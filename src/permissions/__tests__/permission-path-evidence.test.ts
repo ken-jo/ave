@@ -30,7 +30,11 @@ describe("permission path facts", () => {
     const target = join(workspace, "notes.txt");
     expect(protectedControlEntryFor(target)).toBeUndefined();
     expect(protectedControlEntryFor(workspace)).toBeUndefined();
-    expect(protectedControlEntryFor(target.toUpperCase().replaceAll("/", "\\"))).toBeUndefined();
+    const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+    expect(protectedControlEntryFor(join(home, "WORKSPACE", "notes.txt"))).toBe(caseInsensitive ? undefined : "application-home");
+    if (process.platform === "win32") expect(protectedControlEntryFor(target.toUpperCase().replaceAll("/", "\\"))).toBeUndefined();
+    // A lone lexical call must not collapse `..` into the exception.
+    expect(protectedControlEntryFor(`${workspace}/../config/settings.json`)).toBe("application-home");
     const manager = new PermissionManager(join(root, "permissions.json"));
     manager.setMode("default");
     expect(manager.checkDetailed("write_file", "builtin", "write", null, {
@@ -45,8 +49,9 @@ describe("permission path facts", () => {
       ruleSubject: { kind: "shell", dialect: "powershell", command: "Set-Content -Path notes.txt -Value y", cwd: workspace },
       shellExecution: { runsSandboxed: true, environmentSnapshot: {} },
     });
+    // Only the application-home floor is under test; whether this sandboxed write then asks (row 148) or runs (row 147) is the PowerShell startup lane's call.
     expect(shell.pipelineRequest?.floor).toBeUndefined();
-    if (process.platform === "win32") expect(shell).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+    expect(shell.reasonCode).not.toBe("application-home");
     expect(protectedControlEntryFor(join(workspace, ".git/config"))).toBe(".git");
     expect(protectedControlEntryFor(join(workspace, ".ave/permissions.json"))).toBe("application-home");
     expect(isAdmissionDeniedPath(join(workspace, ".ave/keys/key"))).not.toBeNull();

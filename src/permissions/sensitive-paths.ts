@@ -575,15 +575,18 @@ export function protectedControlEntryFor(path: string): string | undefined {
   if (entry) return entry;
   const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")]
     .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
-  const workspace = homes.slice(0, 2).map((home) => home + "/workspace")
-    .find((base) => normalized === base || normalized.startsWith(base + "/"));
+  // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
+  const folded = caseFoldForMatch(normalizePath(path).normalize("NFC")).replace(/\/+$/u, "");
+  const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalizePathForMatch(aveHome())]
+    .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
+    .find((base) => folded === base || folded.startsWith(base + "/"));
   if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
   if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
     const base = normalizePath(target).toLowerCase();
     return normalized === base;
   }))) return "runtime-settings-file";
   // The managed workspace is user data; nested control homes remain protected.
-  if ((workspace ? normalized.slice(workspace.length).split("/") : segments).includes(".ave")) return "application-home";
+  if ((workspace ? folded.slice(workspace.length).toLowerCase().split("/") : segments).includes(".ave")) return "application-home";
   return undefined;
 }
 
