@@ -82,19 +82,33 @@ export interface WorkBoardPanelProps {
 
 /** Below this panel width the stack and the lanes become tabs instead of stacking (case board 17). */
 const NARROW_PANEL_WIDTH = 900;
+/** The open step panel's column beside the board: its 300px width plus its 12px gap. */
+const STEPS_COLUMN_WIDTH = 312;
+/** The narrowest board body that still holds three readable lanes beside the open step panel (the spec draws ~650px at a 958px pane). */
+const BOARD_BODY_MIN_WIDTH = 600;
 
-function usePanelNarrow(node: HTMLElement | null): boolean {
-  const [narrow, setNarrow] = useState(false);
+/** The one layout verdict: narrow when the panel is under 900px, or when the board body left beside an open step panel is under 600px.
+ * The body is measured as the panel minus the steps column, not from the body itself, so docking the panel below (which widens the body)
+ * cannot flip the verdict back. */
+function boardIsNarrow(panelWidth: number, stepsOpen: boolean): boolean {
+  if (!Number.isFinite(panelWidth) || panelWidth <= 0) return false;
+  if (panelWidth < NARROW_PANEL_WIDTH) return true;
+  return stepsOpen && panelWidth - STEPS_COLUMN_WIDTH < BOARD_BODY_MIN_WIDTH;
+}
+
+/** The panel's measured width; Infinity until the first measurement (and where ResizeObserver is missing). */
+function usePanelWidth(node: HTMLElement | null): number {
+  const [width, setWidth] = useState(Number.POSITIVE_INFINITY);
   useEffect(() => {
     if (!node || typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width;
-      if (width !== undefined && width > 0) setNarrow(width < NARROW_PANEL_WIDTH);
+      const next = entries[0]?.contentRect.width;
+      if (next !== undefined && next > 0) setWidth(next);
     });
     observer.observe(node);
     return () => observer.disconnect();
   }, [node]);
-  return narrow;
+  return width;
 }
 
 
@@ -1509,7 +1523,10 @@ export function WorkBoardPanel({
   const openScheduleItem = (routineId: string) => (onOpenRoutine ? onOpenRoutine(routineId) : onOpenSchedule?.());
   const [items, setItems] = useState<WorkItemResolved[]>([]);
   const [panelNode, setPanelNode] = useState<HTMLDivElement | null>(null);
-  const narrow = usePanelNarrow(panelNode);
+  const panelWidth = usePanelWidth(panelNode);
+  // The live step panel's visibility is declared here because the layout verdict reads it.
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const narrow = boardIsNarrow(panelWidth, stepsOpen);
   const [approvalCount, setApprovalCount] = useState<number | null>(null);
   // Narrow layout opens 확인 필요 first while it has items; the user's own tab choice then sticks.
   const [narrowTabChoice, setNarrowTabChoice] = useState<"overview" | "approvals" | null>(null);
@@ -1607,7 +1624,6 @@ export function WorkBoardPanel({
   const approvalSurface = useToolApprovalSurface(api);
 
   // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
-  const [stepsOpen, setStepsOpen] = useState(false);
   const [stepsItemId, setStepsItemId] = useState<number | null>(null);
   const [autoFollow, setAutoFollow] = useState(true);
   const [pinned, setPinned] = useState(false);

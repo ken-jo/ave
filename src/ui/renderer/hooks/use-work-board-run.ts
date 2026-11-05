@@ -272,6 +272,69 @@ export function useNowTick(active: boolean): number {
 }
 
 /**
+ * Which steer acknowledgements a board can still apply. It tracks only the steers this board sent: an ack is held early (it can race
+ * ahead of its steer's own reply) only while this board has a steer to that item in flight, and is dropped once no reply of this board
+ * can claim it. A recorded steer leaves once its ack arrives, once its item's next run starts, or when the board unmounts. It is kept past
+ * its run's end, because a steer dropped as the turn ended can be acknowledged after the run settled. Held outside React state: an
+ * updater runs only at flush, and a reply landing before that flush must still find the early ack.
+ */
+export class SteerAckBook {
+  private readonly early = new Map<string, { itemId: number; ack: WorkBoardSteerAck }>();
+  private readonly recorded = new Map<string, number>();
+  private readonly inFlight = new Map<number, number>();
+
+  beginSend(itemId: number): void {
+    this.inFlight.set(itemId, (this.inFlight.get(itemId) ?? 0) + 1);
+  }
+
+  /** The send's reply came back (or threw). Once none of this board's sends to the item is in flight, held acks were another board's. */
+  endSend(itemId: number): void {
+    const left = (this.inFlight.get(itemId) ?? 0) - 1;
+    if (left > 0) {
+      this.inFlight.set(itemId, left);
+      return;
+    }
+    this.inFlight.delete(itemId);
+    for (const [messageId, entry] of this.early) if (entry.itemId === itemId) this.early.delete(messageId);
+  }
+
+  /** The reply named this send's message: returns the ack that already arrived for it, or records it to await one. */
+  onReply(itemId: number, messageId: string): WorkBoardSteerAck | undefined {
+    const early = this.early.get(messageId)?.ack;
+    this.early.delete(messageId);
+    if (early === undefined) this.recorded.set(messageId, itemId);
+    return early;
+  }
+
+  /** "apply" for a recorded steer of this board (delivered and dropped are both final, so it leaves); "held" while a send to the item is in
+   * flight; "ignored" for another board's steer. */
+  onAck(itemId: number, ack: WorkBoardSteerAck): "apply" | "held" | "ignored" {
+    if (this.recorded.delete(ack.messageId)) return "apply";
+    if ((this.inFlight.get(itemId) ?? 0) > 0) {
+      this.early.set(ack.messageId, { itemId, ack });
+      return "held";
+    }
+    return "ignored";
+  }
+
+  forgetItem(itemId: number): void {
+    for (const [messageId, entry] of this.early) if (entry.itemId === itemId) this.early.delete(messageId);
+    for (const [messageId, owner] of this.recorded) if (owner === itemId) this.recorded.delete(messageId);
+  }
+
+  clear(): void {
+    this.early.clear();
+    this.recorded.clear();
+    this.inFlight.clear();
+  }
+
+  /** Entries still held, for the bound's test. */
+  get size(): number {
+    return this.early.size + this.recorded.size + this.inFlight.size;
+  }
+}
+
+/**
  * Subscribe to the four host run channels in ONE effect with a single cleanup, and backfill any run the listed items say is
  * in flight from its persisted transcript. Returns the per-item run state map plus a `runItem` launcher. The launcher
  * optimistically seeds `busy` so the card shows a starting indicator instantly, even before the `runStarted` broadcast lands.
@@ -306,8 +369,11 @@ export function useWorkBoardRun(
   // Acknowledgements that arrived before their steer's own reply, applied when the reply records the steer. Which steers the reply already
   // recorded is tracked here too, outside any state updater: an updater runs only at flush, so a reply landing between an ack and that
   // flush would find no early ack and leave the steer "sent" forever.
-  const earlyAcksRef = useRef(new Map<string, WorkBoardSteerAck>());
-  const recordedSteersRef = useRef(new Set<string>());
+  const steerBookRef = useRef(new SteerAckBook());
+  useEffect(() => {
+    const book = steerBookRef.current;
+    return () => book.clear();
+  }, []);
   const onPhaseEnteredRef = useRef(onPhaseEntered);
   useEffect(() => {
     onPhaseEnteredRef.current = onPhaseEntered;
@@ -327,6 +393,8 @@ export function useWorkBoardRun(
     (id: number, next: Partial<WorkItemRunState>) => {
       const gens = generationRef.current;
       gens.set(id, (gens.get(id) ?? 0) + 1);
+      // The previous run's steers are no longer drawn: nothing can be acknowledged onto them.
+      steerBookRef.current.forgetItem(id);
       update(id, () => ({ ...EMPTY_RUN, ...next }));
     },
     [update],
@@ -340,11 +408,9 @@ export function useWorkBoardRun(
           // A steer acknowledgement reports nothing else, and may arrive after the run settled: never the run's phase.
           const ack = ev.steer;
           if (ack !== undefined) {
-            if (!recordedSteersRef.current.has(ack.messageId)) {
-              earlyAcksRef.current.set(ack.messageId, ack);
-              return;
+            if (steerBookRef.current.onAck(ev.itemId, ack) === "apply") {
+              update(ev.itemId, (cur) => ({ ...cur, steers: applySteerAck(cur.steers, ack) }));
             }
-            update(ev.itemId, (cur) => ({ ...cur, steers: applySteerAck(cur.steers, ack) }));
             return;
           }
           // A tool step update is not a phase entry either; it only revises that phase's steps.
@@ -476,19 +542,26 @@ export function useWorkBoardRun(
     async (id: number, text: string, userIntent: UserKeyboardIntentSnapshot | undefined) => {
       if (typeof api.steerWorkBoardRun !== "function") throw new Error("steerWorkBoardRun is not exposed to this window");
       const sentAt = new Date().toISOString();
-      const result = await api.steerWorkBoardRun(id, text, userIntent);
-      if (result.ok) {
-        const { messageId } = result;
-        recordedSteersRef.current.add(messageId);
-        const early = earlyAcksRef.current.get(messageId);
-        earlyAcksRef.current.delete(messageId);
-        update(id, (cur) => {
-          const sent: RunSteer = { messageId, text, sentAt, status: "sent", redactedCount: result.redactedCount };
-          const steers = [...cur.steers, sent];
-          return { ...cur, steers: early ? applySteerAck(steers, early) : steers };
-        });
+      const book = steerBookRef.current;
+      const generation = generationRef.current.get(id) ?? 0;
+      book.beginSend(id);
+      try {
+        const result = await api.steerWorkBoardRun(id, text, userIntent);
+        // The item's next run started while this steer was in flight: the steer belonged to the run that ended, whose steers are no longer
+        // drawn and whose held acks were forgotten. Listed on the new run it would stay "sent" forever.
+        if (result.ok && (generationRef.current.get(id) ?? 0) === generation) {
+          const { messageId } = result;
+          const early = book.onReply(id, messageId);
+          update(id, (cur) => {
+            const sent: RunSteer = { messageId, text, sentAt, status: "sent", redactedCount: result.redactedCount };
+            const steers = [...cur.steers, sent];
+            return { ...cur, steers: early ? applySteerAck(steers, early) : steers };
+          });
+        }
+        return result;
+      } finally {
+        book.endSend(id);
       }
-      return result;
     },
     [api, update],
   );
