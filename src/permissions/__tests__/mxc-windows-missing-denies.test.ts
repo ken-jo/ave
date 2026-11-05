@@ -187,6 +187,18 @@ describe("pattern denies", () => {
     expect(grants.denied).toEqual([win32.join(sessions, "a", ".ssh")]);
   });
 
+  it("walks a read-only grant that sits behind a link inside the prefix, and lists a nested root only once", () => {
+    const inner = win32.join(sessions, "j", "inner");
+    const behindLink = { [sessions]: [entry("j", "link")], [inner]: [entry("id_rsa")] };
+    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`], [sessions, inner]), existsIn(behindLink), lister(behindLink)).denied)
+      .toEqual([win32.join(inner, "id_rsa")]);
+    const nested = win32.join(sessions, "inner");
+    const files = (count: number) => Array.from({ length: count }, (_, index) => entry(`file-${index}`));
+    const plain = { [sessions]: [...files(6_000), entry("inner", "directory")], [nested]: [...files(8_000), entry("id_rsa")] };
+    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`], [sessions, nested]), existsIn(plain), lister(plain)).denied)
+      .toEqual([win32.join(nested, "id_rsa")]);
+  });
+
   it("expands an unanchored pattern over every read-only grant, and refuses it beside a writable grant", () => {
     const other = win32.join(home, "notes");
     const directories = { ...tree, [other]: [entry("id_rsa")] };

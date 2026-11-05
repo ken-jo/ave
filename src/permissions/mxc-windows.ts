@@ -377,21 +377,23 @@ function expandPatternDenies(
     }
     if (list === undefined) throw patternDenyRefusal(pattern, "no directory lister");
     compiled.push({ pattern, matches: compileGlobMatcher(glob, { caseInsensitive: true }) });
-    for (const root of nearest?.kind === "readonly" ? [prefix] : reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path)) {
+    // Every grant inside the prefix is its own root: the walk from the prefix does not pass links, and a grant can sit behind one.
+    for (const root of [...(nearest?.kind === "readonly" ? [prefix] : []), ...reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path)]) {
       addRoot(root, pattern);
     }
   }
   if (compiled.length === 0 || list === undefined) return [];
   const matched = patternMatcher(compiled);
-  // Walking an outer root covers every root beneath it.
-  const roots = [...walkRoots.values()].filter(({ root }, index, all) =>
-    !all.some((other, otherIndex) => otherIndex !== index && strictlyUnder(root, other.root)));
   const out: string[] = [];
+  // Roots may nest; a directory one walk already listed is not listed again, so nested roots cost nothing extra.
+  const listed = new Set<string>();
   let visited = 0;
-  for (const { root, pattern } of roots) {
+  for (const { root, pattern } of walkRoots.values()) {
     const pending = [root];
     if (matched(root, winPath.basename(root))) { out.push(root); continue; }
     for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
+      if (listed.has(foldPath(directory))) continue;
+      listed.add(foldPath(directory));
       let entries: readonly MxcDirectoryEntry[];
       try { entries = list(directory); }
       catch (error) {
