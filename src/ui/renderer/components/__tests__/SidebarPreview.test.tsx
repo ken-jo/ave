@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SidebarPreviewCard, SidebarPreviewProvider, SidebarPreviewTrigger } from "../SidebarPreview.js";
+import { SidebarPreviewCard, SidebarPreviewProvider, SidebarPreviewTrigger, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
 
 const conversation = { kind: "conversation" as const, title: "Build review", message: "Updated the build target and verified its output.", modifiedAt: Date.now(), running: true };
 function entries(loadPreview?: () => Promise<typeof conversation>) {
@@ -13,6 +13,24 @@ function entries(loadPreview?: () => Promise<typeof conversation>) {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("sidebar preview cards", () => {
+  it("does not update the open card again when a row that reads the preview re-renders with the same data built inline", () => {
+    let renders = 0;
+    // Like a tree row: it reads the preview context and builds its data inline, so each render passes a fresh object.
+    function Row({ title }: { title: string }) {
+      renders += 1;
+      if (renders > 50) throw new Error("preview row re-rendered without end");
+      const handle = useSidebarPreview({ kind: "terminal", title });
+      return <div tabIndex={0} data-testid="row" {...sidebarPreviewRowProps(handle)}>{title}</div>;
+    }
+    const { rerender } = render(<SidebarPreviewProvider><Row title="Terminal 1" /></SidebarPreviewProvider>);
+    act(() => { screen.getByTestId("row").focus(); });
+    expect(screen.getByRole("tooltip").textContent).toBe("Terminal 1");
+    const settled = renders;
+    rerender(<SidebarPreviewProvider><Row title="Terminal 1" /></SidebarPreviewProvider>);
+    // The re-render itself, and at most one more from a single update of the open card.
+    expect(renders - settled).toBeLessThanOrEqual(2);
+    expect(screen.getByRole("tooltip").textContent).toBe("Terminal 1");
+  });
   it("renders a browser frame and domain without rendering page text", () => {
     render(<SidebarPreviewCard id="frame" preview={{ kind: "browser", title: "Build guide", url: "https://example.test/guide", imageDataUrl: "data:image/png;base64,AA==" }} />);
     expect(screen.getByRole("tooltip").textContent).toBe("Build guideexample.test");

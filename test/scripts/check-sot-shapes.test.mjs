@@ -86,6 +86,42 @@ test("fs-rename counts only file-system renames, not a .rename() method of somet
   }
 });
 
+test("fs-rename also follows dynamic imports, destructured aliases and original-fs", () => {
+  const root = fixtureRoot({
+    // A dynamic import bound to a name, and one called inline.
+    "src/main/dynamic.ts": [
+      'const fsp = await import("node:fs/promises");',
+      "await fsp.rename(a, b);",
+      'await (await import("node:fs/promises")).rename(a, b);',
+      "await session.rename(a);",
+      "",
+    ].join("\n"),
+    // Destructured members and aliases, from an awaited import and from require.
+    "src/main/destructured.ts": [
+      'const { rename: mv, writeFile } = await import("node:fs/promises");',
+      'const { renameSync, promises: p } = require("fs");',
+      "await mv(a, b);",
+      "renameSync(a, b);",
+      "await p.rename(a, b);",
+      "writeFile(a, b);",
+      "",
+    ].join("\n"),
+    // Electron's unpatched fs.
+    "src/main/original.ts": 'import * as ofs from "original-fs";\nofs.renameSync(a, b);\n',
+    // A dynamic import of something else does not make a file an fs file.
+    "src/ui/other.ts": 'const m = await import("./rename-dialog.js");\nm.rename(a);\nrename(a);\n',
+  });
+  try {
+    assert.deepEqual(scanSotShapes(root)["fs-rename"], {
+      "src/main/dynamic.ts": 2,
+      "src/main/destructured.ts": 3,
+      "src/main/original.ts": 1,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("compare reports growth and shrinkage separately", () => {
   const current = { "fs-rename": { "a.ts": 2, "b.ts": 1 }, "home-tilde": {}, "error-message": {} };
   const baseline = { "fs-rename": { "a.ts": 1, "c.ts": 3 }, "home-tilde": {} };
