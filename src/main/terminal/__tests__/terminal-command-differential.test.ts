@@ -385,8 +385,8 @@ interface Outcome {
   /** What the shell recorded as the line it ran (its C marker), or null. */
   readonly recorded: string | null;
   readonly hung: boolean;
-  /** For a command with a process substitution, the shell's child processes once its next prompt was ready (none: the prompt waited for them). */
-  readonly childrenAtPrompt: readonly string[] | null;
+  /** For a command with a process substitution, whether its next prompt ended before the harness released the shell's first prompt hook (it must not). */
+  readonly promptBeforeRelease: boolean | null;
 }
 
 interface Session {
@@ -577,7 +577,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       // EOF is sent while a descendant exits, before it signals its parent: wait for the shell to have no child left.
       while ((await shellChildren()).length > 0) {
         if (Date.now() >= deadline) return false;
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
       return true;
     };
@@ -632,7 +632,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 
   let previous = "(start)";
   const stuck: string[] = [];
-  const typeAndWait = async (line: string): Promise<{ blockId: number | null; hung: boolean }> => {
+  const typeAndWait = async (line: string): Promise<{ blockId: number | null; hung: boolean; promptBeforeRelease: boolean | null }> => {
     const expectedBlockId = tracker.nextBlockId();
     const assertUnsubmitted = (): void => {
       if (tracker.nextBlockId() !== expectedBlockId) throw new Error(`${name}: a command started during refused preparation: ${line}`);
@@ -679,25 +679,28 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     }
     previous = line;
     const prompts = tracker.promptEndCount();
+    let promptBeforeRelease: boolean | null = null;
     if (fence) {
       // The shell holds its next prompt in its first prompt hook until its descendants are gone; it is released either way.
       const settled = await fence.settle(Date.now() + 5_000);
+      // Held in its first prompt hook, the shell cannot have ended a prompt yet.
+      promptBeforeRelease = tracker.promptEndCount() > prompts;
       await fence.release();
       if (!settled) {
         writeInput("\u0003");
         await until(() => tracker.promptEndCount() > prompts, 3_000);
-        return { blockId: typed.firstBlockId, hung: true };
+        return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
       }
     }
     if (!await until(() => tracker.promptEndCount() > prompts, 5_000)) {
       writeInput("\u0003");
       await until(() => tracker.promptEndCount() > prompts, 3_000);
-      return { blockId: typed.firstBlockId, hung: true };
+      return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
     }
     // The next line is typed only at a ready prompt (the shell may still be writing after its prompt marker).
-    if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true };
+    if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
     if (tracker.nextBlockId() > expectedBlockId + 1) throw new Error(`${name}: multiple command blocks started for one approved submission: ${line}`);
-    return { blockId: typed.firstBlockId, hung: false };
+    return { blockId: typed.firstBlockId, hung: false, promptBeforeRelease };
   };
 
   // terminal_run types nothing while the handler is defined: it runs code for any word that is not a command.
@@ -733,8 +736,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       truncateSync(trace, 0);
       for (const call of readdirSync(rig.calls)) rmSync(join(rig.calls, call));
       const descendants = /[<>]\(/u.test(command) ? await beginFence() : undefined;
-      const { blockId, hung } = await typeAndWait(command);
-      const childrenAtPrompt = descendants ? await shellChildren() : null;
+      const { blockId, hung, promptBeforeRelease } = await typeAndWait(command);
       await descendants?.verify();
       const executed: Executed[] = [];
       for (const call of readdirSync(rig.calls)) {
@@ -761,7 +763,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
         }
       }
       const block = blockId === null ? null : tracker.get(blockId);
-      return { command, shell: name, executed, recorded: block?.command ?? null, hung, childrenAtPrompt };
+      return { command, shell: name, executed, recorded: block?.command ?? null, hung, promptBeforeRelease };
     },
     close,
   };
@@ -988,7 +990,7 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
         const outcome = await session.run(command);
         expect(outcome.hung, command).toBe(false);
         expect(outcome.recorded, command).toBe(command);
-        expect(outcome.childrenAtPrompt, command).toEqual([]);
+        expect(outcome.promptBeforeRelease, `${command}: prompt end arrived before release`).toBe(false);
         const programs = outcome.executed.filter((ran) => ran.via === "program").map((ran) => ran.argv.join(" ")).sort();
         expect(programs[0], JSON.stringify(programs)).toMatch(/^diff \/(?:dev|proc\/self)\/fd\/\d+ \/(?:dev|proc\/self)\/fd\/\d+$/u);
         expect(programs.slice(1)).toEqual(["ls a", "pause"]);
@@ -1096,7 +1098,7 @@ print -r -- "$options[trapsasync]"` };
         for (const { command, commands } of part) {
           const outcome = await session.run(command);
           if (outcome.hung) hung.push(`${outcome.shell}: ${JSON.stringify(command)}`);
-          if (outcome.childrenAtPrompt !== null && outcome.childrenAtPrompt.length > 0) earlyPrompts.push(`${outcome.shell}: ${JSON.stringify(command)} children ${outcome.childrenAtPrompt.join(",")}`);
+          if (outcome.promptBeforeRelease === true) earlyPrompts.push(`${outcome.shell}: ${JSON.stringify(command)} ended its prompt before release`);
           if (outcome.recorded !== null && outcome.recorded !== command) recordedDiffers.push(`${outcome.shell}: ${JSON.stringify(command)} recorded as ${JSON.stringify(outcome.recorded)}`);
           for (const ran of outcome.executed) {
             if (!commands.some((argv) => covers(argv, ran))) {
