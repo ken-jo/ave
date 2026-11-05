@@ -18,6 +18,13 @@ export function savedSurfaceOf(
   return { kind: surface.kind, tabId: surface.tabId, ordinal: surface.ordinal, cwd: keepCwd, url: keepUrl };
 }
 
+/** A folder view as saved: the folder it shows and the selected item, or its project root before the view has reported. */
+export function savedFolderOf(surface: { tabId: string; ordinal: number; projectRoot: string; folder?: { path: string; selection: string | null } }): SavedMainSurface {
+  const path = surface.folder && isAbsoluteHostPath(surface.folder.path) ? surface.folder.path : surface.projectRoot;
+  const selection = surface.folder?.selection && isAbsoluteHostPath(surface.folder.selection) ? surface.folder.selection : null;
+  return { kind: "folder", tabId: surface.tabId, ordinal: surface.ordinal, path, selection, projectRoot: surface.projectRoot };
+}
+
 function savedTree(node: PaneNode): SavedPaneNode {
   return node.kind === "leaf"
     ? { kind: "leaf", chatGroupId: node.chatGroupId }

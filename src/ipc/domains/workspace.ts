@@ -229,15 +229,20 @@ function registeredRoot(projectRoot: string): WorkspaceRoot | null {
   return computeRoots().find((root) => matchKey(root.path) === key) ?? null;
 }
 
-/** The innermost registered root containing `dir`, as a match key; links in a folder outside every root count as outside. */
-function containingRootKey(dir: string): string | null {
+/** The innermost registered root containing `dir`; links in a folder outside every root count as outside. */
+function containingRoot(dir: string): { key: string; path: string } | null {
   const dirKey = matchKey(dir);
-  let best: string | null = null;
+  let best: { key: string; path: string } | null = null;
   for (const root of computeRoots()) {
     const key = matchKey(root.path);
-    if (keyWithin(key, dirKey) && (best === null || key.length > best.length)) best = key;
+    if (keyWithin(key, dirKey) && (best === null || key.length > best.key.length)) best = { key, path: root.path };
   }
   return best;
+}
+
+/** A path compared by meaning, not spelling: one separator, NFC (Finder writes NFD names), and the platform's case folding. */
+function lexicalKey(path: string): string {
+  return caseFoldForMatch(foldCanonicalPathSeparators(path.normalize("NFC")));
 }
 
 /** A UNC or device spelling, judged as Windows reads it on every platform: such a link is never resolved, only marked outside. */
@@ -246,21 +251,26 @@ function isLinkTargetNetworkOrDevice(target: string): boolean {
 }
 
 /**
- * Whether a link listed in `realDir` points outside `rootKey`, decided without touching anything through a link: the readlink
+ * Whether a link listed in `realDir` points outside `realRoot`, decided without touching anything through a link: the readlink
  * string is resolved lexically against the link's own folder. A network or device target, a target outside the root, and a
  * target reached through another link (a chain, or a linked folder on the way) all count as outside. Only components that are
  * already known not to be links are lstat'ed, so the OS never follows a link here.
  */
-async function linkPointsOutside(realDir: string, linkName: string, rootKey: string): Promise<boolean> {
+async function linkPointsOutside(realDir: string, linkName: string, realRoot: string): Promise<boolean> {
   const target = await fs.readlink(join(realDir, linkName));
   if (isLinkTargetNetworkOrDevice(target)) return true;
   const lexical = resolvePath(realDir, target);
   if (isLinkTargetNetworkOrDevice(lexical)) return true;
-  if (!keyWithin(rootKey, caseFoldForMatch(foldCanonicalPathSeparators(lexical)))) return true;
-  // Inside the root lexically: walk from the root down, refusing any link on the way, including the target itself. `resolve`
-  // output has no doubled separators, so folding kept every index and the root key's length marks the root in `lexical`.
-  let current = lexical.slice(0, rootKey.length);
-  for (const component of lexical.slice(rootKey.length).split(/[\\/]+/u).filter(Boolean)) {
+  const rootKey = lexicalKey(realRoot);
+  const targetKey = lexicalKey(lexical);
+  if (!keyWithin(rootKey, targetKey)) return true;
+  // Inside the root: walk from the root down, refusing any link on the way, including the target itself. The root and the
+  // target may spell the root differently (NFD against NFC, a short 8.3 name), so the walk counts components below the root
+  // and takes them from the target's own spelling instead of cutting the string at the root's length.
+  const below = targetKey.slice(rootKey.length).split("/").filter(Boolean).length;
+  const parts = lexical.split(/[\\/]+/u).filter(Boolean);
+  let current = realRoot;
+  for (const component of parts.slice(parts.length - below)) {
     current = join(current, component);
     try {
       if ((await fs.lstat(current)).isSymbolicLink()) return true;
@@ -907,9 +917,10 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       }
       try {
         const dirents = await fs.readdir(dir, { withFileTypes: true });
-        const rootKey = containingRootKey(dir);
-        // The listed folder's own physical path, so link targets resolve against where the link really is.
-        const realDir = rootKey === null ? null : await fs.realpath(dir).catch(() => null);
+        const root = containingRoot(dir);
+        // The listed folder's and its root's own physical paths, so link targets resolve against where the link really is.
+        const realDir = root === null ? null : await fs.realpath(dir).catch(() => null);
+        const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
         const entries: WorkspaceDirEntry[] = [];
         let truncated = false;
         let hidden = 0;
@@ -943,7 +954,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             // Windows authenticate to that host (NTLM) and a hung mount would stall the whole listing.
             let outside = true;
             try {
-              outside = rootKey === null || realDir === null || await linkPointsOutside(realDir, ent.name, rootKey);
+              outside = realDir === null || realRoot === null || await linkPointsOutside(realDir, ent.name, realRoot);
             } catch {
               outside = true;
             }

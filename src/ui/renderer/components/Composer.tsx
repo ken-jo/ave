@@ -18,6 +18,7 @@ import { Textarea } from "../../../components/ui/textarea.js";
 import {
   AttachmentChip,
   AttachmentChipCollapsed,
+  type OpenAttachmentExternally,
 } from "./AttachmentChip.js";
 import {
   ATTACH_MAX_COUNT,
@@ -114,7 +115,7 @@ export interface ComposerProps {
   /** Releases an app-owned clipboard temp image after this composer refuses it. */
   discardClipboardImage?: (path: string) => Promise<unknown>;
   /** Open via OS default app — for the overlay's open button. */
-  openExternal?: (path: string) => Promise<unknown>;
+  openExternal?: OpenAttachmentExternally;
   onSend: (intent: UserKeyboardIntentSnapshot) => void;
 
   disabled?: boolean;

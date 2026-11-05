@@ -8,6 +8,7 @@ import { Input } from "../../../../components/ui/input.js";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../../components/ui/dropdown-menu.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
+import type { FolderLocation } from "../../preview/main-surfaces.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
@@ -37,6 +38,10 @@ export interface FolderViewProps {
   onAttachText?: ((text: string) => AttachTextResult) | undefined;
   /** Open a side chat about `path`, the file being viewed or else the deepest open folder (case 25). */
   onOpenSideChat?: ((path: string) => void) | undefined;
+  /** Where a restored view was: its columns reopen on this folder and item. */
+  initialLocation?: FolderLocation | undefined;
+  /** The deepest open folder and the selected item, reported whenever they change, for the saved layout. */
+  onLocationChange?: ((location: FolderLocation) => void) | undefined;
 }
 
 function isWithin(dir: string, path: string): boolean {
@@ -50,7 +55,7 @@ function chainTo(root: string, path: string): string[] {
   return parts.map((_, index) => `${root}${root.endsWith(separator) ? "" : separator}${parts.slice(0, index + 1).join(separator)}`);
 }
 
-export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSideChat }: FolderViewProps) {
+export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSideChat, initialLocation, onLocationChange }: FolderViewProps) {
   const { t } = useTranslation();
   const [state, dispatch] = useReducer(folderReducer, projectRoot, initialFolderState);
   const [focusedPath, setFocusedPath] = useState<string | undefined>(undefined);
@@ -60,7 +65,11 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
   const [hiddenLeft, setHiddenLeft] = useState(0);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<Array<{ path: string; relativePath: string }> | null>(null);
-  const [revealQueue, setRevealQueue] = useState<string[]>([]);
+  // A restored view walks back to where it was, one listing at a time, like a search result.
+  const [revealQueue, setRevealQueue] = useState<string[]>(() => {
+    const target = initialLocation?.selection ?? initialLocation?.path;
+    return target && target !== projectRoot && isWithin(projectRoot, target) ? chainTo(projectRoot, target) : [];
+  });
   const rootRef = useRef<HTMLDivElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -237,6 +246,15 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     }, SEARCH_DEBOUNCE_MS);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [query, folder]);
+  // Report where the view is once it has settled; a restore in progress has not got there yet.
+  const onLocationChangeRef = useRef(onLocationChange);
+  onLocationChangeRef.current = onLocationChange;
+  const selectionPath = state.selected[state.selected.length - 1]?.path ?? null;
+  const settled = revealQueue.length === 0;
+  useEffect(() => {
+    if (settled) onLocationChangeRef.current?.({ path: folder, selection: selectionPath });
+  }, [folder, selectionPath, settled]);
+
   const reveal = useCallback((path: string) => {
     setQuery("");
     setMatches(null);

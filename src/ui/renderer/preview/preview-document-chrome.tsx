@@ -6,6 +6,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
+import { canOpenInDefaultApp } from "../../../shared/preview-external-open.js";
 
 function pathParts(path: string, workspaceRoot?: string): { name: string; parent: string } {
   const normalized = path.replace(/\\/g, "/");
@@ -51,7 +52,8 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
   copyContent?: boolean;
   canOpenExternal?: boolean;
   onReload?: () => void;
-  onOpenError?: () => void;
+  /** A refused or failed open, with main's code. */
+  onOpenError?: (code: string | undefined) => void;
   refreshing?: boolean;
 }) {
   const { t } = useTranslation();
@@ -63,8 +65,8 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
   const handleOpenExternal = async (): Promise<void> => {
     try {
       const result = await window.ave.attach.openExternal(path);
-      if (!result.ok) onOpenError?.();
-    } catch { onOpenError?.(); }
+      if (!result.ok) onOpenError?.(result.error);
+    } catch { onOpenError?.(undefined); }
   };
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2 py-1" data-testid="document-preview-header">
@@ -72,7 +74,7 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
       <h3 className="max-w-[45%] shrink truncate text-[13px] font-semibold" title={name}>{name}</h3>
       <span title={path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" data-testid="preview-document-path">{parent}</span>
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        {canOpenExternal ? <Button type="button" size="icon-xs" variant="ghost"
+        {canOpenExternal && canOpenInDefaultApp(path) ? <Button type="button" size="icon-xs" variant="ghost"
           aria-label={t("chatPreviewRail.openDefaultApp")} title={t("chatPreviewRail.openDefaultApp")}
           onClick={() => void handleOpenExternal()}><ExternalLink aria-hidden="true" className="h-3.5 w-3.5" /></Button> : null}
         <Button type="button" size="icon-xs" variant="ghost" aria-label={copyLabel} title={copyLabel} onClick={() => copy(copyValue)}>

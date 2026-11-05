@@ -21,6 +21,14 @@ export interface MainSurface {
   /** The project the surface belongs to, by its root. Every main surface has one; the saved layout keeps it. A folder view
    * lists it as its first column. */
   projectRoot: string;
+  /** A folder view's open folder and the item selected in it, as last reported by the view; the saved layout keeps it. */
+  folder?: FolderLocation;
+}
+
+/** Where a folder view is: the deepest open folder and the selected item in it, if any. */
+export interface FolderLocation {
+  path: string;
+  selection: string | null;
 }
 
 /** Terminal and web surfaces: the ones that move to a side panel and stand as an agent tool surface. A folder view is
@@ -83,6 +91,7 @@ export interface MainSurfacesStore {
   setCwd: (tabId: string, cwd: string) => void;
   /** The surface belongs to another project from now on (다른 프로젝트로 이동). Throws for a surface that is not here. */
   setProjectRoot: (tabId: string, projectRoot: string) => void;
+  setFolderLocation: (tabId: string, location: FolderLocation) => void;
 }
 
 export function useMainSurfaces(): MainSurfacesStore {
@@ -118,6 +127,7 @@ export function useMainSurfaces(): MainSurfacesStore {
     if (surfacesRef.current.some((each) => each.tabId === surface.tabId)) return;
     // A moved tab keeps its number; colliding restored terminal labels are reassigned.
     if (surface.kind === "browser" && nextMainBrowserOrdinal <= surface.ordinal) nextMainBrowserOrdinal = surface.ordinal + 1;
+    if (surface.kind === "folder" && nextMainFolderOrdinal <= surface.ordinal) nextMainFolderOrdinal = surface.ordinal + 1;
     commit([...surfacesRef.current, surface.kind === "terminal" ? { ...surface, ordinal: terminalOrdinal(surface.tabId, surface.ordinal) } : surface]);
   }, [commit]);
 
@@ -162,8 +172,15 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit(current.map((each) => (each.tabId === tabId ? { ...each, projectRoot } : each)));
   }, [commit]);
 
+  const setFolderLocation = useCallback((tabId: string, location: FolderLocation) => {
+    const current = surfacesRef.current;
+    if (!current.some((each) => each.tabId === tabId && each.kind === "folder"
+      && (each.folder?.path !== location.path || each.folder?.selection !== location.selection))) return;
+    commit(current.map((each) => (each.tabId === tabId ? { ...each, folder: location } : each)));
+  }, [commit]);
+
   return useMemo(
-    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot }),
-    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot],
+    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot, setFolderLocation }),
+    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot, setFolderLocation],
   );
 }

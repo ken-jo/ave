@@ -2148,6 +2148,8 @@ export function App() {
             onOpenTerminal={openTerminalAt}
             onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
             onOpenSideChat={openSideChatAbout}
+            initialLocation={surface.folder}
+            onLocationChange={(location) => mainSurfaces.setFolderLocation(surface.tabId, location)}
           />
         </PaneFrame>
       ));

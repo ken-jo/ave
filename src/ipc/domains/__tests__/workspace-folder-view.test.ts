@@ -346,7 +346,7 @@ describe("workspace.openPath", () => {
   it.each([
     // Formats an earlier deny list named, and the ones review found it missed.
     "command", "webloc", "inetloc", "ftploc", "afploc", "mpkg", "lnk", "url", "js", "hta", "reg", "jar",
-    "py", "pyw", "jnlp", "appinstaller", "diagcab", "library-ms", "search-ms", "searchConnector-ms", "ts", "html",
+    "py", "pyw", "jnlp", "appinstaller", "diagcab", "library-ms", "search-ms", "searchConnector-ms", "ts", "html", "svg", "xml",
   ])("refuses to open a .%s file", async (extension) => {
     const target = join(root, `payload.${extension}`);
     writeFileSync(target, "x", { mode: 0o644 });
@@ -422,6 +422,32 @@ describe("workspace.openPath links to network locations", () => {
   });
 });
 
+describe("workspace.listDir under a root spelled in NFD", () => {
+  it("keeps in-project links inside when the root's name is decomposed (a Finder-made Korean folder)", async ({ skip }) => {
+    needsFileLinks(skip);
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-nfd-")));
+    const nfdRoot = join(parent, "프로젝트".normalize("NFD"));
+    mkdirSync(join(nfdRoot, "docs"), { recursive: true });
+    writeFileSync(join(nfdRoot, "docs", "a.txt"), "x");
+    linkFile("docs/a.txt", join(nfdRoot, "relative"));
+    // A link written with the composed spelling of the same root: one folder on APFS, which compares names by meaning.
+    const composed = process.platform === "darwin" ? join(parent, "프로젝트".normalize("NFC"), "docs", "a.txt") : join(nfdRoot, "docs", "a.txt");
+    linkFile(composed, join(nfdRoot, "absolute"));
+    linkFile(join(outside, "secret.txt"), join(nfdRoot, "away"));
+    additionalDirectories.value = [root, nfdRoot];
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), nfdRoot)) as ListResult;
+      const outsideOf = (name: string) => res.entries?.find((entry) => entry.name === name)?.outside;
+      expect(outsideOf("relative")).toBe(false);
+      expect(outsideOf("absolute")).toBe(false);
+      expect(outsideOf("away")).toBe(true);
+    } finally {
+      additionalDirectories.value = [root];
+      await cleanupTmpDir(parent);
+    }
+  });
+});
+
 describe("workspace.listDir links to network locations", () => {
   it("never resolves through a link: chains and linked folders on the way count as outside", async ({ skip }) => {
     needsFileLinks(skip);
@@ -444,8 +470,8 @@ describe("workspace.listDir links to network locations", () => {
       expect(outsideOf("through-folder")).toBe(true);
       expect(outsideOf("local")).toBe(false);
       expect(outsideOf("up")).toBe(false);
-      // Only the listed folder itself is resolved.
-      expect(realpath.mock.calls.every(([path]) => String(path) === dir)).toBe(true);
+      // Only the listed folder and its project root are resolved, never a link.
+      expect(realpath.mock.calls.every(([path]) => String(path) === dir || String(path) === root)).toBe(true);
     } finally {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });

@@ -223,6 +223,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "root-not-registered": "folderView.openRefusedScope",
   "type-not-allowed": "folderView.openRefusedType",
   "network-target": "folderView.openRefusedOutside",
+  "executable": "folderView.openRefusedExecutable",
   "cannot-remove-default": "formatIpcError.cannotRemoveDefaultRoot",
   "not-an-additional-root": "formatIpcError.notAnAdditionalRoot",
   // Workspace root removal preview (workspace.ts): a store could not be asked, so nothing was removed.
@@ -497,6 +498,15 @@ export function resolveIpcErrorKey(code: string | undefined): string | undefined
   return Object.hasOwn(COMMON_IPC_ERROR_MESSAGES, code)
     ? COMMON_IPC_ERROR_MESSAGES[code]
     : undefined;
+}
+
+/** Refusals of "open in default app" that tell the user what to do instead; any other failure says the open failed. */
+const DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE: ReadonlySet<string> = new Set(["type-not-allowed", "executable", "network-target"]);
+
+/** The i18n key for a refused or failed "open in default app" (`attach.openExternal`). */
+export function defaultAppOpenErrorKey(code: string | undefined): string {
+  const key = code !== undefined && DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE.has(code) ? resolveIpcErrorKey(code) : undefined;
+  return key ?? "chatPreviewRail.openDefaultAppError";
 }
 
 export function formatIpcError(

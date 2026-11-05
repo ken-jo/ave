@@ -19,6 +19,8 @@ export const PASTE_PREVIEW_MAX_CHARS = 32 * 1024;
 import { collapsePath } from "../utils/attachment-markers.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
+import { canOpenInDefaultApp } from "../../../shared/preview-external-open.js";
+import { defaultAppOpenErrorKey } from "../format-ipc-error.js";
 
 const THUMB_MAX_PX = 48;
 
@@ -152,7 +154,7 @@ export function AttachmentChip({
 }: {
   attachment: Attachment;
   total: number;
-  onOpenExternal?: (path: string) => void;
+  onOpenExternal?: OpenAttachmentExternally;
   onRemove?: () => void;
 }) {
   const { t } = useTranslation();
@@ -229,7 +231,7 @@ export function AttachmentChipCollapsed({
   onOpenExternal,
 }: {
   attachments: Attachment[];
-  onOpenExternal?: (path: string) => void;
+  onOpenExternal?: OpenAttachmentExternally;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -278,14 +280,19 @@ export function AttachmentChipCollapsed({
  *
  * No remove buttons: removal is exclusively via deleting the marker text.
  */
+/** Hand an attached file to the OS default app (`attach.openExternal`). */
+export type OpenAttachmentExternally = (path: string) => Promise<{ ok: boolean; error?: string }>;
+
 export function AttachmentOverlay({
   attachments,
   onOpenExternal,
 }: {
   attachments: Attachment[];
-  onOpenExternal?: (path: string) => void;
+  onOpenExternal?: OpenAttachmentExternally;
 }) {
   const { t } = useTranslation();
+  // The i18n key of each attachment's last refused or failed open, by path.
+  const [openErrors, setOpenErrors] = useState<Record<string, string | null>>({});
   return (
     <div data-testid="attachment-overlay-body">
       <div className="mb-2 flex items-center justify-between border-b border-border pb-1.5">
@@ -361,15 +368,26 @@ export function AttachmentOverlay({
             {/* A `@file` mention is a reference main never authorized for
                 open-in-OS (only picker / redeemed-drop paths are), so it has no
                 open button rather than one that would be refused. */}
-            {(att.kind === "image" || (att.kind === "file" && !att.reference)) && onOpenExternal ? (
+            {(att.kind === "image" || (att.kind === "file" && !att.reference)) && onOpenExternal && canOpenInDefaultApp(att.path) ? (
               <button
                 type="button"
-                onClick={() => onOpenExternal(att.path)}
+                onClick={() => {
+                  setOpenErrors((current) => ({ ...current, [att.path]: null }));
+                  void onOpenExternal(att.path).then(
+                    (result) => { if (!result.ok) setOpenErrors((current) => ({ ...current, [att.path]: defaultAppOpenErrorKey(result.error) })); },
+                    () => setOpenErrors((current) => ({ ...current, [att.path]: defaultAppOpenErrorKey(undefined) })),
+                  );
+                }}
                 className="flex-shrink-0 rounded border border-border px-2 py-1 text-[10px] hover:bg-muted"
                 title={t("attachmentChip.openExternalTitle")}
               >
                 ↗ {t("attachmentChip.openExternalButton")}
               </button>
+            ) : null}
+            {(att.kind === "image" || att.kind === "file") && openErrors[att.path] ? (
+              <div role="alert" data-testid="overlay-open-error" className="w-full basis-full text-[10px] text-destructive">
+                {t(openErrors[att.path]!)}
+              </div>
             ) : null}
             {/* The chip stands in for the text in the body; opening it shows
                 exactly what will be sent, selectable for a copy. */}

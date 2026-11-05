@@ -178,7 +178,7 @@ describe("AttachmentChip — single, clickable", () => {
   });
 
   it("forwards onOpenExternal from the overlay's open button", () => {
-    const onOpenExternal = vi.fn();
+    const onOpenExternal = vi.fn(async () => ({ ok: true }));
     render(
       <AttachmentChip
         attachment={file2}
@@ -202,7 +202,7 @@ describe("AttachmentOverlay", () => {
   });
 
   it("invokes onOpenExternal callback for non-paste items", () => {
-    const onOpenExternal = vi.fn();
+    const onOpenExternal = vi.fn(async () => ({ ok: true }));
     const list: Attachment[] = [img1, file2, paste3];
     render(
       <AttachmentOverlay attachments={list} onOpenExternal={onOpenExternal} />,
@@ -215,16 +215,30 @@ describe("AttachmentOverlay", () => {
 
   it("offers no open-external action for an @file mention reference", () => {
     const mention: FileAttachment = { ...file2, id: "m4", n: 4, reference: true };
-    render(<AttachmentOverlay attachments={[mention]} onOpenExternal={() => {}} />);
+    render(<AttachmentOverlay attachments={[mention]} onOpenExternal={async () => ({ ok: true })} />);
     expect(screen.queryAllByTitle("기본 앱으로 열기").length).toBe(0);
   });
 
   it("does not render open-external button for paste attachments", () => {
     const list: Attachment[] = [paste3];
     render(
-      <AttachmentOverlay attachments={list} onOpenExternal={() => {}} />,
+      <AttachmentOverlay attachments={list} onOpenExternal={async () => ({ ok: true })} />,
     );
     expect(screen.queryAllByTitle("기본 앱으로 열기").length).toBe(0);
+  });
+
+  it("offers no open action for a type the default app is not given", () => {
+    const script: FileAttachment = { ...file2, id: "s5", n: 5, path: "/Users/example/build.js", name: "build.js", ext: "js" };
+    const page: FileAttachment = { ...file2, id: "s6", n: 6, path: "/Users/example/chart.svg", name: "chart.svg", ext: "svg" };
+    render(<AttachmentOverlay attachments={[script, page, file2]} onOpenExternal={async () => ({ ok: true })} />);
+    expect(screen.getAllByTitle("기본 앱으로 열기")).toHaveLength(1);
+  });
+
+  it("says why the host refused an open", async () => {
+    const onOpenExternal = vi.fn(async () => ({ ok: false, error: "executable" }));
+    render(<AttachmentOverlay attachments={[file2]} onOpenExternal={onOpenExternal} />);
+    fireEvent.click(screen.getByTitle("기본 앱으로 열기"));
+    expect((await screen.findByTestId("overlay-open-error")).textContent).toBe("실행 권한이 있는 파일은 여기서 열지 않습니다 — Finder에서 여세요.");
   });
 
   it("renders empty list cleanly with header count = 0", () => {

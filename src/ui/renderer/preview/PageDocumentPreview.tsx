@@ -9,6 +9,7 @@ import type { ObservationBinding, AgentObservationEvent, DocumentObservationStat
 import { tableErrorKey } from "./table-document-preview.js";
 import { PreviewDocumentHeader, PreviewDocumentFooter, PreviewDocumentLiveStrip, previewFormatLabel } from "./preview-document-chrome.js";
 import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
+import { defaultAppOpenErrorKey } from "../format-ipc-error.js";
 
 type PageElementAddress = PreviewDocumentElement["element"];
 interface PageChange { element: PageElementAddress; before: string; after: string; ts: number; seq: number }
@@ -37,7 +38,8 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
   const [retryGeneration, setRetryGeneration] = useState(0);
-  const [openFailed, setOpenFailed] = useState(false);
+  // The i18n key of the last refused or failed open, cleared when the preview reloads.
+  const [openFailed, setOpenFailed] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
   const [renderedImage, setRenderedImage] = useState<PreviewPageDocument | null>(null);
   const generation = useRef(0);
@@ -66,7 +68,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
     // Showing a hidden panel again keeps the current page on screen while it reads the fresh baseline.
     const refresh = resumed.current;
     resumed.current = false;
-    setOpenFailed(false);
+    setOpenFailed(null);
     if (!refresh) {
       setRenderedImage(null);
       setState({ phase: "loading" });
@@ -184,10 +186,10 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
   return <div className="space-y-2" data-testid="chat-side-panel-page-preview">
     <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
       canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
-      onOpenError={() => setOpenFailed(true)} onReload={() => setRetryGeneration((current) => current + 1)}
+      onOpenError={(code) => setOpenFailed(defaultAppOpenErrorKey(code))} onReload={() => setRetryGeneration((current) => current + 1)}
       refreshing={state.phase === "loading"} />
     <PreviewDocumentLiveStrip status={state.phase === "ok" ? state.status : undefined} summary={summary} ts={latest?.ts}
-      error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />
+      error={openFailed ? t(openFailed) : undefined} />
     {state.phase === "loading" ? <div role="status">{t("chatPreviewRail.filePreviewLoading")}</div>
       : state.phase === "error" ? <div role="alert" className="text-xs text-destructive" data-testid="chat-side-panel-file-error">
         <p>{t(state.code === "superseded" ? "pagePreview.superseded"

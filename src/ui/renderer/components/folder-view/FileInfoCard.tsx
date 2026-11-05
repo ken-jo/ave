@@ -9,6 +9,7 @@ import { useCopyFlash } from "../../hooks/use-copy-flash.js";
 import { folderEntryIcon, revealKey } from "./FolderColumn.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, pathSegments, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
+import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
 
 /** Why there is no preview: an unsupported format, or one of the host reader's refusals. */
 export type FileInfoReason = "unsupported" | "too-large" | "binary-file";
@@ -22,6 +23,7 @@ export function FileInfoCard({ projectRoot, entry, reason }: { projectRoot: stri
   const { t, locale } = useTranslation();
   const { copied, copy } = useCopyFlash();
   const open = useOpenInDefaultApp(projectRoot);
+  const openable = canOpenInDefaultApp(entry.path);
   const [revealFailed, setRevealFailed] = useState(false);
   const Icon = folderEntryIcon(entry);
   const kind = folderFileKind(entry.name);
@@ -60,20 +62,29 @@ export function FileInfoCard({ projectRoot, entry, reason }: { projectRoot: stri
             </div>
           ))}
         </dl>
-        <Button type="button" className="mt-4 w-full" autoFocus data-testid="folder-open-external"
-          disabled={open.pending} onClick={() => void open.run(entry.path)}>
-          <ExternalLink aria-hidden="true" className="h-4 w-4" />{t("folderView.openExternal")}
-        </Button>
-        <div className="mt-1 text-center text-[11px] text-muted-foreground">
-          {t(mac ? "folderView.openExternalHintMac" : "folderView.openExternalHint")}
-        </div>
+        {openable ? (
+          <>
+            <Button type="button" className="mt-4 w-full" autoFocus data-testid="folder-open-external"
+              disabled={open.pending} onClick={() => void open.run(entry.path)}>
+              <ExternalLink aria-hidden="true" className="h-4 w-4" />{t("folderView.openExternal")}
+            </Button>
+            <div className="mt-1 text-center text-[11px] text-muted-foreground">
+              {t(mac ? "folderView.openExternalHintMac" : "folderView.openExternalHint")}
+            </div>
+          </>
+        ) : (
+          // A type the default app is not given: the file manager and the path are the way out.
+          <div className="mt-4 text-center text-[11px] text-muted-foreground" data-testid="folder-open-external-unavailable">
+            {t("folderView.openRefusedType")}
+          </div>
+        )}
         {open.error ? (
           <div role="alert" className="mt-1 text-center text-[11px] text-destructive" data-testid="folder-open-external-error">
             {t(open.error)}
           </div>
         ) : null}
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button type="button" variant="outline" size="sm" data-testid="folder-reveal"
+          <Button type="button" variant="outline" size="sm" data-testid="folder-reveal" autoFocus={!openable}
             onClick={() => {
               setRevealFailed(false);
               void window.ave.workspace.reveal(entry.path).then((res) => setRevealFailed(!res.ok), () => setRevealFailed(true));

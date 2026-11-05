@@ -16,6 +16,7 @@ import { FileInfoCard, formatFolderTimestamp, type FileInfoReason } from "./File
 import { folderEntryIcon } from "./FolderColumn.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
+import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
 
 type ReadResult = Awaited<ReturnType<typeof window.ave.preview.readFile>>;
 type ViewerState =
@@ -190,9 +191,11 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
           <MessageSquarePlus aria-hidden="true" className="h-3.5 w-3.5" />
         </Button>
       ) : null}
-      <Button type="button" size="sm" variant="outline" disabled={open.pending} onClick={() => void open.run(entry.path)} data-testid="folder-open-external">
-        <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.openExternal")}
-      </Button>
+      {canOpenInDefaultApp(entry.path) ? (
+        <Button type="button" size="sm" variant="outline" disabled={open.pending} onClick={() => void open.run(entry.path)} data-testid="folder-open-external">
+          <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.openExternal")}
+        </Button>
+      ) : null}
     </>
   );
   const body = state.phase === "loading" ? (

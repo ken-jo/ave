@@ -5,23 +5,9 @@ import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
+import { canOpenInDefaultApp } from "../shared/preview-external-open.js";
 
 const DENY_EXTENSIONS = new Set<string>(DENY_LIST);
-
-/**
- * The only formats handed to the OS default app: documents, media, plain data and zip. Anything else (scripts, launchers,
- * shortcuts, installers, extensionless files) is refused, because a deny list of formats the OS will run never stays complete.
- * Both the requested name and its target must be on the list; the last extension decides (`report.pdf.exe` is refused).
- */
-const OPEN_ALLOW_EXTENSIONS = new Set<string>([
-  "pdf",
-  "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "svg",
-  "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "pages", "numbers", "key",
-  "txt", "md", "csv", "tsv", "json", "yaml", "yml", "xml", "log",
-  "mp3", "m4a", "wav", "flac", "aac", "ogg", "mp4", "mov", "m4v", "webm", "mkv", "avi",
-  "zip",
-  "sqlite", "db",
-]);
 
 /** Link hops followed while checking a chain, as the OS's own symlink limit. */
 const MAX_LINK_HOPS = 40;
@@ -65,8 +51,9 @@ export async function resolveExternalOpenTarget(
   return { ok: true, real };
 }
 
+/** The shared allow list (`shared/preview-external-open.ts`): both the requested name and its target must be on it. */
 function isOpenAllowed(path: string): boolean {
-  return OPEN_ALLOW_EXTENSIONS.has(externalOpenExtension(path));
+  return canOpenInDefaultApp(path);
 }
 
 /** A UNC or device spelling, judged as Windows reads it on every platform. */

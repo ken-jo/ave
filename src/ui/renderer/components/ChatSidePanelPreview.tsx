@@ -43,6 +43,8 @@ import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
 import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
 import { committedWebSurfaceLocation, subscribeWebSurfaceLocations } from "../preview/web-surfaces.js";
+import { canOpenInDefaultApp } from "../../../shared/preview-external-open.js";
+import { defaultAppOpenErrorKey } from "../format-ipc-error.js";
 
 export const FILE_TARGET_KINDS = new Set<ChatPreviewTarget["kind"]>(["file", "diff", "image"]);
 export const BROWSER_TARGET_KINDS = new Set<ChatPreviewTarget["kind"]>(["html", "url"]);
@@ -162,6 +164,29 @@ export function EmptyState({ children }: { children: string }) {
   return <div className="p-4 text-xs text-muted-foreground">{children}</div>;
 }
 
+/** "Open file" for an image preview: absent for a type the default app is not given, and a refusal says why. */
+function OpenInDefaultAppButton({ path }: { path: string }) {
+  const { t } = useTranslation();
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  if (!canOpenInDefaultApp(path)) return null;
+  const open = () => {
+    setErrorKey(null);
+    void window.ave.attach.openExternal(path).then(
+      (result) => { if (!result.ok) setErrorKey(defaultAppOpenErrorKey(result.error)); },
+      () => setErrorKey(defaultAppOpenErrorKey(undefined)),
+    );
+  };
+  return (
+    <>
+      <Button type="button" size="sm" variant="outline" onClick={open} data-testid="preview-image-open">
+        <ExternalLink className="h-3.5 w-3.5" />
+        <span>{t("chatPreviewRail.openFile")}</span>
+      </Button>
+      {errorKey ? <p role="alert" className="w-full basis-full text-xs text-destructive" data-testid="preview-image-open-error">{t(errorKey)}</p> : null}
+    </>
+  );
+}
+
 function CopyButton({ value }: { value: string }) {
   const { t } = useTranslation();
   const { copied, copy } = useCopyFlash();
@@ -263,10 +288,7 @@ export function PreviewBody({
         </div>
         <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{target.path}</div>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" onClick={() => void window.ave.attach.openExternal(target.path)}>
-            <ExternalLink className="h-3.5 w-3.5" />
-            <span>{t("chatPreviewRail.openFile")}</span>
-          </Button>
+          <OpenInDefaultAppButton path={target.path} />
           <CopyButton value={rawText} />
         </div>
       </div>

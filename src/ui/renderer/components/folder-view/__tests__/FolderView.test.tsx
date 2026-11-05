@@ -12,7 +12,7 @@ const listings: Record<string, unknown> = {
   [ROOT]: { ok: true, entries: [dir(`${ROOT}/data`), dir(`${ROOT}/deploy`), dir(`${ROOT}/src`), file(`${ROOT}/package.json`)], truncated: false, hidden: 0 },
   [`${ROOT}/src`]: { ok: true, entries: [dir(`${ROOT}/src/payments`), file(`${ROOT}/src/index.ts`)], truncated: false, hidden: 0 },
   [`${ROOT}/src/payments`]: { ok: true, entries: [file(`${ROOT}/src/payments/retry-policy.ts`), file(`${ROOT}/src/payments/flow.png`), file(`${ROOT}/src/payments/README.md`)], truncated: false, hidden: 0 },
-  [`${ROOT}/data`]: { ok: true, entries: [file(`${ROOT}/data/settlement.sqlite`, 3_984_384), file(`${ROOT}/data/big.log`, 155_189_248)], truncated: false, hidden: 0 },
+  [`${ROOT}/data`]: { ok: true, entries: [file(`${ROOT}/data/settlement.sqlite`, 3_984_384), file(`${ROOT}/data/big.log`, 155_189_248), file(`${ROOT}/data/mock.psd`, 2_048)], truncated: false, hidden: 0 },
   [`${ROOT}/deploy`]: { ok: true, entries: [dir(`${ROOT}/deploy/keys`), { ...dir(`${ROOT}/deploy/shared-config`), type: "link", outside: true }, dir(`${ROOT}/deploy/empty`)], truncated: false, hidden: 0 },
   [`${ROOT}/deploy/keys`]: { ok: false, error: "permission-denied" },
   [`${ROOT}/deploy/empty`]: { ok: true, entries: [], truncated: false, hidden: 0 },
@@ -132,6 +132,38 @@ describe("FolderView", () => {
     expect(document.activeElement).toBe(button);
     fireEvent.click(button);
     await waitFor(() => expect(openPath).toHaveBeenCalledWith(ROOT, `${ROOT}/data/settlement.sqlite`));
+  });
+
+  it("offers no default-app open for a type it is not given, and focuses the file manager instead", async () => {
+    await openView();
+    fireEvent.click(row(`${ROOT}/data`));
+    await waitFor(() => expect(row(`${ROOT}/data/mock.psd`)).toBeDefined());
+    fireEvent.click(row(`${ROOT}/data/mock.psd`));
+    const card = await screen.findByTestId("folder-file-info");
+    expect(within(card).queryByTestId("folder-open-external")).toBeNull();
+    expect(within(card).getByTestId("folder-open-external-unavailable")).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(within(card).getByTestId("folder-reveal")));
+  });
+
+  it("reopens on a restored location and reports where it is", async () => {
+    const onLocationChange = vi.fn();
+    render(<FolderView projectRoot={ROOT} initialLocation={{ path: `${ROOT}/src`, selection: `${ROOT}/src/index.ts` }}
+      onLocationChange={onLocationChange} />);
+    await screen.findByTestId("folder-viewer");
+    expect(columns()).toEqual([ROOT, `${ROOT}/src`]);
+    await waitFor(() => expect(onLocationChange).toHaveBeenLastCalledWith({ path: `${ROOT}/src`, selection: `${ROOT}/src/index.ts` }));
+    // Nothing is reported for the root while the restore is still walking there.
+    expect(onLocationChange).not.toHaveBeenCalledWith({ path: ROOT, selection: null });
+    fireEvent.click(row(`${ROOT}/data`));
+    await waitFor(() => expect(onLocationChange).toHaveBeenLastCalledWith({ path: `${ROOT}/data`, selection: `${ROOT}/data` }));
+  });
+
+  it("ignores a restored location outside its project", async () => {
+    const onLocationChange = vi.fn();
+    render(<FolderView projectRoot={ROOT} initialLocation={{ path: "/elsewhere", selection: "/elsewhere/a.txt" }} onLocationChange={onLocationChange} />);
+    await waitFor(() => expect(row(`${ROOT}/data`)).toBeDefined());
+    expect(columns()).toEqual([ROOT]);
+    await waitFor(() => expect(onLocationChange).toHaveBeenLastCalledWith({ path: ROOT, selection: null }));
   });
 
   it("explains a too-large file on the same card, with the reason from the preview reader", async () => {
