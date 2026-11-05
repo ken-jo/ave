@@ -74,7 +74,10 @@ class FakeCdp implements CdpSession {
         return {};
       case "Page.getFrameTree": return { frameTree: this.frameTree };
       case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y } };
-      case "DOM.getNodeForLocation": return { ...this.hit, backendNodeId: this.hit.backendNodeId || this.nodes.find((node) => node.backendDOMNodeId)?.backendDOMNodeId };
+      case "DOM.getNodeForLocation":
+        // Chromium rejects a fractional point.
+        if (!Number.isInteger(params?.x) || !Number.isInteger(params?.y)) throw new Error("Invalid parameters");
+        return { ...this.hit, backendNodeId: this.hit.backendNodeId || this.nodes.find((node) => node.backendDOMNodeId)?.backendDOMNodeId };
       case "Input.dispatchMouseEvent":
         if (params?.type === "mousePressed") this.pressed = true;
         return {};
@@ -1298,6 +1301,16 @@ describe("tap placement", () => {
     const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
     const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
     expect([hit.x, hit.y]).toEqual([(move.x as number) + 236, (move.y as number) + 40]);
+  });
+
+  it("hit-tests a whole pixel when the page is scrolled by a fraction, as on a scaled display", async () => {
+    const { cdp, run } = await clickLink();
+    cdp.scroll = { x: 0, y: 4834.39990234375 };
+    await run();
+    const move = cdp.calls.find((call) => call.method === "Input.dispatchMouseEvent")!.params!;
+    const hit = cdp.calls.find((call) => call.method === "DOM.getNodeForLocation")!.params!;
+    expect([hit.x, hit.y]).toEqual([move.x, Math.floor((move.y as number) + 4834.39990234375)]);
+    expect(cdp.calls.some((call) => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchEnd")).toBe(true);
   });
 
   it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
