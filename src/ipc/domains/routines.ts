@@ -272,6 +272,15 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     const filter = projectRoot === undefined ? undefined : { projectRoot };
     const { routines } = filter ? routinesStore.listForDisplay(filter) : routinesStore.listForDisplay();
     const runs: RoutineRun[] = [];
+    const sessionAvailability = new Map<string, boolean>();
+    const sessionExists = (sessionId: string): boolean => {
+      const cached = sessionAvailability.get(sessionId);
+      if (cached !== undefined) return cached;
+      const available = memoryManager.loadSessionMetadata(sessionId) !== null
+        && memoryManager.hasSessionTranscript(sessionId);
+      sessionAvailability.set(sessionId, available);
+      return available;
+    };
     // Past runs include dismissed items: a completed one-shot is dismissed by its own fire and must stay on the grid.
     for (const routine of filter ? routinesStore.list(filter) : routinesStore.list()) {
       const inRange = (iso: string | undefined): iso is string => {
@@ -282,8 +291,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       const seen = new Set<string>();
       const canOpenSession = (sessionId: string): boolean =>
         !(routine.orphanedAt && sessionId === routine.targetSessionId)
-        && memoryManager.loadSessionMetadata(sessionId) !== null
-        && memoryManager.hasSessionTranscript(sessionId);
+        && sessionExists(sessionId);
       for (const run of routine.runs ?? []) {
         if (!inRange(run.firedAt)) continue;
         const { sessionId, ...stored } = run;

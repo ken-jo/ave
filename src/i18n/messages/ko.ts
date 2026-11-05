@@ -3,10 +3,6 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
-  "schedulePanel.durationHour": "시간",
-  "schedulePanel.durationMinute": "분",
-  "schedulePanel.durationSecond": "초",
-  "schedulePanel.runMetrics": "{duration} · {tokens} 토큰",
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",
