@@ -909,7 +909,7 @@ export class PermissionManager {
   private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
     if (sessionId === undefined) return [];
     const rules = this.sessionRules.get(approvalConversationRoot(sessionId)) ?? [];
-    return sessionAuthorityWithheld() ? rules.filter((rule) => rule.action !== "allow") : rules;
+    return sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)) ? rules.filter((rule) => rule.action !== "allow") : rules;
   }
 
   // The "This session" rules a conversation holds.
@@ -1310,7 +1310,8 @@ export class PermissionManager {
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
       ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface,
         // A scheduled wake turn does not inherit the conversation's shared choice; it asks, the default.
-        choice: sessionAuthorityWithheld() ? "ask" : this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
+        choice: sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
+          ? "ask" : this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
       ...(permissionStoreError ? { admissionDenial: Object.freeze({ code: "policy-unreadable", reason: permissionStoreError }) } : {}),
       ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
       tool: Object.freeze({ ...evidence.tool }),

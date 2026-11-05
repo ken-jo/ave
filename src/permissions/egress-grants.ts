@@ -311,7 +311,7 @@ export class EgressGrantStore {
     const key = destinationKey(destination);
     if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
     // A scheduled wake turn does not inherit the conversation's session grants.
-    if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld()
+    if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld(subject.sessionId)
       && this.session.get(subject.sessionId)?.has(key)) return "session";
     if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
     // Persistent grants of the subject's own origin only.

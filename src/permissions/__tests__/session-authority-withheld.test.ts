@@ -11,6 +11,7 @@ const TEST_HOME = join(tmpdir(), `ave-test-withheld-${randomBytes(4).toString("h
 process.env.AVE_HOME = TEST_HOME;
 
 import { inScheduledWake as wake } from "../../__tests__/support/scheduled-wake.js";
+import { withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
 import { recordApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EgressGrantStore } from "../egress-grants.js";
@@ -92,5 +93,26 @@ describe("session egress grants", () => {
     await store.grant("session", scopes, subject, github);
     expect(await wake(() => store.matchingScope(subject, github, scopes))).toBeUndefined();
     expect(await store.matchingScope(subject, github, scopes)).toBe("session");
+  });
+});
+
+describe("a session withheld by id, for lookups outside the wake's async context", () => {
+  it("withholds a conversation allow and a session rule while held, and counts overlapping wakes", async () => {
+    await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", { scope: "session", sessionId: SESSION, verdictAtApproval: "medium", nlJustification: null });
+    const manager = new PermissionManager(join(directory, "permissions.json"));
+    manager.setMode("default");
+    manager.addSessionRule(SESSION, "Network(api.example.com:443)");
+    const destination = { host: "api.example.com", port: 443, source: "builtin", network: "public", ruleScopes: ["session"] } as const;
+    const lookup = () => lookupUserDecision("bash_run", '{"command":"ls"}', "user-keyboard", undefined, undefined, undefined, SESSION);
+    const first = withholdSessionAuthorityFor(SESSION);
+    const second = withholdSessionAuthorityFor(SESSION);
+    expect(await lookup()).toBeNull();
+    expect((await manager.checkNetworkPermission(destination, { sessionId: SESSION })).permission.decision).not.toBe("allow");
+    first();
+    first();
+    expect(await lookup()).toBeNull();
+    second();
+    expect((await lookup())?.decision).toBe("allow");
+    expect((await manager.checkNetworkPermission(destination, { sessionId: SESSION })).permission.decision).toBe("allow");
   });
 });

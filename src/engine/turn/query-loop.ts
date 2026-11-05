@@ -67,6 +67,7 @@ import { createSubscriptionUsageCollector, recordSubscriptionRoundTelemetry } fr
 import { errorMessage } from "../../shared/error-message.js";
 import { directoryInstructionsForToolResult, liveDirectoryInstructions } from "./directory-instructions.js";
 import { toolResultContentReachesWire } from "../wire-serialize.js";
+import { stripRoutineSummary } from "../../shared/routine-summary.js";
 import type { TurnMemoryUse } from "../../prompts/system-prompt-builder.js";
 import {
   authorizationRequiredStateOf,
@@ -143,6 +144,8 @@ export async function queryLoop(
     finalToolSchemas: ToolSchema[];
     promotedToolNames: string[];
   }> {
+    // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
+    const storedText = (text: string): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text) : text);
     const llmSettings = self.deps.settingsService.get("llm");
     const activeBlock = getLlmVendorSettings(
       llmSettings.vendors,
@@ -816,7 +819,7 @@ export async function queryLoop(
       let streamedText = "";
       let streamedThought = "";
       const renderPartial = () => ({
-        content: stripSuggestedReplies(carryTextAtStreamStart + streamedText),
+        content: storedText(stripSuggestedReplies(carryTextAtStreamStart + streamedText)),
         thought: carryThoughtAtStreamStart + streamedThought,
       });
       const stream = await collectActiveRuntimeRoundStream(
@@ -1032,7 +1035,7 @@ export async function queryLoop(
         const savedText = stripSuggestedReplies(continuationCarryText + (stream.text ?? ""));
         self.history.append({
           role: "assistant",
-          content: savedText,
+          content: storedText(savedText),
           meta: {
             interrupted: true,
             ...(isHostExitAbort(abortSignal?.reason) ? { interruptedBy: HOST_EXIT_INTERRUPTION } : {}),
@@ -1137,7 +1140,9 @@ export async function queryLoop(
         role: "assistant",
         // A committed row supersedes its partial snapshot by sharing the same ID.
         ...(roundJournal ? { meta: { messageId: roundJournal.currentRoundRowId() } } : {}),
-        content: wasCapped ? `${mergedText}\n\n[capped at ${MAX_TOOL_CALLS_PER_ROUND} of ${pendingToolCalls.length} tool_use blocks]` : mergedText,
+        content: wasCapped
+          ? `${storedText(mergedText)}\n\n[capped at ${MAX_TOOL_CALLS_PER_ROUND} of ${pendingToolCalls.length} tool_use blocks]`
+          : storedText(mergedText),
         ...(mergedThought && { thought: mergedThought }),
         ...(preserveThinkingBlocks && roundThinkingBlocks.length > 0 && { thinkingBlocks: roundThinkingBlocks }),
         // Persist only executed calls; live UI may still report the full intended count.

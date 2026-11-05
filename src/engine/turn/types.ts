@@ -293,6 +293,8 @@ export interface ConversationLoopDeps {
   allowedPluginIds?: ReadonlySet<string>;
   // Background writes must ask and cannot rely on automatic or cached allows.
   headless?: boolean;
+  // Routine loops: the answer's closing <summary> block is for the result card only, so history stores the answer without it.
+  stripRoutineSummary?: boolean;
   // Approval UI capability is independent of routine tool scope.
   approvalSurface?: ApprovalSurface;
   additionalDirectories?: readonly string[];

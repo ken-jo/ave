@@ -430,7 +430,7 @@ export async function lookupUserDecision(
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
   // A scheduled wake turn reads only a conversation deny: it does not inherit the conversation's allows.
   if (conversation && !conversation.revokedAt
-    && (sessionAuthorityWithheld() ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
+    && (sessionAuthorityWithheld(sessionId, sessionId === undefined ? undefined : approvalConversationRoot(sessionId)) ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
   return legacy ?? global;
 }
 

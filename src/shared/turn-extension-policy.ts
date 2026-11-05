@@ -44,9 +44,31 @@ export function resolveTurnExtensionPolicy(
   });
 }
 
-/** True inside a scheduled wake turn: session-scope allows must not be read (see TurnExtensionPolicy.withholdSessionAuthority). */
-export function sessionAuthorityWithheld(): boolean {
-  return turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true;
+// The sessions a scheduled wake turn is running in right now, counted per wake. A lookup that names one of them withholds its session
+// allows even when it runs outside the turn's async context (a callback, a timer, another module's queue). Host-only: the routine
+// wiring adds a session when a wake starts and removes it in `finally`.
+const withheldSessions = new Map<string, number>();
+
+/** Withhold `sessionId`'s session authority until the returned release runs. Releasing twice is a no-op. */
+export function withholdSessionAuthorityFor(sessionId: string): () => void {
+  withheldSessions.set(sessionId, (withheldSessions.get(sessionId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (withheldSessions.get(sessionId) ?? 1) - 1;
+    if (remaining > 0) withheldSessions.set(sessionId, remaining);
+    else withheldSessions.delete(sessionId);
+  };
+}
+
+/**
+ * True when session-scope allows must not be read: inside a scheduled wake turn's async context (see
+ * TurnExtensionPolicy.withholdSessionAuthority), or for a lookup naming a session a wake is running in.
+ */
+export function sessionAuthorityWithheld(...sessionIds: ReadonlyArray<string | undefined>): boolean {
+  if (turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true) return true;
+  return sessionIds.some((id) => id !== undefined && withheldSessions.has(id));
 }
 
 /** Outside controlled remote turns, hooks remain allowed. */

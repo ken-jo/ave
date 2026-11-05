@@ -227,8 +227,8 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "runTurn spends the verified intent, refuses an unsigned keyboard origin, and records original user text only after that verification. An admitted, session-bound remote controller turn is the user's (owner decision 2026-11-02): its permission, tool-trust and request-anchor origin is user-keyboard, while the verified-keyboard-intent checks still read the transport origin, so a remote turn never spends or forges a keyboard intent",
   },
   "ipc/domains/chat.ts": {
-    sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 4, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },
-    classification: "chat.guide: user guidance only with a consumed gesture, otherwise other-principal guidance. Edit-resend, continue (incl. resume-interrupted) and retry-effort: refused without a consumed gesture, else a user turn carrying the minted intent (a staged envelope replays under its staged origin). Branch-from-checkpoint: mints from its click and holds the intent as a single-use grant for that branch's auto-continue. Session-goal revival and the parent mailbox turn: agent-message",
+    sites: { mintUserKeyboardIntent: 5, runStreamedTurn: 5, userKeyboardLiteral: 3, runTurn: 1, queueUserGuidance: 1, queueGuidance: 1 },
+    classification: "chat.guide: user guidance only with a consumed gesture, otherwise other-principal guidance. Edit-resend, continue (incl. resume-interrupted) and retry-effort: refused without a consumed gesture, else a user turn carrying the minted intent (a staged envelope replays under its staged origin). Branch-from-checkpoint: mints from its click and holds the intent as a single-use grant for that branch's auto-continue. Session-goal revival, the parent mailbox turn and a connected schedule's wake turn (host-started, session authority withheld): agent-message",
   },
   "ipc/domains/permissions.ts": {
     sites: { userKeyboardLiteral: 2 },

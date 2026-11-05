@@ -5,7 +5,11 @@ import { ROUTINES } from "../../../shared/ipc-channels.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 import type { BootContext } from "../../context.js";
 import { setRoutineChatWaker, type RoutineChatWakeResult } from "../../../main/app-state.js";
-import { sessionAuthorityWithheld } from "../../../shared/turn-extension-policy.js";
+import { sessionAuthorityWithheld, turnExtensionPolicyContext } from "../../../shared/turn-extension-policy.js";
+import { EgressGrantStore } from "../../../permissions/egress-grants.js";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type Handler = (event: { routine: Record<string, unknown> }) => void;
 
@@ -182,5 +186,50 @@ describe("a schedule connected to a chat", () => {
     expect(waker).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(routinesScheduler.markRunning).not.toHaveBeenCalled();
+  });
+});
+
+describe("a connected schedule's withheld session, outside the turn's async context", () => {
+  const TARGET = "55555555-5555-4555-8555-555555555555";
+  const connected = { ...routine, trigger: "schedule", prePrompt: "check the build", targetSessionId: TARGET };
+  const scopes = ["once", "session", "project", "always"] as const;
+  const github = { host: "github.com", port: 443 };
+  let dir: string;
+  afterEach(() => { setRoutineChatWaker(null); if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  async function grantedStore() {
+    dir = mkdtempSync(join(tmpdir(), "ave-wake-egress-"));
+    const projectRoot = join(dir, "project");
+    mkdirSync(projectRoot);
+    const store = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
+    const subject = { token: "2".repeat(32), sessionId: TARGET, tabId: undefined, projectRoot, origin: "shell" as const };
+    await store.grant("session", scopes, subject, github);
+    // A lookup from a callback the turn's async context does not reach.
+    const outside = () => turnExtensionPolicyContext.exit(() => store.matchingScope(subject, github, scopes));
+    return { outside };
+  }
+
+  it("does not honour the chat's session egress grant during the wake, and honours it again afterwards", async () => {
+    const { outside } = await grantedStore();
+    const during: Array<string | undefined> = [];
+    setRoutineChatWaker(async () => { during.push(await outside()); return { status: "ran" }; });
+    const { handlers, send } = wire(async () => ({ summary: "" }), { [TARGET]: {} });
+    handlers.llm!({ routine: connected });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+    expect(during).toEqual([undefined]);
+    expect(await outside()).toBe("session");
+  });
+
+  it.each([
+    ["the wake throws", async () => { throw new Error("provider down"); }],
+    ["the chat is busy", async () => ({ status: "busy" }) as RoutineChatWakeResult],
+  ])("releases the session when %s", async (_label, waker) => {
+    const { outside } = await grantedStore();
+    setRoutineChatWaker(waker);
+    const { handlers, routinesScheduler } = wire(async () => ({ summary: "" }), { [TARGET]: {} });
+    handlers.llm!({ routine: connected });
+    await vi.waitFor(() => expect(routinesScheduler.markStopped).toHaveBeenCalled());
+    expect(await outside()).toBe("session");
+    expect(turnExtensionPolicyContext.exit(() => sessionAuthorityWithheld(TARGET))).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { sanitizeRoutineFailureReason } from "../../main/routines-store.js";
 import type { RoutineRecord, RoutineRunOutcome } from "../../shared/routines-types.js";
 import { wakeRoutineChat } from "../../main/app-state.js";
-import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { turnExtensionPolicyContext, withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
 
 const log = createLogger("ave");
 
@@ -40,7 +40,17 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   // A connected schedule enters its chat: the open tile's normal turn path when one holds it, otherwise a headless routine loop that loads
   // the chat under the unattended routine policy. Either way the turn does not inherit what the chat's earlier turns were allowed for
   // this session (permission tree, "Delegated work"); the host sets that here, never from model or tool input.
-  const runConnected = (routine: RoutineRecord, targetSessionId: string, firedAt: string, title: string): Promise<RunResult> => {
+  // The chat's session is also withheld by id for as long as the wake runs, for lookups outside the turn's async context; every
+  // exit (done, thrown, aborted, skipped) releases it.
+  const runConnected = async (routine: RoutineRecord, targetSessionId: string, firedAt: string, title: string): Promise<RunResult> => {
+    const release = withholdSessionAuthorityFor(targetSessionId);
+    try {
+      return await wakeConnected(routine, targetSessionId, firedAt, title);
+    } finally {
+      release();
+    }
+  };
+  const wakeConnected = (routine: RoutineRecord, targetSessionId: string, firedAt: string, title: string): Promise<RunResult> => {
     const inherited = turnExtensionPolicyContext.getStore();
     return turnExtensionPolicyContext.run(Object.freeze({
       ...inherited,
