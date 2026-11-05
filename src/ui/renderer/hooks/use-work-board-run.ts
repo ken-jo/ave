@@ -543,10 +543,13 @@ export function useWorkBoardRun(
       if (typeof api.steerWorkBoardRun !== "function") throw new Error("steerWorkBoardRun is not exposed to this window");
       const sentAt = new Date().toISOString();
       const book = steerBookRef.current;
+      const generation = generationRef.current.get(id) ?? 0;
       book.beginSend(id);
       try {
         const result = await api.steerWorkBoardRun(id, text, userIntent);
-        if (result.ok) {
+        // The item's next run started while this steer was in flight: the steer belonged to the run that ended, whose steers are no longer
+        // drawn and whose held acks were forgotten. Listed on the new run it would stay "sent" forever.
+        if (result.ok && (generationRef.current.get(id) ?? 0) === generation) {
           const { messageId } = result;
           const early = book.onReply(id, messageId);
           update(id, (cur) => {

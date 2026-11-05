@@ -363,6 +363,27 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "joined-limit" }]);
   });
 
+  it("never lists a steer on the item's next run when that run started while the steer was in flight", async () => {
+    // steer sent → its ack arrives early and is held → the item's next run starts (forgetting the held ack) → the reply lands. The reply
+    // belongs to the run it was sent to; appended to the new run it would stay "보냄" forever, since its ack is already gone.
+    const { api, emit, start, steer } = steerHarness();
+    let resolve!: (v: unknown) => void;
+    steer.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "executing" });
+    let pending!: Promise<unknown>;
+    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "turn-ended" } });
+    start(4);
+    let res: unknown;
+    await act(async () => { resolve({ ok: true, messageId: "m-1" }); res = await pending; });
+    expect(res).toEqual({ ok: true, messageId: "m-1" });
+    expect(result.current.runState[4]?.steers).toEqual([]);
+    // Nothing of the old steer is left to claim a later ack either.
+    emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "delivered", turn: 1 } });
+    expect(result.current.runState[4]?.steers).toEqual([]);
+  });
+
   it("applies an acknowledgement whose steer reply lands before React flushes the acknowledgement", async () => {
     // The loop drops a steer in a microtask and the IPC reply can follow before any render: the early-ack record must not wait for a flush.
     const h = steerHarness();
