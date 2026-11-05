@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
 import type { AveApi } from "../types.js";
+import type { MemoryKind, MemoryOriginV1 } from "../../../memory/memory-manager.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 
 export interface NoteResult {
+  kind?: MemoryKind;
+  origin?: MemoryOriginV1;
+  content?: string;
   title: string;
   excerpt: string;
   updatedAt?: string;
@@ -32,7 +36,7 @@ export function memoryProjectOptions(project: ProjectIdentity | undefined) {
   };
 }
 
-function stripTopHeading(content: string): string {
+export function stripTopHeading(content: string): string {
   return content.replace(/^#\s+.+(?:\r?\n)+/m, "").trim();
 }
 
@@ -101,6 +105,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       ]);
       if (!aliveRef.current) return;
       const mappedNotes = (notes ?? []).map((note) => ({
+        ...note,
         filename: note.filename,
         ...(note.id ? { id: note.id } : {}),
         title: note.title,
@@ -168,5 +173,5 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
     setSessionResults([]);
   }, []);
 
-  return { query, setQuery, noteResults, sessionResults, loading, refresh, reset };
+  return { query, setQuery, noteCatalog, noteResults, sessionResults, loading, refresh, reset };
 }

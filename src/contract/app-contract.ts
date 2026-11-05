@@ -138,6 +138,7 @@ export const CHANNELS = {
   },
   memory: {
     entriesList: "ave:memory:entries:list",
+    detailGet: "ave:memory:detail-get",
     entriesDelete: "ave:memory:entries:delete",
     // Undo a memory create or delete by the token its notice or delete returned.
     undo: "ave:memory:undo",

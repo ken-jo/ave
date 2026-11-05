@@ -851,6 +851,19 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith("ave:memory:index:get");
   });
 
+  it("bridges memory detail with optional project scope and preserves typed results", async () => {
+    const api = await loadAveApi();
+    const id = "11111111-1111-4111-8111-111111111111";
+    const project = { projectRoot: "/workspace/project", projectName: "project" };
+    const detail = { ok: false, error: "not-found" } as const;
+    mockInvoke.mockResolvedValue(detail);
+    const getDetail = api["memoryGetDetail"] as AveApi["memoryGetDetail"];
+    expect(await getDetail(id, project)).toEqual(detail);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.memory.detailGet, id, project);
+    await getDetail(id);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.memory.detailGet, id);
+  });
+
   it("bridges memory deletion with optional project scope and exposes no candidate or direct-save bridge", async () => {
     const api = await loadAveApi();
     const project = { projectRoot: "/workspace/project", projectName: "project" };

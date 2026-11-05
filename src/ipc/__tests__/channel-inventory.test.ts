@@ -415,6 +415,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:ui-resource",
         "ave:memory:agents-md:get",
         "ave:memory:agents-md:update",
+        "ave:memory:detail-get",
         "ave:memory:entries:delete",
         "ave:memory:entries:list",
         "ave:memory:entries:search",

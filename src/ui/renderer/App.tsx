@@ -1,3 +1,4 @@
+import type { ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
@@ -1601,6 +1602,11 @@ export function App() {
   }, [checkApiKey, refreshLlmSettings]);
 
   // A memory notice's 보기 opens the memory panel searching for that memory.
+  const [memoryMessageReveal, setMemoryMessageReveal] = useState<ChatMessageRevealRequest | null>(null);
+  const memoryMessageRevealNonce = useRef(0);
+  const handleMemoryMessageRevealHandled = useCallback((nonce: number) => {
+    setMemoryMessageReveal((current) => current?.nonce === nonce ? null : current);
+  }, []);
   const [memoryPanelQuery, setMemoryPanelQuery] = useState<{ text: string; nonce: number } | null>(null);
   const handleOpenMemory = useCallback((query: string) => {
     setMemoryPanelQuery((current) => ({ text: query, nonce: (current?.nonce ?? 0) + 1 }));
@@ -2002,9 +2008,12 @@ export function App() {
             if (opened) closePane();
             return opened;
           }}
-          onOpenSession={async (sessionId) => {
+          onOpenSession={async (sessionId, messageId) => {
             const loaded = await handleLoadSessionAndRefresh(sessionId);
-            if (loaded !== false) closePane();
+            if (loaded !== false) {
+              setMemoryMessageReveal(messageId ? { sessionId, messageId, nonce: ++memoryMessageRevealNonce.current } : null);
+              closePane();
+            }
             return loaded;
           }}
         />
@@ -2647,6 +2656,8 @@ export function App() {
                                     chatGroupId={group.id}
                                     api={api}
                                     registry={chatGroupSessions}
+                                    revealMessage={memoryMessageReveal}
+                                    onMessageRevealHandled={handleMemoryMessageRevealHandled}
                                     env={chatGroupEnvironment}
                                     panelOpen={group.panelOpen}
                                     thumbnailOpen={group.thumbnailOpen}

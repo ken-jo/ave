@@ -199,6 +199,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.listShellTasks, ["main", "11111111-1111-4111-8111-111111111111"]],
   ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.entriesList, [{}]],
+  ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
   // Secret writes and the external-link opener.
   ["settings", CHANNELS.settings.update, [{}]],
   ["settings", CHANNELS.settings.setApiKey, ["anthropic", "k"]],

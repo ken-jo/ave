@@ -59,7 +59,7 @@ import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narro
 import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
 import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
-import { useChatScroll } from "./hooks/use-chat-scroll.js";
+import { useChatScroll, type ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
 import { useCheckpointView } from "./hooks/use-checkpoint-view.js";
 import { useMessageQueue } from "./hooks/use-message-queue.js";
 import { useAttachmentPicker } from "./hooks/use-attachment-picker.js";
@@ -139,6 +139,8 @@ export interface ChatViewProps {
   onSidePanelOpenChange: (open: boolean) => void;
   /** Tile identity addresses side-panel tabs during surface moves. */
   chatGroupId?: string;
+  revealMessage?: ChatMessageRevealRequest | null;
+  onMessageRevealHandled?: (nonce: number) => void;
   /** Side-chat requests target the tile whose conversation owns the panel. */
   sideChatOpenRequest?: SideChatOpenRequest | undefined;
   /** Tell the window its conversation list is stale — a side-chat turn moves a row in it. */
@@ -155,7 +157,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -181,6 +183,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
+  useEffect(() => {
+    if (revealMessage?.sessionId === currentSessionId) setViewMode(null);
+  }, [currentSessionId, revealMessage]);
 
   const visibleEntries = useMemo(
     () => viewMode ? entries.slice(0, viewMode.slicedRangeEnd) : entries,
@@ -596,6 +601,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     searchMatches,
     searchIdx,
     hidden,
+    revealMessage,
+    onMessageRevealHandled,
   });
 
   const { forkToast, handleEnterView, handleExitView, handleBranchFrom } = useCheckpointView({

@@ -1,3 +1,4 @@
+import type { MemoryDetailResult } from "../shared/memory-detail.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
@@ -441,6 +442,8 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
+  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
+    opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>

@@ -3,7 +3,9 @@ import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../../../components/ui/tabs.js";
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
-import { memoryProjectOptions, useMemorySearch, type NoteResult, type SessionResult } from "../hooks/use-memory-search.js";
+import { stripTopHeading, memoryProjectOptions, useMemorySearch, type NoteResult, type SessionResult } from "../hooks/use-memory-search.js";
+import { MemoryDetailContent, type OpenMemorySession } from "./MemoryDetailContent.js";
+import type { MemoryDetailResult } from "../../../shared/memory-detail.js";
 import type { AveApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -24,64 +26,27 @@ function isActionable(note: NoteResult): note is NoteResult & { filename: string
   return note.isIndex !== true && typeof note.filename === "string";
 }
 
-function NoteRow({
-  note,
-  busy,
-  onDelete,
-  onAskAveToFix,
-}: {
+function NoteRow({ note, selected, detail, onSelect }: {
   note: NoteResult;
-  busy: boolean;
-  onDelete: (note: NoteResult & { filename: string }) => void;
-  onAskAveToFix: (note: NoteResult & { id: string }) => void;
+  selected: boolean;
+  detail?: MemoryDetailResult;
+  onSelect: () => void;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-  const fixId = note.id;
-  return (
-    <div className="w-full rounded-lg border bg-background shadow-sm transition-shadow hover:shadow-md">
-      <button
-        type="button"
-        className="group w-full px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <div className="flex min-w-0 items-baseline justify-between gap-2">
-          <span className="min-w-0 flex-1 line-clamp-1 text-sm font-semibold leading-snug text-foreground">{note.title}</span>
-          {note.updatedAt ? (
-            <span className="shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(note.updatedAt, RELATIVE_TIME_LABELS)}</span>
-          ) : null}
-        </div>
-        <p className={`mt-1 text-xs text-muted-foreground ${expanded ? "whitespace-pre-wrap break-words" : "line-clamp-1"}`}>
-          {note.excerpt}
-        </p>
-      </button>
-      {expanded && isActionable(note) ? (
-        <div className="flex justify-end gap-2 border-t px-3 py-2">
-          {/* Ave fixes a memory by its id; a legacy note without one can only be deleted. */}
-          {fixId ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              aria-label={t("memorySaveNotice.askAveToFixAriaLabel", { title: note.title })}
-              onClick={() => onAskAveToFix({ ...note, id: fixId })}
-            >
-              {t("memorySaveNotice.askAveToFix")}
-            </Button>
-          ) : null}
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            aria-label={t("memorySaveNotice.deleteAriaLabel", { title: note.title })}
-            onClick={() => onDelete(note)}
-          >
-            {t("memorySaveNotice.delete")}
-          </Button>
-        </div>
-      ) : null}
+  const origin = detail?.ok ? detail.origin : undefined;
+  const usage = detail?.ok ? detail.usage.entries : [];
+  const latestUse = usage.reduce<string | undefined>((latest, row) => !latest || row.at > latest ? row.at : latest, undefined);
+  return <button type="button" aria-pressed={selected} onClick={onSelect}
+    className={`w-full min-w-0 rounded-lg border p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? "border-primary bg-accent" : "bg-background hover:bg-muted"}`}>
+    <div className="flex min-w-0 items-start gap-2">
+      {note.kind && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">{t(`memorySearchPanel.kind.${note.kind}`)}</span>}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2"><span className="min-w-0 truncate text-sm font-semibold">{note.title}</span>{!note.projectRoot && !note.isIndex && <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">{t("memorySearchPanel.global")}</span>}</div>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{origin?.status === "resolved" ? t("memorySearchPanel.learnedIn", { title: origin.title || shortSessionId(origin.sessionId) }) : origin?.status === "unavailable" ? t("memorySearchPanel.originUnavailable") : note.excerpt}</p>
+      </div>
+      {note.id && detail?.ok && <span className="shrink-0 text-[10px] text-muted-foreground">{t("memorySearchPanel.useCount", { count: usage.length })}{latestUse ? ` · ${formatRelativeTime(latestUse, RELATIVE_TIME_LABELS)}` : ""}</span>}
     </div>
-  );
+  </button>;
 }
 
 function SessionRow({
@@ -89,7 +54,7 @@ function SessionRow({
   onOpenSession,
 }: {
   session: SessionResult;
-  onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
+  onOpenSession?: OpenMemorySession;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -148,7 +113,7 @@ function SessionRow({
 export interface MemorySearchPanelProps {
   api: AveApi;
   project?: ProjectIdentity;
-  onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
+  onOpenSession?: OpenMemorySession;
   /** A search to open with (a memory notice's 보기); a new nonce applies it again. */
   initialQuery?: { text: string; nonce: number } | null;
   /** Open a new chat whose composer asks Ave to fix this memory; false when it could not open. */
@@ -166,12 +131,53 @@ type PanelToast =
 
 export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, onAskAveToFix }: MemorySearchPanelProps) {
   const { t } = useTranslation();
-  const { query, setQuery, noteResults, sessionResults, loading, refresh } = useMemorySearch(api, project);
+  const { query, setQuery, noteCatalog, noteResults, sessionResults, loading, refresh } = useMemorySearch(api, project);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<PanelToast | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [sort, setSort] = useState<"recent" | "kind" | "origin">("recent");
+  const [originFilter, setOriginFilter] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, MemoryDetailResult>>({});
+  const selected = noteResults.find((note) => (note.filename ?? note.title) === selectedKey);
+  const visibleNotes = [...(originFilter ? noteCatalog.filter((note) => note.origin?.sessionId === originFilter) : noteResults)].sort((a, b) => {
+    if (sort === "kind") return (a.kind ?? "note").localeCompare(b.kind ?? "note");
+    if (sort === "origin") return (a.origin?.sessionId ?? "").localeCompare(b.origin?.sessionId ?? "");
+    const latest = (note: NoteResult) => {
+      const detail = note.id ? details[note.id] : undefined;
+      return detail?.ok ? Math.max(0, ...detail.usage.entries.map((row) => Date.parse(row.at))) : 0;
+    };
+    return latest(b) - latest(a);
+  });
 
   useEffect(() => {
-    if (initialQuery) setQuery(initialQuery.text);
+    let cancelled = false;
+    setDetails({});
+    const entries = [...new Map([...noteCatalog, ...noteResults].filter((note) => note.id && !note.isIndex).map((note) => [note.id, note])).values()];
+    // Limit concurrent host reads when a project has a long memory list.
+    const load = async () => {
+      for (let offset = 0; offset < entries.length && !cancelled; offset += 4) {
+        await Promise.all(entries.slice(offset, offset + 4).map(async (note) => {
+          let detail: MemoryDetailResult;
+          try { detail = await api.memoryGetDetail(note.id!, memoryProjectOptions(project)); }
+          catch { detail = { ok: false, error: "read-failed" }; }
+          if (!cancelled) setDetails((current) => ({ ...current, [note.id!]: detail }));
+        }));
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [api, noteCatalog, noteResults, project]);
+
+  useEffect(() => {
+    setOriginFilter(null);
+    setSelectedKey(null);
+  }, [project?.projectRoot]);
+
+  useEffect(() => {
+    if (initialQuery) {
+      setQuery(initialQuery.text);
+      setOriginFilter(null);
+    }
     // App hands a new object per request, so the same title asked for twice still applies.
   }, [initialQuery, setQuery]);
 
@@ -232,7 +238,7 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
     const opened = await onAskAveToFix({
       id: note.id,
       title: note.title,
-      content: note.excerpt,
+      content: note.content ? stripTopHeading(note.content) : note.excerpt,
       ...(note.projectRoot ? { projectRoot: note.projectRoot } : {}),
       ...(note.projectName ? { projectName: note.projectName } : {}),
     });
@@ -240,7 +246,7 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
   };
   return (
     <div
-      className="mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
+      className="@container mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
       data-testid="memory-search-panel"
     >
       <p className="pb-4 text-sm text-muted-foreground">{t("memorySearchPanel.panelDescription")}</p>
@@ -248,7 +254,7 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
         <Input
           placeholder={t("memorySearchPanel.searchPlaceholder")}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { setQuery(e.target.value); setOriginFilter(null); }}
           className="text-sm"
           aria-label={t("memorySearchPanel.searchAriaLabel")}
         />
@@ -313,15 +319,17 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
               )}
             </TabsTrigger>
           </TabsList>
-          <TabsContent value="notes" className="mt-2 flex-1 min-h-0 overflow-hidden rounded-lg border">
+          <TabsContent value="notes" className="mt-2 flex-1 min-h-0 overflow-hidden rounded-lg border data-[state=active]:flex data-[state=active]:flex-col">
             {noteResults.length > 0 && !loading && (
               <div className="flex items-center rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {t("memorySearchPanel.notesTab")}
-                </span>
+                <span className="flex-1 text-xs font-semibold text-muted-foreground">{t("memorySearchPanel.notesTab")}</span>
+                <div className="flex flex-wrap gap-1">
+                  {(["recent", "kind", "origin"] as const).map((value) => <button key={value} type="button" aria-pressed={sort === value} onClick={() => setSort(value)} className={`rounded border px-2 py-1 text-xs ${sort === value ? "bg-background text-foreground" : "text-muted-foreground"}`}>{t(`memorySearchPanel.sort.${value}`)}</button>)}
+                </div>
               </div>
             )}
-            <ScrollArea className="h-full pr-2">
+            <div className="flex flex-1 min-h-0 min-w-0">
+            <ScrollArea className={selected ? "h-full min-w-0 flex-1 hidden @[850px]:block" : "h-full min-w-0 flex-1"}>
               <div className="flex flex-col gap-2 p-3">
                 {loading ? (
                   <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.searching")}</p>
@@ -330,18 +338,55 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
                     {query === "" ? t("memorySearchPanel.noNotesEmpty") : t("memorySearchPanel.noResults")}
                   </p>
                 ) : (
-                  noteResults.map((n) => (
+                  <>
+                  {originFilter && <Button size="sm" variant="outline" onClick={() => setOriginFilter(null)}>{t("memorySearchPanel.clearOriginFilter")}</Button>}
+                  {visibleNotes.map((n, index) => (
+                    <div key={(n.filename ?? n.title) + n.updatedAt}>
+                    {sort === "origin" && (index === 0 || n.origin?.sessionId !== visibleNotes[index - 1]?.origin?.sessionId) && <h3 className="pb-2 pt-3 text-xs font-medium text-muted-foreground">{(() => {
+                      const detail = n.id ? details[n.id] : undefined;
+                      if (!detail) return t("memorySearchPanel.loading");
+                      if (!detail.ok) return t("memorySearchPanel.detailFailed");
+                      if (detail.origin.status === "absent") return t("memorySearchPanel.noOrigin");
+                      if (detail.origin.status === "unavailable") return t("memorySearchPanel.originUnavailable");
+                      return detail.origin.title || shortSessionId(detail.origin.sessionId);
+                    })()}</h3>}
                     <NoteRow
-                      key={(n.filename ?? n.title) + n.updatedAt}
                       note={n}
-                      busy={busy}
-                      onDelete={(note) => void handleDelete(note)}
-                      onAskAveToFix={(note) => void handleAskAveToFix(note)}
+                      selected={(n.filename ?? n.title) === selectedKey}
+                      detail={n.id ? details[n.id] : undefined}
+                      onSelect={() => {
+                        setSelectedKey(n.filename ?? n.title);
+                        if (n.id && details[n.id]?.ok === false) {
+                          const id = n.id;
+                          setDetails((current) => { const next = { ...current }; delete next[id]; return next; });
+                          void api.memoryGetDetail(id, memoryProjectOptions(project)).then(
+                            (detail) => setDetails((current) => ({ ...current, [id]: detail })),
+                            () => setDetails((current) => ({ ...current, [id]: { ok: false, error: "read-failed" } })),
+                          );
+                        }
+                      }}
                     />
-                  ))
+                    </div>
+                  ))}
+                  </>
                 )}
               </div>
             </ScrollArea>
+            {selected && <ScrollArea className="h-full min-w-0 flex-1 border-l">
+              <aside className="space-y-4 p-4" aria-label={t("memorySearchPanel.detailLabel", { title: selected.title })}>
+                <Button size="sm" variant="ghost" onClick={() => setSelectedKey(null)}>{t("memorySearchPanel.backToList")}</Button>
+                <div className="space-y-2">
+                  <h2 className="break-words text-base font-semibold">{selected.title}</h2>
+                  <p className="whitespace-pre-wrap break-words text-sm">{selected.content ? stripTopHeading(selected.content) : selected.excerpt}</p>
+                  {isActionable(selected) && <div className="flex flex-wrap gap-2">
+                    {selected.id && <Button size="sm" variant="outline" disabled={busy} aria-label={t("memorySaveNotice.askAveToFixAriaLabel", { title: selected.title })} onClick={() => void handleAskAveToFix({ ...selected, id: selected.id! })}>{t("memorySaveNotice.askAveToFix")}</Button>}
+                    <Button size="sm" variant="outline" disabled={busy} aria-label={t("memorySaveNotice.deleteAriaLabel", { title: selected.title })} onClick={() => void handleDelete(selected)}>{t("memorySaveNotice.delete")}</Button>
+                  </div>}
+                </div>
+                {selected.id && <MemoryDetailContent key={selected.id} detail={details[selected.id]} onOpenSession={onOpenSession} onSameOrigin={(sessionId) => { setQuery(""); setOriginFilter(sessionId); setSelectedKey(null); }} />}
+              </aside>
+            </ScrollArea>}
+            </div>
           </TabsContent>
           <TabsContent value="sessions" className="mt-2 flex-1 min-h-0 overflow-hidden rounded-lg border">
             {sessionResults.length > 0 && !loading && (

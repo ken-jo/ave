@@ -1,3 +1,4 @@
+import { readMemoryDetail } from "../../memory/memory-detail.js";
 import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
@@ -1769,6 +1770,28 @@ export function registerChatHandlers(deps: IpcDeps): void {
     branchContinuations.set(group, continuation);
     return { ...branched, branchContinuation: continuation.id };
   });
+  ipcMain.handle(CHANNELS.memory.detailGet, async (e, id: unknown, opts?: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.detailGet, e); return UNAUTHORIZED_FRAME; }
+    if (typeof id !== "string") return { ok: false, error: "invalid-input" };
+    const project = parseMemoryProjectOptions(opts);
+    if (!project.ok) return PROJECT_NOT_ALLOWED;
+    const runner = deps.getSubAgentRunner?.();
+    const subagent = runner ? {
+      loadSession: (sessionId: string) => {
+        const result = runner.getPersistedTranscript({ childSessionId: sessionId });
+        return result.ok ? result.messages.map((message) => ({ content: message.content, meta: { messageId: message.messageId } })) : null;
+      },
+      loadSessionMetadata: (sessionId: string) => {
+        const result = runner.getPersistedTranscript({ childSessionId: sessionId });
+        return result.ok ? { title: result.title } : null;
+      },
+    } : undefined;
+    return readMemoryDetail(memoryManager, id, project.options, {
+      main: memoryManager,
+      ...(deps.sideChatMemoryManager ? { "side-chat": deps.sideChatMemoryManager } : {}),
+      ...(subagent ? { subagent } : {}),
+    });
+  });
   ipcMain.handle(CHANNELS.memory.entriesList, (e, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesList, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
@@ -1804,8 +1827,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     return memoryManager.searchMemoryEntries(query, project.options).map((note) => ({
-      // The panel fixes a memory by its id; a legacy note without one can only be deleted.
-      ...(note.id ? { id: note.id } : {}),
+      ...note,
       filename: note.filename,
       title: note.title,
       content: note.content,
