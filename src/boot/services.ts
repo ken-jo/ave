@@ -11,7 +11,6 @@ import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 import { MemoryManager } from "../memory/memory-manager.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
-import { getDefaultWorkspaceRoot } from "../main/default-workspace-root.js";
 import { execTurnRequested } from "../main/exec-mode.js";
 import { InputClassifier } from "../core/input-classifier.js";
 import { RouteEngine } from "../core/route-engine.js";
@@ -140,9 +139,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     /* non-fatal */
   }
 
-  const memoryManager = new MemoryManager({
-    defaultWorkspaceRoot: getDefaultWorkspaceRoot(),
-  });
+  const memoryManager = new MemoryManager();
   memoryManager.load();
   memoryManager.startPersistentContextWatcher();
   registerShutdownHook("memory-manager", () => {

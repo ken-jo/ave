@@ -92,6 +92,11 @@ type MemoryProjectOptions = {
   includeUnscoped?: boolean;
 };
 
+/** An explicit save always names its scope; the default project and global memory are separate. */
+type MemorySaveScope =
+  | { scope: "global" }
+  | { scope: "project"; projectRoot: string; projectName?: string };
+
 function invokeWithOptionalMemoryOptions<T>(
   channel: string,
   opts?: MemoryProjectOptions,
@@ -454,8 +459,8 @@ export function buildInternalApiSurface() {
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
   memoryListCandidates: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.candidatesList, opts),
-  memorySaveEntry: async (title: string, content: string, opts?: MemoryProjectOptions) =>
-    ipcRenderer.invoke(CHANNELS.memory.entriesSave, title, content, opts),
+  memorySaveEntry: async (title: string, content: string, scope: MemorySaveScope) =>
+    ipcRenderer.invoke(CHANNELS.memory.entriesSave, title, content, scope),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>
     invokeMemoryDelete(CHANNELS.memory.entriesDelete, filename, opts),
   memoryActivateCandidate: async (id: string, opts?: MemoryProjectOptions) =>

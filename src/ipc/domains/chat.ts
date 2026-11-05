@@ -23,6 +23,7 @@ import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-manager.js";
+import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
@@ -405,6 +406,25 @@ function parseMemoryProjectOptions(raw: unknown): MemoryProjectOptionsResolution
       ...(record.includeUnscoped === true && resolved.project.isDefault === true ? { includeUnscoped: true } : {}),
     },
   };
+}
+
+// Explicit saves name their scope: the default project has its own memory and global memory is a separate choice.
+function parseMemorySaveScope(raw: unknown): MemoryProjectOptionsResolution | { ok: false; error: "invalid-input" } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "invalid-input" };
+  const record = raw as Record<string, unknown>;
+  if (record.scope === "global") {
+    return hasOnlyKeys(record, ["scope"]) ? { ok: true, options: {} } : { ok: false, error: "invalid-input" };
+  }
+  if (record.scope !== "project" || !hasOnlyKeys(record, ["scope", "projectRoot", "projectName"])) {
+    return { ok: false, error: "invalid-input" };
+  }
+  if (!normalizeMemoryProjectString(record.projectRoot, MAX_MEMORY_PROJECT_ROOT_CHARS)) {
+    return { ok: false, error: "invalid-input" };
+  }
+  if (record.projectName !== undefined && typeof record.projectName !== "string") {
+    return { ok: false, error: "invalid-input" };
+  }
+  return parseMemoryProjectOptions({ projectRoot: record.projectRoot, projectName: record.projectName });
 }
 
 type MemoryCandidateActionPayload =
@@ -1781,8 +1801,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle(CHANNELS.memory.entriesSave, async (e, title: string, content: string, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesSave, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return PROJECT_NOT_ALLOWED;
+    const project = parseMemorySaveScope(opts);
+    if (!project.ok) return project.error === "invalid-input" ? { ok: false, error: "invalid-input" } : PROJECT_NOT_ALLOWED;
     if (!memoryCaptureService) {
       throw new Error("memory-reviewer-unavailable");
     }
@@ -1937,10 +1957,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { ok: false, error: "memory-consolidation-service-unavailable" };
     }
     try {
-      // The default workspace is unscoped global context; never create a project overview for it.
-      const project = conversationLoop.getSessionProjectIsDefault?.()
-        ? undefined
-        : conversationLoop.getSessionMemoryProjectContext?.();
+      // The default project consolidates as its own project scope, separate from global memory.
+      const project = sessionMemoryProject(conversationLoop);
       const result = await memoryConsolidationService.refresh({
         reason: "manual",
         ...(project ? { project } : {}),

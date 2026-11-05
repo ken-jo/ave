@@ -1157,6 +1157,11 @@ without a managed id are not recorded. Only builders on the user's memory store
 record injection; isolated sub-agent builders, including work-board runs, read
 the sub-agent store, so their use appears only as `searched` or `read`.
 
+Managed memories are either global or scoped to one project, and the default
+project (identified by its path) is an ordinary project scope: its memories are
+not global and do not feed the global long-term overview. Global memories apply
+in every project. Saving from the UI always names the target scope.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:

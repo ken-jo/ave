@@ -165,7 +165,6 @@ function unlinkIfPresent(path: string): void {
 export interface MemoryManagerOptions {
 
   aveDir?: string;
-  defaultWorkspaceRoot?: string;
 }
 
 export interface NoteEntry {
@@ -1101,7 +1100,6 @@ export class MemoryManager implements PromptMemorySource {
   private readonly sessionsDir: string;
   private readonly toolOutputArtifacts: ToolOutputArtifactStore;
   private readonly unpublishedOutputCaptures: Map<string, Set<string>>;
-  private readonly defaultWorkspaceRoot: string | undefined;
   // Keep one search index per manager namespace, never a global singleton.
   private readonly searchIndex: SessionSearchIndex;
   // Root guards block stale writers until re-add; only newly created sessions may bind again.
@@ -1131,10 +1129,6 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryDir = join(this.aveDir, "memories");
     this.sessionsDir = sessionStorePath(this.aveDir);
     this.toolOutputArtifacts = new ToolOutputArtifactStore(this.sessionsDir);
-    this.defaultWorkspaceRoot = normalizeMetadataString(
-      options?.defaultWorkspaceRoot,
-      MAX_PROJECT_ROOT_CHARS,
-    );
     this.searchIndex = new SessionSearchIndex(this.aveDir);
     this.ensureStructure();
     const captureOwnerKey = realpathSync(this.sessionsDir);
@@ -1300,7 +1294,7 @@ export class MemoryManager implements PromptMemorySource {
       ? `### ${globalOverview.title}\n${this.memoryBodyForPrompt(globalOverview)}`
       : "";
 
-    // Default workspaces expose global memory only; explicit projects split the bounded overview budget fairly.
+    // Without a project only the global overview applies; a project (the default one included) splits the budget fairly.
     if (projectSnapshot.scope.type !== "project") {
       return truncateTextToTokenBudget(globalSection, MAX_PROMPT_LONG_TERM_MEMORY_OVERVIEW_TOKENS);
     }
@@ -3567,17 +3561,14 @@ export class MemoryManager implements PromptMemorySource {
       && SHA256_HEX.test(snapshot.sourceFingerprint);
   }
 
+  // Default-project memory is ordinary project memory here; global sources are global records only.
+  // Unscoped legacy notes (no id, no project marker) remain global sources, unchanged by the split.
   private getConsolidationSnapshotForScope(scope: MemoryScope): MemoryConsolidationSnapshot {
     const sourceOptions: MemoryReadOptions = scope.type === "project"
       ? { projectRoot: scope.projectRoot }
-      : this.defaultWorkspaceRoot
-        ? { projectRoot: this.defaultWorkspaceRoot, includeUnscoped: true }
-        : {};
+      : {};
     const sources = this.readMarkdownEntries(this.memoryDir, sourceOptions)
-      .filter((entry) => (
-        this.entryMatchesConsolidationScope(entry, scope)
-        || this.isDefaultWorkspaceGlobalSource(entry, scope)
-      ) && this.isConsolidationSource(entry))
+      .filter((entry) => this.entryMatchesConsolidationScope(entry, scope) && this.isConsolidationSource(entry))
       .slice(0, MAX_CONSOLIDATION_SOURCE_NOTES)
       .map((entry) => this.cloneMemoryEntry(entry));
     const sourceFingerprint = sha256Text(JSON.stringify({
@@ -3628,13 +3619,6 @@ export class MemoryManager implements PromptMemorySource {
     return scope.type === "global"
       ? !entry.projectRoot
       : entry.projectRoot !== undefined && projectRootEquals(entry.projectRoot, scope.projectRoot);
-  }
-
-  private isDefaultWorkspaceGlobalSource(entry: NoteEntry, scope: MemoryScope): boolean {
-    return scope.type === "global"
-      && this.defaultWorkspaceRoot !== undefined
-      && entry.projectRoot !== undefined
-      && projectRootEquals(entry.projectRoot, this.defaultWorkspaceRoot);
   }
 
   private isDerivedMemory(entry: NoteEntry): boolean {

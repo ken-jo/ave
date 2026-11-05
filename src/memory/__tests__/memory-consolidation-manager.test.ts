@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryManager } from "../memory-manager.js";
@@ -12,10 +12,7 @@ const DEFAULT_WORKSPACE_ROOT = "C:\\workspace\\default";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ave-memory-consolidation-"));
-  memoryManager = new MemoryManager({
-    aveDir: dir,
-    defaultWorkspaceRoot: DEFAULT_WORKSPACE_ROOT,
-  });
+  memoryManager = new MemoryManager({ aveDir: dir });
 });
 
 afterEach(async () => {
@@ -25,35 +22,36 @@ afterEach(async () => {
 });
 
 describe("MemoryManager long-term-memory consolidation", () => {
-  it("aliases only default-workspace raw sources into the global derived overview", async () => {
+  it("keeps default-project memory out of the global overview and consolidates it as its own project", async () => {
     const defaultWorkspace = await memoryManager.saveMemory(
       "Default workspace source",
       "Default raw source detail.",
       { projectRoot: DEFAULT_WORKSPACE_ROOT, projectName: "default", kind: "fact" },
     );
-    await memoryManager.saveMemory("Alpha source", "Alpha raw source detail.", {
-      projectRoot: "C:\\workspace\\alpha", projectName: "alpha", kind: "fact",
-    });
-    const defaultSourceBefore = readFileSync(join(dir, "memories", defaultWorkspace.filename), "utf-8");
+    await memoryManager.saveMemory("Global source", "Global raw source detail.", { kind: "fact" });
+    // Legacy notes without an id or project marker stay global sources; this split does not move them.
+    writeFileSync(join(dir, "memories", "legacy-note.md"), "# Legacy note\n\nLegacy unscoped detail.\n", "utf-8");
+
     const globalSnapshot = memoryManager.getConsolidationSnapshot();
     expect(globalSnapshot.scope).toEqual({ type: "global" });
-    expect(globalSnapshot.sources.map((entry) => entry.title)).toEqual(["Default workspace source"]);
-    expect(globalSnapshot.sources.map((entry) => entry.content)).not.toContain("Alpha raw source detail.");
+    expect(globalSnapshot.sources.map((entry) => entry.title).sort()).toEqual(["Global source", "Legacy note"]);
+    expect(globalSnapshot.sources.map((entry) => entry.content)).not.toContain(defaultWorkspace.content);
+
+    const defaultSnapshot = memoryManager.getConsolidationSnapshot({
+      projectRoot: DEFAULT_WORKSPACE_ROOT,
+      projectName: "default",
+    });
+    expect(defaultSnapshot.scope).toMatchObject({ type: "project", projectRoot: DEFAULT_WORKSPACE_ROOT });
+    expect(defaultSnapshot.sources.map((entry) => entry.title)).toEqual(["Default workspace source"]);
 
     await expect(memoryManager.upsertConsolidatedMemoryIfUnchanged(
-      globalSnapshot,
-      "GLOBAL-DEFAULT-WORKSPACE-OVERVIEW",
+      defaultSnapshot,
+      "DEFAULT-PROJECT-OVERVIEW",
     )).resolves.toMatchObject({ status: "updated" });
-    expect(readFileSync(join(dir, "memories", defaultWorkspace.filename), "utf-8"))
-      .toBe(defaultSourceBefore);
     expect(memoryManager.getPromptLongTermMemoryOverview())
-      .toContain("GLOBAL-DEFAULT-WORKSPACE-OVERVIEW");
-
-    await memoryManager.saveMemory("Default workspace source", "Changed default raw source detail.", {
-      projectRoot: DEFAULT_WORKSPACE_ROOT, projectName: "default", kind: "fact",
-    });
-    expect(memoryManager.getPromptLongTermMemoryOverview())
-      .not.toContain("GLOBAL-DEFAULT-WORKSPACE-OVERVIEW");
+      .not.toContain("DEFAULT-PROJECT-OVERVIEW");
+    expect(memoryManager.getPromptLongTermMemoryOverview({ projectRoot: DEFAULT_WORKSPACE_ROOT }))
+      .toContain("DEFAULT-PROJECT-OVERVIEW");
   });
 
   it("uses a bounded exact scope, preserves source notes, and keeps a derived overview out of ordinary context", async () => {
@@ -173,9 +171,7 @@ describe("MemoryManager long-term-memory consolidation", () => {
   });
 
   it("rejects a snapshot whose fingerprint is not the lowercase digest this manager mints", async () => {
-    await memoryManager.saveMemory("Source", "Source detail.", {
-      projectRoot: DEFAULT_WORKSPACE_ROOT, projectName: "default", kind: "fact",
-    });
+    await memoryManager.saveMemory("Source", "Source detail.", { kind: "fact" });
     const snapshot = memoryManager.getConsolidationSnapshot();
     expect(snapshot.sourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
     const uppercase = { ...snapshot, sourceFingerprint: snapshot.sourceFingerprint.toUpperCase() };

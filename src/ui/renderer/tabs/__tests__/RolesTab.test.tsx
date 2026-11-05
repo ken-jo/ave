@@ -46,6 +46,40 @@ describe("RolesTab — long-term memory consolidation", () => {
   });
 });
 
+describe("RolesTab — detailed memory save", () => {
+  async function fillDetailedMemory() {
+    fireEvent.change(await screen.findByPlaceholderText(t("rolesTab.detailMemoryTitlePlaceholder")), {
+      target: { value: "Rollout rule" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(t("rolesTab.detailMemoryPlaceholder")), {
+      target: { value: "Use a staged rollout." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("rolesTab.saveDetailMemoryButton") }));
+  }
+
+  it("saves to global memory by naming the global scope", async () => {
+    const { api } = makeMockAveApi();
+    renderRolesTab(api);
+
+    await fillDetailedMemory();
+
+    await waitFor(() => expect(api.memorySaveEntry).toHaveBeenCalledOnce());
+    expect(api.memorySaveEntry).toHaveBeenCalledWith("Rollout rule", "Use a staged rollout.", { scope: "global" });
+    expect(await screen.findByText(t("rolesTab.statusDetailMemorySaved"))).toBeInTheDocument();
+  });
+
+  it("shows the host's refusal instead of reporting the save as done", async () => {
+    const { api } = makeMockAveApi();
+    api.memorySaveEntry.mockResolvedValue({ ok: false, error: "invalid-input" });
+    renderRolesTab(api);
+
+    await fillDetailedMemory();
+
+    expect(await screen.findByText("invalid-input")).toBeInTheDocument();
+    expect(screen.queryByText(t("rolesTab.statusDetailMemorySaved"))).not.toBeInTheDocument();
+  });
+});
+
 describe("RolesTab — ~/.ave reference doc upgrades", () => {
   it("shows the live doc path and no marker list when nothing is pending", async () => {
     const { api } = makeMockAveApi();

@@ -676,8 +676,8 @@ export class SystemPromptBuilder {
       // Ranked notes travel after user input in turn context, keeping resident memory byte-stable.
       build: () => {
         const prefs = memoryManager.getPromptUserPreferences();
-        // Use global overview by default; project summaries require an exact opt-in binding.
-        const longTermMemoryScope = this.projectContext?.projectRoot && this.projectContext.isDefault !== true
+        // Global overview always; a bound project (the default project included) adds its own summary.
+        const longTermMemoryScope = this.projectContext?.projectRoot
           ? {
               projectRoot: this.projectContext.projectRoot,
               projectName: this.projectContext.projectName,

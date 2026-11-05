@@ -463,10 +463,15 @@ export function RolesTab({ api }: { api: AveApi }) {
     setError(null);
     try {
       const links = detailLinks.trim();
-      await api.memorySaveEntry(
+      const result = (await api.memorySaveEntry(
         title,
         links ? `${content}\n\n## References\n${links}` : content,
-      );
+        { scope: "global" },
+      )) as { ok?: boolean; error?: string } | null;
+      if (result && result.ok === false)
+        throw new Error(
+          result.error ?? t("rolesTab.errorMemorySectionSaveFailed"),
+        );
       setDetailMemoryTitle("");
       setDetailMemory("");
       setDetailLinks("");
