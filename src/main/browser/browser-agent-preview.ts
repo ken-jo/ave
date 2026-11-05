@@ -18,6 +18,8 @@ export interface AgentPreviewHost {
 }
 export interface AgentPreviewOptions {
   readonly maxMs?: number;
+  /** The tool call's own signals: a stopped call gives up its thumbnail at once instead of waiting out the capture. */
+  readonly signals?: readonly (AbortSignal | undefined)[];
 }
 
 // Best effort: a failed or slow capture leaves the tool result unchanged.
@@ -28,15 +30,21 @@ export async function captureAgentPreview(
   options: AgentPreviewOptions = {},
 ): Promise<BrowserPreviewImage | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const signals = (options.signals ?? []).filter((signal): signal is AbortSignal => signal !== undefined);
+  let stopWaiting: (() => void) | undefined;
   try {
     const guest = tab.guest;
-    if (!guest || guest.isDestroyed()) return undefined;
+    if (!guest || guest.isDestroyed() || signals.some((signal) => signal.aborted)) return undefined;
     const documentId = tab.documentId;
     const image = png !== undefined
       ? host.decodePng(png)
       : await Promise.race([
         guest.capturePage(undefined, { stayHidden: true, stayAwake: false }).catch(() => null),
-        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), options.maxMs ?? AGENT_PREVIEW_MAX_MS); }),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), options.maxMs ?? AGENT_PREVIEW_MAX_MS);
+          stopWaiting = () => resolve(null);
+          for (const signal of signals) signal.addEventListener("abort", stopWaiting, { once: true });
+        }),
       ]);
     if (!image || tab.guest !== guest || guest.isDestroyed() || tab.documentId !== documentId) return undefined;
     const encoded = encodeBrowserPreview(image);
@@ -47,5 +55,6 @@ export async function captureAgentPreview(
     return undefined;
   } finally {
     clearTimeout(timer);
+    if (stopWaiting) for (const signal of signals) signal.removeEventListener("abort", stopWaiting);
   }
 }

@@ -149,6 +149,19 @@ describe("agent capture thumbnail", () => {
     await expect(captureAgentPreview(tab(), "x", { decodePng: () => { throw new Error("bad png"); }, record })).resolves.toBeUndefined();
     expect(record).toHaveBeenCalledTimes(1);
   });
+  it("gives up a page capture as soon as the tool call is stopped, and never starts one for a stopped call", async () => {
+    const record = vi.fn();
+    const hung = tab(vi.fn(() => new Promise<NativeImage>(() => {})));
+    const stop = new AbortController();
+    // The capture timeout is far beyond the test's own, so only the abort can end this wait.
+    const pending = captureAgentPreview(hung, undefined, host(record), { maxMs: 60_000, signals: [undefined, stop.signal] });
+    stop.abort();
+    await expect(pending).resolves.toBeUndefined();
+    const idle = tab();
+    await expect(captureAgentPreview(idle, undefined, host(record), { signals: [stop.signal] })).resolves.toBeUndefined();
+    expect(idle.guest!.capturePage).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
   it("returns the thumbnail without recording a tab that has no renderer card", async () => {
     const record = vi.fn();
     await expect(captureAgentPreview({ ...tab(), rendererTabId: null }, undefined, host(record))).resolves.toMatchObject({ width: 320 });
