@@ -61,6 +61,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "permissions-judge",
     "permissions-policy",
     "permissions-approval-dialog",
+    "permissions-work-board-approvals",
     "permissions-os-sandbox",
     "permissions-network",
     "permissions-rules",

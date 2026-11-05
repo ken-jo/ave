@@ -56,3 +56,39 @@ describe("document opening settings", () => {
     expect(load().getAll()).toHaveProperty("documents.openMode", "link");
   });
 });
+
+// Shares the fixture above: one settings file per test, migrations already applied.
+describe("work board tool-approval surface setting", () => {
+  it("defaults fresh and legacy settings to the run's chat", async () => {
+    expect(DEFAULT_SETTINGS).toHaveProperty("workBoard.toolApprovalSurface", "chat");
+    expect(load().getAll()).toHaveProperty("workBoard.toolApprovalSurface", "chat");
+    writeFileSync(join(directory, "ave-settings.json"), JSON.stringify({ appliedMigrations: migrations, chat: { autoCompact: false } }));
+    const legacy = load();
+    await legacy.patch({});
+    const migrated = legacy.getAll();
+    expect(migrated).toHaveProperty("workBoard.toolApprovalSurface", "chat");
+    expect(migrated.chat.autoCompact).toBe(false);
+  });
+
+  it.each(["chat", "dialog"] as const)("persists the user's %s choice", async (toolApprovalSurface) => {
+    const settings = load();
+    await settings.patch({ workBoard: { toolApprovalSurface } });
+    expect(load().getAll()).toHaveProperty("workBoard.toolApprovalSurface", toolApprovalSurface);
+    expect(JSON.parse(readFileSync(join(directory, "ave-settings.json"), "utf8")))
+      .toHaveProperty("workBoard.toolApprovalSurface", toolApprovalSurface);
+  });
+
+  it.each([null, [], "dialog", { toolApprovalSurface: "other" }, { toolApprovalSurface: true }].map((workBoard) => ({ workBoard })))("normalizes malformed stored settings $workBoard", async ({ workBoard }) => {
+    writeFileSync(join(directory, "ave-settings.json"), JSON.stringify({ appliedMigrations: migrations, workBoard }));
+    const settings = load();
+    await settings.patch({});
+    expect(settings.getAll()).toHaveProperty("workBoard.toolApprovalSurface", "chat");
+  });
+
+  it.each([null, [], "chat", { toolApprovalSurface: "other" }, { toolApprovalSurface: false }].map((workBoard) => ({ workBoard })))("rejects malformed patches $workBoard without resetting the user choice", async ({ workBoard }) => {
+    const settings = load();
+    await settings.patch({ workBoard: { toolApprovalSurface: "dialog" } });
+    await settings.patch({ workBoard } as never);
+    expect(load().getAll()).toHaveProperty("workBoard.toolApprovalSurface", "dialog");
+  });
+});

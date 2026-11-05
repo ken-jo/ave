@@ -1,5 +1,6 @@
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   normalizeCorpCaCommonName,
 } from "../shared/corp-ca-common-name.js";
@@ -919,6 +920,14 @@ export function normalizeWebView(input: unknown): WebViewSettings {
     );
   }
   return { ...DEFAULT_SETTINGS.webView };
+}
+
+export function normalizeWorkBoard(input: unknown): WorkBoardSettings {
+  const result = { ...DEFAULT_SETTINGS.workBoard };
+  if (isRecord(input)) {
+    acceptField(result, "toolApprovalSurface", input.toolApprovalSurface, isWorkBoardToolApprovalSurface, "workBoard", STORED_FIELD);
+  }
+  return result;
 }
 
 export function normalizeDocuments(input: unknown): DocumentSettings {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, CircleStop, Loader2, Play, Plus, RefreshCw, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleStop, ListTree, Loader2, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
@@ -31,11 +31,17 @@ import type {
   WorkItemStatusStored,
   WorkItemUpdateInput,
 } from "../../../shared/work-board-types.js";
+import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
+import { ApprovalDock, ApprovalLaneCard } from "./permissions/ApprovalDock.js";
+import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
+import { LiveRunPanel, LIVE_STEP_PANEL_ID, type LiveRunEntry } from "./work-board/LiveRunPanel.js";
+import { useBoardApprovals, useToolApprovalSurface } from "./work-board/use-board-approvals.js";
+import type { ApprovalRequest } from "../types.js";
 import {
   currentPhaseTurn,
   formatElapsed,
@@ -167,22 +173,40 @@ function inFlightLabel(phase: RunPhase | undefined): string {
   }
 }
 
-function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
+/** How long the item's current run took, once its history records the end. */
+function settledDuration(item: WorkItemResolved | undefined): string | undefined {
+  const last = item?.runHistory?.at(-1);
+  if (!item || !last || last.runId !== item.runId || !last.endedAt) return undefined;
+  const ms = Date.parse(last.endedAt) - Date.parse(last.startedAt);
+  return Number.isFinite(ms) ? formatElapsed(ms) : undefined;
+}
+
+function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?: WorkItemResolved }) {
   if (!run) return null;
+  const duration = settledDuration(item);
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
 
-  // Settled states. `done` is reflected by the item's stored output in the detail modal, not a persistent card badge. Every phase is named
-  // so a new one cannot fall through to "no chip" unnoticed.
+  // Settled states of a run this board saw: done, rejected, failed or stopped, each with its own chip (livestep cases 10-12). Every phase
+  // is named so a new one cannot fall through to "no chip" unnoticed.
   if (!inFlight) {
     switch (phase) {
       case undefined:
-      case "done":
         return null;
+      case "done":
+        return (
+          <span
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-success/(--opacity-medium) bg-success/(--opacity-subtle) text-success"
+            data-testid="work-board-run-done"
+          >
+            <CheckCircle2 className="h-3 w-3" />
+            {duration ? `${t("workBoard.liveChipDone")} · ${duration}` : t("workBoard.liveChipDone")}
+          </span>
+        );
       case "denied":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             data-testid="work-board-run-denied"
           >
             <XCircle className="h-3 w-3" />
@@ -192,7 +216,7 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
       case "error":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             title={run.reason}
             data-testid="work-board-run-error"
           >
@@ -204,11 +228,11 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
       case "cancelled":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-border bg-muted text-muted-foreground"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-border bg-muted text-muted-foreground"
             data-testid="work-board-run-cancelled"
           >
             <CircleStop className="h-3 w-3" />
-            {t("workBoard.runCancelled")}
+            {duration ? `${t("workBoard.runCancelled")} · ${duration}` : t("workBoard.runCancelled")}
           </span>
         );
       case "planning":
@@ -232,7 +256,7 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   const awaiting = phase === "awaiting_approval";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
         awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
       }`}
       data-testid="work-board-run-indicator"
@@ -275,25 +299,42 @@ function liveChipLabel(phase: RunPhase | undefined): string | null {
 /** "실행 중 · N턴째 · m:ss" — phase, the current phase's turn (once it took one), and the time since the run began (once the
  * listed item carries this run's start). The chip owns the 1s clock, so the tick re-renders only the chip, not the board or an
  * open detail dialog. */
-function LiveRunChip({ run, startedAt }: { run: WorkItemRunState; startedAt: string | undefined }) {
+function LiveRunChip({
+  run,
+  startedAt,
+  toolApprovalPending,
+}: {
+  run: WorkItemRunState;
+  startedAt: string | undefined;
+  /** One of the run's tool approvals waits for the user: the run is paused on it. */
+  toolApprovalPending: boolean;
+}) {
   const now = useNowTick(true);
   const label = liveChipLabel(run.phase);
   if (label === null) return null;
   const turn = currentPhaseTurn(run);
   const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
-  const parts = [label];
-  if (turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
-  if (Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
+  // Stopping and a waiting tool approval outrank the phase word: they are what the run is doing now.
+  const state = run.stopping ? "stopping" : toolApprovalPending ? "tool-approval" : (run.phase ?? "starting");
+  const parts = [run.stopping ? t("workBoard.liveChipStopping") : toolApprovalPending ? t("workBoard.liveChipToolApproval") : label];
+  if (!run.stopping && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
+  if (!run.stopping && !toolApprovalPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
   const awaiting = run.phase === "awaiting_approval";
+  const tone = run.stopping
+    ? "border-border bg-muted text-muted-foreground"
+    : toolApprovalPending
+    ? "border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) text-warning"
+    : `border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""}`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
-        awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
-      }`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border ${tone}`}
       data-testid="work-board-live-chip"
       data-phase={run.phase ?? "starting"}
+      data-state={state}
     >
-      {awaiting ? (
+      {toolApprovalPending && !run.stopping ? (
+        <ShieldAlert className="h-3 w-3 shrink-0" />
+      ) : awaiting ? (
         <CheckCircle2 className="h-3 w-3 shrink-0" />
       ) : (
         <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
@@ -309,40 +350,77 @@ function localClock(iso: string): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-interface WorkItemCardProps {
-  item: WorkItemResolved;
-  run: WorkItemRunState | undefined;
+/** What every card on the board can do, and what the board knows about each card's run beyond its run state. */
+interface CardActions {
   onStart: (id: number) => void;
   onComplete: (id: number) => void;
   onReopen: (id: number) => void;
   onRun: (id: number) => void;
   onOpenDetail: (id: number) => void;
+  /** Open the live step panel on the item's run. */
+  onShowSteps: (id: number) => void;
+  /** The item the open step panel shows, or null when it is closed. */
+  stepsShowingId: number | null;
+  /** The head tool approval each item's run waits on, for items whose run waits on one. */
+  toolApprovals: ReadonlyMap<number, readonly ApprovalRequest[]>;
+  approvalSurface: WorkBoardToolApprovalSurface;
 }
 
-function WorkItemCard({
-  item,
-  run,
-  onStart,
-  onComplete,
-  onReopen,
-  onRun,
-  onOpenDetail,
-}: WorkItemCardProps) {
+interface WorkItemCardProps {
+  item: WorkItemResolved;
+  run: WorkItemRunState | undefined;
+  actions: CardActions;
+}
+
+function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
+  const { onStart, onComplete, onReopen, onRun, onOpenDetail, onShowSteps } = actions;
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
   const narration = latestTurn(live);
+  const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
+  const stepsShowing = actions.stepsShowingId === item.id;
   const narrationLine = (className: string) => (
-    <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
-      {narration ? (
-        <>
-          <span className="tabular-nums">{localClock(narration.at)}</span>
-          {` · ${narration.text}`}
-        </>
-      ) : (
-        t("workBoard.liveNarrationWaiting")
-      )}
-    </p>
+    toolApproval ? (
+      // A waiting tool approval takes the narration's line, so the card keeps its height. In chat mode the line links to the run's
+      // step panel, where the approval card is; in dialog mode the card is already over the board.
+      <p className={className} data-testid="work-board-live-narration" title={toolApproval.toolName}>
+        {actions.approvalSurface === "chat" ? (
+          <span
+            role="link"
+            tabIndex={0}
+            className="text-warning underline underline-offset-2"
+            onClick={(event) => {
+              event.stopPropagation();
+              onShowSteps(item.id);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              onShowSteps(item.id);
+            }}
+            data-testid="work-board-approve-in-chat"
+          >
+            {t("workBoard.liveApproveInChat")}
+          </span>
+        ) : (
+          <span className="text-warning">{t("workBoard.liveApprovalInDialog")}</span>
+        )}
+        {` · ${toolApproval.toolName}`}
+      </p>
+    ) : (
+      <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
+        {narration ? (
+          <>
+            <span className="tabular-nums">{localClock(narration.at)}</span>
+            {` · ${narration.text}`}
+          </>
+        ) : (
+          t("workBoard.liveNarrationWaiting")
+        )}
+      </p>
+    )
   );
   return (
     <button
@@ -377,7 +455,7 @@ function WorkItemCard({
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
-                <LiveRunChip run={live} startedAt={runStartedAt(item)} />
+                <LiveRunChip run={live} startedAt={runStartedAt(item)} toolApprovalPending={toolApproval !== undefined} />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
                 <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
                 {!item.detail && narrationLine("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
@@ -406,7 +484,7 @@ function WorkItemCard({
                   </Badge>
                 )}
                 <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
-                <RunIndicator run={run} />
+                <RunIndicator run={run} item={item} />
               </div>
             </>
           )}
@@ -415,6 +493,23 @@ function WorkItemCard({
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
       <div className="mt-2.5 flex flex-wrap justify-end gap-1">
+        {live && (
+          <Button
+            size="sm"
+            variant={stepsShowing ? "secondary" : "ghost"}
+            className="mr-auto h-6 px-2 text-[11px]"
+            aria-pressed={stepsShowing}
+            aria-controls={LIVE_STEP_PANEL_ID}
+            onClick={(e) => {
+              e.stopPropagation();
+              onShowSteps(item.id);
+            }}
+            data-testid="work-board-show-steps"
+          >
+            <PanelRight className="mr-1 h-3 w-3" />
+            {t("workBoard.liveStepsShow")}
+          </Button>
+        )}
         {!isCompleted && !live && (
           <Button
             size="sm"
@@ -427,7 +522,7 @@ function WorkItemCard({
             data-testid="work-board-run"
           >
             <Play className="mr-1 h-3 w-3" />
-            {t("workBoard.runButton")}
+            {run?.phase === "cancelled" || run?.phase === "error" ? t("workBoard.liveRerun") : t("workBoard.runButton")}
           </Button>
         )}
         {item.status === "planned" && (
@@ -483,12 +578,10 @@ interface BoardColumnProps {
   runState: RunStateMap;
   emptyLabel: string;
   loading: boolean;
-  onStart: (id: number) => void;
-  onComplete: (id: number) => void;
-  onReopen: (id: number) => void;
-  onRun: (id: number) => void;
-  onOpenDetail: (id: number) => void;
+  actions: CardActions;
   testId: string;
+  /** The narrow board shows one column at a time, its cards two abreast and without the column's own heading (the tab carries it). */
+  narrow?: boolean;
 }
 
 function BoardColumn({
@@ -497,19 +590,16 @@ function BoardColumn({
   runState,
   emptyLabel,
   loading,
-  onStart,
-  onComplete,
-  onReopen,
-  onRun,
-  onOpenDetail,
+  actions,
   testId,
+  narrow = false,
 }: BoardColumnProps) {
   // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
   // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
   // header while the list was clipped below it.
   return (
     <section className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid={testId}>
-      <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
+      <div className={`items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2 ${narrow ? "hidden" : "flex"}`}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h3>
         <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
           {items.length}
@@ -521,18 +611,9 @@ function BoardColumn({
         ) : items.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{emptyLabel}</div>
         ) : (
-          <div className="space-y-2">
+          <div className={narrow ? "grid grid-cols-2 gap-2 pt-2" : "space-y-2"}>
             {items.map((item) => (
-              <WorkItemCard
-                key={item.id}
-                item={item}
-                run={runState[item.id]}
-                onStart={onStart}
-                onComplete={onComplete}
-                onReopen={onReopen}
-                onRun={onRun}
-                onOpenDetail={onOpenDetail}
-              />
+              <WorkItemCard key={item.id} item={item} run={runState[item.id]} actions={actions} />
             ))}
           </div>
         )}
@@ -1387,15 +1468,14 @@ export function WorkBoardPanel({
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
-  useEffect(() => {
-    if (focusItemId === undefined || focusItemId === null) return;
-    setDetailId(focusItemId);
-    setDetailOpensLatestRun(true);
-    onFocusConsumed?.();
-  }, [focusItemId, onFocusConsumed]);
+  // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
+  const [listedOnce, setListedOnce] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (typeof api.listWorkBoard !== "function") return;
+    if (typeof api.listWorkBoard !== "function") {
+      setListedOnce(true);
+      return;
+    }
     setLoading(true);
     try {
       const result = await api.listWorkBoard(project?.projectRoot
@@ -1411,7 +1491,10 @@ export function WorkBoardPanel({
         setItems([]);
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+        setListedOnce(true);
+      }
     }
   }, [api, project]);
 
@@ -1458,7 +1541,84 @@ export function WorkBoardPanel({
   // the hook).
   // A run entering a phase has just written its run fields (runId, runHistory, runStatus) to the item. Re-list so the card's elapsed
   // time reads this run's start rather than the previous run's; turn events do not re-list.
-  const { runState, runItem } = useWorkBoardRun(api, items, refresh);
+  const { runState, runItem, steer, stop } = useWorkBoardRun(api, items, refresh);
+  const { byItem: toolApprovals, surface: approvalSurfaceValue } = useBoardApprovals(items, runState);
+  const approvalSurface = useToolApprovalSurface(api);
+
+  // The live step panel: which run it follows, whether it jumps to a newly started run, and whether a settled run stays listed.
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const [stepsItemId, setStepsItemId] = useState<number | null>(null);
+  const [autoFollow, setAutoFollow] = useState(true);
+  const [pinned, setPinned] = useState(false);
+  const liveEntries = useMemo<LiveRunEntry[]>(() => {
+    const inFlightIds = new Set(items.filter((item) => isRunInFlight(runState[item.id])).map((item) => item.id));
+    const entries: LiveRunEntry[] = [];
+    for (const item of items) {
+      const run = runState[item.id];
+      if (!run) continue;
+      // A settled run stays listed while it is the one being followed and the panel is pinned, or while nothing else is in flight.
+      const followedSettled = item.id === stepsItemId && run.phase !== undefined && (pinned || inFlightIds.size === 0);
+      if (!inFlightIds.has(item.id) && !followedSettled) continue;
+      entries.push({ item, run, approvals: toolApprovals.get(item.id) ?? [] });
+    }
+    return entries;
+  }, [items, runState, toolApprovals, stepsItemId, pinned]);
+
+  // Auto-follow: a run that just started takes the panel. Tracked by the set of in-flight items, so a re-render is not a start.
+  const inFlightRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const now = new Set(Object.entries(runState).filter(([, run]) => isRunInFlight(run)).map(([id]) => Number(id)));
+    const started = [...now].filter((id) => !inFlightRef.current.has(id));
+    inFlightRef.current = now;
+    if (autoFollow && started.length > 0) setStepsItemId(started.at(-1)!);
+  }, [runState, autoFollow]);
+  // The panel always shows a run when it lists one.
+  useEffect(() => {
+    if (liveEntries.length === 0) return;
+    if (stepsItemId === null || !liveEntries.some((entry) => entry.item.id === stepsItemId)) {
+      setStepsItemId(liveEntries[0]!.item.id);
+    }
+  }, [liveEntries, stepsItemId]);
+
+  const showSteps = useCallback((id: number) => {
+    setStepsItemId(id);
+    setStepsOpen(true);
+  }, []);
+
+  // A conversation row brought the user here. That arrival is about the item's run: a run parked on a tool approval opens its step
+  // panel, where (or over which) the card is drawn; any other opens the item's detail on its latest run. This is the path to a card
+  // whose row carried the attention dot while no board was open to claim it.
+  const approvalQueue = approvalSurfaceValue.queue;
+  // One arrival is handled once, even while the caller still holds the request; a later arrival for the same item starts after null.
+  const handledFocusRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (focusItemId === undefined || focusItemId === null) {
+      handledFocusRef.current = null;
+      return;
+    }
+    if (!listedOnce || handledFocusRef.current === focusItemId) return;
+    handledFocusRef.current = focusItemId;
+    const item = items.find((each) => each.id === focusItemId);
+    const sessions = new Set([item?.runSessionId, ...(runState[focusItemId]?.sessionIds ?? [])].filter((id): id is string => id !== undefined));
+    if (item && approvalQueue.some((request) => request.sessionId !== undefined && sessions.has(request.sessionId))) {
+      showSteps(focusItemId);
+    } else {
+      setDetailId(focusItemId);
+      setDetailOpensLatestRun(true);
+    }
+    onFocusConsumed?.();
+  }, [focusItemId, onFocusConsumed, listedOnce, items, runState, approvalQueue, showSteps]);
+
+  const appendToDetail = useCallback(async (id: number, text: string): Promise<boolean> => {
+    const item = items.find((each) => each.id === id);
+    if (!item) return false;
+    const detail = item.detail ? `${item.detail}\n\n${text}` : text;
+    if (detail.length > DESCRIPTION_MAX) return false;
+    const result = await api.updateWorkBoardItem(id, { detail });
+    if ("ok" in result && result.ok === false) return false;
+    await refresh();
+    return true;
+  }, [api, items, refresh]);
 
   // A finished run may have written engine fields (plan/output/runStatus) onto
   // the item; re-list so the board view reflects the persisted run result.
@@ -1505,10 +1665,37 @@ export function WorkBoardPanel({
   const onReopen = useCallback((id: number) => void handleReopen(id), [handleReopen]);
   const onRun = useCallback((id: number) => runItem(id), [runItem]);
   const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
+  const onOpenRecord = useCallback((id: number) => {
+    setDetailId(id);
+    setDetailOpensLatestRun(true);
+  }, []);
+  const cardActions = useMemo<CardActions>(() => ({
+    onStart,
+    onComplete,
+    onReopen,
+    onRun,
+    onOpenDetail,
+    onShowSteps: showSteps,
+    stepsShowingId: stepsOpen ? stepsItemId : null,
+    toolApprovals,
+    approvalSurface,
+  }), [onStart, onComplete, onReopen, onRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+
+  // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
+  const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "completed">("in-progress");
+  // The board's share of a narrow pane; the docked panel takes the rest and needs room for its run list, log and composer.
+  const [dockPercent, setDockPercent] = useState(40);
 
   // The board's own global controls. They sat beside the heading this panel no longer draws; the pane's header carries them
   // now. What is left in the body is the state they act on — the count — not a control.
   usePaneActions(useMemo(() => [
+    {
+      id: "work-board-live-steps",
+      label: t("workBoard.liveStepsPanelTitle"),
+      icon: <ListTree className="h-4 w-4" />,
+      active: stepsOpen,
+      onSelect: () => setStepsOpen((open) => !open),
+    },
     {
       id: "work-board-add",
       label: t("workBoard.addItemButton"),
@@ -1521,100 +1708,213 @@ export function WorkBoardPanel({
       icon: <RefreshCw className="h-4 w-4" />,
       onSelect: () => void refresh(),
     },
-  ], [refresh]));
+  ], [refresh, stepsOpen]));
 
-  const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string) => (
+  const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string, narrow = false) => (
     <BoardColumn
       heading={heading}
       items={columnItems}
       runState={runState}
       emptyLabel={emptyLabel}
       loading={loading}
-      onStart={onStart}
-      onComplete={onComplete}
-      onReopen={onReopen}
-      onRun={onRun}
-      onOpenDetail={onOpenDetail}
+      actions={cardActions}
       testId={testId}
+      narrow={narrow}
     />
+  );
+
+  // The window's one decision path for every card the board draws: the same request, the same signed decide, wherever it is shown.
+  const decideHead = (head: ApprovalRequest) => (choice: Parameters<typeof approvalSurfaceValue.decide>[1], pattern?: string, extras?: Parameters<typeof approvalSurfaceValue.decide>[3]) => {
+    void approvalSurfaceValue.decide(head.id, choice, pattern, extras);
+  };
+  const renderApproval = (entry: LiveRunEntry) => {
+    const head = entry.approvals[0];
+    if (!head) return null;
+    return (
+      <ApprovalLaneCard
+        queue={entry.approvals}
+        conversationLabel={entry.item.title}
+        proposedChoice={approvalSurfaceValue.proposal?.requestId === head.id ? approvalSurfaceValue.proposal.choice : null}
+        onDecide={decideHead(head)}
+        onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
+        interactionLocked={approvalSurfaceValue.lockedRequestId === head.id}
+        reviewerSuggestion={approvalSurfaceValue.reviewerSuggestion}
+      />
+    );
+  };
+  // Dialog mode: one card over the board for every run's approvals, in the window queue's order.
+  const dialogQueue = approvalSurface === "dialog"
+    ? approvalSurfaceValue.queue.filter((request) => [...toolApprovals.values()].some((list) => list.includes(request)))
+    : [];
+  const dialogHead = dialogQueue[0];
+  const dialogItem = dialogHead ? items.find((item) => toolApprovals.get(item.id)?.includes(dialogHead)) : undefined;
+
+  const stepsPanel = stepsOpen ? (
+    <LiveRunPanel
+      entries={liveEntries}
+      selectedId={stepsItemId}
+      onSelect={setStepsItemId}
+      autoFollow={autoFollow}
+      onAutoFollowChange={setAutoFollow}
+      pinned={pinned}
+      onPinnedChange={setPinned}
+      onClose={() => setStepsOpen(false)}
+      approvalSurface={approvalSurface}
+      renderApproval={renderApproval}
+      onSteer={steer}
+      onStop={stop}
+      onRerun={onRun}
+      onOpenRecord={onOpenRecord}
+      onAppendToDetail={appendToDetail}
+      captureIntent={() => api.captureUserKeyboardIntent()}
+    />
+  ) : null;
+
+  const columns = narrow ? (
+    <div className="flex min-h-[20rem] flex-1 flex-col gap-2" data-testid="work-board-columns" data-layout="tabs">
+      <div role="tablist" aria-label={t("workBoard.panelTitle")} data-testid="work-board-status-tabs" className="flex shrink-0 gap-1">
+        {([
+          ["planned", t("workBoard.columnPlanned"), planned.length],
+          ["in-progress", t("workBoard.columnInProgress"), inProgress.length],
+          ["completed", t("workBoard.columnCompleted"), completed.length],
+        ] as const).map(([key, label, count]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={statusTab === key}
+            className={`rounded-md px-2.5 py-1 text-xs ${statusTab === key ? "bg-muted font-semibold text-foreground" : "text-muted-foreground hover:bg-muted/(--opacity-half)"}`}
+            onClick={() => setStatusTab(key)}
+            data-testid={`work-board-tab-${key}`}
+          >
+            {label} <span className="tabular-nums">{count}</span>
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
+        {statusTab === "planned" && renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", true)}
+        {statusTab === "in-progress" && renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", true)}
+        {statusTab === "completed" && renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", true)}
+      </div>
+    </div>
+  ) : (
+    // The columns fill whatever height the proposals and reports leave (flex-1) but never drop below a usable floor; when the bands
+    // take the room, the scroller overflows and scrolls instead. The floor must be explicit: with min-h-0 the grid absorbed the whole
+    // deficit and squashed the columns to their headers, and with no min-height the grid's content minimum grows it to every card so
+    // the columns never scroll internally. The breakpoint is the board's own width (container query), not the window's: a split tile
+    // or a narrow window holds three columns only when the board itself is wide enough. Stacked below it, each column gets its own
+    // fixed row.
+    <div
+      className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
+      data-testid="work-board-columns"
+    >
+      {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
+      {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
+      {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
+    </div>
+  );
+
+  const boardBody = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
+        <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant="outline" className="whitespace-nowrap" title={t("workBoard.panelTitle")} data-testid="work-board-item-count">
+            {t("workBoard.itemCount", { count: items.length })}
+          </Badge>
+        </div>
+      </div>
+      <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        {narrow && (
+          <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">
+            <Button
+              role="tab"
+              size="sm"
+              variant={narrowTab === "approvals" ? "default" : "outline"}
+              aria-selected={narrowTab === "approvals"}
+              onClick={() => setNarrowTab("approvals")}
+              data-testid="work-board-tab-approvals"
+            >
+              {t("workApprovals.tabApprovals", { count: approvalCount ?? 0 })}
+            </Button>
+            <Button
+              role="tab"
+              size="sm"
+              variant={narrowTab === "overview" ? "default" : "outline"}
+              aria-selected={narrowTab === "overview"}
+              onClick={() => setNarrowTab("overview")}
+              data-testid="work-board-tab-overview"
+            >
+              {t("workApprovals.tabOverview")}
+            </Button>
+          </div>
+        )}
+        {/* The stack stays mounted on the overview tab, only hidden: it owns the list subscription that counts the tab, and unmounting
+            it before its first response would leave the count empty and the tab stuck on overview. It takes a focus request only while
+            shown; the request itself switches the narrow layout to this tab first. */}
+        <div hidden={stackHidden} data-testid="work-board-approvals-region">
+          <WorkApprovalStack
+            api={api}
+            project={project}
+            actions={approvalActions}
+            focusKey={stackHidden ? undefined : approvalFocusKey}
+            onFocusConsumed={onApprovalFocusConsumed}
+            onCountChange={setApprovalCount}
+          />
+        </div>
+        {(!narrow || narrowTab === "overview") && (
+          <>
+            {columns}
+            <div className="border-t pt-4">
+              <ReportsSection api={api} project={project} />
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 
   return (
     <>
       <div
         ref={setPanelNode}
-        className="mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
+        className={`relative mx-auto flex min-h-0 min-w-0 flex-1 w-full overflow-hidden ${stepsOpen ? "" : "max-w-6xl"} ${narrow ? "flex-col" : "flex-row"}`}
         data-testid="work-board-panel"
         data-narrow={narrow ? "true" : undefined}
+        data-layout={narrow ? "narrow" : "wide"}
       >
-        <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
-          <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
-          <div className="flex shrink-0 items-center gap-2">
-            <Badge variant="outline" className="whitespace-nowrap" title={t("workBoard.panelTitle")} data-testid="work-board-item-count">
-              {t("workBoard.itemCount", { count: items.length })}
-            </Badge>
-          </div>
-        </div>
-        <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          {narrow && (
-            <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">
-              <Button
-                role="tab"
-                size="sm"
-                variant={narrowTab === "approvals" ? "default" : "outline"}
-                aria-selected={narrowTab === "approvals"}
-                onClick={() => setNarrowTab("approvals")}
-                data-testid="work-board-tab-approvals"
-              >
-                {t("workApprovals.tabApprovals", { count: approvalCount ?? 0 })}
-              </Button>
-              <Button
-                role="tab"
-                size="sm"
-                variant={narrowTab === "overview" ? "default" : "outline"}
-                aria-selected={narrowTab === "overview"}
-                onClick={() => setNarrowTab("overview")}
-                data-testid="work-board-tab-overview"
-              >
-                {t("workApprovals.tabOverview")}
-              </Button>
-            </div>
-          )}
-          {/* The stack stays mounted on the overview tab, only hidden: it owns the list subscription that counts the tab, and unmounting
-              it before its first response would leave the count empty and the tab stuck on overview. It takes a focus request only while
-              shown; the request itself switches the narrow layout to this tab first. */}
-          <div hidden={stackHidden} data-testid="work-board-approvals-region">
-            <WorkApprovalStack
-              api={api}
-              project={project}
-              actions={approvalActions}
-              focusKey={stackHidden ? undefined : approvalFocusKey}
-              onFocusConsumed={onApprovalFocusConsumed}
-              onCountChange={setApprovalCount}
-            />
-          </div>
-          {(!narrow || narrowTab === "overview") && (
-            <>
-              {/* The columns fill whatever height the 확인 필요 stack and reports leave (flex-1) but never drop below a usable floor;
-                  when the bands take the room, the scroller overflows and scrolls instead. The floor must be explicit: with
-                  min-h-0 the grid absorbed the whole deficit and squashed the columns to their headers, and with no min-height
-                  the grid's content minimum grows it to every card so the columns never scroll internally. The breakpoint is the
-                  board's own width (container query), not the window's: a split tile or a narrow window holds three columns only
-                  when the board itself is wide enough. Stacked below it, each column gets its own fixed row. */}
-              <div
-                className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
-                data-testid="work-board-columns"
-              >
-                {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
-                {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
-                {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
+        {stepsPanel && narrow ? (
+          <VerticalSplitLayout
+            topPercent={dockPercent}
+            onDragChange={setDockPercent}
+            onCommit={setDockPercent}
+            top={boardBody}
+            bottom={stepsPanel}
+            ariaLabel={t("workBoard.liveStepsResize")}
+            testId="work-board-docked"
+            separatorTestId="work-board-dock-separator"
+          />
+        ) : (
+          <>
+            {boardBody}
+            {stepsPanel && (
+              <div className="ml-3 flex w-[300px] shrink-0 flex-col overflow-hidden rounded-lg border" data-testid="work-board-steps-column">
+                {stepsPanel}
               </div>
-              <div className="border-t pt-4">
-                <ReportsSection api={api} project={project} />
-              </div>
-            </>
-          )}
-        </div>
+            )}
+          </>
+        )}
+        {dialogHead && (
+          <ApprovalDock
+            queue={dialogQueue}
+            conversationLabel={dialogItem?.title ?? t("workBoard.panelTitle")}
+            proposedChoice={approvalSurfaceValue.proposal?.requestId === dialogHead.id ? approvalSurfaceValue.proposal.choice : null}
+            onDecide={decideHead(dialogHead)}
+            onOpenPermanentDeny={approvalSurfaceValue.openPermanentDeny}
+            interactionLocked={approvalSurfaceValue.lockedRequestId === dialogHead.id}
+            reviewerSuggestion={approvalSurfaceValue.reviewerSuggestion}
+          />
+        )}
       </div>
 
       {showCreate && (

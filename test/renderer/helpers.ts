@@ -5,7 +5,7 @@ import type { MessageQueueStore } from "../../src/ui/renderer/state/message-queu
 import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import type { ToolActivityState } from "../../src/ui/renderer/components/ToolActivity.js";
-import { ApprovalSurfaceClaims, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
+import { ApprovalSurfaceClaims, ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
 import { expect, vi } from "vitest";
 export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
@@ -23,6 +23,11 @@ export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
     reviewerSuggestion: null,
     notice: vi.fn(),
   };
+}
+
+/** Render a surface that draws approval cards (the work board) inside the window's approval context. */
+export function withApprovalSurface(node: ReactElement, surface: ApprovalSurfaceContextValue = approvalSurfaceStub()): ReactElement {
+  return createElement(ApprovalSurfaceProvider, { value: surface }, node);
 }
 
 export async function submitChatMessage(

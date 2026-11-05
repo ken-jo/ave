@@ -9,6 +9,7 @@
  * cards arrived — plus the running state while the survey is in flight.
  */
 import "../../../../../test/renderer/setup.js";
+import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
@@ -43,7 +44,7 @@ describe("Work Board — briefing buttons", () => {
       kind: kind as "daily",
       reason: "nothing",
     }));
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     const section = await screen.findByTestId("work-board-reports");
     for (const id of [
@@ -63,7 +64,7 @@ describe("Work Board — briefing buttons", () => {
       filed: ["ave.briefing:weekly-briefing:aaaaaaaaaaaaaaaa", "ave.briefing:weekly-briefing:bbbbbbbbbbbbbbbb"],
       refreshed: [],
     }));
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     fireEvent.click(await screen.findByTestId("work-board-briefing-weekly"));
 
@@ -80,7 +81,7 @@ describe("Work Board — briefing buttons", () => {
       await gate;
       return { status: "empty", kind: kind as "daily", reason: "nothing" };
     });
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     const button = await screen.findByTestId("work-board-briefing-daily");
     fireEvent.click(button);
@@ -102,7 +103,7 @@ describe("Work Board — briefing buttons", () => {
       filed: [],
       refreshed: ["ave.briefing:daily-briefing:cccccccccccccccc"],
     }));
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     fireEvent.click(await screen.findByTestId("work-board-briefing-daily"));
     await waitFor(() => expect(screen.queryByTestId("work-board-briefing-empty")).not.toBeNull());
@@ -114,7 +115,7 @@ describe("Work Board — briefing buttons", () => {
       kind: kind as "daily",
       reason: "no LLM provider configured",
     }));
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     fireEvent.click(await screen.findByTestId("work-board-briefing-daily"));
     await waitFor(() => expect(screen.queryByTestId("work-board-briefing-error")).not.toBeNull());
@@ -153,7 +154,7 @@ describe("Work Board — focus from the sidebar", () => {
     Object.assign(api, { getWorkBoardItem, getWorkBoardRunTranscript });
     const onFocusConsumed = vi.fn();
 
-    render(<WorkBoardPanel api={api} focusItemId={7} onFocusConsumed={onFocusConsumed} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} focusItemId={7} onFocusConsumed={onFocusConsumed} />));
 
     await waitFor(() => expect(screen.getByTestId("work-board-detail-dialog")).toBeTruthy());
     expect(getWorkBoardItem).toHaveBeenCalledWith(7);

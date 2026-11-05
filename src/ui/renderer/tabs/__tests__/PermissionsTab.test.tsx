@@ -2524,7 +2524,9 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     expect(screen.queryByTestId("worker-confinement-toggle")).toBeNull();
     // Owner-away minutes come from the same read, so the approval section waits on it too.
     expect(screen.getByTestId("permissions-load-error-approval-dialog")).toBeTruthy();
-    expect(document.querySelectorAll('[data-testid^="permissions-load-error"]')).toHaveLength(2);
+    // So does the work board approval place, which the same read carries.
+    expect(screen.getByTestId("permissions-load-error-work-board-approvals")).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid^="permissions-load-error"]')).toHaveLength(3);
     expect(document.querySelector('[data-settings-section="permissions-policy"] [role="radiogroup"]')).toBeTruthy();
     expectNoRaw();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), "settings", "Error", RAW);

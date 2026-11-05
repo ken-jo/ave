@@ -146,6 +146,7 @@ type ApiOverrides = {
 export const MOCK_DEFAULT_SETTINGS = {
   llm: fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
   chat: { systemPrompt: "", autoCompact: true },
+  workBoard: { toolApprovalSurface: "chat" },
   webSearch: { provider: "none" },
   marketplace: {
     installedProviderIds: [],

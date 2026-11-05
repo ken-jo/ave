@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /** The execute child's session id arrives on the executing event when it links; later turn events carry no id and must not erase it. */
 import "../../../../../test/renderer/setup.js";
+import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { act } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -42,7 +43,7 @@ describe("Work Board — live execute session id", () => {
       onWorkBoardRunFailed: noop,
     } as unknown as AveApi;
 
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     fireEvent.click(await screen.findByTestId("work-board-card"));
     await waitFor(() => expect(progress).toBeDefined());
 
@@ -70,7 +71,7 @@ describe("Work Board — live execute session id", () => {
       onWorkBoardRunFailed: noop,
     } as unknown as AveApi;
 
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     await screen.findByTestId("work-board-card");
     await waitFor(() => expect(progress !== undefined && finished.length > 0).toBe(true));
     const at = "2026-11-04T00:00:02.000Z";

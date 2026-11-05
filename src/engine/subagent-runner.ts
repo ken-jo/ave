@@ -5,7 +5,7 @@ import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
-import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
+import { ConversationLoop, type ConversationLoopDeps, type GuidanceDropReason } from "./conversation-loop.js";
 import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
@@ -1615,6 +1615,8 @@ export class SubAgentRunner {
     originSessionId: string,
     childSessionId: string,
     text: string,
+    /** Told when the queued steer reaches the child's history, or why it never will. Called after the audit entry for the same outcome. */
+    observer?: { onInjected?: () => void; onDropped?: (reason: GuidanceDropReason) => void },
   ): WorkBoardSteerDeliveryResult {
     const messageId = createDlpSafeUuid();
     const audit = (type: "info" | "warn", outcome: string): void =>
@@ -1644,8 +1646,14 @@ export class SubAgentRunner {
       return refuse("recipient-unavailable");
     }
     const queued = active.loop.queueGuidanceWithDisposition(envelope, {
-      onInjected: () => audit("info", "injected"),
-      onDropped: (reason) => audit("warn", "deferred:" + reason),
+      onInjected: () => {
+        audit("info", "injected");
+        observer?.onInjected?.();
+      },
+      onDropped: (reason) => {
+        audit("warn", "deferred:" + reason);
+        observer?.onDropped?.(reason);
+      },
     });
     if (queued === "queued") {
       audit("info", "queued");

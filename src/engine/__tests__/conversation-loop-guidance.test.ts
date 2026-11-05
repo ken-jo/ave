@@ -136,6 +136,33 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
     ).toBe(true);
   });
 
+  it("acknowledges an injection after the round that took it reported its assistant text", async () => {
+    // The work board reads the delivered steer's turn from the rounds reported so far; it relies on this order.
+    const provider = new FakeProvider([
+      [
+        { type: "text_delta", text: "round one" } as StreamEvent,
+        { type: "tool_call", id: "t1", name: "noop_tool", input: {} } as StreamEvent,
+        { type: "message_complete", stopReason: "tool_use" } as StreamEvent,
+      ],
+      [
+        { type: "text_delta", text: "round two took it" } as StreamEvent,
+        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
+      ],
+    ]);
+    const loop = makeLoop(provider);
+    const order: string[] = [];
+    const turnPromise = loop.runTurn(
+      "work",
+      { onAssistantRound: (round) => order.push(`round:${round.text}`) },
+      undefined,
+      { ...userKeyboardTurn() },
+    );
+    await Promise.resolve();
+    loop.queueGuidanceWithDisposition("steer", { onInjected: () => { order.push("injected"); } });
+    await turnPromise;
+    expect(order).toEqual(["round:round one", "round:round two took it", "injected"]);
+  });
+
   it("marks the injected row as host-minted, whoever the batch came from", async () => {
     // Stamp host injections so child reports cannot be mistaken for parent-authored text.
     const provider = new FakeProvider([

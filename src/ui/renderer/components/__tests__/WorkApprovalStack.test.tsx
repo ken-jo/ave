@@ -2,6 +2,7 @@
 /** The work board's 확인 필요 stack: proposals and routine attention from `ave:work-approvals:list`. Adding a proposal creates an ordinary
  * work item, and "추가하고 계획" runs that item's id through the host's plan/approve/execute flow; plugin text is never executable. */
 import "../../../../../test/renderer/setup.js";
+import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
@@ -88,7 +89,7 @@ describe("Work Board — 확인 필요 stack", () => {
 
   it("asks for this project's items and shows the oldest as the card, with its source named", async () => {
     const { api, list } = stubApi([routine(), proposal()]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     const head = await screen.findByTestId("work-approval-head");
     expect(list).toHaveBeenCalledWith({ projectRoot: PROJECT.projectRoot });
@@ -101,13 +102,13 @@ describe("Work Board — 확인 필요 stack", () => {
 
   it("names a briefing proposal as the briefing's, not a plugin's", async () => {
     const { api } = stubApi([proposal({ proposalId: "ave.briefing:follow-up:abc", pluginLabel: "Briefing" })]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     expect((await screen.findByTestId("work-approval-source")).textContent).not.toContain("Briefing");
   });
 
   it("expands into state, evidence and blockers", async () => {
     const { api } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-expand"));
     expect(screen.getByTestId("work-approval-proposal-state").textContent).toContain("Last scanned");
     expect(screen.getByTestId("work-approval-proposal-evidence").textContent).toContain("quarterly-summary.docx");
@@ -116,7 +117,7 @@ describe("Work Board — 확인 필요 stack", () => {
 
   it("add and plan accepts into this project, then runs the new item's id", async () => {
     const { api, accept, run } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-add-plan"));
     await waitFor(() => expect(run).toHaveBeenCalled());
     expect(accept).toHaveBeenCalledWith("indexer:stale-index:0123456789abcdef", PROJECT.projectRoot);
@@ -125,7 +126,7 @@ describe("Work Board — 확인 필요 stack", () => {
 
   it("add accepts without running", async () => {
     const { api, accept, run } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-add"));
     await waitFor(() => expect(accept).toHaveBeenCalled());
     expect(run).not.toHaveBeenCalled();
@@ -133,7 +134,7 @@ describe("Work Board — 확인 필요 stack", () => {
 
   it("close dismisses without creating anything", async () => {
     const { api, accept, dismiss, run } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-dismiss"));
     await waitFor(() => expect(dismiss).toHaveBeenCalledWith("indexer:stale-index:0123456789abcdef"));
     expect(accept).not.toHaveBeenCalled();
@@ -144,7 +145,7 @@ describe("Work Board — 확인 필요 stack", () => {
     const { api, run } = stubApi([proposal()], {
       acceptWorkProposal: vi.fn(async () => ({ status: "invalid" as const, reason: "item limit reached" })),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-add-plan"));
     expect((await screen.findByTestId("work-approval-action-error")).textContent).toContain("item limit reached");
     expect(run).not.toHaveBeenCalled();
@@ -154,7 +155,7 @@ describe("Work Board — 확인 필요 stack", () => {
     const { api } = stubApi([proposal()], {
       dismissWorkProposal: vi.fn(async () => ({ status: "not_found" as const, proposalId: "p" })),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-dismiss"));
     const error = await screen.findByTestId("work-approval-action-error");
     expect(error.textContent).toContain("더 이상 없습니다");
@@ -164,7 +165,7 @@ describe("Work Board — 확인 필요 stack", () => {
   it("routine attention names the missing plugins and opens the schedule on that routine", async () => {
     const onOpenRoutine = vi.fn();
     const { api } = stubApi([routine()]);
-    render(<WorkBoardPanel api={api} project={PROJECT} onOpenRoutine={onOpenRoutine} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} onOpenRoutine={onOpenRoutine} />));
     expect((await screen.findByTestId("work-approval-routine-reason")).textContent).toContain("mail");
     expect(screen.getByTestId("work-approval-shared")).toBeTruthy();
     fireEvent.click(screen.getByTestId("work-approval-routine-open"));
@@ -176,7 +177,7 @@ describe("Work Board — 확인 필요 stack", () => {
     const { api } = stubApi([], {
       listWorkApprovals: vi.fn(() => new Promise((r) => { resolve = r; })),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     expect(screen.getByTestId("work-approvals-loading").getAttribute("aria-busy")).toBe("true");
     await act(async () => resolve({ ok: true, items: [], total: 0 }));
     expect(await screen.findByTestId("work-approvals-empty")).toBeTruthy();
@@ -186,14 +187,14 @@ describe("Work Board — 확인 필요 stack", () => {
     const { api } = stubApi([], {
       listWorkApprovals: vi.fn(async () => ({ ok: false, error: "work-approvals-source-unavailable", source: "proposal" })),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     expect(await screen.findByTestId("work-approvals-error")).toBeTruthy();
     expect(screen.queryByTestId("work-approvals-empty")).toBeNull();
   });
 
   it("re-lists when main says a source changed", async () => {
     const { api, list, fireChanged } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     const before = list.mock.calls.length;
     await act(async () => fireChanged());
@@ -207,21 +208,21 @@ describe("Work Board — 확인 필요 stack", () => {
       routine({ key: "routine:b", routineId: "b", arrivedAt: "2026-06-19T00:00:00.000Z" }),
     ];
     const { api } = stubApi(many);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approvals-filter-routine-attention"));
     expect(screen.getByTestId("work-approval-head").getAttribute("data-approval-key")).toBe("routine:a");
     expect(screen.getAllByTestId("work-approval-row")).toHaveLength(1);
 
     cleanup();
     const few = stubApi([proposal(), routine()]);
-    render(<WorkBoardPanel api={few.api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={few.api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     expect(screen.queryByTestId("work-approvals-filters")).toBeNull();
   });
 
   it("moves focus with the arrow keys, expands a row with Enter, and decides only on a button press", async () => {
     const { api, accept, dismiss } = stubApi([proposal(), routine()]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     const head = await screen.findByTestId("work-approval-head");
     head.focus();
     fireEvent.keyDown(head, { key: "ArrowDown" });
@@ -238,9 +239,9 @@ describe("Work Board — 확인 필요 stack", () => {
   it("brings a popover target to the card once, then reports it consumed", async () => {
     const onApprovalFocusConsumed = vi.fn();
     const { api } = stubApi([proposal(), routine()]);
-    render(
+    render(withApprovalSurface(
       <WorkBoardPanel api={api} project={PROJECT} approvalFocusKey="routine:r-1" onApprovalFocusConsumed={onApprovalFocusConsumed} />,
-    );
+    ));
     await waitFor(() => expect(screen.getByTestId("work-approval-head").getAttribute("data-approval-key")).toBe("routine:r-1"));
     expect(onApprovalFocusConsumed).toHaveBeenCalledTimes(1);
   });
@@ -260,7 +261,7 @@ describe("Work Board — narrow width", () => {
       disconnect() {}
     });
     const { api } = stubApi([proposal()]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
 
@@ -268,6 +269,10 @@ describe("Work Board — narrow width", () => {
     expect(screen.getByTestId("work-board-tab-approvals").textContent).toContain("1");
     expect(screen.queryByTestId("work-board-column-planned")).toBeNull();
     fireEvent.click(screen.getByTestId("work-board-tab-overview"));
+    // The overview shows one status lane at a time below 900px (livestep case 14); 진행 중 first.
+    expect(screen.getByTestId("work-board-status-tabs")).toBeTruthy();
+    expect(screen.getByTestId("work-board-column-in-progress")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("work-board-tab-planned"));
     expect(screen.getByTestId("work-board-column-planned")).toBeTruthy();
     expect((screen.getByTestId("work-board-approvals-region") as HTMLElement).hidden).toBe(true);
   });
@@ -283,7 +288,7 @@ describe("Work Board — narrow width", () => {
     const { api } = stubApi([proposal()], {
       listWorkApprovals: vi.fn(() => new Promise((r) => { resolve = r; })),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     // Narrow before the list answers: overview first, with the stack still subscribed behind it.
     await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
     expect(screen.getByTestId("work-board-tab-overview").getAttribute("aria-selected")).toBe("true");
@@ -304,13 +309,13 @@ describe("Work Board — narrow width", () => {
     const items = [proposal(), routine()];
     const { api } = stubApi(items);
     const onApprovalFocusConsumed = vi.fn();
-    const { rerender } = render(<WorkBoardPanel api={api} project={PROJECT} onApprovalFocusConsumed={onApprovalFocusConsumed} />);
+    const { rerender } = render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} onApprovalFocusConsumed={onApprovalFocusConsumed} />));
     await screen.findByTestId("work-approval-head");
     await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
     fireEvent.click(screen.getByTestId("work-board-tab-overview"));
     expect((screen.getByTestId("work-board-approvals-region") as HTMLElement).hidden).toBe(true);
 
-    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey="routine:r-1" onApprovalFocusConsumed={onApprovalFocusConsumed} />);
+    rerender(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey="routine:r-1" onApprovalFocusConsumed={onApprovalFocusConsumed} />));
     await waitFor(() => expect(screen.getByTestId("work-board-tab-approvals").getAttribute("aria-selected")).toBe("true"));
     await waitFor(() => expect(onApprovalFocusConsumed).toHaveBeenCalledTimes(1));
     expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Weekday tests");
@@ -334,7 +339,7 @@ describe("Work Board — count and columns beside the 확인 필요 stack", () =
     const { api } = stubApi([proposal()], {
       listWorkBoard: async () => ({ status: "ok" as const, items: [item, { ...item, id: 2, title: "second" }] }),
     } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     await waitFor(() => expect(screen.getByTestId("work-board-item-count").textContent).toBe("2개"));
   });
@@ -342,7 +347,7 @@ describe("Work Board — count and columns beside the 확인 필요 stack", () =
   // jsdom does no layout, so this pins the classes that decide it; the heights themselves were measured in the running app.
   it("gives the columns a floor and lets them fill, instead of absorbing the stack's height", async () => {
     const { api } = stubApi();
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     await screen.findByTestId("work-approval-head");
     const columns = screen.getByTestId("work-board-columns");
@@ -377,7 +382,7 @@ describe("Work Board — failed routine runs in 확인 필요", () => {
   it("names the failure and acknowledges exactly the fire it shows", async () => {
     const acknowledge = vi.fn(async () => ({ ok: true as const }));
     const { api } = stubApi([failed], { acknowledgeRoutineFailure: acknowledge } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     const head = await screen.findByTestId("work-approval-head");
     expect(within(head).getByTestId("work-approval-kind").textContent).toBe("루틴 실패");
@@ -391,7 +396,7 @@ describe("Work Board — failed routine runs in 확인 필요", () => {
     const acknowledge = vi.fn(async () => ({ ok: false as const, error: "routine-failure-stale" }));
     const items: WorkApprovalView[] = [failed, proposal()];
     const { api, list } = stubApi(items, { acknowledgeRoutineFailure: acknowledge } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     const ack = await screen.findByTestId("work-approval-routine-acknowledge");
     const calls = list.mock.calls.length;
@@ -406,7 +411,7 @@ describe("Work Board — failed routine runs in 확인 필요", () => {
   it("shows the stale refusal in words while the card still shows that failure", async () => {
     const acknowledge = vi.fn(async () => ({ ok: false as const, error: "routine-failure-stale" }));
     const { api } = stubApi([failed], { acknowledgeRoutineFailure: acknowledge } as Partial<AveApi>);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     fireEvent.click(await screen.findByTestId("work-approval-routine-acknowledge"));
     const error = await screen.findByTestId("work-approval-action-error");
@@ -419,7 +424,7 @@ describe("Work Board — failed routine runs in 확인 필요", () => {
       routine({ key: "routine:r-2", routineId: "r-2", reasons: ["run-failed"], missingPluginIds: undefined, failure: { kind: "shutdown-timeout", firedAt: "2026-06-15T09:00:00.000Z", at: "2026-06-15T09:00:30.000Z" }, arrivedAt: "2026-06-15T09:00:30.000Z" }),
       routine(),
     ]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
     const head = await screen.findByTestId("work-approval-head");
     expect(within(head).getByTestId("work-approval-routine-reason").textContent).toContain("제시간에");

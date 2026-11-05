@@ -493,7 +493,12 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const created = await store.create({ title: "link write fails" });
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
-      vi.spyOn(store, "setRunSessionId").mockRejectedValue(new Error("disk full"));
+      // The planning child's link write succeeds; the execute child's fails.
+      const realSetRunSessionId = store.setRunSessionId.bind(store);
+      vi.spyOn(store, "setRunSessionId").mockImplementation(async (itemId, sessionId) => {
+        if (sessionId.endsWith("::exec")) throw new Error("disk full");
+        return realSetRunSessionId(itemId, sessionId);
+      });
       const { runner, release, linked } = linkingRunner();
       const { gate, owner } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
@@ -640,7 +645,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
       const run = engine.runItem(id, { approvalSurface: owner });
       const child = await linked;
-      expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true });
+      expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true, messageId: "m-1" });
       expect(steerCalls).toEqual([[`work-board:${id}`, child, "also cover the edge cases"]]);
       release();
       expect((await run).status).toBe("completed");
