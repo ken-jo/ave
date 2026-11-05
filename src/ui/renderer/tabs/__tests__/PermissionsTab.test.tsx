@@ -2768,6 +2768,21 @@ describe("PermissionsTab unified permission rules", () => {
     expect(table).toHaveTextContent(healthy.pattern);
   });
 
+  it.each(["en", "ko"] as const)("says a saved exact or prefix shell rule runs matching commands outside the sandbox unasked in %s", async (locale) => {
+    // Host-shell row of the permission decision tree (owner 2026-10-29): with the sandbox off or unavailable, a saved exact OR
+    // prefix allow rule runs matching commands without asking; the approval card says the same.
+    setLocale(locale);
+    const api = installApi([[]]);
+    const prefix = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValue({ rules: [prefix], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const note = await screen.findByTestId("permissions-shell-outside-sandbox");
+    expect(note).toHaveTextContent(t("permissionsTab.shellOutsideSandbox"));
+    expect(note.textContent).toMatch(locale === "en" ? /exact or prefix allow rule/ : /정확히 일치하거나 접두사가 일치하는 허용 규칙/);
+    expect(note.textContent).not.toMatch(/never|Only an exact|그렇게 하지 않습니다|정확히 일치하는 허용 규칙만/);
+  });
+
   it.each(["en", "ko"] as const)("lists a retired host terminal rule with a delete action in %s", async (locale) => {
     setLocale(locale);
     const api = installApi([[]]);
