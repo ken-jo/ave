@@ -1,4 +1,5 @@
 // Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
+import { existsSync, realpathSync } from "node:fs";
 import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
@@ -40,6 +41,19 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
   return computeDefaultAllowedDirectoryEntries(cwd, false);
 }
 
+/**
+ * A runtime root as the filesystem spells it. The matching form is NFC (`foldCanonicalPathSeparators`), which names the folder
+ * on APFS and NTFS, but a filesystem that keeps bytes as written (ext4) holds a folder made on macOS in NFD: there the NFC
+ * string names nothing, and every realpath'd path under the folder would compare as outside it. When the matching form does
+ * not exist but the folder does, the folder's realpath is the root. Comparisons are not widened: an NFD sibling of an
+ * NFC-allowed folder on ext4 stays a different folder.
+ */
+function runtimeRootSpelling(raw: string, canonical: string): string {
+  if (existsSync(canonical)) return canonical;
+  const resolved = pathResolve(raw);
+  return existsSync(resolved) ? realpathSync.native(resolved) : canonical;
+}
+
 function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): string[] {
   const scratch = verifyAveScratchDir();
   const candidates = [cwd, aveHome(), ...(scratch.ok ? [scratch.path] : [])];
@@ -48,7 +62,7 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
   for (const raw of candidates) {
     const canonical = canonicalizePathForMatch(raw);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : canonical;
+    const value = foldCase ? folded : runtimeRootSpelling(raw, canonical);
     if (isFilesystemRootPath(folded)) continue;
     // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
     if (isAdmissionDeniedPath(folded)) continue;
@@ -82,7 +96,7 @@ function sanitizeAllowedDirectoryEntries(
     if (isFilesystemRootPath(expanded)) continue;
     const canonical = canonicalizePathForMatch(expanded);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : canonical;
+    const value = foldCase ? folded : runtimeRootSpelling(expanded, canonical);
     if (isFilesystemRootPath(folded)) continue;
     if (isAdmissionDeniedPath(folded)) continue;
     if (seen.has(folded)) continue;
