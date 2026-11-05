@@ -16,6 +16,7 @@ function makeStubApi(opts: {
   const cards = opts.pluginCards ?? [];
   return {
     listPluginCards: vi.fn().mockResolvedValue(cards),
+    chatSessions: vi.fn().mockResolvedValue({ current: "", sessions: [] }),
     addRoutine: opts.addRoutine,
   } as unknown as AveApi;
 }

@@ -117,7 +117,7 @@ import type {
   SubAgentSuspension,
 } from "../shared/subagent-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { sessionAuthorityWithheld, turnExtensionPolicyContext, withholdSessionAuthorityForLifetime } from "../shared/turn-extension-policy.js";
 const log = createLogger("ave");
 
 function maskSubAgentText(text: string): string {
@@ -1495,6 +1495,18 @@ export class SubAgentRunner {
     childSessionId: string,
     text: string,
   ): Promise<ParentDirectiveDeliveryResult> {
+    const delivered = await this.deliverParentMessageToChild(originSessionId, childSessionId, text);
+    // A child that takes instructions from a scheduled wake turn carries them out after the wake has ended: from here on it reads no
+    // session allow (the chat's, nor its own egress grants), like a child the wake spawned.
+    if (delivered.ok && sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
+    return delivered;
+  }
+
+  private async deliverParentMessageToChild(
+    originSessionId: string,
+    childSessionId: string,
+    text: string,
+  ): Promise<ParentDirectiveDeliveryResult> {
     const messageId = createDlpSafeUuid();
     const audit = (type: "info" | "warn", outcome: string): void =>
       this.auditParentDirective(type, { originSessionId, childSessionId, messageId }, outcome);
@@ -2531,6 +2543,8 @@ export class SubAgentRunner {
     durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
   ): Promise<SubAgentSpawnResult> {
     const childSessionId = buildChildSessionId(input.originSessionId);
+    // A child of a scheduled wake turn never reads the woken chat's session allows, also after the wake has ended.
+    if (sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
     if (executionPolicy && typeof durableLinkBarrier !== "function") {
       return this.failA2AWireRun(
         childSessionId,
@@ -3357,6 +3371,8 @@ export class SubAgentRunner {
 
     const attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void } = {};
     const inherited = turnExtensionPolicyContext.getStore();
+    // A child resumed by a scheduled wake turn keeps the withhold for the rest of its life, like one the wake spawned.
+    if (inherited?.withholdSessionAuthority === true) withholdSessionAuthorityForLifetime(resumeId);
     const runPromise = turnExtensionPolicyContext.run(Object.freeze({
       ...inherited,
       allowExternalHooks: inherited?.allowExternalHooks ?? true,

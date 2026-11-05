@@ -250,6 +250,24 @@ export async function loadSession(
       log.warn({ sessionId }, "loadSession refused: session open in another conversation loop");
       return false;
     }
+    // Hold the target from this check on: the identity swap below waits on the outgoing session, and another loop checking in that
+    // window must already see this one.
+    self.sessionLoadTarget = sessionId;
+    try {
+      return await loadHeldSession(self, sessionId, outgoingSessionId, leavingStartFiredFor, leavingSessionMeta, lease);
+    } finally {
+      self.sessionLoadTarget = null;
+    }
+}
+
+async function loadHeldSession(
+  self: ConversationLoop,
+  sessionId: string,
+  outgoingSessionId: string,
+  leavingStartFiredFor: string | null,
+  leavingSessionMeta: ReturnType<ConversationLoop["sessionMetaForLifecycle"]>,
+  lease: SessionTransitionLease,
+): Promise<boolean> {
     const messages = self.deps.memoryManager.loadSession(sessionId);
     if (!messages) return false;
 

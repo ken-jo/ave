@@ -375,3 +375,65 @@ describe("runs in progress", () => {
     expect((result as { running: unknown }).running).toEqual(running);
   });
 });
+
+describe("대화에 연결 IPC", () => {
+  const CHAT = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+  async function withChats(chats: Record<string, { projectRoot?: string; noTranscript?: true }>) {
+    const deps = await setup([]);
+    const memory = deps.memoryManager as typeof deps.memoryManager & Record<string, unknown>;
+    memory.loadSessionMetadata = vi.fn((id: string) => chats[id] ?? null);
+    memory.hasSessionTranscript = vi.fn((id: string) => chats[id] !== undefined && chats[id].noTranscript !== true);
+    return deps;
+  }
+  const base = { trigger: "schedule", execution: "llm-session", prePrompt: "p", projectRoot: "/p/a", schedule: { at: "2030-01-01T00:00:00.000Z" } };
+
+  it("connects only to an existing chat of the same project", async () => {
+    const deps = await withChats({
+      [CHAT]: { projectRoot: "/p/a" },
+      "2c5f39cb-3fb2-42e3-994f-1127e4ddb538": { projectRoot: "/p/b" },
+      "4e7b1c2d-0a1b-4c3d-8e9f-0123456789ab": { projectRoot: "/p/a", noTranscript: true },
+    });
+    deps.routinesStore.add.mockResolvedValue({ id: "new" });
+    // Metadata without a transcript is no chat the list shows, and would only turn 대화 없음 at its first fire.
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "4e7b1c2d-0a1b-4c3d-8e9f-0123456789ab" })).toEqual({ ok: false, error: "chat-not-found" });
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "3d6a4adc-4ac3-43f4-a05a-2238f5eec649" })).toEqual({ ok: false, error: "chat-not-found" });
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "2c5f39cb-3fb2-42e3-994f-1127e4ddb538" })).toEqual({ ok: false, error: "chat-other-project" });
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: 7 })).toEqual({ ok: false, error: "invalid-input" });
+    expect(deps.routinesStore.add).not.toHaveBeenCalled();
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: CHAT })).toEqual({ ok: true, routine: { id: "new" } });
+    expect(deps.routinesStore.add).toHaveBeenCalledWith(expect.objectContaining({ targetSessionId: CHAT }));
+  });
+
+  it("relinks to a chat of the item's project, unlinks with null, and maps run-now of a 대화 없음 item", async () => {
+    const deps = await withChats({ [CHAT]: { projectRoot: "/p/a" } });
+    const store = deps.routinesStore as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    store.list = vi.fn(() => [{ id: "routine-c", trigger: "schedule", execution: "llm-session", projectRoot: "/p/b", createdAt: "x" }]);
+    store.edit = vi.fn(async (id: string) => ({ id }));
+    expect(await invoke(ROUTINES.update, "routine-c", { targetSessionId: CHAT })).toEqual({ ok: false, error: "chat-other-project" });
+    expect(await invoke(ROUTINES.update, "routine-c", { targetSessionId: null })).toEqual({ ok: true, routine: { id: "routine-c" } });
+    expect(store.edit).toHaveBeenCalledWith("routine-c", { targetSessionId: null });
+    expect(await invoke(ROUTINES.update, "routine-c", { targetSessionId: 3 })).toEqual({ ok: false, error: "invalid-input" });
+
+    handlers.clear();
+    const { registerRoutineHandlers } = await import("../routines.js");
+    registerRoutineHandlers({ ...makeDeps([]), routinesScheduler: { dispatchNow: vi.fn(async () => "orphaned") } } as unknown as Parameters<typeof registerRoutineHandlers>[0]);
+    expect(await invoke(ROUTINES.triggerNow, "routine-c")).toEqual({ ok: false, error: "orphaned" });
+  });
+
+  it("removing a connected item never deletes the chat it entered", async () => {
+    const deps = await setup([]);
+    deps.routinesStore.remove.mockResolvedValue(true);
+    expect(await invoke(ROUTINES.remove, "routine-a")).toEqual({ ok: true });
+    expect(deps.memoryManager.listSessionsByRoutine).toHaveBeenCalledWith("routine-a");
+    expect(deps.memoryManager.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("a connected item's runs open its chat", async () => {
+    const deps = await setup([]);
+    const store = deps.routinesStore as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    store.list = vi.fn(() => [{ id: "routine-c", trigger: "schedule", execution: "llm-session", createdAt: "x", targetSessionId: CHAT, lastFiredAt: "2026-11-03T00:00:00.000Z" }]);
+    store.listForDisplay = vi.fn(() => ({ routines: [], invalid: [] }));
+    const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }], running: [] });
+  });
+});

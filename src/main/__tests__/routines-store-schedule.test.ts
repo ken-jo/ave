@@ -314,3 +314,82 @@ describe("RoutinesScheduler — runs in progress", () => {
     expect(scheduler.runningNow()).toEqual([]);
   }));
 });
+
+describe("RoutinesStore — 대화에 연결", () => {
+  const SESSION = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+  const connected = (extra: Record<string, unknown> = {}) => ({
+    ...TEST_OWNER, trigger: "schedule" as const, execution: "llm-session" as const, prePrompt: "check the build",
+    schedule: { at: futureIso(HOUR), repeat: { kind: "daily" as const } }, targetSessionId: SESSION, ...extra,
+  });
+
+  it("keeps the chat a run enters, only for an LLM item on a schedule", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(connected());
+    expect(r.targetSessionId).toBe(SESSION);
+    await expect(store.add(connected({ execution: "notification-only", prePrompt: undefined, notificationTitle: "n" }))).rejects.toThrow(/targetSessionId/);
+    await expect(store.add(connected({ trigger: "shutdown", schedule: undefined }))).rejects.toThrow(/targetSessionId/);
+    await expect(store.add(connected({ targetSessionId: "../escape" }))).rejects.toThrow(/targetSessionId/);
+  }));
+
+  it("an item whose chat was deleted is 대화 없음: never due and never run, on any path", withRoutinesStore(async ({ store }) => {
+    const r = await store.add(connected({ schedule: { at: pastIso(-60_000) } }));
+    const other = await store.add(connected({ targetSessionId: "2c5f39cb-3fb2-42e3-994f-1127e4ddb538" }));
+    expect(await store.markOrphaned(SESSION)).toBe(1);
+    const orphan = store.list().find((x) => x.id === r.id)!;
+    expect(orphan.orphanedAt).toBeDefined();
+    expect(store.list().find((x) => x.id === other.id)!.orphanedAt).toBeUndefined();
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const runs: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { runs.push(routine.id); });
+    await scheduler.checkAndFire();
+    expect(runs).toEqual([]);
+    expect(await scheduler.dispatchNow(r.id)).toBe("orphaned");
+    expect(await store.markFired(r.id)).toBeNull();
+  }));
+
+  it("relinking or unlinking clears 대화 없음 without replaying what it missed", withRoutinesStore(async ({ store }) => {
+    const oneShot = await store.add(connected({ schedule: { at: pastIso(-60_000) } }));
+    const daily = await store.add(connected({ schedule: { at: pastIso(-3 * HOUR), repeat: { kind: "daily" } } }));
+    await store.markOrphaned(SESSION);
+    const relinked = await store.edit(oneShot.id, { targetSessionId: "3d6a4adc-4ac3-43f4-a05a-2238f5eec649" });
+    expect(relinked?.orphanedAt).toBeUndefined();
+    expect(relinked?.targetSessionId).toBe("3d6a4adc-4ac3-43f4-a05a-2238f5eec649");
+    const unlinked = await store.edit(daily.id, { targetSessionId: null });
+    expect(unlinked?.orphanedAt).toBeUndefined();
+    expect(unlinked?.targetSessionId).toBeUndefined();
+    expect(Date.parse(unlinked!.schedule!.at!)).toBeGreaterThan(Date.now());
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const runs: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { runs.push(routine.id); });
+    await scheduler.checkAndFire();
+    // The one-shot passed while its chat was gone: it is missed, not replayed.
+    expect(runs).toEqual([]);
+  }));
+
+  it("records a fire its busy chat could not take as skipped, keeps a one-shot visible, and clears on the next fire", withRoutinesStore(async ({ store, dir }) => {
+    const oneShot = await store.add(connected({ schedule: { at: pastIso(-60_000) } }));
+    const fired = await store.markFired(oneShot.id);
+    expect(fired?.dismissedAt).toBeDefined();
+    expect((await store.markChatBusy(oneShot.id, "1999-01-01T00:00:00.000Z"))?.lastSkippedReason).toBeUndefined();
+    const skipped = await store.markChatBusy(oneShot.id, fired!.lastFiredAt!);
+    expect(skipped).toMatchObject({ lastSkippedReason: "chat-busy" });
+    expect(skipped?.dismissedAt).toBeUndefined();
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    expect(reloaded.list().find((x) => x.id === oneShot.id)?.lastSkippedReason).toBe("chat-busy");
+    const daily = await store.add(connected({ schedule: { at: pastIso(-3 * HOUR), repeat: { kind: "daily" } } }));
+    const first = await store.markFired(daily.id);
+    await store.markChatBusy(daily.id, first!.lastFiredAt!);
+    await store.edit(daily.id, { schedule: { at: pastIso(-60_000), repeat: { kind: "daily" } } });
+    expect((await store.markFired(daily.id))?.lastSkippedReason).toBeUndefined();
+  }));
+
+  it("keeps the chat link and 대화 없음 across a restart", withRoutinesStore(async ({ store, dir }) => {
+    const r = await store.add(connected());
+    await store.markOrphaned(SESSION);
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    const back = reloaded.list().find((x) => x.id === r.id)!;
+    expect(back.targetSessionId).toBe(SESSION);
+    expect(back.orphanedAt).toBeDefined();
+  }));
+});

@@ -12,6 +12,7 @@ import type { RoutineScope } from "../shared/routines-types.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { errorMessage } from "../shared/error-message.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { routineSummaryOf } from "../shared/routine-summary.js";
 const log = createLogger("routine-engine");
 
 export interface Routine {
@@ -32,6 +33,10 @@ export interface Routine {
    * the Promise.race winner while the turn continues running.
    */
   signal?: AbortSignal;
+  /** The chat a connected schedule enters. The loop loads that chat instead of starting a routine conversation. */
+  targetSessionId?: string;
+  /** What the chat shows for the scheduled prompt (its marker), instead of the bare prompt. */
+  displayText?: string;
 }
 
 export interface RoutineResult {
@@ -40,6 +45,8 @@ export interface RoutineResult {
   summary: string;
   generatedAt: string;
   sessionId?: string;
+  /** No turn ran: another conversation holds the connected chat. */
+  skipped?: "chat-busy";
 }
 
 export interface RoutineEngineDeps {
@@ -70,11 +77,11 @@ export interface RoutineEngineDeps {
  * Caps extracted content at 200 codepoints (OverlayCard surface budget).
  */
 function extractSummaryTag(text: string): string {
-  const match = text.match(/<summary>([\s\S]*?)<\/summary>/);
-  if (!match) {
+  // The same final block the conversation's stored answer leaves out (shared/routine-summary.ts).
+  const content = routineSummaryOf(text);
+  if (content === null) {
     return t("be_routineEngine.summaryTagMissing");
   }
-  const content = match[1].trim();
   const codepoints = [...content];
   return codepoints.length <= 200 ? content : codepoints.slice(0, 200).join("");
 }
@@ -88,6 +95,11 @@ export class RoutineEngine {
   private workspaceRootPolicySequence = 0;
 
   constructor(private readonly deps: RoutineEngineDeps) {}
+
+  /** The loops running a routine now. The host counts their sessions as held, so no other loop opens a connected chat mid-run. */
+  liveLoops(): Iterable<ConversationLoop> {
+    return this.activeLoops;
+  }
 
   private workspaceRootKey(root: string): string | null {
     try {
@@ -242,7 +254,10 @@ export class RoutineEngine {
     const loop = this.deps.createConversationLoop(normalizedInput);
     this.activeLoops.add(loop);
     try {
-      const sessionId = await loop.startRoutineConversation(
+      if (input.targetSessionId !== undefined && !(await loop.loadSession(input.targetSessionId))) {
+        return { routineId: input.id, trigger: input.trigger, summary: "", generatedAt, skipped: "chat-busy" };
+      }
+      const sessionId = input.targetSessionId ?? await loop.startRoutineConversation(
         input.id,
         input.title ?? input.id,
         input.firedAt ?? generatedAt,
@@ -252,6 +267,7 @@ export class RoutineEngine {
       try {
         const result = await loop.runTurn(input.prePrompt, undefined, input.signal, {
           inputOrigin: "plugin-emitted",
+          ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
         });
         summary = extractSummaryTag(result.text ?? "");
       } catch (err) {

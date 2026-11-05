@@ -9,6 +9,7 @@ import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 import { advanceRepeatAt, isMissedWhilePaused, isRoutineScheduleShape, scheduleIdentity } from "../routines/schedule-advance.js";
 import { projectRootEquals } from "../shared/project-identity.js";
+import { isValidSessionId } from "../shared/session-id.js";
 const log = createLogger("ave");
 
 // Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
@@ -111,7 +112,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
-  if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing") return false;
+  if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing" && x.lastSkippedReason !== "chat-busy") return false;
   if (x.lastSkippedMinuteUTC !== undefined && typeof x.lastSkippedMinuteUTC !== "string") return false;
   if (x.needsAttention !== undefined) {
     if (!x.needsAttention || typeof x.needsAttention !== "object" || Array.isArray(x.needsAttention)) return false;
@@ -133,7 +134,14 @@ function isValidRecord(r: unknown): r is RoutineRecord {
     if (x[field] !== undefined && typeof x[field] !== "string") return false;
   }
   if (x.schedule !== undefined && !isRoutineScheduleShape(x.schedule)) return false;
+  if (x.targetSessionId !== undefined && !canConnect(x.targetSessionId, x.trigger, x.execution)) return false;
+  if (x.orphanedAt !== undefined && (typeof x.orphanedAt !== "string" || x.targetSessionId === undefined)) return false;
   return true;
+}
+
+// Only an LLM item on a schedule can enter a chat: a notification has no turn, and a quit-time run has no one to read it.
+function canConnect(targetSessionId: unknown, trigger: unknown, execution: unknown): boolean {
+  return isValidSessionId(targetSessionId) && trigger === "schedule" && execution === "llm-session";
 }
 
 function isValidRoutineFailure(value: unknown): boolean {
@@ -365,6 +373,9 @@ export class RoutinesStore {
       throw new Error(`RoutinesStore.add: execution must be 'llm-session' or 'notification-only': ${String(input.execution)}`);
     }
     const normalizedSchedule = validateRoutineContent("add", input);
+    if (input.targetSessionId !== undefined && !canConnect(input.targetSessionId, input.trigger, input.execution)) {
+      throw new Error("RoutinesStore.add: targetSessionId must be a valid chat id on a scheduled llm-session item");
+    }
     const normalizedProjectRoot = typeof input.projectRoot === "string" ? input.projectRoot.trim() : "";
     if (!normalizedProjectRoot || normalizedProjectRoot.length > MAX_PROJECT_ROOT_LENGTH) {
       throw new Error(`RoutinesStore.add: projectRoot is required (a non-empty string of at most ${MAX_PROJECT_ROOT_LENGTH} characters)`);
@@ -429,6 +440,7 @@ export class RoutinesStore {
       ...(normalizedSource !== undefined ? { source: normalizedSource } : {}),
       projectRoot: normalizedProjectRoot,
       createdBy: input.createdBy,
+      ...(input.targetSessionId !== undefined ? { targetSessionId: input.targetSessionId } : {}),
     };
 
     return withInProcessFileQueue(this.filePath, async () => {
@@ -608,6 +620,17 @@ export class RoutinesStore {
     });
   }
 
+  // The fire at `firedAt` did not run because its connected chat was busy. A one-shot stays listed as skipped instead of done; it is not
+  // fired again by itself. A later fire is left as it is; null when the item is gone.
+  async markChatBusy(id: string, firedAt: string): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.lastFiredAt !== firedAt) return false;
+      r.lastSkippedReason = "chat-busy";
+      if (isOneShot(r) && r.dismissedAt === r.lastFiredAt) delete r.dismissedAt;
+      return true;
+    });
+  }
+
   // A user edit from the schedule panel, validated exactly as add validates. Null for an unknown or dismissed item.
   async edit(id: string, patch: RoutineEditPatch): Promise<RoutineRecord | null> {
     return this.mutate(id, (r) => {
@@ -623,6 +646,9 @@ export class RoutinesStore {
         ...(patch.schedule !== undefined ? { schedule: patch.schedule } : {}),
       };
       const schedule = validateRoutineContent("edit", next);
+      if (typeof patch.targetSessionId === "string" && !canConnect(patch.targetSessionId, r.trigger, r.execution)) {
+        throw new Error("RoutinesStore.edit: targetSessionId must be a valid chat id on a scheduled llm-session item");
+      }
       if (patch.title === null) delete r.title;
       else if (patch.title !== undefined) r.title = patch.title;
       if (patch.prePrompt !== undefined) r.prePrompt = patch.prePrompt;
@@ -640,8 +666,38 @@ export class RoutinesStore {
           delete r.resumedAt;
         }
       }
+      if (patch.targetSessionId !== undefined) {
+        if (patch.targetSessionId === null) delete r.targetSessionId;
+        else r.targetSessionId = patch.targetSessionId;
+        // Relinking or unlinking a 대화 없음 item works like resume: what it missed is not replayed.
+        if (r.orphanedAt) {
+          const now = new Date().toISOString();
+          delete r.orphanedAt;
+          r.resumedAt = now;
+          advanceRepeatingSchedule(r, now);
+        }
+      }
       return true;
     }, { skipDismissed: true });
+  }
+
+  // The connected chat was deleted: every item that enters it becomes 대화 없음. Returns how many items changed.
+  async markOrphaned(sessionId: string): Promise<number> {
+    if (!this.loaded) await this.load();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await readFileOrEmpty(this.filePath);
+      const now = new Date().toISOString();
+      let changed = 0;
+      for (const r of file.routines) {
+        if (r.targetSessionId !== sessionId || r.orphanedAt || r.dismissedAt) continue;
+        r.orphanedAt = now;
+        changed += 1;
+      }
+      this.cache = file.routines;
+      this.invalidCache = file.invalid;
+      if (changed > 0) await this.persist(file);
+      return changed;
+    });
   }
 
   async pause(id: string, by: RoutineActor): Promise<RoutineRecord | null> {
@@ -701,7 +757,7 @@ export class RoutinesStore {
         || isMissedWhilePaused(r)
         || (r.schedule?.repeat?.kind !== "cron" && r.schedule?.at !== undefined && Date.parse(r.schedule.at) > nowMs)
       )));
-      if (!r || r.pausedAt || stale) {
+      if (!r || r.pausedAt || r.orphanedAt || stale) {
         this.cache = file.routines;
         this.invalidCache = file.invalid;
         return null;

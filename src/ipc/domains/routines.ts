@@ -17,6 +17,9 @@ import type { RoutineRunRow } from "../../shared/session-lookup.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope } from "../../main/routines-store.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
+import { isValidSessionId } from "../../shared/session-id.js";
+import { projectRootEquals } from "../../shared/project-identity.js";
+import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
 
 // The month grid spans at most six weeks; a little slack keeps a range that starts mid-day valid.
 const MAX_OCCURRENCE_RANGE_MS = 43 * 24 * 60 * 60 * 1000;
@@ -52,6 +55,16 @@ function projectRootFilter(filter: unknown): string | undefined {
 
 export function registerRoutineHandlers(deps: IpcDeps): void {
   const { routinesStore, routinesScheduler, memoryManager, auditLogger } = deps;
+
+  // 대화에 연결: the chat must exist and belong to the item's project. A chat outside any named project belongs to the default
+  // workspace, like everywhere else. Null when the chat may be connected, else the error code.
+  const chatLinkError = (targetSessionId: string, projectRoot: string | undefined): string | null => {
+    const metadata = memoryManager.loadSessionMetadata(targetSessionId);
+    // The same existence test the fire uses: a chat needs its metadata and its transcript.
+    if (!metadata || !memoryManager.hasSessionTranscript(targetSessionId)) return "chat-not-found";
+    const defaultRoot = () => defaultWorkspaceProject().projectRoot;
+    return projectRootEquals(metadata.projectRoot ?? defaultRoot(), projectRoot ?? defaultRoot()) ? null : "chat-other-project";
+  };
 
   ipcMain.handle(ROUTINES.list, (e, filter?: unknown) => {
     if (!validateHostRendererSender(e)) {
@@ -101,6 +114,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     const dispatched = await routinesScheduler.dispatchNow(id);
     if (dispatched === "plugins-missing") return { ok: false, error: "plugins-missing" };
     if (dispatched === "paused") return { ok: false, error: "paused" };
+    if (dispatched === "orphaned") return { ok: false, error: "orphaned" };
     if (!dispatched) return { ok: false, error: "routine-not-found" };
     return { ok: true };
   });
@@ -183,6 +197,11 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       if (typeof input.projectRoot !== "string" || !input.projectRoot.trim()) return { ok: false, error: "project-required" };
       const fields = input as unknown as Record<string, unknown>;
       if (!hasValidFieldTypes(fields, false) || !hasValidAddFields(fields)) return { ok: false, error: "invalid-input" };
+      if (input.targetSessionId !== undefined) {
+        if (!isValidSessionId(input.targetSessionId)) return { ok: false, error: "invalid-input" };
+        const linkError = chatLinkError(input.targetSessionId, input.projectRoot);
+        if (linkError) return { ok: false, error: linkError };
+      }
       try {
         // The renderer form is the user's own action; only the host's tool path may record an agent as creator.
         const record = await routinesStore.add({ ...input, createdBy: "user" });
@@ -201,6 +220,14 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { ok: false, error: "no-store" };
     if (typeof id !== "string" || !patch || typeof patch !== "object" || Array.isArray(patch)
       || !hasValidFieldTypes(patch as Record<string, unknown>, true)) return { ok: false, error: "invalid-input" };
+    const target = (patch as Record<string, unknown>).targetSessionId;
+    if (target !== undefined && target !== null && !isValidSessionId(target)) return { ok: false, error: "invalid-input" };
+    if (typeof target === "string") {
+      const record = routinesStore.list().find((r) => r.id === id);
+      if (!record) return { ok: false, error: "routine-not-found" };
+      const linkError = chatLinkError(target, record.projectRoot);
+      if (linkError) return { ok: false, error: linkError };
+    }
     try {
       const routine = await routinesStore.edit(id, patch as RoutineEditPatch);
       return routine ? { ok: true, routine } : { ok: false, error: "routine-not-found" };
@@ -258,8 +285,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
         }
       }
       // A failed run may have no session, and a notification item never has one.
+      // A connected item's run is a turn in its chat, which 대화 열기 opens.
       if (inRange(routine.lastFiredAt) && !seen.has(routine.lastFiredAt)) {
-        runs.push({ routineId: routine.id, firedAt: routine.lastFiredAt, status: statusOf(routine.lastFiredAt) });
+        const chat = routine.targetSessionId && !routine.orphanedAt ? { sessionId: routine.targetSessionId } : {};
+        runs.push({ routineId: routine.id, firedAt: routine.lastFiredAt, status: statusOf(routine.lastFiredAt), ...chat });
       }
     }
     runs.sort((a, b) => a.firedAt.localeCompare(b.firedAt));

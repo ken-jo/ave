@@ -1,7 +1,7 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
+import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/ui/popover.js";
@@ -19,6 +19,8 @@ import { usePaneActions } from "../PaneFrame.js";
 import { AddRoutineModal, InvalidRoutineRow } from "../RoutinePanel.js";
 import { ScheduleItemPopover, routineTitle, type ScheduleItemDraft } from "./ScheduleItemPopover.js";
 import { useScheduleData } from "./use-schedule-data.js";
+import { formatIpcError } from "../../format-ipc-error.js";
+import { CONNECTED_BAR, chatTitle, useProjectChats } from "./chat-link.js";
 import { layoutDayChips, sameDay, scheduleRange, shiftAnchor, type ScheduleViewMode } from "./schedule-layout.js";
 
 const PX_PER_HOUR = 48;
@@ -37,7 +39,7 @@ const SCHEDULE_UNDO_MS = 6_000;
 const NARROW_ENTER = 760;
 const NARROW_EXIT = 820;
 
-type EntryStatus = "scheduled" | "paused" | "missed" | "done" | "failed" | "running";
+type EntryStatus = "scheduled" | "paused" | "missed" | "orphaned" | "done" | "failed" | "running";
 
 interface ScheduleEntry {
   key: string;
@@ -96,6 +98,7 @@ function statusClass(status: EntryStatus): string {
     case "running": return "border-2 border-primary bg-background text-foreground";
     case "paused": return "border-dashed border-muted-foreground bg-muted text-muted-foreground";
     case "missed": return "border-dotted border-warning bg-background text-warning";
+    case "orphaned": return "border-dotted border-muted-foreground bg-muted text-muted-foreground line-through";
     default: return "border-dashed border-border bg-background text-foreground";
   }
 }
@@ -103,7 +106,7 @@ function statusClass(status: EntryStatus): string {
 function StatusIcon({ status }: { status: EntryStatus }) {
   if (status === "running") return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />;
   if (status === "paused") return <Pause className="h-3 w-3 shrink-0" aria-hidden="true" />;
-  if (status === "failed" || status === "missed") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
+  if (status === "failed" || status === "missed" || status === "orphaned") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
   return <Repeat2 className="h-3 w-3 shrink-0" aria-hidden="true" />;
 }
 
@@ -159,6 +162,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   useEffect(() => () => { mounted.current = false; }, []);
 
   const { records, invalid, occurrences, runs, loaded, running, refresh } = useScheduleData(api, projectRoot, range);
+  const chats = useProjectChats(api, projectRoot, records);
 
   // The delete commits when its undo window closes, and when the panel goes away: the user already chose it.
   const pendingRef = useRef<string | null>(null);
@@ -254,7 +258,10 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
   const runAction = async (action: () => Promise<{ ok: boolean; error?: string }>) => {
     const result = await action();
-    if (!result.ok) setNotice(result.error === "paused" ? t("schedulePanel.errorPaused") : result.error ?? t("schedulePanel.errorActionFailed"));
+    if (!result.ok) {
+      setNotice(result.error === "paused" ? t("schedulePanel.errorPaused")
+        : result.error ? formatIpcError(result.error, undefined) : t("schedulePanel.errorActionFailed"));
+    }
     void refresh();
   };
 
@@ -296,7 +303,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         onClose={() => { setSelected(null); dropDraft(entry.routine.id); }}
         onSave={async (patch: RoutineEditPatch) => {
           const result = await api.updateRoutine(entry.routine.id, patch);
-          if (!result.ok) return result.error;
+          if (!result.ok) return formatIpcError(result.error, undefined);
           dropDraft(entry.routine.id);
           setSelected(null);
           void refresh();
@@ -307,6 +314,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         onRunNow={() => void runAction(() => api.triggerRoutineNow(entry.routine.id))}
         onDelete={() => startDelete(entry.routine.id)}
         {...(onOpenSession ? { onOpenSession } : {})}
+        chats={chats}
       />
     );
   };
@@ -329,7 +337,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     );
   };
 
-  const chipLabel = (entry: ScheduleEntry) => t("schedulePanel.chipLabel", {
+  const chipLabel = (entry: ScheduleEntry) => t(entry.routine.targetSessionId ? "schedulePanel.chipLabelConnected" : "schedulePanel.chipLabel", {
     time: entry.routine.trigger === "shutdown" ? t("schedulePanel.onShutdownRow") : hhmm(entry.atMs),
     title: routineTitle(entry.routine),
     status: t(`schedulePanel.status_${entry.status}`),
@@ -342,14 +350,16 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         data-testid="schedule-chip"
         data-status={entry.status}
         data-routine-id={entry.routine.id}
+        data-connected={entry.routine.targetSessionId ? "true" : undefined}
         data-selection-key={`${surface}|${entry.key}`}
         aria-label={chipLabel(entry)}
         style={style}
         onClick={(e) => e.stopPropagation()}
-        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
+        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${entry.routine.targetSessionId ? CONNECTED_BAR : ""} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
       >
         <span className="flex min-w-0 items-center gap-1">
           <StatusIcon status={entry.status} />
+          {entry.routine.targetSessionId && <AlarmClock className="h-3 w-3 shrink-0 text-info" aria-hidden="true" />}
           <span className="shrink-0 tabular-nums">{hhmm(entry.atMs)}</span>
           {!twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
         </span>
@@ -502,9 +512,18 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                 data-testid="schedule-day-list-row">
                 <span className="w-10 shrink-0 tabular-nums">{e.routine.trigger === "shutdown" ? t("schedulePanel.onShutdownRow") : hhmm(e.atMs)}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-semibold">{routineTitle(e.routine)}</span>
+                  <span className="flex min-w-0 items-center gap-1">
+                    <span className="min-w-0 truncate font-semibold">{routineTitle(e.routine)}</span>
+                    {e.routine.targetSessionId && (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-info/(--opacity-subtle) px-1 text-[10px] font-medium text-info">
+                        <AlarmClock className="h-2.5 w-2.5" aria-hidden="true" />{t("schedulePanel.connectedBadge")}
+                      </span>
+                    )}
+                  </span>
                   <span className="block truncate text-muted-foreground">
-                    {e.routine.execution === "notification-only" ? t("schedulePanel.runsAsNotification") : t("schedulePanel.runsInNewChat")}
+                    {e.routine.execution === "notification-only" ? t("schedulePanel.runsAsNotification")
+                      : e.routine.targetSessionId ? t("schedulePanel.connectedTo", { chat: chatTitle(chats, e.routine.targetSessionId) })
+                        : t("schedulePanel.runsInNewChat")}
                   </span>
                 </span>
               </button>

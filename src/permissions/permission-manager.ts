@@ -3,6 +3,7 @@ import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
 import { verifiedShellParsed } from "./verified-shell-command.js";
 import { currentHostTerminalTurn } from "../tools/host-terminal-turn.js";
+import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import type { HostTerminalCommandScope } from "../tools/terminal-run.js";
 import { isIssuedUserOwnedBrowserScope, type UserOwnedBrowserScope } from "./user-owned-browser-scope.js";
 import { UserOwnedSurfaceStore } from "./user-owned-surface-store.js";
@@ -903,6 +904,14 @@ export class PermissionManager {
     this.broadcastConfigChanged?.();
   }
 
+  // The "This session" rules a decision may read. A scheduled wake turn reads only their deny and ask rules: it does not inherit
+  // the conversation's session allows (permission tree, delegated work), and the decision order is unchanged.
+  private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
+    if (sessionId === undefined) return [];
+    const rules = this.sessionRules.get(approvalConversationRoot(sessionId)) ?? [];
+    return sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)) ? rules.filter((rule) => rule.action !== "allow") : rules;
+  }
+
   // The "This session" rules a conversation holds.
   getUserOwnedSurfaceChoice(sessionId: string, surface: UserOwnedSurface): UserOwnedSurfaceChoice {
     return this.userOwnedSurfaceChoices.get(sessionId, surface);
@@ -964,7 +973,7 @@ export class PermissionManager {
       if (!state.ok) throw state.error;
       projectRules = state.rules;
     }
-    const sessionRules = subject.sessionId === undefined ? [] : this.sessionRules.get(approvalConversationRoot(subject.sessionId)) ?? [];
+    const sessionRules = this.sessionRulesInScope(subject.sessionId);
     const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
     const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", projectRules], ["session", sessionRules]];
     for (const [scope, rules] of scoped) {
@@ -1299,7 +1308,10 @@ export class PermissionManager {
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
-      ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface, choice: this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
+      ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface,
+        // A scheduled wake turn does not inherit the conversation's shared choice; it asks, the default.
+        choice: sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
+          ? "ask" : this.getUserOwnedSurfaceChoice(evidence.sessionId ?? "", surface) }) } : {}),
       ...(permissionStoreError ? { admissionDenial: Object.freeze({ code: "policy-unreadable", reason: permissionStoreError }) } : {}),
       ...(pause ? { automationPause: Object.freeze({ kind: pause, reason: "Automated approval is paused for this turn; human approval is required." }) } : {}),
       tool: Object.freeze({ ...evidence.tool }),
@@ -1493,7 +1505,7 @@ export class PermissionManager {
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
       secretRead ||= evidence.effect === "read" && evidence.secret !== null;
     }
-    const sessionRules = context.sessionId === undefined ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
+    const sessionRules = this.sessionRulesInScope(context.sessionId);
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;

@@ -230,6 +230,7 @@ export type RoutineConversationLoopDeps = Pick<
   | "subscriptionProviderFactory"
   | "broadcastPermissionConfigChanged"
   | "approvalSurface"
+  | "sessionHeldElsewhere"
 >;
 
 export function createRoutineConversationLoop(
@@ -297,6 +298,10 @@ export function createRoutineConversationLoop(
     subscriptionProviderFactory: deps.subscriptionProviderFactory,
     broadcastPermissionConfigChanged: deps.broadcastPermissionConfigChanged,
     approvalSurface: deps.approvalSurface,
+    // Routine mode asks for a closing <summary> block: the result card reads it from the turn's return, history stores the answer without it.
+    stripRoutineSummary: true,
+    // A connected schedule loads its chat; that load is refused while another loop holds the chat.
+    ...(deps.sessionHeldElsewhere ? { sessionHeldElsewhere: deps.sessionHeldElsewhere } : {}),
     headless: true,
     // Routine loops omit interactive hooks; normal session persistence still applies.
   });

@@ -26,8 +26,9 @@ function routine(patch: Partial<RoutineRecord> = {}): RoutineRecord {
   };
 }
 
-function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurrence[]; runs?: RoutineRun[]; running?: Array<{ routineId: string; firedAt: string }>; invalid?: Array<{ id: string; field: string; value: string; reason: "invalid-plugin-id" }> }) {
+function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurrence[]; runs?: RoutineRun[]; running?: Array<{ routineId: string; firedAt: string }>; invalid?: Array<{ id: string; field: string; value: string; reason: "invalid-plugin-id" }>; chats?: Array<{ id: string; title: string }> }) {
   const api = {
+    chatSessions: vi.fn(async () => ({ current: "", sessions: (state.chats ?? []).map((c) => ({ ...c, modifiedAt: at(3, 9), sessionKind: "main", family: "main" })) })),
     listRoutines: vi.fn(async () => ({ routines: state.routines, invalid: state.invalid ?? [] })),
     listRoutineOccurrences: vi.fn(async () => ({ ok: true as const, occurrences: state.occurrences ?? [], runs: state.runs ?? [], running: state.running ?? [] })),
     updateRoutine: vi.fn(async (id: string) => ({ ok: true as const, routine: state.routines.find((r) => r.id === id)! })),
@@ -376,5 +377,98 @@ describe("SchedulePanel focus target (확인 필요 → 스케줄에서 열기)"
     render(<SchedulePanel api={api} project={project} now={() => NOW} focusRoutineId="gone" onFocusConsumed={onFocusConsumed} />);
     await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
     expect(document.activeElement?.getAttribute("data-routine-id")).toBeFalsy();
+  });
+});
+
+describe("SchedulePanel — a schedule connected to a chat", () => {
+  const CHAT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const chats = [{ id: CHAT, title: "릴리스 준비" }, { id: OTHER, title: "장애 회고" }];
+  const occurrences: RoutineOccurrence[] = [{ routineId: "build", at: at(4, 14), status: "scheduled" }];
+
+  it("marks a connected chip and names its chat in the day list", async () => {
+    const api = makeApi({ routines: [routine({ targetSessionId: CHAT })], occurrences, chats });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByRole("tab", { name: "일일" }));
+    const chip = await view.findByTestId("schedule-chip");
+    expect(chip.getAttribute("data-connected")).toBe("true");
+    expect(chip.getAttribute("aria-label")).toContain("대화에 연결");
+    await waitFor(() => expect(view.getByTestId("schedule-day-list-row").textContent).toContain("대화에 연결: 릴리스 준비"));
+    expect(api.chatSessions).toHaveBeenCalledWith({ kind: "main", projectRoot: "/work/checkout" });
+  });
+
+  it("connects, changes and unlinks the chat from the popover", async () => {
+    const api = makeApi({ routines: [routine({ targetSessionId: CHAT })], occurrences, chats });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    const field = await within(popover).findByTestId("schedule-chat-link") as HTMLSelectElement;
+    await waitFor(() => expect(within(field).getByRole("option", { name: "장애 회고" })).toBeTruthy());
+    expect(field.value).toBe(CHAT);
+    fireEvent.change(field, { target: { value: OTHER } });
+    await act(async () => { fireEvent.click(within(popover).getByRole("button", { name: "저장" })); });
+    expect(api.updateRoutine).toHaveBeenLastCalledWith("build", { targetSessionId: OTHER });
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const again = await view.findByTestId("schedule-item-popover");
+    fireEvent.change(within(again).getByTestId("schedule-chat-link"), { target: { value: "" } });
+    await act(async () => { fireEvent.click(within(again).getByRole("button", { name: "저장" })); });
+    expect(api.updateRoutine).toHaveBeenLastCalledWith("build", { targetSessionId: null });
+  });
+
+  it("explains a refused link in words, not the host's error code", async () => {
+    const api = makeApi({ routines: [routine()], occurrences, chats });
+    api.updateRoutine.mockResolvedValueOnce({ ok: false, error: "chat-not-found" } as never);
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    const field = await within(popover).findByTestId("schedule-chat-link");
+    await waitFor(() => expect(within(field).getByRole("option", { name: "릴리스 준비" })).toBeTruthy());
+    fireEvent.change(field, { target: { value: CHAT } });
+    await act(async () => { fireEvent.click(within(popover).getByRole("button", { name: "저장" })); });
+    expect(within(popover).getByRole("alert").textContent).toBe("그 대화는 더 이상 없습니다.");
+  });
+
+  it("says 대화 없음 for an item whose chat was deleted, offers relink, unlink and delete, and does not run it now", async () => {
+    // The panel's list may still name the deleted chat; the field reads 대화 없음 all the same.
+    const api = makeApi({ routines: [routine({ targetSessionId: CHAT, orphanedAt: at(3, 10) })], occurrences: [{ routineId: "build", at: at(4, 14), status: "orphaned" }], chats });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    expect(within(popover).getByTestId("schedule-orphaned-note").textContent).toContain("대화 없음");
+    const field = within(popover).getByTestId("schedule-chat-link") as HTMLSelectElement;
+    expect(field.value).toBe(CHAT);
+    await waitFor(() => expect(within(field).getByRole("option", { name: "장애 회고" })).toBeTruthy());
+    expect(field.selectedOptions[0]?.textContent).toBe("대화 없음");
+    expect(within(field).queryByRole("option", { name: "릴리스 준비" })).toBeNull();
+    expect((within(popover).getByRole("button", { name: "지금 실행" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(popover).getByRole("button", { name: "삭제" })).toBeTruthy();
+  });
+
+  it("says when a fire was skipped because its chat was busy", async () => {
+    const api = makeApi({ routines: [routine({ targetSessionId: CHAT, lastSkippedReason: "chat-busy", lastFiredAt: at(4, 9) })], occurrences, chats });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    expect(within(popover).getByTestId("schedule-chat-busy-note").textContent).toContain("건너뛰었습니다");
+  });
+
+  it("adds an item connected to a chat, and a notification has no chat to connect", async () => {
+    const api = makeApi({ routines: [routine()], chats });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    await waitFor(() => expect(api.listRoutines).toHaveBeenCalled());
+    const thursday = view.getAllByTestId("schedule-day-column")[3]!;
+    thursday.getBoundingClientRect = () => ({ top: 0, left: 0, right: 100, bottom: 1152, width: 100, height: 1152, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.click(thursday, { clientY: 11 * 48 + 5 });
+    const modal = await view.findByTestId("add-routine-modal");
+    const field = await within(modal).findByTestId("schedule-chat-link") as HTMLSelectElement;
+    await waitFor(() => expect(within(field).getByRole("option", { name: "릴리스 준비" })).toBeTruthy());
+    fireEvent.change(field, { target: { value: CHAT } });
+    fireEvent.change(within(modal).getByTestId("pre-prompt-input"), { target: { value: "deploy check" } });
+    fireEvent.change(within(modal).getAllByRole("combobox")[1]!, { target: { value: "notification-only" } });
+    expect(field.disabled).toBe(true);
+    fireEvent.change(within(modal).getAllByRole("combobox")[1]!, { target: { value: "llm-session" } });
+    expect(field.disabled).toBe(false);
+    await act(async () => { fireEvent.click(within(modal).getByRole("button", { name: "등록" })); });
+    expect(api.addRoutine).toHaveBeenCalledWith(expect.objectContaining({ prePrompt: "deploy check", targetSessionId: CHAT }));
   });
 });

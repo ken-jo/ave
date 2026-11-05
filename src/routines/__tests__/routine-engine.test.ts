@@ -320,3 +320,42 @@ describe("RoutineEngine workspace lifecycle", () => {
     expect((thrown as AggregateError).errors).toHaveLength(1);
   });
 });
+
+describe("RoutineEngine.runRoutine — a schedule connected to a chat", () => {
+  const TARGET = "22222222-2222-4222-8222-222222222222";
+
+  it("loads the connected chat instead of starting a routine conversation, and runs the same unattended turn", async () => {
+    const loop = { ...makeLoop({ text: "<summary>checked</summary>" }), loadSession: vi.fn(async () => true), getSessionId: vi.fn(() => TARGET) };
+    const engine = new RoutineEngine({ createConversationLoop: () => loop as never });
+    const result = await engine.runRoutine({ id: "linked", trigger: "schedule", prePrompt: "check", targetSessionId: TARGET, displayText: "Scheduled prompt · check" });
+    expect(loop.loadSession).toHaveBeenCalledWith(TARGET);
+    expect(loop.startRoutineConversation).not.toHaveBeenCalled();
+    // The chat shows the scheduled-prompt marker, as it does when the turn runs in an open tile.
+    expect(loop.runTurn).toHaveBeenCalledWith("check", undefined, undefined, { inputOrigin: "plugin-emitted", displayText: "Scheduled prompt · check" });
+    expect(result).toMatchObject({ summary: "checked", sessionId: TARGET });
+    expect(loop.cleanupSession).toHaveBeenCalledOnce();
+  });
+
+  it("skips without a turn when another conversation holds the chat", async () => {
+    const loop = { ...makeLoop(), loadSession: vi.fn(async () => false) };
+    const engine = new RoutineEngine({ createConversationLoop: () => loop as never });
+    const result = await engine.runRoutine({ id: "linked", trigger: "schedule", prePrompt: "check", targetSessionId: TARGET });
+    expect(result).toMatchObject({ skipped: "chat-busy" });
+    expect(result.sessionId).toBeUndefined();
+    expect(loop.runTurn).not.toHaveBeenCalled();
+    expect(loop.cleanupSession).toHaveBeenCalledOnce();
+  });
+
+  it("lists the chats its live loops hold, so no other loop opens one mid-run", async () => {
+    let release!: () => void;
+    const loop = { ...makeLoop(), loadSession: vi.fn(async () => true), getSessionId: vi.fn(() => TARGET) };
+    loop.runTurn.mockImplementation(() => new Promise((resolve) => { release = () => resolve({ text: "", toolCalls: [], route: "llm" }); }));
+    const engine = new RoutineEngine({ createConversationLoop: () => loop as never });
+    const running = engine.runRoutine({ id: "linked", trigger: "schedule", prePrompt: "check", targetSessionId: TARGET });
+    await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalled());
+    expect([...engine.liveLoops()].map((l) => l.getSessionId())).toEqual([TARGET]);
+    release();
+    await running;
+    expect([...engine.liveLoops()]).toEqual([]);
+  });
+});

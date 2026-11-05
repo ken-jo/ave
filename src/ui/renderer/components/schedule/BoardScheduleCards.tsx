@@ -1,7 +1,7 @@
 // Schedule cards drawn inside the work board's columns. They are read-only summaries: editing happens in the schedule panel,
 // which a card opens.
-import { useState } from "react";
-import { AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlarmClock, AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -9,10 +9,12 @@ import { formatLocalClock, formatMediumDateTime } from "../../../../shared/forma
 import type { RoutineRecord } from "../../../../shared/routines-types.js";
 import { describeSchedule } from "../RoutinePanel.js";
 import { routineTitle } from "./ScheduleItemPopover.js";
+import { CONNECTED_BAR } from "./chat-link.js";
 import type { PlannedScheduleCard, RunningScheduleCard, BoardScheduleCards } from "./board-schedule.js";
 
 function runsAs(routine: RoutineRecord): string {
-  return t(routine.execution === "notification-only" ? "schedulePanel.runsAsNotification" : "schedulePanel.runsInNewChat");
+  if (routine.execution === "notification-only") return t("schedulePanel.runsAsNotification");
+  return t(routine.targetSessionId ? "schedulePanel.runsInConnectedChat" : "schedulePanel.runsInNewChat");
 }
 
 /** The repeat rule and how it runs; a one-shot's rule would only repeat its time, so it shows how it runs alone. */
@@ -35,12 +37,15 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
   return (
     <button
       type="button"
-      className="w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className={`w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        card.routine.targetSessionId ? CONNECTED_BAR : ""}`}
       data-testid={`board-schedule-card-${card.routine.id}`}
+      data-connected={card.routine.targetSessionId ? "true" : undefined}
       onClick={() => onOpen?.(card.routine.id)}
     >
       <div className="flex items-center gap-1.5">
         <ScheduleBadge />
+        {card.routine.targetSessionId && <AlarmClock className="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />}
         <span className="min-w-0 truncate text-sm font-semibold">{routineTitle(card.routine)}</span>
       </div>
       <p className="mt-1 truncate text-xs text-foreground">{t("workBoard.scheduleNextRun", { when: formatMediumDateTime(card.nextAt) })}</p>
@@ -49,10 +54,29 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
   );
 }
 
+/** Whole minutes since `firedAt`, re-rendered as each minute passes. The timer lives only while the running card is shown. */
+function useElapsedMinutes(firedAt: string): number {
+  const started = Date.parse(firedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const current = Date.now();
+      setNow(current);
+      timer = setTimeout(schedule, 60_000 - (Math.max(0, current - started) % 60_000));
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [started]);
+  return Math.max(0, Math.floor((now - started) / 60_000));
+}
+
 export function RunningScheduleCardView({ card, onOpenSession }: { card: RunningScheduleCard; onOpenSession?: (sessionId: string) => void }) {
   const sessionId = card.sessionId;
+  const elapsedMinutes = useElapsedMinutes(card.firedAt);
   return (
-    <div className="w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm" data-testid={`board-schedule-running-${card.routine.id}`}>
+    <div className={`w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm ${card.routine.targetSessionId ? CONNECTED_BAR : ""}`}
+      data-testid={`board-schedule-running-${card.routine.id}`} data-connected={card.routine.targetSessionId ? "true" : undefined}>
       <div className="flex items-center gap-1.5">
         <ScheduleBadge />
         <span className="min-w-0 truncate text-sm font-semibold">{routineTitle(card.routine)}</span>
@@ -60,7 +84,7 @@ export function RunningScheduleCardView({ card, onOpenSession }: { card: Running
       <p className="mt-1 flex items-center gap-1 text-xs text-foreground">
         <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />
         <span className="truncate">{`${t("workBoard.scheduleRunning")} · ${t("workBoard.scheduleStartedAt", { time: formatLocalClock(card.firedAt) })} · ${
-          t("workBoard.scheduleElapsed", { minutes: String(Math.max(0, Math.floor((Date.now() - Date.parse(card.firedAt)) / 60_000))) })}`}</span>
+          t("workBoard.scheduleElapsed", { minutes: String(elapsedMinutes) })}`}</span>
       </p>
       <p className="truncate text-xs text-muted-foreground">{ruleLine(card.routine)}</p>
       {sessionId && onOpenSession && (

@@ -6,6 +6,7 @@ import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import { PlannedScheduleCardView, RunningScheduleCardView } from "../schedule/BoardScheduleCards.js";
 import type { AveApi } from "../../types.js";
 import type { RoutineOccurrencesResult, RoutineRecord } from "../../../../shared/routines-types.js";
 import { t } from "../../../../i18n/runtime.js";
@@ -166,6 +167,41 @@ describe("Work Board — schedule cards", () => {
     const row = within(bundle).getByTestId("board-schedule-week-skipped-gh");
     expect(row.textContent).toContain(t("workBoard.scheduleSkipped"));
     expect(row.textContent).toContain("github");
+  });
+
+  it("advances a running card's elapsed minutes on its own minute timer, between data refreshes", () => {
+    const card = { routine: routine("brief", "Morning brief"), firedAt: new Date(NOW.getTime() - 90_000).toISOString() };
+    render(<RunningScheduleCardView card={card} />);
+    const view = screen.getByTestId("board-schedule-running-brief");
+    expect(view.textContent).toContain(t("workBoard.scheduleElapsed", { minutes: "1" }));
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(view.textContent).toContain(t("workBoard.scheduleElapsed", { minutes: "2" }));
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(view.textContent).toContain(t("workBoard.scheduleElapsed", { minutes: "3" }));
+    cleanup();
+    // Unmounted with the card: no timer stays behind.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("draws a card connected to a chat with the blue bar, the alarm mark and where it runs", () => {
+    const card = { routine: { ...routine("deps", "Dependency check"), targetSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, nextAt: iso("2026-11-05T13:00:00") };
+    render(<PlannedScheduleCardView card={card} />);
+    const view = screen.getByTestId("board-schedule-card-deps");
+    expect(view.getAttribute("data-connected")).toBe("true");
+    expect(view.className).toContain("--color-info");
+    expect(view.textContent).toContain(t("schedulePanel.runsInConnectedChat"));
+    expect(view.textContent).not.toContain(t("schedulePanel.runsInNewChat"));
+  });
+
+  it("counts only work items in the done badge when this week has skipped items but no run", async () => {
+    const skipped = { ...routine("gh", "PR review reminder"), lastSkippedReason: "plugins-missing" as const, needsAttention: { missingPluginIds: ["github"] } };
+    const { api } = stubApi([], [], [skipped]);
+    (api as unknown as { listRoutineOccurrences: unknown }).listRoutineOccurrences = vi.fn(async () => ({ ok: true, occurrences: [], running: [], runs: [] }));
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT_A} />));
+    const done = screen.getByTestId("work-board-column-completed");
+    await within(done).findByTestId("board-schedule-week");
+    // Never "업무 0 · 스케줄 0회": the bundle itself says what was skipped.
+    expect(within(done).getByTestId("work-board-column-completed-count").textContent).toBe("0");
   });
 
   it("moves to the new week when the day turns over on an open board", async () => {

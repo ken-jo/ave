@@ -33,6 +33,7 @@ import {
   getPrimaryMainWindow,
   isSecondaryMainWindowContents,
   mainWindowForContents,
+  setRoutineChatWaker,
   setSessionContentsLookup,
 } from "../../main/app-state.js";
 import {
@@ -693,6 +694,26 @@ export function registerChatHandlers(deps: IpcDeps): void {
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
     return holder ? groupTargetContents(holder.owner) ?? null : null;
+  });
+  // A connected schedule's turn, through the host-submitted path goal revival uses. It runs only in a free tile (the main conversation
+  // counts, with or without a window; an ask follows the approval gate's usual surface rules); a busy tile is skipped, never queued. The
+  // routine wiring's policy context carries the withheld session authority into runStreamedTurn, and ConversationLoop.runTurn keeps it
+  // for the turn (resolveTurnExtensionPolicy inherits it).
+  setRoutineChatWaker(async (sessionId, { input, displayText }) => {
+    // The main conversation is a group too (registered before this waker), so this also finds a windowless main loop.
+    const holder = groupHolding(sessionId);
+    if (!holder) return { status: "not-open" };
+    if (holder.surfaceRuntime.activity.isBusy() || holder.loop.hasActiveTurn()) return { status: "busy" };
+    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => runStreamedTurn(
+      holder.loop,
+      input,
+      holder.buildSink(holder.turns.allocateStreamId()),
+      // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
+      { inputOrigin: "agent-message", displayText, hostSubmitted: true },
+    ));
+    if (!running) return { status: "busy" };
+    await running;
+    return { status: "ran" };
   });
   // Scope secondary tile ids by window so independently numbered renderers never share loops.
   const scopedGroupKey = (owner: WebContents | null, rendererGroupId: string): string =>
@@ -1612,6 +1633,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
       await memoryManager.deleteSession(sessionId);
+      // Schedules connected to it become 대화 없음: they never run until the user relinks, unlinks or deletes them. The chat is already
+      // deleted, so a failure here is not a delete failure; a fire still finds the chat gone and marks the item then.
+      try {
+        await deps.routinesStore?.markOrphaned(sessionId);
+      } catch (err) {
+        log.warn("chat delete: marking connected schedules 대화 없음 failed (%s): %s", sessionId, (err as Error).message);
+      }
       // Its "This session" rules, approvals and network hosts end with it.
       const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
       endSessionScopedPermissions(sessionId, conversationLoop.permissionManager);

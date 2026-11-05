@@ -14,6 +14,7 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
@@ -427,7 +428,9 @@ export async function lookupUserDecision(
   const global = readActive(globalKey);
   if (global?.decision === "deny") return global;
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
-  if (conversation && !conversation.revokedAt && hasValidRiskProvenance(conversation)) return conversation;
+  // A scheduled wake turn reads only a conversation deny: it does not inherit the conversation's allows.
+  if (conversation && !conversation.revokedAt
+    && (sessionAuthorityWithheld(sessionId, sessionId === undefined ? undefined : approvalConversationRoot(sessionId)) ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
   return legacy ?? global;
 }
 

@@ -10,6 +10,7 @@ import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import type { RepeatKind, RoutineEditPatch, RoutineRecord, RoutineRepeat, RoutineRun } from "../../../../shared/routines-types.js";
 import { isValidCronExpression } from "../../../../routines/cron-evaluator.js";
 import { describeSchedule } from "../RoutinePanel.js";
+import { ChatLinkField, type ChatChoice } from "./chat-link.js";
 
 const REPEATS: Array<{ kind: Exclude<RepeatKind, "cron">; labelKey: string }> = [
   { kind: "none", labelKey: "routinePanel.repeatNone" },
@@ -56,6 +57,8 @@ export interface ScheduleItemPopoverProps {
   /** What the user has typed so far, held by the panel so a popover re-anchored after a refresh keeps it. */
   draft?: ScheduleItemDraft;
   onDraftChange?: (draft: ScheduleItemDraft) => void;
+  /** The project's chats a scheduled turn can be connected to. */
+  chats?: readonly ChatChoice[];
 }
 
 /** The popover's editable fields, as the user typed them. */
@@ -67,6 +70,8 @@ export interface ScheduleItemDraft {
   repeat?: RepeatKind;
   intervalMinutes?: string;
   cron?: string;
+  /** The connected chat's session id; "" runs in a new chat. */
+  chat?: string;
 }
 
 export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
@@ -83,6 +88,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
     repeat: (repeat?.kind ?? "none") as RepeatKind,
     intervalMinutes: repeat?.kind === "interval" ? String(Math.round(repeat.intervalMs / 60_000)) : "60",
     cron: repeat?.kind === "cron" ? repeat.expression : "",
+    chat: routine.targetSessionId ?? "",
   };
   type FormKey = keyof typeof initial;
   // Only what the user typed is held here. Every other field follows the latest record, so a refresh after the item fires
@@ -105,6 +111,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       if (routine.execution === "llm-session") patch.prePrompt = form.text.trim();
       else patch.notificationTitle = form.text.trim();
     }
+    if (changed("chat")) patch.targetSessionId = form.chat === "" ? null : form.chat;
     const scheduleChanged = (["date", "time", "repeat", "intervalMinutes", "cron"] as const).some(changed);
     if (scheduled && scheduleChanged) {
       if (form.repeat === "cron") {
@@ -145,6 +152,8 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
     })
     : null;
   const failure = routine.lastFailure && !routine.lastFailure.acknowledgedAt ? routine.lastFailure : null;
+  // Only a scheduled turn has a chat to enter; a notification or a quit-time run has none.
+  const connectable = scheduled && routine.execution === "llm-session";
 
   return (
     <div className="flex max-h-[min(80vh,640px)] flex-col gap-3 overflow-y-auto text-sm" data-testid="schedule-item-popover">
@@ -174,6 +183,14 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       {props.missed && (
         <p className="rounded-md bg-muted px-2 py-1.5 text-xs text-warning" role="status" data-testid="schedule-missed-note">{t("schedulePanel.missedWhilePaused")}</p>
       )}
+      {routine.orphanedAt && (
+        <p className="rounded-md bg-muted px-2 py-1.5 text-xs text-warning" role="status" data-testid="schedule-orphaned-note">{t("schedulePanel.orphanedNote")}</p>
+      )}
+      {routine.lastSkippedReason === "chat-busy" && routine.lastFiredAt && (
+        <p className="break-words text-xs text-warning" role="status" data-testid="schedule-chat-busy-note">
+          {t("schedulePanel.chatBusySkipped", { when: formatMediumDateTime(routine.lastFiredAt) })}
+        </p>
+      )}
       {attention && <p className="break-words text-xs text-warning" role="status">{attention}</p>}
       {failure && (
         <p className="flex items-start gap-1 break-words text-xs text-destructive" role="status">
@@ -194,6 +211,20 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
           ? <Textarea rows={3} value={form.text} onChange={(e) => set("text", e.target.value)} data-testid="schedule-edit-prompt" />
           : <Input value={form.text} onChange={(e) => set("text", e.target.value)} />}
       </label>
+
+      {connectable && (
+        <div className="flex items-end gap-2">
+          <div className="min-w-0 flex-1">
+            <ChatLinkField value={form.chat} onChange={(value) => set("chat", value)} chats={props.chats ?? []}
+              missing={Boolean(routine.orphanedAt) && form.chat === routine.targetSessionId} />
+          </div>
+          {routine.targetSessionId && !routine.orphanedAt && props.onOpenSession && (
+            <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => props.onOpenSession?.(routine.targetSessionId!)}>
+              {t("schedulePanel.openChat")}
+            </Button>
+          )}
+        </div>
+      )}
 
       {scheduled && (isCron ? (
         <label className="space-y-1">
@@ -280,7 +311,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
         {routine.pausedAt
           ? <Button size="sm" variant="outline" onClick={props.onResume}><Play className="mr-1 h-3.5 w-3.5" />{t("schedulePanel.resume")}</Button>
           : <Button size="sm" variant="outline" onClick={props.onPause}><Pause className="mr-1 h-3.5 w-3.5" />{t("schedulePanel.pause")}</Button>}
-        <Button size="sm" variant="outline" disabled={Boolean(routine.pausedAt) || props.running} onClick={props.onRunNow}>
+        <Button size="sm" variant="outline" disabled={Boolean(routine.pausedAt) || Boolean(routine.orphanedAt) || props.running} onClick={props.onRunNow}>
           <Play className="mr-1 h-3.5 w-3.5" />{t("routinePanel.triggerNowButton")}
         </Button>
         <Button size="sm" variant="outline" className="text-destructive" onClick={props.onDelete}>

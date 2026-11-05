@@ -82,8 +82,8 @@ export interface RoutineRecord {
   scope?: RoutineScope;
   createdAt: string;
   lastFiredAt?: string;
-  /** Latest scheduled occurrence skipped because every named plugin was absent. */
-  lastSkippedReason?: "plugins-missing";
+  /** Latest scheduled occurrence skipped: every named plugin was absent, or the connected chat was busy with another turn. */
+  lastSkippedReason?: "plugins-missing" | "chat-busy";
   /** UTC minute of a skipped cron occurrence; distinct from a completed fire. */
   lastSkippedMinuteUTC?: string;
   /** Installed registry ids are checked independently of runtime load state. */
@@ -109,6 +109,11 @@ export interface RoutineRecord {
   /** When the item was last resumed. A one-shot whose time is at or before it was missed while paused: it is not due, the grid
    * shows it as missed, and only 지금 실행 or a new time runs it. */
   resumedAt?: string;
+  /** 대화에 연결: the chat a run enters as a turn instead of opening a new chat. Only an LLM item on a schedule has one. */
+  targetSessionId?: string;
+  /** Set when the connected chat was deleted (대화 없음). The item never runs until the user relinks it, unlinks it to run in a new
+   * chat, or deletes it; there is no silent switch to a new chat. */
+  orphanedAt?: string;
 }
 
 export type RoutineActor = "user" | "agent";
@@ -120,13 +125,15 @@ export interface RoutineEditPatch {
   notificationTitle?: string;
   notificationBody?: string;
   schedule?: RoutineSchedule;
+  /** A chat to connect (or relink) to; null unlinks, so runs open a new chat again. */
+  targetSessionId?: string | null;
 }
 
 /** One projected future fire for the schedule grids. */
 export interface RoutineOccurrence {
   routineId: string;
   at: string;
-  status: "scheduled" | "paused" | "missed";
+  status: "scheduled" | "paused" | "missed" | "orphaned";
 }
 
 /** One past fire for the schedule grids; `failed` when the item's lastFailure names this fire. */
@@ -156,6 +163,8 @@ export interface AddRoutineInput {
   projectRoot: string;
   /** The renderer path always records "user"; the routine_schedule tool records "agent". */
   createdBy: RoutineActor;
+  /** 대화에 연결 (optional): the chat each run enters. */
+  targetSessionId?: string;
 }
 
 /** Allow-list renderer payload fields; spreading the record could expose prePrompt and other private data. */
