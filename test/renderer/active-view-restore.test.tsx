@@ -9,6 +9,7 @@ import {
   closeSidebarGroup,
   deferred,
   openSidebarGroup,
+  runComposerSlashAction,
   settingsWithActiveView,
   sidebarNavRowActive,
   type SidebarNavGroup,
@@ -48,6 +49,11 @@ async function isActive(_container: HTMLElement, testId: string): Promise<boolea
 }
 
 async function waitForActive(container: HTMLElement, testId: string): Promise<void> {
+  // A built-in view is a rail button of its own; an extension sits in the extensions flyout.
+  if (groupOf(testId) === "features") {
+    await waitFor(() => expect(container.querySelector(`[data-testid="sidebar-rail"] [data-testid="${testId}"]`)?.getAttribute("aria-current")).toBe("page"));
+    return;
+  }
   await waitFor(() =>
     expect(
       container.querySelector(`[data-testid="sidebar-group-${groupOf(testId)}"]`)?.getAttribute("data-active"),
@@ -169,14 +175,6 @@ describe("a launch whose stored location has not arrived yet", () => {
     };
   }
 
-  async function clickNav(container: HTMLElement, testId: string) {
-    const el = container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
-    expect(el, `missing [data-testid="${testId}"]`).not.toBeNull();
-    await act(async () => {
-      el!.click();
-    });
-  }
-
   it("still lands on the stored view when nobody touches the app", async () => {
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container } = await renderApp(opts);
@@ -255,12 +253,13 @@ describe("a launch whose stored location has not arrived yet", () => {
   });
 
   it("records a pick that changes nothing on screen, since it still supersedes the stored one", async () => {
-    // Starting a new chat supersedes stored location even when the active view key does not change.
+    // Going home supersedes stored location even when the active view key does not change. The rail's launchers wait for
+    // the project selection, which this held read also holds, so the pick is the composer's "/" action.
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container, api } = await renderApp(opts);
     await waitFor(() => expect(atHome(container)).toBe(true));
 
-    await clickNav(container, "sidebar-new-chat");
+    await runComposerSlashAction(container, "홈으로", "홈으로 이동");
     await act(async () => {
       release();
     });

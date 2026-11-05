@@ -109,18 +109,14 @@ function renderSidebar(
     pluginViews: [],
     hasApiKey: true,
     onOpenSettings: vi.fn(),
-    onNewChat: vi.fn(),
+    projectName: (project) => project.isDefault ? "기본 프로젝트" : project.projectName,
+    onSelectProjectRoot: vi.fn(),
+    onSelectAllProjects: vi.fn(),
+    onProjectAdded: vi.fn(),
+    onLaunch: vi.fn(),
     collapsed: false,
     onToggleCollapse: vi.fn(),
     onOpenUnifiedSearch: vi.fn(),
-    viewNav: {
-      segments: [],
-      canGoBack: false,
-      canGoForward: false,
-      onBack: vi.fn(),
-      onForward: vi.fn(),
-      onSelectSegment: vi.fn(),
-    },
     sessions,
     projects: overrides.projects ?? [
       {
@@ -603,18 +599,14 @@ describe("Sidebar conversation pinning", () => {
             pluginViews={[]}
             hasApiKey
             onOpenSettings={vi.fn()}
-            onNewChat={vi.fn()}
+            projectName={(project) => project.projectName}
+            onSelectProjectRoot={vi.fn()}
+            onSelectAllProjects={vi.fn()}
+            onProjectAdded={vi.fn()}
+            onLaunch={vi.fn()}
             collapsed={false}
             onToggleCollapse={vi.fn()}
             onOpenUnifiedSearch={vi.fn()}
-            viewNav={{
-              segments: [],
-              canGoBack: false,
-              canGoForward: false,
-              onBack: vi.fn(),
-              onForward: vi.fn(),
-              onSelectSegment: vi.fn(),
-            }}
             sessions={[
               {
                 id: "sess-1",
@@ -852,6 +844,35 @@ describe("Sidebar project section add-project context menu", () => {
         expect(pickRoot).toHaveBeenCalledTimes(1);
         expect(onRefreshProjects).toHaveBeenCalledTimes(1);
       });
+    } finally {
+      restore();
+    }
+  });
+
+  it("switches to nothing when the folder dialog is dismissed, and reports an add that names no folder", async () => {
+    const onRefreshProjects = vi.fn();
+    const onProjectAdded = vi.fn();
+    const onProjectError = vi.fn();
+    const { getByTestId, emitNativeContextCommand, pickRoot, restore } = renderSidebar({
+      sessions: [], projects, onRefreshProjects, onProjectAdded, onProjectError,
+    });
+    try {
+      // Main answers a dismissed dialog with the current roots and `canceled`.
+      pickRoot.mockResolvedValueOnce({ ok: true, canceled: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-projects")));
+      emitNativeContextCommand("project.add");
+      await waitFor(() => expect(pickRoot).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(onProjectAdded).not.toHaveBeenCalled();
+      expect(onRefreshProjects).not.toHaveBeenCalled();
+      expect(onProjectError).not.toHaveBeenCalled();
+
+      // An add that succeeded without saying which folder is a broken answer: no guess, an error.
+      pickRoot.mockResolvedValueOnce({ ok: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
+      fireEvent.contextMenu(getByTestId("sidebar-projects"));
+      emitNativeContextCommand("project.add");
+      await waitFor(() => expect(onProjectError).toHaveBeenCalledWith("add", "invalid-response"));
+      expect(onProjectAdded).not.toHaveBeenCalled();
     } finally {
       restore();
     }
@@ -1223,65 +1244,86 @@ describe("Sidebar conversation row actions", () => {
   });
 });
 
-describe("Sidebar collapsed rail", () => {
-  it("renders collapsed as well as expanded", () => {
-    // The collapsed rail returns EARLY from the conversation list, so any hook
-    // added below that branch renders in one state and not the other. React
-    // reports that as "rendered fewer hooks than expected" and the whole app
-    // falls into the error boundary — which is what this asserts against.
-    const { getByTestId, restore } = renderSidebar({ collapsed: true });
-    expect(getByTestId("sidebar-cluster")).toBeTruthy();
-    restore();
-  });
+const OTHER_APP: ProjectIdentity = { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\other-app", projectName: "other-app" };
 
-  it("shows icons only — no nav label is left to overflow the rail", () => {
+describe("Sidebar rail", () => {
+  it("keeps the rail when the list folds, and draws no text on it", () => {
     const { getByTestId, queryByTestId, restore } = renderSidebar({
       collapsed: true,
       failedPluginCards: [FAILED_PLUGIN_CARD],
     });
-    const buttons = getByTestId("primary-sidebar").querySelectorAll("button");
+    const rail = getByTestId("sidebar-rail");
+    expect(queryByTestId("sidebar-card")).toBeNull();
+    const buttons = rail.querySelectorAll("button");
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
-      expect(button.textContent?.trim()).toBe("");
+      // Names live in the tooltip only (case 03): every rail button carries them as `aria-label` and `title`.
+      expect(button.getAttribute("aria-label")).toBeTruthy();
+      expect(button.getAttribute("title")).toBeTruthy();
+      expect(button.textContent?.trim().replace(/^[a-z]{1,2}$/, "")).toBe("");
     }
-    // The groups are single icons; their rows wait in the flyout.
-    expect(getByTestId("sidebar-group-features")).toBeTruthy();
     expect(getByTestId("sidebar-group-plugins")).toBeTruthy();
-    expect(queryByTestId("toolbar-work-board")).toBeNull();
     restore();
   });
 
-  it("opens the group's flyout from the rail icon without expanding the sidebar", async () => {
-    const onToggleCollapse = vi.fn();
+  it("lists the project button, the launchers, the views, then search and settings", () => {
+    const { getByTestId, restore } = renderSidebar({ projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP });
+    const order = [...getByTestId("sidebar-rail").querySelectorAll("button")].map((button) => button.dataset.testid);
+    expect(order).toEqual([
+      "sidebar-project-button",
+      "sidebar-new-chat", "sidebar-web", "sidebar-terminal",
+      "toolbar-work-board", "sidebar-routines", "sidebar-memory", "sidebar-starred",
+      "sidebar-search", "sidebar-settings",
+    ]);
+    // Every launcher and view says which project it acts in.
+    for (const id of ["sidebar-new-chat", "sidebar-web", "sidebar-terminal", "toolbar-work-board", "sidebar-memory"]) {
+      expect(getByTestId(id).getAttribute("aria-label")).toContain("other-app");
+    }
+    restore();
+  });
+
+  it("launches nothing until the selection has loaded", () => {
+    const onLaunch = vi.fn();
+    const { getByTestId, restore } = renderSidebar({ onLaunch });
+    try {
+      const terminal = getByTestId("sidebar-terminal") as HTMLButtonElement;
+      expect(terminal.disabled).toBe(true);
+      expect(terminal.getAttribute("aria-label")).toBe("새 터미널");
+      fireEvent.click(terminal);
+      expect(onLaunch).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
+  it("launches in the selected project without asking", () => {
+    const onLaunch = vi.fn();
+    const { getByTestId, queryByTestId, restore } = renderSidebar({
+      onLaunch, projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP,
+    });
+    fireEvent.click(getByTestId("sidebar-terminal"));
+    expect(onLaunch).toHaveBeenCalledWith("terminal", OTHER_APP);
+    expect(queryByTestId("project-picker")).toBeNull();
+    restore();
+  });
+
+  it("marks the home row current only while the project home is the page", () => {
     const onSelect = vi.fn();
-    const { getByTestId, findByTestId, queryByTestId, restore } = renderSidebar({
-      collapsed: true,
-      onToggleCollapse,
-      onSelect,
-    });
-
-    fireEvent.click(getByTestId("sidebar-group-features"));
-    const menu = await findByTestId("sidebar-group-features-menu");
-    expect(menu.getAttribute("role")).toBe("menu");
-    expect(onToggleCollapse).not.toHaveBeenCalled();
-
-    fireEvent.click(getByTestId("sidebar-routines"));
-    expect(onSelect).toHaveBeenCalledWith("routines");
-    await waitFor(() => expect(queryByTestId("sidebar-group-features-menu")).toBeNull());
-    expect(onToggleCollapse).not.toHaveBeenCalled();
-    restore();
+    const home = renderSidebar({ onSelect, projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP });
+    const row = home.getByTestId("sidebar-project-home");
+    expect(row.textContent).toContain("other-app 홈");
+    expect(row.getAttribute("aria-current")).toBeNull();
+    fireEvent.click(row);
+    expect(onSelect).toHaveBeenCalledWith("project-home");
+    home.restore();
+    cleanup();
+    const current = renderSidebar({ activeView: "project-home", projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP });
+    expect(current.getByTestId("sidebar-project-home").getAttribute("aria-current")).toBe("page");
+    current.restore();
   });
 
-  it("expands the sidebar to reveal its project section when the rail's folder is clicked", () => {
-    const onToggleCollapse = vi.fn();
-    const { getByTestId, restore } = renderSidebar({
-      collapsed: true,
-      onToggleCollapse,
-    });
-
-    fireEvent.click(getByTestId("sidebar-projects-collapsed"));
-
-    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+  it("lists only the selected project's conversations", () => {
+    const { queryByTestId, restore } = renderSidebar({ projectSelection: { kind: "root", root: OTHER_APP.projectRoot }, selectedProject: OTHER_APP });
+    expect(queryByTestId("sidebar-session-sess-other")).not.toBeNull();
+    expect(queryByTestId("sidebar-session-sess-1")).toBeNull();
     restore();
   });
 });
@@ -1297,62 +1339,22 @@ const FAILED_PLUGIN_CARD: NonNullable<Parameters<typeof Sidebar>[0]["failedPlugi
 };
 
 describe("Sidebar nav groups", () => {
-  it("has no home row and no marketplace row", () => {
+  it("has no marketplace row and no chat-home row", () => {
     const { queryByTestId, queryByText, restore } = renderSidebar();
     expect(queryByTestId("sidebar-home")).toBeNull();
     expect(queryByTestId("sidebar-marketplace")).toBeNull();
-    expect(queryByText("홈")).toBeNull();
-    expect(queryByText("Home")).toBeNull();
     expect(queryByText("마켓플레이스")).toBeNull();
     expect(queryByText("Marketplace")).toBeNull();
     restore();
   });
 
-  it("opens the Features flyout from its row with menu semantics; a pick navigates and closes it", async () => {
+  it("opens a built-in view from its rail button and marks the current one", () => {
     const onSelect = vi.fn();
-    const { getByTestId, findByTestId, queryByTestId, restore } = renderSidebar({
-      onSelect,
-      activeView: "routines",
-    });
-    const trigger = getByTestId("sidebar-group-features");
-    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    // The trigger says one of its rows is the page, since the rows are hidden.
-    expect(trigger.getAttribute("data-active")).toBe("true");
-    expect(queryByTestId("toolbar-work-board")).toBeNull();
-
-    fireEvent.click(trigger);
-    const menu = await findByTestId("sidebar-group-features-menu");
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(trigger.getAttribute("aria-controls")).toBe("sidebar-group-features-menu");
-    const rows = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((row) => row.getAttribute("data-testid"));
-    expect(rows).toEqual(["toolbar-work-board", "sidebar-routines", "sidebar-starred", "sidebar-terminal", "sidebar-web"]);
+    const { getByTestId, restore } = renderSidebar({ onSelect, activeView: "routines" });
     expect(getByTestId("sidebar-routines").getAttribute("aria-current")).toBe("page");
-
+    expect(getByTestId("toolbar-work-board").getAttribute("aria-current")).toBeNull();
     fireEvent.click(getByTestId("toolbar-work-board"));
     expect(onSelect).toHaveBeenCalledWith("work-board");
-    await waitFor(() => expect(queryByTestId("sidebar-group-features-menu")).toBeNull());
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    restore();
-  });
-
-  it("walks the rows with the arrow keys, wrapping, and closes on Escape", async () => {
-    const { getByTestId, findByTestId, queryByTestId, restore } = renderSidebar();
-    fireEvent.click(getByTestId("sidebar-group-features"));
-    const menu = await findByTestId("sidebar-group-features-menu");
-    await waitFor(() => expect(document.activeElement).toBe(getByTestId("toolbar-work-board")));
-
-    fireEvent.keyDown(menu, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(getByTestId("sidebar-routines"));
-    fireEvent.keyDown(menu, { key: "End" });
-    expect(document.activeElement).toBe(getByTestId("sidebar-web"));
-    fireEvent.keyDown(menu, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(getByTestId("toolbar-work-board"));
-    fireEvent.keyDown(menu, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(getByTestId("sidebar-web"));
-
-    fireEvent.keyDown(menu, { key: "Escape" });
-    await waitFor(() => expect(queryByTestId("sidebar-group-features-menu")).toBeNull());
     restore();
   });
 
@@ -1367,7 +1369,7 @@ describe("Sidebar nav groups", () => {
       failedPluginCards: [FAILED_PLUGIN_CARD],
       onSelect,
     });
-    expect(getByTestId("sidebar-group-plugins")).toHaveTextContent("익스텐션");
+    expect(getByTestId("sidebar-group-plugins").getAttribute("aria-label")).toBe("익스텐션");
     fireEvent.click(getByTestId("sidebar-group-plugins"));
     const menu = await findByTestId("sidebar-group-plugins-menu");
     const row = menu.querySelector<HTMLElement>('[role="menuitem"]');
@@ -1626,8 +1628,7 @@ describe("Sidebar conversation reveal on scroll", () => {
 });
 
 describe("Sidebar view rows", () => {
-  async function featuresRow(getByTestId: (id: string) => HTMLElement, rowTestId: string) {
-    fireEvent.click(getByTestId("sidebar-group-features"));
+  async function featuresRow(_getByTestId: (id: string) => HTMLElement, rowTestId: string) {
     return await waitFor(() => {
       const row = document.querySelector<HTMLButtonElement>(`[data-testid="${rowTestId}"]`);
       expect(row).not.toBeNull();

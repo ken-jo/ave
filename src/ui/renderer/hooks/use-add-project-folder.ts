@@ -23,7 +23,7 @@ export type ProjectErrorReporter = (
 
 /** Keep cancelled, warning, added and failed outcomes distinct; only failed carries a localized IPC error code. */
 export type AddProjectFolderOutcome =
-  | { status: "added"; roots: WorkspaceRootIdentity[]; added: string | null }
+  | { status: "added"; roots: WorkspaceRootIdentity[]; added: string }
   | { status: "canceled" }
   | { status: "needs-acknowledgement" }
   | { status: "failed"; error?: string };
@@ -48,6 +48,19 @@ export interface UseAddProjectFolderResult {
 
 /** Share the pickRoot acknowledgement-token state machine across entry points; callers own list refresh and selection after
  * success. */
+/**
+ * A successful pick's outcome. Main answers a dismissed dialog with `{ ok: true, canceled: true, roots }` and an added folder
+ * with `added` set; an `ok` answer that is neither names no folder, and is refused rather than guessed at.
+ */
+function addedOutcome(res: { canceled?: boolean; added?: string; roots?: WorkspaceRootIdentity[] }): AddProjectFolderOutcome {
+  if (res.canceled) return { status: "canceled" };
+  if (!res.roots || !res.added) {
+    console.error("[workspace] pickRoot answered ok without the folder it added");
+    return { status: "failed", error: "invalid-response" };
+  }
+  return { status: "added", roots: res.roots, added: res.added };
+}
+
 export function useAddProjectFolder(): UseAddProjectFolderResult {
   const [pendingWarning, setPendingWarning] = useState<PendingRootWarning | null>(null);
 
@@ -58,10 +71,7 @@ export function useAddProjectFolder(): UseAddProjectFolderResult {
       setPendingWarning({ path: res.pendingPath, warnings: res.warnings ?? [], ackToken: res.ackToken });
       return { status: "needs-acknowledgement" };
     }
-    // `ok` without a root list is the dialog being dismissed — main answers a cancel with `{ ok: true, canceled: true, roots
-    // }`, so an absent list can only mean the pick produced nothing to apply.
-    if (!res.roots) return { status: "canceled" };
-    return { status: "added", roots: res.roots, added: res.added ?? null };
+    return addedOutcome(res);
   }, []);
 
   const confirmPendingFolder = useCallback(async (): Promise<AddProjectFolderOutcome> => {
@@ -72,8 +82,7 @@ export function useAddProjectFolder(): UseAddProjectFolderResult {
     const res = await window.ave.workspace.pickRoot({ ackToken: pending.ackToken });
     setPendingWarning(null);
     if (!res.ok) return { status: "failed", ...(res.error ? { error: res.error } : {}) };
-    if (!res.roots) return { status: "canceled" };
-    return { status: "added", roots: res.roots, added: res.added ?? null };
+    return addedOutcome(res);
   }, [pendingWarning]);
 
   const cancelPendingFolder = useCallback(() => {

@@ -53,29 +53,23 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
     await expect(card.locator("img")).toHaveCount(0);
     await terminal.click();
     await expect(card).toBeHidden();
+    // Folding the list leaves the rail, whose launchers open something new rather than preview what is open.
     await page.getByTestId("sidebar-collapse-toggle").click();
-    await expect(page.getByTestId("sidebar-card")).toHaveAttribute("data-surface", "bare");
+    await expect(page.getByTestId("sidebar-card")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-rail")).toBeVisible();
     await expect(conversation).toHaveCount(0);
     await expect(browser).toHaveCount(0);
     await expect(terminal).toHaveCount(0);
-    await page.getByTestId("sidebar-group-features").click();
-    const terminalMenu = page.getByTestId("sidebar-terminal");
-    await page.mouse.move(1100, 700);
-    await terminalMenu.focus();
-    await expect(card).toContainText(/터미널|Terminal/);
-    await expect(terminalMenu).not.toHaveAttribute("title");
-    await expect.poll(() => terminalMenu.evaluate((entry) => {
+    // The rail is reachable from the keyboard: Tab walks its controls, and a focused one names itself in its tooltip.
+    const railTerminal = page.getByTestId("sidebar-terminal");
+    await page.getByTestId("sidebar-web").focus();
+    await page.keyboard.press("Tab");
+    await expect(railTerminal).toBeFocused();
+    await expect.poll(() => railTerminal.evaluate((entry) => {
       const id = entry.getAttribute("aria-describedby");
       return id ? document.getElementById(id)?.textContent : null;
     })).toMatch(/터미널|Terminal/);
-    await page.screenshot({ path: testInfo.outputPath("collapsed-keyboard-preview.png") });
-    await page.keyboard.press("Escape");
-    await expect(card).toBeHidden();
-    await page.getByTestId("sidebar-group-features").click();
-    await page.getByTestId("sidebar-web").focus();
-    await expect(card).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(card).toBeHidden();
+    await page.screenshot({ path: testInfo.outputPath("collapsed-rail.png") });
   } finally {
     await teardownSeededElectron(ctx, { terminate: true });
   }

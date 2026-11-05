@@ -1,5 +1,5 @@
 import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
-import { ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
+import { ViewHistoryNav, ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
 import { useTranslation } from "../../i18n/react.js";
 import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";
 import { ToolbarStatusPill } from "./components/ToolbarStatusPill.js";
@@ -69,12 +69,9 @@ export function MainToolbar({
   workApprovals,
 }: MainToolbarProps) {
   const { t } = useTranslation();
-  // The toolbar content lives IN the window-control band (CustomTitleBar). The
-  // search / star / export controls + the collapse toggle moved into the
-  // floating sidebar's cluster strip next to the traffic lights, so this band
-  // hosts only the RIGHT-aligned controls. A leading spacer (stays a drag
-  // region) pushes them to the far-right edge; each control is wrapped `no-drag`
-  // so the surrounding band stays draggable.
+  // The toolbar content lives IN the window-control band (CustomTitleBar): back / forward and the location path on the
+  // leading edge, then a spacer (it stays a drag region) that pushes the status controls to the far-right edge. Each control
+  // is wrapped `no-drag` so the surrounding band stays draggable.
   return (
     <div
       data-testid="main-toolbar"
@@ -85,6 +82,17 @@ export function MainToolbar({
           starts exactly where that card ends. Width-capped so a long path
           truncates rather than eating the drag region the user grabs to move
           the window. */}
+      {/* Back / forward move between routes, across projects too (case 10). */}
+      <NoDrag className="flex shrink-0 items-center">
+        <ViewHistoryNav
+          canGoBack={viewNav.canGoBack}
+          canGoForward={viewNav.canGoForward}
+          backLabel={viewNav.backLabel}
+          forwardLabel={viewNav.forwardLabel}
+          onBack={viewNav.onBack}
+          onForward={viewNav.onForward}
+        />
+      </NoDrag>
       <NoDrag className="flex min-w-0 max-w-[45%] shrink-0 items-center">
         <ViewPathBreadcrumb segments={viewNav.segments} onSelectSegment={viewNav.onSelectSegment} />
       </NoDrag>

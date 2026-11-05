@@ -57,4 +57,11 @@ export interface ToastItem {
   sticky?: true;
   /** Notification metadata enables notifyClick and dismissal; install producers omit it. */
   notification?: NotificationToastMeta;
+  /** One follow-up the toast offers, such as "이전 프로젝트로"; running it dismisses the toast. */
+  action?: ToastAction;
+}
+
+interface ToastAction {
+  label: string;
+  run: () => void;
 }

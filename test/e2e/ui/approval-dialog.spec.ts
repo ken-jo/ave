@@ -23,8 +23,6 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
 
 test('approval toast returns from a browser surface and focuses the requesting conversation card', async ({ app, mainWindow }, testInfo) => {
   const sessionId = await currentSessionId(mainWindow);
-  const features = mainWindow.getByTestId('sidebar-group-features');
-  if ((await features.getAttribute('aria-expanded')) !== 'true') await features.click();
   await mainWindow.getByTestId('sidebar-web').click();
   const browser = mainWindow.locator('[data-surface-kind="browser"]');
   await expect(browser).toBeVisible();
@@ -76,19 +74,27 @@ test('approval dock floats over the route without changing its layout', async ({
   }
   await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true');
 
-  const featuresGroup = mainWindow.getByTestId('sidebar-group-features');
   const openWorkBoard = async () => {
-    if ((await featuresGroup.getAttribute('aria-expanded')) !== 'true') {
-      await featuresGroup.click();
-    }
     await mainWindow.getByTestId('toolbar-work-board').click();
   };
   await openWorkBoard();
   const workBoardPanel = mainWindow.getByTestId('work-board-panel');
   await expect(workBoardPanel).toBeVisible();
-  const routeBefore = await workBoardPanel.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  // The sidebar's unfold animates the route's left edge; measure only once two frames in a row agree.
+  const routeBefore = await workBoardPanel.evaluate(async (element) => {
+    const read = () => {
+      const rect = element.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    };
+    const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    let previous = read();
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await frame();
+      const current = read();
+      if (JSON.stringify(current) === JSON.stringify(previous)) return current;
+      previous = current;
+    }
+    throw new Error('work-board-panel never settled');
   });
 
   // Release sidebar focus before checking card autofocus; another surface must keep its caret.
@@ -382,8 +388,9 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(deny).toBeVisible();
 
   // Keys outside the dock must not decide approval.
-  await featuresGroup.focus();
-  await featuresGroup.press('d');
+  const outside = mainWindow.getByTestId('toolbar-work-board');
+  await outside.focus();
+  await outside.press('d');
   await expect(dock).toBeVisible();
 
   await approve.focus();

@@ -4,6 +4,7 @@ import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import type { MessageQueueStore } from "../../src/ui/renderer/state/message-queue-store.js";
 import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
+import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import type { ToolActivityState } from "../../src/ui/renderer/components/ToolActivity.js";
 import { ApprovalSurfaceClaims, ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
 import { expect, vi } from "vitest";
@@ -11,6 +12,38 @@ export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
 
 // Supply empty approval context when rendering dock-owning bodies outside the app.
+/** The status bar shows one toast at a time; dismiss the ones ahead of `text` until it shows. */
+export async function waitForToast(container: HTMLElement, text: string): Promise<void> {
+  await waitFor(() => {
+    const message = container.querySelector('[data-testid="status-toast-message"]');
+    if (message?.textContent?.includes(text)) return;
+    const dismiss = message?.closest("div")?.parentElement?.querySelector<HTMLButtonElement>("button[aria-label]");
+    if (dismiss) fireEvent.click(dismiss);
+    throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
+  });
+}
+
+/**
+ * Run one of the composer's "/" actions by typing `query` and pressing Enter once the menu offers `label`. The launchers wait
+ * for the project selection, so this is the way to act while a held settings read keeps the selection unloaded.
+ */
+export async function runComposerSlashAction(container: HTMLElement, query: string, label: string): Promise<void> {
+  const composer = await waitFor(() => {
+    const el = container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea));
+    expect(el).not.toBeNull();
+    return el!;
+  });
+  const value = `/${query}`;
+  await act(async () => {
+    fireEvent.change(composer, { target: { value } });
+    composer.setSelectionRange(value.length, value.length);
+    fireEvent.keyUp(composer, { key: value.slice(-1) });
+  });
+  // The menu is portalled out of the app container.
+  await waitFor(() => expect(document.querySelector('[data-testid="inline-slash-menu"]')?.textContent).toContain(label));
+  await act(async () => { fireEvent.keyDown(composer, { key: "Enter" }); });
+}
+
 export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
   return {
     queue: [],
@@ -250,6 +283,18 @@ export async function clickSidebarNavRow(
   rowTestId: string,
   modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {},
 ): Promise<void> {
+  // The built-in views and the launchers are rail buttons of their own; only the extensions keep a flyout.
+  if (group === "features") {
+    const button = await waitFor(() => {
+      const el = document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${rowTestId}"]`);
+      expect(el, `missing [data-testid="${rowTestId}"] on the rail`).not.toBeNull();
+      return el!;
+    });
+    await act(async () => {
+      fireEvent.click(button, modifiers);
+    });
+    return;
+  }
   const menu = await openSidebarGroup(group);
   const row = menu.querySelector<HTMLButtonElement>(`[data-testid="${rowTestId}"]`);
   expect(row, `missing [data-testid="${rowTestId}"] in the ${group} flyout`).not.toBeNull();
@@ -260,6 +305,9 @@ export async function clickSidebarNavRow(
 }
 
 export async function sidebarNavRowActive(group: SidebarNavGroup, rowTestId: string): Promise<boolean> {
+  if (group === "features") {
+    return document.querySelector(`[data-testid="sidebar-rail"] [data-testid="${rowTestId}"]`)?.getAttribute("aria-current") === "page";
+  }
   const menu = await openSidebarGroup(group);
   const active = menu.querySelector(`[data-testid="${rowTestId}"]`)?.getAttribute("aria-current") === "page";
   await closeSidebarGroup(group);

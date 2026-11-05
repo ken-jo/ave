@@ -92,7 +92,7 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
     expect(policy).toContain("img-src 'self' data: blob: ave-content:");
     await page.screenshot({ path: testInfo.outputPath("sidebar-favicon.png") });
-    await page.getByTestId("sidebar-group-features").click();
+    // The rail's web launcher opens a new page in the selected project.
     await page.getByTestId("sidebar-web").focus();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("web-panel")).toBeVisible();

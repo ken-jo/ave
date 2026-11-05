@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   findWorkspaceProject,
-  reconcileActiveProject,
   workspaceRootsToProjects,
   type ProjectIdentity,
 } from "../project-identity.js";
@@ -85,11 +84,5 @@ describe("workspace project reconciliation", () => {
     };
 
     expect(findWorkspaceProject(projects, staleSelection)).toBe(authorizedProject);
-    expect(reconcileActiveProject(staleSelection, projects)).toBe(authorizedProject);
-  });
-
-  it("falls back to the default project when the selected root is no longer authorized", () => {
-    expect(reconcileActiveProject({ projectRoot: "/workspace/removed" }, projects)).toBe(defaultProject);
-    expect(reconcileActiveProject(undefined, [])).toBeUndefined();
   });
 });

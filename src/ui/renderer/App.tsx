@@ -7,7 +7,7 @@ import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
 import { CustomTitleBar } from "./components/CustomTitleBar.js";
 import { MainToolbar } from "./MainToolbar.js";
-import { Sidebar, isDarwinPlatform } from "./components/Sidebar.js";
+import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -25,6 +25,7 @@ import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
 import { MemorySearchPanel } from "./components/MemorySearchPanel.js";
 import { SchedulePanel } from "./components/schedule/SchedulePanel.js";
 import { WorkBoardPanel } from "./components/WorkBoardPanel.js";
+import { ProjectHomeView } from "./components/ProjectHomeView.js";
 import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
@@ -48,8 +49,8 @@ import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./componen
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
-import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
-import { CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, SHELL_GUTTER, collapsedBandLeadClearance, sidebarPushThreshold } from "../../shared/shell-geometry.js";
+import { isInlineViewKey, isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
+import { COLLAPSED_RAIL_RESERVE, CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, RAIL_BAND_LEAD, SHELL_GUTTER, sidebarPushThreshold } from "../../shared/shell-geometry.js";
 import { RecentlyDeniedDialog } from "./dialogs/RecentlyDeniedDialog.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
@@ -112,14 +113,15 @@ import {
 } from "./utils/view-location.js";
 import { useViewHistory } from "./hooks/use-view-history.js";
 import { useViewHistoryShortcuts } from "./hooks/use-view-history-shortcuts.js";
-import type { ProjectIdentity } from "../../shared/project-identity.js";
+import type { ProjectIdentity, ProjectSelection } from "../../shared/project-identity.js";
 import {
   defaultProjectFromProjects,
   findWorkspaceProject,
   projectIdentityFromPayload,
-  reconcileActiveProject,
+  projectRootEquals,
   workspaceRootsToProjects,
 } from "../../shared/project-identity.js";
+import { useProjectSelection } from "./hooks/use-project-selection.js";
 import { formatIpcError } from "./format-ipc-error.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
@@ -240,6 +242,21 @@ export function App() {
     if (!root) statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown"), ttlMs: 10_000 });
     return root;
   }, [statusPushToast, t]);
+  /** The project of the conversation a side panel belongs to: that is where its tab goes when it moves to the main area. Undefined
+   * (after telling the user) when that project is not open or the project list is unavailable. */
+  const sidePanelProjectRoot = useCallback((chatGroupId: string): string | undefined => {
+    const projects = workspaceProjectsRef.current;
+    const ownerRoot = chatGroupSessions.read(chatGroupId)?.currentSessionProject.projectRoot;
+    const root = ownerRoot ? findWorkspaceProject(projects, ownerRoot)?.projectRoot : defaultProjectFromProjects(projects)?.projectRoot;
+    if (!root) {
+      statusPushToast({
+        severity: "error",
+        message: t(projects.length === 0 ? "app.surfaceProjectUnknown" : "app.surfaceProjectNotOpen"),
+        ttlMs: 10_000,
+      });
+    }
+    return root;
+  }, [chatGroupSessions, statusPushToast, t]);
   const [paneChatOpenTabIds, setPaneChatOpenTabIds] = useState<ReadonlySet<string>>(() => new Set());
   const setPaneChatOpen = useCallback((tabId: string, open: boolean) => {
     setPaneChatOpenTabIds((current) => {
@@ -483,7 +500,9 @@ export function App() {
         const held = sink.snapshot().find((each) => each.tabId === tabId);
         if (!held) return;
         if (!isMovableTabKind(held.kind)) throw new Error(`surface-not-movable:${held.kind}`);
-        const projectRoot = surfaceProjectRoot();
+        // A side tab belongs to its pane's conversation, so in the main area it belongs to that conversation's project (the
+        // 기본 프로젝트 for one without a root).
+        const projectRoot = sidePanelProjectRoot(fromGroupId);
         if (!projectRoot) return;
         const tab = sink.release(tabId);
         if (!tab) return;
@@ -509,7 +528,7 @@ export function App() {
         tabToSide(surfaceId, toGroupId);
       },
     };
-  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
+  }, [chatGroups, mainSurfaces, sidePanelProjectRoot]);
 
   const handleSurfaceDrop = useCallback((targetPaneId: string, payload: SurfaceDragPayload, target: DropTarget) => {
     if ("side" in payload.from) {
@@ -527,10 +546,15 @@ export function App() {
   const reopenClosedSurface = useCallback(() => {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
+    // A surface never lands in a project that is not open: the closed one's project may have been removed since.
+    if (!findWorkspaceProject(workspaceProjectsRef.current, closed.projectRoot)) {
+      statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown"), ttlMs: 10_000 });
+      return;
+    }
     // Restore terminals at their last directory and pages at their last address.
     const surface = mainSurfaces.create(closed.kind, { url: closed.url, cwd: closed.cwd, projectRoot: closed.projectRoot });
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
-  }, [chatGroups, mainSurfaces]);
+  }, [chatGroups, mainSurfaces, statusPushToast, t]);
 
   const activeSurfaceOf = useCallback((surface: Pick<MainSurface, "kind" | "tabId" | "ordinal" | "cwd">): ActiveSurface => ({
     kind: surface.kind,
@@ -657,9 +681,14 @@ export function App() {
     if (focusedActiveSurfaceRef.current) updateActiveSurface(focusedActiveSurfaceRef.current);
   }, [focusedActiveSurface?.label, focusedActiveSurface?.cwd]);
 
+  // The project home opens through the focused pane's view selection, which is set up further down.
+  const openProjectHomeRef = useRef<() => void>(() => undefined);
   const runPanelCommand = useCallback((id: PanelCommandId) => {
     const focused = chatGroups.focusedId;
     switch (id) {
+      case "project.openHome":
+        openProjectHomeRef.current();
+        return;
       case "sidebar.toggleVisibility":
         sidebarFocusPending.current = true;
         if (sidebarHidden) {
@@ -715,11 +744,29 @@ export function App() {
     projectLabel,
     setProjectLabel,
   } = useProjectPreferences(api);
+  /** The name every project surface shows: the user's label, else 기본 프로젝트 for the default, else the folder name. */
+  const projectDisplayName = useCallback((project: ProjectIdentity) =>
+    projectLabel(project.projectRoot) ?? (project.isDefault ? t("sidebar.defaultProject") : project.projectName),
+  [projectLabel, t]);
   const [slashPickerOpen, setSlashPickerOpen] = useState(false);
   const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [devLabelsOn, setDevLabelsOn] = useState(false);
   const [workspaceProjects, setWorkspaceProjects] = useState<ProjectIdentity[]>([]);
-  const [activeProject, setActiveProject] = useState<ProjectIdentity | undefined>(undefined);
+  const workspaceProjectsRef = useRef(workspaceProjects);
+  workspaceProjectsRef.current = workspaceProjects;
+  // The window's project is the user's selection (plan D1), not the focused conversation's.
+  const projectSelection = useProjectSelection(api, workspaceProjects);
+  const activeProject = projectSelection.selectedProject;
+  const projectSelectionRef = useRef(projectSelection);
+  projectSelectionRef.current = projectSelection;
+  /** Opening something that belongs to another project switches to it, except in the all-projects view. */
+  const followProject = useCallback((projectRoot: string | undefined) => {
+    const current = projectSelectionRef.current;
+    if (!projectRoot || current.selection?.kind !== "root" || projectRootEquals(current.selection.root, projectRoot)) return;
+    // A project that is no longer open (removed meanwhile) is not followed.
+    if (!findWorkspaceProject(workspaceProjectsRef.current, projectRoot)) return;
+    current.selectRoot(projectRoot);
+  }, []);
 
   // Bind dev-tool shortcuts only in dev mode; packaged builds expose no dev IPC handlers.
   useEffect(() => {
@@ -828,12 +875,21 @@ export function App() {
   const restoresApplied = activeViewRestoresApplied + settingsTabRestoresApplied;
   // History includes the settings tab and surface id so return visits resolve the same page or instance.
   const focusedSurface = chatGroups.contentById[chatGroups.focusedId]?.surface;
-  const location = useMemo(() => {
+  // A location also names the project the window was in, so history can step back across a project switch (case 10).
+  const selectedRoot = projectSelection.selection?.kind === "root" ? projectSelection.selection.root : undefined;
+  const location = useMemo<ViewLocation>(() => {
     const base = toViewLocation(activeView, settingsTab);
-    return isInstanceViewKey(activeView) && focusedSurface ? { ...base, surface: focusedSurface } : base;
-  }, [activeView, settingsTab, focusedSurface]);
+    const withSurface = isInstanceViewKey(activeView) && focusedSurface ? { ...base, surface: focusedSurface } : base;
+    return selectedRoot ? { ...withSurface, projectRoot: selectedRoot } : withSurface;
+  }, [activeView, settingsTab, focusedSurface, selectedRoot]);
   // Restore both location halves so settings history returns to the recorded tab.
   const navigateToLocation = useCallback((to: ViewLocation) => {
+    // A step back into another project switches to it first; a project removed since is not reopened.
+    const selection = projectSelectionRef.current;
+    if (to.projectRoot && selection.selection?.kind === "root" && !projectRootEquals(selection.selection.root, to.projectRoot)
+      && findWorkspaceProject(workspaceProjectsRef.current, to.projectRoot)) {
+      selection.selectRoot(to.projectRoot);
+    }
     if (to.view === "settings") setSettingsTab(to.settingsTab ?? "llm");
     // Reuse a live surface; a closed one resolves as a bare destination.
     if (to.surface && mainSurfaces.surfaces.some((surface) => surface.tabId === to.surface)) {
@@ -871,6 +927,83 @@ export function App() {
 
   const viewHistory = useViewHistory(location, navigateToLocation, restoresApplied);
   useViewHistoryShortcuts(viewHistory);
+
+  // Each project remembers where the window last was in it (case 10): a move made inside one project is recorded. Arriving in a
+  // project (the launch, a switch) is not a move, so it writes nothing.
+  const lastPlaceRef = useRef<{ root: string; view: string; surface: string | undefined } | undefined>(undefined);
+  useEffect(() => {
+    if (!selectedRoot) return;
+    const previous = lastPlaceRef.current;
+    lastPlaceRef.current = { root: selectedRoot, view: activeView, surface: location.surface };
+    if (!previous || !projectRootEquals(previous.root, selectedRoot)) return;
+    if (previous.view === activeView && previous.surface === location.surface) return;
+    projectSelectionRef.current.recordLastView(selectedRoot, { view: activeView, ...(location.surface ? { surface: location.surface } : {}) });
+  }, [selectedRoot, activeView, location.surface]);
+
+  /** Switch to a project from the menu (case 10): the window shows where it last was there, else the project home. A terminal
+   * or page that has closed since is not reopened under the old id; the home stands in for it. */
+  const switchToProject = useCallback((root: string) => {
+    const target = findWorkspaceProject(workspaceProjectsRef.current, root);
+    if (!target) {
+      statusPushToast({ severity: "error", message: t("sidebar.projectNotOpen"), ttlMs: 10_000 });
+      return;
+    }
+    const selection = projectSelectionRef.current;
+    selection.selectRoot(target.projectRoot);
+    const last = selection.lastViewFor(target.projectRoot);
+    const place = last ? isInlineViewKey(last.view) ? last.view : undefined : undefined;
+    const liveSurface = last?.surface !== undefined && mainSurfaces.surfaces.some((surface) => surface.tabId === last.surface);
+    if (!place || (isInstanceViewKey(place) && !liveSurface)) {
+      navigateToLocation({ view: "project-home" });
+      return;
+    }
+    navigateToLocation({ ...toViewLocation(place, settingsTab), ...(liveSurface ? { surface: last?.surface } : {}) });
+  }, [mainSurfaces.surfaces, navigateToLocation, settingsTab, statusPushToast, t]);
+
+  // New Chat is set up further down, with the conversation tiles it starts in.
+  const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }) => Promise<void>) | undefined>(undefined);
+  /** A launcher opens its surface in `project` (case 11–13): a new terminal starts in the project folder. */
+  const launchInProject = useCallback((kind: SidebarLaunchKind, project: ProjectIdentity) => {
+    if (kind === "chat") {
+      void handleNewChatRef.current?.({ projectRoot: project.projectRoot, projectName: project.projectName });
+      return;
+    }
+    const view = kind === "web" ? "web" : "terminal";
+    // A terminal starts in its project's folder (case 13).
+    const surface = mainSurfaces.create(SURFACE_KIND_OF_VIEW[view], {
+      projectRoot: project.projectRoot,
+      ...(view === "terminal" ? { cwd: project.projectRoot } : {}),
+    });
+    chatGroups.setPaneContent(chatGroups.focusedId, { view, surface: surface.tabId });
+  }, [chatGroups, mainSurfaces]);
+
+  // After a folder is added (case 08) or turns out to be a project already (case 09), the window switches to it once the
+  // refreshed list holds it, and the notice offers the way back to where it was.
+  const [projectAddedSwitch, setProjectAddedSwitch] =
+    useState<{ root: string; alreadyOpen: boolean; previous: ProjectSelection | undefined } | null>(null);
+  const handleProjectAdded = useCallback((root: string, alreadyOpen: boolean) => {
+    setProjectAddedSwitch({ root, alreadyOpen, previous: projectSelectionRef.current.selection });
+  }, []);
+  useEffect(() => {
+    if (!projectAddedSwitch) return;
+    const project = findWorkspaceProject(workspaceProjects, projectAddedSwitch.root);
+    if (!project) return;
+    setProjectAddedSwitch(null);
+    const { previous, alreadyOpen } = projectAddedSwitch;
+    switchToProject(project.projectRoot);
+    const back = previous && !(previous.kind === "root" && projectRootEquals(previous.root, project.projectRoot)) ? previous : undefined;
+    statusPushToast({
+      severity: "success",
+      message: t(alreadyOpen ? "sidebar.projectAlreadyOpenSwitched" : "sidebar.projectAddedSwitched", { name: projectDisplayName(project) }),
+      ttlMs: 10_000,
+      ...(back ? {
+        action: {
+          label: t("sidebar.projectBackToPrevious"),
+          run: () => (back.kind === "all" ? projectSelectionRef.current.selectAll() : switchToProject(back.root)),
+        },
+      } : {}),
+    });
+  }, [projectAddedSwitch, workspaceProjects, switchToProject, statusPushToast, t, projectDisplayName]);
 
   const handleOpenPermanentDeny = useCallback((
     request: ApprovalRequest,
@@ -950,23 +1083,27 @@ export function App() {
     handleProjectError("list", code);
   }, [handleProjectError]);
 
+  // The last list read failed: the launchers say so and offer a retry rather than sitting disabled with no reason.
+  const [projectListFailed, setProjectListFailed] = useState(false);
   const refreshWorkspaceProjects = useCallback(async () => {
     try {
       const result = await window.ave?.workspace?.listRoots?.();
       if (!result?.ok) {
         // Report unreadable project lists instead of silently presenting them as empty.
         if (result?.error) reportProjectListFault(result.error);
+        setProjectListFailed(true);
         return;
       }
+      setProjectListFailed(false);
       if (result.settingsFault) reportProjectListFault(result.settingsFault);
       else reportedListFault.current = null;
       const roots = Array.isArray(result.roots) ? result.roots : [];
       // The default project is hidden from display surfaces, so its fallback basename is never shown.
       const projects = workspaceRootsToProjects(result.defaultRoot, roots, t("sidebar.projectsLabel"));
       setWorkspaceProjects(projects);
-      setActiveProject((current) => reconcileActiveProject(current, projects));
     } catch {
       // The backend still defaults chat creation to the anchored workspace root.
+      setProjectListFailed(true);
     }
   }, [reportProjectListFault, t]);
 
@@ -980,18 +1117,22 @@ export function App() {
     return findWorkspaceProject(workspaceProjects, project) ?? project;
   }, [workspaceProjects]);
 
-  useEffect(() => {
-    // Wait for the focused tile to hydrate before following its project; an unpublished tile does not imply the default
-    // project.
-    if (!currentSessionId) return;
-    const sessionProject = projectIdentityFromPayload(currentSessionProject);
-    setActiveProject(reconcileActiveProject(sessionProject, workspaceProjects));
-  }, [currentSessionId, currentSessionProject, workspaceProjects]);
-
   const defaultWorkspaceProject = useMemo(
     () => defaultProjectFromProjects(workspaceProjects),
     [workspaceProjects],
   );
+  // Focusing a conversation of another project switches to that project. The launch's first hydrated conversation does
+  // not: the saved selection wins at launch.
+  const followedSessionRef = useRef<string | undefined>(undefined);
+  const focusedSessionRoot = projectIdentityFromPayload(currentSessionProject)?.projectRoot ?? defaultWorkspaceProject?.projectRoot;
+  useEffect(() => {
+    // Wait for the focused tile to hydrate; an unpublished tile does not imply the default project.
+    if (!currentSessionId || !focusedSessionRoot || !projectSelection.selection) return;
+    const seen = followedSessionRef.current;
+    followedSessionRef.current = currentSessionId;
+    if (seen === undefined || seen === currentSessionId) return;
+    followProject(focusedSessionRoot);
+  }, [currentSessionId, focusedSessionRoot, projectSelection.selection === undefined, followProject]);
   surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
 
   const handleOpenRoutineSession = useCallback(
@@ -1091,6 +1232,7 @@ export function App() {
     pluginViews, pluginCards, pluginAuthStatuses, refreshPluginAuthStatus,
     statusPushToast,
   });
+  openProjectHomeRef.current = () => handleViewSelect("project-home");
 
   // Resolve plugin path labels from declared titles so sidebar and toolbar agree.
   const viewNav = useMemo(() => {
@@ -1103,9 +1245,16 @@ export function App() {
       // Default-workspace sessions are plain chats; only named projects label the root crumb.
       sessionProject: activeProject && !activeProject.isDefault ? activeProject : undefined,
     };
-    // History buttons name their destinations even when the path cannot fit.
-    const destinationLabel = (target: ViewLocation | null) =>
-      target ? viewLocationBreadcrumb(target, deps).at(-1)?.label : undefined;
+    // History buttons name their destinations even when the path cannot fit, and the project when the step crosses into
+    // another one (case 10).
+    const destinationLabel = (target: ViewLocation | null) => {
+      if (!target) return undefined;
+      const label = viewLocationBreadcrumb(target, deps).at(-1)?.label;
+      const otherProject = target.projectRoot && !projectRootEquals(target.projectRoot, location.projectRoot)
+        ? findWorkspaceProject(workspaceProjects, target.projectRoot)
+        : undefined;
+      return otherProject && label ? `${projectDisplayName(otherProject)} / ${label}` : label;
+    };
     return {
       segments: viewLocationBreadcrumb(location, deps),
       canGoBack: viewHistory.canGoBack,
@@ -1116,7 +1265,7 @@ export function App() {
       onForward: viewHistory.goForward,
       onSelectSegment: navigateToLocation,
     };
-  }, [location, t, locale, pluginViews, viewHistory, navigateToLocation, activeProject]);
+  }, [location, t, locale, pluginViews, viewHistory, navigateToLocation, activeProject, workspaceProjects, projectDisplayName]);
 
   // Share conversation actions between headers and sidebar menus. Plugin-grid auth indicators follow manifest.auth and live
   // status.
@@ -1387,12 +1536,13 @@ export function App() {
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
       : undefined);
     if (!started) return;
-    if (nextProject) setActiveProject(nextProject);
+    followProject(nextProject?.projectRoot);
     setActiveView("home");
   }, [
-    activeProject, adoptGroupBeside, defaultWorkspaceProject, focusedSession,
+    activeProject, adoptGroupBeside, defaultWorkspaceProject, focusedSession, followProject,
     resolveKnownProject, setActiveView, streaming,
   ]);
+  handleNewChatRef.current = handleNewChat;
 
   // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
@@ -1514,7 +1664,6 @@ export function App() {
     [pluginViews, locale, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
   );
 
-  const onNewChat = useCallback(() => { void handleNewChat(); }, [handleNewChat]);
   const onNewChatForProject = useCallback((project: { projectRoot?: string; projectName?: string }) => {
     void handleNewChat(project);
   }, [handleNewChat]);
@@ -1788,6 +1937,23 @@ export function App() {
       ), "none");
     }
 
+    if (view === "project-home") {
+      return viewPane("project-home", (
+        <ProjectHomeView
+          project={activeProject}
+          projects={workspaceProjects}
+          projectName={projectDisplayName}
+          surfaces={mainSurfaces.surfaces.map((surface) => ({
+            tabId: surface.tabId,
+            projectRoot: surface.projectRoot,
+            label: `${t(BUILTIN_LABEL_KEYS[surface.kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`,
+          }))}
+          onOpenSurface={(tabId) => { openWorkspaceSurface(tabId); }}
+          onOpenView={handleViewSelect}
+        />
+      ));
+    }
+
     if (view === "work-board") {
       return viewPane("work-board", (
         <WorkBoardPanel
@@ -1926,8 +2092,24 @@ export function App() {
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
                 keepVisibleInFullscreen={sidebarHidden}
-                leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? collapsedBandLeadClearance(isDarwinPlatform()) : sidebarWidth + SHELL_GUTTER + CONTENT_TITLE_INSET}
+                leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? RAIL_BAND_LEAD : COLLAPSED_RAIL_RESERVE + sidebarWidth + CONTENT_TITLE_INSET}
               >
+                {/* With the list folded, the button that unfolds it is the band's first control (case 21). */}
+                {sidebarCollapsed && (
+                  <Button
+                    data-testid="sidebar-collapse-toggle"
+                    variant="ghost"
+                    size="icon"
+                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    title={t("mainToolbar.expandSidebar")}
+                    aria-label={t("mainToolbar.expandSidebar")}
+                    aria-pressed={false}
+                    onClick={() => setSidebarState("expanded")}
+                    style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                  >
+                    <PanelLeftOpen className="h-4 w-4" />
+                  </Button>
+                )}
                 {sidebarHidden && (
                   <Button
                     data-testid="sidebar-show"
@@ -2002,7 +2184,15 @@ export function App() {
                 subscriptionRuntimePolicy={subscriptionRuntimePolicy}
                 modelConfigured={chatModelConfigured}
                 onOpenSettings={() => onOpenSettings()}
-                onNewChat={onNewChat}
+                projectSelection={projectSelection.selection}
+                selectedProject={activeProject}
+                recentProjectRoots={projectSelection.recentProjectRoots}
+                projectName={projectDisplayName}
+                onSelectProjectRoot={switchToProject}
+                onSelectAllProjects={projectSelection.selectAll}
+                onProjectAdded={handleProjectAdded}
+                onLaunch={launchInProject}
+                projectListUnavailable={projectListFailed}
                 onNewChatForProject={onNewChatForProject}
                 onRefreshProjects={refreshWorkspaceProjects}
                 onProjectError={handleProjectError}
@@ -2012,11 +2202,10 @@ export function App() {
                 overlay={sidebarOverlay}
                 onToggleCollapse={() => setSidebarState(sidebarCollapsed ? "expanded" : "rail")}
                 width={sidebarWidth}
-                maxWidth={sidebarOverlay ? Math.max(0, shellWidth - SHELL_GUTTER * 2) : undefined}
+                maxWidth={sidebarOverlay ? Math.max(0, shellWidth - COLLAPSED_RAIL_RESERVE - SHELL_GUTTER) : undefined}
                 onWidthChange={setSidebarWidth}
                 onWidthCommit={commitSidebarWidth}
                 onOpenUnifiedSearch={() => { searchOpenOverlay(); }}
-                viewNav={viewNav}
                 conversationActions={conversationActions}
                 projectActions={projectActions}
                 mainSurfaces={mainSurfaces.surfaces}
@@ -2038,7 +2227,7 @@ export function App() {
                     !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
-                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
+                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
                   {/* The window's notice strip — the announcement banner, the
                       permission-memory toast and the window status toasts

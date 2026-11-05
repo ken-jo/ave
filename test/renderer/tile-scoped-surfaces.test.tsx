@@ -17,7 +17,7 @@ import {
   mountedTileIds,
   toggleTileMaximized,
 } from "./helpers.js";
-import { MOCK_DEFAULT_SESSION_ID, MOCK_SIDE_CHAT_SESSION_ID, type MockAveApi } from "./mock-ave-api.js";
+import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS, MOCK_SIDE_CHAT_SESSION_ID, type MockAveApi } from "./mock-ave-api.js";
 import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS } from "../../src/contract/app-contract.js";
 import { BLOCKING_SURFACE_SELECTOR, TEST_IDS, chatSidePanelLauncherTestId, testIdSelector } from "../../src/shared/test-ids.js";
 import type { MarketplaceAnnouncement } from "../../src/shared/marketplace-announcements.js";
@@ -1710,9 +1710,12 @@ describe("opening a conversation while another is mid-turn", () => {
   });
 
   describe("New Chat during a turn starts under the project it was asked for (#2348)", () => {
+    // The all-projects view lists every project's folder row, so a conversation can start in another project's folder from
+    // there; the rail's New Chat asks which project.
     const projectWindow = {
       hasApiKey: true,
       nativeContextMenu: true,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "all" } } },
       workspaceRoots: [
         { path: "/ws", isDefault: true },
         { path: "/proj-a", isDefault: false },
@@ -1766,14 +1769,22 @@ describe("opening a conversation while another is mid-turn", () => {
       });
     }
 
-    const railNewChat = (container: HTMLElement) =>
-      container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLButtonElement;
+    /** The rail's New Chat in the all-projects view, answered with proj-a in its project picker. */
+    const newChatInProjectA = async (container: HTMLElement) => {
+      await act(async () => { fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!); });
+      const option = await waitFor(() => {
+        const el = document.querySelector<HTMLElement>('[data-testid="project-picker-project-proj-a"]');
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      await act(async () => { fireEvent.click(option); });
+    };
     const folderRow = (container: HTMLElement) =>
       container.querySelector('[data-testid="sidebar-project-proj-b"]') as HTMLButtonElement;
 
     it("New Chat stays in the busy conversation's project", async () => {
       const rendered = await busyInProjectA();
-      await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
+      await newChatInProjectA(rendered.container);
       await expectAdoptedTileProject(rendered, "/proj-a");
     });
 
@@ -1798,7 +1809,7 @@ describe("opening a conversation while another is mid-turn", () => {
       await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
       // A refused adoption must not seed the project of the next new conversation.
       rendered.api.chatNew.mockClear();
-      await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
+      await newChatInProjectA(rendered.container);
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
 
@@ -1828,7 +1839,7 @@ describe("opening a conversation while another is mid-turn", () => {
       });
       rendered.api.chatSend.mockReset();
       rendered.api.chatNew.mockClear();
-      await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
+      await newChatInProjectA(rendered.container);
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
 
@@ -1842,7 +1853,7 @@ describe("opening a conversation while another is mid-turn", () => {
       await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
       expect(rendered.container.textContent).toContain("hello");
       rendered.api.chatNew.mockClear();
-      await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
+      await newChatInProjectA(rendered.container);
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
   });
@@ -1901,6 +1912,8 @@ describe("opening a conversation while another is mid-turn", () => {
     const rendered = await renderApp({
       hasApiKey: true,
       nativeContextMenu: true,
+      // The all-projects view lists every conversation, whichever project its tile is in.
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "all" } } },
       workspaceRoots: [{ path: "/ws", isDefault: true }, { path: "/proj-a", isDefault: false }],
       sessions: [
         { id: MOCK_DEFAULT_SESSION_ID, title: "주 대화", modifiedAt: new Date(2, 0, 2).toISOString() },

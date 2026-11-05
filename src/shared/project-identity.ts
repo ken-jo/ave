@@ -185,10 +185,3 @@ export function findWorkspaceProject(
   const projectRoot = typeof candidate === "string" ? candidate : candidate?.projectRoot;
   return projects.find((project) => projectRootEquals(project.projectRoot, projectRoot));
 }
-
-export function reconcileActiveProject(
-  current: Pick<ProjectIdentity, "projectRoot"> | null | undefined,
-  projects: readonly ProjectIdentity[],
-): ProjectIdentity | undefined {
-  return findWorkspaceProject(projects, current) ?? defaultProjectFromProjects(projects);
-}

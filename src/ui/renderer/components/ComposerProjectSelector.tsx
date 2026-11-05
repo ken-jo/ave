@@ -83,8 +83,7 @@ export function ComposerProjectSelector({
     }
     if (outcome.status !== "added") return;
     await onRefreshProjects?.();
-    const addedRoot = outcome.added ?? outcome.roots.find((r) => !r.isDefault)?.path;
-    if (!addedRoot) return;
+    const addedRoot = outcome.added;
     onOpenChange(false);
     void onSelectProject({ projectRoot: addedRoot, projectName: addedRootDisplayName(addedRoot) });
   };

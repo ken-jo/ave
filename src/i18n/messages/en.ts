@@ -509,6 +509,7 @@ export const en = {
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
   "app.paneChatUnavailable": "This terminal or page is no longer available in this window.",
   "app.surfaceProjectUnknown": "The project list is not available yet, so this terminal or page was not opened.",
+  "app.surfaceProjectNotOpen": "This tab's project is not open, so the tab stays in the side panel.",
   "app.paneChatOpenFailed": "The terminal or page could not be opened. Select it from the workspace and try again.",
   "assistantCard.systemNoticeOperationError": "System Notice — Request Not Completed",
   "assistantCard.conversationOpenInPane": "This conversation is open in {surface}.",
