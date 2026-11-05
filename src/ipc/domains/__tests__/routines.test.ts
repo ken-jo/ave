@@ -254,6 +254,28 @@ describe("schedule panel IPC", () => {
     expect(deps.routinesStore.add).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: "/p/a", createdBy: "user" }));
   });
 
+  it("refuses an add whose trigger, execution, scope or source is not an allowed value", async () => {
+    const deps = await setup([]);
+    const base = { trigger: "schedule", execution: "notification-only", notificationTitle: "n", projectRoot: "/p/a" };
+    for (const bad of [
+      { trigger: "hourly" },
+      { execution: "webhook" },
+      { scope: { pluginIds: { mode: "everything" }, forcedPluginIds: [], directories: [] } },
+      { scope: { pluginIds: { mode: "allow", ids: "mail" }, forcedPluginIds: [], directories: [] } },
+      { scope: { pluginIds: { mode: "deny-all" }, forcedPluginIds: [], directories: [7] } },
+      { source: "suggestion:mail:daily-digest" },
+      { source: "agent-plugin:writer" },
+      { source: 42 },
+    ]) {
+      expect(await invoke(ROUTINES.add, { ...base, ...bad })).toEqual({ ok: false, error: "invalid-input" });
+    }
+    expect(deps.routinesStore.add).not.toHaveBeenCalled();
+    deps.routinesStore.add.mockResolvedValue({ id: "new" });
+    for (const source of ["agent-plugin:writer-plugin:daily", "extension:@acme/notes:weekly"]) {
+      expect(await invoke(ROUTINES.add, { ...base, source })).toEqual({ ok: true, routine: { id: "new" } });
+    }
+  });
+
   it("edits, pauses and resumes through the store, reporting unknown items", async () => {
     const deps = await setup([]);
     const store = deps.routinesStore as typeof deps.routinesStore & Record<string, ReturnType<typeof vi.fn>>;

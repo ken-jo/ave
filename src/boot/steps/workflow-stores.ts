@@ -38,6 +38,7 @@ import { setApprovalConversationRootResolver } from "../../permissions/user-appr
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t } from "../../i18n/index.js";
 import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
+import { createRoutineProjectRootResolver, findSessionLiveLoop } from "./session-live-loop.js";
 
 const log = createLogger("ave");
 
@@ -66,9 +67,7 @@ export async function setupWorkflowStores(
     const sessionId = ctx.resolveRootSessionId(requestingSessionId);
     const store = sessionOwner(sessionId);
     const metadata = store.loadSessionMetadata(sessionId);
-    const liveLoop = ctx.findLoopBySessionId?.(sessionId)
-      ?? (ctx.sideChatConversationLoop?.getSessionId() === sessionId ? ctx.sideChatConversationLoop : undefined)
-      ?? ctx.paneChatLoops?.all().find((loop) => loop.getSessionId() === sessionId);
+    const liveLoop = findSessionLiveLoop(ctx, sessionId);
     return resolveConversationTitle({
       sessionId,
       title: metadata?.title,
@@ -105,16 +104,15 @@ export async function setupWorkflowStores(
     notificationService,
   );
   const subAgentRunnerRef: { fn: SubAgentRunner | undefined } = { fn: undefined };
-  // A schedule the agent adds is listed under its conversation's project; a conversation outside any named project belongs to the
-  // default workspace. An unknown session has no project, and the tool refuses rather than guess.
-  const routineProjectRootForSession = (requestingSessionId: string): string | undefined => {
-    const sessionId = ctx.resolveRootSessionId(requestingSessionId);
-    const liveLoop = ctx.findLoopBySessionId?.(sessionId);
-    const store = sessionOwner(sessionId);
-    const metadata = store.loadSessionMetadata(sessionId);
-    if (!liveLoop && !metadata) return undefined;
-    return liveLoop?.getSessionProjectRoot() ?? metadata?.projectRoot ?? defaultWorkspaceProject().projectRoot;
-  };
+  // Read the loops at call time: they are wired after this step.
+  const routineProjectRootForSession = createRoutineProjectRootResolver({
+    resolveRootSessionId: (sessionId) => ctx.resolveRootSessionId(sessionId),
+    get findLoopBySessionId() { return ctx.findLoopBySessionId; },
+    get sideChatConversationLoop() { return ctx.sideChatConversationLoop; },
+    get paneChatLoops() { return ctx.paneChatLoops; },
+    loadSessionMetadata: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId),
+    defaultProjectRoot: () => defaultWorkspaceProject().projectRoot,
+  });
   const workflowDeps: WorkflowToolDeps = {
     routinesStore,
     routineProjectRootForSession,

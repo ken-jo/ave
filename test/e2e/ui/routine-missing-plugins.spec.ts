@@ -30,9 +30,9 @@ test("missing-plugin routines retain their status and can be removed", async ({}
     await page.getByTestId("main-toolbar").first().waitFor({ timeout: 60_000 });
     await page.getByTestId("sidebar-group-features").click();
     await page.getByTestId("sidebar-routines").click();
-    const panel = page.getByTestId("routine-panel");
-    const skipped = panel.getByTestId("routine-row").filter({ hasText: "Unavailable summary" });
-    const partial = panel.getByTestId("routine-row").filter({ hasText: "Partial summary" });
+    const panel = page.getByTestId("schedule-panel");
+    const skipped = panel.getByTestId("schedule-attention-row").filter({ hasText: "Unavailable summary" });
+    const partial = panel.getByTestId("schedule-attention-row").filter({ hasText: "Partial summary" });
     await expect(skipped.getByRole("status")).toContainText("Skipped:", { timeout: 45_000 });
     await expect(skipped.getByRole("status")).toContainText("absent-plugin");
     await expect(partial.getByRole("status")).toContainText("Needs attention:");
@@ -43,8 +43,9 @@ test("missing-plugin routines retain their status and can be removed", async ({}
     await skipped.getByRole("button", { name: "Delete", exact: true }).click();
     await expect(skipped).toHaveCount(0);
     await partial.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect(panel.getByTestId("routine-row")).toHaveCount(0);
-    expect(JSON.parse(readFileSync(routinePath, "utf8")).routines).toEqual([]);
+    await expect(panel.getByTestId("schedule-attention-row")).toHaveCount(0);
+    // A user delete applies at once behind an undo toast; the store write lands when the undo window closes.
+    await expect.poll(() => JSON.parse(readFileSync(routinePath, "utf8")).routines, { timeout: 20_000 }).toEqual([]);
   } finally {
     await app?.close();
     rmSync(root, { recursive: true, force: true });

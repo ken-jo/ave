@@ -15,6 +15,8 @@ import { ROUTINES } from "../../shared/ipc-channels.js";
 import { toSessionListRow } from "../../memory/memory-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
+import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope } from "../../main/routines-store.js";
+import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
 
 // The month grid spans at most six weeks; a little slack keeps a range that starts mid-day valid.
 const MAX_OCCURRENCE_RANGE_MS = 43 * 24 * 60 * 60 * 1000;
@@ -30,6 +32,16 @@ function hasValidFieldTypes(input: Record<string, unknown>, allowNullTitle: bool
     return false;
   }
   return input.schedule === undefined || isRoutineScheduleShape(input.schedule);
+}
+
+// The panel only records which installed template an item came from; other sources (plugin suggestions) are host-only.
+const RENDERER_ROUTINE_SOURCE = /^(?:agent-plugin|extension):[^:\s]+:[^:\s]+$/;
+
+function hasValidAddFields(input: Record<string, unknown>): boolean {
+  if (!isRoutineTrigger(input.trigger) || !isRoutineExecution(input.execution)) return false;
+  if (input.scope !== undefined && !isValidRoutineScope(input.scope)) return false;
+  if (input.source === undefined) return true;
+  return typeof input.source === "string" && input.source.length <= MAX_ROUTINE_SOURCE_LENGTH && RENDERER_ROUTINE_SOURCE.test(input.source);
 }
 
 function projectRootFilter(filter: unknown): string | undefined {
@@ -159,7 +171,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     ROUTINES.add,
     async (
       e,
-      input: Pick<AddRoutineInput, "trigger" | "schedule" | "execution" | "prePrompt" | "title" | "notificationTitle" | "notificationBody" | "projectRoot">,
+      input: Omit<AddRoutineInput, "createdBy">,
     ) => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, ROUTINES.add, e);
@@ -169,7 +181,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "invalid-input" };
       // Every new item belongs to a project; the panel passes the active one.
       if (typeof input.projectRoot !== "string" || !input.projectRoot.trim()) return { ok: false, error: "project-required" };
-      if (!hasValidFieldTypes(input as unknown as Record<string, unknown>, false)) return { ok: false, error: "invalid-input" };
+      const fields = input as unknown as Record<string, unknown>;
+      if (!hasValidFieldTypes(fields, false) || !hasValidAddFields(fields)) return { ok: false, error: "invalid-input" };
       try {
         // The renderer form is the user's own action; only the host's tool path may record an agent as creator.
         const record = await routinesStore.add({ ...input, createdBy: "user" });

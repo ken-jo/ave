@@ -1,5 +1,5 @@
 /** Locations include settings tabs and surface instances, but exclude chat sessions and external marketplace navigation. */
-import { Brain, CalendarDays, Globe, KanbanSquare, KeyRound, Repeat2, Terminal, type LucideIcon } from "lucide-react";
+import { Brain, CalendarClock, CalendarDays, Globe, KanbanSquare, KeyRound, Terminal, type LucideIcon } from "lucide-react";
 import {
   SETTINGS_TAB_LABEL_KEYS,
   normalizeSettingsTab,
@@ -131,7 +131,7 @@ export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
 export const BUILTIN_VIEW_ICONS: Record<PaneViewKey, LucideIcon> = {
   settings: KeyRound,
   "work-board": KanbanSquare,
-  routines: Repeat2,
+  routines: CalendarClock,
   insights: CalendarDays,
   starred: CalendarDays,
   memory: Brain,

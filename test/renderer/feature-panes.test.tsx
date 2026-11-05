@@ -43,7 +43,7 @@ async function openView(view: PaneViewKey, bodyTestId: string) {
 
 const VIEWS: ReadonlyArray<readonly [PaneViewKey, string]> = [
   ["work-board", "work-board-panel"],
-  ["routines", "routine-panel"],
+  ["routines", "schedule-panel"],
   ["insights", "insights-scroll-root"],
   ["memory", "memory-search-panel"],
 ];
@@ -100,12 +100,12 @@ describe("a view's global actions live in the pane header", () => {
     });
   });
 
-  it("carries the routines' new-routine and refresh controls", async () => {
-    const { container } = await openView("routines", "routine-panel");
+  it("carries the schedule panel's add and refresh controls", async () => {
+    const { container } = await openView("routines", "schedule-panel");
     const header = pane(container)?.querySelector('[data-testid="pane-header"]');
 
-    expect(header?.querySelector('[data-testid="pane-action-routine-add"]')).not.toBeNull();
-    expect(header?.querySelector('[data-testid="pane-action-routine-refresh"]')).not.toBeNull();
+    expect(header?.querySelector('[data-testid="pane-action-schedule-add"]')).not.toBeNull();
+    expect(header?.querySelector('[data-testid="pane-action-schedule-refresh"]')).not.toBeNull();
   });
 
   it("carries the insights' refresh control", async () => {
@@ -210,7 +210,7 @@ describe("a plugin view is a pane body", () => {
 
 describe("closing a view's pane", () => {
   it("hands the pane back to the conversation instead of closing it", async () => {
-    const { container } = await openView("routines", "routine-panel");
+    const { container } = await openView("routines", "schedule-panel");
     expect(atHome(container)).toBe(false);
 
     const close = pane(container)?.querySelector('[data-testid="pane-close"]');

@@ -57,6 +57,15 @@ describe("RoutinesStore — project scope and creator", () => {
   }));
 });
 
+describe("RoutinesStore — add refuses values a later read would drop", () => {
+  it("refuses an unknown trigger or execution instead of accepting and later dropping it", withRoutinesStore(async ({ store }) => {
+    const base = { ...TEST_OWNER, schedule: { at: futureIso() }, notificationTitle: "n" };
+    await expect(store.add({ ...base, trigger: "hourly", execution: "notification-only" } as never)).rejects.toThrow(/trigger/);
+    await expect(store.add({ ...base, trigger: "schedule", execution: "webhook" } as never)).rejects.toThrow(/execution/);
+    expect(store.list()).toEqual([]);
+  }));
+});
+
 describe("RoutinesStore — edit", () => {
   it("changes title, prompt and schedule with the same validation as add", withRoutinesStore(async ({ store }) => {
     const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", schedule: { at: futureIso(), repeat: { kind: "daily" } }, prePrompt: "old", title: "Old" });
@@ -220,6 +229,22 @@ describe("RoutinesStore — a re-save that only looks different is not a new sch
     await scheduler.checkAndFire();
     // The same schedule, keys in another order and the expression padded.
     await store.edit(r.id, { schedule: { repeat: { expression: " * * * * * ", kind: "cron" } as never } });
+    await scheduler.checkAndFire();
+    expect(fired).toHaveLength(1);
+  }));
+
+  it("re-saving a just-fired cron with an `at` added or only its spacing changed does not fire the same minute twice", withRoutinesStore(async ({ store }) => {
+    const r = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p",
+      schedule: { repeat: { kind: "cron", expression: "* * * * *" } } });
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    const fired: string[] = [];
+    scheduler.onLlmSession(({ routine }) => { fired.push(routine.id); });
+    await scheduler.checkAndFire();
+    // Cron ignores `at`, so adding one is not a new schedule.
+    await store.edit(r.id, { schedule: { at: futureIso(HOUR), repeat: { kind: "cron", expression: "* * * * *" } } });
+    await scheduler.checkAndFire();
+    // Inner spacing is not a new schedule either.
+    await store.edit(r.id, { schedule: { repeat: { kind: "cron", expression: "*  *   * *\t*" } } });
     await scheduler.checkAndFire();
     expect(fired).toHaveLength(1);
   }));

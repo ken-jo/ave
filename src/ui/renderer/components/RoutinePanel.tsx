@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
-import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
-import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import {
   Dialog,
@@ -18,57 +15,13 @@ import {
 } from "../../../components/ui/dialog.js";
 import type { AveApi, PluginCardSummary } from "../types.js";
 import type { AddRoutineInput, InvalidRoutine, RoutineRecord, RoutineExecution, RepeatKind, RoutineSchedule } from "../../../shared/routines-types.js";
-import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES } from "../../../shared/routines-types.js";
 import { isValidCronExpression } from "../../../routines/cron-evaluator.js";
-import { formatMediumDateTime, formatRelativeSessionTime } from "../../../shared/format-time.js";
-import type { RoutineRunRow } from "../../../shared/session-lookup.js";
+import { formatMediumDateTime } from "../../../shared/format-time.js";
 import { packageRoutineSource, type AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
-import { useInstalledContent } from "../installed-content.js";
 
-/** A run row as this panel holds it: the shared conversation row, with the routine's own title resolved. The panel fetches
- * runs one routine at a time, so the routine naming each row is known before the row is built. */
-type RoutineRunListRow = RoutineRunRow & { routineTitle: string };
-
-/**
- * When a run happened. `routineFiredAt` is what the scheduler wrote at fire
- * time; a session persisted before that field existed answers with its last
- * write instead of dropping out of the list. The label and the sort read the
- * same instant so a row never sorts by one time and reads as another.
- */
-function runInstant(row: RoutineRunRow): string {
-  return row.routineFiredAt ?? row.modifiedAt;
-}
 import { errorMessage } from "../../../shared/error-message.js";
-import { usePaneActions } from "./PaneFrame.js";
 
-export interface RoutinePanelProps {
-  api: AveApi;
-  /** The project new items are listed under. */
-  projectRoot?: string;
-  onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
-  /** A routine another surface (확인 필요) asked to show: scrolled into view and focused once the list holds it, then reported consumed. */
-  focusRoutineId?: string | null;
-  onFocusConsumed?: () => void;
-}
-
-function ExecutionBadge({ execution }: { execution: RoutineExecution }) {
-  return (
-    <Badge variant={execution === "llm-session" ? "default" : "outline"}>
-      {execution === "llm-session" ? "LLM" : t("routinePanel.notificationBadge")}
-    </Badge>
-  );
-}
-
-interface RoutineRowProps {
-  routine: RoutineRecord;
-  installedTemplateSources: ReadonlySet<string>;
-  onDismiss: (id: string) => void;
-  onRemove: (id: string) => void;
-  onTriggerNow: (id: string) => void;
-  recentlyFired: boolean;
-}
-
-function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">): string {
+export function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">): string {
   const s = routine.schedule;
   if (!s) return routine.trigger === "shutdown" ? t("routinePanel.onShutdown") : t("routinePanel.noSchedule");
   const repeatKind = s.repeat?.kind;
@@ -91,7 +44,7 @@ function describeSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">):
 }
 
 /** A stored routine the host holds back: shown as an error with its reason and a remove action. */
-function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRoutine; onRemove: (id: string) => void }) {
+export function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRoutine; onRemove: (id: string) => void }) {
   return (
     <div className="rounded-lg border border-destructive/(--opacity-strong) bg-destructive/(--opacity-subtle) p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="invalid-routine-row" data-routine-id={routine.id} tabIndex={-1} role="alert">
       <div className="flex items-start justify-between gap-2">
@@ -114,110 +67,6 @@ function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRoutine; onR
   );
 }
 
-function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, onTriggerNow, recentlyFired }: RoutineRowProps) {
-  const templateSource = routine.source?.startsWith("agent-plugin:") || routine.source?.startsWith("extension:") ? routine.source : null;
-  return (
-    <div
-      className={`rounded-lg border bg-background p-3 shadow-sm outline-none transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring ${recentlyFired ? "border-warning/(--opacity-strong) bg-warning/(--opacity-subtle)" : ""}`}
-      data-testid="routine-row"
-      data-routine-id={routine.id}
-      tabIndex={-1}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold leading-snug text-foreground">{routine.title || routine.notificationTitle || routine.prePrompt?.slice(0, 30) || routine.id.slice(0, 8)}</span>
-            <ExecutionBadge execution={routine.execution} />
-          </div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {describeSchedule(routine)}
-          </div>
-          {templateSource && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
-              {installedTemplateSources.has(templateSource)
-                ? t(templateSource.startsWith("extension:") ? "routinePanel.createdFromExtensionTemplate" : "routinePanel.createdFromPluginTemplate",
-                  { plugin: templateSource.split(":")[1]! })
-                : t("routinePanel.templateNoLongerInstalled")}
-            </p>
-          )}
-          {routine.needsAttention && (
-            <p className="mt-1 break-words text-xs text-warning" role="status">
-              {t(routine.lastSkippedReason === "plugins-missing"
-                ? "routinePanel.pluginsMissing" : "routinePanel.pluginsPartlyMissing", {
-                plugins: routine.needsAttention.missingPluginIds.join(", "),
-              })}
-            </p>
-          )}
-          {routine.prePrompt && (
-            <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
-              {routine.prePrompt}
-            </p>
-          )}
-          {routine.notificationBody && (
-            <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
-              {routine.notificationBody}
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px]"
-            onClick={() => onTriggerNow(routine.id)}
-          >
-            {t("routinePanel.triggerNowButton")}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px]"
-            onClick={() => onDismiss(routine.id)}
-          >
-            {t("routinePanel.dismissButton")}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-[11px] text-destructive"
-            onClick={() => onRemove(routine.id)}
-          >
-            {t("routinePanel.deleteButton")}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** One run of a routine. The row is the sidebar's row — same fields, same time label — because it is the same session; only
- * the opening snippet is drawn here, where there is room for it. */
-function RoutineSessionRow({ session, onOpen }: { session: RoutineRunListRow; onOpen: (sessionId: string) => void }) {
-  return (
-    <button
-      type="button"
-      className="w-full rounded-lg border bg-background px-3 py-2 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      data-testid="routine-session-row"
-      onClick={() => onOpen(session.id)}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="line-clamp-1 text-sm font-semibold leading-snug text-foreground">{session.routineTitle}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {formatRelativeSessionTime(runInstant(session), t)}
-          </div>
-          {session.preview && (
-            <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-              {session.preview}
-            </div>
-          )}
-        </div>
-        <Badge variant="outline">{t("routinePanel.openSessionBadge")}</Badge>
-      </div>
-    </button>
-  );
-}
-
 type InputTab = "form" | "cron" | "natural";
 
 const REPEAT_OPTIONS: Array<{ value: RepeatKind; labelKey: string }> = [
@@ -233,12 +82,15 @@ interface AddRoutineModalProps {
   onClose: () => void;
   onAdded: () => void;
   template?: AgentPluginRoutineTemplate;
+  /** The slot the user clicked in the schedule grid; prefills date and time. */
+  initialAt?: Date;
+  /** The project the schedule panel lists the new item under. */
   projectRoot?: string;
 }
 
 // Exported for renderer tests — the modal owns the button → scope-payload mapping that we want to lock down (empty
 // selection MUST map to `{ mode: "deny-all" }`, not "inherit" / "allow all").
-export function AddRoutineModal({ api, onClose, onAdded, template, projectRoot }: AddRoutineModalProps) {
+export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: slotAt, projectRoot }: AddRoutineModalProps) {
   const [tab, setTab] = useState<InputTab>(template?.schedule?.repeat?.kind === "cron" ? "cron" : "form");
   const [trigger, setTrigger] = useState<"schedule" | "shutdown">(template?.trigger ?? "schedule");
   const [execution, setExecution] = useState<RoutineExecution>(template?.execution ?? "llm-session");
@@ -251,7 +103,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, projectRoot }
   const [pluginScopeError, setPluginScopeError] = useState("");
 
   // Form tab fields
-  const initialAt = template?.schedule?.at ? new Date(template.schedule.at) : null;
+  const initialAt = template?.schedule?.at ? new Date(template.schedule.at) : slotAt ?? null;
   const [atDate, setAtDate] = useState(initialAt ? `${initialAt.getFullYear()}-${String(initialAt.getMonth() + 1).padStart(2, "0")}-${String(initialAt.getDate()).padStart(2, "0")}` : "");
   const [atTime, setAtTime] = useState(initialAt ? `${String(initialAt.getHours()).padStart(2, "0")}:${String(initialAt.getMinutes()).padStart(2, "0")}` : "09:00");
   const [repeatKind, setRepeatKind] = useState<RepeatKind>(template?.schedule?.repeat?.kind ?? "none");
@@ -685,253 +537,5 @@ export function AddRoutineModal({ api, onClose, onAdded, template, projectRoot }
         )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-export function RoutinePanel({ api, onOpenSession, projectRoot, focusRoutineId, onFocusConsumed }: RoutinePanelProps) {
-  const templates = useInstalledContent().routineTemplates;
-  const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
-  const [routines, setRoutines] = useState<RoutineRecord[]>([]);
-  const [invalidRoutines, setInvalidRoutines] = useState<InvalidRoutine[]>([]);
-  const [routineSessions, setRoutineSessions] = useState<RoutineRunListRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [recentlyFired, setRecentlyFired] = useState<string[]>([]);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<AgentPluginRoutineTemplate | null>(null);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const [loadedOnce, setLoadedOnce] = useState(false);
-
-  // Focus the requested routine once a loaded list contains it; a request for a routine that is gone is still consumed.
-  useEffect(() => {
-    if (!focusRoutineId || loading || !loadedOnce) return;
-    const known = routines.some((r) => r.id === focusRoutineId) || invalidRoutines.some((r) => r.id === focusRoutineId);
-    if (known) {
-      const row = listRef.current?.querySelector<HTMLElement>(`[data-routine-id="${CSS.escape(focusRoutineId)}"]`);
-      row?.scrollIntoView?.({ block: "nearest" });
-      row?.focus();
-    }
-    onFocusConsumed?.();
-  }, [focusRoutineId, invalidRoutines, loadedOnce, loading, onFocusConsumed, routines]);
-
-  const refresh = useCallback(async () => {
-    if (typeof api.listRoutines !== "function") return;
-    setLoading(true);
-    try {
-      const { routines: list, invalid } = await api.listRoutines();
-      const sessions = (
-        await Promise.all(
-          list
-            .filter((routine) => routine.execution === "llm-session")
-            .map(async (routine) => {
-              const records = await api.listRoutineSessions(routine.id, 10);
-              // The panel groups runs BY routine, so every row it holds is named by the routine record it was fetched for rather than by
-              // whatever title the session happened to persist.
-              const routineTitle =
-                routine.title ?? routine.notificationTitle ?? routine.prePrompt?.slice(0, 30) ?? routine.id.slice(0, 8);
-              return records.map((record) => ({ ...record, routineTitle }));
-            }),
-        )
-      )
-        .flat()
-        .sort((a, b) => runInstant(b).localeCompare(runInstant(a)))
-        .slice(0, 30);
-      if (!mountedRef.current) return;
-      setRoutines(list);
-      setInvalidRoutines(invalid);
-      setRoutineSessions(sessions);
-    } finally {
-      if (mountedRef.current) {
-        setLoading(false);
-        setLoadedOnce(true);
-      }
-    }
-  }, [api]);
-
-  useEffect(() => {
-    void refresh();
-    // A skipped occurrence has no fired event; refresh its status while this panel is open.
-    const timer = setInterval(() => void refresh(), 30_000);
-    const unsub = api.onRoutineFired?.((r) => {
-      setRecentlyFired((prev) => (prev.includes(r.id) ? prev : [...prev, r.id]));
-      void refresh();
-    });
-    return () => { clearInterval(timer); unsub?.(); };
-  }, [api, refresh]);
-
-  const handleDismiss = useCallback(
-    async (id: string) => {
-      await api.dismissRoutine(id);
-      await refresh();
-    },
-    [api, refresh],
-  );
-
-  const handleRemove = useCallback(
-    async (id: string) => {
-      await api.removeRoutine(id);
-      await refresh();
-    },
-    [api, refresh],
-  );
-
-  const handleTriggerNow = useCallback(
-    async (id: string) => {
-      const result = await api.triggerRoutineNow(id);
-      if (result.ok) setRecentlyFired((prev) => (prev.includes(id) ? prev : [...prev, id]));
-      await refresh();
-    },
-    [api, refresh],
-  );
-
-  const llmCount = routines.filter((r) => r.execution === "llm-session").length;
-  const totalCapReached = routines.length >= MAX_PERSISTED_ROUTINES;
-
-  // The panel's global controls, drawn by the pane header. The counts they act on stay in the body: a badge reports state,
-  // it is not a control.
-  usePaneActions(useMemo(() => [
-    {
-      id: "routine-add",
-      label: t("routinePanel.addRoutineButton"),
-      icon: <Plus className="h-4 w-4" />,
-      disabled: totalCapReached,
-      onSelect: () => { setSelectedTemplate(null); setShowAddModal(true); },
-    },
-    {
-      id: "routine-refresh",
-      label: t("routinePanel.refreshButton"),
-      icon: <RefreshCw className="h-4 w-4" />,
-      onSelect: () => void refresh(),
-    },
-  ], [totalCapReached, refresh]));
-
-  return (
-    <>
-      <div
-        className="mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
-        data-testid="routine-panel"
-      >
-        <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
-          <p className="min-w-0 text-sm text-muted-foreground">{t("routinePanel.panelDescription")}</p>
-          <div className="flex shrink-0 items-center gap-2">
-            <Badge variant="outline" title={t("routinePanel.totalRoutineBadgeTitle")}>
-              {routines.length}/{MAX_PERSISTED_ROUTINES}
-            </Badge>
-            <Badge variant="outline" title={t("routinePanel.llmRoutineBadgeTitle")}>
-              LLM {llmCount}/{MAX_LLM_SESSION_ROUTINES}
-            </Badge>
-            {totalCapReached && (
-              <span className="text-xs text-destructive">{t("routinePanel.capReachedLabel")}</span>
-            )}
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          {templates.length > 0 && (
-            <section className="rounded-lg border bg-muted/(--opacity-light) p-3" data-testid="routine-template-list">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("routinePanel.pluginTemplatesHeading")}</h3>
-              <ScrollArea className="max-h-52">
-                <div className="space-y-2">
-                  {templates.map((template) => (
-                    <div key={packageRoutineSource(template)} className="rounded-md border bg-background p-3" data-testid="routine-template-row">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="text-sm font-semibold">{template.title} <span className="font-normal text-muted-foreground">({template.packageName})</span></div>
-                          <p className="text-xs text-muted-foreground">{template.description}</p>
-                          <p className="text-xs text-muted-foreground">{describeSchedule(template)}</p>
-                        </div>
-                        <Button size="sm" variant="outline" disabled={totalCapReached} onClick={() => { setSelectedTemplate(template); setShowAddModal(true); }}>
-                          {t("routinePanel.createFromTemplate")}
-                        </Button>
-                      </div>
-                      {template.prePrompt && <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{template.prePrompt}</pre>}
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            </section>
-          )}
-          <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.72fr)]">
-            <section className="flex min-h-0 flex-col gap-2 rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid="routine-list-section">
-              <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("routinePanel.routineListHeading")}</h3>
-                <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-                  {routines.length}
-                </span>
-              </div>
-              <ScrollArea className="min-h-[220px] flex-1 px-2 pb-2">
-                {loading ? (
-                  <div className="py-8 text-center text-sm text-muted-foreground">{t("routinePanel.loadingLabel")}</div>
-                ) : routines.length === 0 && invalidRoutines.length === 0 ? (
-                  <div className="py-8 text-center text-sm text-muted-foreground">
-                    {t("routinePanel.noRoutinesEmpty")}
-                  </div>
-                ) : (
-                  <div className="space-y-2" ref={listRef}>
-                    {invalidRoutines.map((r) => (
-                      <InvalidRoutineRow key={r.id} routine={r} onRemove={(id) => void handleRemove(id)} />
-                    ))}
-                    {routines.map((r) => (
-                      <RoutineRow
-                        key={r.id}
-                        routine={r}
-                        installedTemplateSources={installedTemplateSources}
-                        onDismiss={(id) => void handleDismiss(id)}
-                        onRemove={(id) => void handleRemove(id)}
-                        onTriggerNow={(id) => void handleTriggerNow(id)}
-                        recentlyFired={recentlyFired.includes(r.id)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </section>
-
-            <section className="flex min-h-0 flex-col gap-2 rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid="routine-session-list">
-              <div className="flex items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("routinePanel.sessionListHeading")}</h3>
-                <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-                  {routineSessions.length}
-                </span>
-              </div>
-              <ScrollArea className="min-h-[220px] flex-1 px-2 pb-2">
-                {loading ? (
-                  <div className="py-8 text-center text-sm text-muted-foreground">{t("routinePanel.loadingLabel")}</div>
-                ) : routineSessions.length === 0 ? (
-                  <div className="py-8 text-center text-sm text-muted-foreground">
-                    {t("routinePanel.noSessionsEmpty")}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {routineSessions.map((session) => (
-                      <RoutineSessionRow
-                        key={session.id}
-                        session={session}
-                        onOpen={(sessionId) => onOpenSession?.(sessionId)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </section>
-          </div>
-        </div>
-      </div>
-
-      {showAddModal && (
-        <AddRoutineModal
-          key={selectedTemplate ? packageRoutineSource(selectedTemplate) : "manual"}
-          api={api}
-          template={selectedTemplate ?? undefined}
-          {...(projectRoot ? { projectRoot } : {})}
-          onClose={() => { setShowAddModal(false); setSelectedTemplate(null); }}
-          onAdded={() => {
-            setShowAddModal(false);
-            setSelectedTemplate(null);
-            void refresh();
-          }}
-        />
-      )}
-    </>
   );
 }

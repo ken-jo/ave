@@ -141,6 +141,7 @@ import { ko as ko_rolesTab } from "../generated/rolesTab.js";
 import { ko as ko_routinePanel } from "../generated/routinePanel.js";
 import { ko as ko_sandboxAuthority } from "../generated/sandboxAuthority.js";
 import { ko as ko_savedToast } from "../generated/savedToast.js";
+import { ko as ko_schedulePanel } from "../generated/schedulePanel.js";
 import { ko as ko_sessionGoalPanel } from "../generated/sessionGoalPanel.js";
 import { ko as ko_sessionResumeDivider } from "../generated/sessionResumeDivider.js";
 import { ko as ko_sessionTasksPanel } from "../generated/sessionTasksPanel.js";
@@ -333,6 +334,7 @@ export const koMessages: Record<string, string> = {
   ...ko_routinePanel,
   ...ko_sandboxAuthority,
   ...ko_savedToast,
+  ...ko_schedulePanel,
   ...ko_sessionGoalPanel,
   ...ko_sessionResumeDivider,
   ...ko_sessionTasksPanel,

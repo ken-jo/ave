@@ -60,14 +60,14 @@ export function isRoutineScheduleShape(value: unknown): value is RoutineSchedule
   return true;
 }
 
-/** Two schedules fire at the same times when these keys match: `at` as an instant, no repeat as "none", a trimmed cron expression. */
+/**
+ * Two schedules fire at the same times when these keys match. A cron schedule is its expression alone, with whitespace
+ * runs collapsed, because cron ignores `at`. Any other schedule is `at` as an instant plus its repeat ("none" when absent).
+ */
 export function scheduleIdentity(schedule: RoutineSchedule | undefined): string {
   if (!schedule) return "none";
-  const at = schedule.at === undefined ? null : Date.parse(schedule.at);
   const repeat = schedule.repeat;
-  const kind = repeat?.kind ?? "none";
-  const detail = repeat?.kind === "cron" ? repeat.expression.trim()
-    : repeat?.kind === "interval" ? repeat.intervalMs
-      : null;
-  return JSON.stringify([at, kind, detail]);
+  if (repeat?.kind === "cron") return JSON.stringify(["cron", repeat.expression.trim().replace(/\s+/g, " ")]);
+  const at = schedule.at === undefined ? null : Date.parse(schedule.at);
+  return JSON.stringify([at, repeat?.kind ?? "none", repeat?.kind === "interval" ? repeat.intervalMs : null]);
 }
