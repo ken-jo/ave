@@ -62,6 +62,14 @@ export function getToolCallLabel(toolName: string, input: unknown): string {
   if (toolName === "skill_read" && skillName && resourcePath) {
     return t("toolDisplay.skillReadNamed", { name: skillName, path: resourcePath });
   }
+  if (toolName === "routine_schedule") {
+    // update and remove reach only an item connected to the calling chat.
+    const action = args.action === "update" || args.action === "remove" ? args.action : "add";
+    const label = action === "update"
+      ? t("toolDisplay.routineScheduleUpdate")
+      : action === "remove" ? t("toolDisplay.routineScheduleRemove") : getToolDisplayName(toolName);
+    return action !== "add" || args.connectToThisChat === true ? t("toolDisplay.routineScheduleConnected", { label }) : label;
+  }
   return getToolDisplayName(toolName);
 }
 

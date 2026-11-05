@@ -23,6 +23,15 @@ describe("tool call labels", () => {
     expect(getToolCallLabel("bash", { command: "ls" })).toBe(getToolDisplayName("bash"));
   });
 
+  it("names a schedule call by its action, and says when it is connected to this chat", () => {
+    expect(getToolCallLabel("routine_schedule", { execution: "llm-session" })).toBe("스케줄 추가");
+    expect(getToolCallLabel("routine_schedule", { execution: "llm-session", connectToThisChat: true })).toBe("스케줄 추가 · 이 대화에 연결");
+    // An agent only ever changes or deletes an item connected to its own chat.
+    expect(getToolCallLabel("routine_schedule", { action: "update", routineId: "r1" })).toBe("스케줄 변경 · 이 대화에 연결");
+    expect(getToolCallLabel("routine_schedule", { action: "remove", routineId: "r1" })).toBe("스케줄 삭제 · 이 대화에 연결");
+    expect(getToolDisplayName("routine_schedule")).toBe("스케줄 추가");
+  });
+
   it("ships every skill label key in both en and ko", () => {
     const keys = [
       "toolDisplay.skillLoad",
