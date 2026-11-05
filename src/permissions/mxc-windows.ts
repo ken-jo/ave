@@ -442,7 +442,10 @@ export function rankMxcFilesystem(
     else denied.push(deny);
   }
   const allGrants = [...readwrite, ...readonlyOut];
-  const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor]);
+  // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
+  // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
+  const pierced = new Set(pierces.map(foldPath));
+  const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
   const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));

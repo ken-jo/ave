@@ -187,6 +187,28 @@ describe("pattern denies", () => {
     expect(grants.denied).toEqual([win32.join(sessions, "a", ".ssh")]);
   });
 
+  it("lifts a pierced floor row whatever its spelling, so the pierced sessions grant survives a writable home", () => {
+    const aveHome = String.raw`D:\cc-verify\h3\home`;
+    const pierce = "d:/cc-verify/h3/home/sessions";
+    const sessionsRoot = win32.join(aveHome, "sessions");
+    const directories: Record<string, MxcDirectoryEntry[]> = {
+      [aveHome]: [entry("sessions", "directory")],
+      [sessionsRoot]: [entry("a", "directory")],
+      [win32.join(sessionsRoot, "a")]: [entry("note.txt"), entry(".ssh", "directory")],
+      [win32.join(sessionsRoot, "a", ".ssh")]: [],
+    };
+    const present = new Set([aveHome, sessionsRoot, ...Object.entries(directories).flatMap(([directory, entries]) => entries.map((child) => win32.join(directory, child.name)))]
+      .map((path) => path.toLowerCase()));
+    const grants = rankMxcFilesystem({
+      allowWrite: [aveHome], allowRead: [pierce],
+      denyRead: SENSITIVE_PATH_PATTERNS.map((pattern) => `${pierce}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`), denyWrite: [],
+      protectedFloor: [`${sessionsRoot}\\`, `${win32.join(aveHome, "config")}\\`], floorPierces: [pierce],
+    }, (path) => present.has(win32.normalize(path).toLowerCase()), (directory) => directories[win32.normalize(directory).replace(/^d:/, "D:")] ?? []);
+    expect(grants.readonly.map((path) => path.toLowerCase())).toEqual([sessionsRoot.toLowerCase()]);
+    // The unpierced config row still denies; the sessions row no longer does.
+    expect(grants.denied.map((path) => path.toLowerCase())).toEqual([win32.join(aveHome, "config"), win32.join(sessionsRoot, "a", ".ssh")].map((path) => path.toLowerCase()));
+  });
+
   it("walks a read-only grant that sits behind a link inside the prefix, and lists a nested root only once", () => {
     const inner = win32.join(sessions, "j", "inner");
     const behindLink = { [sessions]: [entry("j", "link")], [inner]: [entry("id_rsa")] };
