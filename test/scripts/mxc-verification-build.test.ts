@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error standalone build utilities have no declaration output
 import { assertMxcVerificationPayload, assertMxcVerificationPublish, mxcVerificationBuild, mxcVerificationEntries } from "../../scripts/lib/mxc-verification-build.mjs";
@@ -44,7 +45,7 @@ describe("explicit native verification build", () => {
         return nextLoad(url, context);
       }});
     `);
-    const result = spawnSync(process.execPath, ["--import", guard, path.resolve("scripts/build-installers.mjs"), ...publishArgs], {
+    const result = spawnSync(process.execPath, ["--import", pathToFileURL(guard).href, path.resolve("scripts/build-installers.mjs"), ...publishArgs], {
       cwd: root,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_MXC_VERIFICATION_BUILD: "1" },
       encoding: "utf8",
