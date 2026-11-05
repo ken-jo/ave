@@ -4,12 +4,12 @@ import type { TokenUsage } from "./llm/types.js";
 import type { SubscriptionUsageTelemetry } from "../shared/subscription-runtime.js";
 import { aggregateSubscriptionUsage } from "./turn/subscription-usage-telemetry.js";
 
-type UsageSource = () => { usage?: TokenUsage; subscriptionUsage: readonly SubscriptionUsageTelemetry[]; failed?: boolean };
-const routineUsageContext = new AsyncLocalStorage<{ sources: Set<UsageSource>; sessionId?: string }>();
+type UsageSource = () => { usage?: TokenUsage; subscriptionUsage: readonly SubscriptionUsageTelemetry[] };
+const routineUsageContext = new AsyncLocalStorage<{ sources: Set<UsageSource>; observedSessionId?: string }>();
 
 export function observeRoutineSession(sessionId: string): void {
   const context = routineUsageContext.getStore();
-  if (context) context.sessionId = sessionId;
+  if (context) context.observedSessionId = sessionId;
 }
 
 /** Observe the query loop's existing usage accumulator, including partial usage when it throws. */
@@ -18,9 +18,9 @@ export function observeRoutineTurnUsage(source: UsageSource): void {
 }
 
 /** Each invocation owns its sources; concurrent fires and earlier chat turns cannot leak into this run. */
-export function captureRoutineRun<T>(run: () => Promise<T>): { result: Promise<T>; metrics: () => RoutineRunMetrics; failed: () => boolean; sessionId: () => string | undefined } {
+export function captureRoutineRun<T>(run: () => Promise<T>): { result: Promise<T>; metrics: () => RoutineRunMetrics; sessionId: () => string | undefined } {
   const sources = new Set<UsageSource>();
-  const context = { sources, sessionId: undefined as string | undefined };
+  const context = { sources, observedSessionId: undefined as string | undefined };
   const startedAt = new Date().toISOString();
   const started = performance.now();
   let durationMs: number | undefined;
@@ -31,7 +31,7 @@ export function captureRoutineRun<T>(run: () => Promise<T>): { result: Promise<T
       durationMs = Math.max(0, performance.now() - started);
     }
   });
-  return { result, failed: () => [...sources].some((source) => source().failed), sessionId: () => context.sessionId, metrics: () => {
+  return { result, sessionId: () => context.observedSessionId, metrics: () => {
     if (durationMs === undefined) throw new Error("Routine run has not ended");
     let tokens: RoutineRunMetrics["tokens"];
     for (const source of sources) {

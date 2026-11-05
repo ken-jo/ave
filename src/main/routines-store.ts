@@ -266,6 +266,17 @@ function isValidStoredRun(value: unknown, routineId: unknown): value is RoutineR
   return m.tokens === undefined || (m.tokens !== null && [m.tokens.input, m.tokens.output, m.tokens.total].every((n) => Number.isFinite(n) && n >= 0));
 }
 
+const ROUTINE_RUN_RETENTION_MS = 35 * 24 * 60 * 60 * 1000;
+const MAX_ROUTINE_RUNS = 500;
+
+function appendRoutineRun(record: RoutineRecord, run: RoutineRun): void {
+  const cutoff = Date.now() - ROUTINE_RUN_RETENTION_MS;
+  record.runs = [...(record.runs ?? []).filter((previous) => previous.firedAt !== run.firedAt), structuredClone(run)]
+    .filter((entry) => Date.parse(entry.firedAt) >= cutoff)
+    .sort((a, b) => a.firedAt.localeCompare(b.firedAt))
+    .slice(-MAX_ROUTINE_RUNS);
+}
+
 function emptyRoutinesFile(): RoutinesFile {
   return { version: 2, routines: [], invalid: [] };
 }
@@ -637,6 +648,17 @@ export class RoutinesStore {
     return stale ? "stale" : "acknowledged";
   }
 
+  /** Notification delivery retains its existing outcome behavior: timing never creates or clears attention state. */
+  async recordNotificationRunMetrics(id: string, firedAt: string, metrics: RoutineRunMetrics): Promise<RoutineRecord | null> {
+    const run: RoutineRun = { routineId: id, firedAt, status: "done", metrics };
+    if (!isValidStoredRun(run, id)) throw new Error("Invalid routine run metrics");
+    return this.mutate(id, (record) => {
+      if (record.execution !== "notification-only") throw new Error("Expected a notification routine");
+      appendRoutineRun(record, run);
+      return true;
+    });
+  }
+
   // Keep metrics by fire even when runs overlap. Only the current fire may change the item's attention state.
   // Success clears the failure. A failed scheduled one-shot is restored for review, but lastFiredAt prevents another fire.
   // Shutdown routines stay dismissed so they cannot run again at every quit.
@@ -650,8 +672,7 @@ export class RoutinesStore {
     return this.mutate(id, (r) => {
       let recorded = false;
       if (metrics !== undefined) {
-        r.runs = [...(r.runs ?? []).filter((previous) => previous.firedAt !== firedAt), structuredClone(run)]
-          .sort((a, b) => a.firedAt.localeCompare(b.firedAt));
+        appendRoutineRun(r, run);
         recorded = true;
       }
       if (r.lastFiredAt !== firedAt) return recorded;

@@ -124,7 +124,6 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }));
       try {
         const runResult: RunResult = await captured.result;
-        if (captured.failed()) throw new Error(t("be_routineEngine.runIncomplete"));
         skipped = runResult.skipped !== undefined;
         runSummary = runResult.summary;
         routineSessionId = runResult.sessionId;
@@ -189,7 +188,6 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   routinesScheduler.onNotification(({ routine }) => {
     const startedAt = new Date().toISOString();
     const started = performance.now();
-    let outcome: RoutineRunOutcome = { ok: true };
     try {
       notificationService.fire({
         kind: "routine",
@@ -199,7 +197,6 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       });
     } catch (err) {
       log.warn("routines notification emit failed: %s", (err as Error).message);
-      outcome = { ok: false, kind: "error", reason: (err as Error).message };
     }
     const durationMs = Math.max(0, performance.now() - started);
     void (async () => {
@@ -207,7 +204,11 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       try {
         const firedAt = routine.lastFiredAt ?? new Date().toISOString();
         const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
-        await persistRunOutcome(routine.id, firedAt, outcome, { startedAt, durationMs });
+        try {
+          await routinesStore.recordNotificationRunMetrics(routine.id, firedAt, { startedAt, durationMs });
+        } catch (err) {
+          log.warn("routines notification metrics persist failed (%s): %s", routine.id, (err as Error).message);
+        }
         announce(ROUTINES.fired, {
           id: routine.id,
           trigger: routine.trigger,

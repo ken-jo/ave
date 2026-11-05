@@ -29,6 +29,7 @@ describe("runShutdownRoutines", () => {
         calls.push(`update:${id}:${patch.lastRoutineSessionId}`);
         return { ...record, ...patch };
       }),
+      recordNotificationRunMetrics: vi.fn(async () => record),
       recordRunOutcome: vi.fn(async (id: string, firedAt: string, outcome: { ok: boolean }) => {
         calls.push(`outcome:${id}:${firedAt}:${outcome.ok}`);
         return record;
@@ -72,6 +73,7 @@ describe("runShutdownRoutines", () => {
       listActive: vi.fn(() => [record]),
       markFired: vi.fn(async () => ({ ...record, lastFiredAt: "2026-05-16T01:00:00.000Z" })),
       update: vi.fn(async () => record),
+      recordNotificationRunMetrics: vi.fn(async () => record),
       recordRunOutcome: vi.fn(async () => record),
     };
   }
@@ -121,7 +123,16 @@ describe("runShutdownRoutines", () => {
 
     await runShutdownRoutines({ routinesStore, routineEngine, notificationService: { fire: vi.fn() } });
 
-    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(record.id, expect.any(String), { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), undefined);
+    expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
+    expect(routinesStore.recordNotificationRunMetrics).toHaveBeenCalledWith(record.id, expect.any(String), expect.objectContaining({ durationMs: expect.any(Number) }));
+  });
+
+  it("does not create failure attention when shutdown notification delivery throws", async () => {
+    const record = routine({ execution: "notification-only", notificationTitle: "bye" });
+    const routinesStore = failingStore(record);
+    await runShutdownRoutines({ routinesStore, routineEngine: { runRoutine: vi.fn() }, notificationService: { fire: () => { throw new Error("notification delivery failed"); } } });
+    expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
+    expect(routinesStore.recordNotificationRunMetrics).toHaveBeenCalledWith(record.id, expect.any(String), expect.objectContaining({ durationMs: expect.any(Number) }));
   });
 
   it("keeps a failing shutdown routine dismissed against a real store, so it does not run at every quit", async () => {
@@ -164,6 +175,7 @@ describe("runShutdownRoutines — paused", () => {
       listActive: vi.fn(() => [routine({ pausedAt: "2026-05-16T00:30:00.000Z", pausedBy: "user" })]),
       markFired: vi.fn(),
       update: vi.fn(),
+      recordNotificationRunMetrics: vi.fn(),
       recordRunOutcome: vi.fn(),
     };
     const routineEngine = { runRoutine: vi.fn() };

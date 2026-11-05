@@ -10,6 +10,8 @@ import { PlannedScheduleCardView, RunningScheduleCardView, ScheduleWeekBundle } 
 import type { AveApi } from "../../types.js";
 import type { RoutineOccurrencesResult, RoutineRecord } from "../../../../shared/routines-types.js";
 import { t } from "../../../../i18n/runtime.js";
+import { boardScheduleCards } from "../schedule/board-schedule.js";
+import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import { localIso } from "../schedule/__tests__/schedule-test-helpers.js";
 
 const NOW = new Date("2026-11-05T10:00:00");
@@ -218,13 +220,17 @@ describe("Work Board — schedule cards", () => {
 });
 
 
-it("shows the metrics of each finished board run without zero-filling older fires", () => {
+it("shows only the latest dated metrics in a busy weekly group", () => {
   const item = routine("brief", "Morning brief");
-  const view = render(<ScheduleWeekBundle week={{ total: 2, skipped: [], rows: [{ routine: item, count: 2, failed: 1, runs: [
-    { routineId: item.id, firedAt: iso("2026-11-03T08:30:00"), status: "done" },
-    { routineId: item.id, firedAt: iso("2026-11-04T08:30:00"), status: "failed", metrics: { startedAt: iso("2026-11-04T08:30:00"), durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } },
-  ] }] }} />);
+  const runs = Array.from({ length: 21 }, (_, index) => ({
+    routineId: item.id, firedAt: iso(`2026-11-0${2 + Math.floor(index / 3)}T${String(8 + index % 3).padStart(2, "0")}:00:00`), status: "done" as const,
+    metrics: { startedAt: iso("2026-11-02T08:00:00"), durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } },
+  }));
+  const latest = runs.at(-1)!;
+  const { week } = boardScheduleCards({ records: [item], runs: runs.toReversed(), occurrences: [], running: new Map(), now: new Date("2026-11-08T12:00:00") });
+  const view = render(<ScheduleWeekBundle week={week} />);
   fireEvent.click(view.getByRole("button", { expanded: false }));
   expect(view.getAllByTestId("routine-run-metrics")).toHaveLength(1);
   expect(view.getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
+  expect(view.getByTestId("board-schedule-week-row-brief").textContent).toContain(formatMediumDateTime(latest.firedAt));
 });

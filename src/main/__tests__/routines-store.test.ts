@@ -1,6 +1,6 @@
 import { TEST_OWNER } from "./routines-fixture.js";
 import { withRoutinesStore } from "./support/routines-store.js";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -970,8 +970,8 @@ describe("routine run metrics", () => {
   it("persists each fire and its partial failure usage across reload, including overlapping older fires", withRoutinesStore(async ({ store, dir }) => {
     const filePath = join(dir, "routines.json");
     const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso(), repeat: { kind: "daily" } } });
-    const first = "2026-11-05T00:00:00.000Z";
-    const second = "2026-11-05T01:00:00.000Z";
+    const first = new Date(Date.now() - 3_600_000).toISOString();
+    const second = new Date().toISOString();
     await store.update(item.id, { lastFiredAt: second });
     const metrics = { startedAt: first, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } };
     await store.recordRunOutcome(item.id, second, { ok: true }, { ...metrics, startedAt: second }, "chat");
@@ -1000,5 +1000,60 @@ describe("routine run metrics", () => {
   it("rejects invalid metrics rather than persisting silent defaults", withRoutinesStore(async ({ store }) => {
     const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "n", schedule: { at: futureIso() } });
     await expect(store.recordRunOutcome(item.id, "2026-11-05T00:00:00.000Z", { ok: true }, { startedAt: "invalid", durationMs: -1 })).rejects.toThrow("Invalid routine run metrics");
+  }));
+});
+
+
+describe("routine metrics retention", () => {
+  it("prunes history older than 35 days on append and retains the exact age boundary", withRoutinesStore(async ({ store, dir }) => {
+    const now = new Date("2026-11-05T12:00:00.000Z");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now.getTime());
+    try {
+      const cutoff = new Date(now.getTime() - 35 * 86_400_000).toISOString();
+      const expired = new Date(Date.parse(cutoff) - 1).toISOString();
+      const current = now.toISOString();
+      const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso(), repeat: { kind: "daily" } } });
+      const filePath = join(dir, "routines.json");
+      const stored = JSON.parse(readFileSync(filePath, "utf8"));
+      stored.routines[0].runs = [expired, cutoff].map((firedAt) => ({ routineId: item.id, firedAt, status: "done" }));
+      writeFileSync(filePath, JSON.stringify(stored));
+      const reloaded = new RoutinesStore(filePath);
+      await reloaded.load();
+      expect(reloaded.list()[0]!.runs).toHaveLength(2);
+      await reloaded.recordRunOutcome(item.id, current, { ok: true }, { startedAt: current, durationMs: 1 });
+      expect(reloaded.list()[0]!.runs!.map((run) => run.firedAt)).toEqual([cutoff, current]);
+    } finally { clock.mockRestore(); }
+  }));
+
+  it("keeps at most the 500 newest fires when appending to unbounded history", withRoutinesStore(async ({ store, dir }) => {
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso(), repeat: { kind: "daily" } } });
+    const current = Date.now();
+    const history = Array.from({ length: 600 }, (_, index) => ({ routineId: item.id, firedAt: new Date(current - (600 - index) * 60_000).toISOString(), status: "done" }));
+    const filePath = join(dir, "routines.json");
+    const stored = JSON.parse(readFileSync(filePath, "utf8"));
+    stored.routines[0].runs = history.toReversed();
+    writeFileSync(filePath, JSON.stringify(stored));
+    const reloaded = new RoutinesStore(filePath);
+    await reloaded.load();
+    expect(reloaded.list()[0]!.runs).toHaveLength(600);
+    const firedAt = new Date(current).toISOString();
+    await reloaded.recordRunOutcome(item.id, firedAt, { ok: true }, { startedAt: firedAt, durationMs: 1 });
+    const runs = reloaded.list()[0]!.runs!;
+    expect(runs).toHaveLength(500);
+    expect(runs[0]!.firedAt).toBe(history[101]!.firedAt);
+    expect(runs.at(-1)!.firedAt).toBe(firedAt);
+    const reopened = new RoutinesStore(filePath);
+    await reopened.load();
+    expect(reopened.list()[0]!.runs).toEqual(runs);
+  }));
+
+  it("records notification timing without changing its attention or dismissal", withRoutinesStore(async ({ store }) => {
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "n", schedule: { at: futureIso() } });
+    const fired = await store.markFired(item.id);
+    await store.recordNotificationRunMetrics(item.id, fired!.lastFiredAt!, { startedAt: fired!.lastFiredAt!, durationMs: 12 });
+    const recorded = store.list()[0]!;
+    expect(recorded.lastFailure).toBeUndefined();
+    expect(recorded.dismissedAt).toBe(fired!.dismissedAt);
+    expect(recorded.runs![0]).toMatchObject({ status: "done", metrics: { durationMs: 12 } });
   }));
 });

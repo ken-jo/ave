@@ -109,11 +109,12 @@ describe("RoutineEngine.runRoutine", () => {
     expect(result.summary).toBe("[요약 형식 누락]");
   });
 
-  it("propagates turn errors so the fire records a failed outcome", async () => {
+  it("keeps the existing error summary when a turn throws", async () => {
     const loop = makeLoop({ throws: true });
     const engine = new RoutineEngine({ createConversationLoop: () => loop as any });
 
-    await expect(engine.runRoutine({ id: "shutdown-daily", trigger: "shutdown", prePrompt: "" })).rejects.toThrow("loop crashed");
+    const result = await engine.runRoutine({ id: "shutdown-daily", trigger: "shutdown", prePrompt: "" });
+    expect(result.summary).toContain("loop crashed");
     expect(loop.cleanupSession).toHaveBeenCalled();
   });
 

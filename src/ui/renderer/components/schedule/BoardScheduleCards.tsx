@@ -119,7 +119,11 @@ export function ScheduleWeekBundle({ week, onOpen }: { week: BoardScheduleCards[
             <li key={row.routine.id} className="flex items-center gap-2" data-testid={`board-schedule-week-row-${row.routine.id}`}>
               <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => onOpen?.(row.routine.id)}>
                 {routineTitle(row.routine)}
-                {row.runs.map((run) => <RunMetrics key={run.firedAt} metrics={run.metrics} />)}
+                {row.latestRun?.metrics && (
+                  <span className="block truncate text-muted-foreground">
+                    {formatMediumDateTime(row.latestRun.firedAt)} · <RunMetrics metrics={row.latestRun.metrics} className="inline" />
+                  </span>
+                )}
               </button>
               <span className="shrink-0 tabular-nums text-muted-foreground">{t("workBoard.scheduleRunCount", { count: String(row.count) })}</span>
               {row.failed > 0 && (

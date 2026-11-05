@@ -1580,7 +1580,6 @@ describe("routine metrics from transcript usage", () => {
     const captured = captureRoutineRun(() => loop.runTurn("Read report.", undefined, undefined, userKeyboardTurn()));
     const result = await captured.result;
     expect(result.stopReason).toBe("stream-error");
-    expect(captured.failed()).toBe(true);
     expect(captured.metrics().tokens).toEqual({ input: 100, output: 20, total: 120 });
   });
 });

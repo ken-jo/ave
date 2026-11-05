@@ -280,9 +280,14 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       };
       const statusOf = (firedAt: string): RoutineRun["status"] => (routine.lastFailure?.firedAt === firedAt ? "failed" : "done");
       const seen = new Set<string>();
+      const canOpenSession = (sessionId: string): boolean =>
+        !(routine.orphanedAt && sessionId === routine.targetSessionId)
+        && memoryManager.loadSessionMetadata(sessionId) !== null
+        && memoryManager.hasSessionTranscript(sessionId);
       for (const run of routine.runs ?? []) {
         if (!inRange(run.firedAt)) continue;
-        runs.push(run);
+        const { sessionId, ...stored } = run;
+        runs.push({ ...stored, ...(sessionId !== undefined && canOpenSession(sessionId) ? { sessionId } : {}) });
         seen.add(run.firedAt);
       }
       if (routine.execution === "llm-session") {
@@ -295,7 +300,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       // A failed run may have no session, and a notification item never has one.
       // A connected item's run is a turn in its chat, which 대화 열기 opens.
       if (inRange(routine.lastFiredAt) && !seen.has(routine.lastFiredAt)) {
-        const chat = routine.targetSessionId && !routine.orphanedAt ? { sessionId: routine.targetSessionId } : {};
+        const chat = routine.targetSessionId && !routine.orphanedAt && canOpenSession(routine.targetSessionId) ? { sessionId: routine.targetSessionId } : {};
         runs.push({ routineId: routine.id, firedAt: routine.lastFiredAt, status: statusOf(routine.lastFiredAt), ...chat });
       }
     }

@@ -295,7 +295,7 @@ export class RoutineEngine {
         summary = extractSummaryTag(result.text ?? "");
       } catch (err) {
         log.warn("runRoutine error (id=%s): %s", input.id, errorMessage(err));
-        throw err;
+        summary = t("be_routineEngine.runRoutineError", { message: errorMessage(err) });
       }
 
       return {

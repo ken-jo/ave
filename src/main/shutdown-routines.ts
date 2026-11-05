@@ -15,6 +15,7 @@ type ShutdownRoutinesStore = {
     id: string,
     patch: Partial<Pick<RoutineRecord, "lastRoutineSessionId">>,
   ) => Promise<RoutineRecord | null>;
+  recordNotificationRunMetrics: (id: string, firedAt: string, metrics: RoutineRunMetrics) => Promise<RoutineRecord | null>;
   recordRunOutcome: (id: string, firedAt: string, outcome: RoutineRunOutcome, metrics?: RoutineRunMetrics, sessionId?: string) => Promise<RoutineRecord | null>;
 };
 
@@ -62,7 +63,6 @@ export async function runShutdownRoutines(
       });
       try {
         await captured.result;
-        if (captured.failed() && outcome.ok) outcome = { ok: false, kind: "error", reason: t("be_routineEngine.runIncomplete") };
       } catch (err) {
         log.warn("before-quit: shutdown routine failed (id=%s): %s", routine.id, errorMessage(err));
         outcome = { ok: false, kind: "error", reason: errorMessage(err) };
@@ -87,7 +87,11 @@ export async function runShutdownRoutines(
       // Persist the outcome so the next launch shows a failed shutdown run instead of losing it to the log.
       if (fired?.lastFiredAt) {
         try {
-          await svc.routinesStore.recordRunOutcome(routine.id, fired.lastFiredAt, outcome, captured.metrics(), routineSessionId ?? captured.sessionId());
+          if (routine.execution === "llm-session") {
+            await svc.routinesStore.recordRunOutcome(routine.id, fired.lastFiredAt, outcome, captured.metrics(), routineSessionId ?? captured.sessionId());
+          } else {
+            await svc.routinesStore.recordNotificationRunMetrics(routine.id, fired.lastFiredAt, captured.metrics());
+          }
         } catch (outcomeErr) {
           log.warn("before-quit: shutdown routine outcome persist failed (id=%s): %s", routine.id, errorMessage(outcomeErr));
         }

@@ -61,6 +61,8 @@ function makeDeps(
         title: "",
         ...session,
       }))),
+      loadSessionMetadata: vi.fn((_id: string): { projectRoot?: string; noTranscript?: true } | null => ({})),
+      hasSessionTranscript: vi.fn((_id: string) => true),
       deleteSession: vi.fn(async () => undefined),
       touchSessionTranscript: vi.fn(),
     },
@@ -447,4 +449,22 @@ it("returns persisted metrics once per fire, preserving older connected turns an
   expect(result).toMatchObject({ ok: true, runs: [recorded, { routineId: "routine-a", firedAt: "2026-11-04T00:00:00.000Z", status: "done" }] });
   expect((result as { runs: unknown[] }).runs).toHaveLength(2);
   expect((result as { runs: Array<{ metrics?: unknown }> }).runs[1]!.metrics).toBeUndefined();
+});
+
+
+describe("stored routine conversation links", () => {
+  it.each(["orphaned", "metadata-deleted", "transcript-deleted"])("omits an unopenable stored session while preserving metrics: %s", async (kind) => {
+    const deps = await setup([]);
+    const firedAt = "2026-11-03T00:00:00.000Z";
+    const metrics = { startedAt: firedAt, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } };
+    deps.routinesStore.list.mockReturnValue([{ id: "routine-a", trigger: "schedule", execution: "llm-session", targetSessionId: "deleted-chat", lastFiredAt: firedAt,
+      ...(kind === "orphaned" ? { orphanedAt: firedAt } : {}),
+      runs: [{ routineId: "routine-a", firedAt, status: "done", sessionId: "deleted-chat", metrics }],
+    }] as never);
+    if (kind === "metadata-deleted") deps.memoryManager.loadSessionMetadata.mockReturnValue(null);
+    if (kind === "transcript-deleted") deps.memoryManager.hasSessionTranscript.mockReturnValue(false);
+    const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    expect(result).toMatchObject({ ok: true, runs: [{ routineId: "routine-a", firedAt, metrics }] });
+    expect((result as { runs: Array<{ sessionId?: string }> }).runs[0]!.sessionId).toBeUndefined();
+  });
 });
