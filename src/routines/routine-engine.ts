@@ -5,6 +5,7 @@
  * sessions are isolated from the interactive main loop while using the same
  * session repository and metadata model.
  */
+import { observeRoutineSession } from "../engine/routine-run-metrics.js";
 import type { ConversationLoop } from "../engine/conversation-loop.js";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
@@ -284,6 +285,7 @@ export class RoutineEngine {
         input.firedAt ?? generatedAt,
       );
 
+      observeRoutineSession(sessionId);
       let summary = "";
       try {
         const result = await loop.runTurn(input.prePrompt, undefined, input.signal, {
@@ -293,7 +295,7 @@ export class RoutineEngine {
         summary = extractSummaryTag(result.text ?? "");
       } catch (err) {
         log.warn("runRoutine error (id=%s): %s", input.id, errorMessage(err));
-        summary = t("be_routineEngine.runRoutineError", { message: errorMessage(err) });
+        throw err;
       }
 
       return {

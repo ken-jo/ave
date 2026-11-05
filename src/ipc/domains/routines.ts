@@ -280,6 +280,11 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       };
       const statusOf = (firedAt: string): RoutineRun["status"] => (routine.lastFailure?.firedAt === firedAt ? "failed" : "done");
       const seen = new Set<string>();
+      for (const run of routine.runs ?? []) {
+        if (!inRange(run.firedAt)) continue;
+        runs.push(run);
+        seen.add(run.firedAt);
+      }
       if (routine.execution === "llm-session") {
         for (const session of memoryManager.listSessionsByRoutine(routine.id)) {
           if (!inRange(session.routineFiredAt) || seen.has(session.routineFiredAt)) continue;

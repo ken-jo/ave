@@ -74,9 +74,10 @@ describe("routine cards and the Suggestions conversation", () => {
     expectTouchedBefore(send, touchSessionTranscript, ROUTINES.failed);
   });
 
-  it("and for a notification-only routine's card", () => {
+  it("and for a notification-only routine's card", async () => {
     const { handlers, send, touchSessionTranscript } = wire(async () => ({ summary: "" }));
     handlers.notification!({ routine: { ...routine, execution: "notification-only" } });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
     expectTouchedBefore(send, touchSessionTranscript, ROUTINES.fired);
   });
 });
@@ -90,6 +91,8 @@ describe("routine run outcome persistence", () => {
       "routine-a",
       "2026-11-04T01:00:00.000Z",
       { ok: false, kind: "error", reason: "boom" },
+      expect.objectContaining({ startedAt: expect.any(String), durationMs: expect.any(Number) }),
+      undefined,
     );
   });
 
@@ -97,7 +100,7 @@ describe("routine run outcome persistence", () => {
     const { handlers, send, routinesStore } = wire(async () => ({ summary: "done", sessionId: "s-1" }));
     handlers.llm!({ routine });
     await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
-    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", "2026-11-04T01:00:00.000Z", { ok: true });
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", "2026-11-04T01:00:00.000Z", { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), "s-1");
   });
 
   it("still sends the result card when persisting the outcome fails", async () => {
@@ -142,7 +145,7 @@ describe("a schedule connected to a chat", () => {
     expect(wakes[0]).toMatchObject({ sessionId: TARGET, input: "check the build", withheld: true });
     expect(wakes[0]!.displayText).toContain("Morning");
     expect(wakes[0]!.displayText).toContain("check the build");
-    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", routine.lastFiredAt, { ok: true });
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", routine.lastFiredAt, { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), TARGET);
     expect(routinesScheduler.markStopped).toHaveBeenCalledWith("routine-a");
     // Outside the wake the flag is gone again: the next ordinary turn reads its allows.
     expect(sessionAuthorityWithheld()).toBe(false);

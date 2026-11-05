@@ -1,3 +1,4 @@
+import { observeRoutineTurnUsage } from "../routine-run-metrics.js";
 import {
   DEFAULT_SUBSCRIPTION_REASONING_SPEED,
   subscriptionReasoningSpeedEffort,
@@ -235,6 +236,7 @@ export async function queryLoop(
           pricing: resolveModelPricing(llmSettings.provider, model, turnPricingOverrides, primaryPricingRoute),
         };
     let turnModelSettings: RunModelSettings | undefined;
+    let routineTurnFailed = false;
     const withServingIdentity = (
       result: {
         text: string;
@@ -244,24 +246,30 @@ export async function queryLoop(
         inputRequired?: TurnInputRequired;
         authorizationRequired?: AuthorizationRequiredState;
       },
-    ) => ({
-      ...result,
-      usageByModel: [...usageByModel],
-      subscriptionUsage: subscriptionUsage.values,
-      ...(servingVendorProvider !== undefined && servingVendorModel !== undefined
-        ? {
-            vendorProvider: servingVendorProvider,
-            vendorModel: servingVendorModel,
-          }
-        : {}),
-      // Fallbacks resolve their own facts even when labels match; retain only last primary request facts.
-      ...(turnModelSettings !== undefined
-        && servingVendorProvider === llmSettings.provider && servingVendorModel === model
-        ? { modelSettings: turnModelSettings }
-        : {}),
-      finalToolSchemas: [...toolSchemas],
-      promotedToolNames: [...new Set(promotedToolNamesForTurn)],
-    });
+    ) => {
+      routineTurnFailed = result.stopReason === "stream-error"
+        || result.stopReason === "context-error"
+        || result.stopReason === "interrupted"
+        || result.stopReason === "authorization-required";
+      return {
+        ...result,
+        usageByModel: [...usageByModel],
+        subscriptionUsage: subscriptionUsage.values,
+        ...(servingVendorProvider !== undefined && servingVendorModel !== undefined
+          ? {
+              vendorProvider: servingVendorProvider,
+              vendorModel: servingVendorModel,
+            }
+          : {}),
+        // Fallbacks resolve their own facts even when labels match; retain only last primary request facts.
+        ...(turnModelSettings !== undefined
+          && servingVendorProvider === llmSettings.provider && servingVendorModel === model
+          ? { modelSettings: turnModelSettings }
+          : {}),
+        finalToolSchemas: [...toolSchemas],
+        promotedToolNames: [...new Set(promotedToolNamesForTurn)],
+      };
+    };
     const turnProvider = self.provider instanceof FallbackProvider
       ? self.provider.withCallbacks({
         onFallback: callbacks?.onFallback,
@@ -285,6 +293,7 @@ export async function queryLoop(
     // Persist the last live review verdict on its tool result so reload shows the same decision.
     const permissionReviewByUseId = new Map<string, PermissionReviewEvent>();
     let turnUsage: TokenUsage | undefined;
+    observeRoutineTurnUsage(() => ({ usage: turnUsage, subscriptionUsage: subscriptionUsage.values, failed: routineTurnFailed }));
     const recordProviderUsage = (
       usage: TokenUsage,
       updateContextCalibration: boolean,

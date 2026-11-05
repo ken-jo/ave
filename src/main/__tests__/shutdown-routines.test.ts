@@ -88,6 +88,8 @@ describe("runShutdownRoutines", () => {
       "shutdown-llm",
       "2026-05-16T01:00:00.000Z",
       { ok: false, kind: "error", reason: "provider down" },
+      expect.objectContaining({ startedAt: expect.any(String), durationMs: expect.any(Number) }),
+      undefined,
     );
     expect(routinesStore.update).not.toHaveBeenCalled();
   });
@@ -107,17 +109,19 @@ describe("runShutdownRoutines", () => {
       "shutdown-llm",
       "2026-05-16T01:00:00.000Z",
       { ok: false, kind: "shutdown-timeout" },
+      expect.objectContaining({ startedAt: expect.any(String), durationMs: expect.any(Number) }),
+      undefined,
     );
   });
 
-  it("records no run outcome for a notification-only shutdown routine", async () => {
+  it("records duration without fabricated tokens for a notification-only shutdown routine", async () => {
     const record = routine({ execution: "notification-only", notificationTitle: "bye" });
     const routinesStore = failingStore(record);
     const routineEngine = { runRoutine: vi.fn() };
 
     await runShutdownRoutines({ routinesStore, routineEngine, notificationService: { fire: vi.fn() } });
 
-    expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith(record.id, expect.any(String), { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), undefined);
   });
 
   it("keeps a failing shutdown routine dismissed against a real store, so it does not run at every quit", async () => {

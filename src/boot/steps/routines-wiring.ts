@@ -1,4 +1,5 @@
 /** Prepare scheduling now, but start only after IPC listeners attach so overdue routines are not lost. */
+import { captureRoutineRun } from "../../engine/routine-run-metrics.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
@@ -6,7 +7,7 @@ import type { BootContext } from "../context.js";
 import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { sanitizeRoutineFailureReason } from "../../main/routines-store.js";
-import type { RoutineRecord, RoutineRunOutcome } from "../../shared/routines-types.js";
+import type { RoutineRecord, RoutineRunOutcome, RoutineRunMetrics } from "../../shared/routines-types.js";
 import { wakeRoutineChat } from "../../main/app-state.js";
 import { turnExtensionPolicyContext, withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
 
@@ -27,9 +28,11 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     routineId: string,
     firedAt: string,
     outcome: RoutineRunOutcome,
+    metrics: RoutineRunMetrics,
+    sessionId?: string,
   ): Promise<void> => {
     try {
-      const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome);
+      const updated = await routinesStore.recordRunOutcome(routineId, firedAt, outcome, metrics, sessionId);
       if (!updated) log.warn("routines llm-session outcome persist failed: routine not found (%s)", routineId);
     } catch (err) {
       log.warn("routines llm-session outcome persist failed (%s): %s", routineId, (err as Error).message);
@@ -109,17 +112,19 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       let routineSessionId: string | undefined;
       let runError: Error | undefined;
       let skipped = false;
+      const captured = captureRoutineRun(() => target !== undefined
+        ? runConnected(routine, target, firedAt, title)
+        : routineEngine.runRoutine({
+          id: routine.id,
+          trigger: routine.trigger,
+          prePrompt: routine.prePrompt ?? "",
+          title: routine.title,
+          scope: routine.scope,
+          firedAt,
+        }));
       try {
-        const runResult: RunResult = target !== undefined
-          ? await runConnected(routine, target, firedAt, title)
-          : await routineEngine.runRoutine({
-            id: routine.id,
-            trigger: routine.trigger,
-            prePrompt: routine.prePrompt ?? "",
-            title: routine.title,
-            scope: routine.scope,
-            firedAt,
-          });
+        const runResult: RunResult = await captured.result;
+        if (captured.failed()) throw new Error(t("be_routineEngine.runIncomplete"));
         skipped = runResult.skipped !== undefined;
         runSummary = runResult.summary;
         routineSessionId = runResult.sessionId;
@@ -159,7 +164,11 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
         return;
       }
-      await persistRunOutcome(routine.id, firedAt, runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true });
+      await persistRunOutcome(
+        routine.id, firedAt,
+        runError ? { ok: false, kind: "error", reason: runError.message } : { ok: true },
+        captured.metrics(), routineSessionId ?? captured.sessionId() ?? target,
+      );
       const summary = runSummary;
       // Allow-list event fields; spreading the routine could expose private content.
       try {
@@ -178,6 +187,9 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     })();
   });
   routinesScheduler.onNotification(({ routine }) => {
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
+    let outcome: RoutineRunOutcome = { ok: true };
     try {
       notificationService.fire({
         kind: "routine",
@@ -187,21 +199,26 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       });
     } catch (err) {
       log.warn("routines notification emit failed: %s", (err as Error).message);
+      outcome = { ok: false, kind: "error", reason: (err as Error).message };
     }
-    // Allow-list fields so prompts and notification bodies cannot leak into events.
-    try {
-      const firedAt = routine.lastFiredAt ?? new Date().toISOString();
-      const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
-      announce(ROUTINES.fired, {
-        id: routine.id,
-        trigger: routine.trigger,
-        execution: routine.execution,
-        firedAt,
-        title,
-        summary: "",
-      } satisfies import("../../shared/routines-types.js").RoutineFiredPayload);
-    } catch (err) {
-      log.warn("routines notification fired emit failed: %s", (err as Error).message);
-    }
+    const durationMs = Math.max(0, performance.now() - started);
+    void (async () => {
+      // Allow-list fields so prompts and notification bodies cannot leak into events.
+      try {
+        const firedAt = routine.lastFiredAt ?? new Date().toISOString();
+        const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
+        await persistRunOutcome(routine.id, firedAt, outcome, { startedAt, durationMs });
+        announce(ROUTINES.fired, {
+          id: routine.id,
+          trigger: routine.trigger,
+          execution: routine.execution,
+          firedAt,
+          title,
+          summary: "",
+        } satisfies import("../../shared/routines-types.js").RoutineFiredPayload);
+      } catch (err) {
+        log.warn("routines notification fired emit failed: %s", (err as Error).message);
+      }
+    })();
   });
 }

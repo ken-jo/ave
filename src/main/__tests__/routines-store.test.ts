@@ -964,3 +964,41 @@ describe("RoutinesStore v2 — run failure persistence", () => {
     expect(store.list()[0].lastFailure).toMatchObject({ kind: "shutdown-timeout", firedAt });
   }));
 });
+
+
+describe("routine run metrics", () => {
+  it("persists each fire and its partial failure usage across reload, including overlapping older fires", withRoutinesStore(async ({ store, dir }) => {
+    const filePath = join(dir, "routines.json");
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "p", schedule: { at: futureIso(), repeat: { kind: "daily" } } });
+    const first = "2026-11-05T00:00:00.000Z";
+    const second = "2026-11-05T01:00:00.000Z";
+    await store.update(item.id, { lastFiredAt: second });
+    const metrics = { startedAt: first, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } };
+    await store.recordRunOutcome(item.id, second, { ok: true }, { ...metrics, startedAt: second }, "chat");
+    await store.recordRunOutcome(item.id, first, { ok: false, kind: "error", reason: "failed after spend" }, metrics, "chat");
+    metrics.tokens.input = 1;
+    const reloaded = new RoutinesStore(filePath);
+    await reloaded.load();
+    expect(reloaded.list()[0]!.runs).toEqual([
+      { routineId: item.id, firedAt: first, status: "failed", sessionId: "chat", metrics: { startedAt: first, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } },
+      { routineId: item.id, firedAt: second, status: "done", sessionId: "chat", metrics: { startedAt: second, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } },
+    ]);
+    expect(reloaded.list()[0]!.lastFailure).toBeUndefined();
+    reloaded.list()[0]!.runs![0]!.metrics!.tokens!.input = 2;
+    expect(reloaded.list()[0]!.runs![0]!.metrics!.tokens!.input).toBe(4000);
+  }));
+
+  it("loads older fires without fabricating metrics", withRoutinesStore(async ({ store, dir }) => {
+    const filePath = join(dir, "routines.json");
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "n", schedule: { at: futureIso() } });
+    await store.markFired(item.id);
+    const reloaded = new RoutinesStore(filePath);
+    await reloaded.load();
+    expect(reloaded.list()[0]!.runs).toBeUndefined();
+  }));
+
+  it("rejects invalid metrics rather than persisting silent defaults", withRoutinesStore(async ({ store }) => {
+    const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "n", schedule: { at: futureIso() } });
+    await expect(store.recordRunOutcome(item.id, "2026-11-05T00:00:00.000Z", { ok: true }, { startedAt: "invalid", durationMs: -1 })).rejects.toThrow("Invalid routine run metrics");
+  }));
+});

@@ -6,7 +6,7 @@ import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
-import { PlannedScheduleCardView, RunningScheduleCardView } from "../schedule/BoardScheduleCards.js";
+import { PlannedScheduleCardView, RunningScheduleCardView, ScheduleWeekBundle } from "../schedule/BoardScheduleCards.js";
 import type { AveApi } from "../../types.js";
 import type { RoutineOccurrencesResult, RoutineRecord } from "../../../../shared/routines-types.js";
 import { t } from "../../../../i18n/runtime.js";
@@ -215,4 +215,16 @@ describe("Work Board — schedule cards", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     await waitFor(() => expect(vi.mocked(api.listRoutineOccurrences).mock.calls.some(([q]) => (q as { from: string }).from === iso("2026-11-09T00:00:00"))).toBe(true));
   });
+});
+
+
+it("shows the metrics of each finished board run without zero-filling older fires", () => {
+  const item = routine("brief", "Morning brief");
+  const view = render(<ScheduleWeekBundle week={{ total: 2, skipped: [], rows: [{ routine: item, count: 2, failed: 1, runs: [
+    { routineId: item.id, firedAt: iso("2026-11-03T08:30:00"), status: "done" },
+    { routineId: item.id, firedAt: iso("2026-11-04T08:30:00"), status: "failed", metrics: { startedAt: iso("2026-11-04T08:30:00"), durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } },
+  ] }] }} />);
+  fireEvent.click(view.getByRole("button", { expanded: false }));
+  expect(view.getAllByTestId("routine-run-metrics")).toHaveLength(1);
+  expect(view.getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
 });

@@ -3,6 +3,11 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "be_routineEngine.runIncomplete": "예약 실행을 완료하지 못했습니다",
+  "schedulePanel.durationHour": "시간",
+  "schedulePanel.durationMinute": "분",
+  "schedulePanel.durationSecond": "초",
+  "schedulePanel.runMetrics": "{duration} · {tokens} 토큰",
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",

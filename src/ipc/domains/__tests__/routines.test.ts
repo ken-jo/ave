@@ -437,3 +437,14 @@ describe("대화에 연결 IPC", () => {
     expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }], running: [] });
   });
 });
+
+
+it("returns persisted metrics once per fire, preserving older connected turns and old records without metrics", async () => {
+  const deps = await setup([{ id: "session", routineFiredAt: "2026-11-03T00:00:00.000Z", preview: "" }]);
+  const recorded = { routineId: "routine-a", firedAt: "2026-11-03T00:00:00.000Z", status: "failed", sessionId: "session", metrics: { startedAt: "2026-11-03T00:00:00.000Z", durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } };
+  deps.routinesStore.list.mockReturnValue([{ id: "routine-a", trigger: "schedule", execution: "llm-session", lastFiredAt: "2026-11-04T00:00:00.000Z", runs: [recorded] }] as never);
+  const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+  expect(result).toMatchObject({ ok: true, runs: [recorded, { routineId: "routine-a", firedAt: "2026-11-04T00:00:00.000Z", status: "done" }] });
+  expect((result as { runs: unknown[] }).runs).toHaveLength(2);
+  expect((result as { runs: Array<{ metrics?: unknown }> }).runs[1]!.metrics).toBeUndefined();
+});

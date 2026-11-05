@@ -1,8 +1,9 @@
+import { captureRoutineRun } from "../engine/routine-run-metrics.js";
 import type { Routine, RoutineResult } from "../routines/routine-engine.js";
 import { createLogger } from "../lib/logger.js";
 import { t } from "../i18n/index.js";
 import type { FireOptions } from "./notification-service.js";
-import type { RoutineRecord, RoutineRunOutcome } from "../shared/routines-types.js";
+import type { RoutineRecord, RoutineRunOutcome, RoutineRunMetrics } from "../shared/routines-types.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
@@ -14,7 +15,7 @@ type ShutdownRoutinesStore = {
     id: string,
     patch: Partial<Pick<RoutineRecord, "lastRoutineSessionId">>,
   ) => Promise<RoutineRecord | null>;
-  recordRunOutcome: (id: string, firedAt: string, outcome: RoutineRunOutcome) => Promise<RoutineRecord | null>;
+  recordRunOutcome: (id: string, firedAt: string, outcome: RoutineRunOutcome, metrics?: RoutineRunMetrics, sessionId?: string) => Promise<RoutineRecord | null>;
 };
 
 type ShutdownRoutineEngine = {
@@ -37,6 +38,7 @@ export async function runShutdownRoutines(
 ): Promise<void> {
   if (!svc.routinesStore || !svc.routineEngine) return;
 
+  const routineEngine = svc.routineEngine;
   try {
     const shutdownRoutines = svc.routinesStore.listActive().filter(
       (routine) => routine.trigger === "shutdown" && !routine.pausedAt,
@@ -44,9 +46,9 @@ export async function runShutdownRoutines(
     for (const routine of shutdownRoutines) {
       let routineSessionId: string | undefined;
       let outcome: RoutineRunOutcome = { ok: true };
-      try {
+      const captured = captureRoutineRun(async () => {
         if (routine.execution === "llm-session") {
-          const run = await runLlmShutdownRoutine(svc.routineEngine, routine, timeoutMs);
+          const run = await runLlmShutdownRoutine(routineEngine, routine, timeoutMs);
           if (run.timedOut) outcome = { ok: false, kind: "shutdown-timeout" };
           else routineSessionId = run.sessionId;
         } else {
@@ -57,6 +59,10 @@ export async function runShutdownRoutines(
             contextRef: { routineId: routine.id },
           });
         }
+      });
+      try {
+        await captured.result;
+        if (captured.failed() && outcome.ok) outcome = { ok: false, kind: "error", reason: t("be_routineEngine.runIncomplete") };
       } catch (err) {
         log.warn("before-quit: shutdown routine failed (id=%s): %s", routine.id, errorMessage(err));
         outcome = { ok: false, kind: "error", reason: errorMessage(err) };
@@ -79,9 +85,9 @@ export async function runShutdownRoutines(
         );
       }
       // Persist the outcome so the next launch shows a failed shutdown run instead of losing it to the log.
-      if (fired?.lastFiredAt && routine.execution === "llm-session") {
+      if (fired?.lastFiredAt) {
         try {
-          await svc.routinesStore.recordRunOutcome(routine.id, fired.lastFiredAt, outcome);
+          await svc.routinesStore.recordRunOutcome(routine.id, fired.lastFiredAt, outcome, captured.metrics(), routineSessionId ?? captured.sessionId());
         } catch (outcomeErr) {
           log.warn("before-quit: shutdown routine outcome persist failed (id=%s): %s", routine.id, errorMessage(outcomeErr));
         }
