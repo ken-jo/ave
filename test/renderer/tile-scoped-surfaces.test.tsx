@@ -25,6 +25,7 @@ import { CHAT_SESSION_DRAG_TYPE } from "../../src/ui/renderer/components/pane-dr
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import { A2ATaskState } from "../../src/shared/a2a.js";
 import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
+import { requestNewChatDraft } from "../../src/ui/renderer/chat-draft-request.js";
 
 // Advance frames after committed layout when proving surface ownership and focus.
 beforeEach(() => {
@@ -1714,6 +1715,33 @@ describe("opening a conversation while another is mid-turn", () => {
     await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
     expect(collectTiles(container)).toHaveLength(1);
     expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
+    expect(releasedGroupIds()).toEqual([]);
+
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
+  });
+
+  it("a prepared draft during a turn opens in the adopted tile, never in the busy one", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, releasedGroupIds } = await renderApp(withOtherSession);
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    api.chatNew.mockClear();
+
+    await act(async () => { requestNewChatDraft("Migrate the Ave extension."); });
+
+    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
+    const adopted = collectTiles(container).find((tile) => tile.chatGroupId !== MAIN_CHAT_GROUP_ID)!;
+    const composer = (element: HTMLElement) =>
+      element.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement | null;
+    await waitFor(() => expect(composer(adopted.element)?.value).toBe("Migrate the Ave extension."));
+    // The draft arrives through a started new conversation, not a write into whatever the tile holds.
+    expect(api.chatNew).toHaveBeenCalled();
+    const busy = collectTiles(container).find((tile) => tile.chatGroupId === MAIN_CHAT_GROUP_ID)!;
+    expect(composer(busy.element)?.value ?? "").not.toContain("Migrate the Ave extension.");
     expect(releasedGroupIds()).toEqual([]);
 
     await act(async () => {
