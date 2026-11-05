@@ -502,7 +502,9 @@ own authority:
   no paths to the attachment allowlist. Both now meet the same allowed-extension
   and execute-bit refusals;
 - the folder view's `workspace.openPath` uses project containment: the target
-  must lie inside the registered project root it names.
+  must lie inside the registered project root it names. It refuses a path with a
+  `.` or `..` segment (`invalid-request`) before any lstat or realpath, so the
+  checks and the open cannot resolve different files.
 
 Every caller requires the registered main-frame identity, checked again before
 the open. The folder view's open also requires a user gesture

@@ -257,10 +257,9 @@ describe("workspace.openPath", () => {
   });
 
   it("refuses path traversal out of the project", async () => {
-    const traversal = join(root, "src", "..", "..", outside.split(/[\\/]/).pop()!, "secret.txt");
-    const res = await openPath({ projectRoot: root, path: traversal, intent: GESTURE });
-    expect(res.ok).toBe(false);
-    expect(["path-not-allowed", "outside-project"]).toContain(res.error);
+    // Spelled with its `..` segments: `join` would fold them away.
+    const traversal = [root, "src", "..", "..", outside.split(/[\\/]/).pop()!, "secret.txt"].join("/");
+    expect(await openPath({ projectRoot: root, path: traversal, intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
     expect(openPathMock).not.toHaveBeenCalled();
   });
 
@@ -455,15 +454,27 @@ describe("the open path's link chain with `..`", () => {
     }
   });
 
-  it("walks a requested `..` from the physical folder, so a link before it is still judged", async ({ skip }) => {
+  it("refuses a requested `.` or `..` segment before any lstat or realpath", async ({ skip }) => {
     needsFileLinks(skip);
+    // `mnt/..` is `other` to the OS but `root` to a lexical fold, where `x.txt` links to a UNC path: the checks and the open
+    // must never see different files.
     const dir = join(root, "climb-request");
-    mkdirSync(dir);
-    writeFileSync(join(dir, "x.txt"), "x");
-    symlinkSync("//fileserver/share/sub", join(dir, "mnt"), process.platform === "win32" ? "dir" : undefined);
+    mkdirSync(join(dir, "other", "inner"), { recursive: true });
+    writeFileSync(join(dir, "other", "x.txt"), "x");
+    symlinkSync("other/inner", join(dir, "mnt"), process.platform === "win32" ? "dir" : undefined);
+    linkFile("//fileserver/share/x.txt", join(dir, "x.txt"));
+    const lstat = vi.spyOn(fsModule.promises, "lstat");
+    const realpath = vi.spyOn(fsModule.promises, "realpath");
     try {
-      expect(await linkChainVerdict(`${dir}/mnt/../x.txt`)).toBe("network");
+      for (const path of [`${dir}/mnt/../x.txt`, `${dir}/./x.txt`]) {
+        expect(await openPath({ projectRoot: root, path, intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
+      }
+      expect(lstat).not.toHaveBeenCalled();
+      expect(realpath).not.toHaveBeenCalled();
+      expect(openPathMock).not.toHaveBeenCalled();
     } finally {
+      lstat.mockRestore();
+      realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });

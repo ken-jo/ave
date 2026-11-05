@@ -1165,7 +1165,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
       const { projectRoot, path: rawPath } = payload as { projectRoot?: unknown; path?: unknown };
       if (typeof projectRoot !== "string" || typeof rawPath !== "string" || rawPath.length === 0
-        || !isAbsolutePath(projectRoot) || !isAbsolutePath(rawPath)) {
+        || !isAbsolutePath(projectRoot) || !isAbsolutePath(rawPath)
+        // A `.` or `..` segment is refused before any lstat or realpath: the link-chain walk, the scope guard and Win32 would
+        // each fold it differently (lexically, or against a link's physical parent), so the checks could judge one file and
+        // the open resolve another. The folder view never sends one.
+        || rawPath.split(/[\\/]+/u).some((segment) => segment === "." || segment === "..")) {
         return { ok: false, error: "invalid-request" };
       }
       let root: WorkspaceRoot | null;

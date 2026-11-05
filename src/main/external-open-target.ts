@@ -1,7 +1,7 @@
 // One default-app open sequence for every host channel that hands a file to the OS (attach.openExternal, workspace.openPath).
 import { shell } from "electron";
 import { promises as fs } from "node:fs";
-import { basename, isAbsolute, parse, resolve, sep } from "node:path";
+import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
@@ -73,9 +73,8 @@ function climbs(path: string): boolean {
  */
 export async function linkChainVerdict(path: string): Promise<"local" | "network" | "missing"> {
   if (isNetworkOrDevice(path)) return "network";
-  // The requested path keeps its own `..` segments: `resolve` would fold them against the spelled parent, skipping a link
-  // before them, while the walk below takes each `..` from the physical folder it has reached, as the OS does.
-  const start = isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`;
+  // Callers refuse a requested path with a `.` or `..` segment before this walk, so `resolve` folds nothing here.
+  const start = resolve(path);
   let current = parse(start).root;
   const rest = start.slice(current.length).split(/[\\/]+/u).filter(Boolean);
   let hops = 0;
