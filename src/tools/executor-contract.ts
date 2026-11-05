@@ -7,6 +7,7 @@ import type {
   AuthorizationRequiredControl,
 } from "../shared/authorization-required.js";
 import type { McpUiPayload } from "../mcp/types.js";
+import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { DisposableSubstrate } from "../permissions/sandbox-capability.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
@@ -38,6 +39,8 @@ export interface ToolCallMeta {
   executionPlan?: HostShellExecutionPlanAuditProjection;
   // Renderer-only cancellation marker; model-facing is_error stays true because tool results have no cancellation state.
   cancelled?: boolean;
+  /** Renderer-only page thumbnail from a builtin browser tool. */
+  browserPreview?: BrowserPreviewImage;
 }
 
 export interface ToolUseBlock {

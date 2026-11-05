@@ -1139,7 +1139,11 @@ function adapterFixture(options: {
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   modelFocusRelease(registry, guest.id, cdp);
   const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
-  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
+  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT), {
+    // These cases assert page actions, not thumbnails; a capture attempt fails and leaves the tool result as it is.
+    decodePng: () => { throw new Error("no image decoder in this fixture"); },
+    record: () => {},
+  });
   const tools = createBrowserTools({
     tabs: registry,
     pickUploadFiles: async () => null,
@@ -1262,6 +1266,25 @@ it("reports the page a clicked link commits after the click is acknowledged", as
   expect(result.isError).toBe(false);
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: "https://a.example/next" });
   expect(guest.listenerCount("did-navigate")).toBe(0);
+});
+
+describe("page action thumbnails", () => {
+  it("hands the call's signals to the capture, so a stopped call never starts one", async () => {
+    const actions = createBrowserPageActions(new BrowserTabRegistry(), browserOrigin, () => null, {
+      decodePng: () => { throw new Error("no image decoder in this fixture"); },
+      record: () => {},
+    });
+    const capturePage = vi.fn(() => new Promise<never>(() => {}));
+    const stopped = new AbortController();
+    stopped.abort();
+    const live = {
+      tab: { windowId: 1, rendererTabId: "browser:one", documentId: 1, guest: { isDestroyed: () => false, capturePage } },
+      signal: new AbortController().signal,
+      callerSignal: stopped.signal,
+    };
+    await expect(actions.capturePreview!(live as never)).resolves.toBeUndefined();
+    expect(capturePage).not.toHaveBeenCalled();
+  });
 });
 
 describe("tap placement", () => {

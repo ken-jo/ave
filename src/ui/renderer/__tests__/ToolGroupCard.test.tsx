@@ -809,3 +809,37 @@ describe("ToolGroupCard — tool row header cells", () => {
     expect(queryByRole("tooltip")).toBeNull();
   });
 });
+
+describe("ToolGroupCard browser thumbnails", () => {
+  const browserPreview = { dataUrl: "data:image/jpeg;base64,QUdFTlQ=", width: 320, height: 180 };
+  const browserTool = (overrides: Partial<ToolGroupEntry["tools"][number]> = {}) =>
+    makeTool({ name: "browser_snapshot", result: "outline", browserPreview, ...overrides });
+
+  it("shows a completed browser tool's thumbnail as an image", () => {
+    const { getByTestId } = render(<ToolGroupCard group={makeGroup({ tools: [browserTool()] })} />);
+    const img = getByTestId("tool-browser-preview");
+    expect(img.tagName).toBe("IMG");
+    expect(img.getAttribute("src")).toBe(browserPreview.dataUrl);
+  });
+
+  it("shows the latest thumbnail of a collapsed multi-tool group", () => {
+    const later = { ...browserPreview, dataUrl: "data:image/jpeg;base64,TEFURVI=" };
+    const { getAllByTestId } = render(<ToolGroupCard group={makeGroup({ tools: [
+      browserTool({ toolUseId: "tu-1", displayOrder: 0 }),
+      browserTool({ toolUseId: "tu-2", displayOrder: 1, browserPreview: later }),
+    ] })} />);
+    expect(getAllByTestId("tool-browser-preview").map((img) => img.getAttribute("src"))).toEqual([later.dataUrl]);
+  });
+
+  it("renders nothing for a non-JPEG payload or an unfinished tool", () => {
+    for (const tool of [
+      browserTool({ browserPreview: { ...browserPreview, dataUrl: "data:text/html;base64,PHNjcmlwdD4=" } }),
+      browserTool({ browserPreview: { ...browserPreview, dataUrl: "javascript:alert(1)" } }),
+      browserTool({ status: "running" }),
+    ]) {
+      const { queryByTestId, unmount } = render(<ToolGroupCard group={makeGroup({ tools: [tool] })} />);
+      expect(queryByTestId("tool-browser-preview")).toBeNull();
+      unmount();
+    }
+  });
+});

@@ -1,6 +1,7 @@
 import type { NativeImage, WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserWorkspacePreview } from "../browser-workspace-preview.js";
+import { captureAgentPreview, type AgentPreviewHost, type AgentPreviewTab } from "../browser-agent-preview.js";
 
 function image(bytes = 100): NativeImage {
   const value = { getSize: () => ({ width: 1920, height: 1080 }), isEmpty: () => false, resize: vi.fn(() => value), toJPEG: () => Buffer.alloc(bytes) };
@@ -85,5 +86,85 @@ describe("browser preview capture", () => {
     const { preview, capturePage } = setup();
     capturePage.mockResolvedValueOnce(image(256_001));
     await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-unavailable");
+  });
+});
+
+describe("agent capture fallback", () => {
+  const AGENT = { ...TARGET, dataUrl: "data:image/jpeg;base64,QUdFTlQ=", width: 320, height: 180 };
+  it("serves the agent's last capture of the same document when a live capture cannot paint", async () => {
+    const { preview, capturePage, setVisible, setGeneration, advance } = setup();
+    preview.remember(1, AGENT);
+    capturePage.mockResolvedValueOnce({ getSize: () => ({ width: 0, height: 0 }), isEmpty: () => true } as unknown as NativeImage);
+    await expect(preview.capture(1, TARGET)).resolves.toEqual(AGENT);
+    setVisible(false);
+    await expect(preview.capture(1, TARGET)).resolves.toEqual(AGENT);
+    setVisible(true);
+    await expect(preview.capture(1, TARGET)).rejects.toThrow("capture-throttled");
+    advance(1500);
+    await expect(preview.capture(1, TARGET)).resolves.not.toEqual(AGENT);
+    setGeneration(2);
+    capturePage.mockResolvedValueOnce({ getSize: () => ({ width: 0, height: 0 }), isEmpty: () => true } as unknown as NativeImage);
+    advance(1500);
+    await expect(preview.capture(1, { ...TARGET, documentGeneration: 2 })).rejects.toThrow("capture-unavailable");
+    setGeneration(1);
+    setVisible(false);
+    await expect(preview.capture(1, TARGET)).rejects.toThrow("window-hidden");
+  });
+  it("forgets agent captures when the window is disposed", async () => {
+    const { preview, setVisible } = setup();
+    preview.remember(1, AGENT);
+    preview.disposeWindow(1);
+    setVisible(false);
+    await expect(preview.capture(1, TARGET)).rejects.toThrow("window-hidden");
+  });
+});
+
+describe("agent capture thumbnail", () => {
+  // A snapshot capture never decodes; a call to decodePng here would be a wrong path.
+  function host(record: AgentPreviewHost["record"]): AgentPreviewHost {
+    return { decodePng: () => { throw new Error("snapshot captures never decode a PNG"); }, record };
+  }
+  function tab(capturePage = vi.fn(async () => image())): AgentPreviewTab & { documentId: number } {
+    return { windowId: 1, rendererTabId: "browser:one", documentId: 3, guest: { isDestroyed: () => false, capturePage } as unknown as AgentPreviewTab["guest"] };
+  }
+  it("encodes the screenshot PNG and records it under the renderer tab and document", async () => {
+    const record = vi.fn();
+    const decodePng = vi.fn(() => image());
+    const result = await captureAgentPreview(tab(), "iVBORw0KGgo=", { decodePng, record });
+    expect(decodePng).toHaveBeenCalledWith("iVBORw0KGgo=");
+    expect(result).toMatchObject({ width: 320, height: 180, dataUrl: expect.stringMatching(/^data:image\/jpeg;base64,/) });
+    expect(record).toHaveBeenCalledWith(1, { tabId: "browser:one", documentGeneration: 3, ...result });
+  });
+  it("captures the page for a snapshot, and gives up silently on timeout, failure, or a document change", async () => {
+    const record = vi.fn();
+    const captured = tab();
+    await expect(captureAgentPreview(captured, undefined, host(record))).resolves.toMatchObject({ width: 320 });
+    expect(captured.guest!.capturePage).toHaveBeenCalledWith(undefined, { stayHidden: true, stayAwake: false });
+    const hung = tab(vi.fn(() => new Promise<NativeImage>(() => {})));
+    await expect(captureAgentPreview(hung, undefined, host(record), { maxMs: 5 })).resolves.toBeUndefined();
+    await expect(captureAgentPreview(tab(vi.fn(async () => { throw new Error("gone"); })), undefined, host(record))).resolves.toBeUndefined();
+    const moved = tab();
+    vi.mocked(moved.guest!.capturePage).mockImplementationOnce(async () => { moved.documentId = 4; return image(); });
+    await expect(captureAgentPreview(moved, undefined, host(record))).resolves.toBeUndefined();
+    await expect(captureAgentPreview(tab(), "x", { decodePng: () => { throw new Error("bad png"); }, record })).resolves.toBeUndefined();
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+  it("gives up a page capture as soon as the tool call is stopped, and never starts one for a stopped call", async () => {
+    const record = vi.fn();
+    const hung = tab(vi.fn(() => new Promise<NativeImage>(() => {})));
+    const stop = new AbortController();
+    // The capture timeout is far beyond the test's own, so only the abort can end this wait.
+    const pending = captureAgentPreview(hung, undefined, host(record), { maxMs: 60_000, signals: [undefined, stop.signal] });
+    stop.abort();
+    await expect(pending).resolves.toBeUndefined();
+    const idle = tab();
+    await expect(captureAgentPreview(idle, undefined, host(record), { signals: [stop.signal] })).resolves.toBeUndefined();
+    expect(idle.guest!.capturePage).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+  it("returns the thumbnail without recording a tab that has no renderer card", async () => {
+    const record = vi.fn();
+    await expect(captureAgentPreview({ ...tab(), rendererTabId: null }, undefined, host(record))).resolves.toMatchObject({ width: 320 });
+    expect(record).not.toHaveBeenCalled();
   });
 });

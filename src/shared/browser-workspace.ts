@@ -31,7 +31,8 @@ export interface BrowserSitePermissionRequest extends BrowserWorkspaceTarget {
 }
 export interface BrowserFindRequest extends BrowserWorkspaceTarget { readonly text: string; readonly forward: boolean; readonly findNext: boolean }
 export interface BrowserZoomRequest extends BrowserWorkspaceTarget { readonly factor: number }
-export interface BrowserPreview extends BrowserWorkspaceTarget { readonly dataUrl: string; readonly width: number; readonly height: number }
+export interface BrowserPreviewImage { readonly dataUrl: string; readonly width: number; readonly height: number }
+export interface BrowserPreview extends BrowserWorkspaceTarget, BrowserPreviewImage {}
 export const BROWSER_WORKSPACE_ERRORS = ["bad-request", "unauthorized-frame", "no-such-tab", "stale-document", "origin-mismatch", "window-hidden", "capture-busy", "capture-throttled", "capture-unavailable", "storage-unavailable", "operation-failed"] as const;
 export type BrowserWorkspaceError = typeof BROWSER_WORKSPACE_ERRORS[number];
 export type BrowserWorkspaceResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: BrowserWorkspaceError };
@@ -123,7 +124,14 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
 export function parseBrowserWorkspacePreview(value: unknown): BrowserPreview | null {
   const record = value;
   if (!isRecord(record) || !keys(record, ["tabId", "documentGeneration", "dataUrl", "width", "height"]) || !target(record)) return null;
-  if (typeof record.dataUrl !== "string" || record.dataUrl.length > Math.ceil(BROWSER_WORKSPACE_LIMITS.previewBytes * 4 / 3) + 23 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(record.dataUrl)) return null;
-  if (!Number.isSafeInteger(record.width) || Number(record.width) < 1 || Number(record.width) > BROWSER_WORKSPACE_LIMITS.previewWidth || !Number.isSafeInteger(record.height) || Number(record.height) < 1 || Number(record.height) > BROWSER_WORKSPACE_LIMITS.previewHeight) return null;
-  return record as unknown as BrowserPreview;
+  return validPreviewImage(record) ? record as unknown as BrowserPreview : null;
+}
+function validPreviewImage(record: Record<string, unknown>): boolean {
+  if (typeof record.dataUrl !== "string" || record.dataUrl.length > Math.ceil(BROWSER_WORKSPACE_LIMITS.previewBytes * 4 / 3) + 23 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(record.dataUrl)) return false;
+  return Number.isSafeInteger(record.width) && Number(record.width) >= 1 && Number(record.width) <= BROWSER_WORKSPACE_LIMITS.previewWidth && Number.isSafeInteger(record.height) && Number(record.height) >= 1 && Number(record.height) <= BROWSER_WORKSPACE_LIMITS.previewHeight;
+}
+/** A page thumbnail is untrusted page content: only a bounded JPEG data URL is ever rendered. */
+export function parseBrowserPreviewImage(value: unknown): BrowserPreviewImage | null {
+  if (!isRecord(value) || !validPreviewImage(value)) return null;
+  return { dataUrl: value.dataUrl as string, width: value.width as number, height: value.height as number };
 }

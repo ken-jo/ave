@@ -1,6 +1,7 @@
 /** All adapters share one semantic timeline; raw frames are not an alternative event source.
  * Shared surfaces require explicit projection and grants; ownerDetail stays trusted-owner-only. */
 import type { McpUiPayload } from "../mcp/types.js";
+import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import {
   isSharedApprovalToolIdentifier,
@@ -51,6 +52,7 @@ interface ConversationToolEndOwnerDetail {
   readonly result: string;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
   readonly uiPayload?: McpUiPayload;
+  readonly browserPreview?: BrowserPreviewImage;
 }
 
 interface ConversationAssistantRound {
