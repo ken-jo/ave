@@ -371,6 +371,7 @@ describe("preload contextBridge world shape lock", () => {
           "codexSubscriptionStartDeviceCodeLogin": "function",
           "codexSubscriptionStatus": "function",
           "completeWorkBoardItem": "function",
+          "decideWorkPlan": "function",
           "deleteApiKey": "function",
           "deletePersonaPrompt": "function",
           "deleteWebApiKey": "function",

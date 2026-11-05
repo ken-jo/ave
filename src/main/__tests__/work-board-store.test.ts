@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkBoardStore } from "../work-board-store.js";
+import { WorkBoardStore, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
 
@@ -403,6 +403,146 @@ describe("WorkBoardStore — user-stopped runs (cancelled)", () => {
       if (got.status !== "found") throw new Error("missing item");
       expect(got.item.runStatus).toBe("cancelled");
       expect(got.item.runHistory?.at(-1)).toMatchObject({ runId: "run-1", status: "cancelled", endedAt: expect.any(String) });
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// Plan approval is a work approval stored on the item (permission-decision-tree.md "Work approvals"): written with the plan in one
+// write, decided inside the board lock against the stored plan, and kept across restarts while it is whole.
+describe("WorkBoardStore — plan approval", () => {
+  async function planned(store: WorkBoardStore, title = "plan me") {
+    const created = await store.create({ title, detail: "details" });
+    if (created.status !== "created") throw new Error("setup failed");
+    await store.beginRun(created.itemId, "run-1", new Date(FIXED_NOW).toISOString());
+    const stored = await store.setPlanAwaitingApproval(created.itemId, { runId: "run-1", plan: "PLAN: A", runSessionId: "s", revision: 0 });
+    if (stored?.status !== "updated") throw new Error("setup failed");
+    return { id: created.itemId, approval: stored.item.planApproval! };
+  }
+
+  it("stores the plan and its pending decision in one write, bound to the plan and the item", async () => {
+    const { store, path, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id, approval } = await planned(store);
+      expect(approval).toMatchObject({ runId: "run-1", planHash: planHashOf("PLAN: A"), status: "pending", revision: 0 });
+      const onDisk = JSON.parse(readFileSync(path, "utf-8")).items.find((i: { id: number }) => i.id === id);
+      expect(onDisk.runStatus).toBe("awaiting_approval");
+      expect(onDisk.planApproval.planHash).toBe(planHashOf("PLAN: A"));
+      // A plan for a run the item has moved on from is not stored.
+      expect(await store.setPlanAwaitingApproval(id, { runId: "run-0", plan: "OLD", runSessionId: "s", revision: 0 })).toBeNull();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps a whole pending plan across a restart and turns anything less into error", async () => {
+    const { store, path, cleanup } = tempBoard(fixedClock);
+    try {
+      const whole = await planned(store, "whole");
+      const noApproval = await planned(store, "no approval");
+      const otherRun = await planned(store, "other run");
+      const editedPlan = await planned(store, "edited plan");
+      const board = JSON.parse(readFileSync(path, "utf-8"));
+      for (const item of board.items) {
+        if (item.id === noApproval.id) delete item.planApproval;
+        if (item.id === otherRun.id) item.planApproval.runId = "run-x";
+        if (item.id === editedPlan.id) item.plan = "PLAN: B";
+      }
+      writeFileSync(path, JSON.stringify(board));
+
+      const reloaded = new WorkBoardStore(path, fixedClock);
+      expect(await reloaded.reconcileInterruptedRuns()).toBe(3);
+      const status = async (id: number) => {
+        const got = await reloaded.get(id);
+        if (got.status !== "found") throw new Error("missing");
+        return got.item.runStatus;
+      };
+      expect(await status(whole.id)).toBe("awaiting_approval");
+      expect(await status(noApproval.id)).toBe("error");
+      expect(await status(otherRun.id)).toBe("error");
+      expect(await status(editedPlan.id)).toBe("error");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("drops only an unreadable decision and keeps the item", async () => {
+    const { store, path, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id } = await planned(store);
+      const board = JSON.parse(readFileSync(path, "utf-8"));
+      board.items[0].planApproval.status = "allow-always";
+      writeFileSync(path, JSON.stringify(board));
+      const reloaded = new WorkBoardStore(path, fixedClock);
+      const got = await reloaded.get(id);
+      if (got.status !== "found") throw new Error("item dropped");
+      expect(got.item.planApproval).toBeUndefined();
+      expect(await reloaded.reconcileInterruptedRuns()).toBe(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("decides only the pending plan it names: wrong run, wrong hash, or a second decision are refused", async () => {
+    const { store, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id, approval } = await planned(store);
+      expect(await store.decidePlan(id, { runId: "run-x", planHash: approval.planHash, status: "approved" }))
+        .toEqual({ status: "refused", reason: "not_pending" });
+      expect(await store.decidePlan(id, { runId: "run-1", planHash: planHashOf("PLAN: other"), status: "approved" }))
+        .toEqual({ status: "refused", reason: "plan_mismatch" });
+      const decisions = await Promise.all([
+        store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "approved" }),
+        store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "approved" }),
+      ]);
+      expect(decisions.map((d) => d.status).sort()).toEqual(["decided", "refused"]);
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing");
+      // The approval and the move to executing land in the same write.
+      expect(got.item.runStatus).toBe("executing");
+      expect(got.item.planApproval).toMatchObject({ status: "approved" });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses to approve a plan made for an item that changed since, but still lets the user send it back", async () => {
+    const { store, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id, approval } = await planned(store);
+      expect((await store.update(id, { title: "a different job" })).status).toBe("updated");
+      expect(await store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "approved" }))
+        .toEqual({ status: "refused", reason: "plan_stale" });
+      const sentBack = await store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "changes_requested", note: "redo it" });
+      expect(sentBack.status).toBe("decided");
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing");
+      expect(got.item.runStatus).toBe("planning");
+      expect(got.item.planApproval).toMatchObject({ status: "changes_requested", note: "redo it" });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses a patch that names run fields or the plan decision instead of ignoring it", async () => {
+    const { store, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id } = await planned(store);
+      for (const patch of [
+        { planApproval: { status: "approved" } },
+        { runStatus: "executing" },
+        { plan: "PLAN: forged" },
+        { title: "ok", runStatus: "completed" },
+      ]) {
+        const result = await store.update(id, patch as never);
+        expect(result.status).toBe("invalid");
+      }
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing");
+      expect(got.item.title).toBe("plan me");
+      expect(got.item.runStatus).toBe("awaiting_approval");
+      expect(got.item.planApproval?.status).toBe("pending");
     } finally {
       await cleanup();
     }

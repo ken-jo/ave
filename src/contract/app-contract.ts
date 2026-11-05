@@ -961,6 +961,8 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // refused without one rather than downgraded to another principal.
   [WORK_BOARD.steerRun]: "required",
   [WORK_BOARD.cancelRun]: "required",
+  // A plan's work approval is the user's decision on a host work object ("Work approvals"): the same consumed gesture.
+  [WORK_BOARD.decidePlan]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

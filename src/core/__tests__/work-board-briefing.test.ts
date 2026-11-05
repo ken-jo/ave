@@ -6,7 +6,6 @@ import type {
   SubAgentRunner,
   SubAgentToolScope,
 } from "../../engine/subagent-runner.js";
-import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../shared/work-board-types.js";
 import {
   boardParentToolRegistry,
@@ -45,13 +44,10 @@ function fakeRunner(answers: string[]): {
   return { runner, spawns };
 }
 
-const unusedGate = new ApprovalGate(null);
-
 function engineOver(store: WorkBoardStore, runner: SubAgentRunner) {
   return createWorkBoardEngine({
     store,
     getRunner: () => runner,
-    approvalGate: unusedGate,
     emitProgress: () => {},
   });
 }

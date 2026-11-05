@@ -1235,6 +1235,30 @@ are not steerable or stoppable here. See
 [permission-decision-tree.md](./permission-decision-tree.md), S→T and the
 "Delegated work" note; the tree is unchanged.
 
+Plan approval is a work approval, not a tool-approval card (owner decision
+2026-11-04; [permission-decision-tree.md](./permission-decision-tree.md),
+"Work approvals"). When the plan child finishes, the engine stores the plan and
+a pending `planApproval` on the item in one write and the run returns
+`awaiting_approval`; nothing waits in the approval gate, so there is no timeout,
+and a restart keeps the pending plan (boot reconciliation leaves an
+`awaiting_approval` run alone only while its plan, run id and pending decision
+are whole and the plan hash still matches; anything less becomes `error`).
+`ave:work-board:decide-plan` (internal, sender-validated board-window main
+frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
+the card showed and the decision, never the plan text. The store checks all of
+them, and for approve also that the item's title, detail and project are
+unchanged since planning (`plan_stale` otherwise), inside the board lock, and
+writes the decision before anything acts on it: approve moves the run to
+`executing` in that write, so a second approval finds nothing pending. Approve
+spawns the execute child; request changes (a note is required) re-plans the
+same run with the prior plan and the note as host-fenced non-principal
+guidance, so the plan child's permissions do not change; reject ends the run
+as `denied`. The continuing run broadcasts its own `run-started` (`resumed`)
+and `run-finished`. The audit records `work-approval:decided` with the run, the
+plan hash prefix and the decision, never the note. Run fields and
+`planApproval` are engine-written: `ave:work-board:update` refuses any field
+other than title, detail, due date and priority.
+
 Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
 

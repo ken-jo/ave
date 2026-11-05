@@ -1162,6 +1162,13 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
       | { ok: false; error: string }
     >,
+  // The user's work approval of the item's stored plan; the click's own activation is the gesture. The input names the run and the plan
+  // hash the card showed, never the plan text.
+  decideWorkPlan: async (itemId: number, input: import("../shared/work-board-types.js").WorkPlanDecideInput) =>
+    ipcRenderer.invoke(WORK_BOARD.decidePlan, itemId, input, ipcUserKeyboardIntent()) as Promise<
+      | import("../shared/work-board-types.js").WorkPlanDecideIpcResult
+      | { ok: false; error: string }
+    >,
   // Stop the item's running execute child; the click's own activation is the gesture, as for the other required-gesture controls.
   cancelWorkBoardRun: async (itemId: number) =>
     ipcRenderer.invoke(WORK_BOARD.cancelRun, itemId, ipcUserKeyboardIntent()) as Promise<
@@ -1196,7 +1203,7 @@ export function buildInternalApiSurface() {
   },
   // Coarse marker: a run started for `itemId` (renderer sets the running flag).
   onWorkBoardRunStarted: (
-    handler: (payload: { itemId: number; at: string }) => void,
+    handler: (payload: { itemId: number; at: string; resumed?: true }) => void,
   ) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(WORK_BOARD.runStarted, listener);

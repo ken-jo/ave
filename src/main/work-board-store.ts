@@ -1,5 +1,6 @@
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
+import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -72,6 +73,9 @@ import {
   type WorkProposalInput,
   type WorkProposalListResult,
   type WorkProposalResult,
+  type WorkPlanApproval,
+  type WorkPlanApprovalStatus,
+  type WorkPlanDecideRefusal,
   BRIEFING_PROPOSAL_SOURCE_ID,
   BRIEFING_PROPOSAL_SOURCE_LABEL,
   MAX_PROPOSALS,
@@ -115,6 +119,99 @@ const VALID_RUN_STATUSES: readonly WorkItemRunStatus[] = [
   "error",
   "cancelled",
 ];
+
+const UPDATABLE_FIELDS: ReadonlySet<string> = new Set<keyof WorkItemUpdateInput>(["title", "detail", "due_at", "priority"]);
+
+const PLAN_APPROVAL_STATUSES: readonly WorkPlanApprovalStatus[] = ["pending", "approved", "rejected", "changes_requested"];
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The hash a plan decision binds to; computed by the host from the stored plan, never taken from the renderer. */
+export function planHashOf(plan: string): string {
+  return sha256(plan);
+}
+
+/** What the plan was made for. A title, detail or project change after planning makes the plan stale. */
+export function itemDigestOf(item: Pick<WorkItem, "title" | "detail" | "projectRoot">): string {
+  return sha256(JSON.stringify([item.title, item.detail ?? "", item.projectRoot ?? ""]));
+}
+
+function isValidPlanApproval(v: unknown): v is WorkPlanApproval {
+  if (!v || typeof v !== "object") return false;
+  const x = v as Record<string, unknown>;
+  for (const field of ["runId", "planHash", "itemDigest", "requestedAt"]) {
+    if (typeof x[field] !== "string" || (x[field] as string).length === 0) return false;
+  }
+  if (typeof x.status !== "string" || !PLAN_APPROVAL_STATUSES.includes(x.status as WorkPlanApprovalStatus)) return false;
+  if (typeof x.revision !== "number" || !Number.isInteger(x.revision) || x.revision < 0) return false;
+  if (x.note !== undefined && typeof x.note !== "string") return false;
+  if (x.decidedAt !== undefined && typeof x.decidedAt !== "string") return false;
+  if (x.agentName !== undefined && typeof x.agentName !== "string") return false;
+  return true;
+}
+
+/** The decision the user made, applied inside the board lock. */
+export interface PlanDecisionInput {
+  runId: string;
+  planHash: string;
+  status: Exclude<WorkPlanApprovalStatus, "pending">;
+  note?: string;
+}
+
+export type PlanDecisionResult =
+  | { status: "decided"; item: WorkItemResolved; planApproval: WorkPlanApproval }
+  | { status: "refused"; reason: Exclude<WorkPlanDecideRefusal, "already_running" | "note_required" | "note_too_long" | "note_invalid"> };
+
+/** An item whose stored plan can still be decided: awaiting approval, with a pending decision for its current run and plan. */
+function isDecidablePlan(item: WorkItem): boolean {
+  const approval = item.planApproval;
+  return (
+    item.runStatus === "awaiting_approval" &&
+    typeof item.plan === "string" &&
+    typeof item.runId === "string" &&
+    approval !== undefined &&
+    approval.status === "pending" &&
+    approval.runId === item.runId &&
+    approval.planHash === planHashOf(item.plan)
+  );
+}
+
+interface RunResultPatch {
+  runStatus: WorkItemRunStatus;
+  plan?: string | null;
+  output?: string | null;
+  runSessionId?: string | null;
+}
+
+// null → clear the key; a string → set it; undefined → leave as-is. Keeps the CURRENT run's history entry (matched by runId) in sync, so
+// the re-run history index reflects each run's final status/plan/output without a separate write path; `endedAt` is stamped on terminal status.
+function withRunResult(item: WorkItem, result: RunResultPatch, iso: string): WorkItem {
+  const updated: WorkItem = { ...item, runStatus: result.runStatus, runUpdatedAt: iso };
+  if (result.plan === null) delete updated.plan;
+  else if (result.plan !== undefined) updated.plan = result.plan;
+  if (result.output === null) delete updated.output;
+  else if (result.output !== undefined) updated.output = result.output;
+  if (result.runSessionId === null) delete updated.runSessionId;
+  else if (result.runSessionId !== undefined) updated.runSessionId = result.runSessionId;
+  if (updated.runId && Array.isArray(updated.runHistory)) {
+    updated.runHistory = updated.runHistory.map((h) =>
+      h.runId === updated.runId
+        ? {
+            ...h,
+            status: result.runStatus,
+            ...(typeof updated.plan === "string" ? { plan: updated.plan } : {}),
+            ...(typeof updated.output === "string"
+              ? { outputPreview: updated.output.slice(0, RUN_OUTPUT_PREVIEW_CHARS) }
+              : {}),
+            ...(TERMINAL_RUN_STATUSES.has(result.runStatus) ? { endedAt: iso } : {}),
+          }
+        : h,
+    );
+  }
+  return updated;
+}
 
 function isStatus(v: unknown): v is WorkItemStatusStored {
   return typeof v === "string" && VALID_STATUSES.includes(v as WorkItemStatusStored);
@@ -182,7 +279,14 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
     if (!Array.isArray(file.items)) {
       return emptyBoard();
     }
-    const valid = file.items.filter(isValidRecord);
+    const valid = file.items.filter(isValidRecord).map((item) => {
+      if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
+      // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
+      log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
+      const repaired = { ...item };
+      delete repaired.planApproval;
+      return repaired;
+    });
     // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
     // on every load and converges; nothing marks it done.
     const { items, changed } = normalizeBoardDueDates(valid);
@@ -389,6 +493,11 @@ export class WorkBoardStore {
         reason: "at least one of title / detail / due_at / priority must be provided",
       };
     }
+    // Run fields and the plan decision are engine-written; a patch naming any other field is refused, never silently ignored.
+    const unknown = keys.filter((key) => !UPDATABLE_FIELDS.has(key));
+    if (unknown.length > 0) {
+      return { status: "invalid", itemId: id, reason: `fields not updatable: ${unknown.join(", ")}` };
+    }
     if (typeof patch.title === "string" && patch.title.trim().length === 0) {
       return { status: "invalid", itemId: id, reason: "title cannot be empty — omit the field instead" };
     }
@@ -569,6 +678,7 @@ export class WorkBoardStore {
       delete updated.plan;
       delete updated.output;
       delete updated.runSessionId;
+      delete updated.planApproval;
       board.items[idx] = updated;
       await writeFileAtomic(this.filePath, board);
       this.cache = board;
@@ -597,6 +707,9 @@ export class WorkBoardStore {
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
         const it = board.items[i];
+        // A plan waiting for the user's decision belongs to no process: it stays, with its stored decision object, as long as that
+        // object is whole and still matches the stored plan. Anything less cannot be decided safely and becomes error like the rest.
+        if (it.runStatus === "awaiting_approval" && isDecidablePlan(it)) continue;
         if (
           it.runStatus === "planning" ||
           it.runStatus === "awaiting_approval" ||
@@ -653,15 +766,7 @@ export class WorkBoardStore {
 
   // Only the engine writes terminal results; undefined preserves fields, null clears them, and values replace them.
   // Clear stale plan/output/session fields so a failed new run cannot display an old success.
-  async setRunResult(
-    id: number,
-    result: {
-      runStatus: WorkItemRunStatus;
-      plan?: string | null;
-      output?: string | null;
-      runSessionId?: string | null;
-    },
-  ): Promise<WorkItemUpdateResult> {
+  async setRunResult(id: number, result: RunResultPatch): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
@@ -672,35 +777,7 @@ export class WorkBoardStore {
       }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
-      const updated: WorkItem = {
-        ...board.items[idx],
-        runStatus: result.runStatus,
-        runUpdatedAt: iso,
-      };
-      // null → clear the key; a string → set it; undefined → leave as-is.
-      if (result.plan === null) delete updated.plan;
-      else if (result.plan !== undefined) updated.plan = result.plan;
-      if (result.output === null) delete updated.output;
-      else if (result.output !== undefined) updated.output = result.output;
-      if (result.runSessionId === null) delete updated.runSessionId;
-      else if (result.runSessionId !== undefined) updated.runSessionId = result.runSessionId;
-      // Keep the CURRENT run's history entry (matched by runId) in sync, so the re-run history index reflects each run's final status/plan/output — without a
-      // separate write path. `endedAt` is stamped on terminal status.
-      if (updated.runId && Array.isArray(updated.runHistory)) {
-        updated.runHistory = updated.runHistory.map((h) =>
-          h.runId === updated.runId
-            ? {
-                ...h,
-                status: result.runStatus,
-                ...(typeof updated.plan === "string" ? { plan: updated.plan } : {}),
-                ...(typeof updated.output === "string"
-                  ? { outputPreview: updated.output.slice(0, RUN_OUTPUT_PREVIEW_CHARS) }
-                  : {}),
-                ...(TERMINAL_RUN_STATUSES.has(result.runStatus) ? { endedAt: iso } : {}),
-              }
-            : h,
-        );
-      }
+      const updated = withRunResult(board.items[idx], result, iso);
       board.items[idx] = updated;
       await writeFileAtomic(this.filePath, board);
       this.cache = board;
@@ -716,6 +793,106 @@ export class WorkBoardStore {
         itemId: id,
         item: decorate(cloneItem(updated), nowMs),
       };
+    });
+  }
+
+  // The plan child finished: store the plan and its pending decision in one write, so no reader (or a restart) ever sees a run awaiting
+  // approval without the decision object. The hashes come from the stored item at this moment. Refused (null) when the run moved on.
+  async setPlanAwaitingApproval(
+    id: number,
+    input: { runId: string; plan: string; runSessionId: string; revision: number; agentName?: string },
+  ): Promise<WorkItemUpdateResult | null> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const idx = board.items.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        this.cache = board;
+        return { status: "not_found" as const, itemId: id };
+      }
+      const current = board.items[idx];
+      if (current.runId !== input.runId || current.runStatus !== "planning") {
+        this.cache = board;
+        return null;
+      }
+      const nowMs = this.now();
+      const iso = new Date(nowMs).toISOString();
+      const updated = withRunResult(current, { runStatus: "awaiting_approval", plan: input.plan, runSessionId: input.runSessionId }, iso);
+      updated.planApproval = {
+        runId: input.runId,
+        planHash: planHashOf(input.plan),
+        itemDigest: itemDigestOf(current),
+        requestedAt: iso,
+        status: "pending",
+        revision: input.revision,
+        ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      };
+      board.items[idx] = updated;
+      await writeFileAtomic(this.filePath, board);
+      this.cache = board;
+      await appendActivity(this.activity, {
+        kind: runStatusActivityKind("awaiting_approval"),
+        itemId: updated.id,
+        title: updated.title,
+        to: "awaiting_approval",
+        ts: iso,
+      });
+      return { status: "updated" as const, itemId: id, item: decorate(cloneItem(updated), nowMs) };
+    });
+  }
+
+  // Record the user's decision on the pending plan. Every check runs inside the board lock against the stored item, so two decisions for
+  // the same plan cannot both pass: the second finds the approval no longer pending. The decision is written before anything acts on it;
+  // approve moves the run to executing and request_changes back to planning in the same write, and reject ends the run as denied.
+  async decidePlan(id: number, input: PlanDecisionInput): Promise<PlanDecisionResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      this.cache = board;
+      const idx = board.items.findIndex((i) => i.id === id);
+      if (idx === -1) return { status: "refused" as const, reason: "not_found" as const };
+      const current = board.items[idx];
+      const approval = current.planApproval;
+      if (
+        current.runStatus !== "awaiting_approval" ||
+        approval === undefined ||
+        approval.status !== "pending" ||
+        current.runId !== input.runId ||
+        approval.runId !== input.runId
+      ) {
+        return { status: "refused" as const, reason: "not_pending" as const };
+      }
+      if (typeof current.plan !== "string" || approval.planHash !== planHashOf(current.plan) || input.planHash !== approval.planHash) {
+        return { status: "refused" as const, reason: "plan_mismatch" as const };
+      }
+      // A stale plan can still be sent back for changes (that re-plans the current item) or rejected; it cannot be approved.
+      if (input.status === "approved" && approval.itemDigest !== itemDigestOf(current)) {
+        return { status: "refused" as const, reason: "plan_stale" as const };
+      }
+      const nowMs = this.now();
+      const iso = new Date(nowMs).toISOString();
+      const decided: WorkPlanApproval = {
+        ...approval,
+        status: input.status,
+        decidedAt: iso,
+        ...(input.note !== undefined ? { note: input.note } : {}),
+      };
+      if (input.note === undefined) delete decided.note;
+      const nextRunStatus: WorkItemRunStatus =
+        input.status === "approved" ? "executing" : input.status === "rejected" ? "denied" : "planning";
+      const updated = withRunResult(current, { runStatus: nextRunStatus }, iso);
+      updated.planApproval = decided;
+      board.items[idx] = updated;
+      await writeFileAtomic(this.filePath, board);
+      this.cache = board;
+      await appendActivity(this.activity, {
+        kind: runStatusActivityKind(nextRunStatus),
+        itemId: updated.id,
+        title: updated.title,
+        to: nextRunStatus,
+        ts: iso,
+      });
+      return { status: "decided" as const, item: decorate(cloneItem(updated), nowMs), planApproval: { ...decided } };
     });
   }
 

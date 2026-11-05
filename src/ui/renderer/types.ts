@@ -1231,6 +1231,13 @@ export type AveApi = {
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
     | { ok: false; error: string }
   >;
+  decideWorkPlan?: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").WorkPlanDecideInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").WorkPlanDecideIpcResult
+    | { ok: false; error: string }
+  >;
   cancelWorkBoardRun?: (
     itemId: number,
   ) => Promise<
@@ -1245,7 +1252,8 @@ export type AveApi = {
   // Coarse markers so the renderer can set/clear a per-item running indicator
   // without re-listing.
   onWorkBoardRunStarted: (
-    handler: (payload: { itemId: number; at: string }) => void,
+    /** `resumed`: a plan decision continued an existing run, so its earlier turns stay. */
+    handler: (payload: { itemId: number; at: string; resumed?: true }) => void,
   ) => () => void;
   onWorkBoardRunFinished: (
     handler: (payload: {

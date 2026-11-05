@@ -81,6 +81,10 @@ export const WORK_BOARD = {
   // sender-validated, board-owner frame, CHANNEL_GESTURE "required"; the engine resolves the child, the renderer never names it.
   steerRun: "ave:work-board:steer-run",
   cancelRun: "ave:work-board:cancel-run",
+  // Renderer → main: the user's work approval of a stored plan (approve / request changes / reject). Internal, sender-validated,
+  // board-owner frame, CHANNEL_GESTURE "required"; bound to the run id and the hash of the stored plan (permission-decision-tree.md
+  // "Work approvals").
+  decidePlan: "ave:work-board:decide-plan",
   // Renderer → main: read a past run's persisted transcript (sessions/<itemId>/<runId>.jsonl) for the run-history view.
   runTranscript: "ave:work-board:run-transcript",
   // Renderer → main: list the open proposals, accept one (creating the work item it becomes), or dismiss one.

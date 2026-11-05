@@ -641,7 +641,6 @@ export async function wireConversation(
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
-    approvalGate,
     getAgentProfile: (name) => agentProfileStore.load(name),
     emitProgress: (event) => {
       // Broadcast run progress to every open window so detached panels stay current.
