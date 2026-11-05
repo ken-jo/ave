@@ -25,7 +25,7 @@ import {
 import { APPROVAL_MEMORY_SCOPE_METADATA_KEY } from "../approval-memory-context.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import type { ApprovalMemoryScope } from "../../shared/permissions-events.js";
-import type { ToolExecutionContext } from "../types.js";
+import { ToolUnavailableError, type ToolExecutionContext } from "../types.js";
 import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
@@ -251,6 +251,26 @@ describe("terminal_run", () => {
       }
       await expect(tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "routine" })).rejects.toThrow(/this session has no terminals/);
       expect(deps.typed).toEqual([]);
+    });
+
+    it("reports a terminal that cannot run here as unavailable, and a terminal the arguments may not name as bad input", async () => {
+      const failure = (scope: Promise<unknown> | unknown) => Promise.resolve(scope).then(() => undefined, (err: unknown) => err);
+      const sandboxOff = createTerminalRunTool(depsWith({ ensureConversationTerminal: async () => {
+        throw new Error("Terminal requires the OS tool sandbox with filesystem and process isolation active");
+      } }));
+      const unavailable = await failure(sandboxOff.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" }));
+      expect(unavailable).toBeInstanceOf(ToolUnavailableError);
+      expect((unavailable as Error).message).toMatch(/requires the OS tool sandbox/);
+      expect(await failure(sandboxOff.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "routine" }))).toBeInstanceOf(ToolUnavailableError);
+      registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
+      const foreign = await failure(createTerminalRunTool(depsWith())
+        .approvalMemoryScope!({ command: "ls", tabId: "terminal:foreign" }, { cwd: "/workspace", sessionId: "main" }));
+      expect((foreign as Error).message).toMatch(/cannot target a host terminal or another conversation/);
+      expect(foreign).not.toBeInstanceOf(ToolUnavailableError);
+      const paneForeign = await failure(createTerminalRunTool(depsWith({ boundSurface: () => ({ kind: "terminal", tabId: "terminal:host" }) }))
+        .approvalMemoryScope!({ command: "ls", tabId: "terminal:aaaaaaaa-1" }, { cwd: "/workspace", sessionId: "main" }));
+      expect((paneForeign as Error).message).toMatch(/only into this pane chat's own terminal/);
+      expect(paneForeign).not.toBeInstanceOf(ToolUnavailableError);
     });
 
   });

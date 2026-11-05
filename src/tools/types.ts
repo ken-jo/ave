@@ -36,6 +36,11 @@ export function isValidToolName(name: unknown): name is string {
   return typeof name === "string" && TOOL_NAME_PATTERN.test(name);
 }
 
+/** Thrown while deriving a call's identity when the tool cannot run here right now (no sandbox, terminal busy); the arguments are fine. */
+export class ToolUnavailableError extends Error {
+  override readonly name = "ToolUnavailableError";
+}
+
 export function trustFromSource(source: ToolSource): TrustLevel {
   switch (source) {
     case "builtin":
