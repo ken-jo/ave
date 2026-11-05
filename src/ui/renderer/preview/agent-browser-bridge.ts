@@ -10,8 +10,9 @@ export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
   sessionId: () => string | null;
   hasTab: (tabId: string) => boolean;
-  /** Absent for a host that holds tabs but does not open the agent's new ones. */
-  openAgentTab?: (url: string, requestId: string, active: boolean) => void;
+  /** Absent for a host that holds tabs but does not open the agent's new ones. `owner` is the conversation the op names: the
+   * tab belongs to that chat, never to whichever chat this host shows. */
+  openAgentTab?: (url: string, requestId: string, active: boolean, owner: string) => void;
   /** Load an agent page into this host's existing empty browser tab; false when the tab is not an empty browser page. */
   loadAgentTab?: (tabId: string, url: string, requestId: string) => boolean;
   selectTab: (tabId: string) => void;
@@ -112,11 +113,11 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     return;
   }
   if (request.op === "new") {
-    const openers = candidates.filter((candidate) => candidate.openAgentTab !== undefined);
-    const host = request.sessionId === undefined
-      ? openers[0]
-      : openers.find((candidate) => candidate.sessionId() === request.sessionId);
-    host?.openAgentTab?.(request.url, request.requestId, request.active);
+    // Main names the conversation on every agent tab it opens; one that names none has no owner to give the tab.
+    const owner = request.sessionId;
+    if (owner === undefined) throw new Error(`browser-tab-op-unowned: new tab ${request.requestId} names no conversation`);
+    const host = candidates.find((candidate) => candidate.openAgentTab !== undefined && candidate.sessionId() === owner);
+    host?.openAgentTab?.(request.url, request.requestId, request.active, owner);
     return;
   }
   const host = candidates.find((candidate) => candidate.hasTab(request.tabId));

@@ -37,7 +37,7 @@ function RetainedPanel({ api, target }: { api: AveApi; target: Extract<ChatPrevi
   return <>
     <button onClick={() => setVisible(true)}>Reopen panel</button>
     <button onClick={() => workspaceTabs.openInEphemeral({ source: "preview", targetId: target.id })}>Open document tab</button>
-    <button onClick={() => workspaceTabs.openAgentBrowserTab("https://example.test/agent", "agent-browser-request", true)}>Open agent browser</button>
+    <button onClick={() => workspaceTabs.openAgentBrowserTab("https://example.test/agent", "agent-browser-request", true, SESSION)}>Open agent browser</button>
     <ChatSidePanel api={api} visible={visible} sessionId={SESSION} targets={[target]}
       files={[{ id: "document-file", path: target.path, label: target.title, detail: target.path,
         sourceLabel: "read_file", operation: "read", canOpenExternal: false, previewTargetId: target.id }]}

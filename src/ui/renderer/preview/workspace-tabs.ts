@@ -83,7 +83,7 @@ export interface WorkspaceTabsStore {
   hasTab: (id: string) => boolean;
   /** Open a NEW pinned browser tab for the agent (`browser_tab_new`) and activate it. Never reuses a tab showing the same
    * url: the agent gets a tab of its own. Returns the new tab's id, or null for an unsafe url. */
-  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean, sessionId?: string) => string | null;
+  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean, owner: string) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -313,14 +313,14 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
-  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean, sessionId?: string): string | null => {
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean, owner: string): string | null => {
     const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
       ? { source: "browser", url: rawUrl }
       : normalizeContentRef({ source: "browser", url: rawUrl });
     if (!content) return null;
     // The id is taken here, outside the updater: an updater runs at flush time, and the caller needs the id now.
     const id = mintTabId("browser");
-    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId, ...(sessionId === undefined ? {} : { agentSessionId: sessionId }) };
+    const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId, agentSessionId: owner };
     setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: active ? id : prev.activeTabId }));
     return id;
   }, []);

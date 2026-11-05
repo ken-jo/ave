@@ -128,7 +128,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank", true);
+      tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank", true, "s1");
     });
     expect(tabId).not.toBeNull();
     const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
@@ -157,7 +157,7 @@ describe("ChatSidePanel agent browser", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
     act(() => {
-      store!.openAgentBrowserTab("about:blank", "browser-op-observed", true);
+      store!.openAgentBrowserTab("about:blank", "browser-op-observed", true, "s1");
     });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
@@ -175,7 +175,7 @@ describe("ChatSidePanel agent browser", () => {
   it("tracks only main-frame in-page URL changes without reloading the bootstrap guest", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-in-page", true));
+    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-in-page", true, "s1"));
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/page" })));
@@ -191,7 +191,7 @@ describe("ChatSidePanel agent browser", () => {
   it("discards a previously observed URL when the bootstrap guest reattaches", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-reattach", true));
+    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-reattach", true, "s1"));
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     const openExternal = within(viewer).getByRole("button");
@@ -236,7 +236,7 @@ describe("ChatSidePanel agent browser", () => {
 
     let agentTabId: string | null = null;
     act(() => {
-      agentTabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-1", true);
+      agentTabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-1", true, "s1");
     });
     act(() => {
       store!.openPinned({ source: "browser", url: "https://b.example/" });
@@ -274,7 +274,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-2", true);
+      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-2", true, "s1");
     });
     await waitFor(() => expect(api.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId }));
   });
@@ -289,7 +289,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = null;
     act(() => {
-      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3", true);
+      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3", true, "s1");
     });
     const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
     webview.getWebContentsId = () => 42;
@@ -307,7 +307,7 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId: string | null = "unset";
     act(() => {
-      tabId = store!.openAgentBrowserTab("javascript:alert(1)", "browser-op-3", true);
+      tabId = store!.openAgentBrowserTab("javascript:alert(1)", "browser-op-3", true, "s1");
     });
     expect(tabId).toBeNull();
     expect(screen.queryAllByTestId("chat-side-panel-browser-tab-host")).toHaveLength(0);
