@@ -28,7 +28,6 @@ test("missing-plugin routines retain their status and can be removed", async ({}
   });
     const page = await app.firstWindow();
     await page.getByTestId("main-toolbar").first().waitFor({ timeout: 60_000 });
-    await page.getByTestId("sidebar-group-features").click();
     await page.getByTestId("sidebar-routines").click();
     const panel = page.getByTestId("schedule-panel");
     const skipped = panel.getByTestId("schedule-attention-row").filter({ hasText: "Unavailable summary" });

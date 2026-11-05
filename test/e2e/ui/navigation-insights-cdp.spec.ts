@@ -130,9 +130,8 @@ async function openFeatureRow(
   page: import("@playwright/test").Page,
   rowTestId: string,
 ): Promise<void> {
-  const group = page.getByTestId("sidebar-group-features");
-  if ((await group.getAttribute("aria-expanded")) !== "true") await group.click();
-  await page.getByTestId(rowTestId).click();
+  // The built-in views are rail buttons of their own.
+  await page.getByTestId("sidebar-rail").getByTestId(rowTestId).click();
 }
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";

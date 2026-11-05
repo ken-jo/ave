@@ -23,8 +23,6 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
 
 test('approval toast returns from a browser surface and focuses the requesting conversation card', async ({ app, mainWindow }, testInfo) => {
   const sessionId = await currentSessionId(mainWindow);
-  const features = mainWindow.getByTestId('sidebar-group-features');
-  if ((await features.getAttribute('aria-expanded')) !== 'true') await features.click();
   await mainWindow.getByTestId('sidebar-web').click();
   const browser = mainWindow.locator('[data-surface-kind="browser"]');
   await expect(browser).toBeVisible();
@@ -76,11 +74,7 @@ test('approval dock floats over the route without changing its layout', async ({
   }
   await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true');
 
-  const featuresGroup = mainWindow.getByTestId('sidebar-group-features');
   const openWorkBoard = async () => {
-    if ((await featuresGroup.getAttribute('aria-expanded')) !== 'true') {
-      await featuresGroup.click();
-    }
     await mainWindow.getByTestId('toolbar-work-board').click();
   };
   await openWorkBoard();
@@ -382,8 +376,9 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(deny).toBeVisible();
 
   // Keys outside the dock must not decide approval.
-  await featuresGroup.focus();
-  await featuresGroup.press('d');
+  const outside = mainWindow.getByTestId('toolbar-work-board');
+  await outside.focus();
+  await outside.press('d');
   await expect(dock).toBeVisible();
 
   await approve.focus();
