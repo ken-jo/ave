@@ -97,7 +97,8 @@ function readRootConfigurationSources(home: string): { bytes: Partial<Record<(ty
     let identity;
     try { identity = entry(path); }
     catch (error) { present = true; diagnostics.push(`Legacy configuration could not be read safely at ${path}: ${(error as Error).message}`); continue; }
-    if (identity === undefined) continue;
+    // A zero-byte regular file is a sandbox deny placeholder (srt-win stamps absent deny targets a write grant reaches), not legacy configuration.
+    if (identity === undefined || (identity.isFile() && !identity.isSymbolicLink() && identity.size === 0)) continue;
     present = true;
     if (!identity.isFile() || identity.isSymbolicLink()) { diagnostics.push(`Legacy configuration is a link or non-regular file: ${path}`); continue; }
     try {
@@ -182,6 +183,8 @@ function cleanupRootConfiguration(home: string): string[] {
           try {
             const opened = fstatSync(descriptor);
             if (!opened.isFile() || opened.ino !== identity.ino || opened.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
+            // A sandbox deny placeholder is absent, not a source: leave it for the sandbox to re-stamp.
+            if (opened.size === 0) continue;
             identical = createHash("sha256").update(readFileSync(descriptor)).digest("base64") === hashes[name];
           } finally { closeSync(descriptor); }
           const current = lstatSync(path);
