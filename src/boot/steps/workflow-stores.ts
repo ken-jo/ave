@@ -38,8 +38,8 @@ import { setApprovalConversationRootResolver } from "../../permissions/user-appr
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t } from "../../i18n/index.js";
 import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
+import { removeRoutineWithRuns } from "../../main/routines-store.js";
 import { createRoutineChatResolver, createRoutineProjectRootResolver, findSessionLiveLoop } from "./session-live-loop.js";
-import { removeRoutineWithRuns } from "../../ipc/domains/routines.js";
 
 const log = createLogger("ave");
 
