@@ -197,18 +197,20 @@ async function runTurnInSpan(
 
     self.tracer.step("REQUEST_ENTRY", { inputLen: turnInput.length, inputOrigin,
   });
+    if (self.providerPending) await self.whenProviderReady();
     let activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
     if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
       try {
         // Revalidate provider posture at execution for stale loops missed by settings refresh.
-        self.refreshProvider();
+        await self.refreshProvider();
       } catch {
-        // Refresh clears the prior client first; rebuild failure leaves the route unconfigured.
+        // A failed rebuild clears the client and records its kind; the route stays unconfigured.
       }
       activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
     }
     if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
-      const err = t("be_conversationLoop.llmProviderNotConfigured");
+      const buildError = self.providerBuildError;
+      const err = t("be_conversationLoop.llmProviderNotConfigured") + (buildError ? ` (${buildError})` : "");
       callbacks?.onError?.(err);
       throw new Error(err);
     }

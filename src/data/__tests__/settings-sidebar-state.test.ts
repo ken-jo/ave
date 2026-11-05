@@ -6,10 +6,10 @@ import { SettingsService } from "../settings-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const encryption = {
-  isEncryptionAvailable: () => false,
+  isAsyncEncryptionAvailable: async () => false,
   getSelectedStorageBackend: () => "gnome_libsecret" as const,
-  encryptString: vi.fn(),
-  decryptString: vi.fn(),
+  encryptStringAsync: vi.fn(),
+  decryptStringAsync: vi.fn(),
 };
 
 describe("sidebar visibility settings", () => {

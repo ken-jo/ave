@@ -7,7 +7,7 @@ import { A2ARemoteDurableStore, A2A_REMOTE_REPLY_MAX_CHARS, INTENDED_CREDENTIAL_
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const digest = "a".repeat(64);
 const lineage = { targetAgentId: 1, interfaceUrl: "https://agent.example.test/a2a", agentCardDigestSha256: digest, trustKeyId: 2, credentialBindingId: 3, callerGenerationId: "generation-1", routePolicyVersion: 4, routePolicyDigestSha256: digest, extensionSpecDigestSha256: digest };
-const encryption = { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value), decryptString: (value: Buffer) => value.toString() };
+const encryption = { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value: string) => Buffer.from(value), decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }) };
 
 function prepared(overrides: Partial<A2ARemotePreparedAttempt> = {}): A2ARemotePreparedAttempt {
   return {

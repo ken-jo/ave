@@ -130,18 +130,23 @@ async function handleModelCommand(self: ConversationLoop, args: string): Promise
     return t("be_conversationLoop.cmdModelUnsupported");
   }
   if (requested === MODEL_COMMAND_RESET) {
-    self.setSessionModelOverride(undefined);
+    await self.setSessionModelOverride(undefined);
     return t("be_conversationLoop.cmdModelReset", { model: currentModel() || "-" });
   }
   const model = cleanModelOverride(requested);
   if (!model || /\s/.test(model)) return t("be_conversationLoop.cmdModelInvalid");
+  // A rebuild in flight (credentials still decrypting) is about to install the provider whose catalog decides this.
+  if (self.providerPending) await self.whenProviderReady();
+  // A failed rebuild left no provider: say why, as a turn would, instead of switching a model nothing can serve.
+  const buildError = self.providerBuildError;
+  if (buildError) return `${t("be_conversationLoop.llmProviderNotConfigured")} (${buildError})`;
   const verification = subscription
     ? await verifySubscriptionModel(self, model)
     : await verifyRouteModel(self, model);
   if (verification === "unknown") return t("be_conversationLoop.cmdModelUnknown", { model });
   if (verification === "retired") return t("be_conversationLoop.cmdModelRetired", { model });
   if (verification === "unverifiable") return t("be_conversationLoop.cmdModelUnverifiable", { model });
-  self.setSessionModelOverride(model);
+  await self.setSessionModelOverride(model);
   return verification === "deployment"
     ? t("be_conversationLoop.cmdModelSetUnverifiedDeployment", { model })
     : t("be_conversationLoop.cmdModelSet", { model });

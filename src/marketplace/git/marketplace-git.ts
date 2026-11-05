@@ -12,7 +12,7 @@ export interface MarketplaceGitOptions {
   envRoot: string;
   /** {@link installerGitRoot}; null where no installer provides git. */
   installerRoot: string | null;
-  getToken: (host: string, sourceId: string) => string | null;
+  getToken: (host: string, sourceId: string) => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
   detectionDeps?: GitDetectionDeps;
 }

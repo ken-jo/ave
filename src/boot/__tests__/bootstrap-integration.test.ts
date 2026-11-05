@@ -46,7 +46,7 @@ vi.mock("electron", async () => {
       })),
     },
     shell: { openExternal: vi.fn() },
-    safeStorage: { isEncryptionAvailable: vi.fn(() => false) },
+    safeStorage: { isAsyncEncryptionAvailable: vi.fn(async () => false) },
     BrowserWindow,
   };
 });
@@ -593,7 +593,7 @@ vi.mock("../../audit/audit-logger.js", () => ({
 }));
 vi.mock("../../audit/hmac-chain.js", () => ({
   FileSecretStore: class {},
-  SafeStorageSecretStore: class {},
+  SafeStorageSecretStore: class { static async open() { return { read: () => null, write: () => undefined }; } },
   ensureAuditSecret: vi.fn(() => ({})),
   computeLineHmac: vi.fn(() => "h".repeat(64)),
 }));

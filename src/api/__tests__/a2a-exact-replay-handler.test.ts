@@ -43,9 +43,9 @@ function fixture() {
       writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); },
     },
     encryption: {
-      isEncryptionAvailable: () => true,
-      encryptString: (value) => Buffer.from(value),
-      decryptString: (value) => value.toString(),
+      isAsyncEncryptionAvailable: async () => true,
+      encryptStringAsync: async (value) => Buffer.from(value),
+      decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }),
     },
     maxKeysPerGeneration: 4,
     random: (size) => Buffer.alloc(size, 2),

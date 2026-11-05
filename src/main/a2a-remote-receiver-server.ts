@@ -91,7 +91,7 @@ async function startForBoot(
   if (!isCanonicalA2APublicHttpsOrigin(receiverPublicOrigin)) {
     throw new Error("a2a-remote-receiver-public-origin-invalid");
   }
-  const receiverSecret = options.services.settingsService.getEncryptedSecret(
+  const receiverSecret = await options.services.settingsService.getEncryptedSecret(
     A2A_REMOTE_RECEIVER_SECRET_KEY,
   );
   if (!receiverSecret) throw new Error("a2a-remote-receiver-secret-missing");

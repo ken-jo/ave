@@ -36,7 +36,7 @@ export async function createTailnetPairedSharingRuntime(
     throw new Error("tailnet-paired-sharing-current-conversation-unavailable");
   }
   const secretStore = options.secretStore
-    ?? createHostSecretStore(options.encryption);
+    ?? await createHostSecretStore(options.encryption);
   const actorSecret = ensureTailnetPairedShareActorSecret(secretStore);
   const getOwnerLogin = options.getOwnerLogin ?? readTailnetOwnerLogin;
   const store = createTailnetPairingShareStore({ ...options.storeOptions, getOwnerActorId: () => {

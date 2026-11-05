@@ -148,11 +148,11 @@ function authorizedBearer(header: string | undefined, secret: Buffer): boolean {
   try { return candidate.length === secret.length && timingSafeEqual(candidate, secret); } finally { candidate.fill(0); }
 }
 
-export function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOptions): A2ARemoteRuntime | null {
+export async function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOptions): Promise<A2ARemoteRuntime | null> {
   const gates = options.gates ?? snapshotA2ARemoteGates(options.settings);
   if (!gates.outboundRouting && !gates.receiverProfile) return null;
   const encryption = options.encryption;
-  if (!encryption.isEncryptionAvailable()) throw new Error("a2a-remote-os-encryption-unavailable");
+  if (!await encryption.isAsyncEncryptionAvailable()) throw new Error("a2a-remote-os-encryption-unavailable");
   const config = options.settings.get("a2aRemote");
   if (!config.extensionSpecDigestSha256
     || (gates.outboundRouting && !config.outboundCallerGenerationId)
@@ -160,8 +160,8 @@ export function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOptions): 
       || !isCanonicalA2APublicHttpsOrigin(config.receiverPublicOrigin)))) {
     throw new Error("a2a-remote-config-incomplete");
   }
-  if (gates.outboundRouting && (!config.routeControlBaseUrl || config.targets.length === 0 || !options.settings.getEncryptedSecret(A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY))) throw new Error("a2a-remote-outbound-config-incomplete");
-  const receiverValue = gates.receiverProfile ? options.settings.getEncryptedSecret(A2A_REMOTE_RECEIVER_SECRET_KEY) : null;
+  if (gates.outboundRouting && (!config.routeControlBaseUrl || config.targets.length === 0 || !await options.settings.getEncryptedSecret(A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY))) throw new Error("a2a-remote-outbound-config-incomplete");
+  const receiverValue = gates.receiverProfile ? await options.settings.getEncryptedSecret(A2A_REMOTE_RECEIVER_SECRET_KEY) : null;
   if (gates.receiverProfile && !receiverValue) throw new Error("a2a-remote-receiver-secret-missing");
   const namespace = options.namespace ?? openFeatureNamespace("a2a-remote");
   const transport = createA2AStrictTransport();
@@ -185,8 +185,8 @@ export function createA2ARemoteRuntime(options: CreateA2ARemoteRuntimeOptions): 
     authorizer: { authorize: (input) => input.depth === 0 && input.projectRoot === options.projectRoot && config.targets.some((entry) => entry.targetAgentId === input.targetAgentId && entry.interfaceUrl === input.interfaceUrl) },
     approver,
     store,
-    secretResolver: { prepare: async ({ credentialBindingId, credentialRevisionId }) => { const value = options.settings.getEncryptedSecret(a2aRemoteDataSecretKey(credentialBindingId, credentialRevisionId)); if (!value) throw new Error("a2a-remote-data-secret-missing"); return secretHandle(value); } },
-    controlPlane: new A2ARouteControlClient({ baseUrl: config.routeControlBaseUrl, authResolver: { prepare: async () => { const value = options.settings.getEncryptedSecret(A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY); if (!value) throw new Error("a2a-remote-route-control-secret-missing"); return secretHandle(value); } } }),
+    secretResolver: { prepare: async ({ credentialBindingId, credentialRevisionId }) => { const value = await options.settings.getEncryptedSecret(a2aRemoteDataSecretKey(credentialBindingId, credentialRevisionId)); if (!value) throw new Error("a2a-remote-data-secret-missing"); return secretHandle(value); } },
+    controlPlane: new A2ARouteControlClient({ baseUrl: config.routeControlBaseUrl, authResolver: { prepare: async () => { const value = await options.settings.getEncryptedSecret(A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY); if (!value) throw new Error("a2a-remote-route-control-secret-missing"); return secretHandle(value); } } }),
     transport,
     audit: (event) => options.audit?.(`${event.operation}:${event.outcome}:${event.code}`),
   }) : null;

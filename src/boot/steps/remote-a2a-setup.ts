@@ -7,7 +7,7 @@ const UNCLASSIFIED_REASON = "a2a-remote-start-failed";
 
 export interface RemoteA2ASetupOptions {
   /** Null when neither gate is on. May throw when a gate is on but unprovisioned. */
-  readonly createRuntime: () => A2ARemoteRuntime | null;
+  readonly createRuntime: () => Promise<A2ARemoteRuntime | null> | A2ARemoteRuntime | null;
   readonly createController: (runtime: A2ARemoteRuntime) => RemoteA2AActionController;
   /** Receives the reason code only; never the thrown value. */
   readonly audit: (code: string) => void;
@@ -29,7 +29,7 @@ export function remoteA2AStartFailureReason(err: unknown): string {
 export async function setupRemoteA2A(options: RemoteA2ASetupOptions): Promise<RemoteA2ASetup> {
   let runtime: A2ARemoteRuntime | null = null;
   try {
-    runtime = options.createRuntime();
+    runtime = await options.createRuntime();
     if (runtime === null) return Object.freeze({});
     await runtime.ready();
     const controller = runtime.gates.outboundRouting ? options.createController(runtime) : undefined;

@@ -156,7 +156,7 @@ export interface AppServices {
   /** B1: approval gate, created after mainWindow is ready. */
   approvalGate?: ApprovalGate;
   /** Rebuild Layer 5 reviewer bindings after persisted reviewer settings change. */
-  rewireReviewerAgent?: () => void;
+  rewireReviewerAgent?: () => Promise<void>;
   /** current `/allow` sentence selector. A GETTER, not the instance: reviewer re-wiring replaces it (a login that finally configures a
    * provider heals it from the no-op stand-in to the live one), and a value captured at IPC-registration time would pin the stand-in forever. */
   getApprovalSentenceSelector?: () => ApprovalSentenceSelector | undefined;

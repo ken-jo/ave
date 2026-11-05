@@ -86,7 +86,7 @@ describe("A2A remote startup recovery fence", () => {
         readJson: async <T>(name: string, fallback: T) => structuredClone((files.get(name) ?? fallback) as T),
         writeJson: async (name: string, value: unknown) => { files.set(name, structuredClone(value)); },
       },
-      encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+      encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
       now,
       audit,
     });
@@ -117,7 +117,7 @@ describe("A2A remote startup recovery fence", () => {
         readJson: async <T>(name: string, fallback: T) => structuredClone((files.get(name) ?? fallback) as T),
         writeJson: async (name: string, value: unknown) => { files.set(name, structuredClone(value)); },
       },
-      encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+      encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
       now,
       audit,
     });
@@ -168,7 +168,7 @@ describe("A2A remote startup recovery fence", () => {
         readJson: async <T>(name: string, fallback: T) => structuredClone((files.get(name) ?? fallback) as T),
         writeJson: async (name: string, value: unknown) => { files.set(name, structuredClone(value)); },
       },
-      encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() },
+      encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) },
       now,
       audit,
     });
@@ -219,9 +219,9 @@ describe("strict encrypted data-key recovery", () => {
         writeJson,
       },
       encryption: {
-        isEncryptionAvailable: () => available,
-        encryptString: () => { throw new Error("unexpected key replacement"); },
-        decryptString: () => { throw new Error("unreadable ciphertext"); },
+        isAsyncEncryptionAvailable: async () => available,
+        encryptStringAsync: async () => { throw new Error("unexpected key replacement"); },
+        decryptStringAsync: async () => { throw new Error("unreadable ciphertext"); },
       },
       unreadableKeyPolicy: "reject",
     });

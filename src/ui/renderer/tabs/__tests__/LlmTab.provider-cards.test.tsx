@@ -623,10 +623,10 @@ describe("LlmTab provider cards", () => {
     const options = {
       userDataPath,
       encryption: {
-        isEncryptionAvailable: () => false,
+        isAsyncEncryptionAvailable: async () => false,
         getSelectedStorageBackend: () => "gnome_libsecret" as const,
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
+        encryptStringAsync: async (value: string) => Buffer.from(value),
+        decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
       },
     };
     try {
@@ -662,10 +662,10 @@ describe("LlmTab provider cards", () => {
           vendors: { "openai-compatible": { presetModels: { [gateway.providerId]: gateway.defaultModel } } } },
       }));
       const migrated = new SettingsService({ userDataPath, encryption: {
-        isEncryptionAvailable: () => false,
+        isAsyncEncryptionAvailable: async () => false,
         getSelectedStorageBackend: () => "gnome_libsecret" as const,
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
+        encryptStringAsync: async (value: string) => Buffer.from(value),
+        decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
       } });
       await migrated.patch({});
       const llm = migrated.get("llm");

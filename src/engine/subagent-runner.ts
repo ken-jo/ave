@@ -2837,6 +2837,7 @@ export class SubAgentRunner {
       return await persistFinalResult(this.buildFailureResult(childSessionId, message));
     }
 
+    if (child.providerPending) await child.whenProviderReady();
     if (!child.hasProvider()) {
       const message = "sub-agent: LLM provider not configured";
       callbacks?.onError?.(maskSubAgentText(message));
@@ -3645,6 +3646,7 @@ export class SubAgentRunner {
     updateApprovalSurface({ kind: "inherit", sessionId: resumeId, parentSessionId: originSessionId });
     child.sessionKind = "subagent";
     child.rebindTracer();
+    if (child.providerPending) await child.whenProviderReady();
     if (!child.hasProvider()) {
       return await finishAuthorizedFailure(
         "sub-agent resume: LLM provider not configured",

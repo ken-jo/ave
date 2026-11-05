@@ -734,14 +734,14 @@ export async function maybeStartTelegramConnectionBridge(
   const plan: TelegramActivationPlan = {
     botToken: options.botToken,
     botFingerprint: options.botFingerprint,
-    createRuntime: (activationEpoch) => Promise.resolve(createTelegramPairedPlatformRuntime({
+    createRuntime: (activationEpoch) => createTelegramPairedPlatformRuntime({
       encryption: options.encryption,
       botFingerprint: options.botFingerprint,
       authority: options.authority,
       getCurrentConversationId: options.getCurrentConversationId,
       activationEpoch,
       ...(options.secretStore ? { secretStore: options.secretStore } : {}),
-    })),
+    }),
     verifier: createTelegramPollingVerifier(),
     startIngress: (gateway, onCallbackQuery) => {
       const poll = startTelegramPollingIngress({

@@ -1188,7 +1188,7 @@ export class SubscriptionRuntimeService {
   }
 
   // Error projection without forcing a new runtime start or credential refresh.
-  getCachedStatus(runtimeId: SubscriptionRuntimeId): SubscriptionRuntimeStatus | undefined {
+  async getCachedStatus(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus | undefined> {
     if (this.stopped) return undefined;
     // A projection of the stored record only; reading it makes no request.
     if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
@@ -1539,8 +1539,8 @@ export class SubscriptionRuntimeService {
     return this.chatGptPlan;
   }
 
-  private chatGptPlanStatus(): SubscriptionRuntimeStatus {
-    return this.chatGptPlan ? this.chatGptPlan.getStatus() : notConfiguredChatGptPlanStatus();
+  private chatGptPlanStatus(): Promise<SubscriptionRuntimeStatus> {
+    return this.chatGptPlan ? this.chatGptPlan.getStatus() : Promise.resolve(notConfiguredChatGptPlanStatus());
   }
 
   private projectCodexStatus(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {

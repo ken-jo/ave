@@ -26,13 +26,18 @@ vi.mock("../mcp-oauth.js", async (importOriginal) => {
     readonly credentialKey: string;
     readonly fetch = vi.fn();
     constructor(readonly config: { id: string; url: string },
-      dependencies: { secrets: { getSecret(key: string): string | null } }, options: { after?: Promise<void> } = {}) {
+      dependencies: { secrets: { getSecret(key: string): Promise<string | null> } }, options: { after?: Promise<void> } = {}) {
       this.credentialKey = actual.tryMcpOAuthCredentialKey(config as Parameters<typeof actual.tryMcpOAuthCredentialKey>[0])!;
-      const loadStored = () => { if (dependencies.secrets.getSecret(this.credentialKey) === "grant") this.status = "authenticated"; };
+      const loadStored = async () => {
+        if (await dependencies.secrets.getSecret(this.credentialKey) === "grant") this.status = "authenticated";
+      };
+      // Like the real session, a hand-off is not awaited by readiness: status stays "required" until it settles.
       if (options.after) void options.after.then(loadStored);
-      else loadStored();
+      this.ready = options.after ? Promise.resolve() : loadStored();
       oauth.sessions.push(this);
     }
+    private readonly ready: Promise<void>;
+    whenReady() { return this.ready; }
     authenticate = vi.fn(async () => { this.status = "authenticated"; });
     getStatus() { return this.status; }
     getBlockedCode() { return undefined; }
@@ -123,8 +128,8 @@ beforeEach(() => {
 describe("McpManager bundled generation", () => {
   it("withholds an app plugin's OAuth server until the Authenticate action, then connects it through its session", async () => {
     const stored = new Map<string, string>();
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-oauth.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-oauth.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -163,8 +168,8 @@ describe("McpManager bundled generation", () => {
     const stableId = bundledConfigId({ kind: "plugin", name: "rebuild-kit" }, "remote");
     const stored = new Map<string, string>([["mcp.oauth.index", "{ not json"]]);
     const deleted: string[] = [];
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { deleted.push(key); stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { deleted.push(key); stored.delete(key); }, canStoreEncrypted: async () => true };
     const configPath = join(root, "servers-rebuild.json");
     writeFileSync(configPath, JSON.stringify({ servers: [] }));
     const manager = new McpManager(new McpGovernance(join(root, "policy-rebuild.json")), new ToolRegistry(), unusedNetworkFetch,
@@ -207,8 +212,8 @@ describe("McpManager bundled generation", () => {
       ["mcp.oauth.index", JSON.stringify({ [removedId]: "mcp.oauth.removed", [disabledId]: "mcp.oauth.disabled" })],
       ["mcp.oauth.removed", "grant"], ["mcp.oauth.disabled", "grant"],
     ]);
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-registry.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-registry.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -234,8 +239,8 @@ describe("McpManager bundled generation", () => {
 
   it("asks a reinstalled app plugin to authenticate again once its uninstall retired the sign-in", async () => {
     const stored = new Map<string, string>();
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-reinstall.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-reinstall.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -289,8 +294,8 @@ describe("McpManager bundled generation", () => {
   it("revokes a removed app plugin's sign-in even when its reinstall commits before the package locks settle", async () => {
     const stored = new Map<string, string>();
     let deletions: Promise<void> | undefined;
-    const secrets = { getSecret: (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
-      deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: () => true };
+    const secrets = { getSecret: async (key: string) => stored.get(key) ?? null, setSecret: async (key: string, value: string) => { stored.set(key, value); },
+      deleteSecret: async (key: string) => { await deletions; stored.delete(key); }, canStoreEncrypted: async () => true };
     const manager = new McpManager(new McpGovernance(join(root, "policy-race.json")), new ToolRegistry(), unusedNetworkFetch,
       join(root, "servers-race.json"), undefined, undefined, undefined, secrets,
       { secrets, redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {} });
@@ -343,10 +348,10 @@ describe("McpManager bundled generation", () => {
   it("stores a bundled key under packaged encryption and injects it only into a connection", async () => {
     const secretPath = join(root, "bundled-secrets.json");
     const encryption = {
-      isEncryptionAvailable: () => true,
+      isAsyncEncryptionAvailable: async () => true,
       getSelectedStorageBackend: () => "kwallet" as const,
-      encryptString: (value: string) => Buffer.from(`sealed:${value}`),
-      decryptString: (value: Buffer) => value.toString().slice("sealed:".length),
+      encryptStringAsync: async (value: string) => Buffer.from(`sealed:${value}`),
+      decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString().slice("sealed:".length) }),
     };
     const document = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
     const secrets = { getSecret: (key: string) => document.get(key), setSecret: (key: string, value: string) => document.set(key, value),
@@ -378,7 +383,7 @@ describe("McpManager bundled generation", () => {
     expect(readFileSync(secretPath, "utf8")).not.toContain("private-value");
     const key = bundledCredentialKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
     const reopened = new SecretDocumentStore({ path: secretPath, policy: "packaged", encryption });
-    expect(readBoundBundledCredential(reopened.get(key))).toEqual({
+    expect(readBoundBundledCredential(await reopened.get(key))).toEqual({
       declaration: bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-Token" }),
       secret: "private-value",
     });
@@ -401,7 +406,7 @@ describe("McpManager bundled generation", () => {
     await restarted.discardBundledGeneration(missingAfterChange);
     await restarted.stageBundledCredentialDrop({ kind: "agent-plugin", name: "meeting-kit" }, "notes",
       bundledCredentialDeclaration({ transport: "http", auth: "api-key", apiKeyHeader: "X-New-Token" }));
-    expect(reopened.get(key)).toBeNull();
+    expect(await reopened.get(key)).toBeNull();
     restarted.registerBundledCredentialSource("agent-plugin", { installedPackages: async () => new Set(["meeting-kit"]),
       list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp",
         auth: "api-key", apiKeyHeader: "X-New-Token" }],

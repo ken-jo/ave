@@ -59,24 +59,24 @@ describe("main's active chat model", () => {
     vi.unstubAllEnvs();
   });
 
-  it("is none on a fresh profile with no selected model", () => {
+  it("is none on a fresh profile with no selected model", async () => {
     const settingsService = fakeSettings({});
     expect(DEFAULT_SETTINGS.llm.vendors.openai?.model).toBe("");
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({
       kind: "none",
       reason: "no-connected-provider",
     });
   });
 
-  it("projects the typed none into the renderer snapshot instead of the vendor default", () => {
-    const snapshot = rendererSettingsSnapshot(fakeSettings({}));
+  it("projects the typed none into the renderer snapshot instead of the vendor default", async () => {
+    const snapshot = await rendererSettingsSnapshot(fakeSettings({}));
     expect(snapshot.activeChatModel).toEqual({ kind: "none", reason: "no-connected-provider" });
     expect("a2aRemote" in snapshot).toBe(false);
   });
 
-  it("requires a model choice after connecting a fresh route", () => {
+  it("requires a model choice after connecting a fresh route", async () => {
     const settingsService = fakeSettings({ secrets: { "llm.apiKey.openai": "sk-test" } });
-    expect(rendererSettingsSnapshot(settingsService).activeChatModel).toEqual({
+    expect((await rendererSettingsSnapshot(settingsService)).activeChatModel).toEqual({
       kind: "none",
       reason: "no-model-selected",
     });
@@ -98,7 +98,7 @@ describe("main's active chat model", () => {
 
   it.each(["claude", "openai", "gemini", "azure-foundry", "vertex-ai"] as const)(
     "leaves an empty %s route unconfigured even with credentials",
-    (provider) => {
+    async (provider) => {
       const settingsService = fakeSettings({
         llm: {
           provider,
@@ -106,20 +106,20 @@ describe("main's active chat model", () => {
         },
         secrets: { [`llm.apiKey.${provider}`]: "fixture-key" },
       });
-      expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "no-model-selected" });
-      expect(providerFor(settingsService)).toBeNull();
+      expect(await resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "no-model-selected" });
+      expect(await providerFor(settingsService)).toBeNull();
     },
   );
 
-  it("does not adopt a credential saved for a vendor that is not active", () => {
+  it("does not adopt a credential saved for a vendor that is not active", async () => {
     const settingsService = fakeSettings({ secrets: { "llm.apiKey.claude": "sk-ant-test" } });
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({
       kind: "none",
       reason: "no-connected-provider",
     });
   });
 
-  it("reports a connected handshake-only route with no model as no-model-selected", () => {
+  it("reports a connected handshake-only route with no model as no-model-selected", async () => {
     const settingsService = fakeSettings({
       llm: {
         provider: "openai-compatible",
@@ -127,24 +127,24 @@ describe("main's active chat model", () => {
       },
       secrets: { "llm.apiKey.openai-compatible": "sk-local" },
     });
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "no-model-selected" });
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "no-model-selected" });
   });
 
-  it("treats a selected preset that is no longer installed as not connected", () => {
+  it("treats a selected preset that is no longer installed as not connected", async () => {
     const settingsService = fakeSettings({
       llm: { provider: "openai-compatible", marketplaceProviderPresetId: PRESET.providerId },
     });
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({
       kind: "none",
       reason: "no-connected-provider",
     });
   });
 
-  it("reports a selected subscription runtime without consulting the secret store", () => {
+  it("reports a selected subscription runtime without consulting the secret store", async () => {
     const settingsService = fakeSettings({
       llm: { activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-6.1-sol" } },
     });
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({
       kind: "subscription",
       provider: "codex",
       model: "gpt-6.1-sol",
@@ -152,12 +152,12 @@ describe("main's active chat model", () => {
     expect(settingsService.hasStoredSecret).not.toHaveBeenCalled();
   });
 
-  it("reports a retired provider as its own reason", () => {
+  it("reports a retired provider as its own reason", async () => {
     const settingsService = fakeSettings({
       llm: { retiredProvider: "copilot" },
       secrets: { "llm.apiKey.openai": "sk-test" },
     });
-    expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "retired-provider" });
+    expect(await resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "retired-provider" });
   });
 
   // Composer model selection must agree with the model the transport can reach.
@@ -192,10 +192,10 @@ describe("main's active chat model", () => {
       llm: { provider: "openai-compatible", marketplaceProviderPresetId: PRESET.providerId },
       presets: [PRESET],
     }],
-  ])("agrees with buildProvider: %s", (_label, expectedKind, input) => {
+  ])("agrees with buildProvider: %s", async (_label, expectedKind, input) => {
     const settingsService = fakeSettings(input);
-    const active = resolveMainActiveChatModel(settingsService);
-    const provider = providerFor(settingsService);
+    const active = await resolveMainActiveChatModel(settingsService);
+    const provider = await providerFor(settingsService);
     expect(active.kind).toBe(expectedKind);
     expect(provider === null).toBe(expectedKind === "none");
   });

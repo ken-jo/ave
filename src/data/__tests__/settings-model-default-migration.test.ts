@@ -66,10 +66,10 @@ const REMOVED_DEFAULTS: readonly (readonly [LLMVendor, string])[] = [
 ];
 const MIGRATION = "built-in-default-models-cleared";
 const encryption = {
-  isEncryptionAvailable: () => false,
+  isAsyncEncryptionAvailable: async () => false,
   getSelectedStorageBackend: () => "gnome_libsecret" as const,
-  encryptString: (value: string) => Buffer.from(value),
-  decryptString: (value: Buffer) => value.toString(),
+  encryptStringAsync: async (value: string) => Buffer.from(value),
+  decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
 };
 
 describe("stored built-in default model migration", () => {
@@ -194,7 +194,7 @@ describe("stored built-in default model migration", () => {
   it("makes a cleared market route unconfigured without dispatching an empty model", async () => {
     const service = load(marketProfile());
     const deps = { settingsService: { get: service.get.bind(service), getSecret: () => "test-key" } } as unknown as ConversationLoopDeps;
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
     expect(provider).toBeNull();
     await expect(generateText(provider, service, "hello")).rejects.toThrow("not configured");
     expect(createProvider).not.toHaveBeenCalled();
@@ -279,13 +279,13 @@ describe("stored built-in default model migration", () => {
       fallbackChain: [{ provider: "claude", model: "claude-sonnet-4-6" }],
     } });
     const deps = { settingsService: { get: service.get.bind(service), getSecret: () => "test-key" } } as unknown as ConversationLoopDeps;
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
     expect(provider).toBeNull();
     await expect(generateText(provider, service, "hello")).rejects.toThrow("not configured");
     expect(createProvider).not.toHaveBeenCalled();
     expect(streamTurn).not.toHaveBeenCalled();
     await service.patch({ llm: { vendors: { openai: { model: "chosen-model" } } } });
-    const configured = buildProvider(deps)!;
+    const configured = (await buildProvider(deps))!;
     vi.useFakeTimers();
     const request = (async () => {
       for await (const _event of configured.streamTurn({ model: "chosen-model", systemPrompt: "system", messages: [], tools: [] })) {  }

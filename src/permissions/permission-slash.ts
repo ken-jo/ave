@@ -336,7 +336,7 @@ export async function dispatchPermissionReviewerCommand(
 
 export async function dispatchPermissionReviewerCommandWithRewire(
   cmd: PermissionReviewerCommand,
-  rewireReviewerAgent?: () => void,
+  rewireReviewerAgent?: () => Promise<void>,
   pathOverride?: string,
 ): Promise<PermissionReviewerResult> {
   if (cmd.verb === "show") {
@@ -349,13 +349,13 @@ export async function dispatchPermissionReviewerCommandWithRewire(
   const result = await dispatchPermissionReviewerCommand(cmd, pathOverride);
   if (!result.ok) return result;
   try {
-    rewireReviewerAgent?.();
+    await rewireReviewerAgent?.();
     return result;
   } catch (err) {
     if (previous.ok && !(previous.verb === "show" && previous.fault)) {
       await setReviewerSettingsPersist({ ...previous.settings }, pathOverride);
       try {
-        rewireReviewerAgent?.();
+        await rewireReviewerAgent?.();
       } catch {
         // The original rewire failure is the actionable error for callers.
       }

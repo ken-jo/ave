@@ -11,13 +11,13 @@ const mockedElectron = vi.hoisted(() => {
     enc,
     safeStorage: {
       getSelectedStorageBackend: () => "gnome_libsecret" as const,
-      isEncryptionAvailable: vi.fn(() => enc.available),
-      encryptString: vi.fn((s: string) => Buffer.from(`ENC(${s})`, "utf-8")),
-      decryptString: vi.fn((b: Buffer) => {
+      isAsyncEncryptionAvailable: vi.fn(async () => enc.available),
+      encryptStringAsync: vi.fn(async (s: string) => Buffer.from(`ENC(${s})`, "utf-8")),
+      decryptStringAsync: vi.fn(async (b: Buffer) => {
         const raw = Buffer.from(b).toString("utf-8");
         const match = /^ENC\(([\s\S]*)\)$/.exec(raw);
         if (!match) throw new Error("decryptString: not ciphertext from this seam");
-        return match[1];
+        return { shouldReEncrypt: false, result: match[1] };
       }),
     },
   };
@@ -312,7 +312,7 @@ describe("the encrypted pair fails for its own reasons", () => {
     await storage.writeEncrypted("auth/token.enc", "s3cret");
     // Persist the encryption result and round-trip it intact.
     expect(readFileSync(join(storageDir, "auth/token.enc"), "utf-8")).toBe("ENC(s3cret)");
-    expect(mockedElectron.safeStorage.encryptString).toHaveBeenCalledWith("s3cret");
+    expect(mockedElectron.safeStorage.encryptStringAsync).toHaveBeenCalledWith("s3cret");
     expect(await storage.readEncrypted("auth/token.enc")).toBe("s3cret");
   });
 

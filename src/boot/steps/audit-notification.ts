@@ -34,7 +34,7 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
   const { ensureAuditSecret } = await import("../../audit/hmac-chain.js");
   const { createHostSecretStore } = await import("../../audit/host-secret-store.js");
   const bootAuditLogger = new AuditLogger();
-  const permissionAuditSecretStore = createHostSecretStore(ctx.host.encryption);
+  const permissionAuditSecretStore = await createHostSecretStore(ctx.host.encryption);
   await bootAuditLogger.setupPermissionAuditChain(
     ensureAuditSecret(permissionAuditSecretStore),
     permissionAuditSecretStore,

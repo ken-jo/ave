@@ -148,7 +148,7 @@ describe("independent configuration owners", () => {
     // Legacy root secrets are never imported: the commit moves the root document aside.
     expect(migrateOtherProcess(home).join("\n")).toContain("ave-secrets.json.post-migration-");
     await store.set("fixture", "after");
-    expect(store.get("fixture")).toBe("after");
+    expect(await store.get("fixture")).toBe("after");
     expect(store.path).toBe(join(home, "config", "ave-secrets.json"));
     expect(existsSync(join(home, "ave-secrets.json"))).toBe(false);
     expect(migrateOtherProcess(home)).toEqual([]);

@@ -10,10 +10,10 @@ import {
 const digest = "a".repeat(64);
 function settings(features: Record<string, boolean>, secrets: Record<string, string> = {}, config: Record<string, unknown> = {}) {
   const get = vi.fn((key: string) => key === "features" ? features : key === "a2aRemote" ? { routeControlBaseUrl: "https://hub.example.test/", receiverPublicOrigin: "https://receiver-a2a-383a1d70.com/", outboundCallerGenerationId: "outbound-generation-1", receiverCallerGenerationId: "receiver-generation-1", extensionSpecDigestSha256: digest, targets: [{ targetAgentId: 1, label: "Agent one", interfaceUrl: "https://agent.example.test/a2a", agentCardDigestSha256: digest, trustKeyId: 2, credentialBindingId: 3, routePolicyVersion: 4, routePolicyDigestSha256: digest, intendedCredentialRevisionId: 5 }], receiverMaxKeysPerGeneration: 10, ...config } : undefined);
-  const getEncryptedSecret = vi.fn((key: string) => secrets[key] ?? null);
+  const getEncryptedSecret = vi.fn(async (key: string) => secrets[key] ?? null);
   return { value: { get, getEncryptedSecret } as unknown as Pick<SettingsService, "get" | "getEncryptedSecret">, get, getEncryptedSecret };
 }
-const encryption = { getSelectedStorageBackend: () => "gnome_libsecret" as const, isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value), decryptString: (value: Buffer) => value.toString() };
+const encryption = { getSelectedStorageBackend: () => "gnome_libsecret" as const, isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value: string) => Buffer.from(value), decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }) };
 const namespace = { readJson: async <T>(_name: string, fallback: T) => fallback, writeJson: async () => undefined };
 const agentActionApprover = vi.fn(async () => ({
   decisionId: "test-approval",
@@ -21,24 +21,24 @@ const agentActionApprover = vi.fn(async () => ({
 }));
 
 describe("A2A remote boot runtime", () => {
-  it("has zero config, secret, namespace, Hub, DNS, and listener effect when both gates are OFF", () => {
+  it("has zero config, secret, namespace, Hub, DNS, and listener effect when both gates are OFF", async () => {
     const value = settings({ a2aLoopbackServer: true });
-    expect(createA2ARemoteRuntime({ encryption: encryption, settings: value.value, agentActionApprover, projectRoot: "/project" })).toBeNull();
+    expect(await createA2ARemoteRuntime({ encryption: encryption, settings: value.value, agentActionApprover, projectRoot: "/project" })).toBeNull();
     expect(value.get).toHaveBeenCalledTimes(1); expect(value.get).toHaveBeenCalledWith("features"); expect(value.getEncryptedSecret).not.toHaveBeenCalled();
   });
-  it("fails closed before runtime creation when an enabled gate lacks OS encryption or config", () => {
+  it("fails closed before runtime creation when an enabled gate lacks OS encryption or config", async () => {
     const value = settings({ a2aRemoteRouting: true });
-    expect(() => createA2ARemoteRuntime({ settings: value.value, agentActionApprover, projectRoot: "/project", encryption: { ...encryption, isEncryptionAvailable: () => false }, namespace })).toThrow("a2a-remote-os-encryption-unavailable");
+    await expect(createA2ARemoteRuntime({ settings: value.value, agentActionApprover, projectRoot: "/project", encryption: { ...encryption, isAsyncEncryptionAvailable: async () => false }, namespace })).rejects.toThrow("a2a-remote-os-encryption-unavailable");
     const missing = settings({ a2aRemoteRouting: true }, { "a2a.remote.route-control-auth": "control" }, { outboundCallerGenerationId: "" });
-    expect(() => createA2ARemoteRuntime({ settings: missing.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).toThrow("a2a-remote-config-incomplete");
+    await expect(createA2ARemoteRuntime({ settings: missing.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).rejects.toThrow("a2a-remote-config-incomplete");
     const receiverMissingOrigin = settings({ a2aRemoteReceiver: true }, { "a2a.remote.receiver-bearer": "receiver" }, { receiverPublicOrigin: "" });
-    expect(() => createA2ARemoteRuntime({ settings: receiverMissingOrigin.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).toThrow("a2a-remote-config-incomplete");
+    await expect(createA2ARemoteRuntime({ settings: receiverMissingOrigin.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).rejects.toThrow("a2a-remote-config-incomplete");
     const receiverInvalidOrigin = settings({ a2aRemoteReceiver: true }, { "a2a.remote.receiver-bearer": "receiver" }, { receiverPublicOrigin: "https://receiver.internal/" });
-    expect(() => createA2ARemoteRuntime({ settings: receiverInvalidOrigin.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).toThrow("a2a-remote-config-incomplete");
+    await expect(createA2ARemoteRuntime({ settings: receiverInvalidOrigin.value, agentActionApprover, projectRoot: "/project", encryption, namespace })).rejects.toThrow("a2a-remote-config-incomplete");
   });
-  it("assembles an optional host-owned runtime without opening a socket", () => {
+  it("assembles an optional host-owned runtime without opening a socket", async () => {
     const value = settings({ a2aRemoteRouting: true }, { "a2a.remote.route-control-auth": "control-secret" });
-    const runtime = createA2ARemoteRuntime({ settings: value.value, agentActionApprover, projectRoot: "/project", encryption, namespace });
+    const runtime = await createA2ARemoteRuntime({ settings: value.value, agentActionApprover, projectRoot: "/project", encryption, namespace });
     expect(runtime?.gates).toEqual({ outboundRouting: true, receiverProfile: false });
     expect(runtime?.agentActionApprover).toBe(agentActionApprover);
     expect(value.getEncryptedSecret).toHaveBeenCalledWith("a2a.remote.route-control-auth");
@@ -56,13 +56,13 @@ describe("A2A remote boot runtime", () => {
       { a2aRemoteRouting: true, a2aRemoteReceiver: true },
       { "a2a.remote.route-control-auth": "control-secret", "a2a.remote.receiver-bearer": "receiver-secret" },
     );
-    const runtime = createA2ARemoteRuntime({
+    const runtime = (await createA2ARemoteRuntime({
       settings: value.value,
       agentActionApprover: shared,
       projectRoot: "/project",
       encryption,
       namespace,
-    })!;
+    }))!;
     expect(runtime.agentActionApprover).toBe(shared);
 
     const outbound = runtime.agentActionApprover({

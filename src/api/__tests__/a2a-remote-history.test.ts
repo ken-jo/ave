@@ -45,7 +45,7 @@ function fixture(responseResult: unknown, headers: Record<string, string> = {}) 
     readJson: async <T>(_name: string, fallback: T) => structuredClone((disk ?? fallback) as T),
     writeJson: async (_name: string, value: unknown) => { disk = structuredClone(value); },
   };
-  const store = new A2ARemoteDurableStore({ namespace, encryption: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(value), decryptString: (value) => value.toString() }, random: (size) => Buffer.alloc(size, 7), now });
+  const store = new A2ARemoteDurableStore({ namespace, encryption: { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value) => Buffer.from(value), decryptStringAsync: async (value) => ({ shouldReEncrypt: false, result: value.toString() }) }, random: (size) => Buffer.alloc(size, 7), now });
   const client = new A2ARemoteClient({
     enabled: true,
     authorizer: { authorize: () => true },

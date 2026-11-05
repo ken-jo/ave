@@ -65,7 +65,7 @@ export interface BundledCredentialSource {
 }
 
 export interface BundledSecretStore {
-  getSecret(key: string): string | null;
+  getSecret(key: string): Promise<string | null>;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
 }
@@ -258,7 +258,7 @@ export class McpManager {
     }
     const removal = `${packageRef.kind}/${packageRef.name}`;
     const work = this.queueOAuthStoreWork(async (secrets) => {
-      const index = this.readOAuthIndex(secrets);
+      const index = await this.readOAuthIndex(secrets);
       let changed = false;
       for (const [serverId, key] of Object.entries(index ?? {})) {
         if (!ofPackage(serverId)) continue;
@@ -559,10 +559,10 @@ export class McpManager {
   }
 
   /** Unreadable indexes authorize no deletion and rebuild only from successfully loaded config keys. */
-  private readOAuthIndex(secrets: McpOAuthSecrets): Record<string, string> | undefined {
+  private async readOAuthIndex(secrets: McpOAuthSecrets): Promise<Record<string, string> | undefined> {
     let parsed: unknown;
     try {
-      const raw = secrets.getSecret(OAUTH_CREDENTIAL_INDEX_KEY);
+      const raw = await secrets.getSecret(OAUTH_CREDENTIAL_INDEX_KEY);
       if (!raw) return {};
       parsed = JSON.parse(raw) as unknown;
     } catch {
@@ -587,8 +587,8 @@ export class McpManager {
   private queueOAuthIndexUpdate(serverId: string, key: string | undefined, retiredKey?: string): Promise<void> {
     return this.queueOAuthStoreWork(async (secrets) => {
       if (retiredKey) await secrets.deleteSecret(retiredKey);
-      if (!secrets.canStoreEncrypted()) return;
-      const index = this.readOAuthIndex(secrets);
+      if (!await secrets.canStoreEncrypted()) return;
+      const index = await this.readOAuthIndex(secrets);
       if (!index) return;
       const recorded = index[serverId];
       if (recorded === key) return;
@@ -608,8 +608,8 @@ export class McpManager {
       if (key) desired.set(config.id, key);
     }
     return this.queueOAuthStoreWork(async (secrets) => {
-      if (!secrets.canStoreEncrypted()) return;
-      const index = this.readOAuthIndex(secrets);
+      if (!await secrets.canStoreEncrypted()) return;
+      const index = await this.readOAuthIndex(secrets);
       if (!index) {
         const rebuilt = Object.fromEntries(desired);
         for (const [stableId, { session }] of this.bundledOAuthSessions) rebuilt[stableId] = session.credentialKey;
@@ -676,8 +676,8 @@ export class McpManager {
       for (const stableId of [...this.bundledOAuthSessions.keys()]) {
         if (this.bundledGrantRetired(stableId, kind, inventory)) this.retireBundledSession(stableId);
       }
-      if (!secrets.canStoreEncrypted()) return;
-      const index = this.readOAuthIndex(secrets);
+      if (!await secrets.canStoreEncrypted()) return;
+      const index = await this.readOAuthIndex(secrets);
       if (!index) return;
       let changed = false;
       for (const [serverId, key] of Object.entries(index)) {
@@ -866,6 +866,7 @@ export class McpManager {
         let oauthSession: McpOAuthSession | undefined;
         if (projection.config.auth === "oauth") {
           oauthSession = this.bundledOAuthSessionFor(projection);
+          await oauthSession.whenReady();
           const authStatus = oauthSession.getStatus();
           // Only explicit settings authentication may open a browser; preparation cannot.
           if (authStatus !== "authenticated" && authStatus !== "insufficient_scope") {
@@ -882,7 +883,7 @@ export class McpManager {
           const bundled = projection.approval.bundled;
           if (!bundled) throw new Error("bundled MCP approval is missing its package identity");
           const packageRef = this.packageRefFromApproval(bundled.package);
-          const stored = this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, bundled.server));
+          const stored = await this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, bundled.server));
           const bound = packageRef.kind === "agent-plugin" ? readBoundBundledCredential(stored) : null;
           credential = packageRef.kind === "agent-plugin"
             ? (bound?.declaration === bundledCredentialDeclaration(projection.config) ? bound.secret : null)
@@ -1327,7 +1328,7 @@ export class McpManager {
       if (!declaration || !spec) throw new Error(`Configured connector ${serverId} does not exist`);
       const args = [...(declaration.args ?? [])];
       const env = { ...(declaration.env ?? {}) };
-      const credential = ref ? this.bundledStudioCredential(ref.packageRef, ref.server) : null;
+      const credential = ref ? await this.bundledStudioCredential(ref.packageRef, ref.server) : null;
       if (credential && declaration.apiKeyEnv && env[declaration.apiKeyEnv] === credential) delete env[declaration.apiKeyEnv];
       if ((await this.getStudioStoredCredentialValues()).some((key) => containsStoredCredential({ spec, args, env }, key))) {
         throw new Error("Connector arguments or environment contain its stored credential");
@@ -1349,11 +1350,11 @@ export class McpManager {
     return { spec, args, env };
   }
 
-  private bundledStudioCredential(packageRef: BundledPackageRef, server: string): string | null {
+  private async bundledStudioCredential(packageRef: BundledPackageRef, server: string): Promise<string | null> {
     const declaration = this.bundledCredentialSources.get(packageRef.kind)?.list().find((item) =>
       item.packageName === packageRef.name && item.serverName === server);
     if (!declaration || declaration.auth !== "api-key" || !this.bundledSecrets) return null;
-    const stored = this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, server));
+    const stored = await this.bundledSecrets.getSecret(bundledCredentialKey(packageRef, server));
     if (packageRef.kind !== "agent-plugin") return stored;
     const bound = readBoundBundledCredential(stored);
     return bound?.declaration === bundledCredentialDeclaration(declaration) ? bound.secret : null;
@@ -1362,7 +1363,7 @@ export class McpManager {
   async getStudioStoredCredentialValues(): Promise<string[]> {
     const keys = (await this.loadFromConfig()).flatMap((config) => config.apiKey ? [config.apiKey] : []);
     for (const [kind, source] of this.bundledCredentialSources) for (const declaration of source.list()) {
-      const key = this.bundledStudioCredential({ kind, name: declaration.packageName }, declaration.serverName);
+      const key = await this.bundledStudioCredential({ kind, name: declaration.packageName }, declaration.serverName);
       if (key) keys.push(key);
     }
     return [...new Set(keys)];
@@ -1480,7 +1481,7 @@ export class McpManager {
   async stageBundledCredentialDrop(packageRef: BundledPackageRef, serverName: string, expectedDeclaration?: string): Promise<() => Promise<void>> {
     if (!this.bundledSecrets) throw new Error("bundled MCP credential store is unavailable");
     const key = bundledCredentialKey(packageRef, serverName);
-    const previous = this.bundledSecrets.getSecret(key);
+    const previous = await this.bundledSecrets.getSecret(key);
     if (previous === null) return async () => undefined;
     if (expectedDeclaration && readBoundBundledCredential(previous)?.declaration === expectedDeclaration) return async () => undefined;
     await this.bundledSecrets.deleteSecret(key);

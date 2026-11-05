@@ -95,55 +95,55 @@ describe("OpenAI login type selection", () => {
   });
 
   describe("API key", () => {
-    it("builds the API-key provider when a key is stored", () => {
+    it("builds the API-key provider when a key is stored", async () => {
       const { deps: d } = deps({ kind: "api" }, { apiKey: OPENAI_KEY, subscriptionProviderFactory: codexFactory() });
-      const provider = buildProvider(d);
+      const provider = await buildProvider(d);
       expect(provider?.vendor).toBe("openai");
       expect(provider?.subscriptionRuntime).toBeUndefined();
     });
 
-    it("is not configured without a key, even when a subscription could answer", () => {
+    it("is not configured without a key, even when a subscription could answer", async () => {
       const factory = codexFactory();
       const { deps: d } = deps({ kind: "api" }, { apiKey: null, subscriptionProviderFactory: factory });
-      expect(buildProvider(d)).toBeNull();
+      expect(await buildProvider(d)).toBeNull();
       expect(factory).not.toHaveBeenCalled();
     });
   });
 
   describe("Codex CLI", () => {
-    it("builds the Codex subscription provider and never reads the API key", () => {
+    it("builds the Codex subscription provider and never reads the API key", async () => {
       const { deps: d, getSecret } = deps(
         { kind: "subscription", provider: "codex" },
         { apiKey: OPENAI_KEY, subscriptionProviderFactory: codexFactory() },
       );
-      expect(buildProvider(d)?.subscriptionRuntime).toEqual({ kind: "subscription", provider: "codex" });
+      expect((await buildProvider(d))?.subscriptionRuntime).toEqual({ kind: "subscription", provider: "codex" });
       expect(getSecret).not.toHaveBeenCalled();
     });
 
-    it("is not configured without its runtime, and does not fall back to the API key", () => {
+    it("is not configured without its runtime, and does not fall back to the API key", async () => {
       const { deps: d, getSecret } = deps({ kind: "subscription", provider: "codex" }, { apiKey: OPENAI_KEY });
-      expect(buildProvider(d)).toBeNull();
+      expect(await buildProvider(d)).toBeNull();
       expect(getSecret).not.toHaveBeenCalled();
     });
   });
 
   describe("ChatGPT plan usage", () => {
-    it("builds the plan provider on the OpenAI Responses connection and never reads the API key", () => {
+    it("builds the plan provider on the OpenAI Responses connection and never reads the API key", async () => {
       const { deps: d, getSecret } = deps(
         { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
         { apiKey: OPENAI_KEY, subscriptionProviderFactory: planFactory({}) },
       );
-      const provider = buildProvider(d);
+      const provider = await buildProvider(d);
       expect(provider?.subscriptionRuntime).toEqual({ kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" });
       expect(getSecret).not.toHaveBeenCalled();
     });
 
-    it("is not configured without a model, and does not fall back to the API key", () => {
+    it("is not configured without a model, and does not fall back to the API key", async () => {
       const { deps: d, getSecret } = deps(
         { kind: "subscription", provider: "chatgpt-plan" },
         { apiKey: OPENAI_KEY, subscriptionProviderFactory: planFactory({}) },
       );
-      expect(buildProvider(d)).toBeNull();
+      expect(await buildProvider(d)).toBeNull();
       expect(getSecret).not.toHaveBeenCalled();
     });
 
@@ -152,7 +152,7 @@ describe("OpenAI login type selection", () => {
         { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
         { apiKey: OPENAI_KEY, subscriptionProviderFactory: planFactory(null) },
       );
-      const provider = buildProvider(d)!;
+      const provider = (await buildProvider(d))!;
       const events: StreamEvent[] = [];
       for await (const event of provider.streamTurn({ model: "gpt-6.1-sol", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] })) {
         events.push(event);

@@ -226,10 +226,10 @@ async function fixture(): Promise<Fixture> {
 function createSession(state: Fixture, options: { store?: Map<string, string>; config?: Partial<McpHttpServerConfig>; getSecret?: McpOAuthSecrets["getSecret"]; canStoreEncrypted?: McpOAuthSecrets["canStoreEncrypted"] } = {}) {
   const store = options.store ?? new Map<string, string>();
   const secrets: McpOAuthSecrets = {
-    getSecret: options.getSecret ?? ((key) => store.get(key) ?? null),
+    getSecret: options.getSecret ?? (async (key) => store.get(key) ?? null),
     setSecret: async (key, value) => { store.set(key, value); },
     deleteSecret: async (key) => { store.delete(key); },
-    canStoreEncrypted: options.canStoreEncrypted ?? (() => true),
+    canStoreEncrypted: options.canStoreEncrypted ?? (async () => true),
   };
   const catchers = new AuthRedirectCatchers();
   const openAuthorizationUrl = vi.fn(async (url: string, login: OAuthLoginOptions) => {
@@ -622,10 +622,11 @@ describe("remote authorization", () => {
     const state = await fixture();
     let readable = false;
     const store = new Map<string, string>();
-    const { session } = createSession(state, { store, getSecret: (key) => {
+    const { session } = createSession(state, { store, getSecret: async (key) => {
       if (!readable) throw new Error("private-storage-diagnostic");
       return store.get(key) ?? null;
     } });
+    await session.whenReady();
     expect(session.getStatus()).toBe("error");
     const failure = await session.authenticate().catch((error: unknown) => error as Error & { code?: string });
     expect(failure).toMatchObject({ code: "mcp-auth-storage-unreadable", message: "MCP authorization storage cannot be read" });
@@ -638,9 +639,32 @@ describe("remote authorization", () => {
     expect(session.getStatus()).toBe("authenticated");
   });
 
+  it("does not repopulate a session disposed while its stored credentials were decrypting", async () => {
+    const state = await fixture();
+    const store = new Map<string, string>();
+    const first = createSession(state, { store }).session;
+    await first.authenticate();
+    expect(first.getStatus()).toBe("authenticated");
+
+    for (const outcome of ["resolve", "reject"] as const) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const { session } = createSession(state, { store, getSecret: async (key) => {
+        await gate;
+        if (outcome === "reject") throw new Error("decrypt failed");
+        return store.get(key) ?? null;
+      } });
+      session.dispose();
+      release();
+      await session.whenReady();
+      expect(session.getStatus()).toBe("required");
+      expect(session.getBlockedCode()).toBeUndefined();
+    }
+  });
+
   it("refuses before discovery, the redirect listener or registration when encrypted storage is unavailable", async () => {
     const state = await fixture();
-    const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: () => false });
+    const { session, catchers, openAuthorizationUrl } = createSession(state, { canStoreEncrypted: async () => false });
     const open = vi.spyOn(catchers, "open");
     await expect(session.authenticate()).rejects.toMatchObject({ code: "mcp-auth-storage-unavailable" });
     expect(open).not.toHaveBeenCalled();
@@ -804,6 +828,7 @@ describe("remote authorization", () => {
     await first.session.authenticate();
     first.session.dispose();
     const restored = createSession(state, { store: first.store, config });
+    await restored.session.whenReady();
     expect(restored.session.getStatus()).toBe("authenticated");
     expect((await restored.session.fetch(state.resource)).ok).toBe(true);
     expect(state.registrations).toHaveLength(0);

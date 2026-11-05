@@ -63,14 +63,14 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       "https://aif.example.openai.azure.com/openai/v1/";
     const llmFetch = vi.fn() as unknown as typeof fetch;
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => "test-key",
       },
       ...makeLoopDeps(toolRegistry),
       llmFetch,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -94,14 +94,14 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     settings.vendors.openai.baseUrl = "https://proxy.example.test/v1";
     const llmFetch = vi.fn() as unknown as typeof fetch;
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => "test-key",
       },
       ...makeLoopDeps(toolRegistry),
       llmFetch,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).toHaveBeenCalledWith(
       expect.not.objectContaining({
@@ -128,13 +128,13 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     });
     settings.vendors["openai-compatible"].baseUrl = "http://localhost:8000/v1";
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -156,13 +156,13 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     });
     settings.vendors["openai-compatible"].baseUrl = "http://localhost:8000/v1";
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     // Empty model IDs mean unconfigured; never fabricate an endpoint model selection.
     expect(createProvider).not.toHaveBeenCalled();
@@ -178,13 +178,13 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     });
     settings.vendors["openai-compatible"].baseUrl = "http://localhost:8000/v1";
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => "stored-key",
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -208,7 +208,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     });
     settings.vendors["openai-compatible"].baseUrl = "https://stale.example/v1";
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: (key: string) => {
           if (key === "llm") return settings;
@@ -236,7 +236,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
             : null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -269,7 +269,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       marketplaceProviderPresetId: "future-router",
     });
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: (key: string) => {
           if (key === "llm") return settings;
@@ -297,7 +297,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       ...makeLoopDeps(toolRegistry),
       // Supply the host transport so the guarded-fetch assertions exercise the real boundary.
       networkFetch: unusedNetworkFetch,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     const providerConfig = createProvider.mock.calls[0]?.[0];
     const guardedFetch = providerConfig?.fetch;
@@ -345,7 +345,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       marketplaceProviderPresetId: "local-router",
     });
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: (key: string) => {
           if (key === "llm") return settings;
@@ -368,7 +368,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
         getSecret: () => null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     const providerConfig = createProvider.mock.calls[0]?.[0];
     const guardedFetch = providerConfig?.fetch;
@@ -410,7 +410,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
     });
     settings.vendors["openai-compatible"].baseUrl = "https://future.example/v1";
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: (key: string) => {
           if (key === "llm") return settings;
@@ -421,7 +421,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
           key === "llm.apiKey.openai-compatible" ? "generic-secret" : null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).not.toHaveBeenCalled();
   });
@@ -487,6 +487,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       },
       ...makeLoopDeps(toolRegistry),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
 
     const pending = collectStream(
       loop.provider!.streamTurn({
@@ -516,13 +517,13 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       model: "gpt-5.4-mini",
     });
 
-    new ConversationLoop({
+    await new ConversationLoop({
       settingsService: {
         get: () => settings,
         getSecret: () => null,
       },
       ...makeLoopDeps(toolRegistry),
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]).whenProviderReady();
 
     expect(createProvider).not.toHaveBeenCalled();
   });

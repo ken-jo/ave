@@ -101,7 +101,7 @@ it.each([
       yield { type: "error", error: SAFE_SUBSCRIPTION_FAILURE, classification: "subscription-chat-unavailable", providerError };
     });
     const { deps, getSecret } = buildRetryDeps(selection, { vendor: "openai", subscriptionRuntime: selection, streamTurn });
-    const pending = collectSubscriptionRound(buildProvider(deps)!);
+    const pending = collectSubscriptionRound((await buildProvider(deps))!);
     await vi.advanceTimersByTimeAsync(5_000);
     const result = await pending;
     expect(streamTurn).toHaveBeenCalledTimes(5);
@@ -122,14 +122,14 @@ it("does not retry an RPC timeout after model output has reached the host", asyn
     yield { type: "error", error: SAFE_SUBSCRIPTION_FAILURE, classification: "subscription-chat-unavailable", providerError };
   });
   const { deps, getSecret } = buildRetryDeps(selection, { vendor: "openai", subscriptionRuntime: selection, streamTurn });
-  const result = await collectSubscriptionRound(buildProvider(deps)!);
+  const result = await collectSubscriptionRound((await buildProvider(deps))!);
   expect(streamTurn).toHaveBeenCalledExactlyOnceWith(expect.anything());
   expect(getSecret).not.toHaveBeenCalled();
   expect(result).toMatchObject({ kind: "stream_error", classification: "unknown", providerError });
 });
 
 describe("buildProvider subscription model overrides", () => {
-  it("omits the parent model fallback for an explicit selection", () => {
+  it("omits the parent model fallback for an explicit selection", async () => {
     const persisted = {
       kind: "subscription",
       provider: "codex",
@@ -137,7 +137,7 @@ describe("buildProvider subscription model overrides", () => {
     } as const satisfies SubscriptionChatRuntimeSelection;
     const { deps, subscriptionProviderFactory } = buildSubscriptionDeps(persisted, "summary-model");
 
-    const provider = buildProvider(deps, { fallbackEnabled: false });
+    const provider = await buildProvider(deps, { fallbackEnabled: false });
 
     expect(provider?.subscriptionRuntime?.model).toBe("summary-model");
     expect(subscriptionProviderFactory).toHaveBeenCalledExactlyOnceWith({ ...persisted, model: "summary-model" });
@@ -154,7 +154,7 @@ describe("buildProvider subscription model overrides", () => {
       "  gpt-5.5-codex  ",
     );
 
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
     const [selection] = subscriptionProviderFactory.mock.calls[0] ?? [];
 
     expect(provider?.subscriptionRuntime).toEqual({
@@ -177,14 +177,14 @@ describe("buildProvider subscription model overrides", () => {
   it.each([
     ["valid catalog candidate", "gpt-5.1"],
     ["stale catalog candidate", "removed-profile-model"],
-  ])("uses the conservative 64K budget for a Codex child candidate", (_caseName, modelOverride) => {
+  ])("uses the conservative 64K budget for a Codex child candidate", async (_caseName, modelOverride) => {
     const persisted = {
       kind: "subscription",
       provider: "codex",
       model: "gpt-4o",
     } as const satisfies SubscriptionChatRuntimeSelection;
     const { deps } = buildSubscriptionDeps(persisted, modelOverride);
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
 
     const budget = contextBudgetForCurrentRuntime({ provider, deps } as unknown as ConversationLoop);
 
@@ -198,14 +198,14 @@ describe("buildProvider subscription model overrides", () => {
     });
   });
 
-  it("ignores an unusably small reported Codex context window", () => {
+  it("ignores an unusably small reported Codex context window", async () => {
     const selection = {
       kind: "subscription",
       provider: "codex",
       model: "gpt-5.5-codex",
     } as const satisfies SubscriptionChatRuntimeSelection;
     const { deps } = buildSubscriptionDeps(selection);
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
 
     const budget = contextBudgetForCurrentRuntime({
       provider,
@@ -231,7 +231,7 @@ describe("buildProvider subscription model overrides", () => {
     ["empty", "   "],
     ["control character", "gpt-5.5\u0000"],
     ["over the subscription model-id limit", "x".repeat(MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH + 1)],
-  ])("retains the persisted Codex selection for a %s override", (_caseName, modelOverride) => {
+  ])("retains the persisted Codex selection for a %s override", async (_caseName, modelOverride) => {
     const persisted = {
       kind: "subscription",
       provider: "codex",
@@ -239,7 +239,7 @@ describe("buildProvider subscription model overrides", () => {
     } as const satisfies SubscriptionChatRuntimeSelection;
     const { deps, subscriptionProviderFactory } = buildSubscriptionDeps(persisted, modelOverride);
 
-    const provider = buildProvider(deps);
+    const provider = await buildProvider(deps);
     const [selection] = subscriptionProviderFactory.mock.calls[0] ?? [];
 
     expect(selection).toBe(persisted);
@@ -248,7 +248,7 @@ describe("buildProvider subscription model overrides", () => {
 
   it.each(["kimi-code", "grok-build", "claude-code"] as const)(
     "does not apply a model override to the %s subscription runtime",
-    (runtimeId) => {
+    async (runtimeId) => {
       const persisted = {
         kind: "subscription",
         provider: runtimeId,
@@ -259,7 +259,7 @@ describe("buildProvider subscription model overrides", () => {
         "gpt-5.5-codex",
       );
 
-      const provider = buildProvider(deps);
+      const provider = await buildProvider(deps);
       const [selection] = subscriptionProviderFactory.mock.calls[0] ?? [];
 
       expect(selection).toBe(persisted);
@@ -298,7 +298,7 @@ describe("subscription primary-only retries", () => {
       };
       const { deps, getSecret, subscriptionProviderFactory } = buildRetryDeps(selection, candidate);
 
-      const provider = buildProvider(deps);
+      const provider = await buildProvider(deps);
 
       expect(provider).toBeInstanceOf(FallbackProvider);
       expect(provider?.subscriptionRuntime).toBe(selection);
@@ -341,7 +341,7 @@ describe("subscription primary-only retries", () => {
       subscriptionRuntime: selection,
       streamTurn,
     });
-    const provider = buildProvider(deps)!;
+    const provider = (await buildProvider(deps))!;
     const result = await collectSubscriptionRound(provider, [{
       name: "bad_tool",
       description: "test schema",
@@ -382,7 +382,7 @@ describe("subscription primary-only retries", () => {
       streamTurn,
     });
 
-    const result = await collectSubscriptionRound(buildProvider(deps)!);
+    const result = await collectSubscriptionRound((await buildProvider(deps))!);
 
     expect(streamTurn).toHaveBeenCalledOnce();
     expect(getSecret).not.toHaveBeenCalled();
@@ -424,7 +424,7 @@ describe("subscription primary-only retries", () => {
         subscriptionRuntime: selection,
         streamTurn,
       });
-      const provider = buildProvider(deps)!;
+      const provider = (await buildProvider(deps))!;
       const pending = collectSubscriptionRound(provider);
       await vi.advanceTimersByTimeAsync(5_000);
       const result = await pending;
@@ -471,16 +471,16 @@ describe("buildProvider — profile moved off a retired vendor", () => {
     return { deps, getSecret };
   }
 
-  it.each([undefined, "role-model"])("blocks the API route and fallback keys with model override %s", (modelOverride) => {
+  it.each([undefined, "role-model"])("blocks the API route and fallback keys with model override %s", async (modelOverride) => {
     // Switching a subscription profile vendor must not authorize use of a stored API key.
     const { deps, getSecret } = apiDeps("copilot");
     deps.modelOverride = modelOverride;
-    expect(buildProvider(deps)).toBeNull();
+    expect(await buildProvider(deps)).toBeNull();
     expect(getSecret).not.toHaveBeenCalled();
   });
 
-  it("builds the API provider once the marker is gone (control)", () => {
+  it("builds the API provider once the marker is gone (control)", async () => {
     const { deps } = apiDeps();
-    expect(buildProvider(deps)).not.toBeNull();
+    expect(await buildProvider(deps)).not.toBeNull();
   });
 });

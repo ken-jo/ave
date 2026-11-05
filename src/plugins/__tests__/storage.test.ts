@@ -4,19 +4,23 @@ import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Use a recognizable ciphertext envelope so tests can distinguish encryption from plaintext persistence.
+// The removed synchronous methods throw, so any use of them fails the test.
 const mockedElectron = vi.hoisted(() => {
   const enc = { available: true };
   return {
     enc,
     safeStorage: {
       getSelectedStorageBackend: () => "gnome_libsecret" as const,
-      isEncryptionAvailable: vi.fn(() => enc.available),
-      encryptString: vi.fn((s: string) => Buffer.from(`ENC(${s})`, "utf-8")),
-      decryptString: vi.fn((b: Buffer) => {
+      isEncryptionAvailable: () => { throw new Error("deprecated isEncryptionAvailable called"); },
+      encryptString: () => { throw new Error("deprecated encryptString called"); },
+      decryptString: () => { throw new Error("deprecated decryptString called"); },
+      isAsyncEncryptionAvailable: vi.fn(async () => enc.available),
+      encryptStringAsync: vi.fn(async (s: string) => Buffer.from(`ENC(${s})`, "utf-8")),
+      decryptStringAsync: vi.fn(async (b: Buffer) => {
         const raw = Buffer.from(b).toString("utf-8");
         const m = /^ENC\(([\s\S]*)\)$/.exec(raw);
         if (!m) throw new Error("decryptString: not ciphertext produced by this seam");
-        return m[1];
+        return { shouldReEncrypt: false, result: m[1] };
       }),
     },
   };
@@ -329,8 +333,8 @@ describe("createPluginStorage error shape", () => {
 describe("createPluginStorage encrypted-at-rest variants", () => {
   beforeEach(() => {
     mockedElectron.enc.available = true;
-    mockedElectron.safeStorage.encryptString.mockClear();
-    mockedElectron.safeStorage.decryptString.mockClear();
+    mockedElectron.safeStorage.encryptStringAsync.mockClear();
+    mockedElectron.safeStorage.decryptStringAsync.mockClear();
   });
 
   it("writeEncrypted → readEncrypted round-trips through safeStorage and never writes plaintext", async () => {
@@ -338,7 +342,7 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
     const secret = "s3cr3t-token-値";
     await s.writeEncrypted("auth/token.enc", secret);
 
-    expect(mockedElectron.safeStorage.encryptString).toHaveBeenCalledWith(secret);
+    expect(mockedElectron.safeStorage.encryptStringAsync).toHaveBeenCalledWith(secret);
     const onDisk = readFileSync(join(dataDir, "auth", "token.enc"), "utf-8");
     expect(onDisk).toBe(`ENC(${secret})`);
     expect(onDisk).not.toBe(secret);
@@ -354,7 +358,7 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
     );
     // Encryption failure must never persist plaintext.
     expect(existsSync(join(dataDir, "nope.enc"))).toBe(false);
-    expect(mockedElectron.safeStorage.encryptString).not.toHaveBeenCalled();
+    expect(mockedElectron.safeStorage.encryptStringAsync).not.toHaveBeenCalled();
   });
 
   it("the thrown error carries the stable kebab-case code", async () => {

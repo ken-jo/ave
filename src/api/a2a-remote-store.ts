@@ -24,6 +24,7 @@ import {
   type A2ARemoteResolvedFields,
 } from "./a2a-remote-contracts.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { DataKeySession, type A2AOsEncryption } from "./a2a-data-key-session.js";
 
 const LEGACY_STORE_VERSION = 2;
 const STORE_VERSION = 3;
@@ -35,11 +36,7 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const SAFE_TOKEN = /^[A-Za-z0-9._:~-]{1,256}$/;
 const ATTEMPT_STAGES = new Set<A2ARemoteDeliveryState>(["prepared", "resolved", "in-flight", "outcome-unknown", "reconciling", "settled", "NOT_SENT", "RETENTION_EXPIRED"]);
 
-export interface A2AOsEncryption {
-  isEncryptionAvailable(): boolean;
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
-}
+export type { A2AOsEncryption } from "./a2a-data-key-session.js";
 
 interface EncryptedPayloadRecord {
   id: string;
@@ -296,6 +293,7 @@ export class A2ARemoteDurableStore {
   private state: StoreState | undefined;
   private recoveryBlocked = false;
   private queue: Promise<void> = Promise.resolve();
+  private keySession?: DataKeySession;
 
   constructor(private readonly options: CreateA2ARemoteStoreOptions) {
     this.fileName = options.fileName ?? DEFAULT_FILE;
@@ -315,15 +313,32 @@ export class A2ARemoteDurableStore {
 
   private async withLock<T>(operation: (state: StoreState) => Promise<T> | T): Promise<T> {
     const run = this.queue.then(async () => {
-      const state = await this.load();
-      return await operation(state);
+      try {
+        const state = await this.load();
+        return await operation(state);
+      } finally {
+        this.keySession?.close();
+      }
     });
     this.queue = run.then(() => undefined, () => undefined);
     return await run;
   }
 
+  private session(): DataKeySession {
+    this.keySession ??= new DataKeySession(this.options.encryption, this.random, {
+      unavailable: "a2a-remote-encryption-unavailable",
+      invalid: "a2a-remote-key-invalid",
+      decodeWrapped: (value) => Buffer.from(value, "base64"),
+      decodeKey: (value) => Buffer.from(value, "base64"),
+    });
+    return this.keySession;
+  }
+
   private async load(): Promise<StoreState> {
-    if (this.state) return this.state;
+    if (this.state) {
+      if (await this.session().open(this.state)) await this.persist(this.state);
+      return this.state;
+    }
     const raw = await this.options.namespace.readJson<unknown>(this.fileName, initialState());
     const loaded = migrateStoreState(raw);
     if (!loaded) {
@@ -331,7 +346,8 @@ export class A2ARemoteDurableStore {
       throw new Error("a2a-remote-store-invalid");
     }
     if (loaded.migrated) this.audit("state-migrated", 1);
-    const recovered = await this.validateAndRecover(loaded.state, loaded.migrated);
+    const rewrapped = await this.session().open(loaded.state);
+    const recovered = await this.validateAndRecover(loaded.state, loaded.migrated || rewrapped);
     this.state = recovered;
     return this.state;
   }
@@ -615,23 +631,7 @@ export class A2ARemoteDurableStore {
   }
 
   private dataKey(state: StoreState): Buffer {
-    if (!this.options.encryption.isEncryptionAvailable()) {
-      throw new Error("a2a-remote-encryption-unavailable");
-    }
-    if (!state.encryptedDataKey) {
-      const key = this.random(32);
-      if (key.length !== 32) throw new Error("a2a-remote-key-invalid");
-      state.encryptedDataKey = this.options.encryption
-        .encryptString(key.toString("base64"))
-        .toString("base64");
-      return key;
-    }
-    const decoded = this.options.encryption.decryptString(
-      Buffer.from(state.encryptedDataKey, "base64"),
-    );
-    const key = Buffer.from(decoded, "base64");
-    if (key.length !== 32) throw new Error("a2a-remote-key-invalid");
-    return key;
+    return this.session().take(state);
   }
 
   private payloadCryptographyValid(

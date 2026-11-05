@@ -37,7 +37,7 @@ interface TicketState {
 
 export interface AskpassBrokerOptions {
   /** Stored tokens are host-scoped; source ids restrict preview tokens to that preview. */
-  getToken(host: string, sourceId: string): string | null;
+  getToken(host: string, sourceId: string): Promise<string | null>;
   nodeExecPath?: string;
   platform?: NodeJS.Platform;
   parentDir?: string;
@@ -175,7 +175,7 @@ export class AskpassBroker {
     private readonly socketDir: string | null,
     readonly launcherPath: string,
     readonly endpoint: string,
-    private readonly getToken: (host: string, sourceId: string) => string | null,
+    private readonly getToken: (host: string, sourceId: string) => Promise<string | null>,
   ) {}
 
   static async start(options: AskpassBrokerOptions): Promise<AskpassBroker> {
@@ -215,8 +215,8 @@ export class AskpassBroker {
     }
   }
 
-  hasToken(host: string, sourceId: string): boolean {
-    return this.getToken(host, sourceId) !== null;
+  async hasToken(host: string, sourceId: string): Promise<boolean> {
+    return (await this.getToken(host, sourceId)) !== null;
   }
 
   issueTicket(binding: { host: string; sourceId: string }): AskpassTicket {
@@ -233,13 +233,14 @@ export class AskpassBroker {
     };
   }
 
-  answer(ticketId: string, prompt: string): string {
+  async answer(ticketId: string, prompt: string): Promise<string> {
     const ticket = this.tickets.get(ticketId);
     if (!ticket) return "";
     const asked = promptHost(prompt);
     if (!asked || asked.host !== ticket.host) return "";
-    const token = this.getToken(ticket.host, ticket.sourceId);
-    if (!token) return "";
+    const token = await this.getToken(ticket.host, ticket.sourceId);
+    // The ticket may have been revoked while the token decrypted.
+    if (!token || this.tickets.get(ticketId) !== ticket) return "";
     if (asked.field === "username") return TOKEN_USERNAME;
     ticket.credentialOffered = true;
     return token;
@@ -247,10 +248,12 @@ export class AskpassBroker {
 
   private handle(socket: Socket): void {
     let buffer = "";
+    let answering = false;
     socket.setEncoding("utf8");
     socket.setTimeout(CONNECTION_TIMEOUT_MS, () => socket.destroy());
     socket.on("error", () => socket.destroy());
     socket.on("data", (chunk: string) => {
+      if (answering) return;
       buffer += chunk;
       if (buffer.length > MAX_REQUEST_BYTES) {
         socket.destroy();
@@ -258,16 +261,19 @@ export class AskpassBroker {
       }
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
-      let answer = "";
-      try {
-        const request = JSON.parse(buffer.slice(0, newline)) as { ticket?: unknown; prompt?: unknown };
-        if (typeof request.ticket === "string" && typeof request.prompt === "string") {
-          answer = this.answer(request.ticket, request.prompt);
+      answering = true;
+      void (async () => {
+        let answer = "";
+        try {
+          const request = JSON.parse(buffer.slice(0, newline)) as { ticket?: unknown; prompt?: unknown };
+          if (typeof request.ticket === "string" && typeof request.prompt === "string") {
+            answer = await this.answer(request.ticket, request.prompt);
+          }
+        } catch {
+          answer = "";
         }
-      } catch {
-        answer = "";
-      }
-      socket.end(`${JSON.stringify({ answer })}\n`);
+        socket.end(`${JSON.stringify({ answer })}\n`);
+      })();
     });
   }
 

@@ -43,10 +43,10 @@ describe("secret document exact file identity", () => {
       path,
       policy: "development",
       encryption: {
-        isEncryptionAvailable: () => false,
+        isAsyncEncryptionAvailable: async () => false,
         getSelectedStorageBackend: () => "unknown",
-        encryptString: () => { throw new Error("Encryption unavailable"); },
-        decryptString: () => { throw new Error("Encryption unavailable"); },
+        encryptStringAsync: async () => { throw new Error("Encryption unavailable"); },
+        decryptStringAsync: async () => { throw new Error("Encryption unavailable"); },
       },
       runtime: { lock: async (_anchor, callback) => callback() },
     });
@@ -61,7 +61,7 @@ describe("secret document exact file identity", () => {
     ["opened descriptor", 1],
     ["descriptor after read", 2],
     ["path after read", 3],
-  ])("rejects an inexactly representable replacement at the %s", (_label, changedObservation) => {
+  ])("rejects an inexactly representable replacement at the %s", async (_label, changedObservation) => {
     const inode = 2n ** 60n;
     let observations = 0;
     inspectStats = (stats) => Object.assign(stats, {
@@ -71,7 +71,7 @@ describe("secret document exact file identity", () => {
       inspectStats = (stats) => Object.assign(stats, { ino: inode + BigInt(observations++ % 2) });
     }
     expect(Number(inode)).toBe(Number(inode + 1n));
-    expect(() => store.get("absent")).toThrow(/Configuration identity changed/);
+    await expect(store.get("absent")).rejects.toThrow(/Configuration identity changed/);
   });
 
   it.each([
@@ -81,9 +81,9 @@ describe("secret document exact file identity", () => {
     const modeStore = new SecretDocumentStore({
       path: store.path, policy: "development",
       encryption: {
-        isEncryptionAvailable: () => false, getSelectedStorageBackend: () => "unknown",
-        encryptString: () => { throw new Error("Encryption unavailable"); },
-        decryptString: () => { throw new Error("Encryption unavailable"); },
+        isAsyncEncryptionAvailable: async () => false, getSelectedStorageBackend: () => "unknown",
+        encryptStringAsync: async () => { throw new Error("Encryption unavailable"); },
+        decryptStringAsync: async () => { throw new Error("Encryption unavailable"); },
       },
       runtime: { exists: existsSync },
     });

@@ -50,10 +50,10 @@ const childFixture = resolve(testDir, "../../../data/__tests__/fixtures/secret-s
 const repoRoot = resolve(testDir, "../../../..");
 const secretKey = "llm.apiKey.openai";
 const encryption = {
-  isEncryptionAvailable: () => true,
+  isAsyncEncryptionAvailable: async () => true,
   getSelectedStorageBackend: () => "external_key" as const,
-  encryptString: (value: string) => Buffer.from(value),
-  decryptString: (value: Buffer) => value.toString(),
+  encryptStringAsync: async (value: string) => Buffer.from(value),
+  decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
 };
 
 afterEach(async () => {
@@ -107,7 +107,7 @@ it("checks the lease after the first stream pull and before the desktop request 
   const reservation = registry.reserve("fixture", incarnation, [secretKey], signal, "lease");
   if (!reservation) throw new Error("reservation missing");
   const lease = registry.register(reservation, {
-    key: secretKey, vendor: "openai", secret: store.getSecret(secretKey)!, scheme: "bearer",
+    key: secretKey, vendor: "openai", secret: (await store.getSecret(secretKey))!, scheme: "bearer",
     audience: (url) => url.origin === "https://api.example.test", permissionSignal: signal,
   });
   if (!lease || lease.exposure !== "lease") throw new Error("lease missing");

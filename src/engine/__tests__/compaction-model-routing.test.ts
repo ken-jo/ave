@@ -59,6 +59,7 @@ describe("compaction model routing", () => {
   it("keeps unsupported runtimes on their own current model despite an inactive saved override", async () => {
     const { loop, llm, requests } = makeLoop("inactive-summary-model");
     llm.activeChatRuntime = { kind: "subscription", provider: "kimi-code" };
+    await loop.whenProviderReady();
     const callsBefore = vi.mocked(createProvider).mock.calls.length;
     loop.provider = {
       vendor: "openai",

@@ -97,41 +97,44 @@ function readPrivateKey(keyFilePath: string): KeyObject {
 /** Operators own key creation and rotation; pin the protected key until next startup. */
 export function createNodeSecretEncryption(keyFilePath?: string): SecretEncryption {
   const key = keyFilePath === undefined ? undefined : readPrivateKey(keyFilePath);
-  return Object.freeze({
-    isEncryptionAvailable: () => key !== undefined,
-    getSelectedStorageBackend: () => "external_key" as const,
-    encryptString(value: string): Buffer {
-      if (!key) throw new SecretEncryptionUnavailableError();
-      const nonce = randomBytes(NONCE_BYTES);
-      const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: AUTH_TAG_BYTES });
-      cipher.setAAD(ENVELOPE_HEADER);
-      const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-      return Buffer.concat([ENVELOPE_HEADER, nonce, cipher.getAuthTag(), ciphertext]);
-    },
-    decryptString(value: Buffer): string {
-      if (!key) throw new SecretEncryptionUnavailableError();
-      const nonceStart = ENVELOPE_HEADER.length;
-      const tagStart = nonceStart + NONCE_BYTES;
-      const ciphertextStart = tagStart + AUTH_TAG_BYTES;
-      if (value.length < ciphertextStart
-        || !value.subarray(0, nonceStart).equals(ENVELOPE_HEADER)) {
-        throw new Error("Secret ciphertext has an unsupported encryption format");
-      }
+  const encrypt = (value: string): Buffer => {
+    if (!key) throw new SecretEncryptionUnavailableError();
+    const nonce = randomBytes(NONCE_BYTES);
+    const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: AUTH_TAG_BYTES });
+    cipher.setAAD(ENVELOPE_HEADER);
+    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    return Buffer.concat([ENVELOPE_HEADER, nonce, cipher.getAuthTag(), ciphertext]);
+  };
+  const decrypt = (value: Buffer): string => {
+    if (!key) throw new SecretEncryptionUnavailableError();
+    const nonceStart = ENVELOPE_HEADER.length;
+    const tagStart = nonceStart + NONCE_BYTES;
+    const ciphertextStart = tagStart + AUTH_TAG_BYTES;
+    if (value.length < ciphertextStart
+      || !value.subarray(0, nonceStart).equals(ENVELOPE_HEADER)) {
+      throw new Error("Secret ciphertext has an unsupported encryption format");
+    }
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, value.subarray(nonceStart, tagStart), {
+        authTagLength: AUTH_TAG_BYTES,
+      });
+      decipher.setAAD(ENVELOPE_HEADER);
+      decipher.setAuthTag(value.subarray(tagStart, ciphertextStart));
+      const plaintext = Buffer.concat([decipher.update(value.subarray(ciphertextStart)), decipher.final()]);
       try {
-        const decipher = createDecipheriv("aes-256-gcm", key, value.subarray(nonceStart, tagStart), {
-          authTagLength: AUTH_TAG_BYTES,
-        });
-        decipher.setAAD(ENVELOPE_HEADER);
-        decipher.setAuthTag(value.subarray(tagStart, ciphertextStart));
-        const plaintext = Buffer.concat([decipher.update(value.subarray(ciphertextStart)), decipher.final()]);
-        try {
-          return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
-        } finally {
-          plaintext.fill(0);
-        }
-      } catch {
-        throw new Error("Secret ciphertext authentication failed");
+        return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+      } finally {
+        plaintext.fill(0);
       }
-    },
+    } catch {
+      throw new Error("Secret ciphertext authentication failed");
+    }
+  };
+  // The pinned key never rotates in-process, so nothing ever needs re-encryption.
+  return Object.freeze({
+    isAsyncEncryptionAvailable: async () => key !== undefined,
+    getSelectedStorageBackend: () => "external_key" as const,
+    encryptStringAsync: async (value: string): Promise<Buffer> => encrypt(value),
+    decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: decrypt(value) }),
   });
 }

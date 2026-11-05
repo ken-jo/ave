@@ -91,8 +91,8 @@ export interface InstallerPorts {
 }
 
 export interface TokenStore {
-  get(host: string): string | null;
-  has(host: string): boolean;
+  get(host: string): Promise<string | null>;
+  has(host: string): Promise<boolean>;
   set(host: string, token: string): Promise<void>;
   delete(host: string): Promise<void>;
 }

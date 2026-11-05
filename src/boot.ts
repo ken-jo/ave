@@ -792,7 +792,7 @@ export async function bootstrap(
   }).subscriptionProviderFactory;
 
   // Permission policy P4 — reviewer agent + PermissionManager broadcast wiring.
-  wireReviewerAndPermissions(ctx);
+  await wireReviewerAndPermissions(ctx);
 
   // Permission policy P4 — Layer 6 plugin tool execution surface + delegate.
   await setupPluginToolExecutor(ctx);

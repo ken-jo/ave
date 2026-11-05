@@ -54,13 +54,13 @@ function projectionStore(): SharedConversationProjectionStore {
 }
 
 // Share the secret store with the runtime so the fixture actor digest matches its live conversation approval.
-function connectionFixture(overrides: {
+async function connectionFixture(overrides: {
   readonly receiptStore?: unknown;
   readonly submit?: () => unknown;
   readonly sendMessage?: () => Promise<TelegramBotApiResult<unknown>>;
 } = {}) {
   const secretStore = new MemorySecretStore();
-  const { authority } = ownerPairedAuthority(secretStore);
+  const { authority } = await ownerPairedAuthority(secretStore);
 
   const batches: Batch[] = [];
   const parked: (() => void)[] = [];
@@ -152,7 +152,7 @@ afterEach(async () => {
 
 describe("Telegram bridge lifecycle (owner-driven connection)", () => {
   it("starts one bridge, answers a concurrent connect with the same handle, and stops it", async () => {
-    const f = connectionFixture();
+    const f = await connectionFixture();
     await expect(maybeStartTelegramConnectionBridge(f.input)).resolves.toEqual({ port: null });
     // Already active ⇒ the same activation, not a second poll loop.
     await expect(maybeStartTelegramConnectionBridge(f.input)).resolves.toEqual({ port: null });
@@ -166,7 +166,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
   it("admits Telegram's 4,096-UTF-16-unit text bound and no more", async () => {
     // The ambient stack is nobody's transport here — the fixture hands the bridge its own, and a path that regresses to the global fails loudly.
     forbidAmbientFetch();
-    const f = connectionFixture({
+    const f = await connectionFixture({
       receiptStore: {
         reserve: vi.fn(() => ({ kind: "reserved" })),
         releaseReserved: vi.fn(),
@@ -194,7 +194,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
     const reserve = vi.fn(() => {
       throw new Error("receipt store unavailable");
     });
-    const f = connectionFixture({
+    const f = await connectionFixture({
       receiptStore: { reserve, releaseReserved: vi.fn(), settle: vi.fn() },
     });
     const log = vi.fn();
@@ -208,7 +208,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
   });
 
   it("restarts after an owner disconnect but stays closed after app shutdown", async () => {
-    const f = connectionFixture();
+    const f = await connectionFixture();
     await expect(maybeStartTelegramConnectionBridge(f.input)).resolves.toEqual({ port: null });
     await stopTelegramBridgeServer("user");
     await expect(maybeStartTelegramConnectionBridge(f.input)).resolves.toEqual({ port: null });
@@ -220,7 +220,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
   });
 
   it("starts a reconnect issued in the same tick as the disconnect", async () => {
-    const f = connectionFixture();
+    const f = await connectionFixture();
     await maybeStartTelegramConnectionBridge(f.input);
 
     const stopping = stopTelegramBridgeServer("user");
@@ -235,7 +235,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
     const reserve = vi.fn(() => ({ kind: "reserved" }));
     const settle = vi.fn();
     const receiptStore = { reserve, releaseReserved: vi.fn(), settle };
-    const f = connectionFixture({
+    const f = await connectionFixture({
       receiptStore,
       submit: () => ({
         completion: new Promise<void>((resolve) => {
@@ -268,7 +268,7 @@ describe("Telegram bridge lifecycle (owner-driven connection)", () => {
       },
       resolveWithFreshIdentity: vi.fn((_requestId, decision) => decision),
     };
-    const f = connectionFixture({
+    const f = await connectionFixture({
       receiptStore: {
         reserve: vi.fn(() => ({ kind: "reserved" })),
         releaseReserved: vi.fn(),

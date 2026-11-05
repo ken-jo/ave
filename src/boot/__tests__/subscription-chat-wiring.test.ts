@@ -110,7 +110,7 @@ describe("subscription chat boot wiring", () => {
     );
   });
 
-  it("injects the subscription runtime into main, side, and routine loops", () => {
+  it("injects the subscription runtime into main, side, and routine loops", async () => {
     const bindings = createSubscriptionChatLoopBindings({
       auditLogger: { log: vi.fn() },
     });
@@ -137,6 +137,7 @@ describe("subscription chat boot wiring", () => {
     expect(main.deps.subscriptionProviderFactory).toBe(bindings.subscriptionProviderFactory);
     expect(side.deps.subscriptionProviderFactory).toBe(bindings.subscriptionProviderFactory);
     expect(routine.deps.subscriptionProviderFactory).toBe(bindings.subscriptionProviderFactory);
+    await Promise.all([main.whenProviderReady(), side.whenProviderReady(), routine.whenProviderReady()]);
     expect((main as unknown as { provider: LLMProvider | null }).provider?.subscriptionRuntime).toEqual(selection);
     expect((side as unknown as { provider: LLMProvider | null }).provider?.subscriptionRuntime).toEqual(selection);
     expect((routine as unknown as { provider: LLMProvider | null }).provider?.subscriptionRuntime).toEqual(selection);

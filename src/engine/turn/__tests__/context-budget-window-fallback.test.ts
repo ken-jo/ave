@@ -212,6 +212,7 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
       memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
     loop.history.append({ role: "user", content: "reply" });
     await queryLoop(loop, "system", loop.resolveToolScope("reply"), undefined, undefined, null, {
       inputOrigin: "user-keyboard", toolTrustOrigin: "user-keyboard", maxRounds: 1,

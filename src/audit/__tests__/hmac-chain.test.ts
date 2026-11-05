@@ -8,6 +8,7 @@ import {
   writeFileSync,
   existsSync,
   readdirSync,
+  readFileSync,
   statSync,
   symlinkSync,
 } from "node:fs";
@@ -18,6 +19,7 @@ import {
   buildChainedEntries,
   computeDailySeal,
   computeLineHmac,
+  ELECTRON_DECRYPT_FAILED_MESSAGE,
   ensureAuditSecret,
   FileSecretStore,
   filterPermissionAuditLines,
@@ -25,6 +27,7 @@ import {
   MemorySecretStore,
   readStableRegularFileUtf8,
   SafeStorageSecretStore,
+  SafeStorageTemporarilyUnavailableError,
   type SafeStorageLike,
   sealDayFromFile,
   sealKeyName,
@@ -193,99 +196,279 @@ describe("readStableRegularFileUtf8", () => {
 });
 
 describe("SafeStorageSecretStore", () => {
-  function makeSafeStorage(): SafeStorageLike {
-    return {
-      isEncryptionAvailable: () => true,
-      encryptString: (value: string) => Buffer.from(`enc:${value}`, "utf-8"),
-      decryptString: (value: Buffer) => value.toString("utf-8").replace(/^enc:/, ""),
-    };
+  interface FakeSafeStorage extends SafeStorageLike {
+    decryptCalls: number;
+    encryptCalls: number;
   }
+  // The removed synchronous methods throw, so any use of them fails the test.
+  function makeSafeStorage(options: {
+    available?: boolean;
+    shouldReEncrypt?: boolean;
+    decrypt?: (raw: string) => string;
+  } = {}): FakeSafeStorage {
+    const fake = {
+      decryptCalls: 0,
+      encryptCalls: 0,
+      isEncryptionAvailable: () => { throw new Error("deprecated isEncryptionAvailable called"); },
+      encryptString: () => { throw new Error("deprecated encryptString called"); },
+      decryptString: () => { throw new Error("deprecated decryptString called"); },
+      isAsyncEncryptionAvailable: async () => options.available ?? true,
+      encryptStringAsync: async (value: string) => {
+        fake.encryptCalls += 1;
+        return Buffer.from(`enc:${value}`, "utf-8");
+      },
+      decryptStringAsync: async (value: Buffer) => {
+        fake.decryptCalls += 1;
+        const raw = value.toString("utf-8");
+        const result = options.decrypt ? options.decrypt(raw) : raw.replace(/^enc:/, "");
+        return { shouldReEncrypt: options.shouldReEncrypt ?? false, result };
+      },
+    };
+    return fake;
+  }
+  const secretsDir = () => join(workDir, "secrets");
+  const entryPath = (name: string) => join(secretsDir(), `${name}.safe-storage`);
+  const keyPath = () => join(secretsDir(), "store-data.safe-storage-key");
+  const legacyEntry = (value: string) => SAFE_STORAGE_TEST_PREFIX + Buffer.from(`enc:${value}`).toString("base64");
 
-  it.skipIf(process.platform === "win32")("persists encrypted ciphertext with 0o600 mode", () => {
-    const store = new SafeStorageSecretStore(makeSafeStorage(), join(workDir, "secrets"));
+  it.skipIf(process.platform === "win32")("persists encrypted ciphertext with 0o600 mode", async () => {
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
     store.write("audit-hmac.key", "hello-secret");
-    const filePath = join(workDir, "secrets", "audit-hmac.key.safe-storage");
-    const mode = statSync(filePath).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(statSync(entryPath("audit-hmac.key")).mode & 0o777).toBe(0o600);
+    expect(statSync(keyPath()).mode & 0o777).toBe(0o600);
     expect(store.read("audit-hmac.key")).toBe("hello-secret");
   });
 
-  it("throws when safeStorage becomes unavailable", () => {
-    const store = new SafeStorageSecretStore({
-      isEncryptionAvailable: () => false,
-      encryptString: () => Buffer.from(""),
-      decryptString: () => "",
-    }, join(workDir, "secrets"));
-    expect(() => store.write("audit-hmac.key", "x")).toThrow(/safeStorage/);
+  it("seals entries under a wrapped data key and never stores the value in plaintext", async () => {
+    const safeStorage = makeSafeStorage();
+    const store = await SafeStorageSecretStore.open(safeStorage, secretsDir());
+    store.write("audit-hmac.key", "hello-secret");
+    const stored = readFileSync(entryPath("audit-hmac.key"), "utf-8");
+    expect(stored.startsWith("safe:v2:")).toBe(true);
+    expect(stored).not.toContain("hello-secret");
+    expect(Buffer.from(stored.slice("safe:v2:".length), "base64").includes(Buffer.from("hello-secret"))).toBe(false);
+    expect(readFileSync(keyPath(), "utf-8").startsWith(SAFE_STORAGE_TEST_PREFIX)).toBe(true);
+    expect(safeStorage.encryptCalls).toBe(1);
+
+    const reopened = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(reopened.read("audit-hmac.key")).toBe("hello-secret");
   });
 
-  it("quarantines undecryptable ciphertext before boot rotates the secret", () => {
-    const store = new SafeStorageSecretStore({
-      isEncryptionAvailable: () => true,
-      encryptString: (value: string) => Buffer.from(`enc:${value}`, "utf-8"),
-      decryptString: (value: Buffer) => {
-        const raw = value.toString("utf-8");
-        if (raw === "bad-ciphertext") throw new Error("decrypt failed");
+  it("binds each sealed entry to its name", async () => {
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir(), "reject");
+    store.write("first", "value-one");
+    writeFileSync(entryPath("second"), readFileSync(entryPath("first"), "utf-8"));
+    expect(() => store.read("second")).toThrow(/could not be decrypted/);
+  });
+
+  it("refuses to open when safeStorage is unavailable", async () => {
+    await expect(SafeStorageSecretStore.open(makeSafeStorage({ available: false }), secretsDir()))
+      .rejects.toThrow(/safeStorage/);
+  });
+
+  it("re-encrypts pre-envelope entries when it opens", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), legacyEntry("legacy-secret"));
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(readFileSync(entryPath("audit-hmac.key"), "utf-8").startsWith("safe:v2:")).toBe(true);
+    expect(store.read("audit-hmac.key")).toBe("legacy-secret");
+  });
+
+  it.skipIf(process.platform === "win32")("serves pre-envelope entries to a read-only opener without rewriting them", async () => {
+    mkdirSync(secretsDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(entryPath("authority"), legacyEntry("legacy-authority"), { mode: 0o600 });
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir(), "reject", "existing-read-only");
+    expect(store.read("authority")).toBe("legacy-authority");
+    expect(readFileSync(entryPath("authority"), "utf-8")).toBe(legacyEntry("legacy-authority"));
+    expect(existsSync(keyPath())).toBe(false);
+    expect(() => store.write("authority", "x")).toThrow(/read-only/);
+  });
+
+  it("rewraps the data key when safeStorage asks for re-encryption", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readFileSync(keyPath(), "utf-8");
+    const rotated = makeSafeStorage({ shouldReEncrypt: true });
+    const reopened = await SafeStorageSecretStore.open(rotated, secretsDir());
+    expect(rotated.encryptCalls).toBe(1);
+    expect(readFileSync(keyPath(), "utf-8")).toBe(before);
+    expect(reopened.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("agrees on one data key when two openers race to mint it", async () => {
+    const [left, right] = await Promise.all([
+      SafeStorageSecretStore.open(makeSafeStorage(), secretsDir()),
+      SafeStorageSecretStore.open(makeSafeStorage(), secretsDir()),
+    ]);
+    left.write("shared", "from-left");
+    expect(right.read("shared")).toBe("from-left");
+    expect(readdirSync(secretsDir()).filter((file) => file.includes(".staging-"))).toEqual([]);
+  });
+
+  it("quarantines an undecryptable data key and every entry it sealed", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "old-secret");
+    const broken = makeSafeStorage({ decrypt: () => { throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE); } });
+    await expect(SafeStorageSecretStore.open(broken, secretsDir(), "reject")).rejects.toThrow(/could not be decrypted/);
+    const store = await SafeStorageSecretStore.open(broken, secretsDir());
+    expect(store.read("audit-hmac.key")).toBe(null);
+    const files = readdirSync(secretsDir());
+    expect(files.some((file) => file.startsWith("store-data.safe-storage-key.quarantined-"))).toBe(true);
+    expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.quarantined-"))).toBe(true);
+  });
+
+  // Electron 45 rejects with this while the keychain is briefly unreachable.
+  const transient = () => makeSafeStorage({
+    decrypt: () => { throw new Error("safeStorage.decryptStringAsync is temporarily unavailable. Please try again."); },
+  });
+
+  it("fails open on a transient data-key decrypt failure, quarantines nothing, and keeps every entry", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    await expect(SafeStorageSecretStore.open(transient(), secretsDir())).rejects.toThrow(SafeStorageTemporarilyUnavailableError);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("fails open on a transient pre-envelope decrypt failure and leaves the entry in place", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), legacyEntry("legacy-secret"));
+    await expect(SafeStorageSecretStore.open(transient(), secretsDir())).rejects.toThrow(SafeStorageTemporarilyUnavailableError);
+    expect(readFileSync(entryPath("audit-hmac.key"), "utf8")).toBe(legacyEntry("legacy-secret"));
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
+  });
+
+  // Only known permanent failures quarantine: a message Electron has not used before (a new release, a locked keychain) moves nothing.
+  const unknownReject = () => makeSafeStorage({ decrypt: () => { throw new Error("keychain locked during boot"); } });
+
+  it("rethrows an unknown data-key decrypt failure and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    await expect(SafeStorageSecretStore.open(unknownReject(), secretsDir())).rejects.toThrow("keychain locked during boot");
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("rethrows an unknown pre-envelope decrypt failure and leaves the entry in place", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), legacyEntry("legacy-secret"));
+    await expect(SafeStorageSecretStore.open(unknownReject(), secretsDir())).rejects.toThrow("keychain locked during boot");
+    expect(readFileSync(entryPath("audit-hmac.key"), "utf8")).toBe(legacyEntry("legacy-secret"));
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
+  });
+
+  it("rethrows a near miss of Electron's decrypt failure and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const syncMessage = "Error while decrypting the ciphertext provided to safeStorage.decryptString.";
+    const nearMiss = makeSafeStorage({ decrypt: () => { throw new Error(syncMessage); } });
+    await expect(SafeStorageSecretStore.open(nearMiss, secretsDir())).rejects.toThrow(syncMessage);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+  });
+
+  it("fails closed when decrypt resolves without a string and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const contractBreak = makeSafeStorage({ decrypt: () => undefined as unknown as string });
+    await expect(SafeStorageSecretStore.open(contractBreak, secretsDir())).rejects.toThrow(/without a string result/);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("leaves an unreadable data key in place when wrapping its replacement fails", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "old-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const keyBefore = readFileSync(keyPath(), "utf-8");
+    const broken = makeSafeStorage({ decrypt: () => { throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE); } });
+    broken.encryptStringAsync = async () => { throw new Error("encrypt refused"); };
+    await expect(SafeStorageSecretStore.open(broken, secretsDir())).rejects.toThrow("encrypt refused");
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    expect(readFileSync(keyPath(), "utf-8")).toBe(keyBefore);
+  });
+
+  it("adopts the key another opener published while it was wrapping a replacement, and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "old-secret");
+    const otherDir = join(workDir, "other-secrets");
+    const other = await SafeStorageSecretStore.open(makeSafeStorage(), otherDir);
+    other.write("theirs", "from-the-other-opener");
+    const theirKey = readFileSync(join(otherDir, "store-data.safe-storage-key"), "utf-8");
+    writeFileSync(entryPath("theirs"), readFileSync(join(otherDir, "theirs.safe-storage"), "utf-8"));
+
+    // The stored key is unreadable until the other opener replaces it, which happens while this one encrypts.
+    let swapped = false;
+    const racing = makeSafeStorage({
+      decrypt: (raw) => {
+        if (!swapped) throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
         return raw.replace(/^enc:/, "");
       },
-    }, join(workDir, "secrets"));
-    const secretPath = join(workDir, "secrets", "audit-hmac.key.safe-storage");
-    writeFileSync(
-      secretPath,
-      "safe:v1:YmFkLWNpcGhlcnRleHQ=",
-    );
+    });
+    const encrypt = racing.encryptStringAsync;
+    racing.encryptStringAsync = async (value: string) => {
+      writeFileSync(keyPath(), theirKey);
+      swapped = true;
+      return encrypt(value);
+    };
+    const store = await SafeStorageSecretStore.open(racing, secretsDir());
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
+    expect(readFileSync(keyPath(), "utf-8")).toBe(theirKey);
+    expect(store.read("theirs")).toBe("from-the-other-opener");
+  });
+
+  it("quarantines undecryptable pre-envelope ciphertext before boot rotates the secret", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), "safe:v1:YmFkLWNpcGhlcnRleHQ=");
+    const store = await SafeStorageSecretStore.open(makeSafeStorage({
+      decrypt: (raw) => {
+        if (raw === "bad-ciphertext") throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
+        return raw.replace(/^enc:/, "");
+      },
+    }), secretsDir());
 
     const secret = ensureAuditSecret(store);
 
     expect(secret).toMatch(/^[0-9a-f]{64}$/);
     expect(store.read("audit-hmac.key")).toBe(secret);
-    const files = readdirSync(join(workDir, "secrets"));
+    const files = readdirSync(secretsDir());
     expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.quarantined-"))).toBe(true);
     expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.recovery-"))).toBe(true);
   });
 
-  it("quarantines malformed safeStorage files as missing", () => {
-    const store = new SafeStorageSecretStore(makeSafeStorage(), join(workDir, "secrets"));
-    const secretPath = join(workDir, "secrets", "audit-hmac.key.safe-storage");
-    writeFileSync(secretPath, "plain-secret");
+  it("quarantines malformed safeStorage files as missing", async () => {
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    writeFileSync(entryPath("audit-hmac.key"), "plain-secret");
     expect(store.read("audit-hmac.key")).toBe(null);
-    const files = readdirSync(join(workDir, "secrets"));
+    const files = readdirSync(secretsDir());
     expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.quarantined-"))).toBe(true);
     expect(files.some((file) => file.startsWith("audit-hmac.key.safe-storage.recovery-"))).toBe(true);
   });
 
-  it("rejects oversized ciphertext without invoking safeStorage decrypt", () => {
-    let decryptCalls = 0;
-    const dir = join(workDir, "secrets");
-    const store = new SafeStorageSecretStore({
-      isEncryptionAvailable: () => true,
-      encryptString: (value: string) => Buffer.from(value, "utf8"),
-      decryptString: () => {
-        decryptCalls += 1;
-        return "unused";
-      },
-    }, dir);
-    writeFileSync(
-      join(dir, "oversized.safe-storage"),
-      SAFE_STORAGE_TEST_PREFIX + "A".repeat(6_000),
-    );
-
-    expect(() => store.read("oversized", 64)).toThrow(/read byte limit/);
-    expect(decryptCalls).toBe(0);
+  it("never destroys a pre-envelope entry that appears after open", async () => {
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    writeFileSync(entryPath("late"), legacyEntry("late-secret"));
+    expect(() => store.read("late")).toThrow(/could not be decrypted/);
+    expect(readFileSync(entryPath("late"), "utf-8")).toBe(legacyEntry("late-secret"));
   });
 
-  it("rejects an oversized decrypted value", () => {
-    const dir = join(workDir, "secrets");
-    const store = new SafeStorageSecretStore({
-      isEncryptionAvailable: () => true,
-      encryptString: (value: string) => Buffer.from(value, "utf8"),
-      decryptString: () => "x".repeat(65),
-    }, dir);
-    writeFileSync(
-      join(dir, "oversized-plain.safe-storage"),
-      SAFE_STORAGE_TEST_PREFIX + Buffer.from("ciphertext").toString("base64"),
-    );
+  it("rejects oversized ciphertext before opening it", async () => {
+    const safeStorage = makeSafeStorage();
+    const store = await SafeStorageSecretStore.open(safeStorage, secretsDir());
+    writeFileSync(entryPath("oversized"), "safe:v2:" + "A".repeat(6_000));
+    expect(() => store.read("oversized", 64)).toThrow(/read byte limit/);
+    expect(safeStorage.decryptCalls).toBe(0);
+  });
 
+  it("rejects an oversized decrypted value", async () => {
+    const store = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    store.write("oversized-plain", "x".repeat(65));
     expect(() => store.read("oversized-plain", 64)).toThrow(/value exceeds/);
   });
 });

@@ -48,7 +48,7 @@ function conversationDigestFor(conversationId: string): string {
 
 interface Harness {
   ownerUserId: string | null;
-  readonly runtime: ReturnType<typeof createTelegramPairedPlatformRuntime>;
+  readonly runtime: Awaited<ReturnType<typeof createTelegramPairedPlatformRuntime>>;
   readonly ownerActorDigest: string;
   current: string;
   paired: string | null;
@@ -58,7 +58,7 @@ interface Harness {
   bound: string | null;
 }
 
-function harness(): Harness {
+async function harness(): Promise<Harness> {
   const secrets = new MemorySecretStore();
   const actorSecret = ensureTelegramPlatformActorSecret(secrets);
   const ownerActorDigest = actorDigestFor(actorSecret, OWNER_ID);
@@ -80,7 +80,7 @@ function harness(): Harness {
     resolveBoundConversation: (actorDigest) =>
       state.paired !== null && actorDigest === state.paired ? state.bound : null,
   };
-  const runtime = createTelegramPairedPlatformRuntime({
+  const runtime = await createTelegramPairedPlatformRuntime({
     encryption: unavailableSecretEncryption,
     botFingerprint: BOT_FINGERPRINT,
     authority,
@@ -117,7 +117,7 @@ function revokeShare(h: Harness): void {
 
 describe("createTelegramPairedPlatformRuntime", () => {
   it.each([null, STRANGER_ID])("revokes already-bound authority when the registered owner changes to %s", async (ownerUserId) => {
-    const h = harness();
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const authorization = await h.runtime.authorize(envelope());
     expect(authorization).not.toBeNull();
@@ -130,8 +130,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(authorization!.bridgeGuard.isCurrent(authorization!.bridgeBinding)).toBe(false);
   });
 
-  it("admits nobody until an approval exists, and never a stranger", () => {
-    const h = harness();
+  it("admits nobody until an approval exists, and never a stranger", async () => {
+    const h = await harness();
 
     // Paired but nothing shared: pairing is identification, not access.
     expect(h.runtime.routeForEnvelope(envelope())).toBeNull();
@@ -150,8 +150,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.routeForEnvelope(envelope())).toBeNull();
   });
 
-  it("binds the conversation that was shared, not the one on screen", () => {
-    const h = harness();
+  it("binds the conversation that was shared, not the one on screen", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     // A grant left over for another conversation, and the owner looking at it. A router that asked "is the CURRENT conversation approved?" would answer yes
     // here and re-point the surface at a conversation nobody shared last.
@@ -167,8 +167,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.routeForEnvelope(envelope())?.conversationId).toBe(CONVERSATION_A);
   });
 
-  it("binds the route to the conversation that was approved", () => {
-    const h = harness();
+  it("binds the route to the conversation that was approved", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
 
     const route = h.runtime.routeForEnvelope(envelope());
@@ -178,8 +178,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.isRouteCurrent(route!)).toBe(true);
   });
 
-  it("does not run a share whose conversation is closed", () => {
-    const h = harness();
+  it("does not run a share whose conversation is closed", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const route = h.runtime.routeForEnvelope(envelope())!;
 
@@ -196,8 +196,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.routeForEnvelope(envelope())).toBe(route);
   });
 
-  it("fences the bound conversation, not merely the active one", () => {
-    const h = harness();
+  it("fences the bound conversation, not merely the active one", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const routeBoundToA = h.runtime.routeForEnvelope(envelope())!;
     expect(h.runtime.isRouteCurrent(routeBoundToA)).toBe(true);
@@ -211,8 +211,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.isRouteCurrent(routeBoundToA)).toBe(false);
   });
 
-  it("mints a distinct route when the owner shares a different conversation", () => {
-    const h = harness();
+  it("mints a distinct route when the owner shares a different conversation", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const first = h.runtime.routeForEnvelope(envelope())!;
 
@@ -228,8 +228,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(second.binding.scope).not.toBe(first.binding.scope);
   });
 
-  it("rejects a binding captured before the approval was replaced", () => {
-    const h = harness();
+  it("rejects a binding captured before the approval was replaced", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const first = h.runtime.routeForEnvelope(envelope())!;
     const staleAuthorization = h.runtime.authorize(envelope()) as PlatformBridgeInboundAuthorization;
@@ -242,8 +242,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(staleAuthorization.bridgeGuard.isCurrent(first.binding)).toBe(false);
   });
 
-  it("revokes every route on dispose", () => {
-    const h = harness();
+  it("revokes every route on dispose", async () => {
+    const h = await harness();
     approve(h, CONVERSATION_A, "scope-a");
     const route = h.runtime.routeForEnvelope(envelope())!;
 
@@ -253,7 +253,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(h.runtime.routes).toEqual([]);
   });
 
-  it("fails closed when the authority throws or the conversation is unreadable", () => {
+  it("fails closed when the authority throws or the conversation is unreadable", async () => {
     const secrets = new MemorySecretStore();
     const throwing: TelegramPairedRouteAuthority = {
     ownerUserId: () => OWNER_ID,
@@ -261,7 +261,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
       resolveActiveApproval: () => { throw new Error("store unavailable"); },
       resolveBoundConversation: () => { throw new Error("store unavailable"); },
     };
-    const runtime = createTelegramPairedPlatformRuntime({
+    const runtime = await createTelegramPairedPlatformRuntime({
       encryption: unavailableSecretEncryption,
       botFingerprint: BOT_FINGERPRINT,
       authority: throwing,
@@ -273,7 +273,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
     expect(runtime.authorize(envelope())).toBeNull();
   });
 
-  it("rejects an unusable configuration", () => {
+  it("rejects an unusable configuration", async () => {
     const authority: TelegramPairedRouteAuthority = {
     ownerUserId: () => OWNER_ID,
       activePairingActorDigest: () => null,
@@ -288,23 +288,23 @@ describe("createTelegramPairedPlatformRuntime", () => {
       activationEpoch: 1,
       secretStore: new MemorySecretStore(),
     };
-    expect(() => createTelegramPairedPlatformRuntime({ ...base, activationEpoch: 0 }))
-      .toThrow("telegram-paired-platform-runtime-invalid");
-    expect(() => createTelegramPairedPlatformRuntime({
+    await expect(createTelegramPairedPlatformRuntime({ ...base, activationEpoch: 0 }))
+      .rejects.toThrow("telegram-paired-platform-runtime-invalid");
+    await expect(createTelegramPairedPlatformRuntime({
       ...base,
       botFingerprint: BOT_FINGERPRINT.toUpperCase(),
-    })).toThrow("telegram-paired-platform-runtime-invalid");
-    expect(() => createTelegramPairedPlatformRuntime({
+    })).rejects.toThrow("telegram-paired-platform-runtime-invalid");
+    await expect(createTelegramPairedPlatformRuntime({
       ...base,
       authority: {} as unknown as TelegramPairedRouteAuthority,
-    })).toThrow("telegram-paired-platform-runtime-invalid");
+    })).rejects.toThrow("telegram-paired-platform-runtime-invalid");
     // An authority that cannot name the durable binding is refused at construction rather than silently routing by whatever is on screen.
-    expect(() => createTelegramPairedPlatformRuntime({
+    await expect(createTelegramPairedPlatformRuntime({
       ...base,
       authority: {
         activePairingActorDigest: authority.activePairingActorDigest,
         resolveActiveApproval: authority.resolveActiveApproval,
       } as unknown as TelegramPairedRouteAuthority,
-    })).toThrow("telegram-paired-platform-runtime-invalid");
+    })).rejects.toThrow("telegram-paired-platform-runtime-invalid");
   });
 });

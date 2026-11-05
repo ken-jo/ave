@@ -16,7 +16,7 @@ import { broadcastToAppWindows } from "../window-fanout.js";
 
 const log = createLogger("permission-judge");
 
-function snapshot(deps: IpcDeps): PermissionJudgeSnapshot {
+async function snapshot(deps: IpcDeps): Promise<PermissionJudgeSnapshot> {
   const llm = deps.settingsService.get("llm");
   const presets = deps.settingsService.get("marketplace")?.installedProviderPresets ?? [];
   const catalog = judgeModelCatalogFrom({ ...llm, installedProviderPresets: presets });
@@ -28,7 +28,7 @@ function snapshot(deps: IpcDeps): PermissionJudgeSnapshot {
     const keyless = activePreset ? !activePreset.requiresApiKey : canUseLlmVendorWithoutApiKey(vendor, block);
     const projectConfigured = vendor === "vertex-ai" && Boolean(llm?.vendors?.[vendor]?.vertexProject?.trim());
     if (!keyless && !projectConfigured &&
-        !deps.settingsService.getSecret(hostSecretKeyForVendor(vendor, {
+        !await deps.settingsService.getSecret(hostSecretKeyForVendor(vendor, {
           llmProvider: llm?.provider ?? "",
           marketplaceProviderPresetId: llm?.marketplaceProviderPresetId,
         }))) continue;
@@ -60,12 +60,12 @@ function activeChatModelLabel(llm: AppSettings["llm"] | undefined): string | nul
 /** Only the host settings surface can read or change judge automation. */
 export function registerPermissionJudgeHandlers(deps: IpcDeps): void {
   const saveJudgeSettings = createSerialQueue();
-  ipcMain.handle(PERMISSIONS.judgeGet, (event): PermissionJudgeReadResult => {
+  ipcMain.handle(PERMISSIONS.judgeGet, async (event): Promise<PermissionJudgeReadResult> => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, PERMISSIONS.judgeGet, event);
       return { ...UNAUTHORIZED_FRAME, ok: false };
     }
-    return { ok: true, ...snapshot(deps) };
+    return { ok: true, ...(await snapshot(deps)) };
   });
   ipcMain.handle(PERMISSIONS.judgeSet, async (event, payload: unknown): Promise<PermissionJudgeWriteResult> => {
     if (!validateHostRendererSender(event)) {
@@ -93,12 +93,12 @@ export function registerPermissionJudgeHandlers(deps: IpcDeps): void {
         return { ok: false, error: "judge-save-failed" };
       }
       try {
-        rewireReviewerAgent();
+        await rewireReviewerAgent();
       } catch (error) {
         log.error("Judge settings runtime refresh failed: %s", (error as Error).message);
         try {
           await receipt.rollback();
-          rewireReviewerAgent();
+          await rewireReviewerAgent();
         } catch (rollbackError) {
           log.error("Judge settings runtime rollback failed: %s", (rollbackError as Error).message);
           return { ok: false, error: "judge-rollback-failed" };
@@ -106,7 +106,7 @@ export function registerPermissionJudgeHandlers(deps: IpcDeps): void {
         return { ok: false, error: "judge-rewire-failed" };
       }
       broadcastToAppWindows(deps, PERMISSIONS.configChanged, {});
-      return { ok: true, ...snapshot(deps) };
+      return { ok: true, ...(await snapshot(deps)) };
     });
   });
 }

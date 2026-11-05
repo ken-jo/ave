@@ -23,10 +23,10 @@ const repoRoot = resolve(testDir, "../../..");
 const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const secretKey = "llm.apiKey.openai";
 const encryption = {
-  isEncryptionAvailable: () => true,
+  isAsyncEncryptionAvailable: async () => true,
   getSelectedStorageBackend: () => "external_key" as const,
-  encryptString: (value: string) => Buffer.from(value),
-  decryptString: (value: Buffer) => value.toString(),
+  encryptStringAsync: async (value: string) => Buffer.from(value),
+  decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
 };
 
 afterEach(async () => {
@@ -41,14 +41,14 @@ async function fixture(): Promise<{ root: string; store: SettingsService }> {
   return { root, store };
 }
 
-function issue(store: SettingsService) {
+async function issue(store: SettingsService) {
   const registry = new CredentialLeaseRegistry(store);
   const incarnation = {};
   const signal = new AbortController().signal;
   const reservation = registry.reserve("fixture", incarnation, [secretKey], signal, "lease");
   if (!reservation) throw new Error("reservation missing");
   const lease = registry.register(reservation, {
-    key: secretKey, vendor: "openai", secret: store.getSecret(secretKey)!, scheme: "bearer",
+    key: secretKey, vendor: "openai", secret: (await store.getSecret(secretKey))!, scheme: "bearer",
     audience: (url) => url.origin === "https://api.example.test", permissionSignal: signal,
   });
   if (!lease || lease.exposure !== "lease") throw new Error("lease missing");
@@ -90,24 +90,24 @@ async function writeFromAnotherProcess(root: string, operation: "rotate" | "dele
 
 it.each(["rotate", "delete"] as const)("rejects an old lease after another process completes a %s", async (operation) => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   await writeFromAnotherProcess(root, operation);
-  expect(store.getSecret(secretKey)).toBe(operation === "rotate" ? "child-rotated-key" : null);
+  expect(await store.getSecret(secretKey)).toBe(operation === "rotate" ? "child-rotated-key" : null);
   await expectNoSend(use);
 });
 
 it("rejects an old lease after a second live settings instance rotates its secret", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const other = new SettingsService({ userDataPath: root, encryption });
   await other.setSecret(secretKey, "second-instance-key");
-  expect(store.getSecret(secretKey)).toBe("second-instance-key");
+  expect(await store.getSecret(secretKey)).toBe("second-instance-key");
   await expectNoSend(use);
 });
 
 it("rejects an old lease after a direct same-size edit of the secret document", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const path = join(root, "ave-secrets.json");
   const original = readFileSync(path, "utf8");
   const priorTime = statSync(path);
@@ -117,13 +117,13 @@ it("rejects an old lease after a direct same-size edit of the secret document", 
   expect(original).toContain(oldValue);
   writeFileSync(path, original.replace(oldValue, newValue));
   utimesSync(path, priorTime.atime, priorTime.mtime);
-  expect(store.getSecret(secretKey)).toBe("synthetic-new-key");
+  expect(await store.getSecret(secretKey)).toBe("synthetic-new-key");
   await expectNoSend(use);
 });
 
 it("rejects an old lease when the shared secret document becomes unreadable", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   writeFileSync(join(root, "ave-secrets.json"), Buffer.from([0xff]));
   await expectNoSend(use);
 });
@@ -137,17 +137,20 @@ it("advances every bulk-deleted key before notifying synchronous listeners", asy
   const beforeFirst = store.getSecretGeneration(firstKey);
   const beforeSecond = store.getSecretGeneration(secondKey);
   const observations: Array<{ first: string | null; second: string | null; firstGeneration: number; secondGeneration: number }> = [];
+  const reads: Promise<unknown>[] = [];
   const unsubscribe = store.onLeaseStateChanged(() => {
-    observations.push({
-      first: store.getSecret(firstKey), second: store.getSecret(secondKey),
-      firstGeneration: store.getSecretGeneration(firstKey), secondGeneration: store.getSecretGeneration(secondKey),
-    });
+    const firstGeneration = store.getSecretGeneration(firstKey);
+    const secondGeneration = store.getSecretGeneration(secondKey);
+    reads.push(Promise.all([store.getSecret(firstKey), store.getSecret(secondKey)]).then(([first, second]) => {
+      observations.push({ first, second, firstGeneration, secondGeneration });
+    }));
   });
   try {
     await store.deletePluginSecrets("fixture", ["first", "second"]);
   } finally {
     unsubscribe();
   }
+  await Promise.all(reads);
   expect(observations.some((entry) => entry.first === null && entry.second === null)).toBe(true);
   for (const entry of observations.filter((item) => item.first === null && item.second === null)) {
     expect(entry.firstGeneration).toBeGreaterThan(beforeFirst);
@@ -157,7 +160,7 @@ it("advances every bulk-deleted key before notifying synchronous listeners", asy
 
 it("checks an external rotation at the transport handoff after an asynchronous wait", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const first = await evaluateHostFetch({
     pluginId: "fixture", rawUrl: "https://api.example.test/v1", allowedDomains: ["api.example.test"],
     ensurePublicUrl: async (rawUrl) => new URL(rawUrl),
@@ -180,7 +183,7 @@ it("checks an external rotation at the transport handoff after an asynchronous w
 
 it("checks each redirect hop again at its own transport handoff", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const first = await evaluateHostFetch({
     pluginId: "fixture", rawUrl: "https://api.example.test/v1", allowedDomains: ["api.example.test"],
     ensurePublicUrl: async (rawUrl) => new URL(rawUrl),
@@ -207,7 +210,7 @@ it("checks each redirect hop again at its own transport handoff", async () => {
 
 it("revokes an old lease after another instance writes the same secret value", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const path = join(root, "ave-secrets.json");
   const before = JSON.parse(readFileSync(path, "utf8")) as { mutation: number };
   const other = new SettingsService({ userDataPath: root, encryption });
@@ -219,19 +222,19 @@ it("revokes an old lease after another instance writes the same secret value", a
 
 it("revokes an old lease after an unseen external A to B to A sequence", async () => {
   const { root, store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const other = new SettingsService({ userDataPath: root, encryption });
   await other.setSecret(secretKey, "synthetic-new-key");
-  expect(store.getSecret(secretKey)).toBe("synthetic-new-key");
+  expect(await store.getSecret(secretKey)).toBe("synthetic-new-key");
   await other.setSecret(secretKey, "synthetic-old-key");
-  expect(store.getSecret(secretKey)).toBe("synthetic-old-key");
+  expect(await store.getSecret(secretKey)).toBe("synthetic-old-key");
   await expectNoSend(use);
 });
 
 it.each(["missing", "backwards"] as const)("fails closed when the observed mutation counter goes %s", async (change) => {
   const { root, store } = await fixture();
   await store.setSecret(secretKey, "synthetic-old-key");
-  const use = issue(store);
+  const use = await issue(store);
   const path = join(root, "ave-secrets.json");
   const document = JSON.parse(readFileSync(path, "utf8")) as { mutation?: number };
   if (change === "missing") delete document.mutation;
@@ -248,7 +251,7 @@ it.each(["missing", "backwards"] as const)("fails closed when the observed mutat
 
 it("does not reread the secret document for every response chunk", async () => {
   const { store } = await fixture();
-  const use = issue(store);
+  const use = await issue(store);
   const secretStore = (store as unknown as { secretStore: { readIdentity(): unknown } }).secretStore;
   const readIdentity = vi.spyOn(secretStore, "readIdentity");
   const first = await evaluateHostFetch({

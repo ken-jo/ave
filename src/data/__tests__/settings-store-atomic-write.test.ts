@@ -28,10 +28,10 @@ describe("settings persistence", () => {
     const store = new SettingsService({
       userDataPath: root,
       encryption: {
-        isEncryptionAvailable: () => true,
+        isAsyncEncryptionAvailable: async () => true,
         getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
+        encryptStringAsync: async (value: string) => Buffer.from(value),
+        decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
       },
     });
     await store.setSecret(key, "synthetic-old-key");
@@ -41,7 +41,7 @@ describe("settings persistence", () => {
     const reservation = registry.reserve("fixture", incarnation, [key], permissionSignal, "lease");
     if (!reservation) throw new Error("reservation missing");
     const lease = registry.register(reservation, {
-      key, vendor: "openai", secret: store.getSecret(key)!, scheme: "bearer",
+      key, vendor: "openai", secret: (await store.getSecret(key))!, scheme: "bearer",
       audience: (url) => url.origin === "https://api.example.test", permissionSignal,
     });
     if (!lease || lease.exposure !== "lease") throw new Error("lease missing");
@@ -64,7 +64,7 @@ describe("settings persistence", () => {
         : store.deletePluginSecrets("fixture", ["token"]);
     try {
       await visible;
-      expect(store.getSecret(key)).toBe(change === "rotate" ? "synthetic-new-key"
+      expect(await store.getSecret(key)).toBe(change === "rotate" ? "synthetic-new-key"
         : change === "same-value" ? "synthetic-old-key" : null);
       const first = await evaluateHostFetch({
         pluginId: "fixture", rawUrl: "https://api.example.test/v1", allowedDomains: ["api.example.test"],
@@ -87,10 +87,10 @@ describe("settings persistence", () => {
     const store = new SettingsService({
       userDataPath: root,
       encryption: {
-        isEncryptionAvailable: () => true,
+        isAsyncEncryptionAvailable: async () => true,
         getSelectedStorageBackend: () => "external_key",
-        encryptString: (value: string) => Buffer.from(value),
-        decryptString: (value: Buffer) => value.toString(),
+        encryptStringAsync: async (value: string) => Buffer.from(value),
+        decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
       },
     });
     const preset = {

@@ -231,7 +231,7 @@ describe("ConversationLoop onTurnSummary", () => {
             },
           },
         }),
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       },
       auditLogger,
     } as never);
@@ -513,7 +513,7 @@ describe("ConversationLoop onTurnSummary", () => {
           ...fakeLlmSettings({ provider: "openai", model: "gpt-5.4-mini" }),
           pricingOverrides: [{ vendor: "openai", model: "gpt-5.4-mini", inputPer1M: 0.5, outputPer1M: 3 }],
         }),
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       },
       auditLogger,
     } as never);
@@ -731,7 +731,7 @@ describe("ConversationLoop onTurnSummary", () => {
       disableSessionPersistence: false,
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       },
       memoryManager: { saveSession, listSessions: () => [] } as never,
       auditLogger: auditLogger as never,
@@ -813,7 +813,7 @@ describe("ConversationLoop onTurnSummary", () => {
             modelEntries: [{ id: model, maxOutputTokens: 4_096 }], fetchedAt: new Date(0).toISOString(),
           },
         } }),
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       } as never,
       auditLogger: auditLogger as never,
     });
@@ -922,7 +922,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       settingsService: {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       },
       memoryManager: { saveSession, listSessions: () => [] } as never,
       auditLogger: auditLogger as never,
@@ -1126,7 +1126,7 @@ describe("ConversationLoop onTurnSummary", () => {
       {
         settingsService: {
           get: fakeUsageReportingSubscriptionSettings,
-          getSecret: () => "test-key",
+          getSecret: async () => "test-key",
         } as never,
         auditLogger: auditLogger as never,
       },
@@ -1198,7 +1198,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const loop = createLoopWithRegistry(provider, toolRegistry, {
       settingsService: {
         get: fakeUsageReportingSubscriptionSettings,
-        getSecret: () => "test-key",
+        getSecret: async () => "test-key",
       } as never,
     });
 

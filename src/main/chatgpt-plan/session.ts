@@ -21,8 +21,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 /** The settings-store surface the session needs: encrypted secrets only. */
 export interface ChatGptPlanSecretStore {
-  isSecretStorageEncrypted(): boolean;
-  getEncryptedSecret(key: string): string | null;
+  isSecretStorageEncrypted(): Promise<boolean>;
+  getEncryptedSecret(key: string): Promise<string | null>;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
 }
@@ -177,8 +177,8 @@ export class ChatGptPlanSession {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  status(): ChatGptPlanStatus {
-    const record = this.load();
+  async status(): Promise<ChatGptPlanStatus> {
+    const record = await this.load();
     const tokens = record?.tokens ?? null;
     const planUsage = tokens ? (tokens.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE) ? "enabled" : "disabled") : null;
     const notice = this.notice ?? (planUsage === "disabled" ? "plan-usage-disabled" : null);
@@ -198,10 +198,10 @@ export class ChatGptPlanSession {
    */
   async startSignIn(options: { readonly requestConsent?: boolean } = {}): Promise<{ readonly completion: Promise<void> }> {
     if (this.pending) throw new ChatGptPlanSessionError("sign-in-in-progress");
-    if (!this.options.secrets.isSecretStorageEncrypted()) {
+    if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
-    const record = this.load();
+    const record = await this.load();
     const hostId = await this.options.hostId();
     try {
       await verifyDiscoveryDocument(this.options.fetch);
@@ -321,7 +321,7 @@ export class ChatGptPlanSession {
    * presented exactly once.
    */
   async accessToken(): Promise<string> {
-    const record = this.load();
+    const record = await this.load();
     if (!record?.tokens) throw new ChatGptPlanSessionError("signed-out");
     if (!record.tokens.scopes.includes(CHATGPT_PLAN_USAGE_SCOPE)) {
       throw new ChatGptPlanSessionError("plan-usage-disabled");
@@ -361,7 +361,7 @@ export class ChatGptPlanSession {
       // A refresh already in flight finishes and is saved first, so the token
       // revoked below is the latest rotation rather than a superseded one.
       if (this.refreshing) await this.refreshing.catch(() => undefined);
-      const current = this.load();
+      const current = await this.load();
       if (!current?.tokens) {
         this.notice = null;
         return;
@@ -390,7 +390,7 @@ export class ChatGptPlanSession {
     if (this.refreshing) return this.refreshing;
     if (this.signingOut) return Promise.reject(new ChatGptPlanSessionError("signed-out"));
     const run = (async () => {
-      const record = this.load();
+      const record = await this.load();
       if (!record?.tokens) throw new ChatGptPlanSessionError("signed-out");
       let response: ChatGptPlanTokenResponse;
       try {
@@ -456,15 +456,17 @@ export class ChatGptPlanSession {
     });
   }
 
-  private load(): AccountRecord | null {
+  private async load(): Promise<AccountRecord | null> {
     if (this.record !== undefined) return this.record;
-    const raw = this.options.secrets.getEncryptedSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY);
+    const raw = await this.options.secrets.getEncryptedSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY);
+    // A save that landed while decrypting is newer than what was read.
+    if (this.record !== undefined) return this.record;
     this.record = raw === null ? null : parseRecord(raw);
     return this.record;
   }
 
   private async save(record: AccountRecord): Promise<void> {
-    if (!this.options.secrets.isSecretStorageEncrypted()) {
+    if (!await this.options.secrets.isSecretStorageEncrypted()) {
       throw new ChatGptPlanSessionError("secure-storage-unavailable");
     }
     await this.options.secrets.setSecret(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, JSON.stringify(record));

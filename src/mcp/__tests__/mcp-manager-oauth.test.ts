@@ -82,10 +82,10 @@ const validateServer = vi.fn(() => ({ valid: true }));
 const unregisterByMcp = vi.fn();
 const secretStore = new Map<string, string>();
 const secrets = {
-  getSecret: vi.fn((key: string) => secretStore.get(key) ?? null),
+  getSecret: vi.fn(async (key: string) => secretStore.get(key) ?? null),
   setSecret: vi.fn(async (key: string, value: string) => { secretStore.set(key, value); }),
   deleteSecret: vi.fn(async (key: string) => { secretStore.delete(key); }),
-  canStoreEncrypted: vi.fn(() => true),
+  canStoreEncrypted: vi.fn(async () => true),
 };
 const keyOf = (value: McpHttpServerConfig) => `mcp.oauth.${JSON.stringify([value.id, value.url, value.oauth])}`;
 const hostFetch = vi.fn(async () => new Response(null, { status: 200 }));
@@ -102,7 +102,7 @@ function manager(onDisconnected?: (serverId: string) => void) {
 beforeEach(async () => {
   vi.clearAllMocks();
   secretStore.clear();
-  secrets.canStoreEncrypted.mockReturnValue(true);
+  secrets.canStoreEncrypted.mockResolvedValue(true);
   validateServer.mockReturnValue({ valid: true });
   harness.sessions.length = 0;
   harness.clients.length = 0;

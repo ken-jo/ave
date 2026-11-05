@@ -277,6 +277,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
     summary: string;
     removedMessageCount: number;
   }> {
+    if (self.providerPending) await self.whenProviderReady();
     if (!self.provider) {
       return {
         compacted: false,

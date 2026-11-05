@@ -38,13 +38,13 @@ const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 
 function availableEncryption(overrides: Partial<SecretEncryption> = {}): SecretEncryption {
   return {
-    isEncryptionAvailable: () => true,
+    isAsyncEncryptionAvailable: async () => true,
     getSelectedStorageBackend: () => "gnome_libsecret",
-    encryptString: (value) => Buffer.from(`sealed:${value}`, "utf-8"),
-    decryptString: (value) => {
+    encryptStringAsync: async (value) => Buffer.from(`sealed:${value}`, "utf-8"),
+    decryptStringAsync: async (value) => {
       const decoded = value.toString("utf-8");
       if (!decoded.startsWith("sealed:")) throw new Error("invalid ciphertext");
-      return decoded.slice(7);
+      return { shouldReEncrypt: false, result: decoded.slice(7) };
     },
     ...overrides,
   };
@@ -52,10 +52,10 @@ function availableEncryption(overrides: Partial<SecretEncryption> = {}): SecretE
 
 function unavailableEncryption(): SecretEncryption {
   return {
-    isEncryptionAvailable: () => false,
+    isAsyncEncryptionAvailable: async () => false,
     getSelectedStorageBackend: () => "unknown",
-    encryptString: () => { throw new Error("encrypt should not run"); },
-    decryptString: () => { throw new Error("decrypt should not run"); },
+    encryptStringAsync: async () => { throw new Error("encrypt should not run"); },
+    decryptStringAsync: async () => { throw new Error("decrypt should not run"); },
   };
 }
 
@@ -104,26 +104,26 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const writer = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ getSelectedStorageBackend }) });
     await writer.set("alpha", "fixture-value");
     await writer.set("unrelated", "another-fixture-value");
-    const decryptString = vi.fn(() => { throw new Error("must not decrypt"); });
-    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ decryptString, getSelectedStorageBackend }) });
-    expect(store.has("alpha")).toBe(true);
-    expect(store.has("missing")).toBe(false);
-    expect(decryptString).not.toHaveBeenCalled();
+    const decryptStringAsync = vi.fn(async () => { throw new Error("must not decrypt"); });
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ decryptStringAsync, getSelectedStorageBackend }) });
+    await expect(store.has("alpha")).resolves.toBe(true);
+    await expect(store.has("missing")).resolves.toBe(false);
+    expect(decryptStringAsync).not.toHaveBeenCalled();
   });
 
   it("rejects mismatched encryption backends before reporting presence", async () => {
     const writer = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     await writer.set("alpha", "fixture-value");
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption({ getSelectedStorageBackend: () => "external_key" }) });
-    expect(() => store.has("alpha")).toThrow(SecretDocumentValidationError);
+    await expect(store.has("alpha")).rejects.toThrow(SecretDocumentValidationError);
   });
 
   it("preserves encryption policy when reporting credential presence", async () => {
     const development = new SecretDocumentStore({ path, policy: "development", encryption: unavailableEncryption() });
     await development.set("alpha", "fixture-value");
-    expect(development.has("alpha")).toBe(true);
+    expect(await development.has("alpha")).toBe(true);
     const packaged = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
-    expect(() => packaged.has("alpha")).toThrow(SecretEncryptionUnavailableError);
+    await expect(packaged.has("alpha")).rejects.toThrow(SecretEncryptionUnavailableError);
   });
 
   it("serializes same-process set/set without losing either key", async () => {
@@ -132,16 +132,16 @@ describe("SecretDocumentStore atomicity and policy", () => {
 
     await Promise.all([first.set("alpha", "one"), second.set("beta", "two")]);
 
-    expect(first.get("alpha")).toBe("one");
-    expect(first.get("beta")).toBe("two");
+    expect(await first.get("alpha")).toBe("one");
+    expect(await first.get("beta")).toBe("two");
   });
 
   it("serializes same-process set/delete against the locked fresh document", async () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     await store.set("remove", "old");
     await Promise.all([store.set("keep", "new"), store.delete("remove")]);
-    expect(store.get("keep")).toBe("new");
-    expect(store.get("remove")).toBeNull();
+    expect(await store.get("keep")).toBe("new");
+    expect(await store.get("remove")).toBeNull();
   });
 
   it("applies bulk deletion as one exact-key mutation", async () => {
@@ -151,9 +151,9 @@ describe("SecretDocumentStore atomicity and policy", () => {
     await store.set("plugin.beta.token", "three");
 
     await expect(store.deleteMany(["plugin.alpha.token", "plugin.beta.token"])).resolves.toBe(2);
-    expect(store.get("plugin.alpha.token")).toBeNull();
-    expect(store.get("plugin.alpha.token.extra")).toBe("two");
-    expect(store.get("plugin.beta.token")).toBeNull();
+    expect(await store.get("plugin.alpha.token")).toBeNull();
+    expect(await store.get("plugin.alpha.token.extra")).toBe("two");
+    expect(await store.get("plugin.beta.token")).toBeNull();
   });
 
   it("stores and deletes keys that collide with object prototypes", async () => {
@@ -162,12 +162,12 @@ describe("SecretDocumentStore atomicity and policy", () => {
     await store.set("__proto__", "prototype-value");
     await store.set("toString", "method-value");
 
-    expect(store.get("__proto__")).toBe("prototype-value");
-    expect(store.get("toString")).toBe("method-value");
+    expect(await store.get("__proto__")).toBe("prototype-value");
+    expect(await store.get("toString")).toBe("method-value");
     await expect(store.delete("__proto__")).resolves.toBe(true);
     await expect(store.deleteMany(["toString", "constructor"])).resolves.toBe(1);
-    expect(store.get("__proto__")).toBeNull();
-    expect(store.get("toString")).toBeNull();
+    expect(await store.get("__proto__")).toBeNull();
+    expect(await store.get("toString")).toBeNull();
   });
 
   it("moves an entry as stored, without decrypting it", async () => {
@@ -177,7 +177,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const store = new SecretDocumentStore({
       path,
       policy: "packaged",
-      encryption: availableEncryption({ decryptString: () => { throw new Error("decrypt should not run"); } }),
+      encryption: availableEncryption({ decryptStringAsync: async () => { throw new Error("decrypt should not run"); } }),
     });
 
     await expect(store.move("llm.apiKey.old", "llm.apiKey.new")).resolves.toBe(true);
@@ -192,8 +192,8 @@ describe("SecretDocumentStore atomicity and policy", () => {
 
     await expect(store.move("llm.apiKey.old", "llm.apiKey.new")).resolves.toBe(true);
 
-    expect(store.get("llm.apiKey.new")).toBe("new");
-    expect(store.get("llm.apiKey.old")).toBeNull();
+    expect(await store.get("llm.apiKey.new")).toBe("new");
+    expect(await store.get("llm.apiKey.old")).toBeNull();
   });
 
   it("writes nothing when the moved key is absent, even with writes unavailable", async () => {
@@ -233,8 +233,8 @@ describe("SecretDocumentStore atomicity and policy", () => {
     ]);
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     expect(results.every((result) => result.stderr.includes("AveHomeConfigurationNotOwnerError"))).toBe(true);
-    expect(store.get("alpha")).toBeNull();
-    expect(store.get("beta")).toBeNull();
+    expect(await store.get("alpha")).toBeNull();
+    expect(await store.get("beta")).toBeNull();
   }, 20_000);
 
   it("refuses non owner secret set and delete", async () => {
@@ -244,8 +244,8 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const second = spawnNode([childFixture, "delete", path, "remove"]);
     const results = await Promise.all([waitForExit(first), waitForExit(second)]);
     expect(results.every((result) => result.code === 1 && result.stderr.includes("AveHomeConfigurationNotOwnerError")), results.map((result) => result.stderr).join("\n")).toBe(true);
-    expect(store.get("keep")).toBeNull();
-    expect(store.get("remove")).toBe("old");
+    expect(await store.get("keep")).toBeNull();
+    expect(await store.get("remove")).toBe("old");
   }, 20_000);
 
   it("refuses non owner bulk deletion and set", async () => {
@@ -257,10 +257,10 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const second = spawnNode([childFixture, "set", path, "concurrent", "new"]);
     const results = await Promise.all([waitForExit(first), waitForExit(second)]);
     expect(results.every((result) => result.code === 1 && result.stderr.includes("AveHomeConfigurationNotOwnerError")), results.map((result) => result.stderr).join("\n")).toBe(true);
-    expect(store.get("remove-alpha")).toBe("old-alpha");
-    expect(store.get("remove-beta")).toBe("old-beta");
-    expect(store.get("preserve")).toBe("old-preserve");
-    expect(store.get("concurrent")).toBeNull();
+    expect(await store.get("remove-alpha")).toBe("old-alpha");
+    expect(await store.get("remove-beta")).toBe("old-beta");
+    expect(await store.get("preserve")).toBe("old-preserve");
+    expect(await store.get("concurrent")).toBeNull();
   }, 20_000);
 
   it.each([
@@ -272,7 +272,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
   ])("preserves invalid bytes and fails visibly: %s", async (raw) => {
     writeFileSync(path, raw, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
-    expect(() => store.get("key")).toThrow(SecretDocumentValidationError);
+    await expect(store.get("key")).rejects.toThrow(SecretDocumentValidationError);
     await expect(store.set("next", "value")).rejects.toThrow(SecretDocumentValidationError);
     expect(readFileSync(path, "utf-8")).toBe(raw);
   });
@@ -283,7 +283,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     let message = "";
     try {
-      store.get("provider.secret.key");
+      await store.get("provider.secret.key");
     } catch (error) {
       message = (error as Error).message;
     }
@@ -301,7 +301,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
   it("uses plaintext only under explicit development policy", async () => {
     const store = new SecretDocumentStore({ path, policy: "development", encryption: unavailableEncryption() });
     await store.set("api", "development-secret");
-    expect(store.get("api")).toBe("development-secret");
+    expect(await store.get("api")).toBe("development-secret");
     expect(parseDocument(path).entries.api).toEqual({
       encoding: "plain-development",
       value: "development-secret",
@@ -317,10 +317,10 @@ describe("SecretDocumentStore atomicity and policy", () => {
       version: 1,
       entries: { api: { encoding: "plain-development", value: "must-not-return" } },
     })}\n`, { mode: 0o600 });
-    expect(() => store.get("api")).toThrow(SecretEncryptionUnavailableError);
-    expect(() => store.getEncrypted("api")).toThrow(SecretEncryptionUnavailableError);
-    expect(store.get("missing")).toBeNull();
-    expect(store.getEncrypted("missing")).toBeNull();
+    await expect(store.get("api")).rejects.toThrow(SecretEncryptionUnavailableError);
+    await expect(store.getEncrypted("api")).rejects.toThrow(SecretEncryptionUnavailableError);
+    expect(await store.get("missing")).toBeNull();
+    expect(await store.getEncrypted("missing")).toBeNull();
     await expect(store.delete("api")).rejects.toThrow(SecretEncryptionUnavailableError);
     expect(readFileSync(path, "utf-8")).toContain("must-not-return");
   });
@@ -357,7 +357,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
       encryption: availableEncryption({ getSelectedStorageBackend: () => "basic_text" }),
     });
     await expect(store.migrate()).rejects.toThrow(SecretEncryptionUnavailableError);
-    expect(() => store.get("api")).toThrow(SecretEncryptionUnavailableError);
+    await expect(store.get("api")).rejects.toThrow(SecretEncryptionUnavailableError);
     expect(readFileSync(path, "utf-8")).toBe(original);
   });
 
@@ -369,7 +369,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
       encryption: availableEncryption({ getSelectedStorageBackend: () => "kwallet6" }),
     });
     await store.set("api", "protected");
-    expect(store.get("api")).toBe("protected");
+    expect(await store.get("api")).toBe("protected");
   });
 
   it("fails closed when an encrypted entry cannot be decrypted", async () => {
@@ -379,22 +379,22 @@ describe("SecretDocumentStore atomicity and policy", () => {
     })}\n`, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: unavailableEncryption() });
 
-    expect(() => store.get("api")).toThrow(SecretEncryptionUnavailableError);
-    expect(() => store.getEncrypted("api")).toThrow(SecretEncryptionUnavailableError);
-    expect(store.get("missing")).toBeNull();
-    expect(store.getEncrypted("missing")).toBeNull();
+    await expect(store.get("api")).rejects.toThrow(SecretEncryptionUnavailableError);
+    await expect(store.getEncrypted("api")).rejects.toThrow(SecretEncryptionUnavailableError);
+    expect(await store.get("missing")).toBeNull();
+    expect(await store.getEncrypted("missing")).toBeNull();
   });
 
   it("accepts a legacy flat map only during explicit migration", async () => {
     const legacy = `${JSON.stringify({ api: "plain:legacy", token: "plain:second" })}\n`;
     writeFileSync(path, legacy, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
-    expect(() => store.get("api")).toThrow(SecretDocumentValidationError);
+    await expect(store.get("api")).rejects.toThrow(SecretDocumentValidationError);
     await expect(store.set("next", "value")).rejects.toThrow(SecretDocumentValidationError);
     expect(readFileSync(path, "utf-8")).toBe(legacy);
     await expect(store.migrate()).resolves.toBe(true);
-    expect(store.get("api")).toBe("legacy");
-    expect(store.get("token")).toBe("second");
+    expect(await store.get("api")).toBe("legacy");
+    expect(await store.get("token")).toBe("second");
     expect(readFileSync(path, "utf-8")).not.toContain("legacy");
   });
 
@@ -419,11 +419,11 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const store = new SecretDocumentStore({
       path,
       policy: "packaged",
-      encryption: availableEncryption({ decryptString: () => { throw new Error("ciphertext leaked"); } }),
+      encryption: availableEncryption({ decryptStringAsync: async () => { throw new Error("ciphertext leaked"); } }),
     });
-    expect(() => store.get("provider.secret.key")).toThrow(SecretDocumentDecryptionError);
+    await expect(store.get("provider.secret.key")).rejects.toThrow(SecretDocumentDecryptionError);
     try {
-      store.get("provider.secret.key");
+      await store.get("provider.secret.key");
     } catch (error) {
       expect((error as Error).message).toBe("Stored secret could not be decrypted");
       expect((error as Error).message).not.toContain(ciphertext);
@@ -440,14 +440,14 @@ describe("SecretDocumentStore atomicity and policy", () => {
       },
     }, null, 2)}\n`;
     writeFileSync(path, original, { mode: 0o600 });
-    const encryptString = vi.fn((value: string) => {
+    const encryptStringAsync = vi.fn(async (value: string) => {
       if (value === "two") throw new Error("injected encryption failure");
       return Buffer.from(`sealed:${value}`);
     });
     const store = new SecretDocumentStore({
       path,
       policy: "packaged",
-      encryption: availableEncryption({ encryptString }),
+      encryption: availableEncryption({ encryptStringAsync }),
     });
 
     await expect(store.migrate()).rejects.toThrow("injected encryption failure");
@@ -483,7 +483,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
       },
     });
     await expect(store.set("api", "value")).resolves.toBeUndefined();
-    expect(store.get("api")).toBe("value");
+    expect(await store.get("api")).toBe("value");
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       reason: "atomic-directory-sync-unconfirmed",
       path,
@@ -523,7 +523,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
       },
     });
     await expect(store.set("api", "value")).resolves.toBeUndefined();
-    expect(store.get("api")).toBe("value");
+    expect(await store.get("api")).toBe("value");
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       reason: "lock-release-failed-after-commit",
       path,
@@ -571,7 +571,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
 
     await expect(store.migrate()).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
-    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    await expect(store.get("api")).rejects.toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(lstatSync(path).isSymbolicLink()).toBe(true);
     expect(readFileSync(externalPath, "utf-8")).toBe(external);
   });

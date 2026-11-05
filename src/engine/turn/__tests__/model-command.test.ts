@@ -56,7 +56,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
   },
 }));
 
-function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRuntime?: ActiveChatRuntime } = fakeLlmSettings({ model: "gpt-5.4" })) {
+async function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRuntime?: ActiveChatRuntime } = fakeLlmSettings({ model: "gpt-5.4" })) {
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
@@ -66,6 +66,7 @@ function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRuntime?
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  await loop.whenProviderReady();
   return { llm, loop };
 }
 
@@ -76,7 +77,7 @@ beforeEach(() => {
   state.refreshes = 0;
 });
 
-function customEndpointLoop() {
+async function customEndpointLoop() {
   const llm = fakeLlmSettings({ provider: "openai-compatible", model: "served-model" });
   llm.vendors["openai-compatible"].baseUrl = "https://llm.example.test/v1";
   return makeLoop(llm);
@@ -84,14 +85,14 @@ function customEndpointLoop() {
 
 describe("/model", () => {
   it("reports the configured model when called without an argument", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     const result = await loop.handleCommand("model", "", "user-keyboard");
     expect(result.route).toBe("command");
     expect(result.text).toContain("gpt-5.4");
   });
 
   it("switches the next round to the requested model without touching settings", async () => {
-    const { llm, loop } = makeLoop();
+    const { llm, loop } = await makeLoop();
     const result = await loop.handleCommand("model", " gpt-5.4-mini ", "user-keyboard");
     expect(result.text).toContain("gpt-5.4-mini");
     expect(state.configs.at(-1)?.model).toBe("gpt-5.4-mini");
@@ -103,7 +104,7 @@ describe("/model", () => {
   });
 
   it("returns to the configured model with `default`", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
     const result = await loop.handleCommand("model", "default", "user-keyboard");
     expect(result.text).toContain("gpt-5.4");
@@ -111,7 +112,7 @@ describe("/model", () => {
   });
 
   it("drops the choice when the loop starts another session", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
     await loop.newConversation();
     expect(state.configs.at(-1)?.model).toBe("gpt-5.4");
@@ -119,7 +120,7 @@ describe("/model", () => {
   });
 
   it("refuses an id with whitespace or control characters", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     const before = state.configs.length;
     const result = await loop.handleCommand("model", "two words", "user-keyboard");
     expect(result.text).not.toContain("two words");
@@ -129,14 +130,14 @@ describe("/model", () => {
   it("refuses a subscription runtime that owns its model", async () => {
     const runtime: ActiveChatRuntime = { kind: "subscription", provider: "claude-code" };
     const llm = { ...fakeLlmSettings({ model: "gpt-5.4" }), activeChatRuntime: runtime };
-    const { loop } = makeLoop(llm);
+    const { loop } = await makeLoop(llm);
     const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
     expect(loop.deps.modelOverride).toBeUndefined();
     expect(result.text).toContain("/model");
   });
 
   it("rejects an id neither the catalog nor the endpoint names, and does not switch", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     const before = state.configs.length;
     const result = await loop.handleCommand("model", "gpt-nonexistent-9", "user-keyboard");
     expect(result.text).toBe(t("be_conversationLoop.cmdModelUnknown", { model: "gpt-nonexistent-9" }));
@@ -146,7 +147,7 @@ describe("/model", () => {
   });
 
   it("rejects a spelling the catalog only matches loosely", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     const result = await loop.handleCommand("model", "GPT-5-4-MINI", "user-keyboard");
     expect(result.text).toBe(t("be_conversationLoop.cmdModelUnknown", { model: "GPT-5-4-MINI" }));
     expect(loop.deps.modelOverride).toBeUndefined();
@@ -154,14 +155,14 @@ describe("/model", () => {
 
   it("accepts a new model the vendor's endpoint reports before the catalog knows it", async () => {
     state.endpointModels = ["gpt-5.4", "gpt-next-preview"];
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     const result = await loop.handleCommand("model", "gpt-next-preview", "user-keyboard");
     expect(result.text).toContain("gpt-next-preview");
     expect(loop.deps.modelOverride).toBe("gpt-next-preview");
   });
 
   it("refuses a catalog model the route's complete listing no longer serves", async () => {
-    const { llm, loop } = makeLoop();
+    const { llm, loop } = await makeLoop();
     llm.modelListCache = {
       [llmModelListCacheKey("openai")]: {
         vendor: "openai",
@@ -177,7 +178,7 @@ describe("/model", () => {
   });
 
   it("refuses a custom endpoint's model when no model list can be fetched", async () => {
-    const { loop } = customEndpointLoop();
+    const { loop } = await customEndpointLoop();
     const result = await loop.handleCommand("model", "served-model-2", "user-keyboard");
     expect(result.text).toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "served-model-2" }));
     expect(loop.deps.modelOverride).toBeUndefined();
@@ -185,7 +186,7 @@ describe("/model", () => {
 
   it("checks a custom endpoint's model against the list it reports", async () => {
     state.endpointModels = ["served-model", "served-model-2"];
-    const { loop } = customEndpointLoop();
+    const { loop } = await customEndpointLoop();
     expect((await loop.handleCommand("model", "other-model", "user-keyboard")).text)
       .toBe(t("be_conversationLoop.cmdModelUnknown", { model: "other-model" }));
     expect(loop.deps.modelOverride).toBeUndefined();
@@ -193,10 +194,10 @@ describe("/model", () => {
     expect(loop.deps.modelOverride).toBe("served-model-2");
   });
 
-  function codexLoop(catalog: () => Promise<readonly string[]>) {
+  async function codexLoop(catalog: () => Promise<readonly string[]>) {
     const runtime: ActiveChatRuntime = { kind: "subscription", provider: "codex", model: "gpt-5.5-codex" };
     const llm = { ...fakeLlmSettings({ model: "gpt-5.4" }), activeChatRuntime: runtime };
-    const { loop } = makeLoop(llm);
+    const { loop } = await makeLoop(llm);
     (loop as { provider: LLMProvider | null }).provider = {
       vendor: "openai",
       subscriptionRuntime: runtime,
@@ -207,27 +208,64 @@ describe("/model", () => {
   }
 
   it("switches a Codex subscription to a model its live catalog offers", async () => {
-    const loop = codexLoop(async () => ["gpt-5.5-codex", "gpt-5.5-codex-mini"]);
+    const loop = await codexLoop(async () => ["gpt-5.5-codex", "gpt-5.5-codex-mini"]);
     const result = await loop.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard");
     expect(result.text).toBe(t("be_conversationLoop.cmdModelSet", { model: "gpt-5.5-codex-mini" }));
     expect(loop.deps.modelOverride).toBe("gpt-5.5-codex-mini");
   });
 
   it("rejects a model the Codex catalog does not offer, and refuses when the catalog is unreachable", async () => {
-    const loop = codexLoop(async () => ["gpt-5.5-codex"]);
+    const loop = await codexLoop(async () => ["gpt-5.5-codex"]);
     expect((await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard")).text)
       .toBe(t("be_conversationLoop.cmdModelUnknown", { model: "gpt-5.4-mini" }));
-    const offline = codexLoop(async () => { throw new Error("subscription-chat-unavailable"); });
+    const offline = await codexLoop(async () => { throw new Error("subscription-chat-unavailable"); });
     expect((await offline.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard")).text)
       .toBe(t("be_conversationLoop.cmdModelUnverifiable", { model: "gpt-5.5-codex-mini" }));
     expect(loop.deps.modelOverride).toBeUndefined();
     expect(offline.deps.modelOverride).toBeUndefined();
   });
 
+  it("checks a Codex model against the provider a rebuild in flight is about to install", async () => {
+    const loop = await codexLoop(async () => []);
+    (loop as { provider: LLMProvider | null }).provider = null;
+    (loop.deps as { subscriptionProviderFactory?: (selection: ActiveChatRuntime) => LLMProvider }).subscriptionProviderFactory = (selection) => ({
+      vendor: "openai",
+      subscriptionRuntime: selection,
+      listSubscriptionModels: async () => ["gpt-5.5-codex", "gpt-5.5-codex-mini"],
+      async *streamTurn(): AsyncIterable<StreamEvent> {},
+    } as LLMProvider);
+    const rebuild = loop.refreshProvider();
+    expect(loop.providerPending).toBe(true);
+    const result = await loop.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard");
+    await rebuild;
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelSet", { model: "gpt-5.5-codex-mini" }));
+  });
+
+  it("names a failed provider build instead of switching the model", async () => {
+    let secret: () => Promise<string> = async () => "test-key";
+    const llm = fakeLlmSettings({ model: "gpt-5.4" });
+    const loop = new ConversationLoop({
+      settingsService: { get: () => llm, getSecret: () => secret() },
+      systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
+      inputClassifier: new InputClassifier(),
+      routeEngine: new RouteEngine(),
+      toolRegistry: new ToolRegistry(),
+      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      disableSessionPersistence: true,
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
+    secret = async () => { throw Object.assign(new Error("unreadable"), { name: "StoredSecretUnreadable", code: "decrypt-failed" }); };
+    const rebuild = loop.refreshProvider().catch(() => undefined);
+    const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
+    await rebuild;
+    expect(result.text).toBe(`${t("be_conversationLoop.llmProviderNotConfigured")} (StoredSecretUnreadable:decrypt-failed)`);
+    expect(loop.deps.modelOverride).toBeUndefined();
+  });
+
   it("switches an Azure deployment but says the name is unverified", async () => {
     const llm = fakeLlmSettings({ provider: "azure-foundry", model: "my-gpt-deployment" });
     llm.vendors["azure-foundry"].baseUrl = "https://example-resource.openai.azure.com/openai/v1";
-    const { loop } = makeLoop(llm);
+    const { loop } = await makeLoop(llm);
     const result = await loop.handleCommand("model", "team-deployment-2", "user-keyboard");
     expect(result.text).toBe(t("be_conversationLoop.cmdModelSetUnverifiedDeployment", { model: "team-deployment-2" }));
     expect(result.text).not.toBe(t("be_conversationLoop.cmdModelSet", { model: "team-deployment-2" }));
@@ -236,7 +274,7 @@ describe("/model", () => {
   });
 
   it("is refused from a non-keyboard origin", async () => {
-    const { loop } = makeLoop();
+    const { loop } = await makeLoop();
     await loop.handleCommand("model", "gpt-5.4-mini", "agent-message");
     expect(loop.deps.modelOverride).toBeUndefined();
   });

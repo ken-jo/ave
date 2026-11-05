@@ -14,10 +14,10 @@ import { secretKeyFor } from "../llm/provider-factory.js";
 export type ActiveChatModelSettingsReader = Pick<SettingsService, "get" | "hasStoredSecret">;
 
 /** Check credential presence without decrypting on settings broadcasts. */
-function activeApiRouteConnected(
+async function activeApiRouteConnected(
   settingsService: ActiveChatModelSettingsReader,
   env: NodeJS.ProcessEnv = process.env,
-): boolean {
+): Promise<boolean> {
   const llm = settingsService.get("llm");
   const vendor = llm.provider;
   const block = getLlmVendorSettings(llm.vendors, vendor);
@@ -28,24 +28,24 @@ function activeApiRouteConnected(
     // A removed preset has no active route.
     if (!preset) return false;
     if (preset.requiresApiKey === false && preset.baseUrl.trim()) return true;
-    return settingsService.hasStoredSecret(marketplaceProviderPresetSecretKey(preset.providerId));
+    return await settingsService.hasStoredSecret(marketplaceProviderPresetSecretKey(preset.providerId));
   }
   if (vendor === "vertex-ai") {
     // Native project authentication requires a project rather than an API key.
     return Boolean(block.vertexProject || env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT);
   }
   if (canUseLlmVendorWithoutApiKey(vendor, block)) return true;
-  return settingsService.hasStoredSecret(secretKeyFor(vendor));
+  return await settingsService.hasStoredSecret(secretKeyFor(vendor));
 }
 
-export function resolveMainActiveChatModel(
+export async function resolveMainActiveChatModel(
   settingsService: ActiveChatModelSettingsReader,
   env: NodeJS.ProcessEnv = process.env,
-): ActiveChatModel {
+): Promise<ActiveChatModel> {
   const llm = settingsService.get("llm");
   // Subscription and retired-provider decisions must not consult the API secret store.
   if (llm.activeChatRuntime.kind === "subscription" || llm.retiredProvider) {
     return resolveActiveChatModel(llm, false);
   }
-  return resolveActiveChatModel(llm, activeApiRouteConnected(settingsService, env));
+  return resolveActiveChatModel(llm, await activeApiRouteConnected(settingsService, env));
 }

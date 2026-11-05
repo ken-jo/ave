@@ -44,7 +44,7 @@ async function createRunner(options: Omit<NonNullable<Parameters<typeof buildTes
   const key = JSON.stringify(Object.entries(snapshot).sort(([a], [b]) => a.localeCompare(b)));
   let broker = tokenBrokers.get(key);
   if (!broker) {
-    broker = AskpassBroker.start({ getToken: (host) => snapshot[host] ?? null });
+    broker = AskpassBroker.start({ getToken: async (host) => snapshot[host] ?? null });
     tokenBrokers.set(key, broker);
   }
   return buildTestGitRunner({ ...configuration, runtime: { git: sharedRuntime.git, broker: await broker } });

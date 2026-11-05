@@ -10,10 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockedElectron = vi.hoisted(() => ({
   safeStorage: {
     // Removing a preset deletes its secret, which needs the encrypted store.
-    isEncryptionAvailable: vi.fn(() => true),
+    isAsyncEncryptionAvailable: vi.fn(async () => true),
     getSelectedStorageBackend: vi.fn(() => "gnome_libsecret" as const),
-    encryptString: vi.fn((value: string) => Buffer.from(`enc:${value}`)),
-    decryptString: vi.fn((value: Buffer) => value.toString().slice(4)),
+    encryptStringAsync: vi.fn(async (value: string) => Buffer.from(`enc:${value}`)),
+    decryptStringAsync: vi.fn(async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString().slice(4) })),
   },
 }));
 
@@ -93,10 +93,10 @@ describe("createContentActivation", () => {
       const key = bundledCredentialKey({ kind: "agent-plugin", name: "meeting-kit" }, "notes");
       await settingsService.setSecret(key, "private-value");
       expect(existsSync(join(dataDir, "marker"))).toBe(true);
-      expect(settingsService.getSecret(key)).toBe("private-value");
+      expect(await settingsService.getSecret(key)).toBe("private-value");
       await removeAgentPluginData(settingsService, "meeting-kit", ["notes"]);
       expect(existsSync(dataDir)).toBe(false);
-      expect(settingsService.getSecret(key)).toBeNull();
+      expect(await settingsService.getSecret(key)).toBeNull();
     } finally {
       if (savedHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = savedHome;
@@ -155,7 +155,7 @@ describe("createContentActivation", () => {
     await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
     await activation.deactivate(entry("provider", "azure-foundry"), null);
     expect(settingsService.get("llm")).toEqual(before);
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+    expect(await settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
   });
 
   it("uninstalls an old bundled vendor package without changing its key or settings", async () => {
@@ -164,7 +164,7 @@ describe("createContentActivation", () => {
     await settingsService.setSecret("llm.apiKey.groq", "sk-user");
     const before = settingsService.get("llm");
     await activation.deactivate(entry("provider", "groq"), null);
-    expect(settingsService.getSecret("llm.apiKey.groq")).toBe("sk-user");
+    expect(await settingsService.getSecret("llm.apiKey.groq")).toBe("sk-user");
     expect(settingsService.get("llm")).toEqual(before);
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("groq");
   });
@@ -178,7 +178,7 @@ describe("createContentActivation", () => {
     await expect(activation.deactivate(entry("provider", "azure-foundry"), null)).resolves.toBeUndefined();
     expect(read).not.toHaveBeenCalled();
     read.mockRestore();
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+    expect(await settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
   });
 
   it("preserves a saved key and its provider when the configuration boundary is untrusted", async () => {
@@ -193,7 +193,7 @@ describe("createContentActivation", () => {
       await expect(activation.deactivate(entry("provider", preset.providerId), null)).rejects.toBe(failure);
       expect(remove).not.toHaveBeenCalled();
       expect(settingsService.get("marketplace").installedProviderPresets).toContainEqual(preset);
-      expect(settingsService.getSecret(key)).toBe("sk-user");
+      expect(await settingsService.getSecret(key)).toBe("sk-user");
     } finally {
       read.mockRestore();
       remove.mockRestore();
@@ -210,7 +210,7 @@ describe("createContentActivation", () => {
       activation.activate({ kind: "provider", preset: { ...preset, baseUrl: "https://moved.example/v1" } }, entry("provider", preset.providerId), entry("provider", preset.providerId), false),
     ).rejects.toThrow("disk full");
     save.mockRestore();
-    expect(settingsService.getSecret(key)).toBe("sk-user");
+    expect(await settingsService.getSecret(key)).toBe("sk-user");
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
   });
 
@@ -261,7 +261,7 @@ describe("createContentActivation", () => {
     const vendor = { providerId: "azure-foundry" as const, defaultModel: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" };
     await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), null, true);
     expect(settingsService.get("llm").vendors["azure-foundry"]).toMatchObject({ model: "user-model", baseUrl: "https://own.example/foundry" });
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+    expect(await settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
 
     await settingsService.installMarketplaceProviderPreset(preset);
     await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), null, true);

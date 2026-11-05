@@ -852,7 +852,7 @@ export function createHostApiFactory(
           incrementHostSecretCounter("hostSecret_denied", pluginId, keyPrefix);
           return null;
         }
-        const value = settingsService.getSecret(key);
+        const value = await settingsService.getSecret(key);
         // Block endpoint URLs in API-key-shaped plugin secrets; otherwise own-namespace reads can exfiltrate data.
         if (shouldBlockPluginSecretRead({ pluginId, storageKey: key, value })) {
           audit(

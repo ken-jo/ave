@@ -193,7 +193,7 @@ export interface ConversationDeps {
   isSkillName?: (name: string) => boolean;
   notificationService?: NotificationService;
   auditLogger?: AuditLogger;
-  rewireReviewerAgent?: () => void;
+  rewireReviewerAgent?: () => Promise<void>;
   llmFetch?: typeof fetch;
   networkFetch: typeof fetch;
   subscriptionProviderFactory?: (

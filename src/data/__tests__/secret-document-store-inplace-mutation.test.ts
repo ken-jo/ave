@@ -37,13 +37,13 @@ const { SecretDocumentStore } = await import(
 type SecretEncryption = import("../secret-document-store.js").SecretEncryption;
 
 const encryption: SecretEncryption = {
-  isEncryptionAvailable: () => true,
+  isAsyncEncryptionAvailable: async () => true,
   getSelectedStorageBackend: () => "gnome_libsecret",
-  encryptString: (value) => Buffer.from(`sealed:${value}`, "utf-8"),
-  decryptString: (value) => {
+  encryptStringAsync: async (value) => Buffer.from(`sealed:${value}`, "utf-8"),
+  decryptStringAsync: async (value) => {
     const decoded = value.toString("utf-8");
     if (!decoded.startsWith("sealed:")) throw new Error("invalid ciphertext");
-    return decoded.slice(7);
+    return { shouldReEncrypt: false, result: decoded.slice(7) };
   },
 };
 
@@ -89,13 +89,13 @@ describe("stable secret read against equal-size in-place mutation", () => {
     expect(Buffer.byteLength(hostile)).toBe(Buffer.byteLength(honest));
   });
 
-  it("reads the honest document when nothing mutates it", () => {
+  it("reads the honest document when nothing mutates it", async () => {
     writeFileSync(path, honest, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption });
-    expect(store.get("api")).toBe("honest-value");
+    expect(await store.get("api")).toBe("honest-value");
   });
 
-  it("rejects a document mutated in place during the descriptor read", () => {
+  it("rejects a document mutated in place during the descriptor read", async () => {
     writeFileSync(path, honest, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption });
     let mutations = 0;
@@ -105,11 +105,11 @@ describe("stable secret read against equal-size in-place mutation", () => {
       overwriteInPlace(path, mutations % 2 === 1 ? hostile : honest);
     };
 
-    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    await expect(store.get("api")).rejects.toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(mutations).toBeGreaterThan(0);
   });
 
-  it("never returns bytes that were replaced under the reader", () => {
+  it("never returns bytes that were replaced under the reader", async () => {
     writeFileSync(path, honest, { mode: 0o600 });
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption });
     let mutated = false;
@@ -119,7 +119,7 @@ describe("stable secret read against equal-size in-place mutation", () => {
       overwriteInPlace(path, hostile);
     };
 
-    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    await expect(store.get("api")).rejects.toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(readFileSync(path, "utf-8")).toBe(hostile);
   });
 });

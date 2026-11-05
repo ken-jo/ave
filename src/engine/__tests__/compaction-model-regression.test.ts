@@ -148,6 +148,7 @@ describe("explicit compaction model failure", () => {
       expect(result).toMatchObject({ compacted: false, compactedAt: null, removedMessageCount: 0 });
       expect(result.summary).toContain("503 selected summary model unavailable");
     } else {
+      await loop.whenProviderReady();
       const trace = vi.spyOn(loop.tracer, "step");
       const scope = loop.resolveToolScope("");
       const projection = loop.createRequestProjectionContext(scope, null, undefined, loop.rebuildToolSchemas(scope));

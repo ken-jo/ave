@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ELECTRON_DECRYPT_FAILED_MESSAGE,
   MemorySecretStore,
   SafeStorageSecretStore,
   type SafeStorageLike,
@@ -49,27 +50,32 @@ describe("actor key rotation", () => {
     directories = [];
   });
 
-  function encryptedSecrets(): {
+  // Breaking decryption reopens the store as the next boot would, since that open unwraps the data key and is where the loss surfaces.
+  async function encryptedSecrets(): Promise<{
     readonly store: SecretStore;
     readonly dir: string;
-    breakDecryption: () => void;
-  } {
+    breakDecryption: () => Promise<void>;
+  }> {
     const dir = mkdtempSync(join(tmpdir(), "ave-telegram-actor-secret-"));
     directories.push(dir);
     const state = { broken: false };
     const encryption: SafeStorageLike = {
-      isEncryptionAvailable: () => true,
-      encryptString: (value: string) => Buffer.from(`enc:${value}`, "utf8"),
-      decryptString: (value: Buffer) => {
-        if (state.broken) throw new Error("safeStorage could not decrypt this ciphertext");
-        return value.toString("utf8").replace(/^enc:/, "");
+      isAsyncEncryptionAvailable: async () => true,
+      encryptStringAsync: async (value: string) => Buffer.from(`enc:${value}`, "utf8"),
+      decryptStringAsync: async (value: Buffer) => {
+        if (state.broken) throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
+        return { shouldReEncrypt: false, result: value.toString("utf8").replace(/^enc:/, "") };
       },
     };
+    let store: SecretStore = await SafeStorageSecretStore.open(encryption, dir);
     return {
-      store: new SafeStorageSecretStore(encryption, dir),
+      get store() {
+        return store;
+      },
       dir,
-      breakDecryption: () => {
+      breakDecryption: async () => {
         state.broken = true;
+        store = await SafeStorageSecretStore.open(encryption, dir);
       },
     };
   }
@@ -77,13 +83,13 @@ describe("actor key rotation", () => {
   const digesterOver = (secretStore: SecretStore) =>
     createTelegramActorDigester({ encryption: unavailableSecretEncryption, botFingerprint: BOT_FINGERPRINT, secretStore });
 
-  it("mints a fresh secret when the stored one can no longer be decrypted", () => {
-    const secrets = encryptedSecrets();
+  it("mints a fresh secret when the stored one can no longer be decrypted", async () => {
+    const secrets = await encryptedSecrets();
     const first = ensureTelegramPlatformActorSecret(secrets.store);
     // Positive control: while the ciphertext is readable the key is stable, so the change below is the broken decryption and nothing else.
     expect(ensureTelegramPlatformActorSecret(secrets.store)).toBe(first);
 
-    secrets.breakDecryption();
+    await secrets.breakDecryption();
     const second = ensureTelegramPlatformActorSecret(secrets.store);
 
     expect(second).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -92,28 +98,28 @@ describe("actor key rotation", () => {
     expect(readdirSync(secrets.dir).some((name) => name.includes("quarantined"))).toBe(true);
   });
 
-  it("renames every actor when the key rotates, so a stored pairing digest stops matching", () => {
-    const secrets = encryptedSecrets();
-    const before = digesterOver(secrets.store);
+  it("renames every actor when the key rotates, so a stored pairing digest stops matching", async () => {
+    const secrets = await encryptedSecrets();
+    const before = await digesterOver(secrets.store);
     const pairedActorDigest = before.digestFor(OWNER_ID);
     expect(pairedActorDigest).toMatch(/^[a-f0-9]{64}$/);
 
     // Positive control: a second digester over the same readable key answers identically, which is what makes a persisted pairing usable at all.
-    const same = digesterOver(secrets.store);
+    const same = await digesterOver(secrets.store);
     expect(same.actorKeyDigest).toBe(before.actorKeyDigest);
     expect(same.digestFor(OWNER_ID)).toBe(pairedActorDigest);
 
-    secrets.breakDecryption();
-    const after = digesterOver(secrets.store);
+    await secrets.breakDecryption();
+    const after = await digesterOver(secrets.store);
 
     expect(after.actorKeyDigest).not.toBe(before.actorKeyDigest);
     expect(after.digestFor(OWNER_ID)).not.toBe(pairedActorDigest);
   });
 
-  it("names the key with a digest that is neither the key nor any other derivation of it", () => {
-    const secrets = encryptedSecrets();
+  it("names the key with a digest that is neither the key nor any other derivation of it", async () => {
+    const secrets = await encryptedSecrets();
     const actorSecret = ensureTelegramPlatformActorSecret(secrets.store);
-    const digester = digesterOver(secrets.store);
+    const digester = await digesterOver(secrets.store);
 
     expect(digester.actorKeyDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(digester.actorKeyDigest).not.toContain(actorSecret);

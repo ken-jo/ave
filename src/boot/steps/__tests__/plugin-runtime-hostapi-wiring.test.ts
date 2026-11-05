@@ -333,10 +333,10 @@ function leaseSettingsOptions(root: string) {
   return {
     userDataPath: root,
     encryption: {
-      isEncryptionAvailable: () => true,
+      isAsyncEncryptionAvailable: async () => true,
       getSelectedStorageBackend: () => "external_key" as const,
-      encryptString: (value: string) => Buffer.from(value),
-      decryptString: (value: Buffer) => value.toString(),
+      encryptStringAsync: async (value: string) => Buffer.from(value),
+      decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString() }),
     },
   };
 }

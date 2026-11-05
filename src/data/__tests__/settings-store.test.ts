@@ -13,10 +13,10 @@ import { join } from "node:path";
 
 const mockedElectron = vi.hoisted(() => ({
   safeStorage: {
-    isEncryptionAvailable: vi.fn(() => false),
+    isAsyncEncryptionAvailable: vi.fn(async () => false),
     getSelectedStorageBackend: vi.fn(() => "gnome_libsecret" as const),
-    encryptString: vi.fn(),
-    decryptString: vi.fn(),
+    encryptStringAsync: vi.fn(),
+    decryptStringAsync: vi.fn(),
   },
 }));
 
@@ -263,7 +263,7 @@ describe("SettingsService marketplace defaults", () => {
   beforeEach(() => {
 
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -539,7 +539,7 @@ describe("SettingsService marketplace defaults", () => {
       marketplaceProviderPresetSecretKey("future-router"),
       "fr-secret",
     );
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
       .toBe("fr-secret");
     expect(service.get("llm")).toMatchObject({
       provider: "openai-compatible",
@@ -559,7 +559,7 @@ describe("SettingsService marketplace defaults", () => {
     expect(Object.values(llm.modelListCache)).not.toContainEqual(
       expect.objectContaining({ credentialScope: "future-router" }),
     );
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
       .toBeNull();
   });
 
@@ -699,17 +699,17 @@ describe("SettingsService marketplace defaults", () => {
       modelOptions: ["future/v2", "future/free"],
       requiresApiKey: false,
     }]);
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
       .toBeNull();
   });
 
   it("keeps a write that landed during a failed preset-secret deletion, and puts back only the preset", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -735,7 +735,7 @@ describe("SettingsService marketplace defaults", () => {
     })).rejects.toThrow("keychain locked");
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([preset]);
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router"))).toBe("fr-secret");
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router"))).toBe("fr-secret");
     expect(service.getPluginConfig("sample")).toEqual({ mode: "fast" });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("marketplace").installedProviderPresets).toEqual([preset]);
@@ -743,12 +743,12 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("withholds a preset key left next to a new address when its deletion and the rollback both fail", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -781,27 +781,27 @@ describe("SettingsService marketplace defaults", () => {
 
     // The new address is what is saved; its old key is not handed out.
     expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).toBe("https://elsewhere.example/v1");
-    expect(service.getSecret(key)).toBeNull();
-    expect(service.getEncryptedSecret(key)).toBeNull();
+    expect(await service.getSecret(key)).toBeNull();
+    expect(await service.getEncryptedSecret(key)).toBeNull();
 
     // The next save that lands deletes it.
     await service.setPluginConfig("sample", { mode: "fast" });
     await vi.waitFor(() => expect(deleteMany).toHaveBeenLastCalledWith([key]));
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await vi.waitFor(() => expect(reloaded.getSecret(key)).toBeNull());
+    await vi.waitFor(async () => expect(await reloaded.getSecret(key)).toBeNull());
 
     // A key entered for the new address is handed out again.
     await service.setSecret(key, "fr-new-secret");
-    expect(service.getSecret(key)).toBe("fr-new-secret");
+    expect(await service.getSecret(key)).toBe("fr-new-secret");
   });
 
   it("holds a preset key back while its old address is saved back, then hands it out again", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -824,8 +824,8 @@ describe("SettingsService marketplace defaults", () => {
     const seenDuringRestore: Array<string | null> = [];
     vi.spyOn(internals, "saveSettings")
       .mockImplementationOnce(realSave)
-      .mockImplementationOnce((settings) => {
-        seenDuringRestore.push(service.getSecret(key));
+      .mockImplementationOnce(async (settings) => {
+        seenDuringRestore.push(await service.getSecret(key));
         return realSave(settings);
       });
     const deleteMany = vi.spyOn(internals.secretStore, "deleteMany")
@@ -838,19 +838,19 @@ describe("SettingsService marketplace defaults", () => {
 
     expect(seenDuringRestore).toEqual([null]);
     expect(service.get("marketplace").installedProviderPresets).toEqual([preset]);
-    expect(service.getSecret(key)).toBe("fr-secret");
+    expect(await service.getSecret(key)).toBe("fr-secret");
     await service.setPluginConfig("sample", { mode: "fast" });
     expect(deleteMany).toHaveBeenCalledOnce();
-    expect(service.getSecret(key)).toBe("fr-secret");
+    expect(await service.getSecret(key)).toBe("fr-secret");
   });
 
   it("never pairs a key with an address it was not entered for when overlapping moves fail", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -888,23 +888,23 @@ describe("SettingsService marketplace defaults", () => {
     }
 
     // Neither the second address (never the key's) nor any other is paired with the key: it is withheld wherever the preset points.
-    expect(service.getSecret(key)).toBeNull();
+    expect(await service.getSecret(key)).toBeNull();
     expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).not.toBe("https://second.example/v1");
     deleteMany.mockRestore();
     await service.setPluginConfig("sample", { mode: "fast" });
-    await vi.waitFor(() => {
+    await vi.waitFor(async () => {
       const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-      expect(reloaded.getSecret(key)).toBeNull();
+      expect(await reloaded.getSecret(key)).toBeNull();
     });
   });
 
   it("keeps a preset edit that landed during a failed key deletion, and withholds the key", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -929,16 +929,16 @@ describe("SettingsService marketplace defaults", () => {
     await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([{ ...moved, label: "Elsewhere Router" }]);
-    expect(service.getSecret(key)).toBeNull();
+    expect(await service.getSecret(key)).toBeNull();
   });
 
   it("keeps a key entered for the new address while the old key's deletion fails", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -963,16 +963,16 @@ describe("SettingsService marketplace defaults", () => {
     await expect(service.installMarketplaceProviderPreset(moved)).rejects.toThrow("keychain locked");
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
-    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+    expect(await service.getSecret(key)).toBe("entered-for-elsewhere");
   });
 
   it("keeps a key whose entry is still being written when the old key's deletion fails", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1011,16 +1011,16 @@ describe("SettingsService marketplace defaults", () => {
     await entry;
 
     expect(service.get("marketplace").installedProviderPresets).toEqual([moved]);
-    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+    expect(await service.getSecret(key)).toBe("entered-for-elsewhere");
   });
 
   it("does not delete a key entered for the new address before the move's deletion runs", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1044,16 +1044,16 @@ describe("SettingsService marketplace defaults", () => {
 
     await service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
 
-    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+    expect(await service.getSecret(key)).toBe("entered-for-elsewhere");
   });
 
   it("withholds the key when an entry made during a move fails to write", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1106,7 +1106,7 @@ describe("SettingsService marketplace defaults", () => {
     const moving = service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
     await atSave;
     try {
-      expect(service.getSecret(key)).toBeNull();
+      expect(await service.getSecret(key)).toBeNull();
       expect(closed).toHaveBeenCalledWith("revoked");
     } finally {
       releaseSave();
@@ -1116,7 +1116,7 @@ describe("SettingsService marketplace defaults", () => {
     await expect(entry).rejects.toThrow("keychain locked");
 
     // The key kept for the entry is the old address's: it is not handed out.
-    expect(service.getSecret(key)).toBeNull();
+    expect(await service.getSecret(key)).toBeNull();
     expect(closed).toHaveBeenCalledWith("revoked");
     if (!issuing) throw new Error("issuing reservation missing");
     expect(registry.register(issuing, {
@@ -1126,12 +1126,12 @@ describe("SettingsService marketplace defaults", () => {
   });
 
   it("deletes a key entered next to an earlier address when a later move lands", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1159,16 +1159,16 @@ describe("SettingsService marketplace defaults", () => {
     await second;
 
     expect(service.get("marketplace").installedProviderPresets[0]?.baseUrl).toBe("https://third.example/v1");
-    expect(service.getSecret(key)).toBeNull();
+    expect(await service.getSecret(key)).toBeNull();
   });
 
   it("reads no key while its invalidation runs, except one entered again for the new address", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1186,25 +1186,25 @@ describe("SettingsService marketplace defaults", () => {
     const reads: Array<string | null> = [];
     vi.spyOn(secrets, "deleteMany").mockImplementationOnce(async () => {
       // The old key is still stored while the move's deletion runs.
-      reads.push(service.getSecret(key), service.getEncryptedSecret(key));
+      reads.push(await service.getSecret(key), await service.getEncryptedSecret(key));
       await service.setSecret(key, "entered-for-elsewhere");
-      reads.push(service.getSecret(key));
+      reads.push(await service.getSecret(key));
       return 0;
     });
 
     await service.installMarketplaceProviderPreset({ ...preset, baseUrl: "https://elsewhere.example/v1" });
 
     expect(reads).toEqual([null, null, "entered-for-elsewhere"]);
-    expect(service.getSecret(key)).toBe("entered-for-elsewhere");
+    expect(await service.getSecret(key)).toBe("entered-for-elsewhere");
   });
 
   it("leaves an active custom provider preset installed when preset-secret deletion fails", async () => {
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    mockedElectron.safeStorage.encryptString.mockImplementation(
-      (value: string) => Buffer.from(`sealed:${value}`),
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    mockedElectron.safeStorage.encryptStringAsync.mockImplementation(
+      async (value: string) => Buffer.from(`sealed:${value}`),
     );
-    mockedElectron.safeStorage.decryptString.mockImplementation(
-      (value: Buffer) => value.toString("utf-8").slice(7),
+    mockedElectron.safeStorage.decryptStringAsync.mockImplementation(
+      async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf-8").slice(7) }),
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const preset = {
@@ -1234,7 +1234,7 @@ describe("SettingsService marketplace defaults", () => {
       marketplaceProviderPresetSecretKey("future-router"),
       "fr-secret",
     );
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
 
     await expect(service.patch({
       marketplace: { installedProviderPresets: [] },
@@ -1245,15 +1245,15 @@ describe("SettingsService marketplace defaults", () => {
       provider: "openai-compatible",
       marketplaceProviderPresetId: "future-router",
     });
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(true);
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
       .toBe("fr-secret");
 
     await service.patch({
       marketplace: { installedProviderPresets: [] },
     });
     expect(service.get("marketplace").installedProviderPresets).toEqual([]);
-    expect(service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
+    expect(await service.getSecret(marketplaceProviderPresetSecretKey("future-router")))
       .toBeNull();
   });
 
@@ -1520,7 +1520,7 @@ describe("SettingsService removes plugin-specific legacy host settings", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-legacy-plugin-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -1553,7 +1553,7 @@ describe("SettingsService removed manual host-resolver map", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-host-map-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -1606,7 +1606,7 @@ describe("SettingsService plugin uninstall cleanup", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-plugin-cleanup-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -1635,10 +1635,10 @@ describe("SettingsService plugin uninstall cleanup", () => {
 
     await expect(service.deletePluginSecrets("meeting", ["token"])).resolves.toBe(1);
 
-    expect(service.getSecret("plugin.meeting.token")).toBeNull();
-    expect(service.getSecret("plugin.meeting.unlisted")).toBe("preserved");
-    expect(service.getSecret("plugin.meeting_extra.token")).toBe("preserved");
-    expect(service.getSecret("llm.apiKey.openai")).toBe("preserved");
+    expect(await service.getSecret("plugin.meeting.token")).toBeNull();
+    expect(await service.getSecret("plugin.meeting.unlisted")).toBe("preserved");
+    expect(await service.getSecret("plugin.meeting_extra.token")).toBe("preserved");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("preserved");
   });
 
   it("does not delete another dotted plugin id's secret by prefix", async () => {
@@ -1649,8 +1649,8 @@ describe("SettingsService plugin uninstall cleanup", () => {
 
     await expect(service.deletePluginSecrets("com.example", ["token"])).resolves.toBe(1);
 
-    expect(service.getSecret("plugin.com.example.token")).toBeNull();
-    expect(service.getSecret("plugin.com.example.mail.token")).toBe("preserved");
+    expect(await service.getSecret("plugin.com.example.token")).toBeNull();
+    expect(await service.getSecret("plugin.com.example.mail.token")).toBe("preserved");
   });
 });
 
@@ -1659,7 +1659,7 @@ describe("SettingsService role presets", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-roles-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -1810,7 +1810,7 @@ describe("SettingsService LLM per-vendor patching", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-llm-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -1999,11 +1999,11 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
     expect(llm.provider).toBe("openai");
     expect(getLlmVendorSettings(llm.vendors, "openai").model).toBe("gpt-5-turbo");
-    expect(service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
     expect(reloaded.get("llm").activeChatRuntime).toEqual(llm.activeChatRuntime);
-    expect(reloaded.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
+    expect(await reloaded.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
   });
 
   it("drops invalid subscription models without changing the selected runtime", async () => {
@@ -2083,7 +2083,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
 
     expect(service.get("llm").activeChatRuntime).toEqual({ kind: "api" });
-    expect(service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
   });
 
   it("retains stored bundled vendor blocks without inferring installations", () => {
@@ -2401,7 +2401,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-webview-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2530,7 +2530,7 @@ describe("SettingsService system preferences", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-system-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2626,7 +2626,7 @@ describe("SettingsService system — pinned project roots", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-pinned-roots-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2669,7 +2669,7 @@ describe("SettingsService system — project selection, recent projects and last
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-project-selection-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2750,7 +2750,7 @@ describe("SettingsService system — workspace preferences", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-system-preferences-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2838,7 +2838,7 @@ describe("SettingsService appearance v2 — fresh install defaults", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-v2-fresh-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -2971,7 +2971,7 @@ describe("SettingsService system locale detection", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-locale-detect-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -3067,7 +3067,7 @@ describe("SettingsService appearance v1 → v2 migration", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-migration-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
     migrationWrites = [];
     type SettingsWriter = { saveSettings(settings: unknown): Promise<void> };
     const prototype = SettingsService.prototype as unknown as SettingsWriter;
@@ -3390,7 +3390,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-e4-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -4044,7 +4044,7 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-vendor-rename-"));
     settingsPath = join(userDataPath, "ave-settings.json");
     secretsPath = join(userDataPath, "ave-secrets.json");
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -4177,11 +4177,11 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
 
     await service.migrateRenamedVendorSecrets();
 
-    expect(service.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
-    expect(service.getSecret("llm.apiKey.nousResearch")).toBeNull();
-    expect(service.getSecret("llm.apiKey.vercel-v0")).toBe("v0_old");
-    expect(service.getSecret("llm.apiKey.v0")).toBeNull();
-    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+    expect(await service.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
+    expect(await service.getSecret("llm.apiKey.nousResearch")).toBeNull();
+    expect(await service.getSecret("llm.apiKey.vercel-v0")).toBe("v0_old");
+    expect(await service.getSecret("llm.apiKey.v0")).toBeNull();
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
   });
 
   it("drops the old key when the new id already has one", async () => {
@@ -4190,8 +4190,8 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
 
     await service.migrateRenamedVendorSecrets();
 
-    expect(service.getSecret("llm.apiKey.nous-research")).toBe("nr_new");
-    expect(service.getSecret("llm.apiKey.nousResearch")).toBeNull();
+    expect(await service.getSecret("llm.apiKey.nous-research")).toBe("nr_new");
+    expect(await service.getSecret("llm.apiKey.nousResearch")).toBeNull();
   });
 
   it("writes nothing when no old key is stored", async () => {
@@ -4217,8 +4217,8 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
     // The next boot, with writes available again, completes the move.
     const retry = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
     await retry.migrateRenamedVendorSecrets();
-    expect(retry.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
-    expect(retry.getSecret("llm.apiKey.nousResearch")).toBeNull();
+    expect(await retry.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
+    expect(await retry.getSecret("llm.apiKey.nousResearch")).toBeNull();
   });
 
   it("deletes the retired marketplace API key and keeps every other secret", async () => {
@@ -4227,9 +4227,9 @@ describe("vendor ids renamed to package names (nousResearch, v0)", () => {
 
     await service.deleteRetiredMarketplaceApiKey();
 
-    expect(service.getSecret("marketplace.apiKey")).toBeNull();
+    expect(await service.getSecret("marketplace.apiKey")).toBeNull();
     expect(readFileSync(secretsPath, "utf-8")).not.toContain("marketplace.apiKey");
-    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
   });
 
   it("leaves the retired key for the next boot when the store refuses the write", async () => {
@@ -4265,7 +4265,7 @@ describe("retired vendor profile migration", () => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-retired-vendor-"));
     settingsPath = join(userDataPath, "ave-settings.json");
     secretsPath = join(userDataPath, "ave-secrets.json");
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -4333,17 +4333,17 @@ describe("retired vendor profile migration", () => {
     const encryptedRead = vi.spyOn(SecretDocumentStore.prototype, "getEncrypted");
     try {
       for (const key of ["llm.apiKey.openai", "llm.apiKey.claude", "llm.marketplaceProvider.example.apiKey"]) {
-        expect(service.getSecret(key)).toBeNull();
-        expect(service.getEncryptedSecret(key)).toBeNull();
+        expect(await service.getSecret(key)).toBeNull();
+        expect(await service.getEncryptedSecret(key)).toBeNull();
       }
       expect(read).not.toHaveBeenCalled();
       expect(encryptedRead).not.toHaveBeenCalled();
-      expect(service.hasStoredSecret("llm.apiKey.openai")).toBe(true);
-      expect(service.hasStoredSecret("llm.apiKey.claude")).toBe(false);
+      expect(await service.hasStoredSecret("llm.apiKey.openai")).toBe(true);
+      expect(await service.hasStoredSecret("llm.apiKey.claude")).toBe(false);
       expect(read).not.toHaveBeenCalled();
       expect(encryptedRead).not.toHaveBeenCalled();
       await service.patch({ llm: { provider: "openai" } });
-      service.getSecret("llm.apiKey.openai");
+      await service.getSecret("llm.apiKey.openai");
       expect(read).toHaveBeenCalledOnce();
     } finally {
       read.mockRestore();
@@ -4361,7 +4361,7 @@ describe("retired vendor profile migration", () => {
       const logContainsCredential = warn.mock.calls.some((call) => JSON.stringify(call).includes("credential-marker"));
       expect(logContainsCredential).toBe(false);
       await service.deleteRetiredLlmVendorApiKeys();
-      expect(service.getSecret("llm.apiKey.copilot")).toBeNull();
+      expect(await service.getSecret("llm.apiKey.copilot")).toBeNull();
       const afterDelete = statSync(secretsPath).mtimeMs;
       await service.deleteRetiredLlmVendorApiKeys();
       expect(statSync(secretsPath).mtimeMs).toBe(afterDelete);
@@ -4375,12 +4375,12 @@ describe("retired vendor profile migration", () => {
   it("deletes a retired vendor credential and preserves other keys", async () => {
     writePlainSecrets(secretsPath, { "llm.apiKey.copilot": "gh-models-token", "llm.apiKey.openai": "sk-keep" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-    expect(service.getSecret("llm.apiKey.copilot")).not.toBeNull();
+    expect(await service.getSecret("llm.apiKey.copilot")).not.toBeNull();
 
     await service.deleteRetiredLlmVendorApiKeys();
 
-    expect(service.getSecret("llm.apiKey.copilot")).toBeNull();
-    expect(service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
+    expect(await service.getSecret("llm.apiKey.copilot")).toBeNull();
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
     expect(readFileSync(secretsPath, "utf-8")).not.toContain("gh-models-token");
   });
 });
@@ -4396,7 +4396,7 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-retired-model-"));
     settingsPath = join(userDataPath, "ave-settings.json");
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -4418,14 +4418,14 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     expect(llm.retiredProvider).toBeUndefined();
   });
 
-  it("keeps the host's API credentials for a deprecated model", () => {
+  it("keeps the host's API credentials for a deprecated model", async () => {
     writeProfile({ provider: "openai", vendors: { openai: { model: "o4-mini" } } });
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-    expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
   });
 
-  it("drops a deprecated-tier marker an earlier build stored for the same model, releasing its keys", () => {
+  it("drops a deprecated-tier marker an earlier build stored for the same model, releasing its keys", async () => {
     writeProfile({
       provider: "openai",
       vendors: { openai: { model: "o4-mini" } },
@@ -4434,7 +4434,7 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
     expect(service.get("llm").retiredProvider).toBeUndefined();
-    expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
   });
 
   it("retires a deprecated model the vendor's complete listing also dropped: the listing outranks the catalog", () => {
@@ -4495,9 +4495,9 @@ describe("retired model profile (design model-capability-catalog §6.1)", () => 
     writeProfile({ provider: "openai", vendors: { openai: { model: "gpt-4o" } }, modelListCache: listingWithout(["gpt-5.4"]) });
     writePlainSecrets(join(userDataPath, "ave-secrets.json"), { "llm.apiKey.openai": "credential-marker" });
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-    expect(service.getSecret("llm.apiKey.openai")).toBeNull();
+    expect(await service.getSecret("llm.apiKey.openai")).toBeNull();
     await service.patch({ llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4" } } } as never });
-    expect(service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
+    expect(await service.getSecret("llm.apiKey.openai")).toBe("credential-marker");
   });
 
   it("keeps a listing's completeness only while the cache holds every id", () => {
@@ -4601,7 +4601,7 @@ describe("SettingsService system — main window layout", () => {
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-main-layout-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {

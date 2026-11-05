@@ -49,7 +49,7 @@ describe("telegram egress integration (real projection, real delivery)", () => {
     const surface = createConversationSurfaceRuntime();
 
     const secretStore = new MemorySecretStore();
-    const { authority } = ownerPairedAuthority(secretStore);
+    const { authority } = await ownerPairedAuthority(secretStore);
 
     const batches: Batch[] = [];
     const client = {

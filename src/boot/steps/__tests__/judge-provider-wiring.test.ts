@@ -1,4 +1,4 @@
-import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -71,10 +71,10 @@ describe("judge configured provider wiring", () => {
         getMainWindow: () => null, bootAuditLogger: { log: vi.fn() },
         subscriptionProviderFactory: vi.fn(() => provider),
       };
-      wireReviewerAndPermissions(context as never);
+      await wireReviewerAndPermissions(context as never);
       expect(context.approvalGate.setOwnerAwayAutoSkipMinutes).toHaveBeenCalledWith(0);
       expect(settingsService.onChanged).toHaveBeenCalledWith("permissions", expect.any(Function));
-      const judgeDeps = wireJudgeAgent.mock.calls[0]![0] as {
+      const initialDeps = wireJudgeAgent.mock.calls[0]![0] as {
         providerForModel: (model: JudgeModelRef) => LLMProvider | null;
         selectedModelCacheScope: (model: JudgeModelRef) => Record<string, unknown>;
         networkFetch: typeof networkFetch;
@@ -83,12 +83,24 @@ describe("judge configured provider wiring", () => {
         chainRejected?: boolean;
         settingsUnreadable?: boolean;
       };
-      expect(judgeDeps.networkFetch).toBe(networkFetch);
-      expect(judgeDeps.audit).toBe(context.bootAuditLogger);
-      expect(judgeDeps.settings.mode).toBe("active");
-      expect(judgeDeps.settings.chain).toEqual([]);
-      expect(judgeDeps.chainRejected).toBe(true);
-      expect(judgeDeps.settingsUnreadable).toBeUndefined();
+      expect(initialDeps.networkFetch).toBe(networkFetch);
+      expect(initialDeps.audit).toBe(context.bootAuditLogger);
+      expect(initialDeps.settings.mode).toBe("active");
+      expect(initialDeps.settings.chain).toEqual([]);
+      expect(initialDeps.chainRejected).toBe(true);
+      expect(initialDeps.settingsUnreadable).toBeUndefined();
+      // Credentials are pre-read for the wired stages only; nothing decrypts on demand.
+      expect(initialDeps.providerForModel({ vendor: "openai-compatible", model: "selected-judge-model" })).toBeNull();
+      expect(settingsService.getSecret).not.toHaveBeenCalledWith("llm.apiKey.openai-compatible");
+      const rewire = () => (context as unknown as { rewireReviewerAgent: () => Promise<void> }).rewireReviewerAgent();
+      const originalJudgeSettings = readFileSync(join(directory, "settings.json"), "utf8");
+      writeFileSync(join(directory, "settings.json"), JSON.stringify({ permissions: { judge: {
+        chain: [{ id: "selected", provider: "builtin-llm", model: "openai-compatible/saved-chat-model" }],
+        mode: "active",
+      } } }));
+      await rewire();
+      writeFileSync(join(directory, "settings.json"), originalJudgeSettings);
+      const judgeDeps = wireJudgeAgent.mock.lastCall![0] as typeof initialDeps;
       expect(judgeDeps.providerForModel({ vendor: "openai-compatible", model: "selected-judge-model" })).toBe(provider);
       expect(createProvider).toHaveBeenCalledWith(expect.objectContaining({
         vendor: "openai-compatible", model: "selected-judge-model", apiKey: "configured-key",
@@ -96,7 +108,15 @@ describe("judge configured provider wiring", () => {
       }));
       expect(context.subscriptionProviderFactory).not.toHaveBeenCalled();
       settingsService.getSecret.mockReturnValue(null);
-      expect(judgeDeps.providerForModel({ vendor: "openai", model: "selected-unavailable-model" })).toBeNull();
+      writeFileSync(join(directory, "settings.json"), JSON.stringify({ permissions: { judge: {
+        chain: [{ id: "selected", provider: "builtin-llm", model: "openai/gpt-5.4" }],
+        mode: "active",
+      } } }));
+      await rewire();
+      writeFileSync(join(directory, "settings.json"), originalJudgeSettings);
+      const keylessDeps = wireJudgeAgent.mock.lastCall![0] as typeof initialDeps;
+      expect(settingsService.getSecret).toHaveBeenCalledWith("llm.apiKey.openai");
+      expect(keylessDeps.providerForModel({ vendor: "openai", model: "gpt-5.4" })).toBeNull();
       expect(createProvider).toHaveBeenCalledOnce();
       const model = { vendor: "openai-compatible" as const, model: "selected-judge-model" };
       const initialScope = judgeDeps.selectedModelCacheScope(model);
@@ -124,7 +144,7 @@ describe("judge configured provider wiring", () => {
         baseUrl: "https://router.example/v1", marketplaceProviderPresetId: presetId,
       });
       expect(presetScope.credentialScope).not.toBe(initialScope.credentialScope);
-      (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      await rewire();
       const rewired = wireJudgeAgent.mock.lastCall![0] as typeof judgeDeps;
       expect(rewired.settings.chain).toEqual([{
         id: "selected", provider: "builtin-llm",
@@ -134,24 +154,24 @@ describe("judge configured provider wiring", () => {
       writeFileSync(join(directory, "settings.json"), JSON.stringify({ permissions: { judge: {
         chain: [], mode: "active",
       } } }));
-      (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      await rewire();
       const disabled = wireJudgeAgent.mock.lastCall![0] as typeof judgeDeps;
       expect(disabled.settings.chain).toEqual([]);
       expect(disabled.chainRejected).toBeUndefined();
       expect(disabled.settingsUnreadable).toBeUndefined();
       writeFileSync(join(directory, "settings.json"), "{");
-      (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      await rewire();
       const unreadable = wireJudgeAgent.mock.lastCall![0] as typeof judgeDeps;
       expect(unreadable.settingsUnreadable).toBe(true);
       expect(unreadable.settings.mode).toBe("shadow");
       expect(unreadable.settings.chain).toEqual([]);
       writeFileSync(join(directory, "settings.json"), "{}");
-      (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      await rewire();
       const absentBlock = wireJudgeAgent.mock.lastCall![0] as typeof judgeDeps;
       expect(absentBlock.settingsUnreadable).toBeUndefined();
       expect(absentBlock.settings.chain).toEqual([]);
       unlinkSync(join(directory, "settings.json"));
-      (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      await rewire();
       const absentFile = wireJudgeAgent.mock.lastCall![0] as typeof judgeDeps;
       expect(absentFile.settingsUnreadable).toBeUndefined();
       expect(absentFile.settings.chain).toEqual([]);
@@ -221,31 +241,31 @@ describe("judge configured provider wiring", () => {
         streamProviderFor: (vendor: string) => LLMProvider | null;
         selectedModel?: { label: string; available: boolean };
       };
-      const rewire = () => (context as unknown as { rewireReviewerAgent: () => void }).rewireReviewerAgent();
+      const rewire = () => (context as unknown as { rewireReviewerAgent: () => Promise<void> }).rewireReviewerAgent();
       const lastReviewerDeps = () => wireReviewerAgent.mock.lastCall![0] as ReviewerDeps;
 
       writeReviewerModel(null);
-      wireReviewerAndPermissions(context as never);
+      await wireReviewerAndPermissions(context as never);
       expect(context.approvalGate.setOwnerAwayAutoSkipMinutes).toHaveBeenCalledWith(0);
       expect(settingsService.onChanged).toHaveBeenCalledWith("permissions", expect.any(Function));
       expect(lastReviewerDeps().selectedModel).toBeUndefined();
       expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "openai", model: "chat-a" });
       vendors.openai = { model: "chat-b" };
-      rewire();
+      await rewire();
       expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "openai", model: "chat-b" });
 
       writeReviewerModel(`claude/${offered}`);
-      rewire();
+      await rewire();
       expect(lastReviewerDeps().selectedModel).toEqual({ label: `claude/${offered}`, available: true });
       expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "claude", model: offered });
       expect(lastReviewerDeps().streamProviderFor("claude")).toBe(provider);
       expect(createProvider).toHaveBeenLastCalledWith(expect.objectContaining({ vendor: "claude", model: offered }));
       vendors.openai = { model: "chat-c" };
-      rewire();
+      await rewire();
       expect(lastReviewerDeps().readActiveLlm()).toMatchObject({ provider: "claude", model: offered });
 
       writeReviewerModel("claude/not-offered-model");
-      rewire();
+      await rewire();
       expect(lastReviewerDeps().selectedModel).toEqual({ label: "configured in Settings", available: false });
     } finally {
       vi.doUnmock("../../../engine/llm/provider-factory.js");

@@ -81,7 +81,7 @@ afterEach(async () => {
 // Initialize the sandbox the way boot does, with every destination allowed and the router built from `deps`.
 async function startSandbox(deps: Partial<UpstreamProxyRouterDeps> & { settings: () => UpstreamProxySettings }): Promise<void> {
   const upstream = createUpstreamProxyRouter({
-    manualCredentials: () => null,
+    manualCredentials: async () => null,
     env: () => process.env,
     ...deps,
   });
@@ -133,7 +133,7 @@ describe.runIf(nativePlatform)("upstream proxy through the sandbox (native)", ()
       process.env.HTTP_PROXY = `http://127.0.0.1:${await deadPort()}`;
       await startSandbox({
         settings: () => ({ mode: "manual", manualUrl: `http://127.0.0.1:${upstream.port}`, bypass: "", resolvesNames: false }),
-        manualCredentials: () => ({ username: "manual-user", password: SECRET, origin: `http://127.0.0.1:${upstream.port}` }),
+        manualCredentials: async () => ({ username: "manual-user", password: SECRET, origin: `http://127.0.0.1:${upstream.port}` }),
       });
       const output = await runSandboxed(`${CURL} -sS -m 10 http://203.0.113.10/manual ; echo run-done`);
       expect(output).toContain("UPSTREAM-OK");

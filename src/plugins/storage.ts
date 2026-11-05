@@ -256,7 +256,7 @@ export function createPluginStorage(
         );
       }
       const target = await guard(rel);
-      if (!encryption.isEncryptionAvailable()) {
+      if (!await encryption.isAsyncEncryptionAvailable()) {
         throw new PluginStorageEncryptionUnavailableError(pluginId);
       }
       if (encryption.getSelectedStorageBackend() === "external_key") {
@@ -264,9 +264,9 @@ export function createPluginStorage(
         try { existing = await readFile(target); } catch (error) {
           if (!isMissingPathError(error)) throw error;
         }
-        if (existing !== undefined) encryption.decryptString(existing);
+        if (existing !== undefined) await encryption.decryptStringAsync(existing);
       }
-      const ciphertext = encryption.encryptString(plaintext);
+      const ciphertext = await encryption.encryptStringAsync(plaintext);
       await ensureParent(target);
       // Secret ciphertext also requires owner-only mode.
       await writeFile(target, ciphertext, { mode: PLUGIN_FILE_MODE });
@@ -274,12 +274,13 @@ export function createPluginStorage(
 
     async readEncrypted(rel) {
       const target = await guard(rel);
-      if (!encryption.isEncryptionAvailable()) {
+      if (!await encryption.isAsyncEncryptionAvailable()) {
         throw new PluginStorageEncryptionUnavailableError(pluginId);
       }
       // Read raw ciphertext and preserve missing-file ENOENT behavior.
       const ciphertext = await readFile(target);
-      return encryption.decryptString(Buffer.from(ciphertext));
+      // No re-encryption on read: plugin files have no write lock, so a rewrite here could undo a concurrent writeEncrypted.
+      return (await encryption.decryptStringAsync(Buffer.from(ciphertext))).result;
     },
   };
   return instrumentEffectsByPath(raw, "storage");

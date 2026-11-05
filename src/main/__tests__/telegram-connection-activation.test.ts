@@ -111,7 +111,7 @@ function activationInput(
     store,
     encryption: unavailableSecretEncryption,
     networkFetch,
-    settingsService: { getEncryptedSecret: (key: string) => (
+    settingsService: { getEncryptedSecret: async (key: string) => (
       key === TELEGRAM_BOT_TOKEN_SECRET_KEY ? BOT_TOKEN : null
     ) },
     conversationSurfaceRuntime: {
@@ -132,7 +132,7 @@ describe("telegram connection activation", () => {
     await store.setConnected(BOT_FINGERPRINT);
     const provider = emptyProvider();
     const input = activationInput(store, () => stopTelegramBridgeServer("user"), provider);
-    const getEncryptedSecret = vi.fn(() => BOT_TOKEN);
+    const getEncryptedSecret = vi.fn(async () => BOT_TOKEN);
     await startTelegramConnectionActivation({ ...input, settingsService: { getEncryptedSecret } });
     expect(getEncryptedSecret).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();

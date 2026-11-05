@@ -8,7 +8,7 @@ function fixture() {
     readJson: async <T>(_name: string, fallback: T): Promise<T> => structuredClone((persisted ?? fallback) as T),
     writeJson: async (_name: string, value: unknown): Promise<void> => { persisted = structuredClone(value); },
   };
-  const encryption = { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value, "utf8"), decryptString: (value: Buffer) => value.toString("utf8") };
+  const encryption = { isAsyncEncryptionAvailable: async () => true, encryptStringAsync: async (value: string) => Buffer.from(value, "utf8"), decryptStringAsync: async (value: Buffer) => ({ shouldReEncrypt: false, result: value.toString("utf8") }) };
   return { namespace, encryption, persisted: () => persisted };
 }
 
@@ -140,7 +140,7 @@ describe("A2A exact replay receiver store", () => {
     const invalidResult = (state: any) => {
       const record = state.records[0];
       const encryptedKey = Buffer.from(state.encryptedDataKey, "base64");
-      const key = Buffer.from(f.encryption.decryptString(encryptedKey), "base64");
+      const key = Buffer.from(encryptedKey.toString("utf8"), "base64");
       const iv = Buffer.alloc(12, 9);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
       cipher.setAAD(Buffer.from(`result\0${record.keyToken}\0${record.bodySha256}\0${record.intentSha256}`));

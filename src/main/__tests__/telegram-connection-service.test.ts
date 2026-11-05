@@ -89,11 +89,11 @@ function secretsFixture(encrypted = true) {
         if (!state.encrypted) throw new SecretEncryptionUnavailableError();
         values.set(key, value);
       }),
-      getEncryptedSecret: vi.fn((key: string) => values.get(key) ?? null),
+      getEncryptedSecret: vi.fn(async (key: string) => values.get(key) ?? null),
       deleteSecret: vi.fn(async (key: string) => {
         values.delete(key);
       }),
-      isSecretStorageEncrypted: vi.fn(() => state.encrypted),
+      isSecretStorageEncrypted: vi.fn(async () => state.encrypted),
     },
   };
 }
@@ -210,8 +210,8 @@ async function harness(
   };
 }
 
-function snapshotOf(service: TelegramConnectionService): TelegramConnectionSnapshot {
-  const result = service.snapshot();
+async function snapshotOf(service: TelegramConnectionService): Promise<TelegramConnectionSnapshot> {
+  const result = await service.snapshot();
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error("unreachable");
   return result.snapshot;
@@ -240,7 +240,7 @@ describe("createTelegramConnectionService", () => {
     expect(await h.service.createPairingCode()).toEqual({ ok: false, error: "telegram-owner-id-required" });
     expect(await h.service.setOwnerUserId("@display_name")).toEqual({ ok: false, error: "telegram-connection-input-invalid" });
     expect(await h.service.setOwnerUserId(RAW_TELEGRAM_USER_ID)).toEqual({ ok: true });
-    expect(snapshotOf(h.service).ownerUserId).toBe(RAW_TELEGRAM_USER_ID);
+    expect((await snapshotOf(h.service)).ownerUserId).toBe(RAW_TELEGRAM_USER_ID);
     expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
     expect(h.bridge.start).toHaveBeenCalledOnce();
   });
@@ -253,14 +253,14 @@ describe("createTelegramConnectionService", () => {
       throw new Error("transport stop failed");
     });
     expect(await h.service.setOwnerUserId("123456789")).toEqual({ ok: false, error: "telegram-connection-unavailable" });
-    expect(snapshotOf(h.service)).toMatchObject({ ownerUserId: "123456789", state: "paused-by-owner", pairing: null, approval: null });
+    expect(await snapshotOf(h.service)).toMatchObject({ ownerUserId: "123456789", state: "paused-by-owner", pairing: null, approval: null });
     expect(h.store.ownerSnapshot().pairingUnrecognized).toBe(true);
   });
 
   it("reports unsupported and writes no secret when storage is not encrypted", async () => {
     const h = await harness({ encrypted: false });
 
-    expect(snapshotOf(h.service).state).toBe("unsupported");
+    expect((await snapshotOf(h.service)).state).toBe("unsupported");
     expect(await h.service.connect(BOT_TOKEN)).toEqual({
       ok: false,
       error: "telegram-encryption-unavailable",
@@ -288,7 +288,7 @@ describe("createTelegramConnectionService", () => {
     expect(h.secrets.values.size).toBe(0);
     expect(h.store.desiredState()).toBe("disconnected");
     expect(h.bridge.start).not.toHaveBeenCalled();
-    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-bot-token-rejected");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBe("telegram-bot-token-rejected");
   });
 
   it("restores the previous token when a replacement is rejected", async () => {
@@ -366,11 +366,11 @@ describe("createTelegramConnectionService", () => {
   it("treats pairing as identification only, never as access", async () => {
     const h = await harness();
     expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("connected-unpaired");
+    expect((await snapshotOf(h.service)).state).toBe("connected-unpaired");
 
     const minted = await h.service.createPairingCode();
     expect(minted.ok).toBe(true);
-    expect(snapshotOf(h.service).state).toBe("pairing-pending");
+    expect((await snapshotOf(h.service)).state).toBe("pairing-pending");
     if (!minted.ok) throw new Error("unreachable");
 
     expect(await h.store.completePairing({ senderId: RAW_TELEGRAM_USER_ID,
@@ -378,7 +378,7 @@ describe("createTelegramConnectionService", () => {
       actorDigest: ACTOR_DIGEST,
     })).not.toBeNull();
 
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     expect(snapshot.state).toBe("paired-unapproved");
     expect(snapshot.pairing?.accountFingerprint).toMatch(/^[a-f0-9]{12}$/);
     expect(snapshot.approval).toBeNull();
@@ -395,14 +395,14 @@ describe("createTelegramConnectionService", () => {
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
     // Positive control: while the key still names the account, the surface says so — this is the reading the guard has to replace, not weaken.
-    const paired = snapshotOf(h.service);
+    const paired = await snapshotOf(h.service);
     expect(paired.state).toBe("active");
     expect(paired.pairing?.accountFingerprint).toMatch(/^[a-f0-9]{12}$/);
 
     // The activation guard, with a key this machine can no longer produce.
     expect(await h.store.reconcileActorKey("f".repeat(64))).toBe(true);
 
-    const lost = snapshotOf(h.service);
+    const lost = await snapshotOf(h.service);
     expect(lost.state).toBe("pairing-unrecognized");
     expect(lost.pairing).toBeNull();
     expect(lost.approval).toBeNull();
@@ -432,7 +432,7 @@ describe("createTelegramConnectionService", () => {
     expect(h.reconcileActorKey.mock.invocationCallOrder[0]!)
       .toBeLessThan(h.secrets.service.getEncryptedSecret.mock.invocationCallOrder[0]!);
 
-    const lost = snapshotOf(h.service);
+    const lost = await snapshotOf(h.service);
     expect(lost.pairing).toBeNull();
     // The lost token is still reported as itself; the reconcile does not swallow the failure that exposed it.
     expect(lost.lastErrorCode).toBe("telegram-bot-token-unreadable");
@@ -446,7 +446,7 @@ describe("createTelegramConnectionService", () => {
     // the connect that preceded the pairing named the key to the store.
     await h.service.resumeStoredConnection();
 
-    const still = snapshotOf(h.service);
+    const still = await snapshotOf(h.service);
     expect(still.state).toBe("active");
     expect(still.pairing).not.toBeNull();
     expect(still.approval).not.toBeNull();
@@ -460,24 +460,24 @@ describe("createTelegramConnectionService", () => {
     expect(await h.service.resume()).toEqual({ ok: false, error: "telegram-connection-unavailable" });
     // Unnameable is not the same as rotated: nothing was retired, and nothing was started either. A bridge whose pairing cannot be checked must not run.
     expect(h.bridge.start).not.toHaveBeenCalled();
-    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-connection-unavailable");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBe("telegram-connection-unavailable");
   });
 
   it("answers a recorded error before any pairing state, whatever the pairing is", async () => {
     const h = await pairedHarness();
     expect(await h.store.reconcileActorKey("f".repeat(64))).toBe(true);
-    expect(snapshotOf(h.service).state).toBe("pairing-unrecognized");
+    expect((await snapshotOf(h.service)).state).toBe("pairing-unrecognized");
 
     await h.store.setLastError("telegram-poll-conflict");
 
-    expect(snapshotOf(h.service).state).toBe("error");
+    expect((await snapshotOf(h.service)).state).toBe("error");
   });
 
   it("keeps the share active when the owner looks at another conversation", async () => {
     const h = await pairedHarness();
 
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
-    const approved = snapshotOf(h.service);
+    const approved = await snapshotOf(h.service);
     expect(approved.state).toBe("active");
     expect(approved.approval?.matchesCurrentConversation).toBe(true);
     expect(h.store.resolveActiveApproval(
@@ -486,7 +486,7 @@ describe("createTelegramConnectionService", () => {
     )).not.toBeNull();
 
     h.conversation.id = OTHER_CONVERSATION_ID;
-    const switched = snapshotOf(h.service);
+    const switched = await snapshotOf(h.service);
     // The share is durable: looking elsewhere is a property of the approval, not a state the connection falls into and has to be repaired from.
     expect(switched.state).toBe("active");
     expect(switched.approval?.matchesCurrentConversation).toBe(false);
@@ -504,7 +504,7 @@ describe("createTelegramConnectionService", () => {
 
     // This used to report `shared-conversation-missing` the instant the owner shared it — beside a success toast — and on every refresh until they said
     // something. The share was routing correctly the entire time.
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
   });
 
   it("still reports a deleted conversation once the owner looks elsewhere", async () => {
@@ -516,14 +516,14 @@ describe("createTelegramConnectionService", () => {
     h.existingConversations.delete(CONVERSATION_ID);
     h.conversation.id = OTHER_CONVERSATION_ID;
 
-    expect(snapshotOf(h.service).state).toBe("shared-conversation-missing");
+    expect((await snapshotOf(h.service)).state).toBe("shared-conversation-missing");
   });
 
   it("says the shared conversation is gone instead of calling it merely closed", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
     // Positive control: the same snapshot reads `active` while the conversation is there, so the assertion below is about the deletion and nothing else.
-    const live = snapshotOf(h.service);
+    const live = await snapshotOf(h.service);
     expect(live.state).toBe("active");
     expect(live.approval?.id).toBeDefined();
 
@@ -531,7 +531,7 @@ describe("createTelegramConnectionService", () => {
     h.conversation.id = OTHER_CONVERSATION_ID;
     h.existingConversations.delete(CONVERSATION_ID);
 
-    const dangling = snapshotOf(h.service);
+    const dangling = await snapshotOf(h.service);
     expect(dangling.state).toBe("shared-conversation-missing");
     // The grant itself is untouched — this is a report, not a revocation. An owner who restores a backup gets their share back.
     expect(dangling.approval?.id).toBe(live.approval?.id);
@@ -544,14 +544,14 @@ describe("createTelegramConnectionService", () => {
 
     // Looking elsewhere: the conversation still exists, so the share stays active and only the approval reports the mismatch.
     h.conversation.id = OTHER_CONVERSATION_ID;
-    const elsewhere = snapshotOf(h.service);
+    const elsewhere = await snapshotOf(h.service);
     expect(elsewhere.state).toBe("active");
     expect(elsewhere.approval?.matchesCurrentConversation).toBe(false);
 
     // Same "not on screen" reading, different cause. Before the resolver told these apart, both produced the state above and the surface told the owner to
     // reopen a conversation that no longer existed.
     h.existingConversations.delete(CONVERSATION_ID);
-    const deleted = snapshotOf(h.service);
+    const deleted = await snapshotOf(h.service);
     expect(deleted.state).toBe("shared-conversation-missing");
     expect(deleted.approval?.matchesCurrentConversation).toBe(false);
   });
@@ -559,7 +559,7 @@ describe("createTelegramConnectionService", () => {
   it("treats an unanswerable existence check as missing rather than healthy", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
 
     // A failed existence lookup must not count as healthy; select another conversation to bypass the current-conversation shortcut.
     h.conversation.id = OTHER_CONVERSATION_ID;
@@ -569,23 +569,23 @@ describe("createTelegramConnectionService", () => {
       throw new Error("conversation index unavailable");
     };
     try {
-      expect(snapshotOf(h.service).state).toBe("shared-conversation-missing");
+      expect((await snapshotOf(h.service)).state).toBe("shared-conversation-missing");
     } finally {
       broken.has = original;
     }
     // And it recovers: the state is derived per snapshot, never latched.
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
   });
 
   it("shares the conversation on screen, replacing the previous share", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
-    const first = snapshotOf(h.service).approval?.id;
+    const first = (await snapshotOf(h.service)).approval?.id;
 
     h.conversation.id = OTHER_CONVERSATION_ID;
     expect(await h.service.approveCurrentConversation("1h")).toEqual({ ok: true });
 
-    const reshared = snapshotOf(h.service);
+    const reshared = await snapshotOf(h.service);
     expect(reshared.state).toBe("active");
     expect(reshared.approval?.matchesCurrentConversation).toBe(true);
     expect(reshared.approval?.id).not.toBe(first);
@@ -616,14 +616,14 @@ describe("createTelegramConnectionService", () => {
   it("never reports active while the owner has paused", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
 
     expect(await h.service.pause()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("paused-by-owner");
+    expect((await snapshotOf(h.service)).state).toBe("paused-by-owner");
     expect(h.bridge.stop).toHaveBeenCalledWith("user");
 
     expect(await h.service.resume()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
   });
 
   it("returns the raw pairing code once and never again", async () => {
@@ -635,13 +635,13 @@ describe("createTelegramConnectionService", () => {
 
     expect(isTelegramPairingCode(minted.pairingCode.code)).toBe(true);
     expect(minted.pairingCode.botUsername).toBe(BOT_USERNAME);
-    expect(JSON.stringify(snapshotOf(h.service))).not.toContain(minted.pairingCode.code);
+    expect(JSON.stringify((await snapshotOf(h.service)))).not.toContain(minted.pairingCode.code);
 
     await h.store.completePairing({ senderId: RAW_TELEGRAM_USER_ID,
       codeDigest: redeemableDigest(minted.pairingCode.code),
       actorDigest: ACTOR_DIGEST,
     });
-    expect(JSON.stringify(snapshotOf(h.service))).not.toContain(minted.pairingCode.code);
+    expect(JSON.stringify((await snapshotOf(h.service)))).not.toContain(minted.pairingCode.code);
   });
 
   it("persists exactly the digest the redemption path will recompute", async () => {
@@ -678,7 +678,7 @@ describe("createTelegramConnectionService", () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation("24h")).toEqual({ ok: true });
 
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     expect(parseTelegramConnectionSnapshot(snapshot)).not.toBeNull();
     const serialized = JSON.stringify(snapshot);
     for (const secret of [
@@ -705,7 +705,7 @@ describe("createTelegramConnectionService", () => {
     expect(h.bridge.stop).toHaveBeenCalledWith("user");
     expect(h.bridge.stop).not.toHaveBeenCalledWith("shutdown");
 
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     expect(snapshot.state).toBe("disconnected");
     expect(snapshot.botUsername).toBeNull();
   });
@@ -735,14 +735,14 @@ describe("createTelegramConnectionService", () => {
   it("reports an unreadable token instead of a live share nothing is behind", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("active");
+    expect((await snapshotOf(h.service)).state).toBe("active");
     // A keychain reset or a restore onto another machine: storage still reports itself encrypted, and the value it held no longer comes back.
     h.secrets.values.delete(SECRET_KEY);
     h.bridge.start.mockClear();
 
     await h.service.resumeStoredConnection();
 
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     // `active` here is the whole defect: it is what the settings screen reads to claim a live share, and what enables the Away Authority arm control, while no poll loop exists.
     expect(snapshot.state).toBe("error");
     expect(snapshot.lastErrorCode).toBe("telegram-bot-token-unreadable");
@@ -754,21 +754,21 @@ describe("createTelegramConnectionService", () => {
     // Non-vacuous: the identical boot continuation resumes to a live share the moment the credential reads back.
     h.secrets.values.set(SECRET_KEY, BOT_TOKEN);
     await h.service.resumeStoredConnection();
-    expect(snapshotOf(h.service).state).toBe("active");
-    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    expect((await snapshotOf(h.service)).state).toBe("active");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBeNull();
   });
 
   it("keeps the pairing when the bridge fails to start on a boot resume", async () => {
     const h = await pairedHarness();
     expect(await h.service.approveCurrentConversation()).toEqual({ ok: true });
     await h.store.recordPollOffset(4_242);
-    const pairingId = snapshotOf(h.service).pairing?.id;
+    const pairingId = (await snapshotOf(h.service)).pairing?.id;
     // A Windows EPERM/EBUSY, a locked feature namespace, an unreadable actor key: transient, unattended, and none of it the owner's doing.
     h.bridge.start.mockRejectedValueOnce(new Error("EPERM"));
 
     await h.service.resumeStoredConnection();
 
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     // Not `disconnected`. That state was produced by a reset which is not the inverse of connecting: it erases the pairing, every approval, the pending code
     // and the poll offset, none of which the failure touched.
     expect(snapshot.state).toBe("error");
@@ -782,8 +782,8 @@ describe("createTelegramConnectionService", () => {
     // And the state says so rather than merely preserving things quietly: the recorded error is what the surface renders, and the retry it offers is this
     // same resume, which clears the error once the condition passes.
     expect(await h.service.resume()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("active");
-    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    expect((await snapshotOf(h.service)).state).toBe("active");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBeNull();
   });
 
   it("rolls a failed first connect back to the state it started from", async () => {
@@ -798,13 +798,13 @@ describe("createTelegramConnectionService", () => {
     // back destroys nothing and leaves the Connect control on screen.
     expect(h.secrets.values.size).toBe(0);
     expect(h.store.desiredState()).toBe("disconnected");
-    const snapshot = snapshotOf(h.service);
+    const snapshot = await snapshotOf(h.service);
     expect(snapshot.state).toBe("disconnected");
     expect(snapshot.lastErrorCode).toBe("telegram-connection-unavailable");
 
     // Non-vacuous: the same call connects once the bridge starts.
     expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("connected-unpaired");
+    expect((await snapshotOf(h.service)).state).toBe("connected-unpaired");
   });
 
   it("rejects pause when nothing is connected", async () => {
@@ -885,7 +885,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
 
     await h.service.resumeStoredConnection();
 
-    const offline = snapshotOf(h.service);
+    const offline = await snapshotOf(h.service);
     expect(offline.state).toBe("reconnecting");
     expect(offline.lastErrorCode).toBe("telegram-provider-unreachable");
     expect(retries.live().map((entry) => entry.delayMs)).toEqual([5_000]);
@@ -896,13 +896,13 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     retries.live()[0]!.run();
     await vi.waitFor(() => expect(retries.pending).toHaveLength(2));
     expect(retries.live().map((entry) => entry.delayMs)).toEqual([10_000]);
-    expect(snapshotOf(h.service).state).toBe("reconnecting");
+    expect((await snapshotOf(h.service)).state).toBe("reconnecting");
 
     // Telegram answers again.
     h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
     retries.live()[0]!.run();
-    await vi.waitFor(() => expect(snapshotOf(h.service).state).toBe("connected-unpaired"));
-    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    await vi.waitFor(async () => expect((await snapshotOf(h.service)).state).toBe("connected-unpaired"));
+    expect((await snapshotOf(h.service)).lastErrorCode).toBeNull();
     expect(retries.live()).toHaveLength(0);
     expect(online.listeners.size).toBe(0);
   });
@@ -913,8 +913,8 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
 
     await h.service.resumeStoredConnection();
 
-    expect(snapshotOf(h.service).state).toBe("error");
-    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-bot-token-rejected");
+    expect((await snapshotOf(h.service)).state).toBe("error");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBe("telegram-bot-token-rejected");
     expect(retries.pending).toHaveLength(0);
     expect(online.listeners.size).toBe(0);
   });
@@ -932,7 +932,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
 
     h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
     online.fire();
-    await vi.waitFor(() => expect(snapshotOf(h.service).state).toBe("connected-unpaired"));
+    await vi.waitFor(async () => expect((await snapshotOf(h.service)).state).toBe("connected-unpaired"));
     expect(retries.live()).toHaveLength(0);
   });
 
@@ -941,7 +941,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     await paused.h.service.resumeStoredConnection();
     expect(await paused.h.service.pause()).toEqual({ ok: true });
     expect(paused.retries.live()).toHaveLength(0);
-    expect(snapshotOf(paused.h.service).state).toBe("paused-by-owner");
+    expect((await snapshotOf(paused.h.service)).state).toBe("paused-by-owner");
     expect(paused.online.listeners.size).toBe(0);
 
     const disconnected = await connectedThenOffline();
@@ -972,7 +972,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(retries.live()).toHaveLength(0);
     expect(vi.mocked(h.bot.client.getMe).mock.calls.length).toBe(getMeBefore);
-    expect(snapshotOf(h.service).state).toBe("paused-by-owner");
+    expect((await snapshotOf(h.service)).state).toBe("paused-by-owner");
     expect(h.bridge.start.mock.calls.length).toBe(startsBefore);
     expect(online.listeners.size).toBe(0);
   });
@@ -982,7 +982,7 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     h.bot.state.getMe = { ok: true, value: { username: BOT_USERNAME } };
     expect(await h.service.pause()).toEqual({ ok: true });
     expect(await h.service.resume()).toEqual({ ok: true });
-    expect(snapshotOf(h.service).state).toBe("connected-unpaired");
+    expect((await snapshotOf(h.service)).state).toBe("connected-unpaired");
   });
 
   it("reads a running poll loop that Telegram stopped answering as reconnecting, not active", async () => {
@@ -991,12 +991,12 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     const h = await harness({ serviceOptions: { onNetworkOnline: online.source, onSystemResume: resumeEvents.source } });
     expect(await h.service.connect(BOT_TOKEN)).toEqual({ ok: true });
     const hooks = h.bridge.start.mock.calls.at(-1)?.[0] as TelegramBridgeStartHooks;
-    const before = snapshotOf(h.service).state;
+    const before = (await snapshotOf(h.service)).state;
 
     hooks.onPollHealth("retrying");
-    expect(snapshotOf(h.service).state).toBe("reconnecting");
+    expect((await snapshotOf(h.service)).state).toBe("reconnecting");
     // Nothing durable was written; the reason is projected from memory.
-    expect(snapshotOf(h.service).lastErrorCode).toBe("telegram-provider-unreachable");
+    expect((await snapshotOf(h.service)).lastErrorCode).toBe("telegram-provider-unreachable");
     expect(h.store.ownerSnapshot().lastErrorCode).toBeNull();
     expect(online.listeners.size).toBe(1);
 
@@ -1005,8 +1005,8 @@ describe("reconnecting after sleep, a network change, or an outage", () => {
     expect(h.bridge.nudge).toHaveBeenCalledTimes(1);
 
     hooks.onPollHealth("receiving");
-    expect(snapshotOf(h.service).state).toBe(before);
-    expect(snapshotOf(h.service).lastErrorCode).toBeNull();
+    expect((await snapshotOf(h.service)).state).toBe(before);
+    expect((await snapshotOf(h.service)).lastErrorCode).toBeNull();
     expect(online.listeners.size).toBe(0);
   });
 
