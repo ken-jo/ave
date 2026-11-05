@@ -1062,9 +1062,9 @@ export function ChatGroupSession({
     </ChatContextProvider>
   );
 
-  // A turn's end re-reads it: the agent may have added or changed an item connected to this chat.
+  // A turn's end re-reads it (the agent may have added or changed an item), and so does coming back from the schedule panel.
   const titleAccessory = (
-    <ScheduleChatChip api={api} sessionId={currentSessionId} refreshKey={streaming} onOpenRoutine={env.onOpenRoutine} />
+    <ScheduleChatChip api={api} sessionId={currentSessionId} refreshKey={`${streaming}:${hidden}`} onOpenRoutine={env.onOpenRoutine} />
   );
 
   return <>{children({ actions, trailing, titleAccessory, content, settle, currentSessionId })}</>;

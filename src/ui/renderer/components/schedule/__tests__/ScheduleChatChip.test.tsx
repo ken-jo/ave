@@ -56,6 +56,17 @@ describe("ScheduleChatChip", () => {
     expect(chip.textContent).toBe("스케줄 매일 09:00");
   });
 
+  it("reads again when a turn ends or the chat comes back into view, so an item added meanwhile shows", async () => {
+    const routines: RoutineRecord[] = [];
+    const { api } = makeApi(routines);
+    const view = render(<ScheduleChatChip api={api} sessionId={CHAT} refreshKey="streaming" onOpenRoutine={() => {}} />);
+    await waitFor(() => expect(api.listRoutines).toHaveBeenCalledTimes(1));
+    expect(view.queryByTestId("schedule-chat-chip")).toBeNull();
+    routines.push(routine());
+    view.rerender(<ScheduleChatChip api={api} sessionId={CHAT} refreshKey="idle" onOpenRoutine={() => {}} />);
+    expect((await view.findByTestId("schedule-chat-chip")).textContent).toBe("스케줄 매일 09:00");
+  });
+
   it("draws nothing for a chat with no connected item", async () => {
     const { api } = makeApi([routine({ targetSessionId: OTHER })]);
     const view = render(<ScheduleChatChip api={api} sessionId={CHAT} onOpenRoutine={() => {}} />);

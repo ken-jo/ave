@@ -19,6 +19,8 @@ import { routineTitle } from "./ScheduleItemPopover.js";
 
 /** As long as the panel's: the delete commits when it runs out. */
 const CHIP_UNDO_MS = 6_000;
+/** As often as the schedule panel re-reads: an item added or changed from the panel has no event of its own. */
+const CHIP_REFRESH_MS = 30_000;
 
 type ChipApi = Pick<AveApi,
   | "listRoutines" | "pauseRoutine" | "resumeRoutine" | "triggerRoutineNow" | "updateRoutine" | "removeRoutine"
@@ -42,8 +44,8 @@ function chipSchedule(routine: Pick<RoutineRecord, "schedule" | "trigger">): str
 
 const failed = (r: RoutineRecord) => Boolean(r.lastFailure && !r.lastFailure.acknowledgedAt);
 
-/** The items connected to `sessionId`, read from the host. Read again on every schedule event and whenever `refreshKey` changes
- * (a turn ended: the agent may have added one). */
+/** The items connected to `sessionId`, read from the host. Read again on every schedule event, every 30 seconds, and whenever
+ * `refreshKey` changes (a turn ended, or the chat came back into view). */
 function useConnectedItems(api: ChipApi, sessionId: string | null | undefined, refreshKey: unknown) {
   const [items, setItems] = useState<RoutineRecord[]>([]);
   const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
@@ -59,6 +61,11 @@ function useConnectedItems(api: ChipApi, sessionId: string | null | undefined, r
     }
   }, [api, sessionId]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    const timer = setInterval(() => void refresh(), CHIP_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [refresh, sessionId]);
   useEffect(() => {
     const unsubs = [
       api.onRoutineFired?.(() => void refresh()),
