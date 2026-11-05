@@ -69,6 +69,15 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "path-grant");
   });
 
+  it.each([['ko', '쓰기'], ['en', 'Write']] as const)("describes an outside write as a write in %s", async (locale, action) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    renderCard(makeRequest({ toolName: "write_file", toolCategory: "write", args: { path: TARGET, content: "approved" } }));
+    const summary = screen.getByTestId("approval-impact-summary");
+    expect(summary).toHaveTextContent(action);
+    expect(summary).not.toHaveTextContent(locale === "ko" ? "읽으려" : "trying to read");
+  });
+
   it("keeps what will be granted on screen as the selection moves", () => {
     renderCard();
     // Fail-closed default selection is Reject, which grants nothing.

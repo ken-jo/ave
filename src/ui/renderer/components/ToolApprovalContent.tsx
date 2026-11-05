@@ -911,7 +911,9 @@ export function ToolApprovalContent({
   const specificHostReason = request.reason.trim();
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
   const reviewedImpact = isOutOfDir
-    ? tHook("dockedApprovalCard.headline", { toolName: request.toolName })
+    ? category === "read"
+      ? tHook("dockedApprovalCard.headline", { toolName: request.toolName })
+      : approvalActionSummary({ ...request, kind: "tool" }, tHook)
     : !isBoilerplateApprovalReason(specificReviewerReason)
       ? specificReviewerReason
       : !isBoilerplateApprovalReason(specificHostReason)
