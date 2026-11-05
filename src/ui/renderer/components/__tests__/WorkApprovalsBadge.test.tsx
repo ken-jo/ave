@@ -86,12 +86,12 @@ describe("WorkApprovalsBadge", () => {
     expect(screen.queryByTestId("work-approval-proposal-add")).toBeNull();
     fireEvent.click(rows[1]!);
     // A shared item opens in the project being viewed.
-    expect(onOpenItem).toHaveBeenCalledWith("routine:r-1", undefined);
+    await waitFor(() => expect(onOpenItem).toHaveBeenCalledWith("routine:r-1", undefined));
     await waitFor(() => expect(screen.queryByTestId("work-approvals-popover")).toBeNull());
 
     fireEvent.click(screen.getByTestId("work-approvals-badge"));
     fireEvent.click(await screen.findByTestId("work-approvals-popover-view-all"));
-    expect(onOpenAll).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onOpenAll).toHaveBeenCalledTimes(1));
   });
 
   it("renders nothing until the first result and nothing at zero", async () => {
@@ -142,6 +142,35 @@ describe("WorkApprovalsBadge", () => {
     expect(groups[0]!.textContent).toContain("지금 보는 프로젝트");
     expect(screen.queryByText("Re-planning")).toBeNull();
     fireEvent.click(screen.getByText("Handbook plan"));
-    expect(onOpenItem).toHaveBeenCalledWith("plan:3", "/work/handbook");
+    await waitFor(() => expect(onOpenItem).toHaveBeenCalledWith("plan:3", "/work/handbook"));
+  });
+
+  it("leaves focus on the card a row opened, and returns it to the badge only when the popover is dismissed", async () => {
+    const card = document.createElement("button");
+    document.body.appendChild(card);
+    try {
+      // The popover traps focus while open, so the card can only take focus once it has closed.
+      let popoverOpenAtCall: boolean | null = null;
+      const onOpenItem = vi.fn(() => {
+        popoverOpenAtCall = screen.queryByTestId("work-approvals-popover") !== null;
+        card.focus();
+      });
+      const { api } = stubApi({ ok: true, items: ITEMS, total: 2, projects: PROJECTS });
+      render(<WorkApprovalsBadge api={api} projectRoot="/work/ave" onOpenItem={onOpenItem} onOpenAll={vi.fn()} />);
+      const badge = await screen.findByTestId("work-approvals-badge");
+      fireEvent.click(badge);
+      fireEvent.click((await screen.findAllByTestId("work-approvals-popover-row"))[0]!);
+      await waitFor(() => expect(onOpenItem).toHaveBeenCalledTimes(1));
+      expect(popoverOpenAtCall).toBe(false);
+      expect(document.activeElement).toBe(card);
+
+      fireEvent.click(badge);
+      const popover = await screen.findByTestId("work-approvals-popover");
+      fireEvent.keyDown(popover, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("work-approvals-popover")).toBeNull());
+      expect(document.activeElement).toBe(badge);
+    } finally {
+      card.remove();
+    }
   });
 });

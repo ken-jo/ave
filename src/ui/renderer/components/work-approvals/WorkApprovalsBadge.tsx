@@ -1,7 +1,7 @@
 // Title-bar badge for 확인 필요: the list's `total` (every authorized project), hidden at zero and until the first result. Its popover
 // lists each counted item once, grouped by project (the viewed project first, the shared items last), and only navigates; it has no
 // decide buttons — decisions are made on the card in that project's home.
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { formatIpcError } from "../../format-ipc-error.js";
@@ -58,6 +58,9 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
     [projectRoot, state],
   );
   const [open, setOpen] = useState(false);
+  // A row's navigation waits until the popover has closed: while open it traps focus, so the card it opens could not take focus, and
+  // on close it would hand focus back to the badge. Dismissing without a choice still returns focus to the badge.
+  const pendingAction = useRef<(() => void) | null>(null);
   // A failed list is not "nothing to review": it shows as a warning dot whose tooltip says why, never as a hidden badge.
   if (state.status === "error") {
     const message = formatIpcError(state.error, undefined);
@@ -77,8 +80,8 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
   if (state.status !== "ready" || state.total === 0) return null;
   const clock = now();
   const select = (action: () => void) => {
+    pendingAction.current = action;
     setOpen(false);
-    action();
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -93,7 +96,18 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
           {t("workApprovals.badge", { count: state.total })}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96 p-0" data-testid="work-approvals-popover">
+      <PopoverContent
+        align="end"
+        className="w-96 p-0"
+        data-testid="work-approvals-popover"
+        onCloseAutoFocus={(event) => {
+          const action = pendingAction.current;
+          if (action === null) return;
+          pendingAction.current = null;
+          event.preventDefault();
+          action();
+        }}
+      >
         <header className="flex items-baseline justify-between border-b px-3 py-2">
           <h2 className="text-sm font-semibold">{t("workApprovals.popoverTitle", { count: state.total })}</h2>
           <span className="text-[11px] text-muted-foreground">{t("workApprovals.popoverScope")}</span>
