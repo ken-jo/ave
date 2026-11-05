@@ -1172,6 +1172,13 @@ failed history write never fails the memory change, and later reads of that
 memory report its history as incomplete. A crash between the memory write and
 its history row leaves no row and no mark.
 
+A memory learned in a conversation records where it came from: the session id
+and, when one exists, the id of the user message that opened the turn. It
+stores ids only; the quoted text is read from the session when shown, so the
+memory store never copies conversation text. The origin comes from host
+metadata only, never from model or renderer input, and a direct save from the
+memory UI has none.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:

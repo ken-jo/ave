@@ -581,6 +581,8 @@ describe("ConversationLoop command routing", () => {
     expect(captureExplicit).toHaveBeenCalledWith({
       title: "retain this rollout preference",
       content: "retain this rollout preference",
+      // The command is handled before any user row exists, so the save names its conversation only.
+      sessionId: loop.sessionId,
     });
     expect(saveMemory).not.toHaveBeenCalled();
     expect(result.text).toBe(t("be_conversationLoop.cmdRememberSaved", { title: "Reviewed rollout preference" }));

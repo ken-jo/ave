@@ -568,6 +568,7 @@ describe("ave:memory:entries:save review gate", () => {
     ["a project scope without a project", [{ scope: "project" }]],
     ["a non-string project name", [{ scope: "project", projectRoot: process.cwd(), projectName: 42 }]],
     ["an unexpected key", [{ scope: "global", includeCandidates: true }]],
+    ["a renderer-supplied origin", [{ scope: "global", origin: { v: 1, sessionId: "forged" } }]],
   ])("rejects a save with %s instead of guessing the scope", async (_label, extra) => {
     const loop = makeConversationLoop(SESSION_ID);
     const deps = await setupHandlers(loop);

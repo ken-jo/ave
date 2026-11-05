@@ -323,4 +323,44 @@ describe("MemoryManager — scoped long-term memory governance", () => {
 
     expect(memoryManager.listMemoryEntries({ includeCandidates: true }).some((entry) => entry.id === valid.id)).toBe(false);
   });
+  it("persists where a memory was learned, keeps the first origin on re-save, and fails closed on a tampered origin", async () => {
+    const origin = {
+      v: 1 as const,
+      sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
+      messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
+      store: "main" as const,
+    };
+    const saved = await memoryManager.saveMemory("Learned rule", "Use pnpm.", { kind: "fact", origin }, "user");
+    expect(saved.origin).toEqual(origin);
+    const resaved = await memoryManager.saveMemory("Learned rule", "Use pnpm 9.", {
+      kind: "fact",
+      origin: { v: 1, sessionId: "9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a" },
+    }, "user");
+    expect(resaved.origin).toEqual(origin);
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === saved.id)?.origin).toEqual(origin);
+
+    await expect(memoryManager.saveMemory("Bad origin", "x", { origin: { v: 1, sessionId: "../escape" } as never }, "user"))
+      .rejects.toThrow(/invalid origin/);
+    await expect(memoryManager.saveMemory("Bad store", "x", { origin: { ...origin, store: "elsewhere" } as never }, "user"))
+      .rejects.toThrow(/invalid origin/);
+
+    const filePath = join(dir, "memories", saved.filename);
+    const stored = readFileSync(filePath, "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    metadata.origin = { v: 1, sessionId: origin.sessionId, messageId: 42 };
+    writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+    expect(memoryManager.listMemoryEntries().some((entry) => entry.id === saved.id)).toBe(false);
+  });
+
+  it("never gives an origin to a memory first saved without one", async () => {
+    const direct = await memoryManager.saveMemory("Direct rule", "Saved from the memory UI.", { kind: "fact" }, "user");
+    const resaved = await memoryManager.saveMemory("Direct rule", "Updated from a conversation.", {
+      kind: "fact",
+      origin: { v: 1, sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10" },
+    }, "user");
+    expect(resaved.id).toBe(direct.id);
+    expect(resaved.origin).toBeUndefined();
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === direct.id)?.origin).toBeUndefined();
+  });
 });

@@ -1,5 +1,5 @@
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "./base.js";
-import type { MemoryManager } from "../memory/memory-manager.js";
+import type { MemoryManager, MemoryOriginV1 } from "../memory/memory-manager.js";
 import { t } from "../i18n/index.js";
 import { modelBoundCredentialKind } from "../shared/dlp.js";
 
@@ -22,6 +22,22 @@ export type MemoryWriteStore = Pick<MemoryManager, "saveMemory">;
 function memoryWriteProjectScope(ctx: ToolExecutionContext): { projectRoot?: string } {
   const projectRoot = typeof ctx.cwd === "string" ? ctx.cwd.trim() : "";
   return projectRoot ? { projectRoot } : {};
+}
+
+// Provenance comes only from host metadata. The store is left out: this tool serves main and side-chat
+// loops alike, and a reader resolves the session's store by probing.
+function memoryWriteOrigin(ctx: ToolExecutionContext): { origin?: MemoryOriginV1 } {
+  const sessionId = ctx.metadata?.sessionId;
+  if (typeof sessionId !== "string") return {};
+  const messageId = ctx.metadata.turnMessageId;
+  return {
+    origin: {
+      v: 1,
+      sessionId,
+      // A malformed host id is passed through for saveMemory to reject, never dropped.
+      ...(messageId !== undefined ? { messageId: messageId as string } : {}),
+    },
+  };
 }
 
 function credentialLikeContent(title: string, content: string): "authorization-key" | "credential" | null {
@@ -123,6 +139,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
           ...memoryWriteProjectScope(ctx),
           source: "assistant",
           state: "candidate",
+          ...memoryWriteOrigin(ctx),
         }, "assistant");
         return {
           output: JSON.stringify({
