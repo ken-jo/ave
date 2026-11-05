@@ -1,3 +1,4 @@
+import { observeRoutineTurnUsage } from "../routine-run-metrics.js";
 import {
   DEFAULT_SUBSCRIPTION_REASONING_SPEED,
   subscriptionReasoningSpeedEffort,
@@ -285,6 +286,7 @@ export async function queryLoop(
     // Persist the last live review verdict on its tool result so reload shows the same decision.
     const permissionReviewByUseId = new Map<string, PermissionReviewEvent>();
     let turnUsage: TokenUsage | undefined;
+    observeRoutineTurnUsage(() => ({ usage: turnUsage, subscriptionUsage: subscriptionUsage.values }));
     const recordProviderUsage = (
       usage: TokenUsage,
       updateContextCalibration: boolean,

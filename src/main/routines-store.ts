@@ -34,6 +34,8 @@ import type {
   RoutineSchedule,
   RoutineFailure,
   RoutineRunOutcome,
+  RoutineRunMetrics,
+  RoutineRun,
   InvalidRoutine,
   RoutineListResult,
   RoutineRecord,
@@ -122,6 +124,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   }
   if (x.lastResultAcknowledgedAt !== undefined && typeof x.lastResultAcknowledgedAt !== "string") return false;
   if (x.lastRoutineSessionId !== undefined && typeof x.lastRoutineSessionId !== "string") return false;
+  if (x.runs !== undefined && (!Array.isArray(x.runs) || !x.runs.every((run) => isValidStoredRun(run, x.id)))) return false;
   if (x.lastFailure !== undefined && !isValidRoutineFailure(x.lastFailure)) return false;
   if (x.dismissedAt !== undefined && typeof x.dismissedAt !== "string") return false;
   if (x.source !== undefined && (typeof x.source !== "string" || x.source.length > MAX_ROUTINE_SOURCE_LENGTH)) return false;
@@ -252,6 +255,28 @@ function isDirectoryAtOrBelow(rootKey: string, directory: string): boolean {
   return isWorkspaceKeyAtOrBelow(rootKey, candidate);
 }
 
+function isValidStoredRun(value: unknown, routineId: unknown): value is RoutineRun {
+  if (!value || typeof value !== "object") return false;
+  const run = value as RoutineRun;
+  if (run.routineId !== routineId || !(typeof run.firedAt === "string" && Number.isFinite(Date.parse(run.firedAt))) || !["done", "failed"].includes(run.status)
+    || (run.sessionId !== undefined && typeof run.sessionId !== "string")) return false;
+  const m = run.metrics;
+  if (m === undefined) return true;
+  if (!m || !(typeof m.startedAt === "string" && Number.isFinite(Date.parse(m.startedAt))) || !Number.isFinite(m.durationMs) || m.durationMs < 0) return false;
+  return m.tokens === undefined || (m.tokens !== null && [m.tokens.input, m.tokens.output, m.tokens.total].every((n) => Number.isFinite(n) && n >= 0));
+}
+
+const ROUTINE_RUN_RETENTION_MS = 35 * 24 * 60 * 60 * 1000;
+const MAX_ROUTINE_RUNS = 500;
+
+function appendRoutineRun(record: RoutineRecord, run: RoutineRun): void {
+  const cutoff = Date.now() - ROUTINE_RUN_RETENTION_MS;
+  record.runs = [...(record.runs ?? []).filter((previous) => previous.firedAt !== run.firedAt), structuredClone(run)]
+    .filter((entry) => Date.parse(entry.firedAt) >= cutoff)
+    .sort((a, b) => a.firedAt.localeCompare(b.firedAt))
+    .slice(-MAX_ROUTINE_RUNS);
+}
+
 function emptyRoutinesFile(): RoutinesFile {
   return { version: 2, routines: [], invalid: [] };
 }
@@ -284,6 +309,7 @@ async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<vo
 function cloneRecord(r: RoutineRecord): RoutineRecord {
   return {
     ...r,
+    ...(r.runs ? { runs: structuredClone(r.runs) } : {}),
     needsAttention: r.needsAttention
       ? { missingPluginIds: [...r.needsAttention.missingPluginIds] }
       : undefined,
@@ -622,15 +648,36 @@ export class RoutinesStore {
     return stale ? "stale" : "acknowledged";
   }
 
-  // Record how the run of the fire at `firedAt` ended. Runs overlap (dispatch does not await, and a manual trigger can start during a
-  // scheduled run), so an outcome for anything but the current fire is stale and changes nothing: it must not clear or overwrite the newer
-  // fire's state. Success clears the failure. A failed scheduled one-shot was dismissed by markFired; it is restored so the failure stays
-  // reviewable, and it is not due again because lastFiredAt is set. Shutdown routines are not restored: they would run again at every quit.
-  async recordRunOutcome(id: string, firedAt: string, outcome: RoutineRunOutcome): Promise<RoutineRecord | null> {
+  /** Notification delivery retains its existing outcome behavior: timing never creates or clears attention state. */
+  async recordNotificationRunMetrics(id: string, firedAt: string, metrics: RoutineRunMetrics): Promise<RoutineRecord | null> {
+    const run: RoutineRun = { routineId: id, firedAt, status: "done", metrics };
+    if (!isValidStoredRun(run, id)) throw new Error("Invalid routine run metrics");
+    return this.mutate(id, (record) => {
+      if (record.execution !== "notification-only") throw new Error("Expected a notification routine");
+      appendRoutineRun(record, run);
+      return true;
+    });
+  }
+
+  // Keep metrics by fire even when runs overlap. Only the current fire may change the item's attention state.
+  // Success clears the failure. A failed scheduled one-shot is restored for review, but lastFiredAt prevents another fire.
+  // Shutdown routines stay dismissed so they cannot run again at every quit.
+  async recordRunOutcome(id: string, firedAt: string, outcome: RoutineRunOutcome, metrics?: RoutineRunMetrics, sessionId?: string): Promise<RoutineRecord | null> {
+    const run: RoutineRun = {
+      routineId: id, firedAt, status: outcome.ok ? "done" : "failed",
+      ...(metrics !== undefined ? { metrics } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    };
+    if (!isValidStoredRun(run, id)) throw new Error("Invalid routine run metrics");
     return this.mutate(id, (r) => {
-      if (r.lastFiredAt !== firedAt) return false;
+      let recorded = false;
+      if (metrics !== undefined) {
+        appendRoutineRun(r, run);
+        recorded = true;
+      }
+      if (r.lastFiredAt !== firedAt) return recorded;
       if (outcome.ok) {
-        if (r.lastFailure === undefined) return false;
+        if (r.lastFailure === undefined) return recorded;
         delete r.lastFailure;
         return true;
       }
