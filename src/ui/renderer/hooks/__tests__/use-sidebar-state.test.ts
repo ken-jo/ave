@@ -23,6 +23,24 @@ describe("useSidebarState", () => {
     expect(updateSettings).not.toHaveBeenCalled();
   });
 
+  it("folds an unchosen sidebar to the rail while the list cannot be pushed beside the content, instead of laying it over the content", async () => {
+    const { api, getSettings, updateSettings } = makeApi();
+    const { result, rerender } = renderHook(({ width, narrow }) => useSidebarState(api, width, narrow), { initialProps: { width: 460, narrow: true } });
+    await act(async () => { await getSettings.mock.results[0]?.value; });
+    expect(result.current.sidebarState).toBe("rail");
+    rerender({ width: 900, narrow: false });
+    expect(result.current.sidebarState).toBe("expanded");
+    rerender({ width: 360, narrow: true });
+    expect(result.current.sidebarState).toBe("hidden");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit expanded choice in a narrow window, where it overlays (case 28)", async () => {
+    const { api } = makeApi("expanded");
+    const { result } = renderHook(() => useSidebarState(api, 460, true));
+    await waitFor(() => expect(result.current.sidebarState).toBe("expanded"));
+  });
+
   it.each(["expanded", "rail", "hidden"] as const)("restores %s at every width without persisting the hydration", async (sidebarState) => {
     const { api, updateSettings } = makeApi(sidebarState);
     const { result, rerender } = renderHook(({ width }) => useSidebarState(api, width), { initialProps: { width: 360 } });
