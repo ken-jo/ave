@@ -12,8 +12,8 @@ import {
   isConfiguredSessionReadPath,
 } from "../permissions/sensitive-paths.js";
 
-// Text preview and read_file share this size cap.
-export const MAX_TEXT_FILE_BYTES = 2_000_000;
+// Text preview and read_file share this size cap; it is defined in shared/ so the renderer reads the same number.
+export { MAX_TEXT_FILE_BYTES } from "../shared/text-file-limits.js";
 const BINARY_SAMPLE_BYTES = 8_192;
 
 // Reject glob patterns before filesystem access; they are tool arguments, not concrete file paths.

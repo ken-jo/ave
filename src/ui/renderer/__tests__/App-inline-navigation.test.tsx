@@ -58,6 +58,13 @@ describe("App inline navigation", () => {
     expect(await sidebarNavRowActive("features", "sidebar-routines")).toBe(true);
   });
 
+  it("opens a folder view of the selected project from the rail's folder launcher", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    expect(container.querySelector('[data-testid="folder-view"]')).toBeNull();
+    await clickSidebarNavRow("features", "sidebar-folder");
+    await waitFor(() => expect(container.querySelector('[data-testid="folder-view"]')).not.toBeNull());
+  });
+
   it("keeps navigating inline after the canvas narrows", async () => {
     const { container, resizeContainers } = await renderApp({ hasApiKey: true });
 

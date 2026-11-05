@@ -1,4 +1,4 @@
-import { dialog, ipcMain, nativeImage, shell } from "electron";
+import { dialog, ipcMain, nativeImage } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { previewFileReadAuthorizes } from "../../main/preview-file-access.js";
+import { openVerifiedExternalFile, resolveExternalOpenTarget } from "../../main/external-open-target.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { DENY_EXTENSIONS as DENY_LIST } from "../../shared/attachments-deny-list.js";
@@ -82,21 +83,6 @@ function senderIdOf(e: IpcMainInvokeEvent): number | null {
 
 function sensitiveForRead(p: string): boolean {
   return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(p)), "read") !== null;
-}
-
-// Re-resolve authorized spellings on every use; a symlink may have been retargeted.
-async function resolveAuthorizedTarget(
-  filePath: string,
-): Promise<{ ok: true; real: string } | { ok: false; error: string }> {
-  let real: string;
-  try {
-    real = await fs.realpath(filePath);
-  } catch {
-    return { ok: false, error: "not-found" };
-  }
-  if (sensitiveForRead(real)) return { ok: false, error: "sensitive-path" };
-  if (DENY_EXTENSIONS.has(getExt(real))) return { ok: false, error: "denied_extension" };
-  return { ok: true, real };
 }
 
 async function validateDroppedPath(
@@ -328,7 +314,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (!ATTACH_PATH_ALLOWLIST.has(filePath)) {
           return { ok: false, error: "path_not_authorized" };
         }
-        const target = await resolveAuthorizedTarget(filePath);
+        const target = await resolveExternalOpenTarget(filePath);
         if (!target.ok) return { ok: false, error: target.error };
         // Stat before buffering so multi-gigabyte files cannot exhaust memory.
         const stat = await fs.stat(target.real);
@@ -467,21 +453,12 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (typeof filePath !== "string" || (!ATTACH_PATH_ALLOWLIST.has(filePath) && !previewFileReadAuthorizes(e, deps, filePath))) {
           return { ok: false, error: "path_not_authorized" };
         }
-        if (DENY_EXTENSIONS.has(getExt(filePath))) {
-          return { ok: false, error: "denied_extension" };
-        }
-        const target = await resolveAuthorizedTarget(filePath);
-        if (!target.ok) return { ok: false, error: target.error };
-        const stat = await fs.stat(target.real);
-        if (!stat.isFile()) return { ok: false, error: "not-a-file" };
-        const current = await resolveAuthorizedTarget(filePath);
-        if (!current.ok) return { ok: false, error: current.error };
-        if (!validateAppWindowMainFrameSender(e, deps)) return { ok: false, error: "unauthorized" };
-        if (current.real !== target.real || (!ATTACH_PATH_ALLOWLIST.has(filePath)
-          && !previewFileReadAuthorizes(e, deps, target.real))) return { ok: false, error: "path_not_authorized" };
-        const result = await shell.openPath(target.real);
-        if (result) return { ok: false, error: result };
-        return { ok: true };
+        const opened = await openVerifiedExternalFile(filePath, (real, pass) => {
+          // The entry check above covers the first pass; the frame is re-checked once, just before the open.
+          if (pass === "final" && !validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
+          return ATTACH_PATH_ALLOWLIST.has(filePath) || previewFileReadAuthorizes(e, deps, real) ? null : "path_not_authorized";
+        });
+        return opened.ok ? { ok: true } : { ok: false, error: opened.error };
       } catch (err) {
         return {
           ok: false,

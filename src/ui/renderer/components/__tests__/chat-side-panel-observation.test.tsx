@@ -133,7 +133,8 @@ describe("retained panel document observation", () => {
     act(() => { handlers.forEach((handler) => handler([event(2, "Hidden edit")])); });
     expect(read).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByText("Reopen panel"));
-    expect(screen.getByText("Initial disk value")).toBeTruthy();
+    // The kept body shows the old read; a code file's line is split into highlighted tokens, so compare its text.
+    expect(body.textContent).toContain("Initial disk value");
     await screen.findByText("Fresh disk value");
     expect(body.isConnected).toBe(true);
     expect(read).toHaveBeenCalledTimes(2);

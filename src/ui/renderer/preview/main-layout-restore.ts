@@ -1,11 +1,12 @@
 import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, type SavedSurface } from "../../../shared/main-layout.js";
 import { projectRootEquals } from "../../../shared/project-identity.js";
+import type { MainSurface } from "./main-surfaces.js";
 
 /** Restore pane geometry first and let later-mounted tab stores consume saved surfaces; restored terminals start new shells
  * in saved directories. */
 
-/** A saved main surface this window can put back. */
-type RestorableSurface = SavedSurface & { projectRoot: string };
+/** A saved main surface this window can put back: a terminal, a page or a folder view. */
+export type RestorableSurface = Extract<SavedMainSurface, { kind: "terminal" | "browser" | "folder" }>;
 
 export interface RestorableLayout extends Omit<MainLayoutSnapshot, "surfaces" | "openSurfaces"> {
   surfaces: Record<string, RestorableSurface>;
@@ -21,7 +22,7 @@ export function restorableLayout(layout: MainLayoutSnapshot, liveRoots: readonly
   const keep = (surface: SavedMainSurface): surface is RestorableSurface => {
     let reason: string | null = null;
     if (!liveRoots.some((root) => projectRootEquals(root, surface.projectRoot))) reason = "its project is not open";
-    else if (!isSavedTerminalOrPage(surface)) reason = `this window does not show ${surface.kind} surfaces`;
+    else if (!isSavedTerminalOrPage(surface) && surface.kind !== "folder") reason = `this window does not show ${surface.kind} surfaces`;
     if (reason === null) return true;
     if (!reasons.has(surface.tabId)) {
       reasons.set(surface.tabId, reason);
@@ -33,6 +34,14 @@ export function restorableLayout(layout: MainLayoutSnapshot, liveRoots: readonly
   const openSurfaces = layout.openSurfaces.filter(keep);
   for (const [paneId, surface] of Object.entries(layout.surfaces)) if (keep(surface)) surfaces[paneId] = surface;
   return { layout: { ...layout, surfaces, openSurfaces }, dropped };
+}
+
+/** The live surface a restored one becomes. A folder view comes back on the folder and item it showed. */
+export function restoredMainSurface(saved: RestorableSurface): MainSurface {
+  const common = { tabId: saved.tabId, ordinal: saved.ordinal, projectRoot: saved.projectRoot };
+  return saved.kind === "folder"
+    ? { ...common, kind: "folder", url: null, cwd: null, folder: { path: saved.path, selection: saved.selection } }
+    : { ...common, kind: saved.kind, url: saved.url, cwd: saved.cwd };
 }
 
 const pendingSideTabs = new Map<string, SavedSurface[]>();

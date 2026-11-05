@@ -66,8 +66,9 @@ describe("shared document viewer chrome", () => {
     expect(screen.getByTestId("preview-document-path").textContent).toBe("src/tools/");
     expect(screen.getByTestId("preview-document-path").title).toBe(PATH);
     expect(header.textContent).toBe("report.tssrc/tools/");
-    expect(header.querySelectorAll("button")).toHaveLength(3);
-    expect(screen.getByRole("button", { name: "기본 앱으로 열기" }).textContent).toBe("");
+    // Source code is not handed to the default app (`shared/preview-external-open.ts`), so the header has no open action.
+    expect(header.querySelectorAll("button")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
     expect(screen.getByRole("button", { name: "복사" }).textContent).toBe("");
     expect(screen.getByRole("button", { name: "다시 불러오기" }).textContent).toBe("");
     expect(screen.queryByText("open document · builtin")).toBeNull();
@@ -91,7 +92,7 @@ describe("shared document viewer chrome", () => {
   });
 
   it("offers the default app after a host read even when the tool target had no picker grant", async () => {
-    const canonicalPath = "/workspace/src/tools/canonical-report.ts";
+    const canonicalPath = "/workspace/src/tools/canonical-report.txt";
     readFile.mockResolvedValueOnce({ ok: true, path: canonicalPath, content: DOCUMENT.content, document: DOCUMENT });
     const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
     const button = await screen.findByRole("button", { name: "기본 앱으로 열기" });
@@ -105,13 +106,15 @@ describe("shared document viewer chrome", () => {
 
   it("does not invent an external-open grant before a read or for an inline snippet", async () => {
     readFile.mockResolvedValueOnce({ ok: false, error: "read-failed" });
-    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, canOpenExternal: false }} />);
+    const notes: Extract<ChatPreviewTarget, { kind: "file" }> = { ...(FILE as Extract<ChatPreviewTarget, { kind: "file" }>),
+      path: "/workspace/src/tools/notes.txt", title: "notes.txt" };
+    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...notes, canOpenExternal: false }} />);
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
     await screen.findByTestId("chat-side-panel-file-error");
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
-    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: false }} />);
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...notes, inlineText: "Indexed source", canOpenExternal: false }} />);
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
-    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, inlineText: "Indexed source", canOpenExternal: true }} />);
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...notes, inlineText: "Indexed source", canOpenExternal: true }} />);
     expect(screen.getByRole("button", { name: "기본 앱으로 열기" })).toBeTruthy();
     expect(readFile).toHaveBeenCalledTimes(1);
   });
@@ -124,13 +127,20 @@ describe("shared document viewer chrome", () => {
     expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
     expect(screen.getByRole("button", { name: "복사" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "다시 불러오기" })).toBeTruthy();
+    // A picker grant does not make a script a type the default app is given.
     view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...FILE, path, canOpenExternal: true }} />);
-    expect(screen.getByRole("button", { name: "기본 앱으로 열기" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "기본 앱으로 열기" })).toBeNull();
   });
 
+  async function openNotes() {
+    const path = "/workspace/src/tools/notes.txt";
+    readFile.mockResolvedValueOnce({ ok: true, path, content: DOCUMENT.content, document: DOCUMENT });
+    render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={{ ...(FILE as Extract<ChatPreviewTarget, { kind: "file" }>), path, title: "notes.txt", canOpenExternal: true }} />);
+    await screen.findByRole("button", { name: "기본 앱으로 열기" });
+  }
+
   it.each(["refusal", "rejection"] as const)("localizes a default-app %s in the shared slot without agent attribution", async (outcome) => {
-    await openText();
-    await emitObservations(handlers, lineEvent(1, 1, "const total = 1;", "const total = 12;"));
+    await openNotes();
     const open = vi.mocked(window.ave.attach.openExternal);
     if (outcome === "refusal") open.mockResolvedValueOnce({ ok: false, error: "raw private failure detail" });
     else open.mockRejectedValueOnce(new Error("raw private failure detail"));
@@ -141,6 +151,27 @@ describe("shared document viewer chrome", () => {
     expect(error.querySelector("[aria-hidden=true]")).toBeNull();
     expect(error.textContent).not.toContain("raw private failure detail");
     expect(screen.getAllByTestId("document-preview-live-strip")).toHaveLength(1);
+  });
+
+  it.each([
+    ["type-not-allowed", "기본 앱으로는 문서·이미지·오디오·동영상·zip 파일만 엽니다. 파일 관리자에서 보거나 경로를 복사하세요."],
+    ["executable", "실행 권한이 있는 파일은 여기서 열지 않습니다 — Finder에서 여세요."],
+  ])("says why the host refused the open (%s)", async (code, message) => {
+    await openNotes();
+    vi.mocked(window.ave.attach.openExternal).mockResolvedValueOnce({ ok: false, error: code });
+    fireEvent.click(screen.getByRole("button", { name: "기본 앱으로 열기" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+  });
+
+  it("offers the image preview's open only for a type the default app is given, and says why a refusal happened", async () => {
+    const image = (path: string): ChatPreviewTarget => ({ kind: "image", id: `image-${path}`, title: "chart", path, dataUrl: "data:image/png;base64,AAAA",
+      mimeType: "image/png", bytes: 4, width: 1, height: 1, canOpenExternal: true, sourceLabel: "attachment", createdOrder: 0 } as ChatPreviewTarget);
+    const view = render(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={image("/workspace/chart.svg")} />);
+    expect(screen.queryByTestId("preview-image-open")).toBeNull();
+    view.rerender(<PreviewDetail visible api={{} as never} sessionId={SESSION} target={image("/workspace/chart.png")} />);
+    vi.mocked(window.ave.attach.openExternal).mockResolvedValueOnce({ ok: false, error: "executable" });
+    fireEvent.click(screen.getByTestId("preview-image-open"));
+    expect((await screen.findByTestId("preview-image-open-error")).textContent).toBe("실행 권한이 있는 파일은 여기서 열지 않습니다 — Finder에서 여세요.");
   });
 
   it("keeps an idle bound markdown preview formatted until confirmed line events arrive", async () => {

@@ -125,6 +125,7 @@ import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspa
 // `a2aRemote` block, expressed once by the IPC projection type.
 import type { RendererSettingsSnapshot as AppSettings } from "../../ipc/domains/settings.js";
 import type { HomeDocsStatus } from "../../ipc/domains/home-docs.js";
+import type { WorkspaceListDirResult, WorkspaceOpenPathResult } from "../../ipc/domains/workspace.js";
 export type { AppSettings };
 
 // Approval / permission contracts are the host types themselves (the full
@@ -2070,14 +2071,8 @@ export interface AveWorkspaceApi {
     ackToken?: string;
     error?: string;
   }>;
-  listDir: (path: string) => Promise<{
-    ok: boolean;
-    path?: string;
-    entries?: Array<{ name: string; path: string; type: "file" | "directory" }>;
-    truncated?: boolean;
-    error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "read-failed";
-    message?: string;
-  }>;
+  /** Links are listed with `outside` and never followed; entries carry their own lstat size and times. */
+  listDir: (path: string) => Promise<WorkspaceListDirResult>;
   /** Remove an additional project root from the read allow-list. Never the default root. */
   removeRoot: (path: string) => Promise<{
     ok: boolean;
@@ -2127,6 +2122,11 @@ export interface AveWorkspaceApi {
     | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
     | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" }
   >;
+  /**
+   * Open one file inside `projectRoot` with the OS default app. Call it only from a click or key handler: preload sends the
+   * gesture flag and main refuses without it. Main re-checks the root, the real path, the file type and the deny list.
+   */
+  openPath: (projectRoot: string, path: string) => Promise<WorkspaceOpenPathResult>;
 }
 
 /**

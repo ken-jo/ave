@@ -4,7 +4,7 @@ import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "./preview-targets.js";
-import { resolveIpcErrorKey } from "../format-ipc-error.js";
+import { defaultAppOpenErrorKey, resolveIpcErrorKey } from "../format-ipc-error.js";
 import { PreviewContent, resolvePreviewRenderer } from "./preview-renderers.js";
 import { PreviewDocumentFooter, PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "./preview-document-chrome.js";
 import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
@@ -46,7 +46,8 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
   const selected = startLine !== undefined && endLine !== undefined;
   const inlineText = selected ? undefined : target.inlineText;
   const [revision, setRevision] = useState(0);
-  const [openFailed, setOpenFailed] = useState(false);
+  // The i18n key of the last refused or failed open, cleared when the preview reloads.
+  const [openFailed, setOpenFailed] = useState<string | null>(null);
   const [state, setState] = useState<TextState>({ phase: "loading" });
   const generation = useRef(0);
   const acknowledged = useRef("");
@@ -59,7 +60,7 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
       setState((previous) => previous.phase === "ok" ? { ...previous, binding: undefined, changes: [], status: undefined } : previous);
       return;
     }
-    setOpenFailed(false);
+    setOpenFailed(null);
     if (inlineText !== undefined) { setState({ phase: "loading" }); return; }
     const refresh = resumed.current;
     let cancelled = false;
@@ -126,7 +127,7 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
 
   const passiveKind = state.phase === "ok" ? resolvePreviewRenderer({ text: state.content, path: state.path }).kind : undefined;
   const sourceVisible = selected || (state.phase === "ok" && state.binding !== undefined
-    && (state.changes.length > 0 || passiveKind === "text"));
+    && (state.changes.length > 0 || passiveKind === "text" || passiveKind === "code"));
   const acknowledgeRendered = useCallback(() => {
     if (state.phase !== "ok" || !state.binding) return;
     const { binding, seq } = state;
@@ -159,10 +160,10 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
     <PreviewDocumentHeader path={state.phase === "ok" ? state.path : target.path} workspaceRoot={target.workspaceRoot}
       canOpenExternal={target.canOpenExternal || (inlineText === undefined && !selected && state.phase === "ok" && previewSupportsExternalOpen(state.path))}
       copyValue={copyValue} copyContent onReload={inlineText === undefined ? () => setRevision((current) => current + 1) : undefined}
-      onOpenError={() => setOpenFailed(true)}
+      onOpenError={(code) => setOpenFailed(defaultAppOpenErrorKey(code))}
       refreshing={inlineText === undefined && state.phase === "loading"} />
     <PreviewDocumentLiveStrip status={state.phase === "ok" ? state.status : undefined} summary={summary} ts={latest?.ts}
-      error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />
+      error={openFailed ? t(openFailed) : undefined} />
     {inlineText !== undefined ? <PreviewContent descriptor={{ text: inlineText, path: target.path }} />
       : state.phase === "loading" ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">{t("chatPreviewRail.filePreviewLoading")}</div>
       : state.phase === "error" ? <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>

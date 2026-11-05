@@ -17,7 +17,7 @@ describe("resolvePreviewRenderer", () => {
 
   it("falls back to text for unknown / no extension", () => {
     expect(resolvePreviewRenderer({ text: "hello" }).kind).toBe("text");
-    expect(resolvePreviewRenderer({ text: "", path: "/a/main.py" }).kind).toBe("text");
+    expect(resolvePreviewRenderer({ text: "", path: "/a/notes.txt" }).kind).toBe("text");
     expect(resolvePreviewRenderer({ text: "", filename: "output" }).kind).toBe("text");
   });
 

@@ -30,6 +30,7 @@ import type {
 import {
   normalizePluginActionResult,
 } from "./internal-api-surface.js";
+import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
 export type AveInitialThemePayload = Readonly<InitialThemePrime>;
@@ -256,6 +257,9 @@ export function buildAveNamespaceExtras() {
     // Composer `@file` autocomplete over the current workspace roots.
     searchFiles: (query: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query),
+    // Folder view "open in default app"; the gesture flag is read here, inside the click or key handler's task.
+    openPath: (projectRoot: string, targetPath: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.openPath, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),
   },
   };
 }

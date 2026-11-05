@@ -13,15 +13,16 @@ export const BUILTIN_VIEWS = {
   // Instance views require a tab ID in ViewLocation.surface.
   terminal: {},
   web: {},
+  folder: {},
 } as const satisfies Record<string, Record<string, never>>;
 
 export type BuiltinViewKey = keyof typeof BUILTIN_VIEWS;
 
-export type InstanceViewKey = "terminal" | "web";
+export type InstanceViewKey = "terminal" | "web" | "folder";
 
 /** Instance views require a live surface ID and cannot be restored as the window view. */
 export function isInstanceViewKey(raw: string): raw is InstanceViewKey {
-  return raw === "terminal" || raw === "web";
+  return raw === "terminal" || raw === "web" || raw === "folder";
 }
 
 export type PluginViewKey = `plugin:${string}:${string}`;

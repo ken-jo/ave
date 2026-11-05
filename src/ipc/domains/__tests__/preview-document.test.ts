@@ -502,9 +502,12 @@ describe("read-only observation sender boundary", () => {
     await registerSessionOwner(event);
     const result = await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
     const realpath = fs.realpath;
-    vi.spyOn(fs, "realpath").mockImplementationOnce(async (...args) => {
+    let resolves = 0;
+    // The second resolve is the pre-open re-check; the window disappears right after it.
+    vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
       const target = await realpath(...args);
-      appWindows.length = 0;
+      resolves += 1;
+      if (resolves === 2) appWindows.length = 0;
       return target;
     });
     expect(await handlers.get(CHANNELS.attach.openExternal)!(event, result.path)).toEqual({ ok: false, error: "unauthorized" });
@@ -531,7 +534,7 @@ describe("read-only observation sender boundary", () => {
       const event = documentEvent(OK_FRAME);
       const results: PreviewReadFileResult[] = [];
       for (let index = 0; index < 17; index += 1) {
-        const path = join(root, `preview-open-${index}.ts`);
+        const path = join(root, `preview-open-${index}.txt`);
         writeFileSync(path, "const value = 1;");
         results.push(await handlers.get(CHANNELS.preview.readFile)!(event, path) as PreviewReadFileResult);
       }

@@ -402,6 +402,25 @@ describe("SideChatView — the conversation a side chat belongs to", () => {
   });
 });
 
+describe("SideChatView — text another surface asks it to attach", () => {
+  it("puts the folder view's path into the draft once, even when the view remounts", async () => {
+    const { api } = makeApi();
+    const load = api.sideChat!.load as ReturnType<typeof vi.fn>;
+    // Nonces rise across the window; this suite's start well above any earlier request.
+    const request = { chatGroupId: "main", attachText: "`/work/app/src/index.ts`", nonce: 10_001 };
+    const first = renderView(api, { hasApiKey: true }, { chatGroupId: "main", openRequest: request });
+    // The same pasted-text attachment a terminal block makes through `attachToComposer`.
+    await waitFor(() => expect(sideComposer().textarea.value).toMatch(/^\[Pasted text #1 /));
+    expect(load).not.toHaveBeenCalled();
+    first.unmount();
+
+    // Closing and reopening the side-chat tab remounts the view with the same request: nothing is attached twice.
+    renderView(api, { hasApiKey: true }, { chatGroupId: "main", openRequest: request });
+    await act(async () => {});
+    expect(sideComposer().textarea.value).toBe("");
+  });
+});
+
 describe("SideChatView — the cards its own turn parks", () => {
   /** The side channel plus the window-wide question channel, as the panel subscribes to it. */
   function makeAskApi() {

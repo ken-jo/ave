@@ -768,6 +768,11 @@ export const CHANNELS = {
     // input; a returned path is a reference the model reads via read_file.
     // INTERNAL: absent from PUBLIC_CHANNELS.
     searchFiles: "ave:workspace:search-files",
+    // Folder view "open in default app": a user action, not a tool, so no agent path reaches it. Main-frame
+    // app-window sender + preload-reported user gesture + a registered project root + realpath inside that root +
+    // regular file + picker deny list, re-checked on a fresh resolution right before shell.openPath.
+    // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
+    openPath: "ave:workspace:open-path",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /

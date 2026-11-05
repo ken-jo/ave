@@ -1,8 +1,10 @@
 // Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   isAdmissionDeniedPath,
   isConfiguredSessionReadPath,
 } from "./sensitive-paths.js";
@@ -40,6 +42,57 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
   return computeDefaultAllowedDirectoryEntries(cwd, false);
 }
 
+/**
+ * Whether two spellings name one folder, by device and inode; false when either is gone, or when the filesystem reports no
+ * file ID (inode 0), so the realpath decides.
+ */
+function sameFolder(a: string, b: string): boolean {
+  try {
+    const left = statSync(a, { bigint: true });
+    const right = statSync(b, { bigint: true });
+    return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A runtime root as the filesystem spells it. The matching form is NFC (`foldCanonicalPathSeparators`), which names the folder
+ * on APFS and NTFS, but a filesystem that keeps bytes as written (ext4) holds a folder made on macOS in NFD: there the NFC
+ * string names nothing, and every realpath'd path under the folder would compare as outside it. When the matching form does
+ * not exist, or names another folder (an NFC sibling of the NFD folder, which ext4 keeps apart), but the folder does, the
+ * folder's realpath is the root. Comparisons are not widened: an NFD sibling of an NFC-allowed folder on ext4 stays a
+ * different folder.
+ */
+function runtimeRootSpelling(raw: string, canonical: string): string | null {
+  const resolved = pathResolve(raw);
+  if (!existsSync(resolved)) {
+    // A folder that does not exist yet keeps the matching form, unless that form names another folder (an NFC sibling on
+    // ext4): granting the sibling would widen the root, so it is left out.
+    if (!existsSync(canonical)) return canonical;
+    console.warn("[allowed-directories] a runtime root was left out: it does not exist and its matching form names another folder");
+    return null;
+  }
+  if (sameFolder(canonical, resolved)) return canonical;
+  let onDisk: string;
+  try {
+    onDisk = realpathSync.native(resolved);
+  } catch {
+    // The folder went away between the existence check and the realpath: there is no spelling to keep, so only this root
+    // is left out.
+    console.warn("[allowed-directories] a runtime root was left out: its folder could not be resolved");
+    return null;
+  }
+  // The on-disk spelling must name the folder the matching form names. Anything else (the folder swapped between the two
+  // resolutions, a link chain the matching form read lexically) is a different target: that one root is left out, so it
+  // matches nothing, and every other root keeps working. Nothing widens.
+  if (foldCanonicalPathSeparators(onDisk) !== canonical) {
+    console.warn("[allowed-directories] a runtime root was left out: its realpath names a different folder than its matching form");
+    return null;
+  }
+  return onDisk;
+}
+
 function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): string[] {
   const scratch = verifyAveScratchDir();
   const candidates = [cwd, aveHome(), ...(scratch.ok ? [scratch.path] : [])];
@@ -48,7 +101,8 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
   for (const raw of candidates) {
     const canonical = canonicalizePathForMatch(raw);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : canonical;
+    const value = foldCase ? folded : runtimeRootSpelling(raw, canonical);
+    if (value === null) continue;
     if (isFilesystemRootPath(folded)) continue;
     // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
     if (isAdmissionDeniedPath(folded)) continue;
@@ -82,7 +136,8 @@ function sanitizeAllowedDirectoryEntries(
     if (isFilesystemRootPath(expanded)) continue;
     const canonical = canonicalizePathForMatch(expanded);
     const folded = caseFoldForMatch(canonical);
-    const value = foldCase ? folded : canonical;
+    const value = foldCase ? folded : runtimeRootSpelling(expanded, canonical);
+    if (value === null) continue;
     if (isFilesystemRootPath(folded)) continue;
     if (isAdmissionDeniedPath(folded)) continue;
     if (seen.has(folded)) continue;

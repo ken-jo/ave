@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildMainLayoutSnapshot, savedSurfaceOf } from "../main-layout-snapshot.js";
+import { buildMainLayoutSnapshot, savedFolderOf, savedSurfaceOf } from "../main-layout-snapshot.js";
 import { parseMainLayout, type MainLayoutSnapshot, type SavedMainSurface } from "../../../../shared/main-layout.js";
-import { restorableLayout } from "../main-layout-restore.js";
+import { restorableLayout, restoredMainSurface } from "../main-layout-restore.js";
 import { leaf, splitLeaf } from "../../components/pane-tree.js";
 
 describe("savedSurfaceOf", () => {
@@ -87,5 +87,59 @@ describe("restorableLayout", () => {
 
   it("keeps a surface whose root matches a live one by identity, not spelling", () => {
     expect(restorableLayout(saved, ["/work", "c:/gone"]).layout.openSurfaces).toEqual([terminal, page]);
+  });
+});
+
+describe("folder views in the saved layout", () => {
+  const folderTab = "folder:0000000a-7";
+
+  it("saves the folder and selection the view reported, or its project root before it has reported", () => {
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 2, projectRoot: "/work", folder: { path: "/work/src", selection: "/work/src/a.ts" } }))
+      .toEqual({ kind: "folder", tabId: folderTab, ordinal: 2, path: "/work/src", selection: "/work/src/a.ts", projectRoot: "/work" });
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 2, projectRoot: "/work" }))
+      .toEqual({ kind: "folder", tabId: folderTab, ordinal: 2, path: "/work", selection: null, projectRoot: "/work" });
+  });
+
+  it("does not write a location outside the project, however it was planted", () => {
+    const save = (folder: { path: string; selection: string | null }) => savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: "/work", folder });
+    expect(save({ path: "/etc", selection: "/etc/passwd" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/work/../etc", selection: "/work/src/../../etc/hosts" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/workshop", selection: "/workshop/a.txt" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/work/src", selection: "/elsewhere/a.txt" })).toMatchObject({ path: "/work/src", selection: null });
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: "C:\\Work", folder: { path: "c:\\work\\src", selection: "D:\\x.txt" } }))
+      .toMatchObject({ path: "c:\\work\\src", selection: null });
+  });
+
+  it("keeps an NFD location under a root stored in NFC (a Korean folder made in Finder)", () => {
+    const root = "/work/프로젝트".normalize("NFC");
+    const folder = "/work/프로젝트/문서".normalize("NFD");
+    const selection = "/work/프로젝트/문서/메모.md".normalize("NFD");
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: root, folder: { path: folder, selection } }))
+      .toMatchObject({ path: folder, selection });
+    // A sibling whose name only starts like the root is still outside.
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: root, folder: { path: "/work/프로젝트2".normalize("NFD"), selection: null } }))
+      .toMatchObject({ path: root });
+  });
+
+  it("survives a save, a parse and a restore, back on the same folder and item", () => {
+    const tree = splitLeaf(leaf("main"), "main", "right", "group-2");
+    const snapshot = buildMainLayoutSnapshot({
+      tree, focusedId: "group-2", panelOpenIds: [], thumbnailOpenIds: [],
+      contentById: { main: { view: "home" }, "group-2": { view: "folder", surface: folderTab } },
+      surfaceOf: (tabId) => (tabId === folderTab
+        ? savedFolderOf({ tabId, ordinal: 1, projectRoot: "/work", folder: { path: "/work/src", selection: "/work/src/a.ts" } }) : null),
+      sideTabsOf: () => [],
+      openSurfaceIds: [folderTab],
+    });
+    const parsed = parseMainLayout(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const { layout, dropped } = restorableLayout(parsed.layout, ["/work"]);
+    expect(dropped).toEqual([]);
+    expect(layout.surfaces["group-2"]).toBeDefined();
+    expect(restoredMainSurface(layout.surfaces["group-2"]!)).toEqual({ tabId: folderTab, kind: "folder", ordinal: 1, url: null, cwd: null,
+      projectRoot: "/work", folder: { path: "/work/src", selection: "/work/src/a.ts" } });
+    // A folder view whose project is no longer open is dropped like any other surface.
+    expect(restorableLayout(parsed.layout, ["/other"]).dropped).toEqual([`${folderTab}: its project is not open`]);
   });
 });

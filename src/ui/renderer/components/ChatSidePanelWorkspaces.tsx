@@ -150,7 +150,10 @@ function ProjectRootsBrowser({
     try {
       const res = await window.ave.workspace.listDir(path);
       if (res.ok && res.entries) {
-        setChildrenByPath((prev) => ({ ...prev, [path]: res.entries ?? [] }));
+        // This tree has no link rows; links stay a folder-view display item, as before they were listed at all.
+        const entries = (res.entries ?? []).flatMap((entry): WorkspaceDirEntry[] =>
+          entry.type === "link" ? [] : [{ name: entry.name, path: entry.path, type: entry.type }]);
+        setChildrenByPath((prev) => ({ ...prev, [path]: entries }));
         setTruncatedPaths((prev) => {
           const has = prev.has(path);
           if (res.truncated && !has) return new Set(prev).add(path);

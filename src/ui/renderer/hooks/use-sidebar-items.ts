@@ -2,13 +2,14 @@ import { useEffect, useReducer, useState } from "react";
 import { parseSessionTabBindingsState, type BrowserSessionActor, type BrowserTabsApi, type SessionTabBindingsState } from "../../../shared/browser-surface.js";
 import { useBrowserControlState } from "../preview/agent-browser-bridge.js";
 import { guestFaviconSource } from "../preview/favicon-source.js";
-import type { MainSurface } from "../preview/main-surfaces.js";
+import { isToolMainSurface, type MainSurface, type ToolMainSurface } from "../preview/main-surfaces.js";
 import { subscribeMainLayoutChange } from "../preview/main-layout-restore.js";
 import { getSideTabsSink } from "../preview/surface-moves.js";
 import { subscribeWebSurfaces, subscribeWebSurfaceLocations, webSurfaceFavicon, webSurfaceLocation } from "../preview/web-surfaces.js";
 
-/** A main surface or a side tab. A side tab has no project of its own: it belongs to its pane's conversation. */
-export interface SidebarSurface extends Omit<MainSurface, "projectRoot"> {
+/** A terminal or web surface in the main area, or a side tab. A side tab has no project of its own: it belongs to its pane's
+ * conversation. */
+export interface SidebarSurface extends Omit<ToolMainSurface, "projectRoot"> {
   projectRoot?: string;
   title?: string;
   /** Main-owned binding membership, independent of the surface creator. */
@@ -55,7 +56,8 @@ export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupI
   }, [browserTabs]);
   const control = useBrowserControlState();
   const surfaces = new Map<string, SidebarSurface>();
-  const existing = [...mainSurfaces, ...chatGroupIds.flatMap((id) => getSideTabsSink(id)?.snapshot() ?? [])];
+  // Folder views have no project-tree row: the rail's folder launcher opens one, and a pane shows it.
+  const existing = [...mainSurfaces.filter(isToolMainSurface), ...chatGroupIds.flatMap((id) => getSideTabsSink(id)?.snapshot() ?? [])];
   for (const surface of existing) {
     const browser = surface.kind === "browser" ? control.tabs.find((tab) => tab.rendererTabId === surface.tabId) : undefined;
     const sessionId = sidebarBoundSessionId(surface, browser?.owner, bindings, sessionIds);

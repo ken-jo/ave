@@ -10,7 +10,7 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { resolveIpcErrorKey } from "../format-ipc-error.js";
+import { defaultAppOpenErrorKey, resolveIpcErrorKey } from "../format-ipc-error.js";
 import {
   PREVIEW_DOCUMENT_LIMITS,
   type PreviewDocumentError,
@@ -142,7 +142,8 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
   const [revision, setRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
-  const [openFailed, setOpenFailed] = useState(false);
+  // The i18n key of the last refused or failed open, cleared when the preview reloads.
+  const [openFailed, setOpenFailed] = useState<string | null>(null);
   const generation = useRef(0);
   const lastAcknowledgement = useRef("");
 
@@ -161,7 +162,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     let observedPath = path;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     generation.current += 1;
-    setOpenFailed(false);
+    setOpenFailed(null);
     setRefreshFailed(false);
     setRefreshing(true);
     setState((previous) => previous.phase === "ok" && previous.document.sheet.index === sheetIndex && refresh
@@ -300,10 +301,10 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
 
   const header = <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
     canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
-    onOpenError={() => setOpenFailed(true)}
+    onOpenError={(code) => setOpenFailed(defaultAppOpenErrorKey(code))}
     onReload={() => { setSheetFallback(false); setRevision((previous) => previous + 1); }} refreshing={refreshing} />;
   if (state.phase === "error") return <div className="space-y-2">{header}
-    <PreviewDocumentLiveStrip error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />
+    <PreviewDocumentLiveStrip error={openFailed ? t(openFailed) : undefined} />
     <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
       {t(tableErrorKey(state.code), { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
     </div></div>;
@@ -311,7 +312,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     {t("chatPreviewRail.tableLoading")}
   </div>;
   if (state.phase === "loading") return <div className="space-y-2">{header}
-    <PreviewDocumentLiveStrip error={openFailed ? t("chatPreviewRail.openDefaultAppError") : undefined} />{loading}</div>;
+    <PreviewDocumentLiveStrip error={openFailed ? t(openFailed) : undefined} />{loading}</div>;
 
   const { document: table, changes, status, latest } = state;
   const { sheet } = table;
@@ -322,7 +323,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2" data-testid="chat-side-panel-table-preview">
       {header}
       <PreviewDocumentLiveStrip status={status} summary={summary} ts={latest?.ts}
-        error={openFailed ? t("chatPreviewRail.openDefaultAppError")
+        error={openFailed ? t(openFailed)
           : refreshFailed ? t("chatPreviewRail.documentObservationRefreshFailed")
           : sheetFallback ? t("chatPreviewRail.tableSheetFallback") : undefined} />
       {table.sheetNames.length > 1 ? (

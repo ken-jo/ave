@@ -1,3 +1,4 @@
+import type { SideChatOpenRequest } from "./SideChatView.js";
 import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
@@ -119,9 +120,10 @@ export interface ChatGroupEnvironment {
 
   // the window's conversation list and stars
   refreshSessions: () => void | Promise<void>;
-  /** A stored side chat a sidebar row asked for, naming the tile that must show it. Every tile is handed the same request and
-   * only the one it names acts — the panel that draws a side chat is one conversation's own column. */
-  sideChatOpenRequest?: { chatGroupId: string; sessionId: string; nonce: number } | null;
+  /** A stored side chat a sidebar row asked for, or text a folder view asked a side chat to attach, naming the tile that must
+   * show it. Every tile is handed the same request and only the one it names acts — the panel that draws a side chat is one
+   * conversation's own column. */
+  sideChatOpenRequest?: SideChatOpenRequest | null;
   /** Bring a chat group forward, including one a narrow canvas has folded away. Returns whether focus moved. */
   focusChatGroup: (chatGroupId: string) => boolean;
   onReturnToConversation: (chatGroupId: string) => void;

@@ -1,24 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 import { isSecondaryMainWindow } from "../utils/main-window-role.js";
-import { parseMainLayout, type MainLayoutLimits, type MainLayoutSnapshot, type SavedSurface } from "../../../shared/main-layout.js";
+import { isSavedTerminalOrPage, parseMainLayout, type MainLayoutLimits, type MainLayoutSnapshot } from "../../../shared/main-layout.js";
 import { MAIN_CHAT_GROUP_ID, MAX_PANES } from "../../../contract/app-contract.js";
 import type { PaneNode } from "../components/pane-tree.js";
 import type { ViewLocation } from "../utils/view-location.js";
-import { VIEW_OF_SURFACE_KIND, type MainSurface } from "../preview/main-surfaces.js";
+import { VIEW_OF_SURFACE_KIND, isToolMainSurface, type MainSurface } from "../preview/main-surfaces.js";
 import { reserveTabIds } from "../preview/workspace-tabs.js";
 import { getSideTabsSink } from "../preview/surface-moves.js";
 import { subscribeWebSurfaceLocations, webSurfaceLocation } from "../preview/web-surfaces.js";
 import {
   emitMainLayoutChange,
   restorableLayout,
+  restoredMainSurface,
   stageRestoredLayout,
   type RestorableLayout,
   subscribeMainLayoutChange,
   takeRestoredSideTabs,
   terminalCwd,
 } from "../preview/main-layout-restore.js";
-import { buildMainLayoutSnapshot, savedSurfaceOf } from "../preview/main-layout-snapshot.js";
+import { buildMainLayoutSnapshot, savedFolderOf, savedSurfaceOf } from "../preview/main-layout-snapshot.js";
 import { knownSurfaceUsedAt, restoreSurfaceUsedAt } from "../preview/active-surface.js";
 
 /** The window's own limits the stored shape is checked against (see `shared/main-layout.ts`). */
@@ -54,13 +55,12 @@ function applyLayout(layout: RestorableLayout, chatGroups: ChatGroupsForLayout, 
   const shown = Object.values(layout.surfaces);
   const listed = layout.openSurfaces;
   const main = [...listed, ...shown.filter((surface) => !listed.some((each) => each.tabId === surface.tabId))];
-  const all: SavedSurface[] = [...main, ...Object.values(layout.sideTabs).flat()];
-  reserveTabIds(all.map((surface) => surface.tabId));
-  stageRestoredLayout({ sideTabs: layout.sideTabs, terminals: all.filter((surface) => surface.kind === "terminal") });
+  const sideTabs = Object.values(layout.sideTabs).flat();
+  reserveTabIds([...main, ...sideTabs].map((surface) => surface.tabId));
+  const terminals = [...main.filter(isSavedTerminalOrPage), ...sideTabs].filter((surface) => surface.kind === "terminal");
+  stageRestoredLayout({ sideTabs: layout.sideTabs, terminals });
   restoreSurfaceUsedAt(main);
-  for (const surface of main) {
-    mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd, projectRoot: surface.projectRoot });
-  }
+  for (const surface of main) mainSurfaces.adopt(restoredMainSurface(surface));
   const content: Record<string, ViewLocation> = {};
   for (const [paneId, surface] of Object.entries(layout.surfaces)) {
     content[paneId] = { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: surface.tabId };
@@ -147,6 +147,7 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
         surfaceOf: (tabId) => {
           const surface = surfaces.get(tabId);
           if (!surface) return null;
+          if (!isToolMainSurface(surface)) return savedFolderOf(surface);
           const saved = savedSurfaceOf(
             surface,
             surface.kind === "terminal" ? terminalCwd(tabId) ?? surface.cwd ?? null : null,
