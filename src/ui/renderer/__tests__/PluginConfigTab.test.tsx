@@ -5,6 +5,8 @@ import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 import { onNewChatDraft } from "../chat-draft-request.js";
+import { MIGRATION_TARGET_HOST_PROTOCOL } from "../tabs/plugin-migration-prompt.js";
+import { HOST_PROTOCOL_VERSIONS_SERVED } from "../../../plugins/isolation/host-api-wire.js";
 import { makePluginCard } from "./support/plugin-card.js";
 
 const mockCards = vi.fn(async () => [
@@ -584,9 +586,14 @@ describe("PluginConfigTab", () => {
     stop();
 
     expect(drafts).toHaveLength(1);
-    expect(drafts[0]).toContain("host protocol 3 to host protocol 4");
+    expect(drafts[0]).toContain(`to host protocol ${MIGRATION_TARGET_HOST_PROTOCOL}`);
+    expect(drafts[0]).toContain(`requires.hostProtocol to "${MIGRATION_TARGET_HOST_PROTOCOL}"`);
     expect(drafts[0]).toContain("https://example.invalid/plugins/meeting");
     expect(market.planInstall).not.toHaveBeenCalled();
+  });
+
+  it("migrates to the host protocol this build serves", () => {
+    expect(HOST_PROTOCOL_VERSIONS_SERVED).toEqual([MIGRATION_TARGET_HOST_PROTOCOL]);
   });
 
   it("opens the reviewed folder install in every build, and the unreviewed one only in dev", async () => {
