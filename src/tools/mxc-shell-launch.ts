@@ -2,6 +2,7 @@
 // This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
+import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -15,6 +16,7 @@ import {
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
+  type MxcDirectoryEntry,
   type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
 
@@ -39,6 +41,24 @@ export interface PrepareMxcShellLaunchInput {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
+  /** Lists a directory without following links; defaults to the real filesystem. */
+  readonly list?: (directory: string) => readonly MxcDirectoryEntry[];
+}
+
+// Listing reports every Windows reparse point as a link; lstat tells a real link (symlink, junction) from a placeholder directory such as a cloud file.
+function listDirectory(directory: string): MxcDirectoryEntry[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry): MxcDirectoryEntry[] => {
+    if (entry.isDirectory()) return [{ name: entry.name, kind: "directory" }];
+    if (!entry.isSymbolicLink()) return [{ name: entry.name, kind: "file" }];
+    let target: ReturnType<typeof lstatSync>;
+    try { target = lstatSync(winPath.join(directory, entry.name)); }
+    catch (error) {
+      // Removed since the listing: nothing is left to deny.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return [{ name: entry.name, kind: target.isSymbolicLink() ? "link" : target.isDirectory() ? "reparse-directory" : "file" }];
+  });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -49,7 +69,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
   if (!input.exists(wxcExec)) {
     throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
   }
-  const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists);
+  const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists, input.list ?? listDirectory);
   let listener: InvocationProxyListener | undefined;
   const relay = await openHostEgressListener(input.egressToken);
   try {

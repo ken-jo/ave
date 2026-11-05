@@ -697,7 +697,9 @@ function isSessionReadPathUnderRoot(canonicalPath: string, root: string | undefi
   return foldedPath === foldedRoot || foldedPath.startsWith(`${foldedRoot}/`);
 }
 
-// Project the existing sensitive rules beneath a host-resolved session root. Native glob matching owns recursion; this function never scans stored data.
+// Project the existing sensitive rules beneath a host-resolved session root. This function never scans stored data: where the native layer has glob
+// rules it owns recursion, and Windows MXC (literal rules only) expands each pattern over the read-only root at every shell start, failing closed past
+// its walk cap (`rankMxcFilesystem`).
 function getSessionReadDenyPatterns(sessionReadRoot: string): readonly string[] {
   return Object.freeze(SENSITIVE_PATH_PATTERNS.map((pattern) =>
     `${sessionReadRoot}/${pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern}`));

@@ -1,5 +1,6 @@
 // The write jail is the canonical union of plugin DATA storage and user-authorized directories; never grant the plugin root containing executable bundles or manifests, since self-rewrite enables later host execution. Reads use separate policy.
-import { canonicalizePathForMatch } from "./sensitive-paths.js";
+import { aveHome } from "../shared/ave-home.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
 // Inputs for deriveSandboxWritePaths. Pure data — no I/O of its own.
 export interface SandboxWriteJailInput {
@@ -21,8 +22,13 @@ export function deriveSandboxWritePaths(input: SandboxWriteJailInput): string[] 
 
   const seen = new Set<string>();
   const out: string[] = [];
+  // The Ave home itself is never a write root. Runtime allowed directories carry it for the file tools, but a sandboxed shell may change
+  // only the project without asking (decision tree: sandbox-auto is "inside the project"; Ave config/home dirs are protected). A
+  // directory inside the home, such as the default workspace, stays a root of its own.
+  const home = caseFoldForMatch(canonicalizePathForMatch(aveHome()));
   for (const path of raw) {
     const canonical = canonicalizePathForMatch(path);
+    if (caseFoldForMatch(canonical) === home) continue;
     if (seen.has(canonical)) continue;
     seen.add(canonical);
     out.push(canonical);

@@ -1,5 +1,6 @@
 // Derive the canonical, deduplicated union of the plugin data root and allowed directories without invoking OS isolation.
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
@@ -13,6 +14,18 @@ afterEach(async () => {
 });
 
 describe("deriveSandboxWritePaths", () => {
+  it("never makes the Ave home a write root, but keeps a project inside it", () => {
+    const home = resources.makeTmpDir("ave-jail-home-");
+    const workspace = join(home, "workspace");
+    mkdirSync(workspace);
+    vi.stubEnv("AVE_HOME", home);
+    try {
+      expect(deriveSandboxWritePaths({ allowedDirectories: [workspace, home] }))
+        .toEqual([canonicalizePathForMatch(workspace)]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+
   it("jails to the allowed directories when there is no owner plugin (builtin shell)", () => {
     const cwd = resources.makeTmpDir("ave-jail-cwd-");
     const result = deriveSandboxWritePaths({ allowedDirectories: [cwd] });
