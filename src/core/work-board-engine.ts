@@ -9,7 +9,7 @@ import {
   type SubAgentRunner,
 } from "../engine/subagent-runner.js";
 import type { LoadedAgentProfile } from "../main/agent-profile-store.js";
-import type { WorkBoardStore } from "../main/work-board-store.js";
+import { itemDigestOf, type WorkBoardStore } from "../main/work-board-store.js";
 import type {
   WorkItem,
   WorkItemResolved,
@@ -634,6 +634,8 @@ export function createWorkBoardEngine(
       plan,
       runSessionId: planResult.childSessionId,
       revision: input.revision,
+      // The item the prompt was built from: an edit made during planning makes this plan stale.
+      itemDigest: itemDigestOf(item),
       ...(input.agentName ? { agentName: input.agentName } : {}),
     });
     if (stored === null || stored.status !== "updated") {
@@ -808,7 +810,10 @@ export function createWorkBoardEngine(
     }
 
     const plan = item.plan;
-    if (typeof plan !== "string") throw new Error(`work item #${itemId} has a decided plan approval but no plan`);
+    if (typeof plan !== "string") {
+      inFlight.delete(itemId);
+      throw new Error(`work item #${itemId} has a decided plan approval but no plan`);
+    }
     const continuation = guarded(itemId, opts.approvalSurface, async () => {
       try {
         const runner = getRunner();

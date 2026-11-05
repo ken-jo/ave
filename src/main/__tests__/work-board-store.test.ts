@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkBoardStore, planHashOf } from "../work-board-store.js";
+import { WorkBoardStore, itemDigestOf, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
 
@@ -416,7 +416,9 @@ describe("WorkBoardStore — plan approval", () => {
     const created = await store.create({ title, detail: "details" });
     if (created.status !== "created") throw new Error("setup failed");
     await store.beginRun(created.itemId, "run-1", new Date(FIXED_NOW).toISOString());
-    const stored = await store.setPlanAwaitingApproval(created.itemId, { runId: "run-1", plan: "PLAN: A", runSessionId: "s", revision: 0 });
+    const stored = await store.setPlanAwaitingApproval(created.itemId, {
+      runId: "run-1", plan: "PLAN: A", runSessionId: "s", revision: 0, itemDigest: itemDigestOf(created.item),
+    });
     if (stored?.status !== "updated") throw new Error("setup failed");
     return { id: created.itemId, approval: stored.item.planApproval! };
   }
@@ -430,7 +432,7 @@ describe("WorkBoardStore — plan approval", () => {
       expect(onDisk.runStatus).toBe("awaiting_approval");
       expect(onDisk.planApproval.planHash).toBe(planHashOf("PLAN: A"));
       // A plan for a run the item has moved on from is not stored.
-      expect(await store.setPlanAwaitingApproval(id, { runId: "run-0", plan: "OLD", runSessionId: "s", revision: 0 })).toBeNull();
+      expect(await store.setPlanAwaitingApproval(id, { runId: "run-0", plan: "OLD", runSessionId: "s", revision: 0, itemDigest: "x" })).toBeNull();
     } finally {
       await cleanup();
     }

@@ -845,6 +845,34 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
     }
   });
 
+  it("leaves a plan stale when the item is edited while the plan child is still planning", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "clean up", detail: "remove /tmp/a" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const id = created.itemId;
+      const registry = boardParentToolRegistry();
+      const runner = {
+        async spawn(input: Record<string, unknown>) {
+          // The edit lands after the plan prompt was built from "remove /tmp/a".
+          if (input.profileMode === "plan") await store.update(id, { detail: "remove everything under ~/" });
+          return { summary: "PLAN: rm /tmp/a", toolCallCount: 0, turnCount: 1, childSessionId: "c", entries: [], ok: true };
+        },
+        parentToolRegistry: () => registry,
+      } as unknown as SubAgentRunner;
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
+      expect((await engine.runItem(id)).status).toBe("awaiting_approval");
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing");
+      expect(got.item.planApproval?.itemDigest).toBe(itemDigestOf({ title: "clean up", detail: "remove /tmp/a" }));
+      const decided = await engine.decidePlan(id, { runId: got.item.runId!, planHash: got.item.planApproval!.planHash, decision: "approve" });
+      expect(decided.result).toEqual({ ok: false, reason: "plan_stale" });
+      expect(decided.continuation).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("requires a note to request changes and refuses control characters, storing nothing", async () => {
     const { store, cleanup } = tempBoard();
     try {

@@ -75,6 +75,15 @@ describe("Work Board — plan decision", () => {
     expect((await screen.findByTestId("work-board-plan-decision-error")).textContent).toContain("수정 요청으로 다시 계획");
   });
 
+  it("says the item is gone when it was deleted before the decision arrived", async () => {
+    const decide = vi.fn(async () => ({ ok: false as const, reason: "not_found" as const }));
+    await openDetail(stubApi(awaitingItem(), decide));
+    fireEvent.click(screen.getByTestId("work-board-plan-reject"));
+    const error = await screen.findByTestId("work-board-plan-decision-error");
+    expect(error.textContent).toContain("삭제되어");
+    expect(error.textContent).not.toContain("not_found");
+  });
+
   it("shows the decision in a detail opened before the plan was ready, once the run reaches awaiting_approval", async () => {
     let progress: ((ev: RunProgressEventPayload) => void) | undefined;
     let current = awaitingItem({ runStatus: "planning", plan: undefined, planApproval: undefined });

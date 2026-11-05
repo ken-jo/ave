@@ -797,10 +797,11 @@ export class WorkBoardStore {
   }
 
   // The plan child finished: store the plan and its pending decision in one write, so no reader (or a restart) ever sees a run awaiting
-  // approval without the decision object. The hashes come from the stored item at this moment. Refused (null) when the run moved on.
+  // approval without the decision object. `itemDigest` is the digest of the item snapshot the plan prompt was built from, never the
+  // item as it is now: an edit made while the child was planning must leave the plan stale. Refused (null) when the run moved on.
   async setPlanAwaitingApproval(
     id: number,
-    input: { runId: string; plan: string; runSessionId: string; revision: number; agentName?: string },
+    input: { runId: string; plan: string; runSessionId: string; revision: number; itemDigest: string; agentName?: string },
   ): Promise<WorkItemUpdateResult | null> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -821,7 +822,7 @@ export class WorkBoardStore {
       updated.planApproval = {
         runId: input.runId,
         planHash: planHashOf(input.plan),
-        itemDigest: itemDigestOf(current),
+        itemDigest: input.itemDigest,
         requestedAt: iso,
         status: "pending",
         revision: input.revision,

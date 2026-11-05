@@ -954,6 +954,8 @@ function planDecisionRefusalText(reason: PlanDecisionRefusal | string): string {
       return t("workBoard.planDecisionNoteInvalid");
     case "already_running":
       return t("workBoard.planDecisionBusy");
+    case "not_found":
+      return t("workBoard.planDecisionItemGone");
     default:
       return formatIpcError(reason, undefined);
   }

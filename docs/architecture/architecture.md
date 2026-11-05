@@ -1246,8 +1246,10 @@ are whole and the plan hash still matches; anything less becomes `error`).
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of
-them, and for approve also that the item's title, detail and project are
-unchanged since planning (`plan_stale` otherwise), inside the board lock, and
+them, and for approve also that the item's title, detail and project still
+match the snapshot the plan prompt was built from, so an edit made while the
+plan child was still planning leaves the plan stale (`plan_stale`), inside the
+board lock, and
 writes the decision before anything acts on it: approve moves the run to
 `executing` in that write, so a second approval finds nothing pending. Approve
 spawns the execute child; request changes (a note is required) re-plans the
