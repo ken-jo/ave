@@ -30,6 +30,7 @@ import {
   reconcileWorkspaceRoots,
   removeWorkspaceRootWithIntent,
   retainedDescendantWorkspaceRoots,
+  workspaceRootRemovalContext,
   opaqueWorkspaceRootAuditRef,
 } from "../../permissions/workspace-root-reconciler.js";
 import {
@@ -52,7 +53,8 @@ const MAX_DIR_ENTRIES = 1_000;
 const ACK_TOKEN_TTL_MS = 60_000;
 
 // Keep warned picks in main behind one-time tokens; acknowledgment never accepts a renderer path.
-const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture }>();
+/** Tokens main handed to one window: each is redeemed once, before it expires, and only by the window it was handed to. */
+const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture; senderId: number }>();
 
 // Native workspace gestures retain their direct-UI boundary; agent folder approval uses its own pipeline.
 function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof validateDirectoryAddition> {
@@ -62,8 +64,9 @@ function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof 
   return sensitive ? { ok: false, reason: `path matches sensitive pattern '${sensitive}'`, adjacencyWarnings: verdict.adjacencyWarnings } : verdict;
 }
 
-// Record picker versus drop provenance in widening audits; dropped paths have no native-picker authority.
-type PickGesture = "dialog" | "drop";
+// Record picker, drop or undo provenance in widening audits; dropped paths have no native-picker authority, and an undo
+// re-adds only the main-owned path a removal just took out.
+type PickGesture = "dialog" | "drop" | "undo";
 
 function prunePendingPicks(now: number): void {
   for (const [token, pending] of pendingPicks) {
@@ -139,9 +142,29 @@ export interface WorkspaceRemoveRootResult {
   // Report pruned path grants; directory removal alone cannot revoke the separate rule-tier authority.
   prunedGrants?: number;
   cleanupPending?: boolean;
+  /** One-time token that re-adds exactly the removed folder through `pickRoot({ackToken})`, within the ack TTL. Absent while
+   * cleanup is pending, so an undo cannot race the deferred revocation. */
+  undoToken?: string;
   error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
   message?: string;
 }
+
+/** What removing a project would end or prune (case 31). Each count comes from the store that removal changes, by the same predicate. */
+export interface WorkspaceRemovalCounts {
+  /** Conversations with a turn running now that removal aborts, by the same per-loop test. The window's own terminals and
+   * pages that removal closes are counted by the renderer, which closes them. */
+  streamingSessions: number;
+  /** Saved "always allow" path grants under the folder. Undo does not bring them back. */
+  pathGrants: number;
+  /** Routines whose folder scope narrows. Undo does not bring that back. */
+  routines: number;
+  /** Conversations whose project link is cleared. Their transcripts stay. */
+  detachableSessions: number;
+}
+
+export type WorkspacePreviewRemoveRootResult =
+  | { ok: true; counts: WorkspaceRemovalCounts }
+  | { ok: false; error: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "preview-failed" };
 
 type WorkspaceSearchFilesResult =
   | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
@@ -304,6 +327,24 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     }
   };
 
+  /**
+   * Everything that holds a live scope over workspace roots, in revocation order. Removal revokes each; its preview asks each
+   * how many running turns that revocation would stop, so the two walk one list. Throws when the sub-agent runner cannot be
+   * reached, unless asked to go on without it.
+   */
+  function workspaceLiveScopeOwners(options: { withoutSubAgents?: boolean } = {}): unknown[] {
+    const owners: unknown[] = [
+      deps.conversationLoop,
+      deps.sideChatConversationLoop,
+      ...(deps.paneChatLoops?.all() ?? []),
+      deps.routineEngine,
+      // Revoke plugin session grants too; they are independent live scope owners.
+      getActivePluginSurfacePermissionScope(),
+    ];
+    if (!options.withoutSubAgents) owners.push(deps.getSubAgentRunner?.());
+    return owners;
+  }
+
   async function finalizeRemovedWorkspaceRoot(
     root: string,
     source: string,
@@ -317,19 +358,13 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       errors.push(error);
       auditLifecycleWarning(source, root, "revoke-live-scopes", error);
     }
-    const liveScopeOwners: unknown[] = [
-      deps.conversationLoop,
-      deps.sideChatConversationLoop,
-      ...(deps.paneChatLoops?.all() ?? []),
-      deps.routineEngine,
-      // Revoke plugin session grants too; they are independent live scope owners.
-      getActivePluginSurfacePermissionScope(),
-    ];
+    let liveScopeOwners: unknown[];
     try {
-      liveScopeOwners.push(deps.getSubAgentRunner?.());
+      liveScopeOwners = workspaceLiveScopeOwners();
     } catch (error: unknown) {
       errors.push(error);
       auditLifecycleWarning(source, root, "revoke-live-scopes", error);
+      liveScopeOwners = workspaceLiveScopeOwners({ withoutSubAgents: true });
     }
     for (const candidate of liveScopeOwners) {
       const loop = candidate as WorkspaceLoopLifecycle | undefined;
@@ -701,6 +736,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const pending = pendingPicks.get(ackToken);
         if (pending) pendingPicks.delete(ackToken); // consume regardless of validity
         if (!pending) return { ok: false, error: "ack-unknown" };
+        // Another window's token is unknown here.
+        if (pending.senderId !== e.sender.id) return { ok: false, error: "ack-unknown" };
         if (now > pending.expires) return { ok: false, error: "ack-expired" };
         return persistValidatedRoot(pending.path, pending.gesture);
       }
@@ -730,6 +767,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           path: dialogPath,
           expires: now + ACK_TOKEN_TTL_MS,
           gesture: "dialog",
+          senderId: e.sender.id,
         });
         return {
           ok: true,
@@ -829,6 +867,65 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
+  // The removal preview (case 31) refuses exactly what removal refuses, then asks each store removal changes how much it would
+  // change, with the removal's own root and preserved child roots. A store it cannot ask fails the preview: reporting zero
+  // would send the renderer down the instant path.
+  ipcMain.handle(
+    CHANNELS.workspace.previewRemoveRoot,
+    async (e, rawPath: unknown): Promise<WorkspacePreviewRemoveRootResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.workspace.previewRemoveRoot, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
+      const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
+      const targetKey = rootKey(rawPath);
+      if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" };
+      const active = readPermissionSettings().permissions.additionalDirectories;
+      const stored = active.find((candidate) => rootKey(candidate) === targetKey);
+      if (!stored) return { ok: false, error: "not-an-additional-root" };
+      const runtimePath = canonicalizePathForMatch(resolvePath(stored));
+      // The context the removal itself hands each store and loop.
+      const context = workspaceRootRemovalContext(runtimePath, active);
+      const options = { preserveRoots: context.preserveRoots };
+      try {
+        const permissionManager = deps.conversationLoop?.permissionManager;
+        if (typeof permissionManager?.countPathGrantsUnderRoot !== "function") throw new Error("permission manager unavailable");
+        if (typeof deps.routinesStore?.countRoutinesScopedToWorkspaceRoot !== "function") throw new Error("routines store unavailable");
+        const sessionStores = [deps.memoryManager, ...sessionMemoryManagers(CHANNELS.workspace.previewRemoveRoot, runtimePath, true)]
+          .filter((store, index, all) => all.indexOf(store) === index) as Array<{ countSessionsInProject?: (root: string) => number } | undefined>;
+        let detachableSessions = 0;
+        for (const store of sessionStores) {
+          if (typeof store?.countSessionsInProject !== "function") throw new Error("session store unavailable");
+          detachableSessions += store.countSessionsInProject(runtimePath);
+        }
+        // Every live-scope owner removal revokes (chat, side and pane loops, routines, plugin grants, sub-agents) says how many
+        // running turns its revocation would stop, by the test it aborts by. An owner that cannot answer is a contract violation,
+        // not a zero.
+        let streamingSessions = 0;
+        for (const owner of workspaceLiveScopeOwners()) {
+          if (owner === undefined || owner === null) continue;
+          const count = (owner as { countTurnsAbortedByWorkspaceRootRemoval?: unknown }).countTurnsAbortedByWorkspaceRootRemoval;
+          if (typeof count !== "function") throw new Error("a live-scope owner cannot preview a workspace root removal");
+          const turns: unknown = count.call(owner, runtimePath, context);
+          if (typeof turns !== "number" || !Number.isSafeInteger(turns) || turns < 0) throw new Error("a live-scope owner answered the removal preview with no count");
+          streamingSessions += turns;
+        }
+        const [pathGrants, routines] = await Promise.all([
+          permissionManager.countPathGrantsUnderRoot(runtimePath, options),
+          deps.routinesStore.countRoutinesScopedToWorkspaceRoot(runtimePath, options),
+        ]);
+        return {
+          ok: true,
+          counts: { streamingSessions, pathGrants, routines, detachableSessions },
+        };
+      } catch (error: unknown) {
+        log.warn({ err: error, path: opaqueWorkspaceRootAuditRef(runtimePath) }, "workspace root removal preview failed");
+        return { ok: false, error: "preview-failed" };
+      }
+    },
+  );
+
   // Removal may target only an existing additional root; the default root is not removable.
   ipcMain.handle(
     CHANNELS.workspace.removeRoot,
@@ -877,12 +974,22 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           ...(prunedAudit.length > 0 ? { prunedPatterns: prunedAudit } : {}),
         }),
       });
+      // Undo re-adds only this main-owned path through the ack flow (same TTL and one-time consumption). None while cleanup is
+      // pending: a re-add must not race the deferred revocation.
+      let undoToken: string | undefined;
+      if (!removal.cleanupPending) {
+        const now = Date.now();
+        prunePendingPicks(now);
+        undoToken = randomBytes(32).toString("base64url");
+        pendingPicks.set(undoToken, { path: removal.runtimePath, expires: now + ACK_TOKEN_TTL_MS, gesture: "undo", senderId: e.sender.id });
+      }
       return {
         ok: true,
         removed: removal.storedPath,
         roots: computeRoots(),
         prunedGrants,
         ...(removal.cleanupPending ? { cleanupPending: true } : {}),
+        ...(undoToken ? { undoToken } : {}),
       };
     },
   );
@@ -944,6 +1051,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         path: rawPath,
         expires: now + ACK_TOKEN_TTL_MS,
         gesture: "drop",
+        senderId: e.sender.id,
       });
       return {
         ok: true,

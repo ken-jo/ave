@@ -41,6 +41,20 @@ async function seed(
 }
 
 describe("MemoryManager workspace project detachment", () => {
+  it("counts, writing nothing, exactly the conversations the detach then unlinks (removal preview)", async () => {
+    await seed(SESSION_A, ROOT, "alpha-a");
+    await seed(SESSION_B, "c:/work/alpha/", "alpha-b");
+    await seed(SESSION_OTHER, "C:\\Work\\Alpha\\child", "alpha-child");
+    const before = readFileSync(join(dir, "sessions", `${SESSION_A}.meta.json`), "utf-8");
+
+    const counted = memory.countSessionsInProject(ROOT);
+    expect(readFileSync(join(dir, "sessions", `${SESSION_A}.meta.json`), "utf-8")).toBe(before);
+
+    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(counted);
+    expect(counted).toBe(2);
+    expect(memory.countSessionsInProject(ROOT)).toBe(0);
+  });
+
   it("preserves JSONL and unrelated metadata while detaching matching path variants", async () => {
     const originalA = await seed(SESSION_A, ROOT, "alpha-a");
     const originalB = await seed(SESSION_B, "c:/work/alpha/", "alpha-b");

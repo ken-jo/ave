@@ -10,7 +10,7 @@ import {
 import type { SessionFamily } from "../../../../shared/session-lookup.js";
 import { isSuggestionsSession } from "../../../../shared/suggestions-session.js";
 import { resolveConversationTitle } from "../../../../shared/conversation-title.js";
-import type { ProjectErrorReporter, useAddProjectFolder } from "../../hooks/use-add-project-folder.js";
+import type { useAddProjectFolder } from "../../hooks/use-add-project-folder.js";
 import {
   useNativeContextMenu,
   useNativeMenu,
@@ -441,9 +441,8 @@ export interface ProjectTreeProps {
   /** Open the live terminal or page and its own chat panel. */
   onOpenPaneChat?: (tabId: string) => void;
   onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
-  onRefreshProjects?: () => void | Promise<void>;
-  onProjectError?: ProjectErrorReporter;
-  onProjectNotice?: (message: string) => void;
+  /** 프로젝트 제거 (case 29): the app previews, confirms when something would be lost, and removes. */
+  onRemoveProject: (project: ProjectIdentity) => void;
   onOpenSurface?: (tabId: string) => void;
   isSurfaceVisible?: (tabId: string) => boolean;
   /** 옆에 분할로 열기 (⌥Enter): the conversation in a new pane beside the focused one. */
@@ -488,9 +487,7 @@ export function ProjectTree({
   onOpenSideChat,
   onOpenPaneChat,
   onNewChatForProject,
-  onRefreshProjects,
-  onProjectError,
-  onProjectNotice,
+  onRemoveProject,
   onOpenSurface,
   isSurfaceVisible,
   onOpenSessionBeside,
@@ -827,22 +824,6 @@ export function ProjectTree({
 
   // ── Project groups (the all-projects view).
   const revealProject = (projectRoot: string) => void window.ave?.workspace?.reveal?.(projectRoot);
-  // Remove a picked (non-default) project from the workspace root list. Refresh on success so the group disappears at once.
-  const removeProject = async (project: ProjectIdentity): Promise<void> => {
-    if (project.isDefault) return;
-    try {
-      const result = await window.ave?.workspace?.removeRoot?.(project.projectRoot);
-      if (!result?.ok) {
-        onProjectError?.("remove", result?.error, result?.message);
-        return;
-      }
-      // The user removed the project; a revocation that could not finish is reported, never asked about.
-      if (result.cleanupPending) onProjectNotice?.(t("chatPreviewRail.removeRootCleanupPending"));
-      await onRefreshProjects?.();
-    } catch (error) {
-      onProjectError?.("remove", "remove-failed", error instanceof Error ? error.message : undefined);
-    }
-  };
   const addProjectMenuHandlers = (): NativeContextMenuHandlers => ({ "project.add": () => void addProject() });
   const newChatIn = (project: ProjectIdentity) => void onNewChatForProject?.({ projectRoot: project.projectRoot, projectName: project.projectName });
   // The folder's own actions, built once: the row's right-click, its trailing button and the menu key all call this.
@@ -861,7 +842,7 @@ export function ProjectTree({
       "project.reveal": () => revealProject(root),
       // Also offered ON a row: someone hunting for "add a project" right-clicks the nearest project-looking thing.
       ...addProjectMenuHandlers(),
-      ...(project.isDefault ? {} : { "project.remove": () => void removeProject(project) }),
+      ...(project.isDefault ? {} : { "project.remove": () => onRemoveProject(project) }),
     } as NativeContextMenuHandlers;
   };
   const renderGroupRow = (line: Extract<TreeLine, { type: "group" }>) => {

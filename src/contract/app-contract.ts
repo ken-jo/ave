@@ -752,6 +752,8 @@ export const CHANNELS = {
     listRoots: "ave:workspace:list-roots",
     listDir: "ave:workspace:list-dir",
     removeRoot: "ave:workspace:remove-root",
+    // What removing a project would end or prune (case 31), asked before removeRoot. Read-only. INTERNAL.
+    previewRemoveRoot: "ave:workspace:preview-remove-root",
     reveal: "ave:workspace:reveal",
     // Drag-drop add-root, step 1 (#1458). A dropped folder path is renderer-NAMED
     // (resolved in preload via webUtils.getPathForFile), so this handler re-runs

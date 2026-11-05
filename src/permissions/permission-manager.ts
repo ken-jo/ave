@@ -478,6 +478,50 @@ export interface NetworkPermissionEvaluation {
   rule?: { decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope };
 }
 
+/** Whether a stored path grant falls under a removed root, sparing separately registered descendant roots. Shared by the prune and its preview. */
+function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] = []): (pattern: string) => boolean {
+  // Dual-form roots (item-5): canonical (realpath'd) and raw (pathResolve only).
+  const rootCanon = caseFoldForMatch(canonicalizePathForMatch(root));
+  const rootRaw = caseFoldForMatch(resolve(root).replace(/\\/g, "/"));
+  const preservedRoots = preserveRoots.flatMap((preserveRoot) => {
+    try {
+      const canonical = caseFoldForMatch(canonicalizePathForMatch(preserveRoot));
+      const raw = caseFoldForMatch(resolve(preserveRoot).replace(/\\/g, "/"));
+      // Only a genuine descendant may carve a hole in the removed root. Ignoring the root itself and unrelated paths prevents a malformed caller option from accidentally preserving the whole revoked scope.
+      if (
+        !isStrictPathDescendant(rootCanon, canonical)
+        && !isStrictPathDescendant(rootRaw, raw)
+      ) {
+        return [];
+      }
+      return [{ canonical, raw }];
+    } catch {
+      return [];
+    }
+  });
+  // A multi-path grant (`apply_patch`) is pruned when ANY of its paths is under the removed root: it would otherwise keep authorizing that path.
+  const isUnderRoot = (pattern: string): boolean =>
+    extractGrantPaths(pattern).some((target) => isPathUnderRoot(target));
+  const isPathUnderRoot = (target: string): boolean => {
+    // A grant matches if EITHER form equals the root or places it under the root. The two forms are compared like-for-like (canonical↔canonical, raw↔raw) so a realpath'd stored grant and a raw stored grant are both caught. isStrictPathDescendant folds case defensively (item-7), so passing the already-folded strings is safe + idempotent.
+    const targetCanon = caseFoldForMatch(canonicalizePathForMatch(target));
+    const targetRaw = caseFoldForMatch(resolve(target).replace(/\\/g, "/"));
+    const covered = targetCanon === rootCanon
+      || targetRaw === rootRaw
+      || isStrictPathDescendant(rootCanon, targetCanon)
+      || isStrictPathDescendant(rootRaw, targetRaw);
+    if (!covered) return false;
+    const preserved = preservedRoots.some(
+      (preserveRoot) => targetCanon === preserveRoot.canonical
+        || isStrictPathDescendant(preserveRoot.canonical, targetCanon)
+        || targetRaw === preserveRoot.raw
+        || isStrictPathDescendant(preserveRoot.raw, targetRaw),
+    );
+    return !preserved;
+  };
+  return isUnderRoot;
+}
+
 export class PermissionManager {
   private rules: PermissionRule[] = [];
   // Unread deny rules fail admission closed for every tool category.
@@ -1098,51 +1142,22 @@ export class PermissionManager {
     this.revokeAllPluginAccess(`rule-removed:${action}:${pattern}`);
   }
 
+  // The removal preview's count of the grants `prunePathGrantsUnderRoot` would prune now: the same file, the same predicate, nothing written.
+  async countPathGrantsUnderRoot(
+    root: string,
+    options?: { preserveRoots?: readonly string[] },
+  ): Promise<number> {
+    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
+    const file = await readPermissionsFile(this.permissionsFilePath);
+    return (file?.rules ?? []).filter((r) => r.action === "allow" && !r.source && isUnderRoot(r.pattern)).length;
+  }
+
   // Removing a root must also prune its inclusive single-path allow grants so re-add cannot revive revoked authority; preserve separately registered descendants, non-path allows and denies. Compare canonical and raw stored forms to cover symlinks/case without changing hot-path identity. Return redacted per-pattern audit provenance; only the count crosses IPC.
   async prunePathGrantsUnderRoot(
     root: string,
     options?: { preserveRoots?: readonly string[] },
   ): Promise<PrunedGrant[]> {
-    // Dual-form roots (item-5): canonical (realpath'd) and raw (pathResolve only).
-    const rootCanon = caseFoldForMatch(canonicalizePathForMatch(root));
-    const rootRaw = caseFoldForMatch(resolve(root).replace(/\\/g, "/"));
-    const preservedRoots = (options?.preserveRoots ?? []).flatMap((preserveRoot) => {
-      try {
-        const canonical = caseFoldForMatch(canonicalizePathForMatch(preserveRoot));
-        const raw = caseFoldForMatch(resolve(preserveRoot).replace(/\\/g, "/"));
-        // Only a genuine descendant may carve a hole in the removed root. Ignoring the root itself and unrelated paths prevents a malformed caller option from accidentally preserving the whole revoked scope.
-        if (
-          !isStrictPathDescendant(rootCanon, canonical)
-          && !isStrictPathDescendant(rootRaw, raw)
-        ) {
-          return [];
-        }
-        return [{ canonical, raw }];
-      } catch {
-        return [];
-      }
-    });
-    // A multi-path grant (`apply_patch`) is pruned when ANY of its paths is under the removed root: it would otherwise keep authorizing that path.
-    const isUnderRoot = (pattern: string): boolean =>
-      extractGrantPaths(pattern).some((target) => isPathUnderRoot(target));
-    const isPathUnderRoot = (target: string): boolean => {
-      // A grant matches if EITHER form equals the root or places it under the root. The two forms are compared like-for-like (canonical↔canonical, raw↔raw) so a realpath'd stored grant and a raw stored grant are both caught. isStrictPathDescendant folds case defensively (item-7), so passing the already-folded strings is safe + idempotent.
-      const targetCanon = caseFoldForMatch(canonicalizePathForMatch(target));
-      const targetRaw = caseFoldForMatch(resolve(target).replace(/\\/g, "/"));
-      const covered = targetCanon === rootCanon
-        || targetRaw === rootRaw
-        || isStrictPathDescendant(rootCanon, targetCanon)
-        || isStrictPathDescendant(rootRaw, targetRaw);
-      if (!covered) return false;
-      const preserved = preservedRoots.some(
-        (preserveRoot) => targetCanon === preserveRoot.canonical
-          || isStrictPathDescendant(preserveRoot.canonical, targetCanon)
-          || targetRaw === preserveRoot.raw
-          || isStrictPathDescendant(preserveRoot.raw, targetRaw),
-      );
-      return !preserved;
-    };
-
+    const isUnderRoot = pathGrantRemovalMatcher(root, options?.preserveRoots);
     // The persisted file is the SOT for path grants: addAlwaysAllowedPersist writes the allow rule to the file + the in-memory alwaysAllowed Map, but NOT to `this.rules` (that array is only hydrated from the file at boot via loadRulesFromFile). Scan the file, not `this.rules`, so a grant made this session is still pruned. Do the read + filter inside ONE updatePermissionsFile pass (atomic under the store lock) and collect the pruned grants so in-memory state (rules + alwaysAllowed) is reconciled and the caller can audit per-pattern tuples.
     const pruned: PrunedGrant[] = [];
     await this.updateRulesFile((file) => {

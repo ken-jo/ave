@@ -1014,6 +1014,8 @@ type AveNamespaceOverrides = {
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
   /** What `workspace.listRoots` answers instead, e.g. a failure. */
   workspaceListRootsResult?: { ok: boolean; error?: string };
+  /** What `workspace.previewRemoveRoot` counts; nothing to lose by default. */
+  workspaceRemovalCounts?: Partial<import("../../src/ipc/domains/workspace.js").WorkspaceRemovalCounts>;
   /** Install the native context-menu bridge (`ave.ui`). Opt-in: without it the renderer's menus fall through to their ancestors, which most suites rely on. */
   nativeContextMenu?: boolean;
 };
@@ -1021,7 +1023,9 @@ type AveNamespaceOverrides = {
 export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
   const approvalHandlers = new Set<(r: unknown) => void>();
   const approvalSettledHandlers = new Set<(payload: unknown) => void>();
-  const roots = overrides.workspaceRoots ?? [{ path: "/ws", isDefault: true }];
+  // Removal and its undo change the listed roots, as main's would.
+  const roots = [...(overrides.workspaceRoots ?? [{ path: "/ws", isDefault: true }])];
+  const undoTokens = new Map<string, { path: string; isDefault: boolean }>();
   const defaultRoot = roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? "/ws";
   const nativeMenuHandlers = new Set<(action: { requestId: string; command: string }) => void>();
   const showNativeContextMenu = vi.fn(async (_payload: { requestId: string; commands: string[] }) => ({ ok: true as const }));
@@ -1118,8 +1122,32 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         requestObservationPreview: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
-        listRoots: vi.fn(async () => overrides.workspaceListRootsResult ?? { ok: true, defaultRoot, roots }),
-        pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
+        listRoots: vi.fn(async () => overrides.workspaceListRootsResult ?? { ok: true, defaultRoot, roots: [...roots] }),
+        pickRoot: vi.fn(async (opts?: { ackToken?: string }) => {
+          if (opts?.ackToken !== undefined) {
+            const root = undoTokens.get(opts.ackToken);
+            if (!root) return { ok: false, error: "ack-unknown" };
+            undoTokens.delete(opts.ackToken);
+            roots.push(root);
+            return { ok: true, added: root.path, roots: [...roots] };
+          }
+          return { ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] };
+        }),
+        previewRemoveRoot: vi.fn(async (path: string) => {
+          if (!roots.some((root) => root.path === path && !root.isDefault)) return { ok: false, error: "not-an-additional-root" };
+          return {
+            ok: true,
+            counts: { streamingSessions: 0, pathGrants: 0, routines: 0, detachableSessions: 0, ...overrides.workspaceRemovalCounts },
+          };
+        }),
+        removeRoot: vi.fn(async (path: string) => {
+          const index = roots.findIndex((root) => root.path === path && !root.isDefault);
+          if (index < 0) return { ok: false, error: "not-an-additional-root" };
+          const [removed] = roots.splice(index, 1);
+          const undoToken = `undo:${path}`;
+          undoTokens.set(undoToken, removed!);
+          return { ok: true, removed: path, roots: [...roots], prunedGrants: 0, undoToken };
+        }),
         listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
       },
       env: {

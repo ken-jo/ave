@@ -119,6 +119,7 @@ export type { PluginPerfStats, PluginContributionTrustRow, HookTrustRow };
 // derived shapes (UsagePerX, UsageTrendPt, UsageConv) are declared here.
 import type { UsageTotals } from "../../engine/usage-stats.js";
 import type { UsageDailySummaryInput, UsageDailySummaryResult } from "../../ipc/handlers/usage.js";
+import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspace.js";
 
 // Settings: the renderer sees the host AppSettings minus the main-only
 // `a2aRemote` block, expressed once by the IPC projection type.
@@ -2090,9 +2091,13 @@ export interface AveWorkspaceApi {
     prunedGrants?: number;
     /** Some revocation did not finish, e.g. a quarantined process keeps its access until Ave restarts. Informational only. */
     cleanupPending?: boolean;
+    /** One-time token for 되돌리기: `pickRoot({ ackToken })` re-adds exactly the removed folder. Absent while cleanup is pending. */
+    undoToken?: string;
     error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
     message?: string;
   }>;
+  /** What removing a project would end or prune (case 31), asked before `removeRoot`. Read-only. */
+  previewRemoveRoot: (path: string) => Promise<WorkspacePreviewRemoveRootResult>;
   /** Reveal a scope-revalidated file/folder in the OS file manager (location only, never opens it). */
   reveal: (path: string) => Promise<{
     ok: boolean;

@@ -288,6 +288,123 @@ describe("sidebar projects", () => {
     await waitFor(() => expect(byTestId(`sidebar-surface-tree-${tabId}`)).not.toBeNull());
   });
 
+  describe("removing a project (cases 29–31)", () => {
+    function renderForRemoval(counts: Record<string, number> = {}, system: Record<string, unknown> = {}, roots = ROOTS) {
+      return renderApp({
+        hasApiKey: true,
+        terminal: true,
+        nativeContextMenu: true,
+        workspaceRoots: roots,
+        workspaceRemovalCounts: counts,
+        settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "all" }, expandedProjectRoots: ["/ws", "/ws/shop"], ...system } },
+      });
+    }
+    const workspaceApi = () => (window as unknown as { ave: { workspace: Record<string, ReturnType<typeof vi.fn>> } }).ave.workspace;
+    async function chooseRemove(rendered: Awaited<ReturnType<typeof renderForRemoval>>) {
+      const row = await waitFor(() => { const el = byTestId("sidebar-project-ws-shop"); expect(el).not.toBeNull(); return el!; });
+      await act(async () => { fireEvent.contextMenu(row); });
+      await act(async () => { rendered.chooseNativeMenuCommand("project.remove"); });
+    }
+
+    it("removes at once when nothing would be lost, forgets the project, and 되돌리기 brings it back", async () => {
+      const rendered = await renderForRemoval({}, { recentProjectRoots: ["/ws/shop", "/ws"] });
+      await chooseRemove(rendered);
+      await waitFor(() => expect(byTestId("sidebar-project-ws-shop")).toBeNull());
+      expect(byTestId("remove-project-dialog")).toBeNull();
+      expect(workspaceApi().previewRemoveRoot).toHaveBeenCalledWith("/ws/shop");
+      expect(workspaceApi().removeRoot).toHaveBeenCalledWith("/ws/shop");
+      await waitForToast(rendered.container, "shop 프로젝트를 제거했습니다.");
+      // Nothing the window remembers still points at the folder.
+      await waitFor(() => expect(rendered.api.updateSettings).toHaveBeenCalledWith({
+        system: expect.objectContaining({ recentProjectRoots: ["/ws"], expandedProjectRoots: ["/ws"] }),
+      }));
+
+      await act(async () => { fireEvent.click(rendered.container.querySelector('[data-testid="status-toast-action"]')!); });
+      expect(workspaceApi().pickRoot).toHaveBeenCalledWith({ ackToken: "undo:/ws/shop" });
+      await waitFor(() => expect(byTestId("sidebar-project-ws-shop")).not.toBeNull());
+      await waitForToast(rendered.container, "shop 프로젝트를 다시 추가했습니다.");
+    });
+
+    it("asks first when something would be lost, with 취소 focused, and keeps the project on 취소", async () => {
+      const rendered = await renderForRemoval({ streamingSessions: 1, pathGrants: 2, detachableSessions: 3 });
+      await chooseRemove(rendered);
+      const dialog = await waitFor(() => { const el = byTestId("remove-project-dialog"); expect(el).not.toBeNull(); return el!; });
+      expect(document.activeElement).toBe(byTestId("remove-project-cancel"));
+      expect(byTestId("remove-project-loss-streamingSessions")?.textContent).toBe("진행 중인 응답 1개가 멈춥니다");
+      expect(byTestId("remove-project-loss-pathGrants")?.textContent).toContain("2개가 삭제됩니다");
+      expect(byTestId("remove-project-loss-routines")).toBeNull();
+      expect(byTestId("remove-project-keeps")?.textContent).toContain("대화 3개");
+      expect(dialog.textContent).toContain("되돌리기는 프로젝트 목록만 복원합니다.");
+      await act(async () => { fireEvent.click(byTestId("remove-project-cancel")!); });
+      await waitFor(() => expect(byTestId("remove-project-dialog")).toBeNull());
+      expect(workspaceApi().removeRoot).not.toHaveBeenCalled();
+      expect(byTestId("sidebar-project-ws-shop")).not.toBeNull();
+    });
+
+    it("counts the project's open terminals and pages, and closes them when the removal is confirmed", async () => {
+      const rendered = await renderForRemoval({}, { projectSelection: { kind: "root", root: "/ws/shop" } });
+      expect(await headerName()).toContain("shop");
+      await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+      const tabId = await waitFor(() => { const shown = shownSurfaces(rendered.container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+      await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
+      await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-all"); expect(el).not.toBeNull(); return el!; })); });
+      await chooseRemove(rendered);
+      await waitFor(() => expect(byTestId("remove-project-loss-closingTerminals")?.textContent).toBe("터미널 1개가 닫히고 그 안에서 실행 중인 명령이 종료됩니다"));
+      // One terminal, listed once: no separate count of the same terminal from main.
+      expect(byTestId("remove-project-losses")!.querySelectorAll("li")).toHaveLength(1);
+      await act(async () => { fireEvent.click(byTestId("remove-project-confirm")!); });
+      await waitFor(() => expect(byTestId("sidebar-project-ws-shop")).toBeNull());
+      expect(shownSurfaces(rendered.container)).toEqual([]);
+      expect(byTestId(`sidebar-surface-tree-${tabId}`)).toBeNull();
+      expect((rendered.api as unknown as { terminal: { kill: ReturnType<typeof vi.fn> } }).terminal.kill).toHaveBeenCalledWith(tabId);
+    });
+
+    it("asks first when the only loss is conversations losing their project link, and says what stays", async () => {
+      const rendered = await renderForRemoval({ detachableSessions: 1 });
+      await chooseRemove(rendered);
+      const dialog = await waitFor(() => { const el = byTestId("remove-project-dialog"); expect(el).not.toBeNull(); return el!; });
+      expect(byTestId("remove-project-losses")).toBeNull();
+      expect(byTestId("remove-project-keeps")?.textContent).toContain("대화 1개는 기록이 그대로 남습니다");
+      expect(dialog.textContent).toContain("되돌리기는 프로젝트 목록만 복원합니다.");
+      expect(workspaceApi().removeRoot).not.toHaveBeenCalled();
+    });
+
+    it("does not count, or close, a terminal of a child project when its parent folder is removed", async () => {
+      const roots = [...ROOTS, { path: "/ws/shop/child", isDefault: false }];
+      const rendered = await renderForRemoval({}, { projectSelection: { kind: "root", root: "/ws/shop/child" } }, roots);
+      expect(await headerName()).toContain("child");
+      await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+      const tabId = await waitFor(() => { const shown = shownSurfaces(rendered.container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+      await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
+      await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-all"); expect(el).not.toBeNull(); return el!; })); });
+      await chooseRemove(rendered);
+      // Nothing of the parent's would be lost, so it goes at once, and the child's terminal stays open.
+      await waitFor(() => expect(byTestId("sidebar-project-ws-shop")).toBeNull());
+      expect(byTestId("remove-project-dialog")).toBeNull();
+      expect(shownSurfaces(rendered.container).map((each) => each.tabId)).toEqual([tabId]);
+      expect((rendered.api as unknown as { terminal: { kill: ReturnType<typeof vi.fn> } }).terminal.kill).not.toHaveBeenCalled();
+    });
+
+    it("removes nothing, and says why, when the preview cannot be made", async () => {
+      const rendered = await renderForRemoval();
+      workspaceApi().previewRemoveRoot.mockResolvedValueOnce({ ok: false, error: "preview-failed" });
+      await chooseRemove(rendered);
+      await waitForToast(rendered.container, "이 프로젝트를 제거하면 무엇이 사라지는지 확인하지 못해 제거하지 않았습니다.");
+      expect(workspaceApi().removeRoot).not.toHaveBeenCalled();
+      expect(byTestId("sidebar-project-ws-shop")).not.toBeNull();
+    });
+
+    it("says it is too late when 되돌리기 comes after the token expired", async () => {
+      const rendered = await renderForRemoval();
+      await chooseRemove(rendered);
+      await waitForToast(rendered.container, "shop 프로젝트를 제거했습니다.");
+      workspaceApi().pickRoot.mockResolvedValueOnce({ ok: false, error: "ack-expired" });
+      await act(async () => { fireEvent.click(rendered.container.querySelector('[data-testid="status-toast-action"]')!); });
+      await waitForToast(rendered.container, "되돌릴 수 있는 시간이 지났습니다.");
+      expect(byTestId("sidebar-project-ws-shop")).toBeNull();
+    });
+  });
+
   it("does not reopen a closed terminal into a project that has since been removed", async () => {
     const { container } = await renderInProject({ kind: "root", root: "/ws/shop" });
     expect(await headerName()).toContain("shop");

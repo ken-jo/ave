@@ -1154,6 +1154,20 @@ export interface PromptMemorySource {
   selectRelevantMemories(query: string, options?: MemorySelectionOptions): MemorySelection;
 }
 
+function parseSessionMetadataObject(raw: string): Record<string, unknown> {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new TypeError("session metadata must be an object");
+  }
+  return parsed;
+}
+
+/** Whether stored session metadata belongs to `projectRoot`: the detach and its preview share this. */
+function sessionMetadataInProject(parsed: Record<string, unknown>, projectRoot: string): boolean {
+  const storedRoot = typeof parsed.projectRoot === "string" ? parsed.projectRoot : undefined;
+  return Boolean(storedRoot && projectRootEquals(storedRoot, projectRoot));
+}
+
 export class MemoryManager implements PromptMemorySource {
   private readonly aveDir: string;
   private readonly memoryDir: string;
@@ -2624,6 +2638,38 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   // Detach project metadata without deleting transcripts; re-read under locks for idempotent concurrent cleanup.
+  private sessionMetadataTargets(): Array<{ sessionId: string; targetPath: string }> {
+    return readdirIfPresent(this.sessionsDir)
+      .filter((file) => file.endsWith(".meta.json"))
+      .map((file) => ({
+        sessionId: file.slice(0, -".meta.json".length),
+        targetPath: join(this.sessionsDir, file),
+      }))
+      .filter(({ sessionId }) => isValidSessionId(sessionId))
+      .sort((a, b) => a.targetPath.localeCompare(b.targetPath));
+  }
+
+  /** The removal preview: how many conversations `detachSessionsFromProject` would detach now, by the same predicate, writing nothing.
+   * Unreadable metadata fails here as it would fail the detach. */
+  countSessionsInProject(projectRoot: string): number {
+    if (!projectRootKey(projectRoot)) return 0;
+    let count = 0;
+    for (const { sessionId, targetPath } of this.sessionMetadataTargets()) {
+      const raw = readUtf8FileIfPresent(targetPath);
+      if (raw === null) continue;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseSessionMetadataObject(raw);
+      } catch (error) {
+        const errorName = error instanceof Error ? error.name : "UnknownError";
+        log.warn("countSessionsInProject: invalid metadata for %s (%s)", sessionId, errorName);
+        throw Object.assign(new Error("workspace session metadata unreadable"), { code: "SESSION_METADATA_INVALID", cause: error });
+      }
+      if (sessionMetadataInProject(parsed, projectRoot)) count += 1;
+    }
+    return count;
+  }
+
   async detachSessionsFromProject(projectRoot: string): Promise<number> {
     const key = projectRootKey(projectRoot);
     if (!key) return 0;
@@ -2636,14 +2682,7 @@ export class MemoryManager implements PromptMemorySource {
       normalized: SessionMetadata;
       next: Record<string, unknown>;
     };
-    const metadataTargets = readdirIfPresent(this.sessionsDir)
-      .filter((file) => file.endsWith(".meta.json"))
-      .map((file) => ({
-        sessionId: file.slice(0, -".meta.json".length),
-        targetPath: join(this.sessionsDir, file),
-      }))
-      .filter(({ sessionId }) => isValidSessionId(sessionId))
-      .sort((a, b) => a.targetPath.localeCompare(b.targetPath));
+    const metadataTargets = this.sessionMetadataTargets();
 
     let detachedCount = 0;
     const withAllMetadataLocks = async <T>(
@@ -2665,14 +2704,8 @@ export class MemoryManager implements PromptMemorySource {
         try {
           const raw = readUtf8FileIfPresent(targetPath);
           if (raw === null) continue;
-          const parsed = JSON.parse(raw) as Record<string, unknown>;
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new TypeError("session metadata must be an object");
-          }
-          const storedRoot = typeof parsed.projectRoot === "string"
-            ? parsed.projectRoot
-            : undefined;
-          if (!storedRoot || !projectRootEquals(storedRoot, projectRoot)) continue;
+          const parsed = parseSessionMetadataObject(raw);
+          if (!sessionMetadataInProject(parsed, projectRoot)) continue;
           const normalized = normalizeSessionMetadata(parsed);
           const terminalTombstone = this.detachedWireTerminalTombstones.get(sessionId);
           const next = terminalTombstone

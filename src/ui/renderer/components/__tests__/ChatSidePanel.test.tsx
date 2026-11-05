@@ -1229,107 +1229,17 @@ describe("ChatSidePanel", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("/ws/readme.md"));
   });
 
-  it("remove-root button (non-default root) calls workspace.removeRoot; default root has no button", async () => {
+  it("offers no folder removal of its own: removing a project is the sidebar's, which previews what would be lost (case 31)", async () => {
     const { removeRoot } = stubRichWorkspace();
     renderPanel(
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    // Default root active -> no remove button.
+    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "/ws/proj" } });
     await screen.findByTestId("chat-side-panel-add-root");
     expect(screen.queryByTestId("chat-side-panel-remove-root")).toBeNull();
-    // Switch the active root to the non-default addition.
-    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "/ws/proj" } });
-    const removeBtn = await screen.findByTestId("chat-side-panel-remove-root");
-    fireEvent.click(removeBtn);
-    await waitFor(() => expect(removeRoot).toHaveBeenCalledWith("/ws/proj"));
-  });
-
-  it("#1494 surfaces the pruned-grants count in the op-info status and lets the user dismiss it", async () => {
-    // removeRoot reports prunedGrants:2 — the panel must show the i18n'd count in
-    // the `chat-side-panel-op-info` status node (the widened effect of "Remove
-    // folder" is made visible), and the dismiss control clears it.
-    stubRichWorkspace({
-      removeRoot: vi.fn(async () => ({
-        ok: true as const,
-        removed: "/ws/proj",
-        roots: [{ path: "/ws", isDefault: true }],
-        prunedGrants: 2,
-      })),
-    });
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
-    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "/ws/proj" } });
-    fireEvent.click(await screen.findByTestId("chat-side-panel-remove-root"));
-    // The op-info status renders the i18n'd count text. The renderer resolves to
-    // the active locale (ko in this harness → "폴더 제거됨 · 저장된 권한 2건 함께 해제"):
-    // assert the load-bearing count is interpolated and the revoke phrasing is
-    // present, locale-agnostically.
-    const info = await screen.findByTestId("chat-side-panel-op-info");
-    expect(info.getAttribute("role")).toBe("status");
-    expect(info.textContent).toContain("2");
-    // The i18n string must be resolved (not the raw key) and mention the revoke.
-    expect(info.textContent).not.toContain("removeRootPruned");
-    expect(info.textContent).toMatch(/해제|revoked|révoqué|widerrufen|取消|撤销/);
-    // Dismiss control clears the status.
-    fireEvent.click(screen.getByTestId("chat-side-panel-op-info-dismiss"));
-    await waitFor(() => expect(screen.queryByTestId("chat-side-panel-op-info")).toBeNull());
-  });
-
-  it("reports unfinished cleanup after a user-initiated folder removal as status text, never a confirmation", async () => {
-    stubRichWorkspace({
-      removeRoot: vi.fn(async () => ({
-        ok: true as const,
-        removed: "/ws/proj",
-        roots: [{ path: "/ws", isDefault: true }],
-        prunedGrants: 1,
-        cleanupPending: true,
-      })),
-    });
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
-    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "/ws/proj" } });
-    fireEvent.click(await screen.findByTestId("chat-side-panel-remove-root"));
-    const info = await screen.findByTestId("chat-side-panel-op-info");
-    expect(info.getAttribute("role")).toBe("status");
-    // Both outcomes are reported: the pruned count and the unfinished cleanup.
-    expect(info.textContent).toContain(t("chatPreviewRail.removeRootPruned", { count: 1 }));
-    expect(info.textContent).toContain(t("chatPreviewRail.removeRootCleanupPending"));
-    expect(info.textContent).not.toContain("removeRootCleanupPending");
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-  });
-
-  it("#1494 shows no op-info status when removeRoot pruned zero grants", async () => {
-    // prunedGrants:0 → no transient info surface (only non-zero counts warrant the
-    // extra disclosure). Guards against a "0 saved grants revoked" false alarm.
-    stubRichWorkspace({
-      removeRoot: vi.fn(async () => ({
-        ok: true as const,
-        removed: "/ws/proj",
-        roots: [{ path: "/ws", isDefault: true }],
-        prunedGrants: 0,
-      })),
-    });
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
-    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "/ws/proj" } });
-    fireEvent.click(await screen.findByTestId("chat-side-panel-remove-root"));
-    // Wait for the root list to update, then assert the info node never appeared.
-    await waitFor(() =>
-      expect(screen.queryByTestId("chat-side-panel-remove-root")).toBeNull(),
-    );
-    expect(screen.queryByTestId("chat-side-panel-op-info")).toBeNull();
+    expect(removeRoot).not.toHaveBeenCalled();
   });
 
   it("collapse-all folds every open folder and disables itself when nothing is open", async () => {
@@ -1401,25 +1311,6 @@ describe("ChatSidePanel", () => {
       .getAllByRole("treeitem")
       .find((el) => el.textContent?.includes("alpha"));
     expect(alphaRow?.getAttribute("aria-selected")).toBeNull();
-  });
-
-  it("surfaces a removeRoot failure inline instead of swallowing it", async () => {
-    stubRichWorkspace({
-      removeRoot: vi.fn(async () => ({ ok: false as const, error: "not-an-additional-root" as const })),
-    });
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
-    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const select = (await screen.findByTestId("chat-side-panel-root-select")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "/ws/proj" } });
-    fireEvent.click(await screen.findByTestId("chat-side-panel-remove-root"));
-    // The failure is shown to the user, not dropped silently.
-    const banner = await screen.findByTestId("chat-side-panel-op-error");
-    expect(banner.textContent).toBeTruthy();
-    // Dismissible.
-    fireEvent.click(screen.getByTestId("chat-side-panel-op-error-dismiss"));
-    await waitFor(() => expect(screen.queryByTestId("chat-side-panel-op-error")).toBeNull());
   });
 
   it("surfaces a reveal failure inline instead of swallowing it", async () => {

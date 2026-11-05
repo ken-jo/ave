@@ -2597,6 +2597,30 @@ describe("SubAgentRunner workspace lifecycle", () => {
     expect(last.mock.calls[0]?.[1]).toEqual(options);
   });
 
+  it("counts the children a workspace removal would stop: a running wire child of the project, or a loop whose turn it aborts", () => {
+    const runner = new SubAgentRunner({} as never);
+    const activeChildren = (runner as unknown as { activeChildren: Map<string, unknown> }).activeChildren;
+    const removedRoot = join(tmpdir(), "removed-workspace");
+    const child = (childSessionId: string, loop: { hasActiveTurn: () => boolean; aborts: boolean }, wireProjectRoot?: string) => ({
+      lease: Symbol(childSessionId),
+      childSessionId,
+      title: childSessionId,
+      background: true,
+      ...(wireProjectRoot ? { wireProjectRoot } : {}),
+      loop: { hasActiveTurn: loop.hasActiveTurn, wouldWorkspaceRootRemovalAbortTurn: vi.fn(() => loop.aborts) },
+    });
+    const options = { globalScopeWasAuthorized: true, preserveRoots: [] };
+    expect(runner.countTurnsAbortedByWorkspaceRootRemoval(removedRoot, options)).toBe(0);
+    // A child whose turn the revocation aborts.
+    activeChildren.set("child-aborted", child("child-aborted", { hasActiveTurn: () => true, aborts: true }));
+    // A running wire child bound to the removed project, whose loop's own test says no: it is cancelled anyway.
+    activeChildren.set("child-wire", child("child-wire", { hasActiveTurn: () => true, aborts: false }, removedRoot));
+    // An idle wire child, and a child of another project: nothing to stop.
+    activeChildren.set("child-idle-wire", child("child-idle-wire", { hasActiveTurn: () => false, aborts: false }, removedRoot));
+    activeChildren.set("child-other", child("child-other", { hasActiveTurn: () => true, aborts: false }, join(tmpdir(), "other")));
+    expect(runner.countTurnsAbortedByWorkspaceRootRemoval(removedRoot, options)).toBe(2);
+  });
+
   it("registers a fresh child before initial metadata persistence can race workspace removal", async () => {
     const removedRoot = join(tmpdir(), "subagent-pending-metadata-root");
     const fallbackRoot = join(tmpdir(), "subagent-safe-default-root");

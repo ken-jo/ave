@@ -306,6 +306,28 @@ function cloneRecord(r: RoutineRecord): RoutineRecord {
   };
 }
 
+/** The scope directories a routine keeps once `root` is removed, sparing separately registered descendant roots; null for an unreadable root. */
+function routineScopeRetention(
+  root: string,
+  preserveRoots: readonly string[] = [],
+): ((directories: readonly string[]) => string[]) | null {
+  const rootKey = workspaceRootKey(root);
+  if (!rootKey) return null;
+  const preservedRootKeys = preserveRoots
+    .map(workspaceRootKey)
+    .filter((key): key is string =>
+      key !== null
+      && key !== rootKey
+      && isWorkspaceKeyAtOrBelow(rootKey, key),
+    );
+  return (directories) => directories.filter((directory) => {
+    if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
+    return preservedRootKeys.some(
+      (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
+    );
+  });
+}
+
 export class RoutinesStore {
   private cache: RoutineRecord[] = [];
   private invalidCache: StoredInvalidRoutine[] = [];
@@ -506,29 +528,15 @@ export class RoutinesStore {
     directoriesRemoved: number;
   }> {
     if (!this.loaded) await this.load();
-    const rootKey = workspaceRootKey(root);
-    if (!rootKey) return { routinesUpdated: 0, directoriesRemoved: 0 };
-    const preservedRootKeys = (options?.preserveRoots ?? [])
-      .map(workspaceRootKey)
-      .filter((key): key is string =>
-        key !== null
-        && key !== rootKey
-        && isWorkspaceKeyAtOrBelow(rootKey, key),
-      );
+    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
+    if (!retainedOf) return { routinesUpdated: 0, directoriesRemoved: 0 };
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       let routinesUpdated = 0;
       let directoriesRemoved = 0;
       for (const routine of file.routines) {
         if (!routine.scope) continue;
-        const retained = routine.scope.directories.filter(
-          (directory) => {
-            if (!isDirectoryAtOrBelow(rootKey, directory)) return true;
-            return preservedRootKeys.some(
-              (preservedRootKey) => isDirectoryAtOrBelow(preservedRootKey, directory),
-            );
-          },
-        );
+        const retained = retainedOf(routine.scope.directories);
         const removed = routine.scope.directories.length - retained.length;
         if (removed === 0) continue;
         routine.scope.directories = retained;
@@ -541,6 +549,22 @@ export class RoutinesStore {
       this.cache = file.routines;
       this.invalidCache = file.invalid;
       return { routinesUpdated, directoriesRemoved };
+    });
+  }
+
+  // The removal preview: how many routines `revokeWorkspaceRoot` would narrow now, by the same predicate, writing nothing.
+  async countRoutinesScopedToWorkspaceRoot(
+    root: string,
+    options?: { preserveRoots?: readonly string[] },
+  ): Promise<number> {
+    if (!this.loaded) await this.load();
+    const retainedOf = routineScopeRetention(root, options?.preserveRoots);
+    if (!retainedOf) return 0;
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await readFileOrEmpty(this.filePath);
+      return file.routines.filter((routine) =>
+        routine.scope ? retainedOf(routine.scope.directories).length !== routine.scope.directories.length : false,
+      ).length;
     });
   }
 

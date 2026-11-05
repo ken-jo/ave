@@ -120,6 +120,27 @@ function applyFreshSessionState(
   self.tracer = createTracer(self.sessionId);
 }
 
+/**
+ * Whether removing `removedRoot` stops this loop's turn: the turn's snapshotted scope references the removed root, or the
+ * root was in global scope. The removal aborts by this test and its preview counts by it, so the two cannot drift.
+ */
+export function workspaceRootRemovalAffectsTurn(
+  self: ConversationLoop,
+  removedRoot: string,
+  options: WorkspaceRootRevocationOptions = {},
+): boolean {
+  const normalizedRoot = normalizeProjectString(removedRoot);
+  if (!normalizedRoot) return false;
+  const isRevoked = createWorkspaceRootRevocationFilter(normalizedRoot, options.preserveRoots ?? []);
+  return Boolean(
+    options.globalScopeWasAuthorized === true
+      || (self.sessionProjectRoot && isRevoked(self.sessionProjectRoot))
+      || self.sessionAdditionalDirectories.some(isRevoked)
+      || self.turnAdditionalDirectories.some(isRevoked)
+      || (self.deps.additionalDirectories ?? []).some(isRevoked),
+  );
+}
+
 // Revoke grants under removed roots; keep independently authorized children and fall back for unauthorized projects.
 export function revokeWorkspaceRoot(
   self: ConversationLoop,
@@ -135,20 +156,12 @@ export function revokeWorkspaceRoot(
   const previousProjectRoot = self.sessionProjectRoot;
   const previousProjectName = self.sessionProjectName;
   const previousProjectWasDefault = self.sessionProjectIsDefault;
-  const staticDirectories = self.deps.additionalDirectories ?? [];
   // Share the workspace-root lifecycle revocation predicate with other live-scope owners.
   const isRevoked = createWorkspaceRootRevocationFilter(
     normalizedRoot,
     options.preserveRoots ?? [],
   );
-  const affectsActiveTurn = Boolean(
-    options.globalScopeWasAuthorized === true
-      || (previousProjectRoot && isRevoked(previousProjectRoot))
-      || previousSessionDirectories.some(isRevoked)
-      || previousTurnDirectories.some(isRevoked)
-      || staticDirectories.some(isRevoked),
-  );
-  if (affectsActiveTurn) {
+  if (workspaceRootRemovalAffectsTurn(self, removedRoot, options)) {
     // Abort only loops whose snapshotted execution directory references the removed root.
     self.abortCurrentTurn(new Error("workspace-removal"));
   }

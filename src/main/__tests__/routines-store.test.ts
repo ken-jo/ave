@@ -696,6 +696,30 @@ describe("RoutinesStore workspace scope revocation", () => {
     ]);
   }));
 
+  it("counts, writing nothing, exactly the routines the revocation then narrows (removal preview)", withRoutinesStore(async ({ store, dir }) => {
+    const parentRoot = join(dir, "workspace");
+    const preservedChild = join(parentRoot, "child");
+    const scoped = (notificationTitle: string, directories: string[]) => store.add({ ...TEST_OWNER,
+      trigger: "schedule",
+      execution: "notification-only",
+      schedule: { at: futureIso() },
+      notificationTitle,
+      scope: { pluginIds: { mode: "deny-all" }, forcedPluginIds: [], directories },
+    });
+    await scoped("parent", [join(parentRoot, "docs")]);
+    await scoped("child only", [join(preservedChild, "src")]);
+    await scoped("both", [parentRoot, preservedChild]);
+    await scoped("elsewhere", [join(dir, "unrelated")]);
+    const before = readFileSync(join(dir, "routines.json"), "utf8");
+
+    const counted = await store.countRoutinesScopedToWorkspaceRoot(parentRoot, { preserveRoots: [preservedChild] });
+    expect(readFileSync(join(dir, "routines.json"), "utf8")).toBe(before);
+
+    const revoked = await store.revokeWorkspaceRoot(parentRoot, { preserveRoots: [preservedChild] });
+    expect(counted).toBe(2);
+    expect(revoked.routinesUpdated).toBe(counted);
+  }));
+
   it("is a no-op when no routine scope is covered", withRoutinesStore(async ({ store, dir }) => {
     await store.add({ ...TEST_OWNER,
       trigger: "schedule",

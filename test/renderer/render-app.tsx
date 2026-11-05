@@ -21,6 +21,7 @@ type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
   pendingApprovals?: unknown[];
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
   workspaceListRootsResult?: { ok: boolean; error?: string };
+  workspaceRemovalCounts?: Partial<import("../../src/ipc/domains/workspace.js").WorkspaceRemovalCounts>;
   nativeContextMenu?: boolean;
 };
 
@@ -53,7 +54,7 @@ export type RenderAppReturn = {
 };
 
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { shellWidth = 1600, canvasWidth = shellWidth, aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, nativeContextMenu, ...apiOpts } = opts;
+  const { shellWidth = 1600, canvasWidth = shellWidth, aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, workspaceRemovalCounts, nativeContextMenu, ...apiOpts } = opts;
   setContainerWidths({ shellWidth, canvasWidth });
   const {
     api,
@@ -75,7 +76,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitNotificationClicked,
   } = makeMockAveApi(apiOpts);
   const { ns, emitApproval, emitApprovalSettled, chooseNativeMenuCommand, chooseDynamicMenuItem } = makeMockAveNamespace({
-    env: aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, nativeContextMenu,
+    env: aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, workspaceRemovalCounts, nativeContextMenu,
   });
 
   vi.stubGlobal("aveApi", api);

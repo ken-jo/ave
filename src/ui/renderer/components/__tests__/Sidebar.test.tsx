@@ -6,7 +6,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
 import { CoveredConversationApprovalDock } from "../permissions/ApprovalDock.js";
 import { I18nProvider } from "../../../../i18n/react.js";
-import { getLocale, setLocale as setRuntimeLocale, t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import { sessionRow } from "../../../../../test/renderer/mock-ave-api.js";
@@ -119,6 +119,7 @@ function renderSidebar(
     onSelectAllProjects: vi.fn(),
     onProjectAdded: vi.fn(),
     onLaunch: vi.fn(),
+    onRemoveProject: vi.fn(),
     // The all-projects view with every group open shows every row these tests read; a test about one project selects it.
     projectSelection: { kind: "all" },
     isProjectExpanded: () => true,
@@ -609,6 +610,7 @@ describe("Sidebar conversation pinning", () => {
         <TooltipProvider>
           <Sidebar
             activeView="home"
+            onRemoveProject={vi.fn()}
             onSelect={vi.fn()}
             pluginViews={[]}
             hasApiKey
@@ -705,104 +707,26 @@ describe("Sidebar project pinning", () => {
     }
   });
 
-  it("refreshes projects only after the native remove action succeeds", async () => {
-    const onRefreshProjects = vi.fn();
-    const {
-      getByTestId,
-      removeRoot,
-      emitNativeContextCommand,
-      restore,
-    } = renderSidebar({
-      sessions: [],
-      projects,
-      onRefreshProjects,
+  it("hands 프로젝트 제거 to the app with the project, and offers it for no 기본 프로젝트 (case 29)", async () => {
+    const onRemoveProject = vi.fn();
+    const defaultProject: ProjectIdentity = { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave", projectName: "ave", isDefault: true };
+    const { container, getByTestId, showNativeContextMenu, emitNativeContextCommand, removeRoot, restore } = renderSidebar({
+      sessions: [], projects: [defaultProject, ...projects], onRemoveProject,
     });
-    try {
-      const projectRow = await waitFor(() =>
-        getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha"));
-      fireEvent.contextMenu(projectRow);
-      emitNativeContextCommand("project.remove");
-
-      await waitFor(() => {
-        expect(removeRoot).toHaveBeenCalledWith(
-          "C:\\Users\\example\\workspace\\ave-project\\alpha",
-        );
-        expect(onRefreshProjects).toHaveBeenCalledTimes(1);
-      });
-    } finally {
-      restore();
-    }
-  });
-
-  it("reports unfinished cleanup after the user removes a project, as a notice and never a confirmation", async () => {
-    const onRefreshProjects = vi.fn();
-    const onProjectNotice = vi.fn();
-    const onProjectError = vi.fn();
-    const { getByTestId, removeRoot, emitNativeContextCommand, restore } = renderSidebar({
-      sessions: [], projects, onRefreshProjects, onProjectNotice, onProjectError,
-    });
-    removeRoot.mockResolvedValueOnce({ ok: true, removed: "x", roots: [], cleanupPending: true } as never);
     try {
       fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha")));
       emitNativeContextCommand("project.remove");
-      await waitFor(() => expect(onRefreshProjects).toHaveBeenCalledTimes(1));
-      expect(onProjectNotice).toHaveBeenCalledTimes(1);
-      expect(onProjectNotice).toHaveBeenCalledWith(t("chatPreviewRail.removeRootCleanupPending"));
-      expect(t("chatPreviewRail.removeRootCleanupPending")).not.toBe("chatPreviewRail.removeRootCleanupPending");
-      expect(onProjectError).not.toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
+      expect(onRemoveProject).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha" }));
+      // The sidebar removes nothing itself: the app previews and confirms first.
+      expect(removeRoot).not.toHaveBeenCalled();
 
-  it("sends no notice when the removal cleanup finished", async () => {
-    const onProjectNotice = vi.fn();
-    const onRefreshProjects = vi.fn();
-    const { getByTestId, emitNativeContextCommand, restore } = renderSidebar({ sessions: [], projects, onRefreshProjects, onProjectNotice });
-    try {
-      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha")));
-      emitNativeContextCommand("project.remove");
-      await waitFor(() => expect(onRefreshProjects).toHaveBeenCalledTimes(1));
-      expect(onProjectNotice).not.toHaveBeenCalled();
-    } finally {
-      restore();
-    }
-  });
-
-  it("keeps the project and surfaces the IPC error when native remove fails", async () => {
-    const onRefreshProjects = vi.fn();
-    const onProjectError = vi.fn();
-    const {
-      getByTestId,
-      removeRoot,
-      emitNativeContextCommand,
-      restore,
-    } = renderSidebar({
-      sessions: [],
-      projects,
-      onRefreshProjects,
-      onProjectError,
-    });
-    removeRoot.mockResolvedValueOnce({
-      ok: false,
-      error: "not-an-additional-root",
-      message: "not registered",
-    } as never);
-    try {
-      const projectRow = await waitFor(() =>
-        getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha"));
-      fireEvent.contextMenu(projectRow);
-      emitNativeContextCommand("project.remove");
-
-      await waitFor(() => {
-        expect(onProjectError).toHaveBeenCalledWith(
-          "remove",
-          "not-an-additional-root",
-          "not registered",
-        );
-      });
-      expect(onRefreshProjects).not.toHaveBeenCalled();
-      expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-alpha")).toBeTruthy();
+      showNativeContextMenu.mockClear();
+      const defaultRow = [...container.querySelectorAll<HTMLElement>('[role="treeitem"][data-testid^="sidebar-project-"]')]
+        .find((row) => row.textContent?.includes("기본 프로젝트"));
+      expect(defaultRow).toBeDefined();
+      fireEvent.contextMenu(defaultRow!);
+      expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({ kind: "project" }));
+      expect(showNativeContextMenu.mock.calls[0]?.[0].commands).not.toContain("project.remove");
     } finally {
       restore();
     }

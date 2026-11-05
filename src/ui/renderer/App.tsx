@@ -122,6 +122,8 @@ import {
   workspaceRootsToProjects,
 } from "../../shared/project-identity.js";
 import { useProjectSelection } from "./hooks/use-project-selection.js";
+import { useRemoveProject } from "./hooks/use-remove-project.js";
+import { RemoveProjectDialog } from "./components/sidebar/RemoveProjectDialog.js";
 import { formatIpcError } from "./format-ipc-error.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
@@ -1104,9 +1106,6 @@ export function App() {
     isSessionStarred,
     handleToggleSessionStar,
   } = useStarred(api);
-  const handleProjectNotice = useCallback((message: string) => {
-    statusPushToast({ severity: "info", message, ttlMs: 10_000 });
-  }, [statusPushToast]);
   const handleProjectError = useCallback<ProjectErrorReporter>((operation, error, message) => {
     statusPushToast({
       severity: "error",
@@ -1159,6 +1158,20 @@ export function App() {
   useEffect(() => {
     void refreshWorkspaceProjects();
   }, [refreshWorkspaceProjects]);
+
+  // 프로젝트 제거 (cases 29–31): preview, confirm when something would be lost, then close what pointed at the folder.
+  const removeProject = useRemoveProject({
+    surfacesIn: (root) => mainSurfaces.surfaces.filter((surface) => projectRootEquals(surface.projectRoot, root)).map((surface) => ({ tabId: surface.tabId, kind: surface.kind })),
+    closeSurface: closeMainSurface,
+    forgetProject: projectSelection.forgetProject,
+    refreshProjects: refreshWorkspaceProjects,
+    projectName: projectDisplayName,
+    pushToast: statusPushToast,
+    reportError: handleProjectError,
+  });
+  const requestRemoveProject = useCallback((project: ProjectIdentity) => {
+    void removeProject.requestRemove(project);
+  }, [removeProject.requestRemove]);
 
   /** Main authorizes project roots; do not replace an explicit root missing from a stale renderer list. */
   const resolveKnownProject = useCallback((project: ProjectIdentity | undefined): ProjectIdentity | undefined => {
@@ -2294,7 +2307,7 @@ export function App() {
                 onNewChatForProject={onNewChatForProject}
                 onRefreshProjects={refreshWorkspaceProjects}
                 onProjectError={handleProjectError}
-                onProjectNotice={handleProjectNotice}
+                onRemoveProject={requestRemoveProject}
                 projects={workspaceProjects}
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}
@@ -2412,6 +2425,12 @@ export function App() {
                     onToggleLabels={() => setDevLabelsOn((v) => !v)}
                   />
                   {devLabelsOn && <DevComponentLabels />}
+                  <RemoveProjectDialog
+                    prompt={removeProject.prompt}
+                    projectName={removeProject.prompt ? projectDisplayName(removeProject.prompt.project) : ""}
+                    onConfirm={() => void removeProject.confirm()}
+                    onCancel={removeProject.cancel}
+                  />
                   {searchOpen && (
                     <UnifiedSearchPanel
                       api={api}

@@ -61,6 +61,7 @@ import {
   branchFromCheckpoint,
   startRoutineConversation,
   revokeWorkspaceRoot,
+  workspaceRootRemovalAffectsTurn,
   type WorkspaceRootRevocationResult,
   type SessionProjectContext,
 } from "./turn/session.js";
@@ -588,6 +589,16 @@ export class ConversationLoop {
     options?: WorkspaceRootRevocationOptions,
   ): WorkspaceRootRevocationResult {
     return revokeWorkspaceRoot(this, root, options);
+  }
+
+  /** Whether removing `root` now would stop a running turn here: the removal preview's count, by the removal's own test. */
+  wouldWorkspaceRootRemovalAbortTurn(root: string, options?: WorkspaceRootRevocationOptions): boolean {
+    return this.hasActiveTurn() && workspaceRootRemovalAffectsTurn(this, root, options);
+  }
+
+  /** The removal preview's question to every live-scope owner: this loop's running turn, if removal would stop it. */
+  countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
+    return this.wouldWorkspaceRootRemovalAbortTurn(root, options) ? 1 : 0;
   }
 
   addSessionAdditionalDirectory(path: string): void {
