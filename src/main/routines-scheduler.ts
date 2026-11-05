@@ -26,6 +26,8 @@ export class RoutinesScheduler {
   private readonly llmHandlers = new Set<LlmSessionHandler>();
   private readonly notificationHandlers = new Set<NotificationHandler>();
   private inFlight = false;
+  // routineId → firedAt of each LLM run in progress, so a view opened mid-run can show it without having seen the start event.
+  private readonly runningRuns = new Map<string, string>();
 
   constructor(
     private readonly store: RoutinesStore,
@@ -97,6 +99,18 @@ export class RoutinesScheduler {
         log.warn("routine tick error (id=%s): %s", routine.id, (err as Error).message);
       }
     }
+  }
+
+  markRunning(routineId: string, firedAt: string): void {
+    this.runningRuns.set(routineId, firedAt);
+  }
+
+  markStopped(routineId: string): void {
+    this.runningRuns.delete(routineId);
+  }
+
+  runningNow(): Array<{ routineId: string; firedAt: string }> {
+    return [...this.runningRuns].map(([routineId, firedAt]) => ({ routineId, firedAt }));
   }
 
   private isDue(routine: RoutineRecord, now: Date): boolean {

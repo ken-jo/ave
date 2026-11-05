@@ -304,3 +304,13 @@ describe("RoutinesStore — a re-save that only looks different is not a new sch
     }
   }));
 });
+
+describe("RoutinesScheduler — runs in progress", () => {
+  it("lists a run from its start until it stops", withRoutinesStore(async ({ store }) => {
+    const scheduler = new RoutinesScheduler(store, async () => []);
+    scheduler.markRunning("r1", "2026-11-05T00:00:00.000Z");
+    expect(scheduler.runningNow()).toEqual([{ routineId: "r1", firedAt: "2026-11-05T00:00:00.000Z" }]);
+    scheduler.markStopped("r1");
+    expect(scheduler.runningNow()).toEqual([]);
+  }));
+});

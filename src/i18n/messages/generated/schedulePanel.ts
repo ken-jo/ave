@@ -69,6 +69,7 @@ export const en = {
   "schedulePanel.status_missed": "missed",
   "schedulePanel.chipLabel": "{time} {title}, {status}",
   "schedulePanel.hiddenItems": "{count} more at this time",
+  "schedulePanel.itemRemoved": "This schedule was deleted, so its details closed.",
 };
 
 export const ko: Record<keyof typeof en, string> = {
@@ -141,4 +142,5 @@ export const ko: Record<keyof typeof en, string> = {
   "schedulePanel.status_missed": "놓침",
   "schedulePanel.chipLabel": "{time} {title}, {status}",
   "schedulePanel.hiddenItems": "이 시각 항목 {count}개 더",
+  "schedulePanel.itemRemoved": "스케줄이 삭제되어 상세 창을 닫았습니다.",
 };

@@ -237,7 +237,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > MAX_OCCURRENCE_RANGE_MS) {
       return { ok: false, error: "invalid-range" };
     }
-    if (!routinesStore) return { ok: true, occurrences: [], runs: [] };
+    if (!routinesStore) return { ok: true, occurrences: [], runs: [], running: [] };
     const projectRoot = projectRootFilter(q);
     const filter = projectRoot === undefined ? undefined : { projectRoot };
     const { routines } = filter ? routinesStore.listForDisplay(filter) : routinesStore.listForDisplay();
@@ -263,7 +263,9 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       }
     }
     runs.sort((a, b) => a.firedAt.localeCompare(b.firedAt));
-    return { ok: true, occurrences: listRoutineOccurrences(routines, { from, to, now: Date.now() }), runs };
+    // The runs in progress now, so a view opened mid-run shows them; later changes arrive as running events.
+    const running = routinesScheduler?.runningNow() ?? [];
+    return { ok: true, occurrences: listRoutineOccurrences(routines, { from, to, now: Date.now() }), runs, running };
   });
 
   // Return the sidebar's shared run-row shape so panels and sidebar describe the same sessions.

@@ -41,6 +41,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
 
       // Emit running state immediately; completed events add the routine session id.
+      routinesScheduler.markRunning(routine.id, firedAt);
       try {
         announce(ROUTINES.runningStarted, {
           routineId: routine.id,
@@ -85,6 +86,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
       } finally {
       // Clear running state on both success and failure.
+        routinesScheduler.markStopped(routine.id);
         try {
           fanOutToAllWindows(appWindows(), ROUTINES.runningFinished, routine.id);
         } catch {

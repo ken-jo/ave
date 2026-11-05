@@ -8,11 +8,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/
 import type { AveApi } from "../../types.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type {
-  InvalidRoutine,
   RoutineEditPatch,
-  RoutineOccurrence,
   RoutineRecord,
-  RoutineRun,
 } from "../../../../shared/routines-types.js";
 import { MAX_PERSISTED_ROUTINES } from "../../../../shared/routines-types.js";
 import { packageRoutineSource, type AgentPluginRoutineTemplate } from "../../../../shared/agent-plugin-routine-template.js";
@@ -20,13 +17,19 @@ import { useInstalledContent } from "../../installed-content.js";
 import { useContainerNarrow } from "../../hooks/use-container-narrow.js";
 import { usePaneActions } from "../PaneFrame.js";
 import { AddRoutineModal, InvalidRoutineRow } from "../RoutinePanel.js";
-import { ScheduleItemPopover, routineTitle } from "./ScheduleItemPopover.js";
+import { ScheduleItemPopover, routineTitle, type ScheduleItemDraft } from "./ScheduleItemPopover.js";
+import { useScheduleData } from "./use-schedule-data.js";
 import { layoutDayChips, sameDay, scheduleRange, shiftAnchor, type ScheduleViewMode } from "./schedule-layout.js";
 
 const PX_PER_HOUR = 48;
 const CHIP_PX = 22;
 const TWO_LINE_PX = 40;
 const MONTH_LINES = 3;
+/** The +N list's identity: its day and the half-hour slot it sits in. */
+function moreSlot(day: Date, top: number): string {
+  return `${day.getTime()}:${Math.floor(top / (PX_PER_HOUR / 2))}`;
+}
+
 const VIEW_MODES = ["day", "week", "month"] as const satisfies readonly ScheduleViewMode[];
 /** A deleted item stays restorable this long; the delete itself is the user's action and is never confirmed. */
 const SCHEDULE_UNDO_MS = 6_000;
@@ -123,13 +126,15 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const { isNarrow: narrow } = useContainerNarrow(container, { enter: NARROW_ENTER, exit: NARROW_EXIT });
   const [mode, setMode] = useState<ScheduleViewMode>("week");
   const [anchor, setAnchor] = useState(() => now());
-  const [records, setRecords] = useState<RoutineRecord[]>([]);
-  const [invalid, setInvalid] = useState<InvalidRoutine[]>([]);
-  const [occurrences, setOccurrences] = useState<RoutineOccurrence[]>([]);
-  const [runs, setRuns] = useState<RoutineRun[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [running, setRunning] = useState<Map<string, string>>(() => new Map());
   const [selected, setSelected] = useState<string | null>(null);
+  // Edits in progress per item, kept here so a popover re-anchored to another chip (its occurrence fired) keeps them.
+  const [drafts, setDrafts] = useState<Record<string, ScheduleItemDraft>>({});
+  const dropDraft = useCallback((routineId: string) => setDrafts((prev) => {
+    if (!(routineId in prev)) return prev;
+    const next = { ...prev };
+    delete next[routineId];
+    return next;
+  }), []);
   const [dayPopover, setDayPopover] = useState<number | null>(null);
   const [morePopover, setMorePopover] = useState<string | null>(null);
   const tabIds = useId();
@@ -153,43 +158,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
 
-  const refresh = useCallback(async () => {
-    const filter = projectRoot ? { projectRoot } : undefined;
-    const [list, occ] = await Promise.all([
-      api.listRoutines(filter),
-      api.listRoutineOccurrences({ ...filter, from: range.from.toISOString(), to: range.to.toISOString() }),
-    ]);
-    if (!mounted.current) return;
-    setRecords(list.routines);
-    setInvalid(list.invalid);
-    if (occ.ok) {
-      setOccurrences(occ.occurrences);
-      setRuns(occ.runs);
-    }
-    setLoaded(true);
-  }, [api, projectRoot, range]);
-
-  useEffect(() => {
-    void refresh();
-    // A skipped occurrence has no fired event; refresh while the panel is open.
-    const timer = setInterval(() => void refresh(), 30_000);
-    const unsubs = [
-      api.onRoutineFired?.(() => void refresh()),
-      api.onRoutineRunningStarted?.(({ routineId, firedAt }) => {
-        setRunning((prev) => new Map(prev).set(routineId, firedAt));
-        void refresh();
-      }),
-      api.onRoutineRunningFinished?.((routineId) => {
-        setRunning((prev) => { const next = new Map(prev); next.delete(routineId); return next; });
-        void refresh();
-      }),
-      api.onRoutineFailed?.(({ routineId }) => {
-        setRunning((prev) => { const next = new Map(prev); next.delete(routineId); return next; });
-        void refresh();
-      }),
-    ];
-    return () => { clearInterval(timer); for (const unsub of unsubs) unsub?.(); };
-  }, [api, refresh]);
+  const { records, invalid, occurrences, runs, loaded, running, refresh } = useScheduleData(api, projectRoot, range);
 
   // The delete commits when its undo window closes, and when the panel goes away: the user already chose it.
   const pendingRef = useRef<string | null>(null);
@@ -210,6 +179,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const startDelete = (id: string) => {
     if (pendingDelete && pendingDelete !== id) void commitDelete(pendingDelete);
     setSelected(null);
+    // Undo restores the item, not the edits that were open when it was deleted.
+    dropDraft(id);
     setPendingDelete(id);
   };
 
@@ -234,6 +205,35 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
     return out.sort((a, b) => a.atMs - b.atMs);
   }, [runs, occurrences, running, byId, visible]);
   const scheduledEntries = entries.filter((e) => e.routine.trigger === "schedule");
+
+  // A selection is "<surface>|<entry key>", and an entry key changes when its occurrence fires (occ: → run:). The open popover
+  // follows its item to the nearest entry on the same surface instead of closing; it closes only when the item is gone.
+  const openKey = useMemo(() => {
+    if (!selected) return null;
+    const bar = selected.indexOf("|");
+    const surface = selected.slice(0, bar);
+    const key = selected.slice(bar + 1);
+    const routineId = key.split(":")[1] ?? "";
+    if (!visible(routineId)) return null;
+    if (key.startsWith("shutdown:") || entries.some((e) => e.key === key)) return selected;
+    const oldMs = Date.parse(key.slice(key.indexOf(":", key.indexOf(":") + 1) + 1));
+    let best: ScheduleEntry | undefined;
+    for (const e of entries) {
+      if (e.routine.id !== routineId) continue;
+      if (!best || Math.abs(e.atMs - oldMs) < Math.abs(best.atMs - oldMs)) best = e;
+    }
+    return best ? `${surface}|${best.key}` : null;
+  }, [selected, entries, visible]);
+  useEffect(() => {
+    if (!selected || openKey === selected) return;
+    const key = selected.slice(selected.indexOf("|") + 1);
+    const routineId = key.split(":")[1] ?? "";
+    if (openKey === null && routineId !== pendingDelete && !byId.has(routineId)) {
+      setNotice(t("schedulePanel.itemRemoved"));
+      dropDraft(routineId);
+    }
+    setSelected(openKey);
+  }, [selected, openKey, pendingDelete, byId, dropDraft]);
   // Show the requested item once loaded: open its popover from its chip in view, or focus its attention row when no chip is
   // drawn. A request for an item that is gone or outside the range is still consumed.
   useEffect(() => {
@@ -291,10 +291,13 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         running={running.has(entry.routine.id)}
         missed={occurrences.some((o) => o.routineId === entry.routine.id && o.status === "missed")}
         {...templateNoteFor(entry.routine, installedTemplateSources)}
-        onClose={() => setSelected(null)}
+        draft={drafts[entry.routine.id] ?? {}}
+        onDraftChange={(draft) => setDrafts((prev) => ({ ...prev, [entry.routine.id]: draft }))}
+        onClose={() => { setSelected(null); dropDraft(entry.routine.id); }}
         onSave={async (patch: RoutineEditPatch) => {
           const result = await api.updateRoutine(entry.routine.id, patch);
           if (!result.ok) return result.error;
+          dropDraft(entry.routine.id);
           setSelected(null);
           void refresh();
           return null;
@@ -313,7 +316,10 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const withPopover = (entry: ScheduleEntry, surface: string, trigger: ReactElement) => {
     const key = `${surface}|${entry.key}`;
     return (
-      <Popover key={key} open={selected === key} onOpenChange={(open) => setSelected(open ? key : null)}>
+      <Popover key={key} open={openKey === key} onOpenChange={(open) => {
+        setSelected(open ? key : null);
+        if (!open) dropDraft(entry.routine.id);
+      }}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
         {/* React events bubble through the portal to the day column, whose click adds an item at that slot. */}
         <PopoverContent className="w-[min(360px,calc(100vw-32px))]" align="start" collisionPadding={16} onClick={(e) => e.stopPropagation()}>
@@ -411,7 +417,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                 {/* The slot click is a pointer shortcut; keyboard users add through this button, shown when focused. */}
                 <button
                   type="button"
-                  className="pointer-events-none absolute left-1 top-1 z-20 rounded border bg-background px-2 py-1 text-xs opacity-0 shadow-sm focus:pointer-events-auto focus:opacity-100"
+                  className="pointer-events-none absolute left-1 top-1 z-20 rounded border bg-background px-2 py-1 text-xs opacity-0 shadow-sm focus-visible:pointer-events-auto focus-visible:opacity-100"
                   onClick={(e) => { e.stopPropagation(); setCreate({ at: new Date(day.getFullYear(), day.getMonth(), day.getDate(), 9) }); }}
                   data-testid="schedule-day-add"
                 >
@@ -426,8 +432,14 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                 }, c.twoLine))}
                 {overflow.map((o) => (
                   // The hidden entries open from here in every layout, including the narrow day view that has no side list.
-                  <Popover key={o.top} open={morePopover === `${day.getTime()}:${o.top}`}
-                    onOpenChange={(open) => setMorePopover(open ? `${day.getTime()}:${o.top}` : null)}>
+                  // Keyed by its half-hour slot, not its pixel top: a fired occurrence becomes a run a few seconds later, and the open
+                  // list must stay open across that.
+                  <Popover key={moreSlot(day, o.top)} open={morePopover === moreSlot(day, o.top)}
+                    onOpenChange={(open) => {
+                      setMorePopover(open ? moreSlot(day, o.top) : null);
+                      // A chip selected from this list is not drawn once the list closes; do not reopen it later on its own.
+                      if (!open) setSelected((current) => (current?.startsWith("more|") ? null : current));
+                    }}>
                     <PopoverTrigger asChild>
                       <button
                         type="button"
