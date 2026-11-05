@@ -1,6 +1,6 @@
 // Schedule cards drawn inside the work board's columns. They are read-only summaries: editing happens in the schedule panel,
 // which a card opens.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -49,8 +49,26 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
   );
 }
 
+/** Whole minutes since `firedAt`, re-rendered as each minute passes. The timer lives only while the running card is shown. */
+function useElapsedMinutes(firedAt: string): number {
+  const started = Date.parse(firedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const current = Date.now();
+      setNow(current);
+      timer = setTimeout(schedule, 60_000 - (Math.max(0, current - started) % 60_000));
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [started]);
+  return Math.max(0, Math.floor((now - started) / 60_000));
+}
+
 export function RunningScheduleCardView({ card, onOpenSession }: { card: RunningScheduleCard; onOpenSession?: (sessionId: string) => void }) {
   const sessionId = card.sessionId;
+  const elapsedMinutes = useElapsedMinutes(card.firedAt);
   return (
     <div className="w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm" data-testid={`board-schedule-running-${card.routine.id}`}>
       <div className="flex items-center gap-1.5">
@@ -60,7 +78,7 @@ export function RunningScheduleCardView({ card, onOpenSession }: { card: Running
       <p className="mt-1 flex items-center gap-1 text-xs text-foreground">
         <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />
         <span className="truncate">{`${t("workBoard.scheduleRunning")} · ${t("workBoard.scheduleStartedAt", { time: formatLocalClock(card.firedAt) })} · ${
-          t("workBoard.scheduleElapsed", { minutes: String(Math.max(0, Math.floor((Date.now() - Date.parse(card.firedAt)) / 60_000))) })}`}</span>
+          t("workBoard.scheduleElapsed", { minutes: String(elapsedMinutes) })}`}</span>
       </p>
       <p className="truncate text-xs text-muted-foreground">{ruleLine(card.routine)}</p>
       {sessionId && onOpenSession && (

@@ -13,13 +13,14 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
   const send = vi.fn();
   const touchSessionTranscript = vi.fn();
   const window = { isDestroyed: () => false, webContents: { send, isDestroyed: () => false } };
+  const routinesScheduler = {
+    onLlmSession: (handler: Handler) => { handlers.llm = handler; return () => {}; },
+    onNotification: (handler: Handler) => { handlers.notification = handler; return () => {}; },
+    markRunning: vi.fn(),
+    markStopped: vi.fn(),
+  };
   const ctx = {
-    routinesScheduler: {
-      onLlmSession: (handler: Handler) => { handlers.llm = handler; return () => {}; },
-      onNotification: (handler: Handler) => { handlers.notification = handler; return () => {}; },
-      markRunning: vi.fn(),
-      markStopped: vi.fn(),
-    },
+    routinesScheduler,
     routineEngine: { runRoutine: vi.fn(runRoutine) },
     routinesStore,
     getMainWindow: () => window,
@@ -28,7 +29,7 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
     memoryManager: { touchSessionTranscript },
   } as unknown as BootContext;
   wireRoutinesScheduler(ctx);
-  return { handlers, send, touchSessionTranscript, routinesStore };
+  return { handlers, send, touchSessionTranscript, routinesStore, routinesScheduler };
 }
 
 const routine = { id: "routine-a", trigger: { kind: "manual" }, execution: "llm-session", title: "Morning", lastFiredAt: "2026-11-04T01:00:00.000Z" };
@@ -88,5 +89,20 @@ describe("routine run outcome persistence", () => {
     routinesStore.recordRunOutcome.mockRejectedValueOnce(new Error("disk full"));
     handlers.llm!({ routine });
     await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+  });
+});
+
+describe("runs in progress", () => {
+  it.each([
+    ["succeeds", async () => ({ summary: "done", sessionId: "s-1" })],
+    ["rejects", async () => { throw new Error("boom"); }],
+  ] as const)("marks the run stopped before the finished event when the run %s", async (_label, run) => {
+    const { handlers, send, routinesScheduler } = wire(run);
+    handlers.llm!({ routine });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+    expect(routinesScheduler.markRunning).toHaveBeenCalledWith("routine-a", "2026-11-04T01:00:00.000Z");
+    expect(routinesScheduler.markStopped).toHaveBeenCalledExactlyOnceWith("routine-a");
+    const finishedAt = send.mock.calls.findIndex(([channel]) => channel === ROUTINES.runningFinished);
+    expect(routinesScheduler.markStopped.mock.invocationCallOrder[0]!).toBeLessThan(send.mock.invocationCallOrder[finishedAt]!);
   });
 });

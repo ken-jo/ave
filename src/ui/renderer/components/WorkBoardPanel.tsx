@@ -662,7 +662,7 @@ function BoardColumn({
           className="flex h-5 min-w-[20px] items-center justify-center whitespace-nowrap rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground"
           data-testid={`${testId}-count`}
         >
-          {hasSchedule ? t(schedule.countKey, { items: String(items.length), schedules: String(schedule.count) }) : items.length}
+          {hasSchedule && schedule.count > 0 ? t(schedule.countKey, { items: String(items.length), schedules: String(schedule.count) }) : items.length}
         </span>
       </div>
       <ScrollArea className="min-h-0 flex-1 px-2 pb-2" data-testid={`${testId}-list`}>
