@@ -385,6 +385,8 @@ interface Outcome {
   /** What the shell recorded as the line it ran (its C marker), or null. */
   readonly recorded: string | null;
   readonly hung: boolean;
+  /** For a command with a process substitution, whether its next prompt ended before the harness released the shell's first prompt hook (it must not). */
+  readonly promptBeforeRelease: boolean | null;
 }
 
 interface Session {
@@ -456,14 +458,21 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     }
   }
   const fencePath = join(rig.root, "descendants-finished");
+  const releasePath = join(rig.root, "descendants-reaped");
   expect(spawnSync("mkfifo", [fencePath]).status).toBe(0);
+  expect(spawnSync("mkfifo", [releasePath]).status).toBe(0);
   // Opening this descriptor immediately before Enter gives every native descendant a writer. The prompt
   // closes the shell's own copy; EOF then proves process substitutions finished before their records are read.
+  // zsh does not wait for process substitutions (under `time`, `if` or braces, for example), and installs its SIGCHLD handler without SA_RESTART: a substitution
+  // that exits while zsh writes its prompt or enables bracketed paste interrupts that write (EINTR), and glibc stdio drops the buffered bytes, so the
+  // prompt end or `ESC[?2004h` is never sent. The shell therefore waits, before any prompt output, until the harness has seen every descendant
+  // close the fence and every child of the shell exit; it then reads one release line (an EINTR read is retried) and draws the prompt.
   const fenceHooks = [
     `__ave_begin_fence() { exec 9>'${fencePath}'; printf f >&9; __ave_fence_open=1; }`,
-    '__ave_close_fence() { if [ "${__ave_fence_open:-0}" = 1 ]; then exec 9>&-; __ave_fence_open=0; fi; return 0; }',
+    `__ave_close_fence() { if [ "\${__ave_fence_open:-0}" = 1 ]; then exec 9>&-; __ave_fence_open=0; IFS= read -r __ave_fence_released <'${releasePath}' || return 1; fi; return 0; }`,
     name === "zsh"
-      ? "zle -N __ave_begin_fence; bindkey '^[[98~' __ave_begin_fence; add-zsh-hook precmd __ave_close_fence"
+      // First of the precmd hooks, ahead of the integration's markers. A hook does not change `$?` for the hooks after it.
+      ? "zle -N __ave_begin_fence; bindkey '^[[98~' __ave_begin_fence; precmd_functions=(__ave_close_fence \"${precmd_functions[@]}\")"
       : `bind -x '"\\e[98~":__ave_begin_fence'`,
   ].join("\n");
   writeFileSync(rc, ubuntuLikeNotFoundHandler(name, notFoundProgram) + tracedIntegration + "\n" + promptFixture + fenceHooks + "\n");
@@ -512,42 +521,94 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     for (const check of changes) check();
   });
   const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); for (const check of changes) check(); resolve(); }));
-  let fence: { cancel(): Promise<void> } | undefined;
-  const beginFence = async () => {
+  interface Fence {
+    /** Whether, before the deadline, every descendant closed the fence and the shell was left with no child process. */
+    settle(deadline: number): Promise<boolean>;
+    /** Let the shell's first prompt hook go on. */
+    release(): Promise<void>;
+    /** The fence's own record: the editor callback opened it once, and every holder closed it. */
+    verify(): Promise<void>;
+    cancel(): Promise<void>;
+  }
+  let fence: Fence | undefined;
+  /** The shell's child processes. A child that has exited has already signalled the shell, which is blocked in the release read. */
+  const shellChildren = async (): Promise<string[]> => {
+    try {
+      const { stdout } = await executeShell("/usr/bin/pgrep", ["-P", String(pty.pid)], { encoding: "utf8" });
+      return stdout.split("\n").filter((pid) => pid !== "");
+    } catch (error) {
+      // pgrep exits 1, with no output, when no process matched.
+      if ((error as { code?: unknown }).code === 1) return [];
+      throw error;
+    }
+  };
+  const beginFence = async (): Promise<Fence> => {
     const reader = spawn("/bin/cat", [fencePath], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let errors = "";
-    reader.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+    let markerSeen = (): void => {};
+    const marked = new Promise<void>((resolve) => { markerSeen = resolve; });
+    reader.stdout.on("data", (data: Buffer) => { output += data.toString(); if (output !== "") markerSeen(); });
     reader.stderr.on("data", (data: Buffer) => { errors += data.toString(); });
     const closed = new Promise<{ code: number | null; error?: Error }>((resolve) => {
       reader.on("error", (error) => resolve({ code: null, error }));
       reader.on("close", (code) => resolve({ code }));
     });
-    // Hold a writer until the command returns, including the interval before its native editor callback opens FD 9. Neither FIFO open can lose EOF.
+    // Hold a writer until the native editor callback has opened FD 9 (its marker byte arrived). Neither FIFO open can lose EOF.
     const writer = await open(fencePath, "w");
-    let finished: Promise<{ code: number | null; error?: Error }> | undefined;
-    const finish = () => finished ??= (async () => {
-      await writer.close();
-      return new Promise<{ code: number | null; error?: Error }>((resolve) => {
+    // Read-write, so neither this open nor the shell's later read-only open waits for the other side.
+    const release = await open(releasePath, "r+");
+    let writerClosed: Promise<void> | undefined;
+    const closeWriter = () => writerClosed ??= writer.close();
+    let released: Promise<void> | undefined;
+    const releaseShell = () => released ??= (async () => { await release.write("\n"); })();
+    let releaseClosed: Promise<void> | undefined;
+    const closeRelease = () => releaseClosed ??= (async () => { await releaseShell(); await release.close(); })();
+    const beforeDeadline = <T>(promise: Promise<T>, deadline: number): Promise<T | undefined> => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error); });
+    });
+    let completion: { code: number | null; error?: Error } | undefined;
+    const settle = async (deadline: number): Promise<boolean> => {
+      if (await beforeDeadline(marked.then(() => true), deadline) === undefined) return false;
+      await closeWriter();
+      completion = await beforeDeadline(closed, deadline);
+      if (completion === undefined) return false;
+      // EOF is sent while a descendant exits, before it signals its parent: wait for the shell to have no child left.
+      while ((await shellChildren()).length > 0) {
+        if (Date.now() >= deadline) return false;
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      return true;
+    };
+    const finish = async (): Promise<{ code: number | null; error?: Error }> => {
+      await closeWriter();
+      await closeRelease();
+      return completion ?? await new Promise<{ code: number | null; error?: Error }>((resolve) => {
         const timer = setTimeout(() => {
           reader.kill("SIGKILL");
           resolve({ code: null, error: new Error("A descendant kept the command-completion FIFO open") });
         }, 3_000);
         void closed.then((result) => { clearTimeout(timer); resolve(result); });
       });
-    })();
-    fence = { cancel: async () => {
-      reader.kill("SIGKILL");
-      // Cleanup is bounded and makes no assertions that could mask the command failure. Completion is checked by the command's own caller.
-      try { await finish(); } catch (error) { process.stderr.write(`FIFO cleanup: ${String(error)}\n`); }
-    } };
-    return async () => {
-      const result = await finish();
-      fence = undefined;
-      if (result.error) throw result.error;
-      expect(result.code, errors).toBe(0);
-      expect(output).toBe("f");
     };
+    fence = {
+      settle,
+      release: releaseShell,
+      async verify() {
+        const result = await finish();
+        fence = undefined;
+        if (result.error) throw result.error;
+        expect(result.code, errors).toBe(0);
+        expect(output).toBe("f");
+      },
+      async cancel() {
+        reader.kill("SIGKILL");
+        // Cleanup is bounded and makes no assertions that could mask the command failure. Completion is checked by the command's own caller.
+        try { await finish(); } catch (error) { process.stderr.write(`FIFO cleanup: ${String(error)}\n`); }
+      },
+    };
+    return fence;
   };
   const close = async () => {
     try { pty.kill("SIGKILL"); } catch { /* gone */ }
@@ -571,7 +632,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 
   let previous = "(start)";
   const stuck: string[] = [];
-  const typeAndWait = async (line: string): Promise<{ blockId: number | null; hung: boolean }> => {
+  const typeAndWait = async (line: string): Promise<{ blockId: number | null; hung: boolean; promptBeforeRelease: boolean | null }> => {
     const expectedBlockId = tracker.nextBlockId();
     const assertUnsubmitted = (): void => {
       if (tracker.nextBlockId() !== expectedBlockId) throw new Error(`${name}: a command started during refused preparation: ${line}`);
@@ -618,15 +679,28 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     }
     previous = line;
     const prompts = tracker.promptEndCount();
+    let promptBeforeRelease: boolean | null = null;
+    if (fence) {
+      // The shell holds its next prompt in its first prompt hook until its descendants are gone; it is released either way.
+      const settled = await fence.settle(Date.now() + 5_000);
+      // Held in its first prompt hook, the shell cannot have ended a prompt yet.
+      promptBeforeRelease = tracker.promptEndCount() > prompts;
+      await fence.release();
+      if (!settled) {
+        writeInput("\u0003");
+        await until(() => tracker.promptEndCount() > prompts, 3_000);
+        return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
+      }
+    }
     if (!await until(() => tracker.promptEndCount() > prompts, 5_000)) {
       writeInput("\u0003");
       await until(() => tracker.promptEndCount() > prompts, 3_000);
-      return { blockId: typed.firstBlockId, hung: true };
+      return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
     }
     // The next line is typed only at a ready prompt (the shell may still be writing after its prompt marker).
-    if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true };
+    if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true, promptBeforeRelease };
     if (tracker.nextBlockId() > expectedBlockId + 1) throw new Error(`${name}: multiple command blocks started for one approved submission: ${line}`);
-    return { blockId: typed.firstBlockId, hung: false };
+    return { blockId: typed.firstBlockId, hung: false, promptBeforeRelease };
   };
 
   // terminal_run types nothing while the handler is defined: it runs code for any word that is not a command.
@@ -661,9 +735,9 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       if (tracker.currentCwd() !== rig.box) await typeAndWait(`cd '${rig.box}'`);
       truncateSync(trace, 0);
       for (const call of readdirSync(rig.calls)) rmSync(join(rig.calls, call));
-      const finishDescendants = /[<>]\(/u.test(command) ? await beginFence() : undefined;
-      const { blockId, hung } = await typeAndWait(command);
-      await finishDescendants?.();
+      const descendants = /[<>]\(/u.test(command) ? await beginFence() : undefined;
+      const { blockId, hung, promptBeforeRelease } = await typeAndWait(command);
+      await descendants?.verify();
       const executed: Executed[] = [];
       for (const call of readdirSync(rig.calls)) {
         const argv = readFileSync(join(rig.calls, call), "utf-8").split("\0");
@@ -689,7 +763,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
         }
       }
       const block = blockId === null ? null : tracker.get(blockId);
-      return { command, shell: name, executed, recorded: block?.command ?? null, hung };
+      return { command, shell: name, executed, recorded: block?.command ?? null, hung, promptBeforeRelease };
     },
     close,
   };
@@ -892,6 +966,45 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     expect(plan([command]).runs.some((run) => run.command === command)).toBe(true);
   });
 
+  it("draws the next prompt only after process substitutions the shell did not wait for have exited", async () => {
+    // zsh returns from `if`, `time` and brace groups before their process substitutions exit, and its SIGCHLD handler interrupts a prompt
+    // write in progress (no SA_RESTART); glibc then drops the buffered prompt. Here the substitution outlives the command by two seconds.
+    const command = "if true; then diff <(ls a) <(pause); fi";
+    const shape = analyzeShellForRules(command);
+    expect(shape.ok).toBe(true);
+    if (!shape.ok) throw new Error("Expected a classified process substitution");
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-procsubst-prompt-")));
+    opened.push(root);
+    const results = await Promise.allSettled(SHELLS.map(async (shellPath) => {
+      const rig = makeRig(join(root, basename(shellPath)), new Set(["diff", "ls"]));
+      writeFileSync(join(rig.shims, "pause"), [
+        "#!/bin/sh",
+        `f='${rig.calls}/call.'$$`,
+        "set -C",
+        "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\" || exit 97",
+        "exec /bin/sleep 2",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      const session = await openSession(shellPath, rig);
+      try {
+        const outcome = await session.run(command);
+        expect(outcome.hung, command).toBe(false);
+        expect(outcome.recorded, command).toBe(command);
+        expect(outcome.promptBeforeRelease, `${command}: prompt end arrived before release`).toBe(false);
+        const programs = outcome.executed.filter((ran) => ran.via === "program").map((ran) => ran.argv.join(" ")).sort();
+        expect(programs[0], JSON.stringify(programs)).toMatch(/^diff \/(?:dev|proc\/self)\/fd\/\d+ \/(?:dev|proc\/self)\/fd\/\d+$/u);
+        expect(programs.slice(1)).toEqual(["ls a", "pause"]);
+        for (const executed of outcome.executed) {
+          expect(shape.commands.some(({ argv }) => covers(argv, executed)), JSON.stringify({ command, executed })).toBe(true);
+        }
+        expect(session.stuck).toEqual([]);
+      } finally {
+        await session.close();
+      }
+    }));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+  });
+
   it("keeps native prompt subprocesses ready after pipelines", async () => {
     // Keep the shipped prompt subprocesses real at this integration boundary; the larger classifier matrix
     // prebuilds entropy and captures bindings with native builtins instead of repeatedly forking for bookkeeping.
@@ -975,6 +1088,7 @@ print -r -- "$options[trapsasync]"` };
     const recordedDiffers: string[] = [];
     const hung: string[] = [];
     const stuckAfter: string[] = [];
+    const earlyPrompts: string[] = [];
     // Each shell runs the corpus in SESSIONS_PER_SHELL parts at once, each session with its own sandbox, shims and call records.
     const parts = Array.from({ length: SESSIONS_PER_SHELL }, (_, part) => runs.filter((_run, i) => i % SESSIONS_PER_SHELL === part));
     const results = await Promise.allSettled(SHELLS.flatMap((shellPath, shellIndex) => parts.map(async (part, index) => {
@@ -984,6 +1098,7 @@ print -r -- "$options[trapsasync]"` };
         for (const { command, commands } of part) {
           const outcome = await session.run(command);
           if (outcome.hung) hung.push(`${outcome.shell}: ${JSON.stringify(command)}`);
+          if (outcome.promptBeforeRelease === true) earlyPrompts.push(`${outcome.shell}: ${JSON.stringify(command)} ended its prompt before release`);
           if (outcome.recorded !== null && outcome.recorded !== command) recordedDiffers.push(`${outcome.shell}: ${JSON.stringify(command)} recorded as ${JSON.stringify(outcome.recorded)}`);
           for (const ran of outcome.executed) {
             if (!commands.some((argv) => covers(argv, ran))) {
@@ -999,11 +1114,12 @@ print -r -- "$options[trapsasync]"` };
     const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (errors.length > 0) throw new AggregateError(errors.map((result) => result.reason), errors.map((result) => String(result.reason)).join("\n"));
 
-    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
-    for (const line of [...mismatches, ...recordedDiffers, ...hung.map((h) => `hung ${h}`), ...stuckAfter.map((h) => `stuck ${h}`)]) console.info(line);
+    process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, early-prompts=${earlyPrompts.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
+    for (const line of [...mismatches, ...recordedDiffers, ...hung.map((h) => `hung ${h}`), ...stuckAfter.map((h) => `stuck ${h}`), ...earlyPrompts.map((h) => `early prompt ${h}`)]) console.info(line);
     expect(mismatches).toEqual([]);
     expect(recordedDiffers).toEqual([]);
     expect(hung).toEqual([]);
     expect(stuckAfter).toEqual([]);
+    expect(earlyPrompts).toEqual([]);
   }, 600_000);
 });
