@@ -8,6 +8,7 @@ import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/p
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { fetchBytesWithRetry } from "./lib/fetch-with-retry.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -48,9 +49,10 @@ function parseArgs(argv) {
 
 async function tarballBytes(localPath) {
   if (localPath) return await readFile(localPath);
-  const response = await fetch(TARBALL_URL);
-  if (!response.ok) throw new Error(`fetch-mxc: ${TARBALL_URL} answered ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
+  return await fetchBytesWithRetry(TARBALL_URL, {
+    httpError: (response) => `fetch-mxc: ${TARBALL_URL} answered ${response.status}`,
+    log: (msg) => process.stderr.write(`fetch-mxc: ${msg}\n`),
+  });
 }
 
 export async function stageMxcLauncher({ arch, tarball, projectRoot = PROJECT_ROOT }) {
@@ -105,9 +107,10 @@ export async function stageMxcSdkAddon({ arch, tarball, projectRoot = PROJECT_RO
   const archive = tarball ? await readFile(tarball) : await (async () => {
     const name = pin.package.split("/")[1];
     const url = "https://registry.npmjs.org/" + pin.package + "/-/" + name + "-" + pin.version + ".tgz";
-    const response = await fetch(url);
-    if (!response.ok) throw new Error("fetch-mxc: SDK addon archive unavailable");
-    return Buffer.from(await response.arrayBuffer());
+    return await fetchBytesWithRetry(url, {
+      httpError: () => "fetch-mxc: SDK addon archive unavailable",
+      log: (msg) => process.stderr.write(`fetch-mxc: ${msg}\n`),
+    });
   })();
   if (createHash("sha512").update(archive).digest("base64") !== pin.tarballSha512Base64) {
     throw new Error("fetch-mxc: SDK addon tarball integrity mismatch");
