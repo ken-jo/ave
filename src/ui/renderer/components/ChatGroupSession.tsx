@@ -55,6 +55,7 @@ import type { SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { ProcessingDisplayLevel } from "../../../shared/processing-display-level.js";
 import type { MemoryFixTarget } from "./MemoryFixCard.js";
+import { ScheduleChatChip } from "./schedule/ScheduleChatChip.js";
 
 /** A new chat's opening text, followed by any unsent text that came along with it, so neither is lost. */
 function withOpeningText(opening: string, carried: string): string {
@@ -101,6 +102,8 @@ export interface ChatGroupEnvironment {
   onOpenSettings: (tab?: string) => void;
   /** Open the memory panel searching for this text. */
   onOpenMemory: (query: string) => void;
+  /** Open the schedule panel on this item (the header chip's 스케줄에서 보기 and 시각·프롬프트 편집). */
+  onOpenRoutine: (routineId: string) => void;
   /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
   maxOutputTokens: number;
   maxOutputTokensSource: ResolvedOutputTokenLimit["effectiveSource"];
@@ -188,6 +191,8 @@ export interface ChatGroupSessionProps {
      * for the frame to assemble.
      */
     trailing: ReactNode;
+    /** Beside the title: the chip for the schedule items connected to this conversation. */
+    titleAccessory: ReactNode;
     content: ReactNode;
     /**
      * This conversation's approval and question cards while the pane shows
@@ -1057,5 +1062,10 @@ export function ChatGroupSession({
     </ChatContextProvider>
   );
 
-  return <>{children({ actions, trailing, content, settle, currentSessionId })}</>;
+  // A turn's end re-reads it: the agent may have added or changed an item connected to this chat.
+  const titleAccessory = (
+    <ScheduleChatChip api={api} sessionId={currentSessionId} refreshKey={streaming} onOpenRoutine={env.onOpenRoutine} />
+  );
+
+  return <>{children({ actions, trailing, titleAccessory, content, settle, currentSessionId })}</>;
 }

@@ -1737,6 +1737,7 @@ export function App() {
     // Estimate output cost from the route's effective limit.
     onOpenSettings,
     onOpenMemory: handleOpenMemory,
+    onOpenRoutine: openRoutine,
     maxOutputTokens: llmOutputTokenLimit.effective,
     maxOutputTokensSource: llmOutputTokenLimit.effectiveSource,
     rolePresets, activePreset, activePresetId, setActivePresetId,
@@ -1774,7 +1775,7 @@ export function App() {
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
-    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, handleOpenMemory, llmOutputTokenLimit,
+    effectiveLlmReady, chatReadyWithoutApiKey, activeChatModel, checkApiKey, onOpenSettings, handleOpenMemory, openRoutine, llmOutputTokenLimit,
     rolePresets, activePreset, activePresetId, setActivePresetId,
     enableThinkingChat, toggleThinking, processingDisplayLevel, refreshSessions, focusChatGroup, sessions, chatGroups.setPaneContent,
     sideChatOpenRequest,
@@ -2511,7 +2512,7 @@ export function App() {
                                     paneHidden={group.hidden}
                                     onSidePanelOpenChange={(open) => chatGroups.setPanelOpen(group.id, open)}
                                   >
-                                    {({ actions, trailing, content, settle, currentSessionId: tileSessionId }) => (
+                                    {({ actions, trailing, titleAccessory, content, settle, currentSessionId: tileSessionId }) => (
                                       <>
                                       {renderPaneRoute(paneView, group.id, settle)}
                                       <div className={paneView === "home" ? "contents" : "hidden"}>
@@ -2535,6 +2536,7 @@ export function App() {
                                         bodyInset="none"
                                         lane={paneView === "home" ? paneLane(group.id) : undefined}
                                         trailing={trailing}
+                                        titleAccessory={titleAccessory}
                                         actions={actions}
                                         {...(chatGroups.canSplit ? {
                                           onSplit: (axis: PaneSplitAxis) => chatGroups.split(group.id, axis),
