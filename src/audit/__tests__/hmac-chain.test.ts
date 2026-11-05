@@ -394,6 +394,35 @@ describe("SafeStorageSecretStore", () => {
     expect(readFileSync(keyPath(), "utf-8")).toBe(keyBefore);
   });
 
+  it("adopts the key another opener published while it was wrapping a replacement, and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "old-secret");
+    const otherDir = join(workDir, "other-secrets");
+    const other = await SafeStorageSecretStore.open(makeSafeStorage(), otherDir);
+    other.write("theirs", "from-the-other-opener");
+    const theirKey = readFileSync(join(otherDir, "store-data.safe-storage-key"), "utf-8");
+    writeFileSync(entryPath("theirs"), readFileSync(join(otherDir, "theirs.safe-storage"), "utf-8"));
+
+    // The stored key is unreadable until the other opener replaces it, which happens while this one encrypts.
+    let swapped = false;
+    const racing = makeSafeStorage({
+      decrypt: (raw) => {
+        if (!swapped) throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
+        return raw.replace(/^enc:/, "");
+      },
+    });
+    const encrypt = racing.encryptStringAsync;
+    racing.encryptStringAsync = async (value: string) => {
+      writeFileSync(keyPath(), theirKey);
+      swapped = true;
+      return encrypt(value);
+    };
+    const store = await SafeStorageSecretStore.open(racing, secretsDir());
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
+    expect(readFileSync(keyPath(), "utf-8")).toBe(theirKey);
+    expect(store.read("theirs")).toBe("from-the-other-opener");
+  });
+
   it("quarantines undecryptable pre-envelope ciphertext before boot rotates the secret", async () => {
     mkdirSync(secretsDir(), { recursive: true });
     writeFileSync(entryPath("audit-hmac.key"), "safe:v1:YmFkLWNpcGhlcnRleHQ=");
