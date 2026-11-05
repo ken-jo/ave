@@ -378,8 +378,6 @@ export const ko: Record<SeedMessageKey, string> = {
   "agentPluginPrompt.send": "보내기",
   "agentPluginPrompt.failed": "플러그인 프롬프트를 실행하지 못했습니다.",
   "agentPluginPrompt.extensionFailed": "익스텐션 프롬프트를 실행하지 못했습니다.",
-  "routinePanel.pluginTemplatesHeading": "루틴 템플릿",
-  "routinePanel.createFromTemplate": "루틴 만들기…",
   "routinePanel.templateSuggestedScope": "제안된 익스텐션 접근 권한: {plugins}. 아래에서 직접 선택하기 전에는 적용되지 않습니다.",
   "routinePanel.createdFromPluginTemplate": "{plugin} 템플릿으로 만들었습니다.",
   "routinePanel.createdFromExtensionTemplate": "{plugin} 익스텐션의 템플릿으로 만들었습니다.",
@@ -407,8 +405,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginConfigTab.lastRestartRefused": "마지막 재시작 거부됨: {message}",
   "gitMarketplace.version.hostProtocol": "다른 익스텐션 호스트 프로토콜 버전이 필요합니다",
   "formatIpcError.pluginsMissing": "이 루틴에서 허용한 익스텐션이 모두 설치되어 있지 않아 실행할 수 없습니다. 익스텐션을 다시 설치하거나 루틴을 삭제해 주세요.",
-  "routinePanel.pluginsMissing": "필요한 익스텐션이 설치되지 않아 실행을 건너뛰었습니다({plugins}). 익스텐션을 다시 설치하거나 이 루틴을 삭제하세요.",
-  "routinePanel.pluginsPartlyMissing": "확인이 필요합니다. 허용한 익스텐션 중 일부가 설치되지 않았습니다({plugins}). 설치된 나머지 익스텐션으로 루틴을 실행했습니다.",
+  "routinePanel.pluginsMissing": "필요한 익스텐션이 설치되지 않아 실행을 건너뛰었습니다({plugins}). 익스텐션을 다시 설치하거나 이 스케줄을 삭제하세요.",
+  "routinePanel.pluginsPartlyMissing": "확인이 필요합니다. 허용한 익스텐션 중 일부가 설치되지 않았습니다({plugins}). 설치된 나머지 익스텐션으로 스케줄을 실행했습니다.",
   // ── Common / shared ───────────────────────────────────────────────
   "common.cancel": "취소",
   "common.save": "저장",
@@ -512,6 +510,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "startupTab.launchRegisterFailedBody":
     "이 시스템에서 로그인 시 자동 실행을 등록하지 못했습니다. 설정에서 다시 시도하세요.",
   "app.paneChatUnavailable": "이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다.",
+  "app.surfaceProjectUnknown": "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.",
   "app.paneChatOpenFailed": "터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요.",
   "assistantCard.systemNoticeOperationError": "시스템 알림 — 요청을 완료할 수 없음",
   "assistantCard.conversationOpenInPane": "이 대화는 {surface}에 열려 있습니다.",

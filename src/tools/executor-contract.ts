@@ -153,6 +153,10 @@ export interface ExecuteOptions {
   spawnDepth?: number;
   // Default-project memory selection includes unscoped legacy notes; memory tools must use the same set.
   memoryIncludeUnscoped?: boolean;
+  /** Host-minted id of the user row that opened the turn; tools see it as metadata, never as model input. */
+  turnMessageId?: string;
+  /** True unless the host saw only the user's own keyboard text in this turn; memory_write and memory_delete refuse while true. */
+  memoryWriteTainted?: boolean;
   supportsA2AParentDelivery?: boolean;
   approvalReasonPrefix?: string;
   a2aCausalContext?: A2AAgentCausalContext;

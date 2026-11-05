@@ -1,10 +1,9 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { render, fireEvent, act, waitFor, within, screen } from "@testing-library/react";
+import { render, fireEvent, act, waitFor, screen } from "@testing-library/react";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { AskUserQuestionCard } from "../components/AskUserQuestionCard.js";
 import { QuestionOverlay } from "../components/QuestionOverlay.js";
-import { RoutinePanel } from "../components/RoutinePanel.js";
 import { SessionTasksPanel } from "../components/SessionTasksPanel.js";
 import { SessionGoalPanel } from "../components/SessionGoalPanel.js";
 import { SkillBadge } from "../components/SkillBadge.js";
@@ -260,76 +259,6 @@ describe("AskUserQuestionCard — multi-question", () => {
       requestId: "multi",
       answers: [{ choice: "서울" }, { choice: "내일" }],
     });
-  });
-});
-
-describe("RoutinePanel", () => {
-  it("renders empty-state when there are no routines", async () => {
-    const api = fakeApi();
-    const { findByText } = render(<RoutinePanel api={api} />);
-    expect(await findByText(/등록된 루틴이 없습니다/)).toBeInTheDocument();
-  });
-
-  it("renders an active routine card", async () => {
-    const api = fakeApi({
-      listRoutines: () =>
-        Promise.resolve({ invalid: [], routines: [
-          {
-            id: "r1",
-            trigger: "schedule" as const,
-            execution: "notification-only" as const,
-            schedule: { at: "2099-01-01T00:00:00.000Z", repeat: { kind: "daily" as const } },
-            notificationTitle: "year-end",
-            createdAt: "2024-01-01T00:00:00.000Z",
-          },
-        ] }),
-    });
-    const { findByText } = render(<RoutinePanel api={api} />);
-    expect(await findByText("year-end")).toBeInTheDocument();
-  });
-
-  it("renders past LLM routine sessions beside the routine list", async () => {
-    // The row main assembles for this run — the same one the sidebar lists.
-    const listRoutineSessions = vi.fn(async () => [
-      {
-        id: "session-routine-1",
-        modifiedAt: "2026-05-11T04:00:00.003Z",
-        title: "뉴스 요약",
-        sessionKind: "routine" as const,
-        family: "routine" as const,
-        routineId: "r-llm",
-        routineTitle: "뉴스 요약",
-        routineFiredAt: "2026-05-11T04:00:00.003Z",
-        preview: "뉴스 요약 완료",
-      },
-    ]);
-    const onOpenSession = vi.fn();
-    const api = fakeApi({
-      listRoutines: () =>
-        Promise.resolve({ invalid: [], routines: [
-          {
-            id: "r-llm",
-            trigger: "schedule" as const,
-            execution: "llm-session" as const,
-            schedule: { at: "2099-01-01T00:00:00.000Z", repeat: { kind: "daily" as const } },
-            title: "뉴스 요약",
-            createdAt: "2024-01-01T00:00:00.000Z",
-          },
-        ] }),
-      listRoutineSessions: listRoutineSessions as never,
-    });
-    const { findByTestId } = render(<RoutinePanel api={api} onOpenSession={onOpenSession} />);
-
-    const sessionList = await findByTestId("routine-session-list");
-    await waitFor(() => {
-      expect(sessionList.textContent).toContain("과거 루틴 세션");
-      expect(sessionList.textContent).toContain("뉴스 요약");
-      expect(sessionList.textContent).toContain("뉴스 요약 완료");
-    });
-    expect(listRoutineSessions).toHaveBeenCalledWith("r-llm", 10);
-
-    fireEvent.click(within(sessionList).getByText("열기"));
-    expect(onOpenSession).toHaveBeenCalledWith("session-routine-1");
   });
 });
 

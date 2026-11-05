@@ -24,7 +24,7 @@ const TERMINAL_TAB = "terminal:0000000a-2";
 
 function layout(): MainLayoutSnapshot {
   return {
-    version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"], thumbnailOpenIds: [],
+    version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: ["main"], thumbnailOpenIds: [], openSurfaces: [],
     sideTabs: { main: [
       { kind: "browser", tabId: BROWSER_TAB, ordinal: 1, cwd: null, url: "https://example.com/" },
       { kind: "terminal", tabId: TERMINAL_TAB, ordinal: 1, cwd: "/work", url: null },
@@ -92,8 +92,8 @@ describe("durable session tab bindings", () => {
     registry.onBindingsChanged((windowId) => announced.push(windowId));
     // Restored from the saved layout: the terminal sits in the side panel.
     expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("side-panel");
-    const terminal = layout().sideTabs.main![1]!;
-    const inPane: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, sideTabs: { main: [layout().sideTabs.main![0]!] } };
+    const terminal = { ...layout().sideTabs.main![1]!, projectRoot: "/work" };
+    const inPane: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, openSurfaces: [terminal], sideTabs: { main: [layout().sideTabs.main![0]!] } };
     registry.prepareLayoutBindings(1, inPane);
     expect(registry.surfacePlacement(1, TERMINAL_TAB)).toBe("workspace");
     expect(announced.length).toBeGreaterThan(0);
@@ -239,6 +239,30 @@ describe("durable session tab bindings", () => {
     expect(restarted.registry.resume(9, BROWSER_TAB)).toBe(true);
     expect(restarted.registry.liveTab("tab-1")?.agentOrigin).toBeNull();
     expect(() => restarted.registry.assertActorAccess(restarted.registry.liveTab("tab-1")!, { sessionId: PANE_SESSION })).toThrow("another conversation");
+    await restarted.registry.flushBindingWrites();
+  });
+
+  it("keeps a hidden tab's pane conversation across save and restart, without a workspace placement while hidden", async () => {
+    const terminal = { ...layout().sideTabs.main![1]!, projectRoot: "/work" };
+    const shown: MainLayoutSnapshot = { ...layout(), surfaces: { main: terminal }, openSurfaces: [terminal], sideTabs: { main: [layout().sideTabs.main![0]!] } };
+    await saveLayout(settings, shown);
+    const first = registryFor();
+    first.registry.bindConversationSurface(PANE_SESSION, { windowId: 1, surface: { kind: "terminal", tabId: TERMINAL_TAB } });
+    expect(first.registry.surfacePlacement(1, TERMINAL_TAB)).toBe("workspace");
+    // The pane switches back to its conversation: the terminal stays open but no pane shows it.
+    const hidden: MainLayoutSnapshot = { ...shown, surfaces: {} };
+    const saved = first.registry.prepareLayoutBindings(1, hidden);
+    expect(saved.openSurfaces?.[0]?.binding).toEqual({ paneSessionId: PANE_SESSION });
+    expect(first.registry.paneConversation(1, TERMINAL_TAB)).toBe(PANE_SESSION);
+    // Hidden is neither workspace nor side panel, so a host-terminal lease (workspace only) cannot survive it.
+    expect(first.registry.surfacePlacement(1, TERMINAL_TAB)).toBeUndefined();
+    expect(info).not.toHaveBeenCalledWith("Pruned tab binding: tab-missing (tab=%s)", TERMINAL_TAB);
+    await saveLayout(settings, saved);
+    await first.registry.flushBindingWrites();
+    first.registry.releaseWindow(1);
+    const restarted = registryFor(settingsFromDisk(), 4);
+    expect(restarted.registry.paneConversation(4, TERMINAL_TAB)).toBe(PANE_SESSION);
+    expect(restarted.registry.surfacePlacement(4, TERMINAL_TAB)).toBeUndefined();
     await restarted.registry.flushBindingWrites();
   });
 

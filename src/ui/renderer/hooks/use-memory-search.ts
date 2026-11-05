@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
-import type { AveApi, MemoryCandidate } from "../types.js";
+import type { AveApi } from "../types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 
 export interface NoteResult {
@@ -10,8 +10,6 @@ export interface NoteResult {
   filename?: string;
 }
 
-export type MemoryCandidateResult = Omit<MemoryCandidate, "content"> & { excerpt: string };
-
 export interface SessionResult {
   sessionId: string;
   title?: string;
@@ -19,7 +17,7 @@ export interface SessionResult {
   timestamp: string;
 }
 
-export function memoryProjectOptions(project: ProjectIdentity | undefined) {
+function memoryProjectOptions(project: ProjectIdentity | undefined) {
   if (!project?.projectRoot) return undefined;
   return {
     projectRoot: project.projectRoot,
@@ -68,26 +66,6 @@ function memorySearchSessions(api: AveApi, query: string, project: ProjectIdenti
   return opts ? api.memorySearchSessions(query, opts) : api.memorySearchSessions(query);
 }
 
-type MemoryCandidateApi = {
-  memoryListCandidates?: (opts?: ReturnType<typeof memoryProjectOptions>) => Promise<Array<{
-    id: string;
-    filename: string;
-    title: string;
-    content: string;
-    updatedAt?: string;
-    createdAt?: string;
-    projectRoot?: string;
-    projectName?: string;
-    source?: "user" | "assistant" | "import";
-  }>>;
-};
-
-function memoryListCandidates(api: AveApi, project: ProjectIdentity | undefined) {
-  const listCandidates = (api as AveApi & MemoryCandidateApi).memoryListCandidates;
-  if (!listCandidates) return Promise.resolve([]);
-  const opts = memoryProjectOptions(project);
-  return opts ? listCandidates(opts) : listCandidates();
-}
 /** Memory search hook. Debounces query (200 ms), fires IPC calls, guards post-unmount setState with aliveRef pattern. */
 export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   const [query, setQuery] = useState("");
@@ -181,41 +159,4 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   }, []);
 
   return { query, setQuery, noteResults, sessionResults, loading, refresh, reset };
-}
-
-/** Loads proposals separately so they never appear in active memory search results. */
-export function useMemoryCandidates(api: AveApi, project?: ProjectIdentity) {
-  const [candidates, setCandidates] = useState<MemoryCandidateResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const aliveRef = useRef(true);
-  const projectKey = `${project?.projectRoot ?? ""}\0${project?.projectName ?? ""}\0${project?.isDefault === true ? "default" : ""}`;
-
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const entries = await memoryListCandidates(api, project);
-      if (!aliveRef.current) return;
-      setCandidates((entries ?? []).map((entry) => ({
-        ...entry,
-        excerpt: stripTopHeading(entry.content),
-      })));
-    } catch {
-      if (aliveRef.current) setCandidates([]);
-    } finally {
-      if (aliveRef.current) setLoading(false);
-    }
-  }, [api, project, projectKey]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { candidates, loading, refresh };
 }

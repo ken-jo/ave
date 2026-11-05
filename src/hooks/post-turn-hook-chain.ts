@@ -21,6 +21,8 @@ const log = createLogger("post-turn");
 
 export interface PostTurnHookContext {
   sessionId: string;
+  /** The user row that opened this turn; automatic capture records it as where a memory was learned. */
+  turnMessageId?: string;
   projectRoot?: string;
   projectName?: string;
 
@@ -124,6 +126,7 @@ export class PostTurnHookChain {
       if (ctx.inputOrigin) {
         this.deps.memoryCaptureService?.enqueueAutomatic({
           sessionId: ctx.sessionId,
+          ...(ctx.turnMessageId !== undefined ? { turnMessageId: ctx.turnMessageId } : {}),
           input: ctx.input,
           inputOrigin: ctx.inputOrigin,
           ...(ctx.projectRoot ? { projectRoot: ctx.projectRoot } : {}),
@@ -144,7 +147,8 @@ export class PostTurnHookChain {
           ...sessionMeta,
           title: detector.newTitle,
         });
-        log.info(`update-title: session ${ctx.sessionId} title set to "${detector.newTitle}"`);
+        // No user content in logs: the id and the title's length only.
+        log.info("update-title: session %s title set (%d chars)", ctx.sessionId, detector.newTitle.length);
       }
     } catch (err) {
       log.warn("update-title failed: %s", err);

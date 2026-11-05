@@ -99,7 +99,47 @@ export interface RoutineRecord {
   lastFiredMinuteUTC?: string;
   /** Origin doubles as idempotency identity; suggestions use suggestion:<pluginId>:<intent>, and manual creation leaves it unset. */
   source?: string;
+  /** The project the schedule panel lists this item under. Items stored before projects existed have none and show in every project. */
+  projectRoot?: string;
+  /** Who added it. Records stored before this field have none. */
+  createdBy?: RoutineActor;
+  /** Pause is reversible, unlike dismissedAt: a paused item is never due and does not catch up when resumed. */
+  pausedAt?: string;
+  pausedBy?: RoutineActor;
+  /** When the item was last resumed. A one-shot whose time is at or before it was missed while paused: it is not due, the grid
+   * shows it as missed, and only 지금 실행 or a new time runs it. */
+  resumedAt?: string;
 }
+
+export type RoutineActor = "user" | "agent";
+
+/** A user edit from the schedule panel. `title: null` clears the title; a schedule replaces the whole schedule. */
+export interface RoutineEditPatch {
+  title?: string | null;
+  prePrompt?: string;
+  notificationTitle?: string;
+  notificationBody?: string;
+  schedule?: RoutineSchedule;
+}
+
+/** One projected future fire for the schedule grids. */
+export interface RoutineOccurrence {
+  routineId: string;
+  at: string;
+  status: "scheduled" | "paused" | "missed";
+}
+
+/** One past fire for the schedule grids; `failed` when the item's lastFailure names this fire. */
+export interface RoutineRun {
+  routineId: string;
+  firedAt: string;
+  status: "done" | "failed";
+  sessionId?: string;
+}
+
+export type RoutineOccurrencesResult =
+  | { ok: true; occurrences: RoutineOccurrence[]; runs: RoutineRun[]; running: Array<{ routineId: string; firedAt: string }> }
+  | { ok: false; error: string };
 
 export interface AddRoutineInput {
   trigger: "shutdown" | "schedule";
@@ -112,6 +152,10 @@ export interface AddRoutineInput {
   /** Omitted scope defaults to deny-all with empty forced plugins and directories; inheritance requires explicit opt-in. */
   scope?: RoutineScope;
   source?: string;
+  /** Required on every new item; only records stored before projects existed have none. */
+  projectRoot: string;
+  /** The renderer path always records "user"; the routine_schedule tool records "agent". */
+  createdBy: RoutineActor;
 }
 
 /** Allow-list renderer payload fields; spreading the record could expose prePrompt and other private data. */

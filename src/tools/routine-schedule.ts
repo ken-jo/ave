@@ -100,7 +100,12 @@ function routineScheduleApprovalCacheKey(rawInput: unknown): string {
   return `scope:allow:${[...allowedPlugins].sort().join(",")}`;
 }
 
-export function createRoutineScheduleTool(store: RoutinesStore): Tool {
+export interface RoutineScheduleToolDeps {
+  /** The project (or default workspace) root of the conversation that called the tool, or undefined when it has none. */
+  projectRootForSession: (sessionId: string) => string | undefined;
+}
+
+export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineScheduleToolDeps): Tool {
   return createDynamicTool({
     name: "routine_schedule",
     description: t("be_routineSchedule.toolDescription"),
@@ -159,8 +164,15 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
         },
       },
     },
-    execute: async (rawInput) => {
+    execute: async (rawInput, ctx) => {
       const a = (rawInput ?? {}) as Record<string, unknown>;
+      // The item is listed under the calling conversation's project, resolved from its session. The tool cwd is not used: it can fall
+      // back to the process cwd, which would file the item under an unrelated directory.
+      const sessionId = ctx?.metadata?.sessionId;
+      const projectRoot = typeof sessionId === "string" && sessionId ? deps.projectRootForSession(sessionId)?.trim() ?? "" : "";
+      if (!projectRoot) {
+        return { output: JSON.stringify({ error: "routine_schedule needs a chat that belongs to a project" }), isError: true };
+      }
 
       const execution = a.execution;
       if (execution !== "llm-session" && execution !== "notification-only") {
@@ -250,6 +262,8 @@ export function createRoutineScheduleTool(store: RoutinesStore): Tool {
             directories: [],
           },
           ...(source !== undefined ? { source } : {}),
+          projectRoot,
+          createdBy: "agent",
         });
         return {
           output: JSON.stringify({ routineId: record.id, schedule: record.schedule }),

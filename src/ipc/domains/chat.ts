@@ -23,6 +23,7 @@ import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-manager.js";
+import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
@@ -407,38 +408,6 @@ function parseMemoryProjectOptions(raw: unknown): MemoryProjectOptionsResolution
   };
 }
 
-type MemoryCandidateActionPayload =
-  | { ok: true; id: string; options: unknown }
-  | { ok: false };
-
-// Limit lifecycle payloads so renderer input cannot smuggle manager options.
-function parseMemoryCandidateActionPayload(raw: unknown): MemoryCandidateActionPayload {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
-  const record = raw as Record<string, unknown>;
-  if (!hasOnlyKeys(record, ["id", "opts"])) return { ok: false };
-  if (typeof record.id !== "string" || record.id.length === 0 || record.id.length > 128) {
-    return { ok: false };
-  }
-  if (record.opts !== undefined) {
-    if (!record.opts || typeof record.opts !== "object" || Array.isArray(record.opts)) {
-      return { ok: false };
-    }
-    if (!hasOnlyKeys(record.opts as Record<string, unknown>, ["projectRoot", "projectName", "includeUnscoped"])) {
-      return { ok: false };
-    }
-  }
-  return { ok: true, id: record.id, options: record.opts };
-}
-
-function candidateMemoryActionFailure(error: unknown): { ok: false; error: "invalid-input" | "not-found" | "write-failed" } {
-  const message = error instanceof Error ? error.message : "";
-  if (message.includes("invalid memory id")) return { ok: false, error: "invalid-input" };
-  // Scope misses intentionally share this result with absent candidates, so a
-  // caller cannot probe whether another project's candidate exists.
-  if (message.includes("candidate not found")) return { ok: false, error: "not-found" };
-  return { ok: false, error: "write-failed" };
-}
-
 export type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 
 // Resolve durable row ids; transcript entry ordinals differ from stored row ordinals.
@@ -478,7 +447,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     conversationLoop,
     settingsService,
     memoryManager,
-    memoryCaptureService,
     starredStore,
     feedbackStore,
     auditLogger,
@@ -1775,71 +1743,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return [];
     return memoryManager.listMemoryEntries(project.options);
   });
-  ipcMain.handle(CHANNELS.memory.candidatesList, (e, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.candidatesList, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return [];
-    return memoryManager.listMemoryCandidates(project.options);
-  });
-  ipcMain.handle(CHANNELS.memory.entriesSave, async (e, title: string, content: string, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesSave, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return PROJECT_NOT_ALLOWED;
-    if (!memoryCaptureService) {
-      throw new Error("memory-reviewer-unavailable");
-    }
-    try {
-      const result = await memoryCaptureService.captureExplicit({
-        title,
-        content,
-        ...project.options,
-      });
-      if (result.status === "skipped") {
-        throw new Error("memory-review-not-saved");
-      }
-      return result.entry;
-    } catch {
-      // Never fall back to a raw renderer-provided memory write.
-      throw new Error("memory-review-not-saved");
-    }
-  });
   ipcMain.handle(CHANNELS.memory.entriesDelete, async (e, filename: unknown, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesDelete, e); return UNAUTHORIZED_FRAME; }
     if (typeof filename !== "string") return { ok: false, error: "invalid-input" };
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     try {
-      await memoryManager.deleteMemory(filename, project.options);
+      await memoryManager.deleteMemory(filename, project.options, "user");
       return { ok: true };
     } catch {
       // Do not disclose a path, title, or another project's memory scope to the renderer.
       return { ok: false, error: "write-failed" };
-    }
-  });
-  ipcMain.handle(CHANNELS.memory.candidateActivate, async (e, raw: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.candidateActivate, e); return UNAUTHORIZED_FRAME; }
-    const candidate = parseMemoryCandidateActionPayload(raw);
-    if (!candidate.ok) return { ok: false, error: "invalid-input" };
-    const project = parseMemoryProjectOptions(candidate.options);
-    if (!project.ok) return PROJECT_NOT_ALLOWED;
-    try {
-      const entry = await memoryManager.activateMemoryCandidate(candidate.id, project.options);
-      return { ok: true, entry };
-    } catch (error) {
-      return candidateMemoryActionFailure(error);
-    }
-  });
-  ipcMain.handle(CHANNELS.memory.candidateDelete, async (e, raw: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.candidateDelete, e); return UNAUTHORIZED_FRAME; }
-    const candidate = parseMemoryCandidateActionPayload(raw);
-    if (!candidate.ok) return { ok: false, error: "invalid-input" };
-    const project = parseMemoryProjectOptions(candidate.options);
-    if (!project.ok) return PROJECT_NOT_ALLOWED;
-    try {
-      await memoryManager.deleteMemoryCandidate(candidate.id, project.options);
-      return { ok: true };
-    } catch (error) {
-      return candidateMemoryActionFailure(error);
     }
   });
   ipcMain.handle(CHANNELS.memory.entriesSearch, (e, query: string, opts?: unknown) => {
@@ -1939,10 +1853,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { ok: false, error: "memory-consolidation-service-unavailable" };
     }
     try {
-      // The default workspace is unscoped global context; never create a project overview for it.
-      const project = conversationLoop.getSessionProjectIsDefault?.()
-        ? undefined
-        : conversationLoop.getSessionMemoryProjectContext?.();
+      // The default project consolidates as its own project scope, separate from global memory.
+      const project = sessionMemoryProject(conversationLoop);
       const result = await memoryConsolidationService.refresh({
         reason: "manual",
         ...(project ? { project } : {}),

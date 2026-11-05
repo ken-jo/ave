@@ -1712,30 +1712,22 @@ describe("SettingsService role presets", () => {
     expect(service.get("features")?.idleMemoryConsolidation).toBe(true);
   });
 
-  it("defaults LLM-reviewed memory capture off and accepts only the supported modes", async () => {
+  it("has no memory capture mode: capture always runs, and a stored mode from an older build is dropped", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.memoryCaptureMode).toBe("off");
+    expect(service.get("features")).not.toHaveProperty("memoryCaptureMode");
 
-    await service.patch({ features: { memoryCaptureMode: "review" } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("review");
-    await service.patch({ features: { memoryCaptureMode: "auto" } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("auto");
-
-    // Invalid data must not silently alter the user's provider-backed capture choice.
-    await service.patch({ features: { memoryCaptureMode: "always" as never } });
-    expect(service.get("features")?.memoryCaptureMode).toBe("auto");
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("features")?.memoryCaptureMode).toBe("auto");
-
-    const corruptPath = mkdtempSync(join(tmpdir(), "settings-memory-capture-mode-"));
+    const olderPath = mkdtempSync(join(tmpdir(), "settings-memory-capture-mode-"));
     try {
       writeFileSync(
-        join(corruptPath, "ave-settings.json"),
-        currentSettingsJson({ features: { memoryCaptureMode: "always" } }),
+        join(olderPath, "ave-settings.json"),
+        currentSettingsJson({ features: { memoryCaptureMode: "review", idleMemoryConsolidation: true } }),
         "utf-8",
       );
-      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: corruptPath }).get("features")?.memoryCaptureMode).toBe("off");
+      const features = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: olderPath }).get("features");
+      expect(features).not.toHaveProperty("memoryCaptureMode");
+      expect(features?.idleMemoryConsolidation).toBe(true);
     } finally {
-      await cleanupTmpDir(corruptPath);
+      await cleanupTmpDir(olderPath);
     }
   });
 
@@ -2669,6 +2661,87 @@ describe("SettingsService system — pinned project roots", () => {
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").pinnedProjectRoots).toEqual(["/ws/alpha", "/ws/beta"]);
+  });
+});
+
+describe("SettingsService system — project selection, recent projects and last view per project", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-project-selection-"));
+    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("is absent until first chosen, then round-trips across restart", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const system = service.get("system");
+    expect([system.projectSelection, system.recentProjectRoots, system.lastViewByProject]).toEqual([undefined, undefined, undefined]);
+    await service.patch({ system: {
+      projectSelection: { kind: "root", root: "/ws/alpha" },
+      recentProjectRoots: ["/ws/alpha", "/ws/beta"],
+      lastViewByProject: { "/ws/alpha": { view: "terminal", surface: "terminal:0000000a-3" }, "/ws/beta": { view: "memory" } },
+    } } as never);
+    await service.patch({ system: { projectSelection: { kind: "all" } } } as never);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system");
+    expect(reloaded.projectSelection).toEqual({ kind: "all" });
+    expect(reloaded.recentProjectRoots).toEqual(["/ws/alpha", "/ws/beta"]);
+    expect(reloaded.lastViewByProject).toEqual({ "/ws/alpha": { view: "terminal", surface: "terminal:0000000a-3" }, "/ws/beta": { view: "memory" } });
+  });
+
+  it("refuses a malformed selection and keeps the one it had", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ system: { projectSelection: { kind: "root", root: "/ws/alpha" } } } as never);
+    for (const bad of ["*", { kind: "root", root: "*" }, { kind: "root", root: "relative" }, { kind: "root" }, { kind: "all", root: "/ws" }, { kind: "none" }, null]) {
+      await service.patch({ system: { projectSelection: bad } } as never);
+    }
+    expect(service.get("system").projectSelection).toEqual({ kind: "root", root: "/ws/alpha" });
+  });
+
+  it("keeps recent projects de-duplicated by root identity, newest first, at most ten", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const roots = Array.from({ length: 12 }, (_, index) => `/ws/p${index}`);
+    await service.patch({ system: { recentProjectRoots: ["C:\\Work", "c:/work/", 7, "", "relative", ...roots] } } as never);
+    expect(service.get("system").recentProjectRoots).toEqual(["C:\\Work", ...roots.slice(0, 9)]);
+    await service.patch({ system: { recentProjectRoots: "/ws/p0" } } as never);
+    expect(service.get("system").recentProjectRoots).toHaveLength(10);
+  });
+
+  it("keys the last view by root identity and drops entries that are not a place", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ system: { lastViewByProject: {
+      "C:\\Work\\": { view: "home" },
+      "/ws/a": { view: "terminal", surface: "not a tab" },
+      "/ws/b": { view: "nowhere" },
+      "/ws/c": "home",
+      relative: { view: "home" },
+      "/ws/d": { view: "plugin:notes:board" },
+    } } } as never);
+    expect(service.get("system").lastViewByProject).toEqual({ "c:/work": { view: "home" }, "/ws/d": { view: "plugin:notes:board" } });
+  });
+
+  it("says how many recent and last-view entries it dropped, and counts two spellings of one root once toward the cap", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await service.patch({ system: { recentProjectRoots: ["/ws/a", "/ws/a/", "relative", "/ws/b"] } } as never);
+      expect(service.get("system").recentProjectRoots).toEqual(["/ws/a", "/ws/b"]);
+      expect(JSON.stringify(warn.mock.calls)).toContain("system.recentProjectRoots dropped 2 entries");
+
+      const views = Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`/ws/p${index}`, { view: "home" }]));
+      await service.patch({ system: { lastViewByProject: { "/ws/same": { view: "home" }, "/ws/same/": { view: "memory" }, ...views } } } as never);
+      const kept = service.get("system").lastViewByProject!;
+      expect(kept["/ws/same"]).toEqual({ view: "memory" });
+      // The cap (200) is distinct roots: the folded pair is one of them, so 199 of the 200 others fit.
+      expect(Object.keys(kept)).toHaveLength(200);
+      expect(JSON.stringify(warn.mock.calls)).toContain("system.lastViewByProject dropped 2 entries");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -4511,7 +4584,7 @@ describe("SettingsService llm.modelCatalogRefresh", () => {
 describe("SettingsService system — main window layout", () => {
   let userDataPath: string;
   const layout = {
-    version: 1,
+    version: 2,
     tree: {
       kind: "split",
       axis: "row",
@@ -4519,10 +4592,11 @@ describe("SettingsService system — main window layout", () => {
       sizes: [0.5, 0.5],
     },
     focusedId: "group-2",
-    surfaces: { "group-2": { kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null } },
+    surfaces: { "group-2": { kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null, projectRoot: "/ws" } },
     panelOpenIds: ["main"],
     thumbnailOpenIds: ["group-2"],
     sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-4", ordinal: 1, cwd: null, url: "https://example.com/" }] },
+    openSurfaces: [{ kind: "terminal", tabId: "terminal:0000000a-3", ordinal: 1, cwd: "/ws/app", url: null, projectRoot: "/ws" }],
   } as const;
 
   beforeEach(() => {
@@ -4559,6 +4633,17 @@ describe("SettingsService system — main window layout", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("system").mainLayout).toBeUndefined();
     expect(service.get("system").closeBehavior).toBe("quit");
+  });
+
+  it("refuses a version 1 layout on disk rather than migrating it", () => {
+    const { openSurfaces: _none, ...v1 } = layout;
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      currentSettingsJson({ system: { closeBehavior: "quit", mainLayout: { ...v1, version: 1, surfaces: { "group-2": { ...layout.surfaces["group-2"], projectRoot: undefined } } } } }),
+      "utf-8",
+    );
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
   });
 });
 

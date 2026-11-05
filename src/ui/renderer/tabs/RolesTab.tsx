@@ -41,9 +41,6 @@ export function RolesTab({ api }: { api: AveApi }) {
   const [userPrefsDraft, setUserPrefsDraft] = useState("");
   const [quickMemory, setQuickMemory] = useState("");
   const [quickLinks, setQuickLinks] = useState("");
-  const [detailMemoryTitle, setDetailMemoryTitle] = useState("");
-  const [detailMemory, setDetailMemory] = useState("");
-  const [detailLinks, setDetailLinks] = useState("");
   const [loading, setLoading] = useState(true);
   const [rolesLoaded, setRolesLoaded] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
@@ -455,38 +452,10 @@ export function RolesTab({ api }: { api: AveApi }) {
     }
   };
 
-  const saveDetailedMemory = async () => {
-    const title = detailMemoryTitle.trim();
-    const content = detailMemory.trim();
-    if (!title || !content) return;
-    setSaving("detail-memory");
-    setError(null);
-    try {
-      const links = detailLinks.trim();
-      await api.memorySaveEntry(
-        title,
-        links ? `${content}\n\n## References\n${links}` : content,
-      );
-      setDetailMemoryTitle("");
-      setDetailMemory("");
-      setDetailLinks("");
-      const latest = await api.memoryGetIndex();
-      setMemoryIndex(latest);
-      setMemoryIndexBase(latest);
-      setStatus(t("rolesTab.statusDetailMemorySaved"));
-      notifySaved();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSaving(null);
-    }
-  };
-
   const memoryBusy =
     saving === "memory-index" ||
     saving === "memory-index-save" ||
     saving === "quick-memory" ||
-    saving === "detail-memory" ||
     saving === "refresh-long-term-memory";
 
   const preferencesBusy =
@@ -745,38 +714,6 @@ export function RolesTab({ api }: { api: AveApi }) {
                   disabled={!quickMemory.trim() || memoryBusy}
                 >
                   {t("rolesTab.saveToSectionButton")}
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2 border-t border-border/(--opacity-stronger) pt-3">
-              <Input
-                value={detailMemoryTitle}
-                onChange={(event) => setDetailMemoryTitle(event.target.value)}
-                placeholder={t("rolesTab.detailMemoryTitlePlaceholder")}
-              />
-              <Textarea
-                value={detailMemory}
-                onChange={(event) => setDetailMemory(event.target.value)}
-                placeholder={t("rolesTab.detailMemoryPlaceholder")}
-                className="min-h-[110px] text-xs"
-              />
-              <Textarea
-                value={detailLinks}
-                onChange={(event) => setDetailLinks(event.target.value)}
-                placeholder={t("rolesTab.referenceLinkPlaceholder")}
-                className="min-w-0 min-h-[70px] text-xs"
-              />
-              <div className="flex justify-end">
-                <Button
-                  size="sm"
-                  onClick={saveDetailedMemory}
-                  disabled={
-                    !detailMemoryTitle.trim() ||
-                    !detailMemory.trim() ||
-                    memoryBusy
-                  }
-                >
-                  {t("rolesTab.saveDetailMemoryButton")}
                 </Button>
               </div>
             </div>

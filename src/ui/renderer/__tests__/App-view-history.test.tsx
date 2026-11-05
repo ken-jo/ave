@@ -52,7 +52,7 @@ describe("App view history", () => {
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
@@ -62,7 +62,7 @@ describe("App view history", () => {
     await click(container, "view-path-forward");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
     await click(container, "view-path-forward");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
   });
 
   it("names the destination on the buttons when the path cannot fit", async () => {
@@ -107,7 +107,7 @@ describe("App view history", () => {
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     // Clicking the entry you are already on is common and must not stack up entries that appear to do nothing when replayed.
     await clickSidebarNavRow("features", "sidebar-routines");
     await clickSidebarNavRow("features", "sidebar-routines");
@@ -152,7 +152,7 @@ describe("App view history", () => {
 
     // One pane on Routines, then a second pane on the work board.
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     await clickSidebarNavRow("features", "toolbar-work-board", { metaKey: true });
     await waitFor(() => expect(mountedTileIds(container)).toHaveLength(2));
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
@@ -162,7 +162,7 @@ describe("App view history", () => {
     // Back: Routines is open in the FIRST pane, so the step focuses that pane instead of drawing a second copy of it. No pane
     // is added, and the second pane keeps the work board.
     await click(container, "view-path-back");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     expect(mountedTileIds(container)).toHaveLength(2);
     expect(focusedPaneId(container)).toBe(first);
 
@@ -180,12 +180,12 @@ describe("App view history", () => {
     await ready(container);
 
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     await clickSidebarNavRow("features", "toolbar-work-board", { metaKey: true });
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
 
     await click(container, "view-path-back");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
   });
 
   it("follows a change of FOCUS, with no navigation at all", async () => {
@@ -198,7 +198,7 @@ describe("App view history", () => {
     const [firstTile, secondTile] = tiles;
     await focusTile(firstTile!);
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     // The other pane is still on its own conversation.
     await focusTile(secondTile!);
@@ -206,7 +206,7 @@ describe("App view history", () => {
     expect(focusedPaneId(container)).toBe(secondTile!.chatGroupId);
 
     await focusTile(firstTile!);
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     expect(focusedPaneId(container)).toBe(firstTile!.chatGroupId);
   });
 
@@ -217,7 +217,7 @@ describe("App view history", () => {
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     expect(container.querySelector('[data-testid="page-shell-back"]')).toBeNull();
     await click(container, "view-path-back");
@@ -235,7 +235,7 @@ describe("App view history", () => {
 
     // Navigating somewhere new discards what was ahead, as a browser does.
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     const forward = container.querySelector('[data-testid="view-path-forward"]') as HTMLButtonElement;
     expect(forward.disabled).toBe(true);
 
@@ -288,7 +288,7 @@ describe("App view history after a restored launch location", () => {
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
 
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     // Back now returns to where the app launched — not to home.
     await act(async () => {
@@ -319,7 +319,7 @@ describe("App view history after a restored launch location", () => {
     // The user acts while the launch location is still in flight. This is a deliberate step away from home, not the app
     // settling into where it left off — losing it strands the user with a dead back button.
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     await act(async () => {
       gate.resolve(MOCK_DEFAULT_SETTINGS);
@@ -355,14 +355,14 @@ describe("App view history after a restored launch location", () => {
     await waitFor(() => expect(container.querySelector('[data-testid="view-path-nav"]')).not.toBeNull());
 
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
 
     // A late stored location must not move the user after navigation, even if that unwanted step would be undoable.
     await act(async () => {
       gate.resolve(settingsWithActiveView("work-board"));
     });
     await settle();
-    expect(path(container)).toContain("루틴");
+    expect(path(container)).toContain("스케줄");
 
     // What is behind them is their own step off the seed, not a launch location that never took effect.
     await act(async () => {
@@ -412,7 +412,7 @@ describe("App view history after a restored launch location", () => {
     // NOW the user takes their first real step, with the history still the untouched seed. It is a step, not an arrival — the
     // count went up for a page they are not looking at.
     await clickSidebarNavRow("features", "sidebar-routines");
-    await waitFor(() => expect(path(container)).toContain("루틴"));
+    await waitFor(() => expect(path(container)).toContain("스케줄"));
     expect(backButton(container).disabled).toBe(false);
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("대화"));

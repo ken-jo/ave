@@ -11,7 +11,6 @@ import { DEFAULT_LOCALE, normalizeLocale, setLocale, tryLoadLocaleMessages,
 import { MemoryManager } from "../memory/memory-manager.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
-import { getDefaultWorkspaceRoot } from "../main/default-workspace-root.js";
 import { execTurnRequested } from "../main/exec-mode.js";
 import { InputClassifier } from "../core/input-classifier.js";
 import { RouteEngine } from "../core/route-engine.js";
@@ -140,9 +139,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     /* non-fatal */
   }
 
-  const memoryManager = new MemoryManager({
-    defaultWorkspaceRoot: getDefaultWorkspaceRoot(),
-  });
+  const memoryManager = new MemoryManager();
   memoryManager.load();
   memoryManager.startPersistentContextWatcher();
   registerShutdownHook("memory-manager", () => {
@@ -159,7 +156,8 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
   const memoryCaptureService = new MemoryCaptureService({
     memoryManager,
-    getMode: () => settingsService.get("features")?.memoryCaptureMode,
+    // Only main-store loops (primary and chat groups) receive this service; side chat and sub-agents do not.
+    sessionStore: "main",
   });
 
   const inputClassifier = new InputClassifier();
@@ -173,7 +171,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   }
   // Local memory saves retain explicit-deny, strict-mode, and staged-origin gates.
   toolRegistry.register(createMemoryWriteTool({ memoryManager }));
-  // Memory deletion is candidate-scoped and is not auto-approved.
+  // memory_delete removes a visible memory by id, refuses on a tainted turn, and is not auto-approved.
   for (const tool of createMemoryRecallTools({ memoryManager, memoryUsageLog })) {
     toolRegistry.register(tool);
   }

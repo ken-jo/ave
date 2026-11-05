@@ -637,6 +637,7 @@ async function runTurnInSpan(
           onPermissionProvenanceChanged: (provenance) => { lifecycleProvenance = provenance; },
           memoryQuery: input,
           turnMessageId: turnUserMessage.meta.messageId,
+          isMemoryWriteTainted: () => memoryCaptureTaint.size > 0,
           ...(onStopHook ? { onStopHook } : {}),
         },
       ),
@@ -696,6 +697,7 @@ async function runTurnInSpan(
     if (self.deps.postTurnHookChain) {
       const hookResult = await self.deps.postTurnHookChain.run({
         sessionId: self.sessionId,
+        turnMessageId: turnUserMessage.meta.messageId,
         ...self.getSessionProjectContext(),
         messages: self.history.getMessages(),
         // Only original textual user input can be capture evidence, never attachments or generated content.

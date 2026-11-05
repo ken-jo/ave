@@ -17,6 +17,8 @@ function wire(runRoutine: () => Promise<{ summary: string; sessionId?: string }>
     routinesScheduler: {
       onLlmSession: (handler: Handler) => { handlers.llm = handler; return () => {}; },
       onNotification: (handler: Handler) => { handlers.notification = handler; return () => {}; },
+      markRunning: vi.fn(),
+      markStopped: vi.fn(),
     },
     routineEngine: { runRoutine: vi.fn(runRoutine) },
     routinesStore,

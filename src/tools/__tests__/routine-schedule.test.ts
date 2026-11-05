@@ -10,15 +10,20 @@ import {
 import { futureIso, tempRoutinesStore } from "../../main/__tests__/routines-fixture.js";
 import { toolExecutionContext as ctx } from "./tool-context-fixture.js";
 
+// A conversation in a project, as every routine_schedule call needs.
+const ANY_PROJECT = { projectRootForSession: () => "/work/project" };
+const chatCtx = () => ({ ...ctx(), metadata: { sessionId: "chat" } });
+
+
 
 describe("routine_schedule tool — source marker", () => {
   it("keeps plugin template attribution on an approval-gated schedule", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       expect(tool.category).toBe("write");
       const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() },
-        prePrompt: "Write a draft", source: "agent-plugin:writer-plugin:daily" }, ctx());
+        prePrompt: "Write a draft", source: "agent-plugin:writer-plugin:daily" }, chatCtx());
       expect(result.isError).toBe(false);
       expect(store.list()[0]?.source).toBe("agent-plugin:writer-plugin:daily");
     } finally { await cleanup(); }
@@ -27,7 +32,7 @@ describe("routine_schedule tool — source marker", () => {
   it("stamps the source marker onto the persisted routine", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const result = await tool.execute(
         {
           execution: "llm-session",
@@ -35,7 +40,7 @@ describe("routine_schedule tool — source marker", () => {
           prePrompt: "야간 재스캔",
           source: "suggestion:local-indexer:nightly-rescan",
         },
-        ctx(),
+        chatCtx(),
       );
       expect(result.isError).toBe(false);
       const routineId = JSON.parse(result.output).routineId as string;
@@ -49,14 +54,14 @@ describe("routine_schedule tool — source marker", () => {
   it("leaves source unset when omitted", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const result = await tool.execute(
         {
           execution: "notification-only",
           schedule: { at: futureIso() },
           notificationTitle: "manual",
         },
-        ctx(),
+        chatCtx(),
       );
       expect(result.isError).toBe(false);
       const routineId = JSON.parse(result.output).routineId as string;
@@ -69,7 +74,7 @@ describe("routine_schedule tool — source marker", () => {
   it("rejects a source longer than the cap with a clean tool error", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const result = await tool.execute(
         {
           execution: "notification-only",
@@ -77,7 +82,7 @@ describe("routine_schedule tool — source marker", () => {
           notificationTitle: "too-long",
           source: "x".repeat(MAX_ROUTINE_SOURCE_LENGTH + 1),
         },
-        ctx(),
+        chatCtx(),
       );
       expect(result.isError).toBe(true);
       expect(result.output).toContain("source must be at most");
@@ -92,7 +97,7 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
   it("rejects a cron expression one character past the store's cap", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       // Repeated minute entries preserve exact length; whitespace would be trimmed.
       const cronOfLength = (length: number): string => {
         let minutes = (length - " 9 * * 1".length) % 2 === 0 ? "00" : "0";
@@ -105,7 +110,7 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
       expect(pastCap).toHaveLength(MAX_CRON_EXPR_LENGTH + 1);
       const run = (expression: string) => tool.execute(
         { execution: "notification-only", schedule: { repeat: { kind: "cron", expression } }, notificationTitle: "cron" },
-        ctx(),
+        chatCtx(),
       );
       expect((await run(atCap)).isError).toBe(false);
       expect((await run(pastCap)).isError).toBe(true);
@@ -117,11 +122,11 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
   it("persists an interval at the store's minimum and drops one a millisecond under it", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const persistedRepeat = async (intervalMs: number) => {
         const result = await tool.execute(
           { execution: "notification-only", schedule: { at: futureIso(), repeat: { kind: "interval", intervalMs } }, notificationTitle: "interval" },
-          ctx(),
+          chatCtx(),
         );
         expect(result.isError).toBe(false);
         const routineId = JSON.parse(result.output).routineId as string;
@@ -132,5 +137,31 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe("routine_schedule tool — owner fields", () => {
+  it("lists the item under the calling chat's project and records the agent as creator", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store, { projectRootForSession: (id) => (id === "chat-1" ? "/work/checkout" : undefined) });
+      const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" },
+        { ...ctx(), cwd: "/somewhere/else", metadata: { sessionId: "chat-1" } });
+      expect(result.isError).toBe(false);
+      expect(store.list()[0]).toMatchObject({ projectRoot: "/work/checkout", createdBy: "agent" });
+    } finally { await cleanup(); }
+  });
+
+  it("refuses when the calling conversation has no project, instead of using the process cwd", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store, { projectRootForSession: () => undefined });
+      for (const metadata of [{}, { sessionId: "chat-without-project" }]) {
+        const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" },
+          { ...ctx(), cwd: "/tmp", metadata });
+        expect(result.isError).toBe(true);
+      }
+      expect(store.list()).toEqual([]);
+    } finally { await cleanup(); }
   });
 });

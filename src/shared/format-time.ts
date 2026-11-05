@@ -11,6 +11,13 @@ export function formatHhMm(value: number | string | undefined): string | null {
   });
 }
 
+/** A 24-hour "HH:MM" in the host's zone; empty for an unreadable time. */
+export function formatLocalClock(value: number | string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 export function formatMediumDateTime(value: number | string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",

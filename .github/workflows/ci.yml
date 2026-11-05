@@ -800,6 +800,7 @@ jobs:
           src/shared/__tests__/ave-home-configuration-read.windows.test.ts
           src/shared/__tests__/windows-configuration-stat.windows.test.ts
           src/shared/__tests__/ave-home-configuration.test.ts
+          src/shared/__tests__/ave-home-trust.test.ts
           src/main/storage/__tests__/feature-namespace.test.ts
           src/lib/__tests__/with-file-lock.test.ts
           src/data/__tests__/secret-document-store.test.ts

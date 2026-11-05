@@ -3,15 +3,19 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-const dacls = vi.hoisted(() => ({ override: undefined as undefined | ((paths: readonly string[]) => unknown[]) }));
+const dacls = vi.hoisted(() => ({
+  override: undefined as undefined | ((paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => unknown[]),
+}));
 vi.mock("../windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../windows-path-facts.js")>();
   return { ...actual, readWindowsDacls: (paths: readonly string[], options?: unknown) =>
-    dacls.override !== undefined ? dacls.override(paths) : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
+    dacls.override !== undefined
+      ? dacls.override(paths, (rest) => (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown[])(rest, options))
+      : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
 });
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
@@ -84,6 +88,11 @@ function boot(dir: string): ReturnType<typeof evaluateAveHomeTrustAtBoot> {
   const privacy = ensureAveHomePrivate(dir);
   migrateAveHomeConfiguration(dir, privacy);
   return evaluateAveHomeTrustAtBoot(dir);
+}
+
+/** The manifest keys a name the way the platform compares names: case-folded on Windows, as written elsewhere. */
+function manifestKey(rel: string): string {
+  return process.platform === "win32" ? rel.toLowerCase() : rel;
 }
 
 function manifest(dir: string): { state: string; entries: Record<string, { current?: string; pendingWrite?: string }> } {
@@ -273,10 +282,10 @@ describe("R5 write intents", () => {
     boot(dir);
     const path = join(dir, "AGENTS.md");
     recordAveHomeInputWriteSync(path, "# one", () => {
-      expect(manifest(dir).entries["AGENTS.md"]).toEqual({ pendingWrite: sha256Hex("# one") });
+      expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ pendingWrite: sha256Hex("# one") });
       writeFileSync(path, "# one");
     });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("# one") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# one") });
   });
 
   it("clears the intent of a failed write so the old bytes never match it", () => {
@@ -284,7 +293,7 @@ describe("R5 write intents", () => {
     boot(dir);
     const path = join(dir, "AGENTS.md");
     expect(() => recordAveHomeInputWriteSync(path, "# one", () => { throw new Error("disk full"); })).toThrow("disk full");
-    expect(manifest(dir).entries["AGENTS.md"]).toBeUndefined();
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toBeUndefined();
   });
 
   it("collapses a crashed write's intent at boot only when the file holds exactly its bytes", () => {
@@ -293,16 +302,55 @@ describe("R5 write intents", () => {
     const landed = join(dir, "AGENTS.md");
     const lost = join(dir, "user-preferences.md");
     const persisted = manifest(dir);
-    persisted.entries["AGENTS.md"] = { pendingWrite: sha256Hex("# landed") };
+    persisted.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# landed") };
     persisted.entries["user-preferences.md"] = { pendingWrite: sha256Hex("# never written") };
     writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify({ version: 1, ...persisted }));
     writeFileSync(landed, "# landed");
     writeFileSync(lost, "# planted");
     boot(dir);
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("# landed") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# landed") });
     expect(manifest(dir).entries["user-preferences.md"]).toBeUndefined();
     expect(readAveHomeInputSync(landed)).toMatchObject({ status: "trusted" });
     expect(readAveHomeInputSync(lost)).toMatchObject({ status: "untrusted" });
+  });
+});
+
+describe("review names", () => {
+  it("shows each item under the name it was written with, and approves and removes by that name", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    put(dir, "skills/MySkill/SKILL.md", "---\nname: mine\n---\nMine.");
+    put(dir, "commands/Deploy.md", "deploy now");
+    expect(boot(dir).pending).toBe(true);
+    const review = getAveHomeTrustReview()!;
+    expect(review.rows.map((entry) => entry.key).sort()).toEqual(["AGENTS.md", "commands/Deploy.md", "skills/MySkill"]);
+    expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md", "skills/MySkill"])).toBe(2);
+    removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "commands/Deploy.md");
+    expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(false);
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeInputSync(join(dir, "AGENTS.md"))).toMatchObject({ status: "trusted" });
+    expect(readAveHomeEntrySync(join(dir, "skills", "MySkill"))).toMatchObject({ status: "trusted" });
+  });
+
+  // Windows compares names case-insensitively, so a key differing only in case names the same item; elsewhere it names none.
+  it("matches a review key that differs only in case exactly where the platform folds names", () => {
+    const dir = home();
+    put(dir, "skills/MySkill/SKILL.md", "---\nname: mine\n---\nMine.");
+    put(dir, "commands/Deploy.md", "deploy now");
+    boot(dir);
+    const review = getAveHomeTrustReview()!;
+    if (process.platform !== "win32") {
+      expect(() => approveAveHomeTrustItems(review.snapshotId, ["SKILLS/myskill"])).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(() => removeAveHomeTrustItem(review.snapshotId, "commands/deploy.md")).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(true);
+      return;
+    }
+    expect(approveAveHomeTrustItems(review.snapshotId, ["SKILLS/myskill"])).toBe(1);
+    expect(Object.keys(manifest(dir).entries)).toEqual(["skills/myskill"]);
+    removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "commands/deploy.md");
+    expect(existsSync(join(dir, "commands", "Deploy.md"))).toBe(false);
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeEntrySync(join(dir, "skills", "MySkill"))).toMatchObject({ status: "trusted" });
   });
 });
 
@@ -360,7 +408,7 @@ describe("fresh home writes through the stores", () => {
     );
     const memory = new MemoryManager({ aveDir: dir });
     memory.load();
-    await memory.saveMemory("Build", "Run the tests before pushing.");
+    await memory.saveMemory("Build", "Run the tests before pushing.", {}, "user");
     expect(getAveHomeTrustReview()!.rows).toEqual([]);
     expect(boot(dir)).toEqual({ pending: false, state: "fresh" });
     expect(getAveHomeTrustReview()!.rows).toEqual([]);
@@ -388,13 +436,14 @@ describe("fresh home writes through the stores", () => {
     removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "memories/MEMORY.md");
     const memory = new MemoryManager({ aveDir: dir });
     memory.load();
-    await memory.saveMemory("Build", "Run the tests before pushing.");
+    await memory.saveMemory("Build", "Run the tests before pushing.", {}, "user");
     expect(boot(dir).pending).toBe(false);
   });
 });
 
 describe("approve all stays closed", () => {
-  it("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
+  // The fixture makes the moved config/ owner-only with POSIX mode bits, which Windows ignores; the next test covers Windows.
+  it.runIf(process.platform !== "win32")("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
     const dir = home();
     put(dir, "AGENTS.md", "# instructions");
     const moved = join(dir, "config.old");
@@ -408,6 +457,19 @@ describe("approve all stays closed", () => {
     expect(review.approveAllOffered).toBe(false);
     expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
     expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md"])).toBe(1);
+  });
+
+  // Ave's own config/, moved aside by the user, carries the protection the D3① heuristic checks on every OS (a DACL on Windows).
+  it("never offers approve all after Ave's own config/ was moved aside", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    boot(dir);
+    renameSync(join(dir, "config"), join(dir, "config.old"));
+    boot(dir);
+    expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+    const review = getAveHomeTrustReview()!;
+    expect(review.approveAllOffered).toBe(false);
+    expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
   });
 
   it("does not reopen approve all when the manifest is corrupted", () => {
@@ -458,7 +520,7 @@ describe("overlapping writes", () => {
     landB();
     await b;
     expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("first") });
     expect(boot(dir).pending).toBe(false);
   });
 
@@ -472,7 +534,7 @@ describe("overlapping writes", () => {
     failB();
     await expect(b).rejects.toThrow("disk full");
     expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-    expect(manifest(dir).entries["AGENTS.md"]).toEqual({ current: sha256Hex("first") });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("first") });
   });
 });
 
@@ -590,11 +652,64 @@ describe("Windows owner and ACL overlay", () => {
     dacls.override = (paths) => paths.map(() => row(user, [{ sid: user, allow: true }]));
     try {
       setProcessPlatform("win32");
-      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key === "skills/notes");
-      expect(rows).toHaveLength(2);
+      const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key.toLowerCase() === "skills/notes");
+      expect(rows.map((entry) => entry.key).sort()).toEqual(["skills/Notes", "skills/notes"]);
       for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
+      // A key that only folds to both names is ambiguous: it names neither.
+      const review = getAveHomeTrustReview()!;
+      expect(() => approveAveHomeTrustItems(review.snapshotId, ["SKILLS/NOTES"])).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(() => removeAveHomeTrustItem(review.snapshotId, "Skills/notes")).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(existsSync(join(dir, "skills", "Notes"))).toBe(true);
+      expect(existsSync(join(dir, "skills", "notes"))).toBe(true);
     } finally {
       setProcessPlatform(platform);
+      dacls.override = undefined;
+    }
+  });
+
+  // D3① on Windows: the moved config/ fixtures read with simulated DACL facts; every other path keeps its real facts.
+  function movedConfigurationDacl(isProtected: boolean) {
+    return (paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => paths.map((path) => {
+      if (!["config.old", "config-old"].includes(basename(path))) return actual([path])[0];
+      // The user's full control, inherited by objects and containers (OI|CI): the shape Ave gives its own config/.
+      return { exists: true, directory: true, currentUserSid: user, elevated: false,
+        dacl: { owner: user, protected: isProtected, nullDacl: false, aces: [{ sid: user, type: 0, mask: 0x1f01ff, flags: 3 }] } };
+    });
+  }
+
+  it.runIf(process.platform === "win32").each([
+    { name: "config-old", restart: false },
+    { name: "config.old", restart: true },
+  ])("withholds approve all when a protected, owner-only $name was found beside the home", ({ name, restart }) => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    const moved = join(dir, name);
+    mkdirSync(moved);
+    writeFileSync(join(moved, ".ave-config-migrated"), "ave-home-boundary-v1");
+    dacls.override = movedConfigurationDacl(true);
+    try {
+      boot(dir);
+      if (restart) boot(dir);
+      expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+      const review = getAveHomeTrustReview()!;
+      expect(review.approveAllOffered).toBe(false);
+      expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    } finally {
+      dacls.override = undefined;
+    }
+  });
+
+  it.runIf(process.platform === "win32")("does not take an unprotected config.old for a moved config/", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    const moved = join(dir, "config.old");
+    mkdirSync(moved);
+    writeFileSync(join(moved, ".ave-config-migrated"), "ave-home-boundary-v1");
+    dacls.override = movedConfigurationDacl(false);
+    try {
+      boot(dir);
+      expect(manifest(dir)).not.toHaveProperty("oneByOne");
+    } finally {
       dacls.override = undefined;
     }
   });

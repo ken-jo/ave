@@ -593,34 +593,6 @@ describe("useSettingsOrchestration", () => {
     expect(result.current.idleMemoryConsolidation).toBe(true);
   });
 
-  it("defaults model-reviewed memory capture off and persists an explicit mode immediately", async () => {
-    const settings = makeSettings();
-    const updated: AppSettings = {
-      ...settings,
-      features: { memoryCaptureMode: "review" },
-    };
-    const api = makeSettingsApi({ settings, hasApiKey: false }, {
-      updateSettings: vi.fn(async () => updated),
-    });
-    const onSaved = vi.fn();
-    const { result } = renderHook(() =>
-      useSettingsOrchestration(api as unknown as AveApi, onSaved)
-    );
-
-    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    expect(result.current.memoryCaptureMode).toBe("off");
-
-    act(() => {
-      result.current.setMemoryCaptureMode("review");
-    });
-
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({
-      features: { memoryCaptureMode: "review" },
-    }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
-    expect(result.current.memoryCaptureMode).toBe("review");
-  });
-
   it("defaults autonomous sub-agent wake off and persists an opt-in immediately", async () => {
     // No persisted `features` block at all: the renderer must read that as "off".
     const { features: _hostDefaults, ...settings } = makeSettings();

@@ -2,7 +2,7 @@
 export const en = {
   // Section tab labels
   "rolesTab.sectionAgents": "AGENTS.md",
-  "rolesTab.sectionMemory": "MEMORY.md",
+  "rolesTab.sectionMemory": "Instructions (MEMORY.md)",
   "rolesTab.sectionPreferences": "User Preferences",
   "rolesTab.sectionRoles": "Role Prompts",
   "rolesTab.sectionPreview": "SSOT",
@@ -45,14 +45,11 @@ export const en = {
   "rolesTab.statusMergedDiscarded": "Discarded the merged document.",
 
   // Memory section
-  "rolesTab.quickMemoryPlaceholder": "Urgent memory (approx. 500 characters)",
+  "rolesTab.quickMemoryPlaceholder": "Urgent instruction (approx. 500 characters)",
   "rolesTab.referenceLinkPlaceholder": "Reference links",
   "rolesTab.reloadButton": "Reload",
-  "rolesTab.saveMemoryButton": "Save MEMORY.md",
+  "rolesTab.saveMemoryButton": "Save instructions",
   "rolesTab.saveToSectionButton": "Save to section",
-  "rolesTab.detailMemoryTitlePlaceholder": "Detailed memory title",
-  "rolesTab.detailMemoryPlaceholder": "Detailed memory",
-  "rolesTab.saveDetailMemoryButton": "Save detailed memory",
   "rolesTab.consolidateLongTermMemoryButton": "Consolidate long-term memory",
   "rolesTab.consolidatingLongTermMemoryLabel": "Consolidating...",
 
@@ -80,10 +77,9 @@ export const en = {
   "rolesTab.statusAgentsSaved": "AGENTS.md saved.",
   "rolesTab.statusUserPrefsSaved": "user-preferences.md saved.",
   "rolesTab.statusUserPrefsRefreshed": "LLM has refreshed user-preferences.md.",
-  "rolesTab.statusMemoryReloaded": "MEMORY.md reloaded.",
-  "rolesTab.statusMemorySaved": "MEMORY.md saved.",
-  "rolesTab.statusQuickMemorySaved": "Urgent memory saved to MEMORY.md sections.",
-  "rolesTab.statusDetailMemorySaved": "Detailed memory saved to memories/.",
+  "rolesTab.statusMemoryReloaded": "Instructions reloaded.",
+  "rolesTab.statusMemorySaved": "Instructions saved.",
+  "rolesTab.statusQuickMemorySaved": "Urgent instruction saved to the MEMORY.md sections.",
   "rolesTab.statusLongTermMemoryConsolidated": "Long-term memory consolidation completed.",
   "rolesTab.statusLongTermMemoryUpToDate": "Long-term memory is already up to date.",
   "rolesTab.statusLongTermMemoryEmpty": "No active long-term memories need consolidation.",
@@ -97,7 +93,7 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   // Section tab labels
   "rolesTab.sectionAgents": "AGENTS.md",
-  "rolesTab.sectionMemory": "MEMORY.md",
+  "rolesTab.sectionMemory": "지침 (MEMORY.md)",
   "rolesTab.sectionPreferences": "User Preferences",
   "rolesTab.sectionRoles": "역할 프롬프트",
   "rolesTab.sectionPreview": "SSOT",
@@ -140,14 +136,11 @@ export const ko: Record<keyof typeof en, string> = {
   "rolesTab.statusMergedDiscarded": "병합한 문서를 버렸습니다.",
 
   // Memory section
-  "rolesTab.quickMemoryPlaceholder": "긴급 기억 (500자 내외)",
+  "rolesTab.quickMemoryPlaceholder": "긴급 지침 (500자 내외)",
   "rolesTab.referenceLinkPlaceholder": "레퍼런스 링크",
   "rolesTab.reloadButton": "다시 읽기",
-  "rolesTab.saveMemoryButton": "MEMORY.md 저장",
+  "rolesTab.saveMemoryButton": "지침 저장",
   "rolesTab.saveToSectionButton": "섹션에 저장",
-  "rolesTab.detailMemoryTitlePlaceholder": "상세 기억 제목",
-  "rolesTab.detailMemoryPlaceholder": "상세 기억",
-  "rolesTab.saveDetailMemoryButton": "상세 기억 저장",
   "rolesTab.consolidateLongTermMemoryButton": "장기 기억 통합",
   "rolesTab.consolidatingLongTermMemoryLabel": "통합 중...",
 
@@ -175,10 +168,9 @@ export const ko: Record<keyof typeof en, string> = {
   "rolesTab.statusAgentsSaved": "AGENTS.md를 저장했습니다.",
   "rolesTab.statusUserPrefsSaved": "user-preferences.md를 저장했습니다.",
   "rolesTab.statusUserPrefsRefreshed": "LLM이 user-preferences.md를 갱신했습니다.",
-  "rolesTab.statusMemoryReloaded": "MEMORY.md를 다시 읽었습니다.",
-  "rolesTab.statusMemorySaved": "MEMORY.md를 저장했습니다.",
-  "rolesTab.statusQuickMemorySaved": "긴급 기억을 MEMORY.md 섹션에 저장했습니다.",
-  "rolesTab.statusDetailMemorySaved": "상세 기억을 memories/에 저장했습니다.",
+  "rolesTab.statusMemoryReloaded": "지침을 다시 읽었습니다.",
+  "rolesTab.statusMemorySaved": "지침을 저장했습니다.",
+  "rolesTab.statusQuickMemorySaved": "긴급 지침을 MEMORY.md 섹션에 저장했습니다.",
   "rolesTab.statusLongTermMemoryConsolidated": "장기 기억 통합을 완료했습니다.",
   "rolesTab.statusLongTermMemoryUpToDate": "장기 기억이 이미 최신 상태입니다.",
   "rolesTab.statusLongTermMemoryEmpty": "통합할 활성 장기 기억이 없습니다.",

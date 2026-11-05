@@ -1,4 +1,5 @@
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
   normalizeCorpCaCommonName,
@@ -58,6 +59,7 @@ import {
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
 import { type InlineViewKey } from "../shared/view-key.js";
+import type { ProjectLastView, ProjectSelection } from "../shared/project-identity.js";
 import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.js";
 import {
   type LlmModelListCache,
@@ -99,12 +101,16 @@ import {
   normalizeMarketplace,
   normalizeProjectRootList,
   normalizeProjectLabels,
+  normalizeProjectSelection,
+  normalizeRecentProjectRoots,
+  normalizeLastViewByProject,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
   withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
   normalizeDocuments,
+  normalizeWorkBoard,
   isWebViewPreferredFlow,
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
@@ -486,8 +492,6 @@ export interface AuditSettings {
   auditRetentionDays: number;
 }
 
-export type MemoryCaptureMode = "off" | "review" | "auto";
-
 /** Experimental feature flags; UI-toggleable, persisted to settings.json. Defaults are defined per flag in
  * settings-defaults.ts. Safe to add fields without migration; missing keys are treated as false at load time. */
 export interface FeatureFlags {
@@ -496,9 +500,6 @@ export interface FeatureFlags {
   /** When true, idle IDLE_SCAN may send eligible active global and current explicit-project raw memories to the
    * configured LLM to update a derived long-term overview. Default false: manual consolidation remains available. */
   idleMemoryConsolidation?: boolean;
-  /** Controls LLM-reviewed capture of durable memories from trusted keyboard turns. `off` makes no background reviewer call; `review` writes only
-   * a candidate; `auto` lets a host-validated high-confidence proposal become active. Explicitly saved user notes remain user-owned exact text. */
-  memoryCaptureMode?: MemoryCaptureMode;
   /** When true, a queued background sub-agent Message may start a new parent turn while that exact parent
    * session is loaded and idle. Default false: the durable mailbox joins the user's next turn instead. */
   subAgentAutonomousWake?: boolean;
@@ -573,6 +574,8 @@ export interface AppSettings {
   webView: WebViewSettings;
   /** User-owned document opening policy; agent writes remain blocked by the settings-file floor. */
   documents: DocumentSettings;
+  /** Work board display preferences. */
+  workBoard: WorkBoardSettings;
   /** Window close-button behaviour (hide-to-tray vs quit). */
   system: SystemSettings;
   /** Global keyboard shortcuts (show/hide window toggle). */
@@ -715,6 +718,13 @@ export interface SystemSettings {
   archivedProjectRoots?: string[];
   /** User-chosen display names for project rows, keyed by `projectRootKey`. A label renames the ROW, never the folder on disk. */
   projectLabels?: Record<string, string>;
+  /** Which project the window works in: every project, or one by its root. Absent until the user first chooses; the window then
+   * starts in the 기본 프로젝트. SoT for the shape: `ProjectSelection` in `../shared/project-identity.js`. */
+  projectSelection?: ProjectSelection;
+  /** Recently used project roots for the project menu, most recent first, de-duplicated by root identity, at most ten. */
+  recentProjectRoots?: string[];
+  /** Where each project's window was last, keyed by `projectRootKey`, so switching back returns there. */
+  lastViewByProject?: Record<string, ProjectLastView>;
 }
 
 /** Production release prep; Electron auto-update (electron-updater). `autoCheckEnabled` defaults to TRUE: only the background update *check* (metadata fetch) runs by default. Actual download +
@@ -1239,6 +1249,11 @@ export class SettingsService {
       acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
       this.settings.documents = nextDocuments;
     }
+    if (partial.workBoard && typeof partial.workBoard === "object" && !Array.isArray(partial.workBoard)) {
+      const nextWorkBoard = { ...this.settings.workBoard };
+      acceptField(nextWorkBoard, "toolApprovalSurface", partial.workBoard.toolApprovalSurface, isWorkBoardToolApprovalSurface, "workBoard", PATCHED_FIELD);
+      this.settings.workBoard = nextWorkBoard;
+    }
     if (partial.webView) {
       // Field-level validation (mirrors `system`/`shortcuts`): an out-of-enum `preferredFlow` is dropped and the existing preference kept, instead of persisting a
       // value that only the *next* load would reject. The accepted value set is owned by `isWebViewPreferredFlow` so the load path and this path can never drift apart.
@@ -1311,6 +1326,9 @@ export class SettingsService {
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "sidebarState", partial.system.sidebarState, isSidebarState, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "projectSelection", partial.system.projectSelection, normalizeProjectSelection, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "recentProjectRoots", partial.system.recentProjectRoots, normalizeRecentProjectRoots, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "lastViewByProject", partial.system.lastViewByProject, normalizeLastViewByProject, "system", PATCHED_FIELD);
       // The reason only is logged on refusal (`normalizeMainLayout`): the value holds page addresses that may carry tokens. A refused patch keeps the saved layout.
       const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
       if (patchedLayout) next.mainLayout = patchedLayout;
@@ -1883,6 +1901,7 @@ export class SettingsService {
         appearance,
         webView: normalizeWebView(parsed.webView),
         documents: normalizeDocuments(parsed.documents),
+        workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},

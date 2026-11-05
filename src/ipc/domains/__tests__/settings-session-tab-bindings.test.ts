@@ -31,7 +31,7 @@ let directory: string;
 let settings: SettingsService;
 
 function layout(): MainLayoutSnapshot {
-  return { version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: [], thumbnailOpenIds: [],
+  return { version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: [], thumbnailOpenIds: [], openSurfaces: [],
     sideTabs: { main: [{ kind: "terminal", tabId: "terminal:0000000a-1", ordinal: 1, cwd: "/work", url: null }] } };
 }
 

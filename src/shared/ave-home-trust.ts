@@ -521,7 +521,10 @@ export function forgetAveHomeInputSync(path: string): void {
 
 /** One covered input that exists on disk. */
 interface CoveredInput {
+  /** The manifest key: `name` folded the way the manifest compares names on this platform. */
   readonly key: string;
+  /** The path below the home as written (Ave's spelling of a covered file, or the on-disk name); what the review shows. */
+  readonly name: string;
   readonly path: string;
   readonly kind: "file" | "entry";
   /**
@@ -560,15 +563,15 @@ export function listAveHomeCoveredInputs(home: string): CoveredInput[] {
     if (keys.has(key)) {
       // A second name with the same folded key: neither can be approved, since an approval could not say which one it vouches for.
       for (let index = 0; index < found.length; index++) if (found[index]!.key === key) found[index] = { ...found[index]!, blocked: "unreadable" };
-      found.push({ key, path, kind, blocked: "unreadable" });
+      found.push({ key, name: rel, path, kind, blocked: "unreadable" });
       return;
     }
     keys.add(key);
-    found.push({ key, path, kind });
+    found.push({ key, name: rel, path, kind });
   };
   const list = (rel: string): string[] => {
     const listing = listDirectory(join(root, ...rel.split("/")));
-    if (listing.linked) found.push({ key: foldKey(rel), path: join(root, ...rel.split("/")), kind: "file", blocked: "link" });
+    if (listing.linked) found.push({ key: foldKey(rel), name: rel, path: join(root, ...rel.split("/")), kind: "file", blocked: "link" });
     return listing.names.filter((name) => !name.startsWith("."));
   };
   for (const rel of COVERED_FILES) add(rel, "file");
@@ -613,7 +616,7 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
 }
 
 /** The hash of an input as it is on disk now, or undefined when it is absent, a link or unreadable. */
-function currentHash(input: CoveredInput, home: string): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
+function currentHash(input: Omit<CoveredInput, "name">, home: string): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
   try {
     const pinned = assertNoLinkBelow(home, input.path);
     if (pinned === undefined) return undefined;
@@ -815,7 +818,7 @@ function reviewRows(trust: ActiveTrust): AveHomeTrustRow[] {
   const rows: AveHomeTrustRow[] = [];
   for (const input of listAveHomeCoveredInputs(trust.home)) {
     if (input.blocked !== undefined) {
-      rows.push({ key: input.key, path: input.path, kind: input.kind, reason: input.blocked, approvable: false });
+      rows.push({ key: input.name, path: input.path, kind: input.kind, reason: input.blocked, approvable: false });
       continue;
     }
     const current = currentHash(input, trust.home);
@@ -823,7 +826,7 @@ function reviewRows(trust: ActiveTrust): AveHomeTrustRow[] {
     if (current === undefined) {
       let reason: AveHomeTrustReason = "unreadable";
       try { assertNoLinkBelow(trust.home, input.path); } catch (error) { if (error instanceof LinkedInputError) reason = "link"; }
-      rows.push({ key: input.key, path: input.path, kind: input.kind, reason, approvable: false });
+      rows.push({ key: input.name, path: input.path, kind: input.kind, reason, approvable: false });
       continue;
     }
     const decision = verdict(trust, input.key, current.hash, current.uids);
@@ -832,7 +835,7 @@ function reviewRows(trust: ActiveTrust): AveHomeTrustRow[] {
     const blocked = decision.reason === "home-refused" || decision.reason === "home-recovery";
     const summary = summarizeAveHomeInput(input.key, current);
     rows.push({
-      key: input.key, path: input.path, kind: input.kind, hash: current.hash, reason: decision.reason, approvable: !withdrawn && !blocked,
+      key: input.name, path: input.path, kind: input.kind, hash: current.hash, reason: decision.reason, approvable: !withdrawn && !blocked,
       ...(summary !== undefined ? { summary } : {}),
     });
   }
@@ -912,6 +915,18 @@ function reviewTarget(snapshotId: string): { trust: ActiveTrust; rows: readonly 
 }
 
 /**
+ * A row names the item as written; the caller's key may differ in case where the platform folds names (win32), so it matches by
+ * the manifest's folded key. An exact match wins, so two names that fold together (both shown blocked) stay distinct; a key
+ * that only folds to several of them names none, and reads as stale.
+ */
+function reviewRow(rows: readonly AveHomeTrustRow[], key: string): AveHomeTrustRow | undefined {
+  const exact = rows.find((candidate) => candidate.key === key);
+  if (exact !== undefined) return exact;
+  const folded = rows.filter((candidate) => foldKey(candidate.key) === foldKey(key));
+  return folded.length === 1 ? folded[0] : undefined;
+}
+
+/**
  * Approve rows of the served snapshot, recording exactly the hashes it rendered; nothing is re-read at click time. Without keys
  * this is "approve all", offered only under the D1① rule. The caller has already checked the host sender and a user gesture.
  */
@@ -924,7 +939,7 @@ export function approveAveHomeTrustItems(snapshotId: string, keys?: readonly str
     selected = rows;
   } else {
     selected = keys.map((key) => {
-      const row = rows.find((candidate) => candidate.key === key);
+      const row = reviewRow(rows, key);
       if (row === undefined) throw new AveHomeTrustReviewError("stale", "The review changed. Reopen it and try again.");
       return row;
     });
@@ -933,7 +948,7 @@ export function approveAveHomeTrustItems(snapshotId: string, keys?: readonly str
     if (!row.approvable || row.hash === undefined) throw new AveHomeTrustReviewError("not-approvable", `${row.path} cannot be approved; remove it instead.`);
   }
   const before = structuredClone(trust.manifest);
-  for (const row of selected) trust.manifest.entries[row.key] = { current: row.hash! };
+  for (const row of selected) trust.manifest.entries[foldKey(row.key)] = { current: row.hash! };
   if (keys === undefined) trust.manifest.state = "bootstrapped:true";
   try { persist(trust); }
   catch (error) { trust.manifest = before; throw error; }
@@ -945,11 +960,12 @@ export function approveAveHomeTrustItems(snapshotId: string, keys?: readonly str
 export function removeAveHomeTrustItem(snapshotId: string, key: string): void {
   const { trust, rows } = reviewTarget(snapshotId);
   if (!isAveHomeConfigurationOwner()) throw new AveHomeConfigurationNotOwnerError();
-  const row = rows.find((candidate) => candidate.key === key);
+  const row = reviewRow(rows, key);
   if (row === undefined) throw new AveHomeTrustReviewError("stale", "The review changed. Reopen it and try again.");
   removeNoFollow(row.path, trust.home);
-  if (trust.manifest.entries[row.key] !== undefined) {
-    delete trust.manifest.entries[row.key];
+  const manifestKey = foldKey(row.key);
+  if (trust.manifest.entries[manifestKey] !== undefined) {
+    delete trust.manifest.entries[manifestKey];
     persist(trust);
   }
   reviewSnapshot = undefined;

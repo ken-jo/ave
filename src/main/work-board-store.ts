@@ -25,6 +25,7 @@ import {
 import { appendActivity } from "../work-board/activity-log.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
+import { ChangeSignal } from "../lib/change-signal.js";
 
 const log = createLogger("ave");
 
@@ -245,6 +246,8 @@ function runStatusActivityKind(
 }
 
 export class WorkBoardStore {
+  // Fires after every proposals.json write, whichever path made it (plugin HostApi, briefing, accept, dismiss, withdraw).
+  readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
   private readonly filePath: string;
@@ -771,6 +774,7 @@ export class WorkBoardStore {
       this.proposalsPath(),
       `${JSON.stringify(file, null, 2)}\n`,
     );
+    this.proposalsChanged.emit();
   }
 
   // Every proposal still showable right now, newest update first.

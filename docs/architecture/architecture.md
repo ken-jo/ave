@@ -1157,6 +1157,28 @@ without a managed id are not recorded. Only builders on the user's memory store
 record injection; isolated sub-agent builders, including work-board runs, read
 the sub-agent store, so their use appears only as `searched` or `read`.
 
+Managed memories are either global or scoped to one project, and the default
+project (identified by its path) is an ordinary project scope: its memories are
+not global and do not feed the global long-term overview. Global memories apply
+in every project. Saving from the UI always names the target scope.
+
+Each managed memory has an append-only change history (created, updated,
+activated, discarded, deleted) that records who acted. Rows keep only a
+masked, bounded title and excerpt of the changed text. Deleting a memory
+removes that text from its history rows and keeps what happened, who did it,
+when, and a digest. If the text cannot be removed, the delete fails. The
+history file is size-capped, and a read reports where rotation cut it. A
+failed history write never fails the memory change, and later reads of that
+memory report its history as incomplete. A crash between the memory write and
+its history row leaves no row and no mark.
+
+A memory learned in a conversation records where it came from: the session id
+and, when one exists, the id of the user message that opened the turn. It
+stores ids only; the quoted text is read from the session when shown, so the
+memory store never copies conversation text. The origin comes from host
+metadata only, never from model or renderer input, and a direct save from the
+memory UI has none.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:
@@ -1182,10 +1204,12 @@ owns storage, approvals, and audit.
 
 Item runs execute as sub-agent sessions whose origin names the item
 (`work-board:<itemId>`), so their conversations live in the isolated sub-agent
-namespace, never in the main chat store. While a plan awaits approval the
-item's `runSessionId` names the plan child; the engine replaces it with the
+namespace, never in the main chat store. As soon as the plan child links, the
+engine records it as the item's `runSessionId` and emits a `planning` progress
+event carrying that id, so a board opened mid-plan can claim the child's tool
+approvals. The engine replaces it with the
 execute child's id, and emits an `executing` progress event carrying that id,
-as soon as the execute child links (before its first round). That link write
+as soon as the execute child links (before its first round). Each link write
 changes only the session id and appends no activity entry. If it fails, the
 run settles as an error even when the child finished: a run whose session the
 board cannot record is not reported as completed.
@@ -1201,8 +1225,10 @@ no sender prefix, so it neither grants the child user-keyboard capabilities nor
 raises an other-principal floor; nothing is stored for a later resume.
 Acceptance (`ok: true`) means queued, not delivered: if the child's turn ends
 before its next round boundary, the steer is dropped and only the audit records
-it (`work-board:steer:deferred:<reason>`); the board receives no event for that
-case yet. A second stop while the first is unwinding is the same stop. A stop
+it (`work-board:steer:deferred:<reason>`). The board learns either outcome from
+a `runProgress` event carrying only `steer: {messageId, status}`: `delivered`
+names the turn that took it, `dropped` names the loop's reason. Such an event
+is never the run's phase. A second stop while the first is unwinding is the same stop. A stop
 uses the ordinary sub-agent interrupt, and a run the user stopped settles as
 `cancelled` (shown as stopped, not as an error). Planning and plan approval
 are not steerable or stoppable here. See
@@ -1211,6 +1237,29 @@ are not steerable or stoppable here. See
 
 Briefing runs
 (`work-board-briefing:<kind>`) are not runs of an item.
+
+Work approvals ("확인 필요" in the UI) are work-level decisions, separate from
+tool-execution approvals, which stay in the conversation's ApprovalDock.
+`ave:work-approvals:list` is a read-only projection over the stores that own
+each decision. It covers open work proposals (`unscoped`) and routines needing
+attention (`global`). A routine needs attention when plugins are missing, a
+held-back plugin id is invalid, or its last run failed and the failure is not
+acknowledged. A failure is listed even on a dismissed record (a shutdown routine
+stays dismissed after it fails). `ave:routines:ack-failure` clears exactly the
+failure the card showed, by its `firedAt`, and returns `routine-failure-stale`
+when a newer failure replaced it. A successful or notify-only result is not a
+decision and is never listed. Plan approvals (project-scoped) join with WA-1.
+Memories save without approval, so they are not a source. The list returns
+the requested project's items plus the unscoped and global ones, with a `total`
+across every authorized project for the title-bar badge. Titles and summaries
+are DLP-masked. Views are built field by field, so
+a routine prompt or a proposal task brief never crosses this channel. A missing
+source store is a `work-approvals-source-unavailable` result, never a silently
+shorter list. Each source store signals after its own write, whichever path made
+it (IPC, plugin HostApi, scheduler). The boot step `wireWorkApprovalsChanged`
+subscribes to those signals and broadcasts the payload-free
+`ave:work-approvals:changed` so windows re-list. Actions stay on each source's
+own channel.
 
 ## Conversation List
 
@@ -1815,6 +1864,47 @@ seen. A failed scheduled one-shot is restored from dismissal so it stays
 reviewable, but it is not due again. Shutdown routines are never restored,
 because they would run at every quit. An unreadable stored `lastFailure` is
 dropped with a warning, and the routine itself is kept.
+
+The schedule panel lists routines per project. Every new record carries a
+`projectRoot` and a `createdBy`, and the store refuses an add without either:
+the renderer passes the active project and records the user, and
+`routine_schedule` passes the calling conversation's project, resolved from
+its session through whichever live loop holds it (a tile, the side chat or a
+pane chat), then its saved metadata (a conversation outside any named project belongs to the default
+workspace), and records the agent. It never uses the tool working directory,
+which can fall back to the process directory; with no session project it
+refuses. Only records stored before projects existed
+have no project; they show in every project. The project filter is for display
+only. It is not an authorization boundary, and nothing may rely on it to keep
+one project's items from another. A user edit (`ROUTINES.update`) changes the
+title, prompt, notification text or schedule and passes the same validation as
+add, and the IPC handlers refuse wrongly typed fields first. Add refuses an
+unknown trigger or execution in both the IPC handler and the store, since a
+later read would drop the record; the renderer may also pass only a
+well-formed scope and an installed-template source
+(`agent-plugin:` or `extension:`). A schedule
+"changes" only when it fires at different times: `at` compares as an instant,
+no repeat equals a "none" repeat, and a cron schedule is its expression alone
+(cron ignores `at`), trimmed with whitespace runs collapsed. Then the old
+series' cron minute keys are dropped, and a one-shot is due again and no longer
+missed. A re-save that fires at the same times keeps them, so neither a cron
+minute nor a fired one-shot can fire twice. Stored records with wrongly typed
+text or schedule fields are refused at load. Pause is reversible, unlike dismissal: a
+paused item is never due, cannot be run now, and a paused shutdown item does
+not run at quit. Resuming does not replay what was paused: a repeating item's
+next fire moves past now, and a one-shot whose time passed while paused is
+missed. It is not due, the grid shows it as missed, and only 지금 실행 or a new
+time runs it. A scheduler pass decides due-ness from a snapshot and then awaits
+the extension check, so `markFired` re-checks the item inside the store's file
+queue: a paused or dismissed item never fires on any path (scheduler, run-now,
+quit), and on a scheduler pass an already-fired one-shot, a missed or a
+no-longer-due item does not fire either. `ROUTINES.listOccurrences` serves the day, week and month grids
+for a range of at most 43 days. Projected occurrences reuse the scheduler's own
+next-fire arithmetic and cron evaluator, so the grid draws only times the
+scheduler fires; each item is capped at 200 occurrences. Past runs come from the
+item's sessions and `lastFiredAt`, including dismissed items, because a
+completed one-shot is dismissed by its own fire. A run is `failed` when
+`lastFailure` names it.
 
 ## Main-process composition and boot readiness
 

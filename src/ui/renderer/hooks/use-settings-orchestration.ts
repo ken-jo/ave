@@ -8,7 +8,6 @@ import {
   type AppSettings,
   type DeepPartial,
   type AveApi,
-  type MemoryCaptureMode,
 } from "../types.js";
 import { ALL_VENDORS, getVendorOption, type VendorOption } from "../constants.js";
 import { formatIpcError } from "../format-ipc-error.js";
@@ -93,8 +92,6 @@ export interface SettingsOrchestrationState {
   setIdlePreferenceRefresh: (v: boolean) => void;
   idleMemoryConsolidation: boolean;
   setIdleMemoryConsolidation: (v: boolean) => void;
-  memoryCaptureMode: MemoryCaptureMode;
-  setMemoryCaptureMode: (v: MemoryCaptureMode) => void;
   subAgentAutonomousWake: boolean;
   subAgentMaxRounds: number;
   setSubAgentMaxRounds: (next: number) => void;
@@ -168,7 +165,6 @@ export function useSettingsOrchestration(
   const [piiRedactEnabled, setPiiRedactEnabled] = useState(false);
   const [idlePreferenceRefresh, setIdlePreferenceRefresh] = useState(false);
   const [idleMemoryConsolidation, setIdleMemoryConsolidation] = useState(false);
-  const [memoryCaptureMode, setMemoryCaptureMode] = useState<MemoryCaptureMode>("off");
   const [subAgentAutonomousWake, setSubAgentAutonomousWake] = useState(false);
   const [subAgentMaxRounds, setSubAgentMaxRounds] = useState(SUBAGENT_MAX_ROUNDS_DEFAULT);
   const [marketplaceProviderPresetId, setMarketplaceProviderPresetId] = useState("");
@@ -235,7 +231,6 @@ export function useSettingsOrchestration(
       setPiiRedactEnabled(s.privacy?.piiRedactEnabled ?? false);
       setIdlePreferenceRefresh(s.features?.idlePreferenceRefresh ?? false);
       setIdleMemoryConsolidation(s.features?.idleMemoryConsolidation ?? false);
-      setMemoryCaptureMode(s.features?.memoryCaptureMode ?? "off");
       setSubAgentAutonomousWake(s.features?.subAgentAutonomousWake ?? false);
       setSubAgentMaxRounds(s.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
       setFallbackChain(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
@@ -252,7 +247,6 @@ export function useSettingsOrchestration(
       setSettingsSnapshot(next);
       setIdlePreferenceRefresh(next.features?.idlePreferenceRefresh ?? false);
       setIdleMemoryConsolidation(next.features?.idleMemoryConsolidation ?? false);
-      setMemoryCaptureMode(next.features?.memoryCaptureMode ?? "off");
       setSubAgentAutonomousWake(next.features?.subAgentAutonomousWake ?? false);
       setSubAgentMaxRounds(next.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
       if (!processingDisplayLevelDraftRef.current.dirty) {
@@ -628,22 +622,6 @@ export function useSettingsOrchestration(
       });
   }, [api, idleMemoryConsolidation, onSaved, settingsLoaded]);
 
-  const setMemoryCaptureModeLive = useCallback((next: MemoryCaptureMode) => {
-    const previous = memoryCaptureMode;
-    setMemoryCaptureMode(next);
-    if (!settingsLoaded) return;
-    void api
-      .updateSettings({ features: { memoryCaptureMode: next } })
-      .then((updated) => {
-        if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
-        setSettingsSnapshot(updated);
-        onSaved();
-      })
-      .catch(() => {
-        setMemoryCaptureMode(previous);
-      });
-  }, [api, memoryCaptureMode, onSaved, settingsLoaded]);
-
   const setSubAgentAutonomousWakeLive = useCallback((next: boolean) => {
     const previous = subAgentAutonomousWake;
     setSubAgentAutonomousWake(next);
@@ -704,7 +682,6 @@ export function useSettingsOrchestration(
     piiRedactEnabled, setPiiRedactEnabled,
     idlePreferenceRefresh, setIdlePreferenceRefresh: setIdlePreferenceRefreshLive,
     idleMemoryConsolidation, setIdleMemoryConsolidation: setIdleMemoryConsolidationLive,
-    memoryCaptureMode, setMemoryCaptureMode: setMemoryCaptureModeLive,
     subAgentAutonomousWake, setSubAgentAutonomousWake: setSubAgentAutonomousWakeLive,
     subAgentMaxRounds, setSubAgentMaxRounds: setSubAgentMaxRoundsLive,
     marketplaceProviderPresetId,

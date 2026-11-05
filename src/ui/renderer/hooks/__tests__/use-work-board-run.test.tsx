@@ -48,7 +48,11 @@ function harness(transcript: () => Promise<{ events: RunTranscriptEvent[] }> = a
     act(() => {
       for (const h of started) h({ itemId });
     });
-  return { api, emit, start, getTranscript };
+  /** Deliver an event without act(): the updates it queues wait for whatever act() the test is inside. */
+  const deliver = (ev: RunProgressEventPayload) => {
+    for (const h of progress) h(ev);
+  };
+  return { api, emit, start, getTranscript, deliver };
 }
 
 function runningItem(overrides: Partial<WorkItemResolved> = {}): WorkItemResolved {
@@ -272,5 +276,159 @@ describe("useNowTick — the chip's clock", () => {
     expect(vi.getTimerCount()).toBe(1);
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("useWorkBoardRun — live steps (LS-2)", () => {
+  function steerHarness() {
+    const h = harness();
+    const steer = vi.fn<(id: number, text: string, intent?: unknown) => Promise<unknown>>(async () => ({ ok: true, messageId: "m-1" }));
+    const cancel = vi.fn<(id: number) => Promise<unknown>>(async () => ({ ok: true }));
+    Object.assign(h.api as object, { steerWorkBoardRun: steer, cancelWorkBoardRun: cancel });
+    return { ...h, steer, cancel };
+  }
+
+  it("never reads a steer acknowledgement or a tool step as the run's phase, nor as a phase entry", () => {
+    const { api, emit } = harness();
+    const entered = vi.fn();
+    const { result } = renderHook(() => useWorkBoardRun(api, [], entered));
+    emit({ itemId: 4, phase: "executing" });
+    expect(entered).toHaveBeenCalledTimes(1);
+    emit({ itemId: 4, phase: "executing", tools: [{ toolUseId: "t1", name: "Bash", kind: "shell", label: "npm test", status: "running", turn: 1 }] });
+    emit({ itemId: 4, phase: "cancelled", message: "user-stopped" });
+    // A steer dropped because the turn ended arrives after the run settled; it must not resurrect the card.
+    emit({ itemId: 4, phase: "executing", steer: { messageId: "m-9", status: "dropped", reason: "turn-ended" } });
+    const run = result.current.runState[4];
+    expect(run?.phase).toBe("cancelled");
+    expect(run?.busy).toBe(false);
+    expect(entered).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps each phase's tool steps, updating a step in place by its id", () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "planning", tools: [{ toolUseId: "p1", name: "Read", kind: "read", label: "a.ts", status: "done", turn: 1 }] });
+    emit({ itemId: 4, phase: "executing", tools: [{ toolUseId: "t1", name: "Bash", kind: "shell", label: "npm test", status: "running", turn: 2 }] });
+    emit({
+      itemId: 4,
+      phase: "executing",
+      tools: [
+        { toolUseId: "t1", name: "Bash", kind: "shell", label: "npm test", status: "done", turn: 2, durationMs: 1800 },
+        { toolUseId: "t2", name: "Edit", kind: "write", label: "refresh.ts", status: "running", turn: 2 },
+      ],
+    });
+    const tools = result.current.runState[4]?.tools ?? [];
+    expect(tools.map((s) => `${s.phase}:${s.toolUseId}:${s.status}`)).toEqual([
+      "planning:p1:done",
+      "executing:t1:done",
+      "executing:t2:running",
+    ]);
+  });
+
+  it("collects every phase child's session, and forgets them when the item's run restarts", () => {
+    const { api, emit, start } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "planning", runSessionId: "sub-plan" });
+    emit({ itemId: 4, phase: "executing", runSessionId: "sub-exec" });
+    emit({ itemId: 4, phase: "executing", runSessionId: "sub-exec" });
+    expect(result.current.runState[4]?.sessionIds).toEqual(["sub-plan", "sub-exec"]);
+    start(4);
+    expect(result.current.runState[4]?.sessionIds).toEqual([]);
+  });
+
+  it("records a sent steer with the renderer's own text, and marks it delivered with the turn that took it", async () => {
+    const { api, emit, steer } = steerHarness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "executing" });
+    let res: unknown;
+    await act(async () => { res = await result.current.steer(4, "also cover refresh", undefined); });
+    expect(steer).toHaveBeenCalledWith(4, "also cover refresh", undefined);
+    expect(res).toEqual({ ok: true, messageId: "m-1" });
+    expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", text: "also cover refresh", status: "sent" }]);
+    emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "delivered", turn: 3 } });
+    expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "delivered", turn: 3 }]);
+  });
+
+  it("applies an acknowledgement that raced ahead of the steer's own reply", async () => {
+    const { api, emit, steer } = steerHarness();
+    let resolve!: (v: unknown) => void;
+    steer.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "executing" });
+    let pending!: Promise<unknown>;
+    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    emit({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "joined-limit" } });
+    await act(async () => { resolve({ ok: true, messageId: "m-1" }); await pending; });
+    expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "joined-limit" }]);
+  });
+
+  it("applies an acknowledgement whose steer reply lands before React flushes the acknowledgement", async () => {
+    // The loop drops a steer in a microtask and the IPC reply can follow before any render: the early-ack record must not wait for a flush.
+    const h = steerHarness();
+    let resolve!: (v: unknown) => void;
+    h.steer.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const { result } = renderHook(() => useWorkBoardRun(h.api, []));
+    h.emit({ itemId: 4, phase: "executing" });
+    let pending!: Promise<unknown>;
+    act(() => { pending = result.current.steer(4, "faster", undefined); });
+    await act(async () => {
+      h.deliver({ itemId: 4, phase: "executing", steer: { messageId: "m-1", status: "dropped", reason: "turn-ended" }, at: "2026-11-04T03:00:01.000Z" });
+      resolve({ ok: true, messageId: "m-1" });
+      await pending;
+    });
+    expect(result.current.runState[4]?.steers).toMatchObject([{ messageId: "m-1", status: "dropped", reason: "turn-ended" }]);
+  });
+
+  it("does not re-list for a child's link event, which carries the session and no turn", () => {
+    const { api, emit } = harness();
+    const entered = vi.fn();
+    renderHook(() => useWorkBoardRun(api, [], entered));
+    emit({ itemId: 4, phase: "planning" });
+    emit({ itemId: 4, phase: "planning", runSessionId: "sub-plan" });
+    emit({ itemId: 4, phase: "executing" });
+    emit({ itemId: 4, phase: "executing", runSessionId: "sub-exec" });
+    expect(entered).toHaveBeenCalledTimes(2);
+  });
+
+  it("records nothing for a refused steer", async () => {
+    const { api, emit, steer } = steerHarness();
+    steer.mockResolvedValueOnce({ ok: false, reason: "recipient-unavailable" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "executing" });
+    let res: unknown;
+    await act(async () => { res = await result.current.steer(4, "x", undefined); });
+    expect(res).toEqual({ ok: false, reason: "recipient-unavailable" });
+    expect(result.current.runState[4]?.steers).toEqual([]);
+  });
+
+  it("holds 'stopping' from an accepted stop until the run settles; a refused stop leaves the run as it was", async () => {
+    const { api, emit, cancel } = steerHarness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 4, phase: "executing" });
+    cancel.mockResolvedValueOnce({ ok: false, reason: "not-running" });
+    let refused: unknown;
+    await act(async () => { refused = await result.current.stop(4); });
+    expect(refused).toEqual({ ok: false, reason: "not-running" });
+    expect(result.current.runState[4]?.stopping).toBe(false);
+
+    await act(async () => { await result.current.stop(4); });
+    expect(result.current.runState[4]?.stopping).toBe(true);
+    expect(result.current.runState[4]?.phase).toBe("executing");
+    emit({ itemId: 4, phase: "cancelled", message: "user-stopped" });
+    expect(result.current.runState[4]?.stopping).toBe(false);
+    expect(result.current.runState[4]?.phase).toBe("cancelled");
+  });
+
+  it("backfills the plan, the finished tool steps and when each phase began from the transcript", async () => {
+    const events: RunTranscriptEvent[] = [
+      { ts: "2026-11-04T03:00:05.000Z", phase: "planning", kind: "turn", turn: 1, text: "Reading" },
+      { ts: "2026-11-04T03:00:06.000Z", phase: "planning", kind: "tool", turn: 1, tool: { toolUseId: "p1", name: "Read", kind: "read", label: "a.ts", status: "done", turn: 1 } },
+      { ts: "2026-11-04T03:01:00.000Z", phase: "awaiting_approval", kind: "plan", text: "1. write test\n2. fix" },
+      { ts: "2026-11-04T03:02:00.000Z", phase: "executing", kind: "turn", turn: 1, text: "Writing" },
+    ];
+    const { api } = harness(async () => ({ events }));
+    const { result } = renderHook(() => useWorkBoardRun(api, [runningItem()]));
+    await waitFor(() => expect(result.current.runState[4]?.plan).toEqual({ text: "1. write test\n2. fix", at: "2026-11-04T03:01:00.000Z" }));
+    expect(result.current.runState[4]?.tools.map((s) => `${s.phase}:${s.toolUseId}`)).toEqual(["planning:p1"]);
   });
 });

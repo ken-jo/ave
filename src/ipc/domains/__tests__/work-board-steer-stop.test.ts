@@ -41,7 +41,7 @@ function handler(channel: string): (...args: unknown[]) => Promise<unknown> {
 function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: false }) {
   const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
   const window = { isDestroyed: () => false, webContents: owner };
-  const steerRun = vi.fn(() => ({ ok: true }));
+  const steerRun = vi.fn(() => ({ ok: true, messageId: "m-7" }));
   const cancelRun = vi.fn(() => ({ ok: true }));
   registerWorkBoardHandlers({
     workBoardStore: {
@@ -69,7 +69,7 @@ beforeEach(() => {
 describe("work-board steer and stop IPC", () => {
   it("forwards a gesture-carrying steer for the item; the engine picks the child, the renderer cannot", async () => {
     const { event, steerRun } = setup();
-    await expect(handler(WORK_BOARD.steerRun)(event, 7, "also cover the edge cases", GESTURE, "sub-forged-child")).resolves.toEqual({ ok: true });
+    await expect(handler(WORK_BOARD.steerRun)(event, 7, "also cover the edge cases", GESTURE, "sub-forged-child")).resolves.toStrictEqual({ ok: true, messageId: "m-7" });
     expect(steerRun).toHaveBeenCalledWith(7, "also cover the edge cases");
   });
 
@@ -127,7 +127,7 @@ describe("work-board steer and stop IPC", () => {
     expect(steerRun).toHaveBeenCalledTimes(1);
     const sent = (steerRun.mock.calls[0] as unknown as [number, string])[1];
     expect(sent).not.toContain("someone@example.com");
-    expect(result).toEqual({ ok: true, redactedCount: 1 });
+    expect(result).toStrictEqual({ ok: true, messageId: "m-7", redactedCount: 1 });
   });
   it("answers a non-main frame UNAUTHORIZED before saying whether the item exists", async () => {
     const { event, steerRun, cancelRun } = setup();

@@ -376,8 +376,6 @@ export const en = {
   "agentPluginPrompt.send": "Send",
   "agentPluginPrompt.failed": "Could not run the plugin prompt.",
   "agentPluginPrompt.extensionFailed": "Could not run the Extension prompt.",
-  "routinePanel.pluginTemplatesHeading": "Routine templates",
-  "routinePanel.createFromTemplate": "Create routine…",
   "routinePanel.templateSuggestedScope": "Suggested extension access: {plugins}. Nothing is selected until you choose it below.",
   "routinePanel.createdFromPluginTemplate": "Created from a template of {plugin}",
   "routinePanel.createdFromExtensionTemplate": "Created from an Extension template of {plugin}",
@@ -405,8 +403,8 @@ export const en = {
   "pluginConfigTab.lastRestartRefused": "Last restart refused: {message}",
   "gitMarketplace.version.hostProtocol": "Requires a different extension host protocol",
   "formatIpcError.pluginsMissing": "This routine cannot run because none of its allowed extensions are installed. Reinstall them or remove the routine.",
-  "routinePanel.pluginsMissing": "Skipped: required extensions are not installed ({plugins}). Reinstall them or remove this routine.",
-  "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed extensions are not installed ({plugins}). The routine ran with the remaining extensions.",
+  "routinePanel.pluginsMissing": "Skipped: required extensions are not installed ({plugins}). Reinstall them or remove this schedule.",
+  "routinePanel.pluginsPartlyMissing": "Needs attention: some allowed extensions are not installed ({plugins}). The schedule ran with the remaining extensions.",
   // ── Common / shared ───────────────────────────────────────────────
   "common.cancel": "Cancel",
   "common.save": "Save",
@@ -510,6 +508,7 @@ export const en = {
   "startupTab.launchRegisterFailedBody":
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
   "app.paneChatUnavailable": "This terminal or page is no longer available in this window.",
+  "app.surfaceProjectUnknown": "The project list is not available yet, so this terminal or page was not opened.",
   "app.paneChatOpenFailed": "The terminal or page could not be opened. Select it from the workspace and try again.",
   "assistantCard.systemNoticeOperationError": "System Notice — Request Not Completed",
   "assistantCard.conversationOpenInPane": "This conversation is open in {surface}.",

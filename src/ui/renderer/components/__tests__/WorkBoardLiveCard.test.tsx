@@ -2,6 +2,7 @@
 /** The compact running card: a chip that says which phase and turn the agent is on and how long the run has gone, one line of
  * the agent's latest narration, both in the footprint the idle card had. */
 import "../../../../../test/renderer/setup.js";
+import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
@@ -82,7 +83,7 @@ describe("Work Board — compact running card", () => {
 
   it("shows phase, the current phase's turn and the elapsed time in one chip", async () => {
     const { api } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     const chip = await screen.findByTestId("work-board-live-chip");
     await vi.waitFor(() =>
@@ -95,7 +96,7 @@ describe("Work Board — compact running card", () => {
 
   it("ticks the elapsed time once a second while the run is live", async () => {
     const { api } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const chip = await screen.findByTestId("work-board-live-chip");
     await vi.waitFor(() => expect(chip.textContent).toMatch(/4:12$/));
 
@@ -107,7 +108,7 @@ describe("Work Board — compact running card", () => {
 
   it("narrates the latest turn on one line with its local time", async () => {
     const { api } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     const line = await screen.findByTestId("work-board-live-narration");
     await vi.waitFor(() =>
@@ -119,7 +120,7 @@ describe("Work Board — compact running card", () => {
 
   it("keeps the description in the layout, hidden, so the running card stays as tall as the idle one", async () => {
     const { api } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const line = await screen.findByTestId("work-board-live-narration");
 
     const spacer = line.parentElement?.querySelector('p[aria-hidden="true"]');
@@ -132,7 +133,7 @@ describe("Work Board — compact running card", () => {
 
   it("follows live turns after the backfill", async () => {
     const { api, emit } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const chip = await screen.findByTestId("work-board-live-chip");
     await vi.waitFor(() => expect(chip.textContent).toContain(t("workBoard.liveChipTurn", { turn: 2 })));
 
@@ -144,7 +145,7 @@ describe("Work Board — compact running card", () => {
 
   it("says the plan is waiting for approval without a turn count", async () => {
     const { api } = stubApi([item({ runStatus: "awaiting_approval" })], TRANSCRIPT.slice(0, 1));
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
 
     const chip = await screen.findByTestId("work-board-live-chip");
     await vi.waitFor(() => expect(chip.getAttribute("data-phase")).toBe("awaiting_approval"));
@@ -154,7 +155,7 @@ describe("Work Board — compact running card", () => {
   it("leaves the elapsed time out while the board still holds a previous run's history", async () => {
     // The live stream says a run is executing, but the listed item is still the finished previous run.
     const { api, emit } = stubApi([item({ runStatus: "completed" })]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     await screen.findByTestId("work-board-card");
 
     emit({ itemId: 4, phase: "executing", turn: 1, text: "working" });
@@ -165,7 +166,7 @@ describe("Work Board — compact running card", () => {
 
   it("re-lists the board when a run enters a new phase so the run start is the current one", async () => {
     const { api, emit, list } = stubApi([item()]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     await screen.findByTestId("work-board-card");
     const before = list.mock.calls.length;
 
@@ -178,7 +179,7 @@ describe("Work Board — compact running card", () => {
 
   it("puts the narration in the chip's row on a card without a description, so it gains no line at run start", async () => {
     const { api } = stubApi([item({ detail: undefined })]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const line = await screen.findByTestId("work-board-live-narration");
     await vi.waitFor(() => expect(line.textContent).toContain("One reproduction failed; finding the cause"));
 
@@ -199,7 +200,7 @@ describe("Work Board — compact running card", () => {
     });
     const { api, list } = stubApi([item()]);
     (api as unknown as { onWorkBoardRunProgress: typeof subscribe }).onWorkBoardRunProgress = subscribe;
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const chip = await screen.findByTestId("work-board-live-chip");
     const before = list.mock.calls.length;
 
@@ -213,7 +214,7 @@ describe("Work Board — compact running card", () => {
 
   it("draws no chip or narration on an item that is not running", async () => {
     const { api } = stubApi([item({ runStatus: "completed" })]);
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     await screen.findByTestId("work-board-card");
 
     expect(screen.queryByTestId("work-board-live-chip")).toBeNull();

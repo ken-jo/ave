@@ -18,6 +18,7 @@ import {
   ROUTINES,
   SETTINGS,
   WORK_BOARD,
+  WORK_APPROVALS,
   type AgentInstallResultPayload,
   type PluginInstallResultPayload,
   type SkillInstallResultPayload,
@@ -118,16 +119,6 @@ function invokeMemoryDelete<T>(
   return opts === undefined
     ? ipcRenderer.invoke(channel, filename) as Promise<T>
     : ipcRenderer.invoke(channel, filename, opts) as Promise<T>;
-}
-
-function invokeMemoryCandidateAction<T>(
-  channel: string,
-  id: string,
-  opts?: MemoryProjectOptions,
-): Promise<T> {
-  return opts === undefined
-    ? ipcRenderer.invoke(channel, { id }) as Promise<T>
-    : ipcRenderer.invoke(channel, { id, opts }) as Promise<T>;
 }
 
 /** What an uninstall channel answers, as the renderer reads it. */
@@ -451,16 +442,8 @@ export function buildInternalApiSurface() {
 
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
-  memoryListCandidates: async (opts?: MemoryProjectOptions) =>
-    invokeWithOptionalMemoryOptions(CHANNELS.memory.candidatesList, opts),
-  memorySaveEntry: async (title: string, content: string, opts?: MemoryProjectOptions) =>
-    ipcRenderer.invoke(CHANNELS.memory.entriesSave, title, content, opts),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>
     invokeMemoryDelete(CHANNELS.memory.entriesDelete, filename, opts),
-  memoryActivateCandidate: async (id: string, opts?: MemoryProjectOptions) =>
-    invokeMemoryCandidateAction(CHANNELS.memory.candidateActivate, id, opts),
-  memoryDeleteCandidate: async (id: string, opts?: MemoryProjectOptions) =>
-    invokeMemoryCandidateAction(CHANNELS.memory.candidateDelete, id, opts),
   memorySearchEntries: async (query: string, opts?: MemoryProjectOptions) =>
     invokeMemorySearch(CHANNELS.memory.entriesSearch, query, opts),
   memoryGetIndex: async (opts?: MemoryProjectOptions) =>
@@ -1004,7 +987,8 @@ export function buildInternalApiSurface() {
   },
 
   // routine_schedule; persistent routine list + lifecycle
-  listRoutines: async () => ipcRenderer.invoke(ROUTINES.list),
+  // With a project, only that project's items plus the unscoped ones stored before projects existed.
+  listRoutines: async (filter?: { projectRoot?: string }) => ipcRenderer.invoke(ROUTINES.list, filter),
   dismissRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.dismiss, id),
   removeRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.remove, id),
   triggerRoutineNow: async (id: string) => ipcRenderer.invoke(ROUTINES.triggerNow, id),
@@ -1014,10 +998,26 @@ export function buildInternalApiSurface() {
     >,
   acknowledgeRoutineResult: async (routineId: string, firedAt: string) =>
     ipcRenderer.invoke(ROUTINES.acknowledgeResult, routineId, firedAt) as Promise<{ ok: boolean; error?: string }>,
-  addRoutine: async (input: import("../shared/routines-types.js").AddRoutineInput) =>
+  acknowledgeRoutineFailure: async (routineId: string, failureFiredAt: string) =>
+    ipcRenderer.invoke(ROUTINES.acknowledgeFailure, routineId, failureFiredAt) as Promise<{ ok: true } | { ok: false; error: string }>,
+  addRoutine: async (input: Omit<import("../shared/routines-types.js").AddRoutineInput, "createdBy">) =>
     ipcRenderer.invoke(ROUTINES.add, input) as Promise<
       { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
     >,
+  updateRoutine: async (id: string, patch: import("../shared/routines-types.js").RoutineEditPatch) =>
+    ipcRenderer.invoke(ROUTINES.update, id, patch) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  pauseRoutine: async (id: string) =>
+    ipcRenderer.invoke(ROUTINES.pause, id) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  resumeRoutine: async (id: string) =>
+    ipcRenderer.invoke(ROUTINES.resume, id) as Promise<
+      { ok: true; routine: import("../shared/routines-types.js").RoutineRecord } | { ok: false; error: string }
+    >,
+  listRoutineOccurrences: async (query: { projectRoot?: string; from: string; to: string }) =>
+    ipcRenderer.invoke(ROUTINES.listOccurrences, query) as Promise<import("../shared/routines-types.js").RoutineOccurrencesResult>,
   onRoutineFired: (
     handler: (event: import("../shared/routines-types.js").RoutineFiredPayload) => void,
   ) => {
@@ -1168,6 +1168,17 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardCancelIpcResult
       | { ok: false; error: string }
     >,
+  // Work-level decisions ("확인 필요") for one project plus the all-project badge total; tool-execution approvals stay in the chat ApprovalDock.
+  listWorkApprovals: async (opts?: { projectRoot?: string }) =>
+    ipcRenderer.invoke(WORK_APPROVALS.list, opts) as Promise<
+      | import("../shared/work-approvals-types.js").WorkApprovalListResult
+      | { ok: false; error: string }
+    >,
+  onWorkApprovalsChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(WORK_APPROVALS.changed, listener);
+    return () => ipcRenderer.removeListener(WORK_APPROVALS.changed, listener);
+  },
   // Read a past run's persisted transcript (plan+execute conversation) for the run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript: async (itemId: number, runId: string) =>
     ipcRenderer.invoke(WORK_BOARD.runTranscript, itemId, runId) as Promise<

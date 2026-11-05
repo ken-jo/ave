@@ -46,6 +46,20 @@ describe("RolesTab — long-term memory consolidation", () => {
   });
 });
 
+describe("RolesTab — instructions, not memories", () => {
+  it("labels the MEMORY.md editors as 지침 and offers no direct memory save", async () => {
+    const { api } = makeMockAveApi();
+    renderRolesTab(api);
+
+    expect(await screen.findByText("지침 (MEMORY.md)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "지침 저장" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("긴급 지침 (500자 내외)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("상세 기억 제목")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "상세 기억 저장" })).not.toBeInTheDocument();
+    expect("memorySaveEntry" in api).toBe(false);
+  });
+});
+
 describe("RolesTab — ~/.ave reference doc upgrades", () => {
   it("shows the live doc path and no marker list when nothing is pending", async () => {
     const { api } = makeMockAveApi();

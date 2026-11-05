@@ -165,7 +165,7 @@ describe("MemoryConsolidationService", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("keeps default-workspace idle maintenance global-only", async () => {
+  it("keeps idle maintenance without a bound project global-only", async () => {
     const memoryCaptureService = { runOnIdle: vi.fn(async () => undefined) };
     const preferenceRefreshService = { runOnIdle: vi.fn(async () => undefined) };
     const refresh = vi.fn(async () => ({

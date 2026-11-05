@@ -52,6 +52,8 @@ import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySe
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
+import { WorkBoardApprovalSettingsContent } from "./WorkBoardApprovalSettingsContent.js";
+import { isWorkBoardToolApprovalSurface, type WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
 import { getApi } from "../api-client.js";
 import { isIpcErrorResult } from "../types.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
@@ -540,6 +542,7 @@ export function PermissionsTab({
   const [sandboxBusy, setSandboxBusy] = useState(false);
   // Plugin-worker confinement: its own setting, so the shell toggle above never confines workers
   // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
+  const [workBoardApprovalSurface, setWorkBoardApprovalSurface] = useState<WorkBoardToolApprovalSurface | "invalid" | null>(null);
   const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
   const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
   // With the variable set, extension confinement is on for this run whatever is stored, so the row shows the effective state, checked
@@ -623,6 +626,10 @@ export function PermissionsTab({
         setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
         setSandboxEnabled(settingsRes.features?.osToolSandbox ?? false);
         setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
+        // Normalized on load in main, so an out-of-enum value is a contract break: that section says so, without defaulting the
+        // preference and without failing the other sections this read feeds.
+        const surface = settingsRes.workBoard?.toolApprovalSurface;
+        setWorkBoardApprovalSurface(isWorkBoardToolApprovalSurface(surface) ? surface : "invalid");
       }),
     ]);
   }, [settle, readDirectories]);
@@ -1732,6 +1739,11 @@ export function PermissionsTab({
           </>
           )}
         </SettingsSection>
+
+        <WorkBoardApprovalSettingsContent
+          stored={workBoardApprovalSurface}
+          loadNotice={panelLoadNotice("work-board-approvals", ["settings"])}
+        />
 
         <RecentlyDeniedPanel showEmpty />
 

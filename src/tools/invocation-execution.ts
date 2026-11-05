@@ -199,6 +199,8 @@ export interface ExecutionStageContext {
   supportsA2AParentDelivery: boolean | undefined;
   spawnDepth: number | undefined;
   memoryIncludeUnscoped: boolean | undefined;
+  turnMessageId: string | undefined;
+  memoryWriteTainted: boolean | undefined;
   a2aCausalContext: A2AAgentCausalContext | undefined;
   toolResultChunkReader: ExecuteOptions["toolResultChunkReader"];
   toolOutputCaptureFactory?: ExecuteOptions["toolOutputCaptureFactory"];
@@ -260,6 +262,8 @@ export async function executeAuthorizedToolInvocation(
     supportsA2AParentDelivery,
     spawnDepth,
     memoryIncludeUnscoped,
+    turnMessageId,
+    memoryWriteTainted,
     a2aCausalContext,
     toolResultChunkReader,
     toolOutputCaptureFactory,
@@ -773,6 +777,9 @@ export async function executeAuthorizedToolInvocation(
       // and refuses when >= 1 (a sub-agent cannot itself spawn).
       spawnDepth: spawnDepth ?? 0,
       ...(memoryIncludeUnscoped === true ? { memoryIncludeUnscoped: true } : {}),
+      ...(turnMessageId !== undefined ? { turnMessageId } : {}),
+      // Fail closed: only an explicit false from the turn lets memory tools write.
+      memoryWriteTainted: memoryWriteTainted !== false,
       // The target-wide scope this call was authorized under (see
       // approval-memory-context.ts): a tool whose target can move between the
       // prompt and execution re-checks it here.

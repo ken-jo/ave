@@ -566,6 +566,7 @@ describe("ConversationLoop command routing", () => {
   it("/remember sends the user text to captureExplicit without raw direct persistence", async () => {
     const captureExplicit = vi.fn<CaptureExplicit>(async () => ({
       status: "saved",
+      op: "created",
       entry: {
         filename: "reviewed-rollout.md",
         title: "Reviewed rollout preference",
@@ -581,6 +582,8 @@ describe("ConversationLoop command routing", () => {
     expect(captureExplicit).toHaveBeenCalledWith({
       title: "retain this rollout preference",
       content: "retain this rollout preference",
+      // The command is handled before any user row exists, so the save names its conversation only.
+      sessionId: loop.sessionId,
     });
     expect(saveMemory).not.toHaveBeenCalled();
     expect(result.text).toBe(t("be_conversationLoop.cmdRememberSaved", { title: "Reviewed rollout preference" }));

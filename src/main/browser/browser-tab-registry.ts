@@ -14,7 +14,7 @@ import type {
   BrowserTabOpRequest,
   SessionTabBindingsState,
 } from "../../shared/browser-surface.js";
-import type { MainLayoutSnapshot, SavedSurface } from "../../shared/main-layout.js";
+import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, type SavedSurface } from "../../shared/main-layout.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
@@ -109,6 +109,22 @@ export interface BrowserGuest {
   getTitle(): string;
   // Native focus capability; operations that require it reject when unavailable.
   isFocused?(): boolean;
+}
+
+/** Every tab a layout keeps: shown in a pane, hidden but still open (`openSurfaces`), or in a side panel — each once. A hidden tab
+ * keeps its conversation binding; its placement is neither "workspace" nor "side-panel" (see `recordPlacements`), so binding-scoped
+ * authority such as a host-terminal lease does not survive while it is hidden. */
+function layoutTabs(layout: MainLayoutSnapshot): SavedSurface[] {
+  const seen = new Set<string>();
+  const tabs: SavedSurface[] = [];
+  // Only terminals and pages carry session bindings.
+  const main = [...Object.values(layout.surfaces), ...layout.openSurfaces].filter(isSavedTerminalOrPage);
+  for (const surface of [...main, ...Object.values(layout.sideTabs).flat()]) {
+    if (seen.has(surface.tabId)) continue;
+    seen.add(surface.tabId);
+    tabs.push(surface);
+  }
+  return tabs;
 }
 
 // A document transition invalidated the old page; it grants no further input authority.
@@ -279,7 +295,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!layout) { this.restoredBindingWindows.add(windowId); return; }
     this.recordPlacements(windowId, layout);
     let changed = false;
-    for (const surface of [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()]) {
+    for (const surface of layoutTabs(layout)) {
       const binding = this.workspaceBinding(windowId, { kind: surface.kind, tabId: surface.tabId });
       const owner = surface.binding?.owner;
       // Absence is the old layout format; an empty binding is an explicit clear.
@@ -321,7 +337,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   prepareLayoutBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
     this.restoreBindings(windowId);
     if (this.recordPlacements(windowId, layout)) this.notifyBindingListeners(windowId);
-    const surfaces = [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()];
+    const surfaces = layoutTabs(layout);
     const ids = new Set(surfaces.map((surface) => surface.tabId));
     for (const surface of surfaces) {
       if (!this.retiredWorkspaceTabs.has(windowTabKey(windowId, surface.tabId))) {
@@ -349,18 +365,19 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private layoutWithBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
-    const decorate = (surface: SavedSurface): SavedSurface => {
+    const decorate = <T extends SavedSurface | SavedMainSurface>(surface: T): T => {
       const { binding: _ignored, ...geometry } = surface;
       const binding = this.workspaceBindings.get(windowTabKey(windowId, surface.tabId));
-      if (!binding?.owner && !binding?.paneSessionId) return { ...geometry, binding: {} };
+      if (!binding?.owner && !binding?.paneSessionId) return { ...geometry, binding: {} } as T;
       return { ...geometry, binding: {
         ...(binding.owner ? { owner: copyActor(binding.owner) } : {}),
         ...(binding.paneSessionId ? { paneSessionId: binding.paneSessionId } : {}),
-      } };
+      } } as T;
     };
     return { ...layout,
       surfaces: Object.fromEntries(Object.entries(layout.surfaces).map(([id, surface]) => [id, decorate(surface)])),
       sideTabs: Object.fromEntries(Object.entries(layout.sideTabs).map(([id, surfaces]) => [id, surfaces.map(decorate)])),
+      openSurfaces: layout.openSurfaces.map(decorate),
     };
   }
 

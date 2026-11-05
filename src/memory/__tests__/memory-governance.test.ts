@@ -21,16 +21,16 @@ afterEach(async () => {
 
 describe("MemoryManager — scoped long-term memory governance", () => {
   it("keeps same-titled project memories in separate files and projects", async () => {
-    const alpha = await memoryManager.saveMemory("Release plan", "alpha-only rollout", {
+    const { entry: alpha } = await memoryManager.saveMemory("Release plan", "alpha-only rollout", {
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
       kind: "goal",
-    });
-    const beta = await memoryManager.saveMemory("Release plan", "beta-only rollout", {
+    }, "user");
+    const { entry: beta } = await memoryManager.saveMemory("Release plan", "beta-only rollout", {
       projectRoot: "C:\\workspace\\beta",
       projectName: "beta",
       kind: "goal",
-    });
+    }, "user");
 
     expect(alpha.filename).not.toBe(beta.filename);
     expect(existsSync(join(dir, "memories", alpha.filename))).toBe(true);
@@ -42,32 +42,26 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       .not.toEqual(expect.arrayContaining([expect.stringContaining("beta-only rollout")]));
   });
 
-  it("keeps candidates and expired records out of normal reads, global profile inputs, and prompts", async () => {
+  it("keeps expired records out of normal reads, global profile inputs, and prompts", async () => {
     await memoryManager.saveMemory("Global preference", "Use concise status updates.", {
       kind: "preference",
       pinned: true,
-    });
-    await memoryManager.saveMemory("Candidate only", "Do not leak candidate detail.", {
-      state: "candidate",
-      source: "assistant",
-    });
+    }, "user");
     await memoryManager.saveMemory("Expired", "Old migration detail.", {
       expiresAt: "2000-01-01T00:00:00.000Z",
-    });
+    }, "user");
     await memoryManager.saveMemory("Project only", "Internal beta detail.", {
       projectRoot: "C:\\workspace\\beta",
       projectName: "beta",
-    });
+    }, "user");
 
     expect(memoryManager.listGlobalMemoryEntries().map((entry) => entry.title)).toEqual(["Global preference"]);
-    expect(memoryManager.listMemoryEntries({ includeCandidates: true }).map((entry) => entry.title))
-      .toContain("Candidate only");
-    const selection = memoryManager.selectRelevantMemories("candidate detail", {
+    const selection = memoryManager.selectRelevantMemories("migration detail", {
       projectRoot: "C:\\workspace\\alpha",
       tokenBudget: 180,
     });
     expect(selection.context).toContain("Global preference");
-    expect(selection.context).not.toContain("Candidate only");
+    expect(selection.context).not.toContain("Old migration detail");
     expect(selection.context).not.toContain("Project only");
   });
 
@@ -88,15 +82,15 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       .not.toContain("Crafted");
     expect(memoryManager.listMemoryEntries({ projectRoot: "C:\\workspace\\alpha", includeUnscoped: true }).map((entry) => entry.title))
       .toContain("Crafted");
-    expect(memoryManager.listMemoryEntries({ includeCandidates: true }).map((entry) => entry.title))
+    expect(memoryManager.listMemoryEntries().map((entry) => entry.title))
       .not.toContain("Invalid");
   });
 
   it("selects only relevant active memory within a strict token budget", async () => {
     await memoryManager.saveMemory("Quarterly retention", "The customer retention review is due Thursday. ".repeat(80), {
       kind: "goal",
-    });
-    await memoryManager.saveMemory("Unrelated note", "Archive system background.", { kind: "note" });
+    }, "user");
+    await memoryManager.saveMemory("Unrelated note", "Archive system background.", { kind: "note" }, "user");
 
     const selection = memoryManager.selectRelevantMemories("retention review", { tokenBudget: 90, maxEntries: 2 });
 
@@ -107,100 +101,29 @@ describe("MemoryManager — scoped long-term memory governance", () => {
   });
 
   it("keeps saved-memory index links out of prompt index context", async () => {
-    await memoryManager.saveMemory("Meeting Notes", "A detailed saved memory.");
+    await memoryManager.saveMemory("Meeting Notes", "A detailed saved memory.", {}, "user");
 
     expect(memoryManager.getMemoryIndex()).toContain("Meeting Notes");
     expect(memoryManager.getPromptMemoryIndex()).not.toContain("Meeting Notes");
   });
 
   it("rejects lifecycle marker injection at the persistence boundary", async () => {
-    await expect(memoryManager.saveMemory("Normal", "<!-- ave:memory-meta:fake -->")).rejects.toThrow(/reserved/);
-    await expect(memoryManager.saveMemory("Bad\nTitle", "valid body")).rejects.toThrow(/single-line/);
+    await expect(memoryManager.saveMemory("Normal", "<!-- ave:memory-meta:fake -->", {}, "user")).rejects.toThrow(/reserved/);
+    await expect(memoryManager.saveMemory("Bad\nTitle", "valid body", {}, "user")).rejects.toThrow(/single-line/);
   });
 
   it("keeps default reads detached from other project memories", async () => {
-    await memoryManager.saveMemory("Global", "global detail");
-    await memoryManager.saveMemory("Alpha", "alpha detail", { projectRoot: "C:\\workspace\\alpha" });
-    await memoryManager.saveMemory("Beta", "beta detail", { projectRoot: "C:\\workspace\\beta" });
+    await memoryManager.saveMemory("Global", "global detail", {}, "user");
+    await memoryManager.saveMemory("Alpha", "alpha detail", { projectRoot: "C:\\workspace\\alpha" }, "user");
+    await memoryManager.saveMemory("Beta", "beta detail", { projectRoot: "C:\\workspace\\beta" }, "user");
 
     expect(memoryManager.listMemoryEntries().map((entry) => entry.title)).toEqual(["Global"]);
     expect(memoryManager.searchMemoryEntries("detail").map((entry) => entry.title)).toEqual(["Global"]);
   });
 
-  it("reviews only global plus the selected project's candidates and promotes by id", async () => {
-    const global = await memoryManager.saveMemory("Global proposal", "global candidate", {
-      source: "assistant", state: "candidate",
-    });
-    const alpha = await memoryManager.saveMemory("Alpha proposal", "alpha candidate", {
-      projectRoot: "C:\\workspace\\alpha", source: "assistant", state: "candidate",
-    });
-    const beta = await memoryManager.saveMemory("Beta proposal", "beta candidate", {
-      projectRoot: "C:\\workspace\\beta", source: "assistant", state: "candidate",
-    });
-
-    expect(memoryManager.listMemoryCandidates().map((entry) => entry.id)).toEqual([global.id]);
-    expect(memoryManager.listMemoryCandidates({ projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.id))
-      .toEqual(expect.arrayContaining([global.id, alpha.id]));
-    expect(memoryManager.listMemoryCandidates({ projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.id))
-      .not.toContain(beta.id);
-    await expect(memoryManager.activateMemoryCandidate(beta.id!, { projectRoot: "C:\\workspace\\alpha" }))
-      .rejects.toThrow(/not found/);
-
-    const activated = await memoryManager.activateMemoryCandidate(alpha.id!, { projectRoot: "C:\\workspace\\alpha" });
-    expect(activated.state).toBe("active");
-    expect(activated.confirmedAt).toEqual(expect.any(String));
-    expect(memoryManager.listMemoryCandidates({ projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.id))
-      .not.toContain(alpha.id);
-    expect(memoryManager.selectRelevantMemories("alpha candidate", { projectRoot: "C:\\workspace\\alpha" }).context)
-      .toContain("alpha candidate");
-  });
-
-  it("activates local assistant memories without overwriting user, import, or legacy candidate records", async () => {
-    const imported = await memoryManager.saveMemory("Release decision", "Imported decision record.", {
-      source: "import",
-    });
-    const user = await memoryManager.saveMemory("Release decision", "The user chose a staged rollout.", {
-      kind: "constraint",
-    });
-    const legacyCandidate = await memoryManager.saveMemory("Release decision", "Old proposal only.", {
-      source: "assistant", state: "candidate",
-    });
-    const automatic = await memoryManager.saveMemory("Release decision", "Watch the canary dashboard.", {
-      source: "assistant", state: "active",
-    });
-    const updated = await memoryManager.saveMemory("Release decision", "Keep the canary dashboard open.", {
-      source: "assistant", state: "active",
-    });
-
-    expect(automatic.filename).not.toBe(user.filename);
-    expect(user.filename).not.toBe(imported.filename);
-    expect(automatic.filename).not.toBe(imported.filename);
-    expect(automatic.filename).not.toBe(legacyCandidate.filename);
-    expect(updated.filename).toBe(automatic.filename);
-    expect(updated).toMatchObject({ state: "active", source: "assistant", confirmedAt: expect.any(String) });
-    expect(memoryManager.listMemoryCandidates().some((entry) => entry.id === legacyCandidate.id)).toBe(true);
-    expect(readFileSync(join(dir, "memories", user.filename), "utf-8")).toContain("The user chose a staged rollout.");
-    expect(readFileSync(join(dir, "memories", imported.filename), "utf-8")).toContain("Imported decision record.");
-    expect(memoryManager.selectRelevantMemories("canary dashboard").context)
-      .toContain("Keep the canary dashboard open.");
-  });
-
-  it("does not demote an active memory when an explicit candidate has the same title", async () => {
-    const active = await memoryManager.saveMemory("Release preference", "active content", { kind: "preference" });
-    const candidate = await memoryManager.saveMemory("Release preference", "candidate content", {
-      source: "assistant", state: "candidate",
-    });
-
-    expect(candidate.filename).not.toBe(active.filename);
-    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === active.id)?.state).toBe("active");
-    expect(memoryManager.listMemoryCandidates().find((entry) => entry.id === candidate.id)?.state).toBe("candidate");
-    await expect(memoryManager.saveMemory("Release preference", "bypass", { state: "active" }))
-      .resolves.toMatchObject({ id: active.id, state: "active" });
-  });
-
   it("rejects cross-project deletion and preserves legacy notes above the V1 write ceiling", async () => {
-    const alpha = await memoryManager.saveMemory("Alpha private", "alpha-only", { projectRoot: "C:\\workspace\\alpha" });
-    await expect(memoryManager.deleteMemory(alpha.filename, { projectRoot: "C:\\workspace\\beta" }))
+    const { entry: alpha } = await memoryManager.saveMemory("Alpha private", "alpha-only", { projectRoot: "C:\\workspace\\alpha" }, "user");
+    await expect(memoryManager.deleteMemory(alpha.filename, { projectRoot: "C:\\workspace\\beta" }, "user"))
       .rejects.toThrow(/selected scope/);
     expect(existsSync(join(dir, "memories", alpha.filename))).toBe(true);
 
@@ -218,7 +141,7 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     expect(memoryManager.getPromptUserPreferences().length).toBeLessThan(profile.length);
   });
 
-  it("round-trips LLM-refined automatic and explicit capture provenance without crossing lineages", async () => {
+  it("round-trips LLM-refined automatic and explicit capture provenance, which follows the latest save", async () => {
     const automaticCapture = {
       v: 1 as const,
       method: "llm-refined" as const,
@@ -234,35 +157,26 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       capturedAt: "2026-08-02T00:01:00.000Z",
     };
 
-    const automatic = await memoryManager.saveMemory("Deployment preference", "Use staged rollout.", {
+    const { entry: automatic } = await memoryManager.saveMemory("Deployment preference", "Use staged rollout.", {
       source: "capture",
       capture: automaticCapture,
-    });
-    const explicit = await memoryManager.saveMemory("Deployment preference", "The user explicitly chose staged rollout.", {
+    }, "capture");
+    const { entry: explicit } = await memoryManager.saveMemory("Deployment choice", "The user explicitly chose staged rollout.", {
       source: "user",
       capture: explicitCapture,
-    });
-    const updatedAutomatic = await memoryManager.saveMemory("Deployment preference", "Keep the staged rollout preference.", {
+    }, "user");
+    const { entry: updatedAutomatic } = await memoryManager.saveMemory("Deployment preference", "Keep the staged rollout preference.", {
       source: "capture",
       capture: {
         ...automaticCapture,
         sourceDigest: "C".repeat(64),
         capturedAt: "2026-08-02T00:02:00.000Z",
       },
-    });
-    const candidate = await memoryManager.saveMemory("Candidate preference", "Use accessible language.", {
-      source: "capture",
-      state: "candidate",
-      capture: automaticCapture,
-    });
-    const activated = await memoryManager.activateMemoryCandidate(candidate.id!);
-    const ordinary = await memoryManager.saveMemory("Ordinary user note", "Keep the original user wording.");
+    }, "capture");
+    const { entry: ordinary } = await memoryManager.saveMemory("Ordinary user note", "Keep the original user wording.", {}, "user");
 
-    expect(explicit.filename).not.toBe(automatic.filename);
     expect(updatedAutomatic.filename).toBe(automatic.filename);
-    expect(activated.capture).toEqual({ ...automaticCapture, sourceDigest: automaticCapture.sourceDigest.toLowerCase() });
-
-    const restored = memoryManager.listMemoryEntries({ includeCandidates: true });
+    const restored = memoryManager.listMemoryEntries();
     expect(restored.find((entry) => entry.id === automatic.id)?.capture).toEqual({
       ...automaticCapture,
       sourceDigest: "c".repeat(64),
@@ -273,6 +187,122 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       sourceDigest: explicitCapture.sourceDigest.toLowerCase(),
     });
     expect(restored.find((entry) => entry.id === ordinary.id)?.capture).toBeUndefined();
+
+    // An assistant rewrite of the captured memory carries no capture claim of its own.
+    const { entry: rewritten } = await memoryManager.saveMemory("Deployment preference", "Roll out to 5% first.", { source: "assistant" }, "assistant");
+    expect(rewritten.id).toBe(automatic.id);
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === automatic.id)).toMatchObject({ source: "assistant" });
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === automatic.id)?.capture).toBeUndefined();
+  });
+
+  it("applies one save rule: a same-title save in one scope updates that memory whatever wrote it before", async () => {
+    const { op: firstOp, entry: imported } = await memoryManager.saveMemory("Release decision", "Imported decision record.", { source: "import" }, "import");
+    const { op: userOp, entry: user } = await memoryManager.saveMemory("Release decision", "The user chose a staged rollout.", { kind: "constraint" }, "user");
+    const { op: assistantOp, entry: assistant } = await memoryManager.saveMemory("Release decision", "Watch the canary dashboard.", { source: "assistant" }, "assistant");
+    const { entry: project } = await memoryManager.saveMemory("Release decision", "Alpha keeps its own.", { projectRoot: "C:\\workspace\\alpha" }, "user");
+
+    expect([firstOp, userOp, assistantOp]).toEqual(["created", "updated", "updated"]);
+    expect(user.id).toBe(imported.id);
+    expect(assistant.id).toBe(imported.id);
+    expect(assistant.filename).toBe(imported.filename);
+    expect(project.id).not.toBe(imported.id);
+    expect(memoryManager.listMemoryEntries().filter((entry) => entry.title === "Release decision")).toHaveLength(1);
+    expect(readFileSync(join(dir, "memories", imported.filename), "utf-8")).toContain("Watch the canary dashboard.");
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === imported.id)).toMatchObject({ source: "assistant", state: "active" });
+  });
+
+  it("updates only the newest of two same-title files and leaves the other untouched", async () => {
+    const { utimesSync } = await import("node:fs");
+    const { entry: first } = await memoryManager.saveMemory("Release decision", "Old copy.", {}, "user");
+    // A second file with the same title and scope, as a copy from another device or an older build would leave.
+    const stored = readFileSync(join(dir, "memories", first.filename), "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    const secondId = "9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a";
+    metadata.id = secondId;
+    writeFileSync(join(dir, "memories", "release-decision-copy.md"),
+      stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")).replace("Old copy.", "Newer copy."), "utf-8");
+    utimesSync(join(dir, "memories", first.filename), new Date(2000, 0, 1), new Date(2000, 0, 1));
+    const olderBefore = readFileSync(join(dir, "memories", first.filename), "utf-8");
+
+    const { op, entry } = await memoryManager.saveMemory("Release decision", "Final.", {}, "assistant");
+
+    expect(op).toBe("updated");
+    expect(entry.id).toBe(secondId);
+    expect(readFileSync(join(dir, "memories", "release-decision-copy.md"), "utf-8")).toContain("Final.");
+    // The older copy is never deleted by a save: the user cleans it up from the panel.
+    expect(readFileSync(join(dir, "memories", first.filename), "utf-8")).toBe(olderBefore);
+    expect(memoryManager.listMemoryEntries().filter((note) => note.title === "Release decision").map((note) => note.id).sort())
+      .toEqual([first.id, secondId].sort());
+    expect((await memoryManager.getMemoryHistory(secondId, {})).entries.at(-1)?.op).toBe("updated");
+    const raw = readFileSync(join(dir, "memories", "history.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { memoryId: string; op: string });
+    expect(raw.filter((row) => row.memoryId === first.id).map((row) => row.op)).toEqual(["created"]);
+  });
+
+  it("refuses zero-width and bidi characters with the stable unsafe-text reason", async () => {
+    for (const ch of ["\u200B", "\u200F", "\u202A", "\u202E", "\u2066", "\u2069", "\uFEFF"]) {
+      await expect(memoryManager.saveMemory(`Ti${ch}tle`, "body", {}, "user")).rejects.toThrow(/unsafe-text/);
+      await expect(memoryManager.saveMemory("Title", `body${ch}text`, {}, "user")).rejects.toThrow(/unsafe-text/);
+    }
+    await expect(memoryManager.saveMemory("Normal", "<!-- ave:memory-meta:fake -->", {}, "user")).rejects.toThrow(/unsafe-text/);
+    await expect(memoryManager.saveMemory("Bad\u0007Title", "body", {}, "user")).rejects.toThrow(/unsafe-text/);
+    expect(memoryManager.listMemoryEntries()).toEqual([]);
+  });
+
+  it("no longer reads a stored candidate: every memory has one active lifecycle", async () => {
+    const { entry } = await memoryManager.saveMemory("Proposal", "proposal body", {}, "user");
+    const filePath = join(dir, "memories", entry.filename);
+    const stored = readFileSync(filePath, "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    metadata.state = "candidate";
+    writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+
+    expect(memoryManager.listMemoryEntries().some((note) => note.id === entry.id)).toBe(false);
+  });
+
+  it("updates a memory by id, title included, within the caller's scope", async () => {
+    const { entry: alpha } = await memoryManager.saveMemory("Build tool", "Use npm.", { projectRoot: "C:\\workspace\\alpha" }, "user");
+    await memoryManager.saveMemory("Taken title", "other", { projectRoot: "C:\\workspace\\alpha" }, "user");
+
+    const { op, entry } = await memoryManager.updateMemoryById(alpha.id!, "Package manager", "Use pnpm.", {
+      projectRoot: "C:\\workspace\\alpha", source: "assistant",
+    }, "assistant");
+    expect(op).toBe("updated");
+    expect(entry).toMatchObject({ id: alpha.id, filename: alpha.filename, title: "Package manager", source: "assistant" });
+    expect(memoryManager.listMemoryEntries({ projectRoot: "C:\\workspace\\alpha" }).map((note) => note.title).sort())
+      .toEqual(["Package manager", "Taken title"]);
+    // The model finds memories with memory_search, so a rename must reach the search index.
+    expect(memoryManager.searchModelVisibleMemories("Package manager", { projectRoot: "C:\\workspace\\alpha" }).map((note) => note.id))
+      .toContain(alpha.id);
+    expect(memoryManager.searchModelVisibleMemories("Build tool", { projectRoot: "C:\\workspace\\alpha" }).map((note) => note.id))
+      .not.toContain(alpha.id);
+
+    await expect(memoryManager.updateMemoryById(alpha.id!, "x", "y", { projectRoot: "C:\\workspace\\beta", source: "assistant" }, "assistant"))
+      .rejects.toThrow(/memory not found/);
+    await expect(memoryManager.updateMemoryById(alpha.id!, "Taken title", "y", { projectRoot: "C:\\workspace\\alpha", source: "assistant" }, "assistant"))
+      .rejects.toThrow(/title-conflict/);
+    await expect(memoryManager.updateMemoryById(alpha.id!, "Package manager", "Use \u200Bpnpm.", { projectRoot: "C:\\workspace\\alpha", source: "assistant" }, "assistant"))
+      .rejects.toThrow(/unsafe-text/);
+
+    const { entry: moved } = await memoryManager.updateMemoryById(alpha.id!, "Package manager", "Use pnpm everywhere.", {
+      projectRoot: "C:\\workspace\\alpha", source: "assistant", scope: "global",
+    }, "assistant");
+    expect(moved.projectRoot).toBeUndefined();
+    expect(memoryManager.listMemoryEntries().map((note) => note.id)).toContain(alpha.id);
+    const history = await memoryManager.getMemoryHistory(alpha.id!, {});
+    expect(history.entries.map((row) => row.op)).toEqual(["created", "updated", "updated"]);
+  });
+
+  it("deletes a memory by id only within the caller's scope", async () => {
+    const { entry: alpha } = await memoryManager.saveMemory("Alpha note", "alpha", { projectRoot: "C:\\workspace\\alpha" }, "user");
+    await expect(memoryManager.deleteMemoryById(alpha.id!, { projectRoot: "C:\\workspace\\beta" }, "assistant"))
+      .rejects.toThrow(/memory not found/);
+    expect(existsSync(join(dir, "memories", alpha.filename))).toBe(true);
+
+    const deleted = await memoryManager.deleteMemoryById(alpha.id!, { projectRoot: "C:\\workspace\\alpha" }, "assistant");
+    expect(deleted).toMatchObject({ id: alpha.id, title: "Alpha note" });
+    expect(existsSync(join(dir, "memories", alpha.filename))).toBe(false);
   });
 
   it("enforces capture source/trigger pairing and fails closed for invalid persisted provenance", async () => {
@@ -288,30 +318,30 @@ describe("MemoryManager — scoped long-term memory governance", () => {
       trigger: "explicit" as const,
     };
 
-    await expect(memoryManager.saveMemory("Missing provenance", "content", { source: "capture" }))
+    await expect(memoryManager.saveMemory("Missing provenance", "content", { source: "capture" }, "capture"))
       .rejects.toThrow(/capture provenance/);
     await expect(memoryManager.saveMemory("Wrong automatic source", "content", {
       source: "user",
       capture: automaticCapture,
-    })).rejects.toThrow(/does not match/);
+    }, "user")).rejects.toThrow(/does not match/);
     await expect(memoryManager.saveMemory("Wrong explicit source", "content", {
       source: "capture",
       capture: explicitCapture,
-    })).rejects.toThrow(/does not match/);
+    }, "capture")).rejects.toThrow(/does not match/);
     await expect(memoryManager.saveMemory("Assistant cannot claim explicit capture", "content", {
       source: "assistant",
       capture: explicitCapture,
-    })).rejects.toThrow(/does not match/);
+    }, "assistant")).rejects.toThrow(/does not match/);
 
     await expect(memoryManager.saveMemory("Invalid trigger", "content", {
       source: "capture",
       capture: { ...automaticCapture, trigger: "other" as never },
-    })).rejects.toThrow(/invalid capture provenance/);
+    }, "capture")).rejects.toThrow(/invalid capture provenance/);
 
-    const valid = await memoryManager.saveMemory("Persisted provenance", "valid source pairing", {
+    const { entry: valid } = await memoryManager.saveMemory("Persisted provenance", "valid source pairing", {
       source: "capture",
       capture: automaticCapture,
-    });
+    }, "capture");
     const filePath = join(dir, "memories", valid.filename);
     const stored = readFileSync(filePath, "utf-8");
     const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored);
@@ -321,6 +351,46 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     const invalidHeader = Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url");
     writeFileSync(filePath, stored.replace(header![1], invalidHeader), "utf-8");
 
-    expect(memoryManager.listMemoryEntries({ includeCandidates: true }).some((entry) => entry.id === valid.id)).toBe(false);
+    expect(memoryManager.listMemoryEntries().some((entry) => entry.id === valid.id)).toBe(false);
+  });
+  it("persists where a memory was learned, keeps the first origin on re-save, and fails closed on a tampered origin", async () => {
+    const origin = {
+      v: 1 as const,
+      sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
+      messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
+      store: "main" as const,
+    };
+    const { entry: saved } = await memoryManager.saveMemory("Learned rule", "Use pnpm.", { kind: "fact", origin }, "user");
+    expect(saved.origin).toEqual(origin);
+    const { entry: resaved } = await memoryManager.saveMemory("Learned rule", "Use pnpm 9.", {
+      kind: "fact",
+      origin: { v: 1, sessionId: "9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a" },
+    }, "user");
+    expect(resaved.origin).toEqual(origin);
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === saved.id)?.origin).toEqual(origin);
+
+    await expect(memoryManager.saveMemory("Bad origin", "x", { origin: { v: 1, sessionId: "../escape" } as never }, "user"))
+      .rejects.toThrow(/invalid origin/);
+    await expect(memoryManager.saveMemory("Bad store", "x", { origin: { ...origin, store: "elsewhere" } as never }, "user"))
+      .rejects.toThrow(/invalid origin/);
+
+    const filePath = join(dir, "memories", saved.filename);
+    const stored = readFileSync(filePath, "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    metadata.origin = { v: 1, sessionId: origin.sessionId, messageId: 42 };
+    writeFileSync(filePath, stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+    expect(memoryManager.listMemoryEntries().some((entry) => entry.id === saved.id)).toBe(false);
+  });
+
+  it("never gives an origin to a memory first saved without one", async () => {
+    const { entry: direct } = await memoryManager.saveMemory("Direct rule", "Saved from the memory UI.", { kind: "fact" }, "user");
+    const { entry: resaved } = await memoryManager.saveMemory("Direct rule", "Updated from a conversation.", {
+      kind: "fact",
+      origin: { v: 1, sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10" },
+    }, "user");
+    expect(resaved.id).toBe(direct.id);
+    expect(resaved.origin).toBeUndefined();
+    expect(memoryManager.listMemoryEntries().find((entry) => entry.id === direct.id)?.origin).toBeUndefined();
   });
 });

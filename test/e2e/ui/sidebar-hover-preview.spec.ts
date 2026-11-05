@@ -21,7 +21,7 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
       system: {
         sidebarState: "expanded",
         mainLayout: {
-          version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: [],
+          version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, openSurfaces: [], panelOpenIds: [],
           sideTabs: { main: [
             { tabId: "browser:abc12345-1", kind: "browser", ordinal: 1, url: "http://127.0.0.1:1/", cwd: null },
             { tabId: "terminal:abc12345-2", kind: "terminal", ordinal: 1, url: null, cwd: null },

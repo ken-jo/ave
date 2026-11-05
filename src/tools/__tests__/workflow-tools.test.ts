@@ -51,6 +51,10 @@ import { AgentProfileStore } from "../../main/agent-profile-store.js";
 import { ToolRegistry, TOOL_SEARCH_TOOL_NAME } from "../registry.js";
 import { registerRequestPluginMetaTool, registerToolSearchMetaTool } from "../../boot/tools.js";
 
+// A conversation in a project, as every routine_schedule call needs.
+const ANY_PROJECT = { projectRootForSession: () => "/work/project" };
+
+
 function ctx(sessionId = "session-x"): ToolExecutionContext {
   return {
     cwd: process.cwd(),
@@ -348,7 +352,7 @@ describe("routine_schedule tool", () => {
     const tmp = mkdtempSync(join(tmpdir(), "ave-rt-"));
     try {
       const store = new RoutinesStore(join(tmp, "routines.json"));
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
 
       expect(tool.approvalCacheKey?.({ allowedPlugins: ["meeting", "local-indexer"] })).toBe(
         "scope:allow:local-indexer,meeting",
@@ -366,7 +370,7 @@ describe("routine_schedule tool", () => {
     const tmp = mkdtempSync(join(tmpdir(), "ave-rt-"));
     try {
       const store = new RoutinesStore(join(tmp, "routines.json"));
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const r = await tool.execute(
         { execution: "notification-only", schedule: { at: "not-a-date" }, notificationTitle: "x" },
         ctx(),
@@ -381,7 +385,7 @@ describe("routine_schedule tool", () => {
     const tmp = mkdtempSync(join(tmpdir(), "ave-rt-"));
     try {
       const store = new RoutinesStore(join(tmp, "routines.json"));
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const r = await tool.execute(
         {
           execution: "notification-only",
@@ -408,7 +412,7 @@ describe("routine_schedule tool", () => {
     try {
       await withTz("Asia/Seoul", async () => {
         const store = new RoutinesStore(join(tmp, "routines.json"));
-        const tool = createRoutineScheduleTool(store);
+        const tool = createRoutineScheduleTool(store, ANY_PROJECT);
         const r = await tool.execute(
           { execution: "notification-only", schedule: { at: "2030-01-01" }, notificationTitle: "newyear" },
           ctx(),
@@ -428,7 +432,7 @@ describe("routine_schedule tool", () => {
     try {
       await withTz("UTC", async () => {
         const store = new RoutinesStore(join(tmp, "routines.json"));
-        const tool = createRoutineScheduleTool(store);
+        const tool = createRoutineScheduleTool(store, ANY_PROJECT);
         const r = await tool.execute(
           { execution: "notification-only", schedule: { at: "2030-01-01" }, notificationTitle: "newyear" },
           ctx(),
@@ -446,7 +450,7 @@ describe("routine_schedule tool", () => {
     const tmp = mkdtempSync(join(tmpdir(), "ave-rt-"));
     try {
       const store = new RoutinesStore(join(tmp, "routines.json"));
-      const tool = createRoutineScheduleTool(store);
+      const tool = createRoutineScheduleTool(store, ANY_PROJECT);
       const r = await tool.execute(
         { execution: "llm-session", schedule: { at: "2030-01-01T09:00:00Z" } },
         ctx(),

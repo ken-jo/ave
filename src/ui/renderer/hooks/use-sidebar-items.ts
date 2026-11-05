@@ -7,7 +7,9 @@ import { subscribeMainLayoutChange } from "../preview/main-layout-restore.js";
 import { getSideTabsSink } from "../preview/surface-moves.js";
 import { subscribeWebSurfaces, subscribeWebSurfaceLocations, webSurfaceFavicon, webSurfaceLocation } from "../preview/web-surfaces.js";
 
-export interface SidebarSurface extends MainSurface {
+/** A main surface or a side tab. A side tab has no project of its own: it belongs to its pane's conversation. */
+export interface SidebarSurface extends Omit<MainSurface, "projectRoot"> {
+  projectRoot?: string;
   title?: string;
   /** Main-owned binding membership, independent of the surface creator. */
   boundSessionIds: readonly string[];
@@ -16,7 +18,7 @@ export interface SidebarSurface extends MainSurface {
 }
 
 /** Creator ownership, or its listed parent, takes precedence over pane membership. */
-function sidebarBoundSessionId(surface: MainSurface, owner: BrowserSessionActor | null | undefined, bindings: SessionTabBindingsState | null, sessionIds: ReadonlySet<string>): string | undefined {
+function sidebarBoundSessionId(surface: Pick<MainSurface, "kind" | "tabId">, owner: BrowserSessionActor | null | undefined, bindings: SessionTabBindingsState | null, sessionIds: ReadonlySet<string>): string | undefined {
   if (owner?.directParentSessionId && !sessionIds.has(owner.sessionId) && sessionIds.has(owner.directParentSessionId)) return owner.directParentSessionId;
   return owner?.sessionId ?? bindings?.bindings.find((binding) =>
     (surface.kind === "browser" ? binding.browserTabIds : binding.terminalTabIds).includes(surface.tabId))?.sessionId;

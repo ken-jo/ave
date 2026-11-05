@@ -267,6 +267,7 @@ describe("PostTurnHookChain", () => {
 
     await chain.run({
       sessionId: "session-memory",
+      turnMessageId: "turn-row-1",
       messages: createMessages(),
       input: "상태 업데이트는 간결하게 유지해줘.",
       inputOrigin: "user-keyboard",
@@ -282,6 +283,7 @@ describe("PostTurnHookChain", () => {
     expect(saveMemory).not.toHaveBeenCalled();
     expect(enqueueAutomatic).toHaveBeenCalledWith({
       sessionId: "session-memory",
+      turnMessageId: "turn-row-1",
       input: "상태 업데이트는 간결하게 유지해줘.",
       inputOrigin: "user-keyboard",
       projectRoot: "C:\\workspace\\alpha",

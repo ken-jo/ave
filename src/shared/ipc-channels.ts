@@ -37,7 +37,13 @@ export const ROUTINES = {
   fired: "ave:routines:fired",
   pendingResults: "ave:routines:pending-results",
   acknowledgeResult: "ave:routines:ack-result",
+  acknowledgeFailure: "ave:routines:ack-failure",
   listSessions: "ave:routines:list-sessions",
+  // Schedule panel: user edit, reversible pause, and projected occurrences plus past runs for the grids.
+  update: "ave:routines:update",
+  pause: "ave:routines:pause",
+  resume: "ave:routines:resume",
+  listOccurrences: "ave:routines:list-occurrences",
   // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:running-started",
   runningFinished: "ave:routines:running-finished",
@@ -83,6 +89,15 @@ export const WORK_BOARD = {
   dismissProposal: "ave:work-board:dismiss-proposal",
   // Main → renderer: the proposal set moved; a plugin posted or withdrew one, or the user accepted or dismissed one; so the board re-lists.
   proposalChanged: "ave:work-board:proposal-changed",
+} as const;
+
+// Work-level decisions ("확인 필요"), kept apart from tool-execution approvals (the chat ApprovalDock). A read-only projection over the stores
+// that own each decision; every action still goes through that store's own channel.
+export const WORK_APPROVALS = {
+  // Renderer → main: the decisions visible for one project, plus the total across every authorized project for the title-bar badge.
+  list: "ave:work-approvals:list",
+  // Main → renderer: a source store changed. No payload; the renderer re-lists.
+  changed: "ave:work-approvals:changed",
 } as const;
 
 export const PERMISSIONS = {

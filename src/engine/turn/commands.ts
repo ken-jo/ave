@@ -181,6 +181,8 @@ export async function handleCommand(
           const capture = await memoryCaptureService.captureExplicit({
             title,
             content: args,
+            // A slash command is not persisted as a user row, so the origin names the conversation only.
+            sessionId: self.sessionId,
             ...(self.getSessionMemoryProjectContext?.()
               ?? self.getSessionProjectContext?.()
               ?? {}),

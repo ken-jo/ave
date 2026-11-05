@@ -1,6 +1,6 @@
 import { test, expect } from "./fixtures.js";
 import type { ElectronApplication, Page } from "playwright";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAIN_ENTRY, buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv, launchElectron, teardownSeededElectron } from "./seeded-electron.js";
@@ -20,11 +20,14 @@ test("pane-bound sidebar row reveals its terminal and chat without opening the r
     mkdirSync(userData, { recursive: true });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
+    // The 기본 프로젝트 is AVE_HOME/workspace, as the running app resolves it.
+    mkdirSync(join(featureHome, "workspace"), { recursive: true });
+    const terminal = { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null, projectRoot: realpathSync(join(featureHome, "workspace")) };
     writeFileSync(join(userData, "ave-settings.json"), JSON.stringify({
       ...buildE2eBaseSettings(true, "en"),
       system: { mainLayout: {
-        version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-        surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: null, url: null } },
+        version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+        surfaces: { main: terminal }, openSurfaces: [terminal],
         panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
       } },
     }));

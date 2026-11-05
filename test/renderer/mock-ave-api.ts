@@ -146,6 +146,7 @@ type ApiOverrides = {
 export const MOCK_DEFAULT_SETTINGS = {
   llm: fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
   chat: { systemPrompt: "", autoCompact: true },
+  workBoard: { toolApprovalSurface: "chat" },
   webSearch: { provider: "none" },
   marketplace: {
     installedProviderIds: [],
@@ -690,11 +691,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memoryDeleteNote: vi.fn(async () => undefined),
     memorySearchNotes: vi.fn(async () => []),
     memoryListEntries: vi.fn(async () => []),
-    memoryListCandidates: vi.fn(async () => []),
-    memorySaveEntry: vi.fn(async () => ({ ok: true })),
     memoryDeleteEntry: vi.fn(async () => ({ ok: true })),
-    memoryActivateCandidate: vi.fn(async () => ({ ok: true })),
-    memoryDeleteCandidate: vi.fn(async () => ({ ok: true })),
     memorySearchEntries: vi.fn(async () => []),
     memoryGetIndex: vi.fn(async () => memoryIndex),
     memoryUpdateIndexIfUnchanged: vi.fn(async () => true),
@@ -784,6 +781,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     listPendingRoutineResults: vi.fn(async () => pendingRoutineResults),
     acknowledgeRoutineResult: vi.fn(async () => ({ ok: true })),
     addRoutine: vi.fn(async () => ({ ok: true, routine: {} })),
+    updateRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    pauseRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    resumeRoutine: vi.fn(async () => ({ ok: false, error: "routine-not-found" })),
+    listRoutineOccurrences: vi.fn(async () => ({ ok: true, occurrences: [], runs: [], running: [] })),
     onRoutineFired: vi.fn((h: (r: unknown) => void) => {
       routineFiredHandlers.add(h);
       // Replay latestRoutineResult on subscription (simulates mount-time catchup).
@@ -1001,6 +1002,8 @@ type AveNamespaceOverrides = {
   pendingApprovals?: unknown[];
   /** Project folders `workspace.listRoots` reports; the default is `/ws` alone. */
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
+  /** What `workspace.listRoots` answers instead, e.g. a failure. */
+  workspaceListRootsResult?: { ok: boolean; error?: string };
   /** Install the native context-menu bridge (`ave.ui`). Opt-in: without it the renderer's menus fall through to their ancestors, which most suites rely on. */
   nativeContextMenu?: boolean;
 };
@@ -1098,7 +1101,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         requestObservationPreview: vi.fn(async () => ({ ok: true })),
       },
       workspace: {
-        listRoots: vi.fn(async () => ({ ok: true, defaultRoot, roots })),
+        listRoots: vi.fn(async () => overrides.workspaceListRootsResult ?? { ok: true, defaultRoot, roots }),
         pickRoot: vi.fn(async () => ({ ok: true, canceled: true, roots: [{ path: "/ws", isDefault: true }] })),
         listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
       },
