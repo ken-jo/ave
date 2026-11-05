@@ -405,10 +405,7 @@ export async function lookupUserDecision(
       }
     }
   }
-  // A scheduled wake turn reads no conversation-scope allow; its denies above still apply.
-  const sessionKey = sessionId === undefined || sessionAuthorityWithheld()
-    ? undefined
-    : conversationEntryKey(key, approvalConversationRoot(sessionId));
+  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
   const globalKey = globalEntryKey(unscopedKey);
   const keys = [...denyOnlyKeys, key, globalKey];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
@@ -431,7 +428,9 @@ export async function lookupUserDecision(
   const global = readActive(globalKey);
   if (global?.decision === "deny") return global;
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
-  if (conversation && !conversation.revokedAt && hasValidRiskProvenance(conversation)) return conversation;
+  // A scheduled wake turn reads only a conversation deny: it does not inherit the conversation's allows.
+  if (conversation && !conversation.revokedAt
+    && (sessionAuthorityWithheld() ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
   return legacy ?? global;
 }
 
