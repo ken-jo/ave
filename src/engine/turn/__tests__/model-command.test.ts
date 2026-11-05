@@ -241,6 +241,27 @@ describe("/model", () => {
     expect(result.text).toBe(t("be_conversationLoop.cmdModelSet", { model: "gpt-5.5-codex-mini" }));
   });
 
+  it("names a failed provider build instead of switching the model", async () => {
+    let secret: () => Promise<string> = async () => "test-key";
+    const llm = fakeLlmSettings({ model: "gpt-5.4" });
+    const loop = new ConversationLoop({
+      settingsService: { get: () => llm, getSecret: () => secret() },
+      systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
+      inputClassifier: new InputClassifier(),
+      routeEngine: new RouteEngine(),
+      toolRegistry: new ToolRegistry(),
+      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      disableSessionPersistence: true,
+    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    await loop.whenProviderReady();
+    secret = async () => { throw Object.assign(new Error("unreadable"), { name: "StoredSecretUnreadable", code: "decrypt-failed" }); };
+    const rebuild = loop.refreshProvider().catch(() => undefined);
+    const result = await loop.handleCommand("model", "gpt-5.4-mini", "user-keyboard");
+    await rebuild;
+    expect(result.text).toBe(`${t("be_conversationLoop.llmProviderNotConfigured")} (StoredSecretUnreadable:decrypt-failed)`);
+    expect(loop.deps.modelOverride).toBeUndefined();
+  });
+
   it("switches an Azure deployment but says the name is unverified", async () => {
     const llm = fakeLlmSettings({ provider: "azure-foundry", model: "my-gpt-deployment" });
     llm.vendors["azure-foundry"].baseUrl = "https://example-resource.openai.azure.com/openai/v1";

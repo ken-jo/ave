@@ -52,8 +52,6 @@ const DEPLOYMENT_NAMED_VENDORS: ReadonlySet<string> = new Set(["azure-foundry"])
 
 /** Empty or unreachable subscription catalogs leave model choices unverifiable. */
 async function verifySubscriptionModel(self: ConversationLoop, model: string): Promise<ModelVerification> {
-  // A rebuild in flight (credentials still decrypting) is about to install the provider whose catalog decides this.
-  if (self.providerPending) await self.whenProviderReady();
   const list = self.provider?.listSubscriptionModels;
   if (!list) return "unverifiable";
   let models: readonly string[];
@@ -137,6 +135,11 @@ async function handleModelCommand(self: ConversationLoop, args: string): Promise
   }
   const model = cleanModelOverride(requested);
   if (!model || /\s/.test(model)) return t("be_conversationLoop.cmdModelInvalid");
+  // A rebuild in flight (credentials still decrypting) is about to install the provider whose catalog decides this.
+  if (self.providerPending) await self.whenProviderReady();
+  // A failed rebuild left no provider: say why, as a turn would, instead of switching a model nothing can serve.
+  const buildError = self.providerBuildError;
+  if (buildError) return `${t("be_conversationLoop.llmProviderNotConfigured")} (${buildError})`;
   const verification = subscription
     ? await verifySubscriptionModel(self, model)
     : await verifyRouteModel(self, model);

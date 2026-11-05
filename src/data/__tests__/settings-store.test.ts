@@ -2669,7 +2669,7 @@ describe("SettingsService system — project selection, recent projects and last
 
   beforeEach(() => {
     userDataPath = mkdtempSync(join(tmpdir(), "settings-store-project-selection-"));
-    mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
   });
 
   afterEach(async () => {

@@ -207,7 +207,7 @@ export const ELECTRON_DECRYPT_FAILED_MESSAGE = "Error while decrypting the ciphe
 export const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "safeStorage.decryptStringAsync is temporarily unavailable. Please try again.";
 
 /**
- * A ciphertext that can never be read: Electron's decrypt failure, or a stored value whose format, encoding or result is wrong.
+ * A ciphertext that can never be read: Electron's decrypt failure, or a stored value whose format or encoding is wrong.
  * Only this is quarantined. Any other failure (a new Electron message, a locked keychain) is rethrown and moves no file, since
  * quarantining the data key would discard every entry it wraps.
  */
@@ -327,7 +327,8 @@ export class SafeStorageSecretStore implements SecretStore {
       if (message === ELECTRON_DECRYPT_FAILED_MESSAGE) throw new UnreadableCiphertextError("Stored secret could not be decrypted", { cause: error });
       throw error;
     }
-    if (typeof decrypted?.result !== "string") throw new UnreadableCiphertextError("Stored secret could not be decrypted");
+    // A resolved decrypt without a string breaks safeStorage's contract, not the ciphertext: fail closed and keep the file.
+    if (typeof decrypted?.result !== "string") throw new Error("safeStorage.decryptStringAsync resolved without a string result");
     return { value: decrypted.result, shouldReEncrypt: decrypted.shouldReEncrypt === true };
   }
 
@@ -347,8 +348,16 @@ export class SafeStorageSecretStore implements SecretStore {
         if (this.access === "existing-read-only") throw new Error("Stored secret could not be decrypted");
         if (!(err instanceof UnreadableCiphertextError)) throw err;
         // Same as an unreadable entry: keep the forensic copy and start over, so every entry it wrapped is quarantined on read.
+        // The replacement is wrapped first, so a rejected encrypt leaves the unreadable key in place instead of no key at all.
+        const replacement = await this.wrapNewDataKey();
+        if (this.readStored(this.keyPath, SAFE_STORAGE_DATA_KEY_FILE_BYTES) !== stored) {
+          // Another opener replaced the key while this one was encrypting: use theirs.
+          replacement.key.fill(0);
+          await this.loadDataKey();
+          return;
+        }
         this.quarantineUnreadableSecret(SAFE_STORAGE_DATA_KEY_FILE, this.keyPath, "decrypt-failed", err);
-        await this.mintDataKey();
+        await this.publishDataKey(replacement);
         return;
       }
       const key = Buffer.from(unwrapped.value, "base64");
@@ -371,9 +380,20 @@ export class SafeStorageSecretStore implements SecretStore {
   }
 
   private async mintDataKey(): Promise<void> {
+    await this.publishDataKey(await this.wrapNewDataKey());
+  }
+
+  private async wrapNewDataKey(): Promise<{ key: Buffer; wrapped: string }> {
     const key = randomBytes(DATA_KEY_BYTES);
-    const encoded = key.toString("base64");
-    const wrapped = await this.wrap(encoded);
+    try {
+      return { key, wrapped: await this.wrap(key.toString("base64")) };
+    } catch (error) {
+      key.fill(0);
+      throw error;
+    }
+  }
+
+  private async publishDataKey({ key, wrapped }: { key: Buffer; wrapped: string }): Promise<void> {
     // Publish with link(2) so a concurrent opener never sees a partial key and exactly one minted key wins.
     const staging = `${this.keyPath}.staging-${randomBytes(8).toString("hex")}`;
     atomicWriteSecretFile(this.dir, staging, wrapped);

@@ -361,6 +361,39 @@ describe("SafeStorageSecretStore", () => {
     expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
   });
 
+  it("rethrows a near miss of Electron's decrypt failure and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const syncMessage = "Error while decrypting the ciphertext provided to safeStorage.decryptString.";
+    const nearMiss = makeSafeStorage({ decrypt: () => { throw new Error(syncMessage); } });
+    await expect(SafeStorageSecretStore.open(nearMiss, secretsDir())).rejects.toThrow(syncMessage);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+  });
+
+  it("fails closed when decrypt resolves without a string and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const contractBreak = makeSafeStorage({ decrypt: () => undefined as unknown as string });
+    await expect(SafeStorageSecretStore.open(contractBreak, secretsDir())).rejects.toThrow(/without a string result/);
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("leaves an unreadable data key in place when wrapping its replacement fails", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "old-secret");
+    const before = readdirSync(secretsDir()).sort();
+    const keyBefore = readFileSync(keyPath(), "utf-8");
+    const broken = makeSafeStorage({ decrypt: () => { throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE); } });
+    broken.encryptStringAsync = async () => { throw new Error("encrypt refused"); };
+    await expect(SafeStorageSecretStore.open(broken, secretsDir())).rejects.toThrow("encrypt refused");
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    expect(readFileSync(keyPath(), "utf-8")).toBe(keyBefore);
+  });
+
   it("quarantines undecryptable pre-envelope ciphertext before boot rotates the secret", async () => {
     mkdirSync(secretsDir(), { recursive: true });
     writeFileSync(entryPath("audit-hmac.key"), "safe:v1:YmFkLWNpcGhlcnRleHQ=");
