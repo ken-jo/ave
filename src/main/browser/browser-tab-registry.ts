@@ -480,6 +480,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   // Bind a renderer tab id to an attached guest of the sender's window.
+  /** The renderer could not load an `inTabId` page: the pane's page is gone or already shows one. Settle now, not at the
+   * timeout. Only the window the op went to may refuse it, and only an op that named a page to load into. */
+  refuseTabOp(senderWindowId: number, requestId: string): boolean {
+    const pending = this.pending.get(requestId);
+    if (pending?.request.op !== "new" || pending.request.inTabId === undefined || pending.windowId !== senderWindowId) return false;
+    pending.settle({ ok: false, error: "no-such-tab" });
+    return true;
+  }
+
   bindTab(senderWindowId: number, request: BrowserTabBindRequest): BrowserTabBindResult {
     this.restoreBindings(senderWindowId);
     const entry = this.attached.get(request.webContentsId);

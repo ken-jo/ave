@@ -88,8 +88,10 @@ const HOST_FOCUS_HISTORY = 8;
 
 let hostFocus: HostFocusMemory | null = null;
 
-/** Route one operation to the single host that should carry it out. */
-export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): void {
+/** Route one operation to the single host that should carry it out. Returns "refused" for a `new` op naming a page
+ * (`inTabId`) that no host can load into, so the caller tells main at once instead of letting the agent wait out the
+ * timeout. */
+export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): "refused" | undefined {
   if (request.op === "focus") {
     const guest = getWebSurfaceElement(request.tabId);
     if (!guest?.isConnected || document.visibilityState !== "visible" || guest.closest("[inert]")) return;
@@ -104,8 +106,9 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "new" && request.inTabId !== undefined) {
     const inTabId = request.inTabId;
-    candidates.find((candidate) => candidate.loadAgentTab !== undefined && candidate.hasTab(inTabId))
-      ?.loadAgentTab?.(inTabId, request.url, request.requestId);
+    const host = candidates.find((candidate) => candidate.loadAgentTab !== undefined && candidate.hasTab(inTabId));
+    // The pane's page closed, or already shows a page, between main's check and this op.
+    if (host?.loadAgentTab?.(inTabId, request.url, request.requestId) !== true) return "refused";
     return;
   }
   if (request.op === "new") {
@@ -147,7 +150,10 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
   hosts.push(host);
   if (!unsubscribe && api.browserTabs) {
     let current = true;
-    const offOp = api.browserTabs.onTabOp((request) => routeBrowserTabOp(request));
+    const tabs = api.browserTabs;
+    const offOp = tabs.onTabOp((request) => {
+      if (routeBrowserTabOp(request) === "refused") void tabs.refuseTabOp(request.requestId);
+    });
     const offControl = api.browserTabs.onControl((state) => setControlState(state));
     void api.browserTabs.getState().then((state) => {
       if (current) setControlState(state);

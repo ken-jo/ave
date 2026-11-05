@@ -306,6 +306,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:browser:get-state",
         "ave:browser:pause",
         "ave:browser:pause-popup",
+        "ave:browser:refuse-tab-op",
         "ave:browser:resume",
         "ave:browser:resume-popup",
         "ave:browser:stop",

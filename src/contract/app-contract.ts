@@ -804,6 +804,7 @@ export const CHANNELS = {
   // main). Wire types: shared/browser-surface.ts.
   browser: {
     bindTab: "ave:browser:bind-tab", // invoke renderer→main  tab id ↔ guest webContents id
+    refuseTabOp: "ave:browser:refuse-tab-op", // invoke renderer→main  an inTabId page could not be loaded
     stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
     pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
     resume: "ave:browser:resume", // invoke renderer→main  explicit new agent control generation

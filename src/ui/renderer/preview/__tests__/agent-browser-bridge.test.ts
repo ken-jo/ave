@@ -175,8 +175,14 @@ describe("routeBrowserTabOp", () => {
     const loads: string[] = [];
     const panels = { ...host(null, ["browser:pane"]), loadAgentTab: (tabId: string, url: string, requestId: string) => { loads.push(`${tabId} ${url} ${requestId}`); return true; } };
     const chat = host("pane-chat", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]);
-    routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]);
+    expect(routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]))
+      .toBeUndefined();
+    // A page that is gone, or one that will not take the load, is refused for main to answer at once.
+    expect(routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]))
+      .toBe("refused");
+    const full = { ...host(null, ["browser:full"]), loadAgentTab: () => false };
+    expect(routeBrowserTabOp({ requestId: "r3", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:full", active: false }, [chat, full]))
+      .toBe("refused");
     expect(loads).toEqual(["browser:pane about:blank r1"]);
     expect(chat.calls).toEqual([]);
   });

@@ -1180,7 +1180,7 @@ describe("main-area terminal and web panels", () => {
 describe("a pane chat's first agent page", () => {
   it("loads into the empty main page it names, bound to the request, and never into a page that already shows one", async () => {
     const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
-    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void } };
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void; refuseTabOp: ReturnType<typeof vi.fn> } };
     await clickSidebarNavRow("features", "sidebar-web");
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     const page = shownSurfaces(container)[0]!.tabId!;
@@ -1197,5 +1197,10 @@ describe("a pane chat's first agent page", () => {
       requestId: "pane-second-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: page,
     }));
     expect(getWebSurfaces().find((surface) => surface.tabId === page)?.bindRequestId).toBe("pane-first-page");
+    // Neither a page that already shows one nor a page that is gone can take it: main hears so at once, not at its timeout.
+    await act(async () => browser.browserTabs.emitBrowserTabOp({
+      requestId: "pane-gone-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: "browser:gone",
+    }));
+    expect(browser.browserTabs.refuseTabOp.mock.calls).toEqual([["pane-second-page"], ["pane-gone-page"]]);
   });
 });

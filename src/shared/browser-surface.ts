@@ -147,6 +147,8 @@ export interface BrowserTabControlState {
 /** Trusted window chrome only; page content never receives this API. */
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
+  /** Report that a `new` op naming `inTabId` could not be loaded into that page, so main answers the agent at once. */
+  refuseTabOp(requestId: string): Promise<{ ok: boolean }>;
   getState(): Promise<BrowserTabControlState>;
   getSessionBindings(): Promise<SessionTabBindingsState>;
   onSessionBindingsChanged(handler: (state: SessionTabBindingsState) => void): () => void;

@@ -87,8 +87,8 @@ export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends 
   readonly tabs: BrowserTabsAccess<G>;
   readonly pickUploadFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>;
   readonly loadActions: () => Promise<BrowserPageActions<G>>;
-  /** False for a hosted conversation no renderer opens agent tabs for (side and pane chats); they act in their attached page. Absent: all may. */
-  readonly opensAgentTabs?: (hostSessionId: string) => boolean;
+  /** False for a hosted conversation no renderer opens agent tabs for (side and pane chats); they act in their attached page. */
+  readonly opensAgentTabs: (hostSessionId: string) => boolean;
 }
 
 /** Keys `browser_press_key` accepts (mirrors browser-actions.ts PRESSABLE_KEYS). */
@@ -153,7 +153,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     },
     // Only a main chat view opens new tabs. A side or pane chat acts in its attached page, or loads one into its empty pane.
     tabNewTarget: (scope) => {
-      if (deps.opensAgentTabs?.(scope.hostSessionId) !== false) return { ok: true };
+      if (deps.opensAgentTabs(scope.hostSessionId)) return { ok: true };
       const attached = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
       if (attached.ok) {
         const url = deps.tabs.liveTabInWindow(attached.handle, scope.windowId)?.guest?.getURL();
