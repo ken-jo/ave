@@ -245,6 +245,8 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.workspace.listDir, dirPath),
     removeRoot: (dirPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.removeRoot, dirPath),
+    previewRemoveRoot: (dirPath: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.previewRemoveRoot, dirPath),
     reveal: (targetPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.reveal, targetPath),
     // Drag-drop add-root, step 1 (#1458): submit a renderer-resolved dropped

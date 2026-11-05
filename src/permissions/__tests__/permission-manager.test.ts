@@ -988,6 +988,22 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     ).decision).toBe("ask");
   });
 
+  it("counts, without pruning, exactly the grants the prune then removes (removal preview)", async () => {
+    const preservedChild = join(root, "child");
+    for (const target of [join(root, "parent-only.md"), preservedChild, join(preservedChild, "src", "app.ts"), join(root, "child-old", "stale.ts")]) {
+      await pm.addAlwaysAllowedPersist(`write_file:path:${target}`, "write");
+    }
+    await pm.addAlwaysAllowedPersist(`write_file:path:${join(tmpdir(), "elsewhere.md")}`, "write");
+    const before = mockStore.rules.map((rule) => rule.pattern);
+
+    const counted = await pm.countPathGrantsUnderRoot(root, { preserveRoots: [preservedChild] });
+    expect(mockStore.rules.map((rule) => rule.pattern)).toEqual(before);
+
+    const pruned = await pm.prunePathGrantsUnderRoot(root, { preserveRoots: [preservedChild] });
+    expect(counted).toBe(2);
+    expect(pruned).toHaveLength(counted);
+  });
+
   // item-2 — the ORIGINAL bug was grant revival: a path-scoped tier grant under a removed root would silently re-authorize writes if the SAME root was later re-added. This walks the full lifecycle and asserts the grant stays revoked. Re-adding a root only writes to the read allow-list (additionalDirectories via workspace.pickRoot → addAllowedDirectoryPersist); NOTHING re-inserts a `rules[].tier` grant, so after prune the target must still ask. We simulate re-add as a pure no-op on the rule surface (its only effect is on the independent read-list, which this PermissionManager unit does not own) and confirm checkDetailed never revives the pruned grant.
   it("does not revive a pruned grant when the same root is re-added (regression)", async () => {
     const target = join(root, "src", "app.ts");

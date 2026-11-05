@@ -220,6 +220,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "sensitive-path": "chatPreviewRail.fileErrorNotAllowed",
   "cannot-remove-default": "formatIpcError.cannotRemoveDefaultRoot",
   "not-an-additional-root": "formatIpcError.notAnAdditionalRoot",
+  // Workspace root removal preview (workspace.ts): a store could not be asked, so nothing was removed.
+  "preview-failed": "formatIpcError.removalPreviewFailed",
   "persist-failed": "formatIpcError.writeFailed",
   // Settings-file conditions (permission-settings-store.ts). Separate from
   // `persist-failed` because neither is about the folder the user picked and

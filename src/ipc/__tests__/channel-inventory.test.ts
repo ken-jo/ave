@@ -658,6 +658,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:workspace:list-dir",
         "ave:workspace:list-roots",
         "ave:workspace:pick-root",
+        "ave:workspace:preview-remove-root",
         "ave:workspace:remove-root",
         "ave:workspace:reveal",
         "ave:workspace:search-files",

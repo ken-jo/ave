@@ -963,6 +963,11 @@ export class SubAgentRunner {
     this.deps.subAgentMemoryManager.allowProjectRoot(root);
   }
 
+  /** The removal preview's count of sub-agent conversations `detachSessionsFromProject` would detach now. */
+  countSessionsInProject(root: string): number {
+    return this.deps.subAgentMemoryManager.countSessionsInProject(root);
+  }
+
   /** Detach the removed project from the isolated sub-agent session store while preserving transcripts. Once that durable boundary commits, cancel every
    * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {

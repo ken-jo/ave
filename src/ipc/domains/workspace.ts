@@ -39,6 +39,7 @@ import {
 import { getActivePluginSurfacePermissionScope } from "../../boot/plugin-surface-permissions.js";
 import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { countLiveTerminalsUnderRoot } from "../../main/terminal/pty-manager.js";
 import {
   searchWorkspaceFiles,
   WORKSPACE_FILE_QUERY_MAX_CHARS,
@@ -62,8 +63,9 @@ function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof 
   return sensitive ? { ok: false, reason: `path matches sensitive pattern '${sensitive}'`, adjacencyWarnings: verdict.adjacencyWarnings } : verdict;
 }
 
-// Record picker versus drop provenance in widening audits; dropped paths have no native-picker authority.
-type PickGesture = "dialog" | "drop";
+// Record picker, drop or undo provenance in widening audits; dropped paths have no native-picker authority, and an undo
+// re-adds only the main-owned path a removal just took out.
+type PickGesture = "dialog" | "drop" | "undo";
 
 function prunePendingPicks(now: number): void {
   for (const [token, pending] of pendingPicks) {
@@ -139,9 +141,30 @@ export interface WorkspaceRemoveRootResult {
   // Report pruned path grants; directory removal alone cannot revoke the separate rule-tier authority.
   prunedGrants?: number;
   cleanupPending?: boolean;
+  /** One-time token that re-adds exactly the removed folder through `pickRoot({ackToken})`, within the ack TTL. Absent while
+   * cleanup is pending, so an undo cannot race the deferred revocation. */
+  undoToken?: string;
   error?: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "lifecycle-failed";
   message?: string;
 }
+
+/** What removing a project would end or prune (case 31). Each count comes from the store that removal changes, by the same predicate. */
+export interface WorkspaceRemovalCounts {
+  /** Live terminals started in the folder or below it. */
+  liveTerminals: number;
+  /** Conversations with a turn running now; removal aborts them. */
+  streamingSessions: number;
+  /** Saved "always allow" path grants under the folder. Undo does not bring them back. */
+  pathGrants: number;
+  /** Routines whose folder scope narrows. Undo does not bring that back. */
+  routines: number;
+  /** Conversations whose project link is cleared. Their transcripts stay. */
+  detachableSessions: number;
+}
+
+export type WorkspacePreviewRemoveRootResult =
+  | { ok: true; counts: WorkspaceRemovalCounts }
+  | { ok: false; error: "unauthorized" | "invalid-path" | "not-an-additional-root" | "cannot-remove-default" | "preview-failed" };
 
 type WorkspaceSearchFilesResult =
   | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
@@ -829,6 +852,53 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
+  // The removal preview (case 31) refuses exactly what removal refuses, then asks each store removal changes how much it would
+  // change, with the removal's own root and preserved child roots. A store it cannot ask fails the preview: reporting zero
+  // would send the renderer down the instant path.
+  ipcMain.handle(
+    CHANNELS.workspace.previewRemoveRoot,
+    async (e, rawPath: unknown): Promise<WorkspacePreviewRemoveRootResult> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, CHANNELS.workspace.previewRemoveRoot, e);
+        return { ok: false, error: "unauthorized" };
+      }
+      if (typeof rawPath !== "string" || rawPath.length === 0) return { ok: false, error: "invalid-path" };
+      const rootKey = (value: string) => caseFoldForMatch(canonicalizePathForMatch(resolvePath(value)));
+      const targetKey = rootKey(rawPath);
+      if (targetKey === rootKey(getDefaultWorkspaceRoot())) return { ok: false, error: "cannot-remove-default" };
+      const active = readPermissionSettings().permissions.additionalDirectories;
+      const stored = active.find((candidate) => rootKey(candidate) === targetKey);
+      if (!stored) return { ok: false, error: "not-an-additional-root" };
+      const runtimePath = canonicalizePathForMatch(resolvePath(stored));
+      const options = { preserveRoots: retainedDescendantWorkspaceRoots(runtimePath, active) };
+      try {
+        const permissionManager = deps.conversationLoop?.permissionManager;
+        if (typeof permissionManager?.countPathGrantsUnderRoot !== "function") throw new Error("permission manager unavailable");
+        if (typeof deps.routinesStore?.countRoutinesScopedToWorkspaceRoot !== "function") throw new Error("routines store unavailable");
+        const sessionStores = [deps.memoryManager, ...sessionMemoryManagers(CHANNELS.workspace.previewRemoveRoot, runtimePath, true)]
+          .filter((store, index, all) => all.indexOf(store) === index) as Array<{ countSessionsInProject?: (root: string) => number } | undefined>;
+        let detachableSessions = 0;
+        for (const store of sessionStores) {
+          if (typeof store?.countSessionsInProject !== "function") throw new Error("session store unavailable");
+          detachableSessions += store.countSessionsInProject(runtimePath);
+        }
+        const loops = [deps.conversationLoop, deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])];
+        const streamingSessions = loops.filter((loop) => loop?.hasActiveTurn?.() === true).length;
+        const [pathGrants, routines] = await Promise.all([
+          permissionManager.countPathGrantsUnderRoot(runtimePath, options),
+          deps.routinesStore.countRoutinesScopedToWorkspaceRoot(runtimePath, options),
+        ]);
+        return {
+          ok: true,
+          counts: { liveTerminals: countLiveTerminalsUnderRoot(runtimePath), streamingSessions, pathGrants, routines, detachableSessions },
+        };
+      } catch (error: unknown) {
+        log.warn({ err: error, path: opaqueWorkspaceRootAuditRef(runtimePath) }, "workspace root removal preview failed");
+        return { ok: false, error: "preview-failed" };
+      }
+    },
+  );
+
   // Removal may target only an existing additional root; the default root is not removable.
   ipcMain.handle(
     CHANNELS.workspace.removeRoot,
@@ -877,12 +947,22 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           ...(prunedAudit.length > 0 ? { prunedPatterns: prunedAudit } : {}),
         }),
       });
+      // Undo re-adds only this main-owned path through the ack flow (same TTL and one-time consumption). None while cleanup is
+      // pending: a re-add must not race the deferred revocation.
+      let undoToken: string | undefined;
+      if (!removal.cleanupPending) {
+        const now = Date.now();
+        prunePendingPicks(now);
+        undoToken = randomBytes(32).toString("base64url");
+        pendingPicks.set(undoToken, { path: removal.runtimePath, expires: now + ACK_TOKEN_TTL_MS, gesture: "undo" });
+      }
       return {
         ok: true,
         removed: removal.storedPath,
         roots: computeRoots(),
         prunedGrants,
         ...(removal.cleanupPending ? { cleanupPending: true } : {}),
+        ...(undoToken ? { undoToken } : {}),
       };
     },
   );

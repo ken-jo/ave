@@ -234,6 +234,7 @@ import {
   sandboxedShellVerdict,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
+  countLiveTerminalsUnderRoot,
   type TerminalEmit,
 } from "../pty-manager.js";
 // REAL canonicalizer (NOT mocked); the module resolves the default terminal cwd to
@@ -446,6 +447,14 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(spawnArgs[2].cwd).toBe(inside);
     const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[] } }];
     expect(options.filesystem.allowWrite).toContain(inside);
+  });
+
+  it("counts the live terminals a project's removal would end: started in the folder or below it, not beside it", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: `${ROOT}/proj` });
+    await spawnTerminal({ tabId: "terminal:0000000a-2", cwd: `${ROOT}/proj/sub` });
+    await spawnTerminal({ tabId: "terminal:0000000a-3", cwd: `${ROOT}/proj-other` });
+    expect(countLiveTerminalsUnderRoot(`${ROOT}/proj`)).toBe(2);
+    expect(countLiveTerminalsUnderRoot(`${ROOT}/elsewhere`)).toBe(0);
   });
 
   it("keeps confined raw output off the renderer emitter", async () => {

@@ -52,7 +52,7 @@ export interface UseAddProjectFolderResult {
  * A successful pick's outcome. Main answers a dismissed dialog with `{ ok: true, canceled: true, roots }` and an added folder
  * with `added` set; an `ok` answer that is neither names no folder, and is refused rather than guessed at.
  */
-function addedOutcome(res: { canceled?: boolean; added?: string; roots?: WorkspaceRootIdentity[] }): AddProjectFolderOutcome {
+export function addedOutcome(res: { canceled?: boolean; added?: string; roots?: WorkspaceRootIdentity[] }): AddProjectFolderOutcome {
   if (res.canceled) return { status: "canceled" };
   if (!res.roots || !res.added) {
     console.error("[workspace] pickRoot answered ok without the folder it added");

@@ -31,6 +31,9 @@ export interface UseProjectSelectionResult {
   isProjectExpanded: (root: string) => boolean;
   /** Open or fold an all-projects group; saved only when it changed. */
   setProjectExpanded: (root: string, expanded: boolean) => void;
+  /** A removed project leaves nothing behind (case 30): its recent entry, its last view and its open group. A selection of it
+   * falls back like any root that is no longer open. */
+  forgetProject: (root: string) => void;
 }
 
 /** The project the window works in is the user's choice, saved in `system.projectSelection`; it never follows the focused
@@ -167,6 +170,25 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
     void api.updateSettings({ system: { expandedProjectRoots: next } });
   }, [api]);
 
+  const forgetProject = useCallback((root: string) => {
+    const key = projectRootKey(root);
+    const nextRecent = recentRef.current.filter((each) => !projectRootEquals(each, root));
+    const nextExpanded = expandedRef.current.filter((each) => !projectRootEquals(each, root));
+    const { [key ?? ""]: _forgotten, ...nextLastViews } = lastViewsRef.current;
+    recentRef.current = nextRecent;
+    setRecent(nextRecent);
+    expandedRef.current = nextExpanded;
+    setExpanded(nextExpanded);
+    lastViewsRef.current = nextLastViews;
+    void api.updateSettings({
+      system: {
+        recentProjectRoots: nextRecent,
+        expandedProjectRoots: nextExpanded,
+        ...(lastViewsLoadedRef.current ? { lastViewByProject: nextLastViews } : {}),
+      },
+    });
+  }, [api]);
+
   return {
     selection,
     selectedProject,
@@ -177,5 +199,6 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
     recordLastView,
     isProjectExpanded,
     setProjectExpanded,
+    forgetProject,
   };
 }

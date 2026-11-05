@@ -168,8 +168,8 @@ export interface SidebarProps {
   onRefreshProjects?: () => void | Promise<void>;
   /** Surface a refused project mutation — an add or a remove — to the user. */
   onProjectError?: ProjectErrorReporter;
-  /** Surface an informational outcome of a project mutation the user made (never a confirmation). */
-  onProjectNotice?: (message: string) => void;
+  /** 프로젝트 제거 (case 29): the app previews, confirms when something would be lost (case 31), and removes. */
+  onRemoveProject: (project: ProjectIdentity) => void;
   mainSurfaces?: readonly MainSurface[];
   browserTabs?: BrowserTabsApi;
   chatGroupIds?: readonly string[];
@@ -763,7 +763,7 @@ export function Sidebar({
   onOpenPaneChat,
   onRefreshProjects,
   onProjectError,
-  onProjectNotice,
+  onRemoveProject,
   projectListUnavailable = false,
   mainSurfaces = [],
   browserTabs,
@@ -1318,9 +1318,7 @@ export function Sidebar({
                   onOpenSideChat={onOpenSideChat}
                   onOpenPaneChat={onOpenPaneChat}
                   onNewChatForProject={onNewChatForProject}
-                  onRefreshProjects={onRefreshProjects}
-                  onProjectError={onProjectError}
-                  onProjectNotice={onProjectNotice}
+                  onRemoveProject={onRemoveProject}
                   onOpenSurface={onOpenSurface}
                   isSurfaceVisible={isSurfaceVisible}
                   onOpenSessionBeside={onOpenSessionBeside}
