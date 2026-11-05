@@ -16,6 +16,7 @@ export const NATIVE_CONTEXT_MENU_COMMANDS = [
   "project.add",
   "project.remove",
   "conversation.open",
+  "conversation.open-split",
   "conversation.pin",
   "conversation.unpin",
   "conversation.rename",
@@ -83,6 +84,7 @@ export const NATIVE_CONTEXT_MENU_COMMANDS_BY_KIND = {
   ],
   conversation: [
     "conversation.open",
+    "conversation.open-split",
     "conversation.pin",
     "conversation.unpin",
     "conversation.rename",

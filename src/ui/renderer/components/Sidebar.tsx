@@ -1,19 +1,14 @@
 import { SidebarPreviewProvider, SidebarPreviewTrigger, type SidebarPreviewData } from "./SidebarPreview.js";
-import { loadSidebarSurfacePreview } from "../utils/sidebar-preview-data.js";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import {
   Blocks,
   ChevronDown,
   ChevronRight,
-  Folder,
   House,
   MessageSquarePlus,
-  MessageSquareText,
-  MoreHorizontal,
   PanelLeftClose,
-  Pin,
   PowerOff,
   Plus,
   Search,
@@ -28,15 +23,11 @@ import { getPluginViewLabel, toViewKey } from "../api-client.js";
 import { toPluginDoctorViewKey, toPluginSettingsViewKey } from "../utils/plugin-doctor-view.js";
 import { pluginIconFor } from "../utils/plugin-icon.js";
 import { BUILTIN_LABEL_KEYS, BUILTIN_VIEW_ICONS } from "../utils/view-location.js";
-import { sortWithPinnedFirst } from "../utils/pinned-sort.js";
-import { useSidebarItems, type SidebarSurface } from "../hooks/use-sidebar-items.js";
+import { useSidebarItems } from "../hooks/use-sidebar-items.js";
 import type { MainSurface } from "../preview/main-surfaces.js";
 import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
 import type { SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
-import {
-  useNativeContextMenu,
-  type NativeContextMenuHandlers,
-} from "../hooks/use-native-context-menu.js";
+import { useNativeContextMenu } from "../hooks/use-native-context-menu.js";
 import {
   useAddProjectFolder,
   type AddProjectFolderOutcome,
@@ -46,24 +37,17 @@ import { RAIL_CONTROL_SIZE_CLASS, SHELL_GUTTER } from "../../../shared/shell-geo
 import { Rail, RailButton } from "./sidebar/Rail.js";
 import { ProjectMark, ProjectMenu, type ProjectMenuModel } from "./sidebar/ProjectMenu.js";
 import { ProjectPicker } from "./sidebar/ProjectPicker.js";
-import { projectTestId } from "./sidebar/ProjectCombobox.js";
+import { ProjectTree, type ConversationRowActions, type ProjectRowActions, type SidebarAddFlow } from "./sidebar/ProjectTree.js";
 import type { InlineViewKey } from "../../../shared/view-key.js";
 import type { PluginCardSummary, PluginUiExtension } from "../types.js";
 import type { SessionSummary } from "../hooks/use-sessions.js";
-import type { SessionFamily } from "../../../shared/session-lookup.js";
-import { tabIcon } from "./ChatSidePanelPreview.js";
-import { useActiveSurface } from "../preview/active-surface.js";
 import type { ProjectIdentity, ProjectSelection } from "../../../shared/project-identity.js";
-import { projectRootEquals, workspaceRootsToProjects } from "../../../shared/project-identity.js";
-import { CHAT_SESSION_DRAG_TYPE } from "./pane-drop.js";
+import { projectRootEquals } from "../../../shared/project-identity.js";
 import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
-import { formatRelativeSessionTime } from "../../../shared/format-time.js";
-import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
-import { resolveConversationTitle } from "../../../shared/conversation-title.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens — one map, so a row and the header it
 // produces cannot disagree.
@@ -74,22 +58,6 @@ const SettingsIcon = BUILTIN_VIEW_ICONS.settings;
 const MemoryIcon = BUILTIN_VIEW_ICONS.memory;
 const TerminalViewIcon = BUILTIN_VIEW_ICONS.terminal;
 const WebViewIcon = BUILTIN_VIEW_ICONS.web;
-
-/** What assistive tech reads for each family's glyph. */
-const SESSION_FAMILY_LABEL_KEYS: Record<SessionFamily, string> = {
-  main: "sidebar.mainConversation",
-  routine: "sidebar.routineConversation",
-  "work-board": "sidebar.workBoardConversation",
-  "side-chat": "sidebar.sideChatConversation",
-};
-
-/** The sidebar's one add-project flow, run from the project menu and the list's right-click. */
-interface SidebarAddFlow {
-  pendingWarning: ReturnType<typeof useAddProjectFolder>["pendingWarning"];
-  addProject: () => Promise<void>;
-  confirmAddProject: () => Promise<void>;
-  cancelPendingFolder: () => void;
-}
 
 /** What the rail's launchers open. */
 export type SidebarLaunchKind = "chat" | "web" | "terminal";
@@ -214,6 +182,17 @@ export interface SidebarProps {
   isProjectPinned?: (projectRoot: string | undefined) => boolean;
   /** Pin/unpin a project — persists immediately (SystemSettings). */
   onToggleProjectPin?: (projectRoot: string) => void;
+  /** Whether an all-projects group is open (case 05). */
+  isProjectExpanded: (root: string) => boolean;
+  onSetProjectExpanded: (root: string, expanded: boolean) => void;
+  /** 옆에 분할로 열기 for a conversation row (case 20). */
+  onOpenSessionBeside?: (sessionId: string) => void;
+  /** 옆에 분할로 열기 for a terminal or page row. */
+  onOpenSurfaceBeside?: (tabId: string) => void;
+  /** Close a terminal or page in the main area from its row. */
+  onCloseSurface?: (tabId: string) => void;
+  /** Move a terminal or page in the main area to another open project. */
+  onMoveSurface?: (tabId: string, projectRoot: string) => void;
   conversationActions?: ConversationRowActions;
   /** What a project row can do to itself — see ProjectRowActions. */
   projectActions?: ProjectRowActions;
@@ -399,38 +378,6 @@ function NavItem({
   }
 
   return btn;
-}
-
-function SidebarSurfaceRow({ surface, visible, onOpen }: {
-  surface: SidebarSurface;
-  visible: boolean;
-  onOpen?: (tabId: string) => void;
-}) {
-  const { t } = useTranslation();
-  const active = useActiveSurface();
-  const [failedFavicon, setFailedFavicon] = useState<string | null>(null);
-  useEffect(() => {
-    setFailedFavicon(null);
-  }, [surface.faviconDataUrl]);
-  const faviconUrl = surface.faviconDataUrl;
-  const label = surface.title || surface.url || `${t(BUILTIN_LABEL_KEYS[surface.kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`;
-  const Icon = tabIcon(surface.kind);
-  return (
-    <NavItem
-      preview={{ kind: surface.kind, title: label, ...(surface.url ? { url: surface.url } : {}) }}
-      loadPreview={() => loadSidebarSurfacePreview(surface, label)}
-      viewKey={surface.tabId}
-      label={label}
-      title={label}
-      icon={surface.kind === "browser" && faviconUrl && faviconUrl !== failedFavicon
-        ? <img src={faviconUrl} alt="" referrerPolicy="no-referrer" className="h-4 w-4 object-contain" onError={() => setFailedFavicon(faviconUrl)} />
-        : <Icon className="h-4 w-4" />}
-      isActive={visible && active?.tabId === surface.tabId}
-      onClick={() => onOpen?.(surface.tabId)}
-      collapsed={false}
-      data-testid={`sidebar-surface-${surface.tabId}`}
-    />
-  );
 }
 
 // ─── NavGroup ────────────────────────────────────────────────────────────────
@@ -775,955 +722,6 @@ function PluginNavItem({
   );
 }
 
-// One page of conversation rows. The lists have no upper bound, so the sidebar
-// shows a page and offers the next one — revealed by scrolling in the flat
-// General list, opened by a button in each project group. Neither CAPS the list,
-// which is what left the remainder unreachable.
-const SESSION_PAGE_SIZE = 6;
-
-/** How far ahead of the scroller's edge the next page is prepared. */
-const SESSION_REVEAL_MARGIN = "200px 0px";
-
-/** Flat lists reveal pages at a sentinel; project groups use separate paging controls so one group cannot push all siblings
- * below the fold. */
-function RevealingSessionList({
-  sessions,
-  renderRow,
-  sentinelTestId,
-  viewportRef,
-}: {
-  sessions: SessionSummary[];
-  renderRow: (session: SessionSummary) => ReactNode;
-  sentinelTestId: string;
-  /** The scroller the sentinel is measured against — see the effect below. */
-  viewportRef: RefObject<HTMLDivElement | null>;
-}) {
-  const [visibleCount, setVisibleCount] = useState(SESSION_PAGE_SIZE);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const total = sessions.length;
-  // The list SHRINKS under the window whenever the archive toggle hides rows again, so what is rendered is the revealed
-  // count reconciled with the list that exists now — never a count carried over from a longer one.
-  const shown = Math.max(SESSION_PAGE_SIZE, Math.min(visibleCount, total));
-  const hasMore = shown < total;
-
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    // Observe within the sidebar scroller and rebuild after reveal; an unchanged visible sentinel otherwise emits no new
-    // intersection event.
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        setVisibleCount(Math.min(shown + SESSION_PAGE_SIZE, total));
-      },
-      { root: viewportRef.current, rootMargin: SESSION_REVEAL_MARGIN },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [total, shown, viewportRef]);
-
-  return (
-    <>
-      {sessions.slice(0, shown).map(renderRow)}
-      {hasMore ? <div ref={sentinelRef} aria-hidden="true" data-testid={sentinelTestId} /> : null}
-    </>
-  );
-}
-
-function useWorkspaceProjects(enabled: boolean): ProjectIdentity[] {
-  const { t } = useTranslation();
-  const [projects, setProjects] = useState<ProjectIdentity[]>([]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    void window.ave?.workspace?.listRoots?.().then((result) => {
-      if (cancelled || !result?.ok) return;
-      const roots = Array.isArray(result.roots) ? result.roots : [];
-      // fallbackName is only a safety net for a root with no resolvable basename (near-unreachable in practice) — the default
-      // project is filtered out of every display surface anyway, so its exact string value is never shown.
-      setProjects(workspaceRootsToProjects(result.defaultRoot, roots, t("sidebar.projectsLabel")));
-    }).catch(() => {
-      // Keep the localized fallback; the sidebar must remain usable without the workspace bridge.
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, t]);
-
-  return projects;
-}
-
-/** Use sibling load and pin buttons; nested buttons are invalid and would route clicks to the outer button. */
-/** What a conversation row can do to ITSELF. One object rather than eight loose props: these arrive together, they are
- * offered together in one menu, and a row that has some of them but not others would show a menu with holes in it. */
-export interface ConversationRowActions {
-  isArchived: (sessionId: string) => boolean;
-  isUnread: (sessionId: string) => boolean;
-  /** A turn is running in some tile that holds this conversation. */
-  isResponding: (sessionId: string) => boolean;
-  onRename: (sessionId: string, title: string) => void | Promise<void>;
-  onSetArchived: (sessionId: string, archived: boolean) => void | Promise<void>;
-  onSetUnread: (sessionId: string, unread: boolean) => void | Promise<void>;
-  onShare: (sessionId: string) => void | Promise<void>;
-  onCopy: (sessionId: string) => void | Promise<void>;
-  onDelete: (sessionId: string) => void | Promise<void>;
-  /** Import a conversation. Acts on the LIST, not on any row — see the Chats tab's own context menu. */
-  onImport?: () => void | Promise<void>;
-}
-
-/** What a project row can do to itself — see ConversationRowActions. */
-export interface ProjectRowActions {
-  isArchived: (projectRoot: string | undefined) => boolean;
-  onSetArchived: (projectRoot: string) => void;
-  label: (projectRoot: string | undefined) => string | undefined;
-  onSetLabel: (projectRoot: string, label: string) => void;
-}
-
-/**
- * Rename in place, for whichever row is being renamed.
- *
- * One component because a conversation row and a project row rename
- * identically: the label becomes a field, Enter commits, Escape and blur
- * abandon. Two copies would be two chances for the two rows to disagree about
- * what Escape does.
- */
-function InlineRename({
-  initial,
-  onCommit,
-  onCancel,
-  testId,
-  t,
-}: {
-  initial: string;
-  onCommit: (value: string) => void;
-  onCancel: () => void;
-  testId: string;
-  t: ReturnType<typeof useTranslation>["t"];
-}) {
-  const [value, setValue] = useState(initial);
-  return (
-    <input
-      type="text"
-      autoFocus
-      value={value}
-      placeholder={t("sidebar.renamePlaceholder")}
-      aria-label={t("sidebar.renamePlaceholder")}
-      data-testid={testId}
-      className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-[12px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      onChange={(event) => setValue(event.target.value)}
-      onClick={(event) => event.stopPropagation()}
-      // Blur abandons rather than commits. A rename that lands because focus moved is a rename the user never confirmed.
-      onBlur={onCancel}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          const next = value.trim();
-          // An empty field is not a rename. Leave the row as it was.
-          if (next) onCommit(next);
-          else onCancel();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          onCancel();
-        }
-      }}
-    />
-  );
-}
-
-function SessionRow({
-  session,
-  active,
-  onLoadSession,
-  family = "main",
-  onOpenFamilyRow,
-  isPinned,
-  onTogglePin,
-  onOpenMenu,
-  unread,
-  pendingAnswer = false,
-  pendingCount = 0,
-  responding,
-  archived,
-  renaming,
-  onCommitRename,
-  onCancelRename,
-  t,
-}: {
-  session: SessionSummary;
-  active: boolean;
-  onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
-  /**
-   * Which conversation family this row is. `main` is the ordinary chat row and
-   * the only one with the main store's actions behind it; every other family
-   * retains its accessible family label and offers exactly one thing — open.
-   */
-  family?: SessionFamily;
-  /** Open a non-`main` row. The families differ in where that lands; the row does not. */
-  onOpenFamilyRow?: () => void;
-  /** Truthy when this conversation is pinned — pinned rows sort to the top and show a persistent filled pin. */
-  isPinned?: boolean;
-  /** Toggle this conversation's pin — omitted entirely hides the pin affordance. */
-  onTogglePin?: () => void | Promise<void>;
-  /** Open this row's actions menu. Wired to BOTH the right-click and the trailing entry button, so the two cannot offer
-   * different things. */
-  onOpenMenu?: (event: MouseEvent<HTMLElement>) => void;
-  /** Marked unread — drawn as a dot plus a heavier title. */
-  unread?: boolean;
-  /** This conversation's turn is parked on a request, on screen or not — the yellow dot says "interrupted here, something is
-   * waiting for an answer". */
-  pendingAnswer?: boolean;
-  /** Suggestions waiting in this conversation — drawn as a count. Only the dedicated Suggestions conversation has any. */
-  pendingCount?: number;
-  /** A turn is running here — the kind glyph gives way to a pulsing dot. */
-  responding?: boolean;
-  /** Archived — kept legible but visibly set aside. */
-  archived?: boolean;
-  renaming?: boolean;
-  onCommitRename?: (title: string) => void;
-  onCancelRename?: () => void;
-  t: ReturnType<typeof useTranslation>["t"];
-}) {
-  const time = formatRelativeSessionTime(session.modifiedAt, t);
-  const pinLabel = isPinned ? t("sidebar.unpinConversation") : t("sidebar.pinConversation");
-  const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
-  return (
-    <div
-      onContextMenu={onOpenMenu}
-      data-session-family={family}
-      className={[
-        "group relative flex w-full min-w-0 items-center rounded-md transition-colors",
-        active
-          ? "bg-primary/(--opacity-subtle) text-primary"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        // Archived rows stay READABLE. Dimming them to the point of illegibility would make the archive a place things go to be
-        // lost, which is what delete is for.
-        archived ? "opacity-70" : "",
-      ].filter(Boolean).join(" ")}
-      data-archived={archived ? "true" : undefined}
-      data-unread={unread ? "true" : undefined}
-      data-responding={responding ? "true" : undefined}
-    >
-      {/* ── Leading slot. One 14px square that holds the row's KIND at rest and
-          its pin on hover. The two never coexist, so the row's text never
-          shifts — the reason the swap happens here rather than by revealing a
-          fourth control. A pinned row keeps the pin showing: the state has to
-          be readable without hovering every row to find it. */}
-      <span className="relative ml-2 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {onTogglePin ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              void onTogglePin();
-            }}
-            className={[
-              "absolute inset-0 items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              isPinned ? "flex text-primary" : "hidden group-hover:flex group-focus-within:flex",
-            ].join(" ")}
-            aria-label={pinLabel}
-            title={pinLabel}
-            aria-pressed={isPinned}
-            data-testid={`sidebar-session-pin-${session.id}`}
-          >
-            <Pin className={`h-3 w-3 ${isPinned ? "fill-current" : ""}`} />
-          </button>
-        ) : null}
-        {responding ? (
-          /** A turn is running here. The pulse is the signal; with reduced motion the dot stands still and the label carries it. Same
-           * square as the glyph, hidden the same way under the pin. */
-          <span
-            role="img"
-            aria-label={t("sidebar.sessionResponding")}
-            title={t("sidebar.sessionResponding")}
-            data-testid={`sidebar-session-responding-${session.id}`}
-            className={[
-              "flex h-3.5 w-3.5 items-center justify-center",
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-          >
-            <span className="h-2 w-2 rounded-full bg-primary animate-pulse motion-reduce:animate-none" />
-          </span>
-        ) : (
-          /* Family labels remain available to assistive tech. The main chat
-             glyph stays hidden from it: on a list that is mostly chats, naming each
-             one would read the same word down the whole column. */
-          <MessageSquareText
-            className={[
-              "h-3.5 w-3.5",
-              // Hidden — not removed. The glyph keeps reserving the square so the swap costs no layout.
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-            data-testid={`sidebar-conversation-glyph-${session.id}`}
-            data-session-family={family}
-            {...(family === "main"
-              ? { "aria-hidden": "true" as const }
-              : { role: "img", "aria-label": familyLabel })}
-          />
-        )}
-      </span>
-      {renaming && onCommitRename && onCancelRename ? (
-        <div className="flex min-w-0 flex-1 items-center px-2 py-1">
-          <InlineRename
-            initial={session.title}
-            onCommit={onCommitRename}
-            onCancel={onCancelRename}
-            testId={`sidebar-session-rename-${session.id}`}
-            t={t}
-          />
-        </div>
-      ) : (
-        <SidebarPreviewTrigger preview={{ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding }}>
-        <button
-          type="button"
-          aria-current={active ? "page" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid={`sidebar-session-${session.id}`}
-          data-session-family={family}
-          title={family === "main" ? undefined : familyLabel}
-          onClick={() => {
-            if (family !== "main") onOpenFamilyRow?.();
-            else void onLoadSession?.(session.id);
-          }}
-          // Dragging a conversation onto a tile is how the main area is
-          // arranged: the edge it lands on says whether to split that tile or
-          // replace what it holds. A click still just opens it in place. Only a
-          // main conversation has a tile form, so only it drags.
-          draggable={family === "main"}
-          onDragStart={(event) => {
-            if (family !== "main") {
-              event.preventDefault();
-              return;
-            }
-            event.dataTransfer.setData(CHAT_SESSION_DRAG_TYPE, session.id);
-            event.dataTransfer.effectAllowed = "copy";
-          }}
-        >
-          {/* Unread is a dot AND weight. The dot alone would be the only
-              carrier of the state, and colour alone is not a signal everyone
-              receives. */}
-          {unread ? (
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
-              aria-hidden="true"
-              data-testid={`sidebar-session-unread-${session.id}`}
-            />
-          ) : null}
-          <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
-            {session.title}
-          </span>
-          {pendingCount > 0 ? (
-            <span
-              className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground tabular-nums"
-              aria-label={t("sidebar.suggestionsPendingCount", { count: pendingCount })}
-              data-testid={`sidebar-pending-count-${session.id}`}
-            >
-              {pendingCount}
-            </span>
-          ) : pendingAnswer ? (
-            <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
-          ) : null}
-        </button>
-        </SidebarPreviewTrigger>
-      )}
-      {time ? (
-        <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
-          {time}
-        </span>
-      ) : null}
-      {/* ── Trailing slot: the way IN to this row's actions. Right-click already
-          opens the same menu, but a right-click is undiscoverable — the button
-          is what tells the user the menu exists. Both call one handler. */}
-      {onOpenMenu ? (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenMenu(event);
-          }}
-          className="mr-1 hidden shrink-0 rounded p-1 hover:bg-muted-foreground/(--opacity-subtle) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:flex group-focus-within:flex"
-          aria-label={t("sidebar.conversationMenu")}
-          title={t("sidebar.conversationMenu")}
-          data-testid={`sidebar-session-menu-${session.id}`}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-/** The conversation list, exported because a chat GROUP renders the same list in its own sidebar. One list component, so
- * the window's sidebar and a group's sidebar cannot show two different pictures of the same conversations. */
-function ProjectSessionList({
-  sessions,
-  currentSessionId,
-  conversationSurfaceVisible,
-  onLoadSession,
-  onOpenWorkBoardItem,
-  onOpenSideChat,
-  onOpenPaneChat,
-  onNewChatForProject,
-  onRefreshProjects,
-  onProjectError,
-  onProjectNotice,
-  projects: projectsProp,
-  surfaces,
-  bindingsLoaded,
-  onOpenSurface,
-  isSurfaceVisible,
-  isSessionStarred,
-  onToggleSessionStar,
-  isProjectPinned,
-  onToggleProjectPin,
-  conversationActions,
-  projectActions,
-  scrollViewportRef,
-  pendingAnswerSessionIds,
-  suggestionsPendingCount,
-  addFlow,
-}: {
-  /** The sidebar's add-project flow, shared with the project menu. */
-  addFlow: SidebarAddFlow;
-  sessions: SessionSummary[];
-  currentSessionId?: string;
-  onOpenWorkBoardItem?: (itemId: number) => void;
-  onOpenSideChat?: (sideChatSessionId: string, originSessionId?: string) => void;
-  /** Open the live terminal or page and its own chat panel. */
-  onOpenPaneChat?: (tabId: string) => void;
-  /**
-   * Whether a CONVERSATION is what the window is showing.
-   *
-   * A session stays loaded while the user reads a plugin view or Settings, so
-   * "which session is loaded" and "which row is the current page" are two
-   * different questions. Answering them with one value put `aria-current`
-   * on a chat row and on the plugin row at the same time — two rows claiming
-   * to be the page the user is on.
-   */
-  conversationSurfaceVisible: boolean;
-  onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
-  onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
-  onRefreshProjects?: () => void | Promise<void>;
-  onProjectError?: ProjectErrorReporter;
-  onProjectNotice?: (message: string) => void;
-  projects?: ProjectIdentity[];
-  surfaces: readonly SidebarSurface[];
-  bindingsLoaded: boolean;
-  onOpenSurface?: (tabId: string) => void;
-  isSurfaceVisible?: (tabId: string) => boolean;
-  isSessionStarred?: (sessionId: string) => string | null;
-  onToggleSessionStar?: (sessionId: string, title?: string) => void | Promise<void>;
-  isProjectPinned?: (projectRoot: string | undefined) => boolean;
-  onToggleProjectPin?: (projectRoot: string) => void;
-  conversationActions?: ConversationRowActions;
-  projectActions?: ProjectRowActions;
-  /** The card's scroll viewport. The Chats list reveals itself against THIS scroller, so the list has to be handed the
-   * element rather than hunt for an ancestor by selector. */
-  scrollViewportRef: RefObject<HTMLDivElement | null>;
-  /** See `SidebarProps.pendingAnswerSessionIds`. */
-  pendingAnswerSessionIds?: ReadonlySet<string>;
-  /** See `SidebarProps.suggestionsPendingCount`. */
-  suggestionsPendingCount: number;
-}) {
-  const { t } = useTranslation();
-  const openNativeContextMenu = useNativeContextMenu();
-  // Adding a project is the sidebar's one add flow (see `SidebarAddFlow`): the project menu and this list's right-click both
-  // run it, and its adjacency warning shows here.
-  const { pendingWarning, addProject, confirmAddProject, cancelPendingFolder } = addFlow;
-  // The one command a right-click offers wherever there is no project row —
-  // the Projects heading, its empty area, and the collapsed rail icon.
-  const addProjectMenuHandlers = (): NativeContextMenuHandlers => ({
-    "project.add": () => void addProject(),
-  });
-  // Reveal the project folder in the OS file manager (real capability: workspace.reveal).
-  const revealProject = (projectRoot: string) => {
-    if (!projectRoot) return;
-    void window.ave?.workspace?.reveal?.(projectRoot);
-  };
-  // Remove a picked (non-default) project from the workspace root list (real capability: workspace.removeRoot). Refresh the
-  // sidebar list on success so the removed project disappears immediately.
-  const removeProject = async (project: ProjectIdentity): Promise<void> => {
-    if (!project.projectRoot || project.isDefault) return;
-    try {
-      const result = await window.ave?.workspace?.removeRoot?.(project.projectRoot);
-      if (!result?.ok) {
-        onProjectError?.("remove", result?.error, result?.message);
-        return;
-      }
-      // The user removed the project; a revocation that could not finish is reported, never asked about.
-      if (result.cleanupPending) onProjectNotice?.(t("chatPreviewRail.removeRootCleanupPending"));
-      await onRefreshProjects?.();
-    } catch (error) {
-      onProjectError?.("remove", "remove-failed", error instanceof Error ? error.message : undefined);
-    }
-  };
-  const isSessionPinned = (sessionId: string) => Boolean(isSessionStarred?.(sessionId));
-  const fallbackProjects = useWorkspaceProjects(projectsProp === undefined);
-  const workspaceProjects = projectsProp ?? fallbackProjects;
-  // Which row is mid-rename. One id for BOTH kinds of row: renaming two things at once is not a state the user can be in, so
-  // it is not a state to model.
-  const [renamingKey, setRenamingKey] = useState<string | null>(null);
-  // Archived rows are out of the way by default and one click from being back.
-  const [showArchived, setShowArchived] = useState(false);
-  // Which project groups are showing all of their conversations. The project
-  // section shows one page per group and the reader
-  // opens the one they came for; letting every group run to its full length
-  // would push the sibling projects below the fold.
-  const [expandedProjects, setExpandedProjects] = useState<ReadonlySet<string>>(new Set());
-  const toggleProjectSessions = (key: string) =>
-    setExpandedProjects((current) => {
-      const next = new Set(current);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
-
-  // Exclude the default workspace at the display boundary. Pinned named
-  // projects sort first, preserving order within each group.
-  const namedProjects = useMemo(() => {
-    const configured = workspaceProjects.filter((project) => !project.isDefault);
-    return sortWithPinnedFirst(configured, (project) => Boolean(isProjectPinned?.(project.projectRoot)));
-  }, [isProjectPinned, workspaceProjects]);
-  const paneSurfaceOf = (session: SessionSummary) => session.family === "side-chat"
-    ? surfaces.find((surface) => surface.tabId === session.paneTabId && surface.boundSessionIds.includes(session.id))
-    : undefined;
-  // The global list cannot establish that a pane ended from a window-local absence.
-  // Wait for host bindings and omit unarchived pane chats not held by this window.
-  const listableSessions = sessions.filter((session) => session.family !== "side-chat" || !session.paneTabId
-    || (bindingsLoaded && (Boolean(session.archivedAt) || Boolean(paneSurfaceOf(session)))));
-  const ordinarySessions = listableSessions.filter((session) => !paneSurfaceOf(session));
-  const sessionsByProject = useMemo(
-    () => namedProjects.map((project) => {
-      const projectSessions = sortWithPinnedFirst(
-        ordinarySessions.filter((session) => session.projectRoot && projectRootEquals(session.projectRoot, project.projectRoot)),
-        (session) => isSessionPinned(session.id),
-      );
-      return { project, projectSessions };
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isSessionPinned is derived fresh each render from isSessionStarred (a stable-enough dep); listing it would require useCallback ceremony for no behavioral benefit.
-    [ordinarySessions, namedProjects, isSessionStarred],
-  );
-  // Display unscoped and unmatched-root sessions as plain chats; main strips legacy default-workspace metadata at the read
-  // boundary.
-  const ungroupedSessions = useMemo(() => {
-    const plain = ordinarySessions.filter(
-      (session) => !session.projectRoot || !namedProjects.some((project) => projectRootEquals(project.projectRoot, session.projectRoot)),
-    );
-    return sortWithPinnedFirst(plain, (session) => isSessionPinned(session.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ordinarySessions, namedProjects, isSessionStarred]);
-
-  const hasNamedProjects = sessionsByProject.length > 0;
-  const projectOfSurface = (surface: SidebarSurface) => {
-    const session = sessions.find((entry) => entry.id === surface.sessionId);
-    return namedProjects.find((project) => session?.projectRoot && projectRootEquals(project.projectRoot, session.projectRoot));
-  };
-  const generalSurfaces = surfaces.filter((surface) => !projectOfSurface(surface));
-  const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
-  const renderSurfaceRow = (surface: SidebarSurface) => {
-    const children = visibleSessions(listableSessions.filter((session) => paneSurfaceOf(session)?.tabId === surface.tabId));
-    return (
-      <div key={surface.tabId} data-testid={`sidebar-surface-tree-${surface.tabId}`}>
-        <SidebarSurfaceRow surface={surface} visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} />
-        {children.length > 0 && (
-          <div className="ml-4 border-l border-border/(--opacity-half) pl-2" data-testid={`sidebar-surface-chats-${surface.tabId}`}>
-            {children.map(renderFamilyRow)}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const conversationMenuHandlers = (session: SessionSummary): NativeContextMenuHandlers => {
-    const actions = conversationActions;
-    const archived = actions?.isArchived(session.id) ?? false;
-    const unread = actions?.isUnread(session.id) ?? false;
-    return {
-      "conversation.open": () => void onLoadSession?.(session.id),
-      ...(actions
-        ? {
-            [unread ? "conversation.mark-read" : "conversation.mark-unread"]: () =>
-              void actions.onSetUnread(session.id, !unread),
-            // The Suggestions conversation's name comes from the catalog, so a rename would store a string no surface shows.
-            ...(isSuggestionsSession(session.id)
-              ? {}
-              : { "conversation.rename": () => setRenamingKey(`session:${session.id}`) }),
-            "conversation.share": () => void actions.onShare(session.id),
-            "conversation.copy": () => void actions.onCopy(session.id),
-            // Archived rows leave the list, and every unrequested card is addressed to the Suggestions conversation — archiving it
-            // would hide every suggestion and its count. Main refuses it too.
-            ...(isSuggestionsSession(session.id) && !archived
-              ? {}
-              : {
-                  [archived ? "conversation.unarchive" : "conversation.archive"]: () =>
-                    void actions.onSetArchived(session.id, !archived),
-                }),
-            "conversation.delete": () => void actions.onDelete(session.id),
-          }
-        : {}),
-      ...(onToggleSessionStar
-        ? {
-            [isSessionPinned(session.id) ? "conversation.unpin" : "conversation.pin"]: () =>
-              void onToggleSessionStar(session.id, session.title),
-          }
-        : {}),
-    } as NativeContextMenuHandlers;
-  };
-
-  // Where one family's row lands when it is clicked. Every family but `main` opens the surface that already owns its
-  // transcript; `main` has no entry here because it loads into the tile through `onLoadSession`.
-  const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
-    switch (session.family) {
-      case "main":
-        return undefined;
-      case "routine":
-        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
-        return () => void onLoadSession?.(session.id);
-      case "work-board":
-        return session.workBoardItemId === undefined
-          ? undefined
-          : () => onOpenWorkBoardItem?.(session.workBoardItemId!);
-      case "side-chat":
-        if (paneSurfaceOf(session)) {
-          return () => onOpenPaneChat?.(session.paneTabId!);
-        }
-        return () => onOpenSideChat?.(session.id, session.originSessionId);
-    }
-  };
-
-  // A row that is not a main conversation is READ-ONLY here: it cannot be
-  // renamed, archived, pinned, deleted or dragged, because those act on the
-  // main session store and three of the four families do not live in it. It
-  // offers the one thing it can do — open — and nothing that would misfire.
-  const renderFamilyRow = (session: SessionSummary) => {
-    const open = openFamilyRow(session);
-    return (
-      <div key={session.id}>
-        <SessionRow
-          session={session}
-          active={false}
-          family={session.family}
-          pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
-          {...(open ? { onOpenFamilyRow: open } : {})}
-          onOpenMenu={(event) => openNativeContextMenu(
-            event,
-            "conversation",
-            (open ? { "conversation.open": open } : {}) as NativeContextMenuHandlers,
-          )}
-          t={t}
-        />
-        {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
-          <div className="truncate pl-7 text-[10px] text-muted-foreground">
-            {t(session.paneTabId.startsWith("terminal:") ? "sidebar.formerTerminalChat" : "sidebar.formerPageChat")}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const renderSessionRow = (listed: SessionSummary) => {
-    if (listed.family !== "main") return renderFamilyRow(listed);
-    // The dedicated Suggestions conversation is named from the catalog by its
-    // id, in the language in use now, and carries the number of suggestions
-    // waiting in it.
-    const suggestions = isSuggestionsSession(listed.id);
-    const session = { ...listed, title: resolveConversationTitle({ sessionId: listed.id, title: listed.title }, t) };
-    return (
-      <SessionRow
-        key={session.id}
-        session={session}
-        pendingCount={suggestions ? suggestionsPendingCount : 0}
-        active={conversationSurfaceVisible && session.id === currentSessionId}
-        onLoadSession={onLoadSession}
-        isPinned={isSessionPinned(session.id)}
-        onTogglePin={onToggleSessionStar ? () => onToggleSessionStar(session.id, session.title) : undefined}
-        onOpenMenu={(event) => openNativeContextMenu(event, "conversation", conversationMenuHandlers(session))}
-        unread={conversationActions?.isUnread(session.id)}
-        pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
-        responding={conversationActions?.isResponding(session.id)}
-        archived={conversationActions?.isArchived(session.id)}
-        renaming={renamingKey === `session:${session.id}`}
-        onCommitRename={conversationActions
-          ? (title) => {
-              setRenamingKey(null);
-              void conversationActions.onRename(session.id, title);
-            }
-          : undefined}
-        onCancelRename={() => setRenamingKey(null)}
-        t={t}
-      />
-    );
-  };
-
-  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
-  // the reason archive is worth having as something distinct from delete.
-  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
-  const visibleSessions = (list: SessionSummary[]) => showArchived ? list : list.filter((session) => !isSessionArchived(session));
-  const hasArchivedSessions = listableSessions.some(isSessionArchived);
-
-  // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
-  // offer different sets.
-  const projectMenuHandlers = (project: ProjectIdentity): NativeContextMenuHandlers => {
-    const root = project.projectRoot;
-    const archived = Boolean(projectActions?.isArchived(root));
-    return {
-      // Offered while a turn runs too: the window starts the conversation beside a busy tile rather than in it, so a running
-      // turn is no reason to take the folder's own first action away.
-      "project.new-chat": () => void onNewChatForProject?.({
-        ...(root ? { projectRoot: root } : {}),
-        projectName: project.projectName,
-      }),
-      ...(onToggleProjectPin && root
-        ? { [pinnedLabelFor(root)]: () => onToggleProjectPin(root) }
-        : {}),
-      ...(projectActions && root
-        ? {
-            "project.edit": () => setRenamingKey(`project:${root}`),
-            [archived ? "project.unarchive" : "project.archive"]: () =>
-              projectActions.onSetArchived(root),
-          }
-        : {}),
-      ...(root ? { "project.reveal": () => revealProject(root) } : {}),
-      // Also offered ON a row: someone hunting for "add a project" right-clicks the nearest project-looking thing.
-      ...addProjectMenuHandlers(),
-      ...(root && !project.isDefault
-        ? { "project.remove": () => void removeProject(project) }
-        : {}),
-    } as NativeContextMenuHandlers;
-  };
-  const pinnedLabelFor = (root: string) =>
-    isProjectPinned?.(root) ? "project.unpin" : "project.pin";
-
-  // Archived FOLDERS leave the listing on the same terms archived conversations do, and answer to the same toggle — one
-  // archive, one switch.
-  const visibleProjects = showArchived || !projectActions
-    ? sessionsByProject
-    : sessionsByProject.filter(({ project }) => !projectActions.isArchived(project.projectRoot));
-
-  return (
-    <div className="min-w-0 space-y-3" data-testid="sidebar-sections">
-      {/* Named projects keep their existing actions and pinned-first sessions. */}
-      {/* Right-click anywhere in this section that is not a row (min-h keeps that
-          blank target present even with one project) → "add project". Rows
-          stop propagation once they answer, so their own menu still wins. */}
-      <section
-        aria-label={t("sidebar.projectsLabel")}
-        className="mt-2 min-h-24 space-y-1"
-        data-testid="sidebar-projects"
-        onContextMenu={(event) => openNativeContextMenu(event, "project", addProjectMenuHandlers())}
-      >
-        <h2 className="px-2 text-[11px] font-medium text-muted-foreground" data-testid="sidebar-projects-heading">{t("sidebar.projectsLabel")}</h2>
-        {pendingWarning ? (
-          /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
-          <div
-            data-testid="sidebar-project-root-warning"
-            className="space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-[11px]"
-          >
-            <div className="font-medium text-destructive">{t("composerProjectSelector.rootWarningTitle")}</div>
-            <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">
-              {pendingWarning.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="destructive"
-                data-testid="sidebar-project-root-warning-confirm"
-                onClick={() => void confirmAddProject()}
-              >
-                {t("composerProjectSelector.rootWarningConfirm")}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                data-testid="sidebar-project-root-warning-cancel"
-                onClick={cancelPendingFolder}
-              >
-                {t("common.cancel")}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-        {hasNamedProjects ? visibleProjects.map(({ project, projectSessions }) => {
-          // Archived rows leave the list BEFORE it is paged, so a page is a page of rows the reader can actually see.
-          const groupSessions = visibleSessions(projectSessions);
-          const groupSurfaces = surfaces.filter((surface) => projectOfSurface(surface) === project);
-          const groupKey = project.projectRoot ?? project.projectName;
-          const groupExpanded = expandedProjects.has(groupKey);
-          const shownGroupSessions = groupExpanded ? groupSessions : groupSessions.slice(0, SESSION_PAGE_SIZE);
-          const hiddenGroupSessions = groupSessions.length - shownGroupSessions.length;
-          const pinned = Boolean(isProjectPinned?.(project.projectRoot));
-          const archived = Boolean(projectActions?.isArchived(project.projectRoot));
-          const displayName = projectActions?.label(project.projectRoot) ?? project.projectName;
-          const openProject = () => void onNewChatForProject?.({
-            ...(project.projectRoot ? { projectRoot: project.projectRoot } : {}),
-            projectName: project.projectName,
-          });
-          return (
-          <div key={project.projectRoot} className="space-y-1">
-            {/* The folder row. Clicking it starts a chat here; the trailing
-                button and the right-click open the SAME set of folder actions,
-                built once below so the two entry points cannot diverge. */}
-            <div
-              className={[
-                "group flex w-full min-w-0 items-center rounded-md transition-colors",
-                "hover:bg-muted",
-                archived ? "opacity-70" : "",
-              ].filter(Boolean).join(" ")}
-              data-archived={archived ? "true" : undefined}
-              onContextMenu={(event) => openNativeContextMenu(event, "project", projectMenuHandlers(project))}
-            >
-              {renamingKey === `project:${project.projectRoot}` && projectActions && project.projectRoot ? (
-                <div className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1">
-                  <Folder className="h-4 w-4 shrink-0 text-primary" />
-                  <InlineRename
-                    initial={displayName}
-                    onCommit={(value) => {
-                      setRenamingKey(null);
-                      projectActions.onSetLabel(project.projectRoot!, value);
-                    }}
-                    onCancel={() => setRenamingKey(null)}
-                    testId={`sidebar-project-rename-${projectTestId(project.projectRoot, project.projectName)}`}
-                    t={t}
-                  />
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className={[
-                    "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] font-medium text-foreground",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  ].join(" ")}
-                  title={project.projectRoot ?? t("sidebar.newProjectChat", { project: displayName })}
-                  data-testid={`sidebar-project-${projectTestId(project.projectRoot, project.projectName)}`}
-                  onClick={openProject}
-                >
-                  <Folder className="h-4 w-4 shrink-0 text-primary" />
-                  {pinned ? <Pin className="h-3 w-3 shrink-0 fill-current text-primary" /> : null}
-                  <span className="min-w-0 flex-1 truncate">{displayName}</span>
-                  {/* Hidden at rest, not removed — it keeps reserving its width
-                      so the folder name does not re-truncate when the pointer
-                      arrives. A row that reflows under the cursor is harder to
-                      aim at than one that simply reveals a control. */}
-                  <Plus
-                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground invisible group-hover:visible group-focus-within:visible"
-                    aria-hidden="true"
-                  />
-                </button>
-              )}
-              {/* After the new-chat affordance, exactly as the folder's own
-                  actions sit after the conversation's. */}
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openNativeContextMenu(event, "project", projectMenuHandlers(project));
-                }}
-                className="mr-1 hidden shrink-0 rounded p-1 hover:bg-muted-foreground/(--opacity-subtle) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:flex group-focus-within:flex"
-                aria-label={t("sidebar.projectMenu")}
-                title={t("sidebar.projectMenu")}
-                data-testid={`sidebar-project-menu-${projectTestId(project.projectRoot, project.projectName)}`}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <div className="ml-4 border-l border-border/(--opacity-half) pl-2">
-              {groupSessions.length > 0 || groupSurfaces.length > 0 ? (
-                <>
-                  {shownGroupSessions.map(renderSessionRow)}
-                  {groupSurfaces.map(renderSurfaceRow)}
-                  {/* A CONTROL, not a label: the conversations past the first
-                      page are only reachable because this button opens them. */}
-                  {hiddenGroupSessions > 0 || groupExpanded ? (
-                    <button
-                      type="button"
-                      onClick={() => toggleProjectSessions(groupKey)}
-                      className="w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      aria-expanded={groupExpanded}
-                      data-testid={`sidebar-project-sessions-more-${projectTestId(project.projectRoot, project.projectName)}`}
-                    >
-                      {groupExpanded
-                        ? t("sidebar.fewerSessions")
-                        : t("sidebar.moreSessions", { count: hiddenGroupSessions })}
-                    </button>
-                  ) : null}
-                </>
-              ) : (
-                <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                  {t("sidebar.noProjectSessions")}
-                </div>
-              )}
-            </div>
-          </div>
-          );
-        }) : (
-          <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-            {t("sidebar.noProjectSessions")}
-          </div>
-        )}
-      </section>
-      {/* Unassigned items remain flat under General. */}
-      {/* Right-click the LIST itself (not a row) → import. Importing always
-          creates a brand-new conversation, so it acts on the list; putting it
-          on a row would imply it acts on that row. Rows stop propagation once
-          they answer, so their own menu still wins. */}
-      <section
-        aria-label={t("sidebar.generalLabel")}
-        className="mt-2 min-h-24 space-y-1"
-        data-testid="sidebar-unassigned-sessions"
-        onContextMenu={(event) => openNativeContextMenu(event, "conversation", {
-          ...(conversationActions?.onImport
-            ? { "conversation.import": () => void conversationActions.onImport!() }
-            : {}),
-        } as NativeContextMenuHandlers)}
-      >
-        <h2 className="px-2 text-[11px] font-medium text-muted-foreground">{t("sidebar.generalLabel")}</h2>
-        {hasUngroupedSessions || hasArchivedSessions ? (
-          <>
-            <RevealingSessionList
-              sessions={visibleSessions(ungroupedSessions)}
-              renderRow={renderSessionRow}
-              sentinelTestId="sidebar-unassigned-sessions-sentinel"
-              viewportRef={scrollViewportRef}
-            />
-            {generalSurfaces.map(renderSurfaceRow)}
-            {/* Offered only once something IS archived. A permanent toggle for
-                an empty archive is a control that never does anything. */}
-            {hasArchivedSessions ? (
-              <button
-                type="button"
-                onClick={() => setShowArchived((value) => !value)}
-                className="w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-pressed={showArchived}
-                data-testid="sidebar-toggle-archived"
-              >
-                {showArchived ? t("sidebar.hideArchived") : t("sidebar.showArchived")}
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-            {t("sidebar.noProjectSessions")}
-          </div>
-        )}
-      </section>
-
-    </div>
-  );
-}
-
-// Keep route navigation in the sidebar cluster and conversation mutations in pane headers; cluster placement stays fixed
-// across collapse.
-/** Whether something recorded against `root` belongs to `selected`. The 기본 프로젝트 also holds what names no open project:
- * a conversation without a root, or one whose project was removed. */
-function belongsToProject(root: string | undefined, selected: ProjectIdentity, projects: readonly ProjectIdentity[]): boolean {
-  if (!selected.isDefault) return Boolean(root) && projectRootEquals(root, selected.projectRoot);
-  if (!root || projectRootEquals(root, selected.projectRoot)) return true;
-  return !projects.some((project) => !project.isDefault && projectRootEquals(project.projectRoot, root));
-}
-
 export function Sidebar({
   activeView,
   onSelect,
@@ -1777,6 +775,12 @@ export function Sidebar({
   projectActions,
   isProjectPinned,
   onToggleProjectPin,
+  isProjectExpanded,
+  onSetProjectExpanded,
+  onOpenSessionBeside,
+  onOpenSurfaceBeside,
+  onCloseSurface,
+  onMoveSurface,
   pendingAnswerSessionIds,
   pluginRequestPending = false,
   suggestionsPendingCount = 0,
@@ -1786,18 +790,6 @@ export function Sidebar({
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
   const allProjects = projectSelection?.kind === "all";
   const allProjectList = useMemo(() => projects ?? [], [projects]);
-  // The list shows the selected project only; the all-projects view shows every project, grouped (case 05, 10).
-  const scoped = useMemo(() => {
-    if (!selectedProject) return { sessions, projects: allProjectList, surfaces };
-    const sessionRoot = new Map(sessions.map((session) => [session.id, session.projectRoot]));
-    const inProject = (root: string | undefined) => belongsToProject(root, selectedProject, allProjectList);
-    return {
-      sessions: sessions.filter((session) => inProject(session.projectRoot)),
-      projects: [selectedProject],
-      surfaces: surfaces.filter((surface) =>
-        inProject(surface.projectRoot ?? (surface.sessionId ? sessionRoot.get(surface.sessionId) : undefined))),
-    };
-  }, [selectedProject, sessions, allProjectList, surfaces]);
   // Nothing is named until the selection has loaded: "전체 프로젝트" before then would claim a choice nobody made.
   const shownName = selectedProject ? projectName(selectedProject) : allProjects ? t("sidebar.allProjects") : "";
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
@@ -2302,37 +1294,70 @@ export function Sidebar({
           viewportRef={navScrollViewportRef}
           className="flex-1 min-h-0 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
         >
-          <div className="px-2 pt-1 pb-1 space-y-0.5">
-            <ProjectSessionList
-              sessions={scoped.sessions}
-              projects={scoped.projects}
-              currentSessionId={currentSessionId}
-              conversationSurfaceVisible={activeView === "home"}
-              onLoadSession={onLoadSession}
-              onOpenWorkBoardItem={onOpenWorkBoardItem}
-              onOpenSideChat={onOpenSideChat}
-              onOpenPaneChat={onOpenPaneChat}
-              onNewChatForProject={onNewChatForProject}
-              onRefreshProjects={onRefreshProjects}
-              onProjectError={onProjectError}
-              onProjectNotice={onProjectNotice}
-              surfaces={scoped.surfaces}
-              bindingsLoaded={bindingsLoaded}
-              onOpenSurface={onOpenSurface}
-              isSurfaceVisible={isSurfaceVisible}
-              isSessionStarred={isSessionStarred}
-              onToggleSessionStar={onToggleSessionStar}
-              isProjectPinned={isProjectPinned}
-              onToggleProjectPin={onToggleProjectPin}
-              conversationActions={conversationActions}
-              projectActions={projectActions}
-              pendingAnswerSessionIds={pendingAnswerSessionIds}
-              suggestionsPendingCount={suggestionsPendingCount}
-              scrollViewportRef={navScrollViewportRef}
-              addFlow={addFlow}
-            />
+          <div className="px-2 pt-1 pb-1">
+            {/* Nothing is listed until the selection has loaded: the all-projects groups before then would show a view
+                nobody chose. */}
+            {selectedProject || allProjects ? (
+              <ProjectTree
+                selectedProject={selectedProject}
+                projects={allProjectList}
+                projectName={projectName}
+                isProjectExpanded={isProjectExpanded}
+                onSetProjectExpanded={onSetProjectExpanded}
+                addFlow={addFlow}
+                sessions={sessions}
+                surfaces={surfaces}
+                bindingsLoaded={bindingsLoaded}
+                currentSessionId={currentSessionId}
+                conversationSurfaceVisible={activeView === "home"}
+                onLoadSession={onLoadSession}
+                onOpenWorkBoardItem={onOpenWorkBoardItem}
+                onOpenSideChat={onOpenSideChat}
+                onOpenPaneChat={onOpenPaneChat}
+                onNewChatForProject={onNewChatForProject}
+                onRefreshProjects={onRefreshProjects}
+                onProjectError={onProjectError}
+                onProjectNotice={onProjectNotice}
+                onOpenSurface={onOpenSurface}
+                isSurfaceVisible={isSurfaceVisible}
+                onOpenSessionBeside={onOpenSessionBeside}
+                onOpenSurfaceBeside={onOpenSurfaceBeside}
+                onCloseSurface={onCloseSurface}
+                onMoveSurface={onMoveSurface}
+                isSessionStarred={isSessionStarred}
+                onToggleSessionStar={onToggleSessionStar}
+                isProjectPinned={isProjectPinned}
+                onToggleProjectPin={onToggleProjectPin}
+                conversationActions={conversationActions}
+                projectActions={projectActions}
+                pendingAnswerSessionIds={pendingAnswerSessionIds}
+                suggestionsPendingCount={suggestionsPendingCount}
+              />
+            ) : null}
           </div>
         </ScrollArea>
+        {/* The work board and memory stay under the list, outside its scroller (case 18). */}
+        <div className="mx-2 h-px shrink-0 bg-border" aria-hidden="true" />
+        <div className="shrink-0 space-y-0.5 px-2 py-1.5" data-testid="sidebar-card-footer">
+          <NavItem
+            viewKey="work-board"
+            label={t(BUILTIN_LABEL_KEYS["work-board"])}
+            icon={<WorkBoardIcon className="h-4 w-4" />}
+            isActive={activeView === "work-board"}
+            onClick={() => onSelect("work-board")}
+            collapsed={false}
+            data-testid="sidebar-card-work-board"
+          />
+          <NavItem
+            viewKey="memory"
+            label={t(BUILTIN_LABEL_KEYS.memory)}
+            icon={<MemoryIcon className="h-4 w-4" />}
+            isActive={activeView === "memory"}
+            onClick={() => onSelect("memory")}
+            collapsed={false}
+            data-testid="sidebar-card-memory"
+          />
+        </div>
       </div>
       )}
     </aside>

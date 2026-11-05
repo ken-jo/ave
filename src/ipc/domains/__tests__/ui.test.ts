@@ -144,20 +144,24 @@ describe("ui IPC handlers", () => {
       x: 4,
       y: 8,
       kind: "conversation",
-      commands: ["conversation.unpin", "conversation.open"],
+      commands: ["conversation.unpin", "conversation.open-split", "conversation.open"],
     });
 
     expect(result).toEqual({ ok: true });
     const template = firstTemplate();
     expect(template.map((item) => item.type ?? "command")).toEqual([
       "command",
+      "command",
       "separator",
       "command",
     ]);
+    // Opening beside sits with opening, ahead of the state changes (S3).
+    expect(template[1]?.label).toMatch(/Open in a split beside|옆에 분할로 열기/);
     for (const item of template) item.click?.();
 
     expect(sendMock.mock.calls.map(([, action]) => action)).toEqual([
       { requestId: "conversation-1", command: "conversation.open" },
+      { requestId: "conversation-1", command: "conversation.open-split" },
       { requestId: "conversation-1", command: "conversation.unpin" },
     ]);
   });

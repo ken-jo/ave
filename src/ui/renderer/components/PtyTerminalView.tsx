@@ -11,7 +11,7 @@ import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeade
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
+import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
 import { sameTerminalSession, type HostTerminalControlState, type TerminalControlAction, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
@@ -207,7 +207,11 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     let pendingBytes = 0;
     const renderEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
       if ("chunk" in event) term.write(event.chunk);
-      else { term.write(diagnostic(t("ptyTerminal.exited", { code: event.exitCode }))); bumpBlocks(); }
+      else {
+        term.write(diagnostic(t("ptyTerminal.exited", { code: event.exitCode })));
+        bumpBlocks();
+        setTerminalExited(tabId, true);
+      }
     };
     const acceptEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
       if (disposed || event.tabId !== tabId || event.lane !== "manual") return;
@@ -255,6 +259,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
         return;
       }
       liveRef = result.session;
+      setTerminalExited(tabId, false);
       blockMarkerToken = result.blockMarkerToken;
       setSession(result.session);
       const current = await terminalApi.control(result.session, "get");

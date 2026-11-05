@@ -62,6 +62,32 @@ export function setTerminalAttended(tabId: string, isAttended: boolean): void {
   if (isAttended && document.hasFocus()) markTerminalRead(tabId);
 }
 
+const exited = new Set<string>();
+const exitListeners = new Set<() => void>();
+let exitedSnapshot: ReadonlySet<string> = new Set();
+
+/** A terminal's shell ended (the sidebar row reads "종료됨", case 19), or a new shell started in its place. Only what a view
+ * has seen is known: a terminal no view has attached to yet is neither. */
+export function setTerminalExited(tabId: string, hasExited: boolean): void {
+  if (exited.has(tabId) === hasExited) return;
+  if (hasExited) exited.add(tabId);
+  else exited.delete(tabId);
+  exitedSnapshot = new Set(exited);
+  for (const listener of [...exitListeners]) listener();
+}
+
+function subscribeExited(listener: () => void): () => void {
+  exitListeners.add(listener);
+  return () => {
+    exitListeners.delete(listener);
+  };
+}
+
+/** The terminals whose shell has ended, by tab id. */
+export function useExitedTerminals(): ReadonlySet<string> {
+  return useSyncExternalStore(subscribeExited, () => exitedSnapshot);
+}
+
 /** A view is about to (re)attach: the scrollback main replays next is output already seen, and must not ring again. Cleared
  * when the attach settles. */
 export function setTerminalReplaying(tabId: string, isReplaying: boolean): void {

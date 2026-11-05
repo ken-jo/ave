@@ -1779,8 +1779,9 @@ describe("opening a conversation while another is mid-turn", () => {
       });
       await act(async () => { fireEvent.click(option); });
     };
+    /** The all-projects group's + (case 05): a new conversation straight in that project. */
     const folderRow = (container: HTMLElement) =>
-      container.querySelector('[data-testid="sidebar-project-proj-b"]') as HTMLButtonElement;
+      container.querySelector('[data-testid="sidebar-project-new-proj-b"]') as HTMLButtonElement;
 
     it("New Chat stays in the busy conversation's project", async () => {
       const rendered = await busyInProjectA();
@@ -1788,7 +1789,7 @@ describe("opening a conversation while another is mid-turn", () => {
       await expectAdoptedTileProject(rendered, "/proj-a");
     });
 
-    it("a folder row starts the conversation in that folder", async () => {
+    it("a group's + starts the conversation in that folder", async () => {
       const rendered = await busyInProjectA();
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
       await expectAdoptedTileProject(rendered, "/proj-b");
@@ -1912,8 +1913,8 @@ describe("opening a conversation while another is mid-turn", () => {
     const rendered = await renderApp({
       hasApiKey: true,
       nativeContextMenu: true,
-      // The all-projects view lists every conversation, whichever project its tile is in.
-      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "all" } } },
+      // The all-projects view lists every conversation, whichever project its tile is in; the 기본 프로젝트 group is open.
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "all" }, expandedProjectRoots: ["/ws"] } },
       workspaceRoots: [{ path: "/ws", isDefault: true }, { path: "/proj-a", isDefault: false }],
       sessions: [
         { id: MOCK_DEFAULT_SESSION_ID, title: "주 대화", modifiedAt: new Date(2, 0, 2).toISOString() },

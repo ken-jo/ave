@@ -46,6 +46,7 @@ export type RenderAppReturn = {
   emitApproval: (r: unknown) => void;
   emitApprovalSettled: (requestId: string) => void;
   chooseNativeMenuCommand: (command: string) => void;
+  chooseDynamicMenuItem: (id: string) => void;
   emitPluginRuntimeUpdated: (payload: { pluginId: string }) => void;
   emitNotificationToast: (payload: unknown) => void;
   emitNotificationClicked: (payload: unknown) => void;
@@ -73,7 +74,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitNotificationToast,
     emitNotificationClicked,
   } = makeMockAveApi(apiOpts);
-  const { ns, emitApproval, emitApprovalSettled, chooseNativeMenuCommand } = makeMockAveNamespace({
+  const { ns, emitApproval, emitApprovalSettled, chooseNativeMenuCommand, chooseDynamicMenuItem } = makeMockAveNamespace({
     env: aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, nativeContextMenu,
   });
 
@@ -107,6 +108,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     emitApproval,
     emitApprovalSettled,
     chooseNativeMenuCommand,
+    chooseDynamicMenuItem,
     emitPluginRuntimeUpdated,
     emitNotificationToast,
     emitNotificationClicked,

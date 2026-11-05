@@ -1000,6 +1000,16 @@ export function normalizeRecentProjectRoots(raw: unknown): string[] | undefined 
   return out;
 }
 
+/** By root identity, at most the project-list cap; only absolute roots. */
+export function normalizeExpandedProjectRoots(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const absolute = raw.filter((entry): entry is string => typeof entry === "string" && isAbsoluteHostPath(entry.trim()));
+  const out = normalizeProjectRootList(absolute, MAX_PROJECT_ROOT_LIST);
+  const dropped = raw.length - out.length;
+  if (dropped > 0) log.warn(`system.expandedProjectRoots dropped ${dropped} entr${dropped === 1 ? "y" : "ies"} (not an absolute root, repeated, or over ${MAX_PROJECT_ROOT_LIST})`);
+  return out;
+}
+
 /** Keyed by `projectRootKey`. An entry that is not a place (or names a surface that is not a tab id) is dropped. */
 export function normalizeLastViewByProject(raw: unknown): Record<string, ProjectLastView> | undefined {
   if (!isRecord(raw)) return undefined;
@@ -1107,6 +1117,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
   acceptNormalizedField(result, "projectSelection", obj.projectSelection, normalizeProjectSelection, "system", STORED_FIELD);
   acceptNormalizedField(result, "recentProjectRoots", obj.recentProjectRoots, normalizeRecentProjectRoots, "system", STORED_FIELD);
   acceptNormalizedField(result, "lastViewByProject", obj.lastViewByProject, normalizeLastViewByProject, "system", STORED_FIELD);
+  acceptNormalizedField(result, "expandedProjectRoots", obj.expandedProjectRoots, normalizeExpandedProjectRoots, "system", STORED_FIELD);
   // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);
   if (storedLayout) result.mainLayout = storedLayout;

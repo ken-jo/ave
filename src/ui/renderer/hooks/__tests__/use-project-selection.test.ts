@@ -72,6 +72,23 @@ describe("useProjectSelection", () => {
     expect(update).toHaveBeenLastCalledWith({ system: { projectSelection: { kind: "all" } } });
   });
 
+  it("opens and folds all-projects groups by root identity, and saves the open ones", async () => {
+    const { api, update } = makeApi({ projectSelection: { kind: "all" }, expandedProjectRoots: ["c:/work/beta"] });
+    const { result } = renderHook(() => useProjectSelection(api, PROJECTS));
+    await waitFor(() => expect(result.current.selection).toEqual({ kind: "all" }));
+    expect(result.current.isProjectExpanded(BETA.projectRoot)).toBe(true);
+    expect(result.current.isProjectExpanded(ALPHA.projectRoot)).toBe(false);
+    act(() => result.current.setProjectExpanded(ALPHA.projectRoot, true));
+    expect(result.current.isProjectExpanded(ALPHA.projectRoot)).toBe(true);
+    expect(update).toHaveBeenLastCalledWith({ system: { expandedProjectRoots: ["c:/work/beta", ALPHA.projectRoot] } });
+    act(() => result.current.setProjectExpanded(BETA.projectRoot, false));
+    expect(result.current.isProjectExpanded(BETA.projectRoot)).toBe(false);
+    expect(update).toHaveBeenLastCalledWith({ system: { expandedProjectRoots: [ALPHA.projectRoot] } });
+    update.mockClear();
+    act(() => result.current.setProjectExpanded(ALPHA.projectRoot, true));
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("refuses to select a root that is not an open project", async () => {
     const { api } = makeApi();
     const { result } = renderHook(() => useProjectSelection(api, PROJECTS));
