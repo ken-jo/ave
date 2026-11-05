@@ -696,8 +696,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // routine wiring's policy context carries the withheld session authority into runStreamedTurn, and ConversationLoop.runTurn keeps it
   // for the turn (resolveTurnExtensionPolicy inherits it).
   setRoutineChatWaker(async (sessionId, { input, displayText }) => {
-    const holder = groupHolding(sessionId)
-      ?? (conversationLoop.getSessionId() === sessionId ? groupContexts.get(MAIN_CHAT_GROUP_ID) : undefined);
+    // The main conversation is a group too (registered before this waker), so this also finds a windowless main loop.
+    const holder = groupHolding(sessionId);
     if (!holder) return { status: "not-open" };
     if (holder.surfaceRuntime.activity.isBusy() || holder.loop.hasActiveTurn()) return { status: "busy" };
     const running = holder.surfaceRuntime.activity.tryTrackTurn(() => runStreamedTurn(

@@ -1495,6 +1495,18 @@ export class SubAgentRunner {
     childSessionId: string,
     text: string,
   ): Promise<ParentDirectiveDeliveryResult> {
+    const delivered = await this.deliverParentMessageToChild(originSessionId, childSessionId, text);
+    // A child that takes instructions from a scheduled wake turn carries them out after the wake has ended: from here on it reads no
+    // session allow (the chat's, nor its own egress grants), like a child the wake spawned.
+    if (delivered.ok && sessionAuthorityWithheld()) withholdSessionAuthorityForLifetime(childSessionId);
+    return delivered;
+  }
+
+  private async deliverParentMessageToChild(
+    originSessionId: string,
+    childSessionId: string,
+    text: string,
+  ): Promise<ParentDirectiveDeliveryResult> {
     const messageId = createDlpSafeUuid();
     const audit = (type: "info" | "warn", outcome: string): void =>
       this.auditParentDirective(type, { originSessionId, childSessionId, messageId }, outcome);

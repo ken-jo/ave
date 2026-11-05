@@ -104,4 +104,56 @@ describe("scheduled wake authority", () => {
     });
     f.memory.closeSearchIndex();
   });
+
+  it("stays on a child the woken turn resumed, after the wake has ended", async () => {
+    const f = await fixture();
+    vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
+    vi.spyOn(ConversationLoop.prototype, "runTurn").mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" } as never);
+    const runner = new SubAgentRunner({ parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: f.memory });
+    const input = { title: "Earlier child", instructions: "probe", originSessionId: f.CHAT, projectRoot: f.projectRoot, toolScope: exactToolScope(["probe"]) };
+    // The user's own child, from before the wake: not withheld.
+    const { childSessionId } = await runner.spawn(input);
+    expect(sessionAuthorityWithheld(childSessionId)).toBe(false);
+    const release = withholdSessionAuthorityFor(f.CHAT);
+    await inScheduledWake(() => runner.resume(childSessionId, "continue", input.title, undefined, f.CHAT));
+    release();
+    turnExtensionPolicyContext.exit(() => expect(sessionAuthorityWithheld(childSessionId)).toBe(true));
+    f.memory.closeSearchIndex();
+  });
+
+  it("stays on a running child the woken turn sent instructions to, after the wake has ended", async () => {
+    const f = await fixture();
+    let open!: () => void;
+    patchLoopProvider(new ScriptedProvider(probeTurns(), new Promise<void>((resolve) => { open = resolve; })));
+    const mailbox = {
+      append: vi.fn(async () => ({ ok: true as const, entry: { id: "entry-1" } })),
+      acknowledge: vi.fn(async () => 1),
+      discardForChild: vi.fn(async () => undefined),
+    };
+    const runner = new SubAgentRunner({
+      parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: f.memory, parentDirectiveMailbox: mailbox,
+    } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]);
+    // The user's earlier background child, still running when the schedule wakes its chat.
+    let childSessionId: string | undefined;
+    const running = runner.spawn({
+      title: "Earlier child", instructions: "probe", originSessionId: f.CHAT, projectRoot: f.projectRoot,
+      background: true, toolScope: exactToolScope(["probe"]), maxRounds: 3,
+    }, { onLinked: ({ childSessionId: id }) => { childSessionId = id; } });
+    await vi.waitFor(() => expect(childSessionId).toBeDefined());
+    await vi.waitFor(() => expect((runner as unknown as { activeChildren: Map<string, { loop: ConversationLoop }> })
+      .activeChildren.get(childSessionId!)?.loop.hasActiveTurn()).toBe(true));
+    const release = withholdSessionAuthorityFor(f.CHAT);
+    const delivered = await inScheduledWake(() => runner.queueParentMessageToChild(f.CHAT, childSessionId!, "Also check the deploy."));
+    expect(delivered).toMatchObject({ ok: true });
+    release();
+    await turnExtensionPolicyContext.exit(async () => {
+      // The child acts on the woken turn's instructions after the wake: it must not read the chat's session allows then.
+      expect(sessionAuthorityWithheld(childSessionId)).toBe(true);
+      open();
+      await running;
+    });
+    f.memory.closeSearchIndex();
+  });
 });

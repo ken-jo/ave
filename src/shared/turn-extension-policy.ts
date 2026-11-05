@@ -52,8 +52,11 @@ export function resolveTurnExtensionPolicy(
 // the chat started earlier loses its session allows while the wake runs too. That is intended: conservative, and only for the wake.
 const withheldSessions = new Map<string, number>();
 
-// Child sessions a woken turn spawned or resumed. A child carries the withhold for the rest of the process's life, so a turn it runs
-// after the wake has ended (a background child, a later resume) still reads no session allow.
+// Child sessions a woken turn spawned, resumed or sent instructions to. A child carries the withhold for the rest of the process's life,
+// so a turn it runs after the wake has ended (a background child, a later resume) still reads no session allow. That includes a resume
+// the user starts directly later in the same process: intended, fail-closed. The set is in memory only. After a restart nothing resumes
+// a child by itself, and whichever turn resumes it is judged on its own, so the withhold is not persisted.
+// An empty session id never reaches a lookup here as a pass: approvalConversationRoot throws on it, which refuses the lookup.
 const lifetimeWithheldSessions = new Set<string>();
 
 /** Withhold `sessionId`'s session authority for the rest of this process: a child session started by a scheduled wake turn. */
