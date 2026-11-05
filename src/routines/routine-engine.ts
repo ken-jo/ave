@@ -12,6 +12,7 @@ import type { RoutineScope } from "../shared/routines-types.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { errorMessage } from "../shared/error-message.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { routineSummaryOf } from "../shared/routine-summary.js";
 const log = createLogger("routine-engine");
 
 export interface Routine {
@@ -76,11 +77,11 @@ export interface RoutineEngineDeps {
  * Caps extracted content at 200 codepoints (OverlayCard surface budget).
  */
 function extractSummaryTag(text: string): string {
-  const match = text.match(/<summary>([\s\S]*?)<\/summary>/);
-  if (!match) {
+  // The same final block the conversation's stored answer leaves out (shared/routine-summary.ts).
+  const content = routineSummaryOf(text);
+  if (content === null) {
     return t("be_routineEngine.summaryTagMissing");
   }
-  const content = match[1].trim();
   const codepoints = [...content];
   return codepoints.length <= 200 ? content : codepoints.slice(0, 200).join("");
 }

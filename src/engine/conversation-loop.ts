@@ -149,6 +149,8 @@ export class ConversationLoop {
   sessionProjectIsDefault = false;
   // Fire SessionStart once per session; switching sessions resets the marker.
   sessionStartFiredFor: string | null = null;
+  // The session this loop is loading, from the held check until the load ends; other loops count it as held (sessionHeldElsewhere).
+  sessionLoadTarget: string | null = null;
   sessionSource: "startup" | "resume" | "clear" = "startup";
 
   tracer: ConversationTracer = createTracer(this.sessionId);
@@ -627,6 +629,11 @@ export class ConversationLoop {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /** The session a load in progress is bringing in, or null. */
+  getSessionLoadTarget(): string | null {
+    return this.sessionLoadTarget;
   }
 
   /** Changes even when a user leaves and later returns to the same session id. */

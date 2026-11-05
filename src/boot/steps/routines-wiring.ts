@@ -82,8 +82,9 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       const firedAt = routine.lastFiredAt ?? new Date().toISOString();
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
       const target = routine.targetSessionId;
-      // The chat was deleted without the delete reaching this item: it becomes 대화 없음 and runs nowhere else.
-      if (target !== undefined && !memoryManager.loadSessionMetadata(target)) {
+      // The chat was deleted without the delete reaching this item (its metadata or its transcript is gone; the chat list needs both):
+      // it becomes 대화 없음 and runs nowhere else, rather than being skipped as busy on every fire.
+      if (target !== undefined && (!memoryManager.loadSessionMetadata(target) || !memoryManager.hasSessionTranscript(target))) {
         try {
           await routinesStore.markOrphaned(target);
         } catch (err) {

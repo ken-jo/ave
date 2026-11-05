@@ -145,7 +145,7 @@ export async function queryLoop(
     promotedToolNames: string[];
   }> {
     // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
-    const storedText = (text: string): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text) : text);
+    const storedText = (text: string, partial = false): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text, { partial }) : text);
     const llmSettings = self.deps.settingsService.get("llm");
     const activeBlock = getLlmVendorSettings(
       llmSettings.vendors,
@@ -819,7 +819,7 @@ export async function queryLoop(
       let streamedText = "";
       let streamedThought = "";
       const renderPartial = () => ({
-        content: storedText(stripSuggestedReplies(carryTextAtStreamStart + streamedText)),
+        content: storedText(stripSuggestedReplies(carryTextAtStreamStart + streamedText), true),
         thought: carryThoughtAtStreamStart + streamedThought,
       });
       const stream = await collectActiveRuntimeRoundStream(
@@ -1035,7 +1035,8 @@ export async function queryLoop(
         const savedText = stripSuggestedReplies(continuationCarryText + (stream.text ?? ""));
         self.history.append({
           role: "assistant",
-          content: storedText(savedText),
+          // An interrupted answer may stop inside its summary block.
+          content: storedText(savedText, true),
           meta: {
             interrupted: true,
             ...(isHostExitAbort(abortSignal?.reason) ? { interruptedBy: HOST_EXIT_INTERRUPTION } : {}),

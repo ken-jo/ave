@@ -18,6 +18,7 @@ import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
+import { approvalConversationRoot } from "./user-approval-store.js";
 import {
   EGRESS_GRANT_SCOPE_LADDERS,
   isEgressGrantScope,
@@ -311,7 +312,7 @@ export class EgressGrantStore {
     const key = destinationKey(destination);
     if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
     // A scheduled wake turn does not inherit the conversation's session grants.
-    if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld(subject.sessionId)
+    if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld(subject.sessionId, approvalConversationRoot(subject.sessionId))
       && this.session.get(subject.sessionId)?.has(key)) return "session";
     if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
     // Persistent grants of the subject's own origin only.

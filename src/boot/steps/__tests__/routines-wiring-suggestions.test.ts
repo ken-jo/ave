@@ -15,7 +15,7 @@ type Handler = (event: { routine: Record<string, unknown> }) => void;
 
 function wire(
   runRoutine: (input: Record<string, unknown>) => Promise<{ summary: string; sessionId?: string; skipped?: "chat-busy" }>,
-  chats: Record<string, { projectRoot?: string }> = {},
+  chats: Record<string, { projectRoot?: string; noTranscript?: true }> = {},
 ) {
   const handlers: { llm?: Handler; notification?: Handler } = {};
   const routinesStore = {
@@ -38,7 +38,11 @@ function wire(
     getMainWindow: () => window,
     host: { desktop: { getAppWindows: () => [window] } },
     notificationService: { fire: vi.fn() },
-    memoryManager: { touchSessionTranscript, loadSessionMetadata: (id: string) => chats[id] ?? null },
+    memoryManager: {
+      touchSessionTranscript,
+      loadSessionMetadata: (id: string) => chats[id] ?? null,
+      hasSessionTranscript: (id: string) => chats[id] !== undefined && chats[id].noTranscript !== true,
+    },
   } as unknown as BootContext;
   wireRoutinesScheduler(ctx);
   return { handlers, send, touchSessionTranscript, routinesStore, routinesScheduler };
@@ -174,6 +178,16 @@ describe("a schedule connected to a chat", () => {
     expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalledWith(ROUTINES.fired, expect.anything());
     expect(send).not.toHaveBeenCalledWith(ROUTINES.failed, expect.anything());
+  });
+
+  it("marks the item 대화 없음, not busy, when the chat's metadata outlived its transcript", async () => {
+    setRoutineChatWaker(async () => ({ status: "not-open" }));
+    const run = vi.fn(async () => ({ summary: "", skipped: "chat-busy" as const }));
+    const { handlers, routinesStore } = wire(run, { [TARGET]: { noTranscript: true } });
+    handlers.llm!({ routine: connected });
+    await vi.waitFor(() => expect(routinesStore.markOrphaned).toHaveBeenCalledWith(TARGET));
+    expect(run).not.toHaveBeenCalled();
+    expect(routinesStore.markChatBusy).not.toHaveBeenCalled();
   });
 
   it("marks the item 대화 없음 and runs nothing when its chat no longer exists", async () => {

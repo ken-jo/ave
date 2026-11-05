@@ -60,7 +60,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
   // workspace, like everywhere else. Null when the chat may be connected, else the error code.
   const chatLinkError = (targetSessionId: string, projectRoot: string | undefined): string | null => {
     const metadata = memoryManager.loadSessionMetadata(targetSessionId);
-    if (!metadata) return "chat-not-found";
+    // The same existence test the fire uses: a chat needs its metadata and its transcript.
+    if (!metadata || !memoryManager.hasSessionTranscript(targetSessionId)) return "chat-not-found";
     const defaultRoot = () => defaultWorkspaceProject().projectRoot;
     return projectRootEquals(metadata.projectRoot ?? defaultRoot(), projectRoot ?? defaultRoot()) ? null : "chat-other-project";
   };

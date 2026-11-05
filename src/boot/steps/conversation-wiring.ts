@@ -63,7 +63,7 @@ export function sessionHeldByOtherLoop(
   return (sessionId) => {
     const me = self();
     for (const loop of loops()) {
-      if (loop !== me && loop.getSessionId() === sessionId) return true;
+      if (loop !== me && (loop.getSessionId() === sessionId || loop.getSessionLoadTarget?.() === sessionId)) return true;
     }
     return false;
   };

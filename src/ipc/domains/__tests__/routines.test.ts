@@ -378,17 +378,24 @@ describe("runs in progress", () => {
 
 describe("대화에 연결 IPC", () => {
   const CHAT = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
-  async function withChats(chats: Record<string, { projectRoot?: string }>) {
+  async function withChats(chats: Record<string, { projectRoot?: string; noTranscript?: true }>) {
     const deps = await setup([]);
     const memory = deps.memoryManager as typeof deps.memoryManager & Record<string, unknown>;
     memory.loadSessionMetadata = vi.fn((id: string) => chats[id] ?? null);
+    memory.hasSessionTranscript = vi.fn((id: string) => chats[id] !== undefined && chats[id].noTranscript !== true);
     return deps;
   }
   const base = { trigger: "schedule", execution: "llm-session", prePrompt: "p", projectRoot: "/p/a", schedule: { at: "2030-01-01T00:00:00.000Z" } };
 
   it("connects only to an existing chat of the same project", async () => {
-    const deps = await withChats({ [CHAT]: { projectRoot: "/p/a" }, "2c5f39cb-3fb2-42e3-994f-1127e4ddb538": { projectRoot: "/p/b" } });
+    const deps = await withChats({
+      [CHAT]: { projectRoot: "/p/a" },
+      "2c5f39cb-3fb2-42e3-994f-1127e4ddb538": { projectRoot: "/p/b" },
+      "4e7b1c2d-0a1b-4c3d-8e9f-0123456789ab": { projectRoot: "/p/a", noTranscript: true },
+    });
     deps.routinesStore.add.mockResolvedValue({ id: "new" });
+    // Metadata without a transcript is no chat the list shows, and would only turn 대화 없음 at its first fire.
+    expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "4e7b1c2d-0a1b-4c3d-8e9f-0123456789ab" })).toEqual({ ok: false, error: "chat-not-found" });
     expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "3d6a4adc-4ac3-43f4-a05a-2238f5eec649" })).toEqual({ ok: false, error: "chat-not-found" });
     expect(await invoke(ROUTINES.add, { ...base, targetSessionId: "2c5f39cb-3fb2-42e3-994f-1127e4ddb538" })).toEqual({ ok: false, error: "chat-other-project" });
     expect(await invoke(ROUTINES.add, { ...base, targetSessionId: 7 })).toEqual({ ok: false, error: "invalid-input" });

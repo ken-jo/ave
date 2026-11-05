@@ -41,13 +41,25 @@ export function resolveTurnExtensionPolicy(
     headless,
     remoteControllerAuthority: authority,
     allowExternalHooks: true,
+    // A turn started inside a scheduled wake (the woken turn itself, or a child it runs) keeps the host-set withhold.
+    ...(turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true ? { withholdSessionAuthority: true } : {}),
   });
 }
 
 // The sessions a scheduled wake turn is running in right now, counted per wake. A lookup that names one of them withholds its session
 // allows even when it runs outside the turn's async context (a callback, a timer, another module's queue). Host-only: the routine
-// wiring adds a session when a wake starts and removes it in `finally`.
+// wiring adds a session when a wake starts and removes it in `finally`. Lookups also name their conversation root, so a background child
+// the chat started earlier loses its session allows while the wake runs too. That is intended: conservative, and only for the wake.
 const withheldSessions = new Map<string, number>();
+
+// Child sessions a woken turn spawned or resumed. A child carries the withhold for the rest of the process's life, so a turn it runs
+// after the wake has ended (a background child, a later resume) still reads no session allow.
+const lifetimeWithheldSessions = new Set<string>();
+
+/** Withhold `sessionId`'s session authority for the rest of this process: a child session started by a scheduled wake turn. */
+export function withholdSessionAuthorityForLifetime(sessionId: string): void {
+  lifetimeWithheldSessions.add(sessionId);
+}
 
 /** Withhold `sessionId`'s session authority until the returned release runs. Releasing twice is a no-op. */
 export function withholdSessionAuthorityFor(sessionId: string): () => void {
@@ -68,7 +80,7 @@ export function withholdSessionAuthorityFor(sessionId: string): () => void {
  */
 export function sessionAuthorityWithheld(...sessionIds: ReadonlyArray<string | undefined>): boolean {
   if (turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true) return true;
-  return sessionIds.some((id) => id !== undefined && withheldSessions.has(id));
+  return sessionIds.some((id) => id !== undefined && (withheldSessions.has(id) || lifetimeWithheldSessions.has(id)));
 }
 
 /** Outside controlled remote turns, hooks remain allowed. */

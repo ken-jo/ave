@@ -55,7 +55,9 @@ afterEach(async () => {
 });
 
 describe("waking a chat for a connected schedule", () => {
-  it("runs a host-submitted, non-keyboard turn in the tile that holds the chat, keeping the withheld authority", async () => {
+  // This checks the withheld context reaches runStreamedTurn; that ConversationLoop.runTurn keeps it for the turn's tool calls is
+  // engine/__tests__/scheduled-wake-authority.test.ts.
+  it("runs a host-submitted, non-keyboard turn in the tile that holds the chat, with the withheld context reaching runStreamedTurn", async () => {
     const wakeRoutineChat = await setup();
     expect(await wake(() => wakeRoutineChat(SESSION, turn))).toEqual({ status: "ran" });
     expect(streamed).toEqual([{
@@ -63,6 +65,13 @@ describe("waking a chat for a connected schedule", () => {
       options: { inputOrigin: "agent-message", displayText: "Scheduled prompt · Build", hostSubmitted: true },
       withheld: true,
     }]);
+  });
+
+  it("runs in an idle main conversation that has no window, instead of skipping it as busy forever", async () => {
+    const wakeRoutineChat = await setup();
+    (await import("../../../main/app-state.js")).resetMainWindowsForTests();
+    expect(await wake(() => wakeRoutineChat(SESSION, turn))).toEqual({ status: "ran" });
+    expect(streamed).toHaveLength(1);
   });
 
   it("answers not-open for a chat no tile holds", async () => {

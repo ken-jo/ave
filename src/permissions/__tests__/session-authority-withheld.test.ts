@@ -12,7 +12,7 @@ process.env.AVE_HOME = TEST_HOME;
 
 import { inScheduledWake as wake } from "../../__tests__/support/scheduled-wake.js";
 import { withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.js";
-import { recordApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
+import { recordApproval, lookupUserDecision, __resetSessionStoreForTest, setApprovalConversationRootResolver } from "../user-approval-store.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import { issueUserOwnedBrowserScope } from "../user-owned-browser-scope.js";
@@ -114,5 +114,27 @@ describe("a session withheld by id, for lookups outside the wake's async context
     second();
     expect((await lookup())?.decision).toBe("allow");
     expect((await manager.checkNetworkPermission(destination, { sessionId: SESSION })).permission.decision).toBe("allow");
+  });
+});
+
+describe("a child of the woken chat, by conversation root", () => {
+  it("does not use its own session egress grant while the chat is woken", async () => {
+    const CHILD = "22222222-2222-4222-8222-222222222222";
+    setApprovalConversationRootResolver((id) => (id === CHILD ? SESSION : id));
+    try {
+      const projectRoot = join(directory, "project");
+      mkdirSync(projectRoot);
+      const store = new EgressGrantStore(join(directory, "shell-egress-hosts.json"));
+      const subject = { token: "4".repeat(32), sessionId: CHILD, tabId: undefined, projectRoot, origin: "shell" as const };
+      const github = { host: "github.com", port: 443 };
+      const scopes = ["once", "session", "project", "always"] as const;
+      await store.grant("session", scopes, subject, github);
+      const release = withholdSessionAuthorityFor(SESSION);
+      expect(await store.matchingScope(subject, github, scopes)).toBeUndefined();
+      release();
+      expect(await store.matchingScope(subject, github, scopes)).toBe("session");
+    } finally {
+      setApprovalConversationRootResolver((id) => id);
+    }
   });
 });
