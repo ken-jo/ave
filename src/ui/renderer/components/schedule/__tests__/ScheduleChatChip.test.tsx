@@ -139,4 +139,53 @@ describe("ScheduleChatChip", () => {
     await act(async () => { vi.advanceTimersByTime(6_100); });
     await waitFor(() => expect(api.removeRoutine).toHaveBeenCalledWith("build"));
   });
+
+  it("reads again every 30 seconds, so an item changed from the panel shows", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = makeApi([routine()]);
+    const view = render(<ScheduleChatChip api={api} sessionId={CHAT} onOpenRoutine={() => {}} />);
+    await view.findByTestId("schedule-chat-chip");
+    const reads = api.listRoutines.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    expect(api.listRoutines.mock.calls.length).toBe(reads + 1);
+  });
+
+  it("commits a pending delete when the chat goes away", async () => {
+    const { api } = makeApi([routine()]);
+    const view = render(<ScheduleChatChip api={api} sessionId={CHAT} onOpenRoutine={() => {}} />);
+    openMenu(await view.findByTestId("schedule-chat-chip"));
+    fireEvent.click(await view.findByRole("menuitem", { name: /삭제/ }));
+    await view.findByTestId("schedule-chip-undo");
+    view.unmount();
+    expect(api.removeRoutine).toHaveBeenCalledWith("build");
+  });
+
+  it("commits a pending delete and drops its undo when the tile shows another chat", async () => {
+    const { api } = makeApi([routine(), routine({ id: "other-chat", targetSessionId: OTHER })]);
+    const view = render(<ScheduleChatChip api={api} sessionId={CHAT} onOpenRoutine={() => {}} />);
+    openMenu(await view.findByTestId("schedule-chat-chip"));
+    fireEvent.click(await view.findByRole("menuitem", { name: /삭제/ }));
+    await view.findByTestId("schedule-chip-undo");
+    view.rerender(<ScheduleChatChip api={api} sessionId={OTHER} onOpenRoutine={() => {}} />);
+    expect(api.removeRoutine).toHaveBeenCalledWith("build");
+    expect(view.queryByTestId("schedule-chip-undo")).toBeNull();
+    expect(await view.findByTestId("schedule-chat-chip")).toBeTruthy();
+  });
+
+  it("clears an error notice on the next successful read and on another chat", async () => {
+    const { api } = makeApi([routine(), routine({ id: "other-chat", targetSessionId: OTHER })]);
+    api.triggerRoutineNow.mockResolvedValue({ ok: false, error: "routine-not-found" } as never);
+    const view = render(<ScheduleChatChip api={api} sessionId={CHAT} refreshKey="a" onOpenRoutine={() => {}} />);
+    const fail = async () => {
+      openMenu(await view.findByTestId("schedule-chat-chip"));
+      fireEvent.click(await view.findByRole("menuitem", { name: /지금 실행/ }));
+      await view.findByTestId("schedule-chip-notice");
+    };
+    await fail();
+    view.rerender(<ScheduleChatChip api={api} sessionId={CHAT} refreshKey="b" onOpenRoutine={() => {}} />);
+    await waitFor(() => expect(view.queryByTestId("schedule-chip-notice")).toBeNull());
+    await fail();
+    view.rerender(<ScheduleChatChip api={api} sessionId={OTHER} refreshKey="b" onOpenRoutine={() => {}} />);
+    expect(view.queryByTestId("schedule-chip-notice")).toBeNull();
+  });
 });

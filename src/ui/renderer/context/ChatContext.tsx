@@ -59,6 +59,8 @@ export interface ChatContextValue {
   onOpenSettings: (tab?: string) => void;
   /** Open the memory panel searching for this text (a memory notice's 보기). */
   onOpenMemory: (query: string) => void;
+  /** Open the schedule panel on this item (a schedule tool row's 스케줄에서 보기). */
+  onOpenRoutine: (routineId: string) => void;
   /** The memory this conversation was opened to fix ("Ave 에게 고치기"), shown above the composer until sent. */
   memoryFix: MemoryFixTarget | null;
   onDismissMemoryFix: () => void;

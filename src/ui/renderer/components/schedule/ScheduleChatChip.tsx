@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "../../../../components/ui/dropdown-menu.js";
 import type { RoutineRecord } from "../../../../shared/routines-types.js";
+import { isRecord } from "../../../../shared/is-record.js";
 import { formatLocalClock, formatMediumDateTime } from "../../../../shared/format-time.js";
 import type { AveApi } from "../../types.js";
 import { formatIpcError } from "../../format-ipc-error.js";
@@ -46,16 +47,20 @@ const failed = (r: RoutineRecord) => Boolean(r.lastFailure && !r.lastFailure.ack
 
 /** The items connected to `sessionId`, read from the host. Read again on every schedule event, every 30 seconds, and whenever
  * `refreshKey` changes (a turn ended, or the chat came back into view). */
-function useConnectedItems(api: ChipApi, sessionId: string | null | undefined, refreshKey: unknown) {
+function useConnectedItems(api: ChipApi, sessionId: string | null | undefined, refreshKey: unknown, onRead: () => void) {
   const [items, setItems] = useState<RoutineRecord[]>([]);
   const [running, setRunning] = useState<ReadonlySet<string>>(() => new Set());
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
   const refresh = useCallback(async () => {
     if (!sessionId) { setItems([]); return; }
     try {
       const list = await api.listRoutines();
-      if (mounted.current) setItems(list.routines.filter((r) => r.targetSessionId === sessionId && !r.dismissedAt));
+      if (!mounted.current) return;
+      setItems(list.routines.filter((r) => r.targetSessionId === sessionId && !r.dismissedAt));
+      onReadRef.current();
     } catch {
       if (mounted.current) setItems([]);
     }
@@ -88,17 +93,18 @@ export function ScheduleChatChip({ api, sessionId, refreshKey, onOpenRoutine }: 
   /** Open the schedule panel on this item: 스케줄에서 보기, and 시각·프롬프트 편집 in its popover. */
   onOpenRoutine: (routineId: string) => void;
 }) {
-  const { items, running, refresh } = useConnectedItems(api, sessionId, refreshKey);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  // A successful read clears an old error: whatever failed is now shown as it stands.
+  const { items, running, refresh } = useConnectedItems(api, sessionId, refreshKey, () => setNotice(""));
 
   const pendingRef = useRef<string | null>(null);
   pendingRef.current = pendingDelete;
   const commitDelete = useCallback(async (id: string) => {
     const result = await api.removeRoutine(id);
     setPendingDelete((current) => (current === id ? null : current));
+    await refresh();
     if (!result.ok) setNotice(result.error ? formatIpcError(result.error, undefined) : t("schedulePanel.errorActionFailed"));
-    void refresh();
   }, [api, refresh]);
   useEffect(() => {
     if (!pendingDelete) return undefined;
@@ -107,15 +113,24 @@ export function ScheduleChatChip({ api, sessionId, refreshKey, onOpenRoutine }: 
   }, [pendingDelete, commitDelete]);
   // The user already chose it: leaving the chat does not bring the item back.
   useEffect(() => () => { if (pendingRef.current) void api.removeRoutine(pendingRef.current); }, [api]);
+  // Another chat in this tile: the delete the user chose commits now, and this chat's notice goes with it.
+  useEffect(() => {
+    const pending = pendingRef.current;
+    if (pending) {
+      void api.removeRoutine(pending);
+      setPendingDelete(null);
+    }
+    setNotice("");
+  }, [api, sessionId]);
 
   const runAction = async (action: () => Promise<{ ok: boolean; error?: string }>) => {
     setNotice("");
     const result = await action();
+    await refresh();
     if (!result.ok) {
       setNotice(result.error === "paused" ? t("schedulePanel.errorPaused")
         : result.error ? formatIpcError(result.error, undefined) : t("schedulePanel.errorActionFailed"));
     }
-    void refresh();
   };
   const startDelete = (id: string) => {
     if (pendingDelete && pendingDelete !== id) void commitDelete(pendingDelete);
@@ -210,5 +225,40 @@ export function ScheduleChatChip({ api, sessionId, refreshKey, onOpenRoutine }: 
       {undo}
       {noticeRow}
     </>
+  );
+}
+
+/** Under a routine_schedule add's tool row (boards 15 and 21): "스케줄 추가됨 · 이 대화에 연결 · 다음 …" with 스케줄에서 보기. A
+ * change, a removal and a failed call keep only their tool row. */
+export function ScheduleToolResultLine({ name, input, result, failed, onOpenRoutine }: {
+  name: string;
+  input: unknown;
+  result: unknown;
+  failed: boolean;
+  onOpenRoutine?: (routineId: string) => void;
+}) {
+  if (name !== "routine_schedule" || failed || typeof result !== "string") return null;
+  const action = isRecord(input) ? input.action : undefined;
+  if (action !== undefined && action !== "add") return null;
+  let value: unknown;
+  try { value = JSON.parse(result); } catch { return null; }
+  if (!isRecord(value) || typeof value.routineId !== "string") return null;
+  const routineId = value.routineId;
+  const at = isRecord(value.schedule) && typeof value.schedule.at === "string" ? value.schedule.at : undefined;
+  const parts = [
+    t("schedulePanel.toolLineAdded"),
+    ...(value.connectedToThisChat === true ? [t("schedulePanel.chipConnected")] : []),
+    ...(at ? [t("schedulePanel.chipNext", { when: formatMediumDateTime(at) })] : []),
+  ];
+  return (
+    <div className="mx-3 my-1 flex min-w-0 items-center gap-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-2 py-1 text-xs text-info">
+      <AlarmClock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 flex-1 truncate" data-testid="schedule-tool-line">{parts.join(" · ")}</span>
+      {onOpenRoutine ? (
+        <button type="button" className="shrink-0 font-medium underline" onClick={() => onOpenRoutine(routineId)}>
+          {t("schedulePanel.chipOpenInSchedule")}
+        </button>
+      ) : null}
+    </div>
   );
 }

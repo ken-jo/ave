@@ -58,7 +58,8 @@ describe("routine chat resolver (대화에 연결)", () => {
     findLoopBySessionId: (sessionId) => (sessionId === "open" ? loop("open", null) : undefined),
     sideChatConversationLoop: loop("side", null),
     paneChatLoops: { all: () => [loop("pane", null)] },
-    loadMainChatMetadata: (sessionId) => ({ saved: {}, side: {}, run: { routineId: "r1" } } as Record<string, { routineId?: string }>)[sessionId],
+    // The side and pane chats' sessions are in the main store too, so only the live-loop checks refuse them.
+    loadMainChatMetadata: (sessionId) => ({ saved: {}, side: {}, pane: {}, run: { routineId: "r1" } } as Record<string, { routineId?: string }>)[sessionId],
   });
 
   it("binds the root main chat, open in a tile or saved by the main store", () => {

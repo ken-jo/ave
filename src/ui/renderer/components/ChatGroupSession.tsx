@@ -956,6 +956,7 @@ export function ChatGroupSession({
     hasApiKey: env.effectiveLlmReady, settingsLoaded: env.settingsLoaded,
     onOpenSettings: env.onOpenSettings,
     onOpenMemory: env.onOpenMemory,
+    onOpenRoutine: env.onOpenRoutine,
     memoryFix: memoryFix?.sessionId === currentSessionId ? memoryFix.memory : null,
     onDismissMemoryFix: dismissMemoryFix,
     ...env.search,

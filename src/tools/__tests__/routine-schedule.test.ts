@@ -223,8 +223,10 @@ describe("routine_schedule tool — 대화에 연결 and this chat's items", () 
       expect(store.list().find((r) => r.id === theirs.id)?.prePrompt).toBe("theirs");
       expect((await tool.execute({ action: "update", prePrompt: "x" }, from(CHAT))).isError).toBe(true);
       // The model cannot move its item to another chat or cut it loose.
-      const relink = await tool.execute({ action: "update", routineId: mine.id, targetSessionId: OTHER }, from(CHAT));
+      const relink = await tool.execute({ action: "update", routineId: mine.id, prePrompt: "x", targetSessionId: OTHER }, from(CHAT));
       expect(relink.isError).toBe(true);
+      expect(JSON.parse(relink.output).error).toContain("does not take: targetSessionId");
+      expect(store.list().find((r) => r.id === mine.id)).toMatchObject({ prePrompt: "new", targetSessionId: CHAT });
     } finally { await cleanup(); }
   });
 
