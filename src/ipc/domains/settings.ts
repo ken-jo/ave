@@ -535,7 +535,17 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const { openOAuthInAuthWindow } = await import("../../main/auth-window-service.js");
     await openOAuthInAuthWindow(parent, validated.url, options);
   };
-  const getSubscriptionRuntime = (): Promise<SubscriptionRuntimeService> =>
+  let knownSubscriptionRuntime: SubscriptionRuntimeService | null = null;
+  // A chat-selection change also drops the settings-read cache, so the status refresh it announces is live.
+  const publishSubscriptionSelectionChanged = (provider: SubscriptionRuntimeId): void => {
+    knownSubscriptionRuntime?.invalidateCachedReads(provider);
+    publishSubscriptionRuntimeStatusUpdated(provider);
+  };
+  const getSubscriptionRuntime = async (): Promise<SubscriptionRuntimeService> => {
+    knownSubscriptionRuntime = await resolveSubscriptionRuntime();
+    return knownSubscriptionRuntime;
+  };
+  const resolveSubscriptionRuntime = (): Promise<SubscriptionRuntimeService> =>
     getSubscriptionRuntimeService(openSubscriptionLogin, {
       audit: (event) => {
         auditLogger.log({
@@ -587,7 +597,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     let runtime: SubscriptionRuntimeService | null = null;
     try {
       runtime = await getSubscriptionRuntime();
-      const result = await runtime.listModels(provider);
+      const result = await runtime.listModels(provider, { allowCached: true });
       return { ok: true, ...result };
     } catch (error) {
       const status = await runtime?.getCachedStatus(provider);
@@ -713,7 +723,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       // too. The subscription mutation announces the provider that failed; announce the one restored.
       const restoredProvider = restored?.runtime?.kind === "subscription" ? restored.runtime.provider : null;
       if (restoredProvider && restoredProvider !== nextSubscriptionProvider) {
-        publishSubscriptionRuntimeStatusUpdated(restoredProvider);
+        publishSubscriptionSelectionChanged(restoredProvider);
       }
       throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
     }
@@ -724,10 +734,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     await broadcastSettingsSnapshot(deps, ownsTransition);
     if (!ownsTransition()) return;
     if (previousSubscriptionProvider && previousSubscriptionProvider !== nextSubscriptionProvider) {
-      publishSubscriptionRuntimeStatusUpdated(previousSubscriptionProvider);
+      publishSubscriptionSelectionChanged(previousSubscriptionProvider);
     }
     if (nextSubscriptionProvider) {
-      publishSubscriptionRuntimeStatusUpdated(nextSubscriptionProvider);
+      publishSubscriptionSelectionChanged(nextSubscriptionProvider);
     }
   };
   const hostAcpSubscriptionHandler = (
@@ -1029,9 +1039,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   ipcMain.handle(CHANNELS.settings.hasApiKey, async (_e, vendor?: string) => {
     const secretKey = llmSecretKeyForInput(deps, vendor);
     if (!secretKey) return false;
-    // A retired profile can still choose a provider with a saved key. Presence is enough for that settings chooser; the credential itself stays fenced.
-    if (settingsService.get("llm").retiredProvider) return await settingsService.hasStoredSecret(secretKey);
-    return (await settingsService.getSecret(secretKey)) !== null;
+    // Presence only, never decrypted. A retired profile can still choose a provider with a saved key; the credential itself stays fenced.
+    return await settingsService.hasStoredSecret(secretKey);
   });
 
   ipcMain.handle(CHANNELS.settings.deleteApiKey, async (e, vendor: string) => {
@@ -1094,7 +1103,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // All providers pass through this host-only boundary. The renderer can name only a static provider
   // id; executable paths, verification URLs, credentials, and raw runtime output remain main-owned.
-  ipcMain.handle(CHANNELS.settings.subscriptionRuntimeStatus, async (e, providerValue: unknown) => {
+  ipcMain.handle(CHANNELS.settings.subscriptionRuntimeStatus, async (e, providerValue: unknown, optionsValue?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionRuntimeStatus, e);
       return UNAUTHORIZED_FRAME;
@@ -1102,7 +1111,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (!isSubscriptionRuntimeId(providerValue)) {
       return { ok: false as const, error: "subscription-provider-not-supported" as const };
     }
-    return runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider));
+    // Only the user's explicit "check again" re-runs discovery; other card reads may reuse a settled status.
+    const refresh = typeof optionsValue === "object" && optionsValue !== null
+      && (optionsValue as { refresh?: unknown }).refresh === true;
+    return runSubscriptionAction(providerValue, (runtime, provider) => runtime.getStatus(provider, { allowCached: !refresh }));
   });
   ipcMain.handle(CHANNELS.settings.subscriptionChooseRuntime, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
