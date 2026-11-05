@@ -11,7 +11,7 @@ const NAME = "프로젝트";
 // A folder whose realpath names a different target than its matching form, as when it is swapped between the two resolutions:
 // the canonicalization resolves it first, and the runtime-root spelling resolves the same path a second time, which is the
 // call that sees the other folder.
-const { swapped } = vi.hoisted(() => ({ swapped: { from: "", to: "", calls: 0, vanish: false } }));
+const { swapped } = vi.hoisted(() => ({ swapped: { from: "", to: "", calls: 0, vanish: false, noFileId: "" } }));
 const NFD = NAME.normalize("NFD");
 const NFC = NAME.normalize("NFC");
 
@@ -36,7 +36,10 @@ vi.mock("node:fs", async (importOriginal) => {
     existsSync: (path: Parameters<typeof actual.existsSync>[0]) => !composed(path) && actual.existsSync(path),
     statSync: ((path: Parameters<typeof actual.statSync>[0], ...rest: unknown[]) => {
       if (composed(path)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return (actual.statSync as (...args: unknown[]) => unknown)(path, ...rest);
+      const stats = (actual.statSync as (...args: unknown[]) => unknown)(path, ...rest);
+      // A filesystem that reports no file ID (FAT, some network shares): every entry has inode 0.
+      if (swapped.noFileId && typeof path === "string" && path.startsWith(swapped.noFileId)) return { ...(stats as object), ino: 0n };
+      return stats;
     }) as typeof actual.statSync,
     realpathSync,
   };
@@ -111,6 +114,26 @@ describe("the on-disk spelling is pinned to the matching form's target", () => {
       swapped.from = "";
       swapped.vanish = false;
       warn.mockRestore();
+    }
+  });
+
+  it("lets the realpath decide when the filesystem reports no file ID", () => {
+    const plain = join(parent, "plain");
+    mkdirSync(plain, { recursive: true });
+    swapped.from = plain;
+    swapped.to = plain;
+    try {
+      swapped.calls = 0;
+      expect(buildRuntimeAllowedDirectories([plain], parent)).toContain(plain);
+      const withFileIds = swapped.calls;
+      swapped.noFileId = parent;
+      swapped.calls = 0;
+      expect(buildRuntimeAllowedDirectories([plain], parent)).toContain(plain);
+      // Inode 0 on both sides is no proof of one folder: the runtime spelling's own realpath ran as well.
+      expect(swapped.calls).toBe(withFileIds + 1);
+    } finally {
+      swapped.from = "";
+      swapped.noFileId = "";
     }
   });
 });

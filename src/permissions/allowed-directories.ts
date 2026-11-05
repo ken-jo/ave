@@ -42,12 +42,15 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
   return computeDefaultAllowedDirectoryEntries(cwd, false);
 }
 
-/** Whether two spellings name one folder, by device and inode; false when either is gone. */
+/**
+ * Whether two spellings name one folder, by device and inode; false when either is gone, or when the filesystem reports no
+ * file ID (inode 0), so the realpath decides.
+ */
 function sameFolder(a: string, b: string): boolean {
   try {
     const left = statSync(a, { bigint: true });
     const right = statSync(b, { bigint: true });
-    return left.dev === right.dev && left.ino === right.ino;
+    return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
   } catch {
     return false;
   }
@@ -63,7 +66,13 @@ function sameFolder(a: string, b: string): boolean {
  */
 function runtimeRootSpelling(raw: string, canonical: string): string | null {
   const resolved = pathResolve(raw);
-  if (!existsSync(resolved)) return canonical;
+  if (!existsSync(resolved)) {
+    // A folder that does not exist yet keeps the matching form, unless that form names another folder (an NFC sibling on
+    // ext4): granting the sibling would widen the root, so it is left out.
+    if (!existsSync(canonical)) return canonical;
+    console.warn("[allowed-directories] a runtime root was left out: it does not exist and its matching form names another folder");
+    return null;
+  }
   if (sameFolder(canonical, resolved)) return canonical;
   let onDisk: string;
   try {

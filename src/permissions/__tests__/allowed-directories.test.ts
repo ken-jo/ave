@@ -552,4 +552,22 @@ describe("runtime roots when an NFD folder has an NFC sibling (ext4 keeps both)"
       await cleanupTmpDir(parent);
     }
   });
+
+  it.runIf(process.platform === "linux")("leaves out a missing NFD folder rather than grant its NFC sibling", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ave-nfc-sibling-missing-"));
+    const nfd = join(parent, "프로젝트".normalize("NFD"));
+    const nfc = join(parent, "프로젝트".normalize("NFC"));
+    mkdirSync(nfc);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(sanitizeRuntimeAllowedDirectories([nfd])).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("left out"));
+      // With neither spelling on disk, the matching form stands for the folder to come.
+      rmSync(nfc, { recursive: true });
+      expect(sanitizeRuntimeAllowedDirectories([nfd])).toEqual([nfc]);
+    } finally {
+      warn.mockRestore();
+      await cleanupTmpDir(parent);
+    }
+  });
 });
