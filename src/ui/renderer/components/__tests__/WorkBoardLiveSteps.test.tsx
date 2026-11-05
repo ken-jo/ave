@@ -321,6 +321,27 @@ describe("Work Board — live step panel", () => {
     expect(selected()).toBe("4");
   });
 
+  it("judges the layout by the board body beside an open step panel: 900px with steps open docks, 1000px keeps the lanes", async () => {
+    setContainerWidths({ canvasWidth: 900 });
+    const { emit } = await mountBoard();
+    await emit({ itemId: 4, phase: "executing", turn: 1, text: "Working" });
+    await waitFor(() => expect(screen.getByTestId("work-board-panel").dataset.layout).toBe("wide"));
+    await openSteps();
+    // 900 - the 312px steps column leaves a ~588px body: too narrow for three lanes, so the panel docks below and the lanes become tabs.
+    await waitFor(() => expect(screen.getByTestId("work-board-panel").dataset.layout).toBe("narrow"));
+    expect(screen.getByTestId("work-board-docked")).toContainElement(screen.getByTestId("live-step-panel"));
+    // Docking widens the body, but the verdict reads the panel, so it does not flip back.
+    expect(screen.getByTestId("work-board-panel").dataset.layout).toBe("narrow");
+    cleanup();
+
+    setContainerWidths({ canvasWidth: 1000 });
+    const again = await mountBoard();
+    await again.emit({ itemId: 4, phase: "executing", turn: 1, text: "Working" });
+    await openSteps();
+    await waitFor(() => expect(screen.getByTestId("work-board-panel").dataset.layout).toBe("wide"));
+    expect(screen.getByTestId("work-board-steps-column")).toContainElement(screen.getByTestId("live-step-panel"));
+  });
+
   it("below 900px shows status tabs and docks the panel under the board behind a separator", async () => {
     setContainerWidths({ canvasWidth: 760 });
     const { emit } = await mountBoard();

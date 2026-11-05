@@ -16,6 +16,7 @@ import {
   formatElapsed,
   latestTurn,
   runStartedAt,
+  SteerAckBook,
   useNowTick,
   useWorkBoardRun,
 } from "../use-work-board-run.js";
@@ -430,5 +431,58 @@ describe("useWorkBoardRun — live steps (LS-2)", () => {
     const { result } = renderHook(() => useWorkBoardRun(api, [runningItem()]));
     await waitFor(() => expect(result.current.runState[4]?.plan).toEqual({ text: "1. write test\n2. fix", at: "2026-11-04T03:01:00.000Z" }));
     expect(result.current.runState[4]?.tools.map((s) => `${s.phase}:${s.toolUseId}`)).toEqual(["planning:p1"]);
+  });
+});
+
+describe("SteerAckBook — only this board's steers, never growing without bound", () => {
+  const dropped = (messageId: string) => ({ messageId, status: "dropped" as const, reason: "turn-ended" as const });
+
+  it("ignores another board's ack while nothing of its own is in flight", () => {
+    const book = new SteerAckBook();
+    expect(book.onAck(4, dropped("theirs"))).toBe("ignored");
+    expect(book.size).toBe(0);
+  });
+
+  it("holds an early ack only until its own sends finish, and drops the ones no reply claimed", () => {
+    const book = new SteerAckBook();
+    book.beginSend(4);
+    expect(book.onAck(4, dropped("mine"))).toBe("held");
+    expect(book.onAck(4, dropped("theirs"))).toBe("held");
+    expect(book.onReply(4, "mine")).toEqual(dropped("mine"));
+    book.endSend(4);
+    expect(book.size).toBe(0);
+  });
+
+  it("forgets a send whose reply threw", () => {
+    const book = new SteerAckBook();
+    book.beginSend(4);
+    book.onAck(4, dropped("theirs"));
+    book.endSend(4);
+    expect(book.size).toBe(0);
+  });
+
+  it("applies a recorded steer's ack once, then forgets it", () => {
+    const book = new SteerAckBook();
+    book.beginSend(4);
+    expect(book.onReply(4, "m-1")).toBeUndefined();
+    book.endSend(4);
+    expect(book.size).toBe(1);
+    expect(book.onAck(4, dropped("m-1"))).toBe("apply");
+    expect(book.size).toBe(0);
+    expect(book.onAck(4, dropped("m-1"))).toBe("ignored");
+  });
+
+  it("keeps a recorded steer past its run's end, and forgets it when the item's next run starts or the board leaves", () => {
+    const book = new SteerAckBook();
+    book.beginSend(4);
+    book.onReply(4, "m-1");
+    book.endSend(4);
+    book.beginSend(5);
+    book.onReply(5, "m-2");
+    book.endSend(5);
+    book.forgetItem(4);
+    expect(book.size).toBe(1);
+    book.clear();
+    expect(book.size).toBe(0);
   });
 });
