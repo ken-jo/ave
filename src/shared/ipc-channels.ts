@@ -39,6 +39,11 @@ export const ROUTINES = {
   acknowledgeResult: "ave:routines:ack-result",
   acknowledgeFailure: "ave:routines:ack-failure",
   listSessions: "ave:routines:list-sessions",
+  // Schedule panel: user edit, reversible pause, and projected occurrences plus past runs for the grids.
+  update: "ave:routines:update",
+  pause: "ave:routines:pause",
+  resume: "ave:routines:resume",
+  listOccurrences: "ave:routines:list-occurrences",
   // Running indicator events (renderer reflects LLM session progress)
   runningStarted: "ave:routines:running-started",
   runningFinished: "ave:routines:running-finished",

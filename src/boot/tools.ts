@@ -80,6 +80,8 @@ export interface WorkflowToolDeps {
   /** Lazy-resolved gate — populated after BrowserWindow is ready. */
   getAskUserQuestionGate?: () => AskUserQuestionGate | undefined;
   routinesStore?: RoutinesStore;
+  /** Required with routinesStore: the calling conversation's project for routine_schedule. */
+  routineProjectRootForSession?: (sessionId: string) => string | undefined;
   sessionTasksStore?: SessionTasksStore;
   sessionGoalStore?: SessionGoalStore;
   /** Lazy-resolved sub-agent runner — populated after ConversationLoop wiring. */
@@ -136,7 +138,9 @@ export function registerBuiltinTools(
     );
   }
   if (workflowDeps?.routinesStore) {
-    builtins.push(createRoutineScheduleTool(workflowDeps.routinesStore));
+    const projectRootForSession = workflowDeps.routineProjectRootForSession;
+    if (!projectRootForSession) throw new Error("registerBuiltinTools: routinesStore requires routineProjectRootForSession");
+    builtins.push(createRoutineScheduleTool(workflowDeps.routinesStore, { projectRootForSession }));
   }
   if (workflowDeps?.sessionTasksStore) {
     builtins.push(createSessionTasksTool(workflowDeps.sessionTasksStore));

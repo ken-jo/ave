@@ -43,6 +43,8 @@ import { usePaneActions } from "./PaneFrame.js";
 
 export interface RoutinePanelProps {
   api: AveApi;
+  /** The project new items are listed under. */
+  projectRoot?: string;
   onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
   /** A routine another surface (확인 필요) asked to show: scrolled into view and focused once the list holds it, then reported consumed. */
   focusRoutineId?: string | null;
@@ -231,11 +233,12 @@ interface AddRoutineModalProps {
   onClose: () => void;
   onAdded: () => void;
   template?: AgentPluginRoutineTemplate;
+  projectRoot?: string;
 }
 
 // Exported for renderer tests — the modal owns the button → scope-payload mapping that we want to lock down (empty
 // selection MUST map to `{ mode: "deny-all" }`, not "inherit" / "allow all").
-export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineModalProps) {
+export function AddRoutineModal({ api, onClose, onAdded, template, projectRoot }: AddRoutineModalProps) {
   const [tab, setTab] = useState<InputTab>(template?.schedule?.repeat?.kind === "cron" ? "cron" : "form");
   const [trigger, setTrigger] = useState<"schedule" | "shutdown">(template?.trigger ?? "schedule");
   const [execution, setExecution] = useState<RoutineExecution>(template?.execution ?? "llm-session");
@@ -354,7 +357,8 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
       return;
     }
 
-    const input: AddRoutineInput = {
+    const input: Omit<AddRoutineInput, "createdBy"> = {
+      projectRoot: projectRoot ?? "",
       trigger,
       execution,
       ...(schedule ? { schedule: schedule as RoutineSchedule } : {}),
@@ -684,7 +688,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
   );
 }
 
-export function RoutinePanel({ api, onOpenSession, focusRoutineId, onFocusConsumed }: RoutinePanelProps) {
+export function RoutinePanel({ api, onOpenSession, projectRoot, focusRoutineId, onFocusConsumed }: RoutinePanelProps) {
   const templates = useInstalledContent().routineTemplates;
   const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
@@ -919,6 +923,7 @@ export function RoutinePanel({ api, onOpenSession, focusRoutineId, onFocusConsum
           key={selectedTemplate ? packageRoutineSource(selectedTemplate) : "manual"}
           api={api}
           template={selectedTemplate ?? undefined}
+          {...(projectRoot ? { projectRoot } : {})}
           onClose={() => { setShowAddModal(false); setSelectedTemplate(null); }}
           onAdded={() => {
             setShowAddModal(false);

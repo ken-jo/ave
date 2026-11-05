@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "./routines-fixture.js";
 import { describe, expect, it, vi } from "vitest";
 import { runShutdownRoutines } from "../shutdown-routines.js";
 import type { RoutineRecord } from "../../shared/routines-types.js";
@@ -129,7 +130,7 @@ describe("runShutdownRoutines", () => {
     try {
       const routinesStore = new RoutinesStore(join(dir, "routines.json"));
       await routinesStore.load();
-      const r = await routinesStore.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+      const r = await routinesStore.add({ ...TEST_OWNER, trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
       const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
 
       await runShutdownRoutines({ routinesStore, routineEngine });
@@ -150,5 +151,20 @@ describe("runShutdownRoutines", () => {
     const routineEngine = { runRoutine: vi.fn(async () => { throw new Error("provider down"); }) };
     await expect(runShutdownRoutines({ routinesStore, routineEngine })).resolves.toBeUndefined();
     expect(routinesStore.markFired).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runShutdownRoutines — paused", () => {
+  it("skips a paused shutdown item", async () => {
+    const routinesStore = {
+      listActive: vi.fn(() => [routine({ pausedAt: "2026-05-16T00:30:00.000Z", pausedBy: "user" })]),
+      markFired: vi.fn(),
+      update: vi.fn(),
+      recordRunOutcome: vi.fn(),
+    };
+    const routineEngine = { runRoutine: vi.fn() };
+    await runShutdownRoutines({ routinesStore, routineEngine } as unknown as Parameters<typeof runShutdownRoutines>[0]);
+    expect(routineEngine.runRoutine).not.toHaveBeenCalled();
+    expect(routinesStore.markFired).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 // Cron schedules use wall-clock evaluation rather than advancing a stored timestamp; deduplicate each routine per minute.
 import type { RoutinesStore, RoutineRecord } from "./routines-store.js";
+import { isMissedWhilePaused } from "../routines/schedule-advance.js";
 import { matchesCron } from "../routines/cron-evaluator.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
@@ -88,7 +89,7 @@ export class RoutinesScheduler {
           const currentMinuteUTC = minuteKeyUTC(now);
           await this.store.update(routine.id, { lastFiredMinuteUTC: currentMinuteUTC });
         }
-        const updated = await this.store.markFired(routine.id, missingPluginIds);
+        const updated = await this.store.markFired(routine.id, missingPluginIds, { scheduled: true });
         if (!updated) continue;
         this.dispatch(updated);
       } catch (err) {
@@ -100,11 +101,13 @@ export class RoutinesScheduler {
 
   private isDue(routine: RoutineRecord, now: Date): boolean {
     if (routine.trigger !== "schedule") return false;
+    if (routine.pausedAt) return false;
     const schedule = routine.schedule;
     if (!schedule) return false;
 
     const repeat = schedule.repeat;
     if ((!repeat || repeat.kind === "none") && routine.lastFiredAt) return false;
+    if (isMissedWhilePaused(routine)) return false;
 
     // Cron expression: match current minute using persistent dedup key.
     if (repeat?.kind === "cron") {
@@ -122,10 +125,12 @@ export class RoutinesScheduler {
   }
 
   // Manual triggers share scheduled execution, persistence, deduplication, and fired-event delivery.
-  async dispatchNow(routineId: string): Promise<boolean | "plugins-missing"> {
+  async dispatchNow(routineId: string): Promise<boolean | "plugins-missing" | "paused"> {
     const active = this.store.listActive();
     const routine = active.find((r) => r.id === routineId);
     if (!routine) return false;
+    // A paused item runs only after the user resumes it.
+    if (routine.pausedAt) return "paused";
     const missingPluginIds = await this.getMissingPluginIds(routine);
     if (this.areAllPluginsMissing(routine, missingPluginIds)) {
       await this.store.markPluginsMissing(routine.id, missingPluginIds,

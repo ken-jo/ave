@@ -1839,6 +1839,41 @@ reviewable, but it is not due again. Shutdown routines are never restored,
 because they would run at every quit. An unreadable stored `lastFailure` is
 dropped with a warning, and the routine itself is kept.
 
+The schedule panel lists routines per project. Every new record carries a
+`projectRoot` and a `createdBy`, and the store refuses an add without either:
+the renderer passes the active project and records the user, and
+`routine_schedule` passes the calling conversation's project, resolved from
+its session (a conversation outside any named project belongs to the default
+workspace), and records the agent. It never uses the tool working directory,
+which can fall back to the process directory; with no session project it
+refuses. Only records stored before projects existed
+have no project; they show in every project. The project filter is for display
+only. It is not an authorization boundary, and nothing may rely on it to keep
+one project's items from another. A user edit (`ROUTINES.update`) changes the
+title, prompt, notification text or schedule and passes the same validation as
+add, and the IPC handlers refuse wrongly typed fields first. A schedule
+"changes" only when it fires at different times: `at` compares as an instant,
+no repeat equals a "none" repeat, and a cron expression is trimmed. Then the old
+series' cron minute keys are dropped, and a one-shot is due again and no longer
+missed. A re-save that fires at the same times keeps them, so neither a cron
+minute nor a fired one-shot can fire twice. Stored records with wrongly typed
+text or schedule fields are refused at load. Pause is reversible, unlike dismissal: a
+paused item is never due, cannot be run now, and a paused shutdown item does
+not run at quit. Resuming does not replay what was paused: a repeating item's
+next fire moves past now, and a one-shot whose time passed while paused is
+missed. It is not due, the grid shows it as missed, and only 지금 실행 or a new
+time runs it. A scheduler pass decides due-ness from a snapshot and then awaits
+the extension check, so `markFired` re-checks the item inside the store's file
+queue: a paused or dismissed item never fires on any path (scheduler, run-now,
+quit), and on a scheduler pass an already-fired one-shot, a missed or a
+no-longer-due item does not fire either. `ROUTINES.listOccurrences` serves the day, week and month grids
+for a range of at most 43 days. Projected occurrences reuse the scheduler's own
+next-fire arithmetic and cron evaluator, so the grid draws only times the
+scheduler fires; each item is capped at 200 occurrences. Past runs come from the
+item's sessions and `lastFiredAt`, including dismissed items, because a
+completed one-shot is dismissed by its own fire. A run is `failed` when
+`lastFailure` names it.
+
 ## Main-process composition and boot readiness
 
 TypeScript under `src/` must have no static runtime-import strongly

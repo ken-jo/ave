@@ -9,6 +9,7 @@ import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
+import { TEST_OWNER } from "../../../main/__tests__/routines-fixture.js";
 import type { WorkApprovalListResult, WorkApprovalView } from "../../../shared/work-approvals-types.js";
 import { wireWorkApprovalsChanged } from "../../../boot/steps/work-approvals-wiring.js";
 
@@ -173,7 +174,7 @@ describe("work approvals list", () => {
 
   it("lists a routine only for missing plugins, never for an unseen or notify-only result, and keeps prePrompt out", async () => {
     await register();
-    const attention = await routinesStore.add({
+    const attention = await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
@@ -183,7 +184,7 @@ describe("work approvals list", () => {
     });
     const fired = await routinesStore.markFired(attention.id, ["mail"]);
     // Fired and never acknowledged: an unseen successful result, which is not a decision.
-    const unseen = await routinesStore.add({
+    const unseen = await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
@@ -191,14 +192,14 @@ describe("work approvals list", () => {
       title: "Unseen result",
     });
     await routinesStore.markFired(unseen.id);
-    const notify = await routinesStore.add({
+    const notify = await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
       notificationTitle: "Notify only",
     });
     await routinesStore.markFired(notify.id);
-    await routinesStore.add({
+    await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: new Date(Date.now() + 60_000).toISOString() },
@@ -223,7 +224,7 @@ describe("work approvals list", () => {
 
   it("lists an unacknowledged failed run, including a shutdown routine's dismissed record, and drops it once acknowledged", async () => {
     await register();
-    const daily = await routinesStore.add({
+    const daily = await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: new Date(Date.now() + 60_000).toISOString(), repeat: { kind: "daily" } },
@@ -233,7 +234,7 @@ describe("work approvals list", () => {
     const dailyFired = (await routinesStore.markFired(daily.id))!.lastFiredAt!;
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
     await routinesStore.recordRunOutcome(daily.id, dailyFired, { ok: false, kind: "error", reason: `provider down ${secret}` });
-    const quit = await routinesStore.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+    const quit = await routinesStore.add({ ...TEST_OWNER, trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
     const quitFired = (await routinesStore.markFired(quit.id))!.lastFiredAt!;
     await routinesStore.recordRunOutcome(quit.id, quitFired, { ok: false, kind: "shutdown-timeout" });
     expect(routinesStore.list().find((r) => r.id === quit.id)?.dismissedAt).toBeDefined();
@@ -315,7 +316,7 @@ describe("work approvals changed signal", () => {
   });
 
   it("fires when the scheduler records a skipped routine", async () => {
-    const routine = await routinesStore.add({
+    const routine = await routinesStore.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: new Date(Date.now() + 60_000).toISOString() },

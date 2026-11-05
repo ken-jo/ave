@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "./routines-fixture.js";
 import { withRoutinesStore } from "./support/routines-store.js";
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
@@ -9,7 +10,7 @@ import { futureIso, tempRoutinesStore } from "./routines-fixture.js";
 
 describe("RoutinesStore v2 — basic persistence", () => {
   it("adds a notification-only routine and reads it back", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -21,7 +22,7 @@ describe("RoutinesStore v2 — basic persistence", () => {
   }));
 
   it("adds an llm-session routine", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: futureIso(), repeat: { kind: "daily" } },
@@ -33,7 +34,7 @@ describe("RoutinesStore v2 — basic persistence", () => {
   }));
 
   it("persists the exact last routine session id and clears it on the next fire", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: futureIso(), repeat: { kind: "daily" } },
@@ -99,7 +100,7 @@ describe("RoutinesStore v2 — basic persistence", () => {
   }));
 
   it("holds back a stored routine whose plugin id the contract rejects while every valid routine loads", withRoutinesStore(async ({ store, dir }) => {
-    const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+    const good = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
     const legacy = {
       id: "legacy-scope",
       trigger: "schedule",
@@ -145,7 +146,7 @@ describe("RoutinesStore v2 — basic persistence", () => {
   }));
 
   it("refuses to add a routine scoped to a plugin id the contract rejects", withRoutinesStore(async ({ store }) => {
-    await expect(store.add({
+    await expect(store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -158,7 +159,7 @@ describe("RoutinesStore v2 — basic persistence", () => {
 describe("RoutinesStore v2 — cap enforcement", () => {
   it("rejects after the 50-record cap is reached", withRoutinesStore(async ({ store }) => {
     for (let i = 0; i < MAX_PERSISTED_ROUTINES; i++) {
-      await store.add({
+      await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso((i + 1) * 60_000) },
@@ -166,7 +167,7 @@ describe("RoutinesStore v2 — cap enforcement", () => {
       });
     }
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso(1_000_000) },
@@ -179,7 +180,7 @@ describe("RoutinesStore v2 — cap enforcement", () => {
 describe("RoutinesStore v2 — invalid at", () => {
   it("rejects non-ISO at value", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: "not-a-date" },
@@ -198,7 +199,7 @@ describe("RoutinesStore v2 — non-cron repeat requires schedule.at", () => {
           ? { kind: "interval" as const, intervalMs: 3_600_000 }
           : { kind };
       await expect(
-        store.add({
+        store.add({ ...TEST_OWNER,
           trigger: "schedule",
           execution: "notification-only",
           schedule: { repeat } as import("../../shared/routines-types.js").RoutineSchedule,
@@ -212,7 +213,7 @@ describe("RoutinesStore v2 — non-cron repeat requires schedule.at", () => {
 describe("RoutinesStore v2 — atomic write", () => {
   it("does not leave a .tmp file behind after successful add", withRoutinesStore(async ({ store, dir }) => {
     const path = join(dir, "routines.json");
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -226,7 +227,7 @@ describe("RoutinesStore v2 — atomic write", () => {
     "sets file mode 0o600 on POSIX",
     withRoutinesStore(async ({ store, dir }) => {
       const path = join(dir, "routines.json");
-      await store.add({
+      await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso() },
@@ -240,7 +241,7 @@ describe("RoutinesStore v2 — atomic write", () => {
 
 describe("RoutinesStore v2 — dismiss / remove", () => {
   it("dismiss sets dismissedAt and hides from listActive", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -253,7 +254,7 @@ describe("RoutinesStore v2 — dismiss / remove", () => {
   }));
 
   it("remove deletes from list entirely", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -266,7 +267,7 @@ describe("RoutinesStore v2 — dismiss / remove", () => {
 
 describe("RoutinesStore v2 — markFired repeat advancement", () => {
   it("none: dismisses after first fire", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso(-1000), repeat: { kind: "none" } },
@@ -278,7 +279,7 @@ describe("RoutinesStore v2 — markFired repeat advancement", () => {
 
   it("daily: advances at by 24h+", withRoutinesStore(async ({ store }) => {
     const pastIso = new Date(Date.now() - 1000).toISOString();
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso, repeat: { kind: "daily" } },
@@ -293,7 +294,7 @@ describe("RoutinesStore v2 — markFired repeat advancement", () => {
   it("monthly clamping: Jan 31 → Feb stays within Feb", withRoutinesStore(async ({ store }) => {
     // Use a past date: Jan 31, 2026
     const jan31 = new Date("2026-01-31T09:00:00Z");
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
@@ -307,7 +308,7 @@ describe("RoutinesStore v2 — markFired repeat advancement", () => {
 
   it("interval: advances at by intervalMs", withRoutinesStore(async ({ store }) => {
     const pastIso = new Date(Date.now() - 1000).toISOString();
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: pastIso, repeat: { kind: "interval", intervalMs: 3_600_000 } },
@@ -322,7 +323,7 @@ describe("RoutinesStore v2 — markFired repeat advancement", () => {
 describe("RoutinesStore v2 — schedule.at ISO normalization", () => {
   it("normalizes tz-offset at to UTC ISO string", withRoutinesStore(async ({ store }) => {
     const kstAt = "2026-05-09T09:00:00+09:00";
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: kstAt },
@@ -340,7 +341,7 @@ describe("RoutinesStore v2 — schedule.at ISO normalization", () => {
 describe("RoutinesStore v2 — cron validation", () => {
   it("rejects invalid cron expression", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { repeat: { kind: "cron", expression: "not a cron" } },
@@ -351,7 +352,7 @@ describe("RoutinesStore v2 — cron validation", () => {
 
   it("rejects cron expression exceeding MAX_CRON_EXPR_LENGTH", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { repeat: { kind: "cron", expression: "0 9 * * 1".padEnd(MAX_CRON_EXPR_LENGTH + 1, " x") } },
@@ -361,7 +362,7 @@ describe("RoutinesStore v2 — cron validation", () => {
   }));
 
   it("accepts valid 5-field cron expression", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { repeat: { kind: "cron", expression: "0 9 * * 1-5" } },
@@ -374,7 +375,7 @@ describe("RoutinesStore v2 — cron validation", () => {
 describe("RoutinesStore v2 — execution validation", () => {
   it("rejects llm-session with empty prePrompt", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "llm-session",
         schedule: { at: futureIso() },
@@ -385,7 +386,7 @@ describe("RoutinesStore v2 — execution validation", () => {
 
   it("rejects notification-only with empty notificationTitle", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso() },
@@ -398,7 +399,7 @@ describe("RoutinesStore v2 — execution validation", () => {
 describe("RoutinesStore v2 — LLM session sub-cap", () => {
   it(`rejects LLM session routine after ${MAX_LLM_SESSION_ROUTINES} active LLM routines`, withRoutinesStore(async ({ store }) => {
     for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
-      await store.add({
+      await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "llm-session",
         schedule: { at: futureIso((i + 1) * 60_000) },
@@ -406,7 +407,7 @@ describe("RoutinesStore v2 — LLM session sub-cap", () => {
       });
     }
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "llm-session",
         schedule: { at: futureIso(1_000_000) },
@@ -417,7 +418,7 @@ describe("RoutinesStore v2 — LLM session sub-cap", () => {
 
   it("notification-only routines are not affected by LLM sub-cap", withRoutinesStore(async ({ store }) => {
     for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
-      await store.add({
+      await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "llm-session",
         schedule: { at: futureIso((i + 1) * 60_000) },
@@ -425,7 +426,7 @@ describe("RoutinesStore v2 — LLM session sub-cap", () => {
       });
     }
     // notification-only should still be allowed
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso(1_000_000) },
@@ -441,7 +442,7 @@ describe("RoutinesStore v2 — advanceInterval far-past (no loop)", () => {
     const farPastMs = Date.now() - 365 * 24 * 60 * 60 * 1000;
     const farPastIso = new Date(farPastMs).toISOString();
     try {
-      const r = await store.add({
+      const r = await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: farPastIso, repeat: { kind: "interval", intervalMs: 3_600_000 } },
@@ -466,7 +467,7 @@ describe("RoutinesStore v2 — advanceMonthly UTC correctness (DST-independence)
     await withTz("America/Los_Angeles", async () => {
       // Jan 31 in UTC — if advanceMonthly used local-time methods, LA timezone offset would shift the date and produce a different day.
       const jan31Utc = new Date("2026-01-31T12:00:00Z");
-      const r = await store.add({
+      const r = await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: jan31Utc.toISOString(), repeat: { kind: "monthly" } },
@@ -493,7 +494,7 @@ describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic
 
     // Use Jan 31, 2020 — far enough back that markFired will advance 6+ months.
     const jan31 = new Date("2020-01-31T09:00:00Z");
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: jan31.toISOString(), repeat: { kind: "monthly" } },
@@ -521,7 +522,7 @@ describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic
 
   it("Feb 28 → Mar preserves day 28 (originalDay < lastDay)", withRoutinesStore(async ({ store }) => {
     const feb28 = new Date("2020-02-28T09:00:00Z");
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: feb28.toISOString(), repeat: { kind: "monthly" } },
@@ -537,7 +538,7 @@ describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic
 
 describe("RoutinesStore v2 — source marker", () => {
   it("persists the source marker through add() and a reload from disk", withRoutinesStore(async ({ store, dir }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "llm-session",
       schedule: { at: futureIso(), repeat: { kind: "daily" } },
@@ -553,7 +554,7 @@ describe("RoutinesStore v2 — source marker", () => {
   }));
 
   it("leaves source unset when omitted (manual creation)", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -563,7 +564,7 @@ describe("RoutinesStore v2 — source marker", () => {
   }));
 
   it("collapses an empty / whitespace-only source to unset", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({
+    const r = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -575,7 +576,7 @@ describe("RoutinesStore v2 — source marker", () => {
 
   it("rejects a source longer than the cap", withRoutinesStore(async ({ store }) => {
     await expect(
-      store.add({
+      store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "notification-only",
         schedule: { at: futureIso() },
@@ -613,7 +614,7 @@ describe("RoutinesStore workspace scope revocation", () => {
     const removedRoot = join(dir, "workspace");
     const segmentSibling = join(dir, "workspace-sibling");
     const unrelated = join(dir, "unrelated");
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -628,7 +629,7 @@ describe("RoutinesStore workspace scope revocation", () => {
         ],
       },
     });
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -660,7 +661,7 @@ describe("RoutinesStore workspace scope revocation", () => {
     const childDeep = join(preservedChild, "src");
     const childPrefixSibling = join(parentRoot, "child-old");
     const unrelated = join(dir, "unrelated");
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -696,7 +697,7 @@ describe("RoutinesStore workspace scope revocation", () => {
   }));
 
   it("is a no-op when no routine scope is covered", withRoutinesStore(async ({ store, dir }) => {
-    await store.add({
+    await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -718,7 +719,7 @@ describe("RoutinesStore v2 — corrupt routines.json recovery", () => {
   it("backs up corrupt JSON as .corrupt-<ts>-<random>.bak and starts empty", withRoutinesStore(async ({ store, dir }) => {
     writeFileSync(join(dir, "routines.json"), "{ this is not json", "utf-8");
 
-    const added = await store.add({
+    const added = await store.add({ ...TEST_OWNER,
       trigger: "schedule",
       execution: "notification-only",
       schedule: { at: futureIso() },
@@ -741,7 +742,7 @@ describe("persisted missing-plugin status validation", () => {
   ])("drops malformed status %j while preserving a neighbouring routine", async (patch) => {
     const { store, dir, cleanup } = tempRoutinesStore();
     try {
-      const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+      const good = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
       const { writeFile } = await import("node:fs/promises");
       await writeFile(join(dir, "routines.json"), JSON.stringify({ version: 2, routines: [good, { ...good, id: "bad", ...patch }] }));
       await store.load();
@@ -750,7 +751,7 @@ describe("persisted missing-plugin status validation", () => {
   });
 
   it("holds back a stored missing-plugin id the contract rejects instead of dropping the routine", withRoutinesStore(async ({ store, dir }) => {
-    const good = await store.add({ trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
+    const good = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "notification-only", notificationTitle: "Good", schedule: { at: futureIso() } });
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(dir, "routines.json"), JSON.stringify({
       version: 2,
@@ -769,6 +770,7 @@ describe("persisted missing-plugin status validation", () => {
 
 describe("RoutinesStore v2 — run failure persistence", () => {
   const dailyInput = {
+    ...TEST_OWNER,
     trigger: "schedule" as const,
     execution: "llm-session" as const,
     schedule: { at: futureIso(), repeat: { kind: "daily" as const } },
@@ -825,7 +827,7 @@ describe("RoutinesStore v2 — run failure persistence", () => {
   }));
 
   it("keeps a failed one-shot visible without making it due again", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ ...dailyInput, schedule: { at: futureIso() } });
+    const r = await store.add({ ...TEST_OWNER, ...dailyInput, schedule: { at: futureIso() } });
     const fired = await store.markFired(r.id);
     expect(store.listActive()).toHaveLength(0);
 
@@ -930,7 +932,7 @@ describe("RoutinesStore v2 — run failure persistence", () => {
   }));
 
   it("records a shutdown timeout as its own kind and does not re-enable the shutdown routine", withRoutinesStore(async ({ store }) => {
-    const r = await store.add({ trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
+    const r = await store.add({ ...TEST_OWNER, trigger: "shutdown", execution: "llm-session", prePrompt: "wrap up", title: "Quit" });
     const firedAt = (await store.markFired(r.id))!.lastFiredAt!;
     expect(store.listActive()).toHaveLength(0);
     await store.recordRunOutcome(r.id, firedAt, { ok: false, kind: "shutdown-timeout" });

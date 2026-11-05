@@ -1,3 +1,4 @@
+import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
@@ -694,7 +695,7 @@ describe("bootstrap() integration lock", () => {
     const dir = await mkdtemp(join(tmpdir(), "ave-routine-alias-"));
     try {
       const store = new RoutinesStore(join(dir, "routines.json"));
-      const routine = await store.add({
+      const routine = await store.add({ ...TEST_OWNER,
         trigger: "schedule",
         execution: "llm-session",
         prePrompt: "Use the installed plugin",
