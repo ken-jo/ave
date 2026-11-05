@@ -69,6 +69,8 @@ export interface MainSurfacesStore {
   takeLastClosed: () => ClosedSurface | undefined;
   setUrl: (tabId: string, url: string) => void;
   setCwd: (tabId: string, cwd: string) => void;
+  /** The surface belongs to another project from now on (다른 프로젝트로 이동). Throws for a surface that is not here. */
+  setProjectRoot: (tabId: string, projectRoot: string) => void;
 }
 
 export function useMainSurfaces(): MainSurfacesStore {
@@ -142,8 +144,14 @@ export function useMainSurfaces(): MainSurfacesStore {
     commit(current.map((each) => (each.tabId === tabId ? { ...each, cwd } : each)));
   }, [commit]);
 
+  const setProjectRoot = useCallback((tabId: string, projectRoot: string) => {
+    const current = surfacesRef.current;
+    if (!current.some((each) => each.tabId === tabId)) throw new Error(`surface-unknown: ${tabId} is not in the main area`);
+    commit(current.map((each) => (each.tabId === tabId ? { ...each, projectRoot } : each)));
+  }, [commit]);
+
   return useMemo(
-    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd }),
-    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd],
+    () => ({ surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot }),
+    [surfaces, get, create, adopt, release, close, takeLastClosed, setUrl, setCwd, setProjectRoot],
   );
 }

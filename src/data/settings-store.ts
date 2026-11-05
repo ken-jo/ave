@@ -104,6 +104,7 @@ import {
   normalizeProjectSelection,
   normalizeRecentProjectRoots,
   normalizeLastViewByProject,
+  normalizeExpandedProjectRoots,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
   withRenamedLlmVendorIds,
@@ -725,6 +726,8 @@ export interface SystemSettings {
   recentProjectRoots?: string[];
   /** Where each project's window was last, keyed by `projectRootKey`, so switching back returns there. */
   lastViewByProject?: Record<string, ProjectLastView>;
+  /** The all-projects view's open groups, by root identity. A group not listed is folded. */
+  expandedProjectRoots?: string[];
 }
 
 /** Production release prep; Electron auto-update (electron-updater). `autoCheckEnabled` defaults to TRUE: only the background update *check* (metadata fetch) runs by default. Actual download +
@@ -1329,6 +1332,7 @@ export class SettingsService {
       acceptNormalizedField(next, "projectSelection", partial.system.projectSelection, normalizeProjectSelection, "system", PATCHED_FIELD);
       acceptNormalizedField(next, "recentProjectRoots", partial.system.recentProjectRoots, normalizeRecentProjectRoots, "system", PATCHED_FIELD);
       acceptNormalizedField(next, "lastViewByProject", partial.system.lastViewByProject, normalizeLastViewByProject, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "expandedProjectRoots", partial.system.expandedProjectRoots, normalizeExpandedProjectRoots, "system", PATCHED_FIELD);
       // The reason only is logged on refusal (`normalizeMainLayout`): the value holds page addresses that may carry tokens. A refused patch keeps the saved layout.
       const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
       if (patchedLayout) next.mainLayout = patchedLayout;

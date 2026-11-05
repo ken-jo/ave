@@ -50,7 +50,7 @@ const NATIVE_LAYOUT: Record<
     ["project.remove"],
   ],
   conversation: [
-    ["conversation.open"],
+    ["conversation.open", "conversation.open-split"],
     ["conversation.mark-unread", "conversation.mark-read"],
     ["conversation.rename", "conversation.pin", "conversation.unpin"],
     ["conversation.share", "conversation.copy"],
@@ -96,6 +96,7 @@ const NATIVE_LABEL: Record<NativeContextMenuCommand, () => string> = {
   "project.add": () => t("sidebar.projectMenuAdd"),
   "project.remove": () => t("sidebar.projectMenuRemove"),
   "conversation.open": () => t("chatPreviewRail.ctxOpen"),
+  "conversation.open-split": () => t("sidebar.openInSplit"),
   "conversation.pin": () => t("sidebar.pinConversation"),
   "conversation.unpin": () => t("sidebar.unpinConversation"),
   "conversation.rename": () => t("sidebar.renameConversation"),

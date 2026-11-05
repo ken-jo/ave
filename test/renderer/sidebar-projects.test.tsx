@@ -205,6 +205,89 @@ describe("sidebar projects", () => {
     }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
   });
 
+  it("closes a terminal from its row the way its pane's close button does", async () => {
+    const { container, api } = await renderInProject({ kind: "root", root: "/ws" });
+    expect(await headerName()).toContain("기본 프로젝트");
+    await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+    const tabId = await waitFor(() => { const shown = shownSurfaces(container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+    // The × says what closing a terminal does, as its menu item does.
+    expect(byTestId(`sidebar-surface-close-${tabId}`)!.getAttribute("aria-label")).toBe("닫기 · 실행 중인 명령 종료");
+    await act(async () => { fireEvent.click(byTestId(`sidebar-surface-close-${tabId}`)!); });
+    await waitFor(() => expect(shownSurfaces(container)).toEqual([]));
+    expect(byTestId(`sidebar-surface-tree-${tabId}`)).toBeNull();
+    expect((api as unknown as { terminal: { kill: ReturnType<typeof vi.fn> } }).terminal.kill).toHaveBeenCalledWith(tabId);
+  });
+
+  it("opens a terminal beside the focused pane with ⌥Enter on its row", async () => {
+    const { container } = await renderInProject({ kind: "root", root: "/ws" });
+    expect(await headerName()).toContain("기본 프로젝트");
+    await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+    const first = await waitFor(() => { const shown = shownSurfaces(container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+    await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+    await waitFor(() => expect(shownSurfaces(container).map((each) => each.tabId)).not.toContain(first));
+    const row = byTestId(`sidebar-surface-tree-${first}`)!;
+    row.focus();
+    await act(async () => { fireEvent.keyDown(row, { key: "Enter", altKey: true }); });
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(2));
+    expect(shownSurfaces(container).map((each) => each.tabId)).toContain(first);
+  });
+
+  it("moves a terminal to another project from its row menu", async () => {
+    const { container, api, chooseDynamicMenuItem } = await renderApp({
+      hasApiKey: true,
+      terminal: true,
+      nativeContextMenu: true,
+      workspaceRoots: ROOTS,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "root", root: "/ws" } } },
+    });
+    expect(await headerName()).toContain("기본 프로젝트");
+    await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+    const tabId = await waitFor(() => { const shown = shownSurfaces(container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+    await act(async () => { fireEvent.click(byTestId(`sidebar-surface-menu-${tabId}`)!); });
+    await act(async () => { chooseDynamicMenuItem("move:/ws/shop"); });
+    await waitFor(() => expect(byTestId(`sidebar-surface-tree-${tabId}`)).toBeNull());
+    await waitFor(() => {
+      const saved = vi.mocked(api.updateSettings).mock.calls
+        .map(([patch]) => (patch as { system?: { mainLayout?: { openSurfaces?: unknown[] } } }).system?.mainLayout)
+        .filter((each) => each !== undefined)
+        .at(-1);
+      expect(saved?.openSurfaces).toEqual([expect.objectContaining({ tabId, projectRoot: "/ws/shop" })]);
+    }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
+    await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
+    await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-project-ws-shop"); expect(el).not.toBeNull(); return el!; })); });
+    await waitFor(() => expect(byTestId(`sidebar-surface-tree-${tabId}`)).not.toBeNull());
+  });
+
+  it("keeps a terminal where it is when the project picked from its open row menu was removed meanwhile", async () => {
+    const { container, chooseDynamicMenuItem } = await renderApp({
+      hasApiKey: true,
+      terminal: true,
+      nativeContextMenu: true,
+      workspaceRoots: ROOTS,
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "root", root: "/ws" } } },
+    });
+    expect(await headerName()).toContain("기본 프로젝트");
+    await act(async () => { fireEvent.click(byTestId("sidebar-terminal")!); });
+    const tabId = await waitFor(() => { const shown = shownSurfaces(container); expect(shown).toHaveLength(1); return shown[0]!.tabId!; });
+    // The native menu is open with "move to shop" in it ...
+    await act(async () => { fireEvent.click(byTestId(`sidebar-surface-menu-${tabId}`)!); });
+    // ... while shop is removed: the next list no longer holds it.
+    const workspace = (window as unknown as { ave: { workspace: { pickRoot: ReturnType<typeof vi.fn>; listRoots: ReturnType<typeof vi.fn> } } }).ave.workspace;
+    const remaining = [{ path: "/ws", isDefault: true }, { path: "/ws/notes", isDefault: false }];
+    workspace.pickRoot.mockResolvedValueOnce({ ok: true, roots: remaining, added: "/ws/notes" });
+    workspace.listRoots.mockResolvedValue({ ok: true, defaultRoot: "/ws", roots: remaining });
+    await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
+    await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-add"); expect(el).not.toBeNull(); return el!; })); });
+    await waitFor(() => expect(byTestId("sidebar-project-header")?.textContent).toContain("notes"));
+
+    expect(() => act(() => { chooseDynamicMenuItem("move:/ws/shop"); })).toThrow("project-unknown");
+    await waitForToast(container, "그 프로젝트가 더 이상 열려 있지 않아 터미널 또는 페이지를 옮기지 않았습니다.");
+    // Still the default project's terminal.
+    await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
+    await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-project-ws"); expect(el).not.toBeNull(); return el!; })); });
+    await waitFor(() => expect(byTestId(`sidebar-surface-tree-${tabId}`)).not.toBeNull());
+  });
+
   it("does not reopen a closed terminal into a project that has since been removed", async () => {
     const { container } = await renderInProject({ kind: "root", root: "/ws/shop" });
     expect(await headerName()).toContain("shop");
@@ -226,5 +309,49 @@ describe("sidebar projects", () => {
     await act(async () => { fireEvent.keyDown(window, { key: "t", shiftKey: true, metaKey: darwin, ctrlKey: !darwin }); });
     await waitForToast(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
     expect(shownSurfaces(container)).toEqual([]);
+  });
+
+  it("keeps a restored terminal's last-used time across launches, and puts one saved without a time below today's conversations", async () => {
+    const now = Date.now();
+    const timed = "terminal:abcd1234-2";
+    const untimed = "terminal:abcd1234-3";
+    const mainLayout = {
+      version: 2,
+      tree: { kind: "leaf", chatGroupId: "main" },
+      focusedId: "main",
+      surfaces: {},
+      openSurfaces: [
+        { kind: "terminal", tabId: untimed, ordinal: 1, cwd: "/ws", url: null, projectRoot: "/ws" },
+        { kind: "terminal", tabId: timed, ordinal: 2, cwd: "/ws", url: null, projectRoot: "/ws", usedAt: now - 60 * 60_000 },
+      ],
+      panelOpenIds: [],
+      thumbnailOpenIds: [],
+      sideTabs: {},
+    };
+    const { api } = await renderApp({
+      hasApiKey: true,
+      terminal: true,
+      workspaceRoots: ROOTS,
+      sessions: [{ id: "sess-today", title: "오늘 대화", modifiedAt: new Date(now - 2 * 60 * 60_000).toISOString(), projectRoot: "/ws", projectName: "ws" }],
+      settings: { ...MOCK_DEFAULT_SETTINGS, system: { closeBehavior: "hide-to-tray", projectSelection: { kind: "root", root: "/ws" }, mainLayout } },
+    });
+    const order = () => [...document.querySelectorAll<HTMLElement>('[data-testid^="sidebar-surface-tree-"], [data-testid="sidebar-row-session-sess-today"]')]
+      .map((row) => row.getAttribute("data-testid"));
+    await waitFor(() => expect(order()).toEqual([
+      `sidebar-surface-tree-${timed}`,
+      "sidebar-row-session-sess-today",
+      `sidebar-surface-tree-${untimed}`,
+    ]));
+    // Showing the untimed one gives it a time, which the next save keeps; the other keeps the time it came back with.
+    await act(async () => { fireEvent.click(byTestId(`sidebar-surface-${untimed}`)!); });
+    const saved = await waitFor(() => {
+      const last = vi.mocked(api.updateSettings).mock.calls
+        .map(([patch]) => (patch as { system?: { mainLayout?: { openSurfaces?: Array<{ tabId: string; usedAt?: number }> } } }).system?.mainLayout)
+        .filter((each) => each !== undefined)
+        .at(-1);
+      expect(last?.openSurfaces?.find((each) => each.tabId === untimed)?.usedAt).toBeGreaterThanOrEqual(now);
+      return last!;
+    }, { timeout: MAIN_LAYOUT_SAVE_DELAY_MS * 10 });
+    expect(saved.openSurfaces!.find((each) => each.tabId === timed)!.usedAt).toBe(now - 60 * 60_000);
   });
 });

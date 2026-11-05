@@ -1025,9 +1025,16 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
   const defaultRoot = roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? "/ws";
   const nativeMenuHandlers = new Set<(action: { requestId: string; command: string }) => void>();
   const showNativeContextMenu = vi.fn(async (_payload: { requestId: string; commands: string[] }) => ({ ok: true as const }));
+  const dynamicMenuHandlers = new Set<(action: { requestId: string; id: string }) => void>();
+  const showDynamicMenu = vi.fn(async (_payload: { requestId: string; sections: Array<{ items: Array<{ id: string; label: string }> }> }) => ({ ok: true as const }));
   const ui = overrides.nativeContextMenu
     ? {
       ui: {
+        showDynamicMenu,
+        onDynamicMenuAction: (handler: (action: { requestId: string; id: string }) => void) => {
+          dynamicMenuHandlers.add(handler);
+          return () => { dynamicMenuHandlers.delete(handler); };
+        },
         showNativeContextMenu,
         onNativeContextMenuAction: (handler: (action: { requestId: string; command: string }) => void) => {
           nativeMenuHandlers.add(handler);
@@ -1133,6 +1140,12 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
       const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
       if (!payload) throw new Error("no native context menu was requested");
       for (const handler of nativeMenuHandlers) handler({ requestId: payload.requestId, command });
+    },
+    /** Answer the last renderer-built menu with the row `id`. */
+    chooseDynamicMenuItem: (id: string) => {
+      const payload = showDynamicMenu.mock.calls.at(-1)?.[0];
+      if (!payload) throw new Error("no dynamic menu was requested");
+      for (const handler of dynamicMenuHandlers) handler({ requestId: payload.requestId, id });
     },
   };
 }

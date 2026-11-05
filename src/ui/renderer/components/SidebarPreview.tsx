@@ -111,31 +111,77 @@ export function SidebarPreviewProvider({ children }: { children: ReactNode }) {
   </PreviewContext.Provider>;
 }
 
+/** One entry's handle on the preview: what a row and its button share so either can show the same card. */
+export interface SidebarPreviewHandle {
+  id: string;
+  /** Whether this entry's card is the one on screen (its `id` then describes the entry). */
+  shown: boolean;
+  show: (anchor: HTMLElement, immediate: boolean) => void;
+  /** `leaving` keeps the next hover warm, as a pointer leaving does. */
+  hide: (leaving: boolean) => void;
+  dismiss: () => void;
+}
+
+/** The preview handle for one entry, or null outside a `SidebarPreviewProvider`. */
+export function useSidebarPreview(preview: SidebarPreviewData, loadPreview?: () => Promise<SidebarPreviewData>): SidebarPreviewHandle | null {
+  const context = useContext(PreviewContext);
+  const id = useId();
+  const hide = context?.hide;
+  const update = context?.update;
+  useEffect(() => () => hide?.(false, id), [hide, id]);
+  // Keyed by content, not identity: a row that reads this context and builds its data inline would otherwise update the
+  // card, re-render itself with a fresh object, and update again without end.
+  const contentKey = JSON.stringify(preview);
+  const latest = useRef(preview);
+  latest.current = preview;
+  useEffect(() => { update?.(id, latest.current); }, [update, id, contentKey]);
+  if (!context) return null;
+  return {
+    id,
+    shown: context.activeId === id,
+    show: (anchor, immediate) => context.show({ id, data: preview, anchor, loadPreview }, immediate),
+    hide: (leaving) => context.hide(leaving, id),
+    dismiss: () => context.hide(),
+  };
+}
+
+/**
+ * Props for a tree row that takes keyboard focus itself (its button stays out of the tab order), so focusing the row shows
+ * the same card the button shows on hover.
+ */
+export function sidebarPreviewRowProps(handle: SidebarPreviewHandle | null): Pick<HTMLAttributes<HTMLElement>, "aria-describedby" | "onFocus" | "onBlur"> {
+  if (!handle) return {};
+  return {
+    "aria-describedby": handle.shown ? handle.id : undefined,
+    onFocus: (event) => { if (event.target === event.currentTarget) handle.show(event.currentTarget, true); },
+    onBlur: (event) => { if (event.target === event.currentTarget) handle.hide(false); },
+  };
+}
+
+/** The direct child must forward standard DOM event and ARIA attributes to its entry. */
+export function SidebarPreviewTarget({ handle, children }: { handle: SidebarPreviewHandle | null; children: ReactElement<HTMLAttributes<HTMLElement>> }) {
+  if (!handle) return children;
+  const original = children.props;
+  return cloneElement(children, {
+    title: undefined,
+    "aria-description": [original["aria-description"], original.title].filter(Boolean).join(" ") || undefined,
+    "aria-describedby": handle.shown ? [original["aria-describedby"], handle.id].filter(Boolean).join(" ") : original["aria-describedby"],
+    onPointerEnter: (event) => { original.onPointerEnter?.(event); handle.show(event.currentTarget, false); },
+    onPointerLeave: (event) => { original.onPointerLeave?.(event); handle.hide(true); },
+    onFocus: (event) => { original.onFocus?.(event); handle.show(event.currentTarget, true); },
+    onBlur: (event) => { original.onBlur?.(event); handle.hide(false); },
+    onClick: (event) => { original.onClick?.(event); handle.dismiss(); },
+  });
+}
+
 /** The direct child must forward standard DOM event and ARIA attributes to its entry. */
 export function SidebarPreviewTrigger({ preview, loadPreview, children }: {
   preview: SidebarPreviewData;
   loadPreview?: () => Promise<SidebarPreviewData>;
   children: ReactElement<HTMLAttributes<HTMLElement>>;
 }) {
-  const context = useContext(PreviewContext);
-  const id = useId();
-  const hide = context?.hide;
-  const update = context?.update;
-  useEffect(() => () => hide?.(false, id), [hide, id]);
-  useEffect(() => { update?.(id, preview); }, [update, id, preview]);
-  if (!context) return children;
-  const original = children.props;
-  const show = (anchor: HTMLElement, immediate: boolean) => context.show({ id, data: preview, anchor, loadPreview }, immediate);
-  return cloneElement(children, {
-    title: undefined,
-    "aria-description": [original["aria-description"], original.title].filter(Boolean).join(" ") || undefined,
-    "aria-describedby": context.activeId === id ? [original["aria-describedby"], id].filter(Boolean).join(" ") : original["aria-describedby"],
-    onPointerEnter: (event) => { original.onPointerEnter?.(event); show(event.currentTarget, false); },
-    onPointerLeave: (event) => { original.onPointerLeave?.(event); context.hide(true, id); },
-    onFocus: (event) => { original.onFocus?.(event); show(event.currentTarget, true); },
-    onBlur: (event) => { original.onBlur?.(event); context.hide(false, id); },
-    onClick: (event) => { original.onClick?.(event); context.hide(); },
-  });
+  const handle = useSidebarPreview(preview, loadPreview);
+  return <SidebarPreviewTarget handle={handle}>{children}</SidebarPreviewTarget>;
 }
 
 export function SidebarPreviewCard({ id, preview }: { id: string; preview: SidebarPreviewData }) {

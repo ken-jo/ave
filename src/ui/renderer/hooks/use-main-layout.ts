@@ -19,6 +19,7 @@ import {
   terminalCwd,
 } from "../preview/main-layout-restore.js";
 import { buildMainLayoutSnapshot, savedSurfaceOf } from "../preview/main-layout-snapshot.js";
+import { knownSurfaceUsedAt, restoreSurfaceUsedAt } from "../preview/active-surface.js";
 
 /** The window's own limits the stored shape is checked against (see `shared/main-layout.ts`). */
 const WINDOW_LAYOUT_LIMITS: MainLayoutLimits = { maxPanes: MAX_PANES, primaryPaneId: MAIN_CHAT_GROUP_ID };
@@ -56,6 +57,7 @@ function applyLayout(layout: RestorableLayout, chatGroups: ChatGroupsForLayout, 
   const all: SavedSurface[] = [...main, ...Object.values(layout.sideTabs).flat()];
   reserveTabIds(all.map((surface) => surface.tabId));
   stageRestoredLayout({ sideTabs: layout.sideTabs, terminals: all.filter((surface) => surface.kind === "terminal") });
+  restoreSurfaceUsedAt(main);
   for (const surface of main) {
     mainSurfaces.adopt({ tabId: surface.tabId, kind: surface.kind, ordinal: surface.ordinal, url: surface.url, cwd: surface.cwd, projectRoot: surface.projectRoot });
   }
@@ -150,7 +152,8 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
             surface.kind === "terminal" ? terminalCwd(tabId) ?? surface.cwd ?? null : null,
             surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : null,
           );
-          return { ...saved, projectRoot: surface.projectRoot };
+          const usedAt = knownSurfaceUsedAt(tabId);
+          return { ...saved, projectRoot: surface.projectRoot, ...(usedAt !== undefined && usedAt >= 0 ? { usedAt } : {}) };
         },
         sideTabsOf: (paneId) => getSideTabsSink(paneId)?.snapshot() ?? [],
         openSurfaceIds: surfaces.surfaces.map((surface) => surface.tabId),

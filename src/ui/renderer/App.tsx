@@ -29,7 +29,7 @@ import { ProjectHomeView } from "./components/ProjectHomeView.js";
 import { StarredView } from "./components/StarredView.js";
 import { SettingsInlineView } from "./SettingsInlineView.js";
 import { PageShell } from "./components/PageShell.js";
-import type { ConversationRowActions, ProjectRowActions } from "./components/Sidebar.js";
+import type { ConversationRowActions, ProjectRowActions } from "./components/sidebar/ProjectTree.js";
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/PaneChatNavigationContext.js";
 import { prunePaneChats } from "./hooks/use-side-chat.js";
@@ -423,21 +423,23 @@ export function App() {
     targetGroupId: string,
     sessionId: string,
     target: DropTarget,
-  ) => {
+  ): boolean => {
     const holder = tileHoldingSession(tileSessions, sessionId);
     if (holder) {
       chatGroups.focus(holder.chatGroupId);
-      return;
+      return true;
     }
     if (target === "center") {
       chatGroups.focus(targetGroupId);
       // Use reachSession for center drops so a busy tile can adopt a group instead of silently refusing the load.
       void reachSession(sessionId, targetGroupId);
-      return;
+      return true;
     }
     const created = chatGroups.dropOnEdge(targetGroupId, target);
-    // The frame disables edge drops at the four-tile ceiling.
-    if (created) setPendingSessionDrop({ chatGroupId: created, sessionId });
+    // The frame disables edge drops at the four-tile ceiling; a caller without that frame says so itself.
+    if (!created) return false;
+    setPendingSessionDrop({ chatGroupId: created, sessionId });
+    return true;
   }, [chatGroups, reachSession, tileSessions]);
 
   useEffect(() => {
@@ -544,6 +546,16 @@ export function App() {
     if (placed === null) chatGroups.movePaneContent(fromPane, targetPaneId);
   }, [chatGroups, surfaceMoves]);
 
+  /** Move a terminal or page to another project from its row menu (case 20). The menu is native and answers later, so the
+   * project may have been removed meanwhile; a surface never lands in a project that is not open. */
+  const moveSurfaceToProject = useCallback((tabId: string, projectRoot: string) => {
+    if (!findWorkspaceProject(workspaceProjectsRef.current, projectRoot)) {
+      statusPushToast({ severity: "error", message: t("app.surfaceMoveProjectGone"), ttlMs: 10_000 });
+      throw new Error(`project-unknown: ${projectRoot} is not an open project`);
+    }
+    mainSurfaces.setProjectRoot(tabId, projectRoot);
+  }, [mainSurfaces, statusPushToast, t]);
+
   const reopenClosedSurface = useCallback(() => {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
@@ -587,6 +599,42 @@ export function App() {
     }
     return false;
   }, [activeSurfaceOf]);
+
+  /** 옆에 분할로 열기 (case 20) for a conversation: a new tile beside the focused one, or the tile already holding it. */
+  const openSessionBeside = useCallback((sessionId: string) => {
+    if (handleSessionDrop(chatGroupsRef.current.focusedId, sessionId, "right")) return;
+    statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
+  }, [handleSessionDrop, statusPushToast, t]);
+
+  /** Close a terminal or page in the main area wherever it is asked from — its pane's close button or its sidebar row. */
+  const closeMainSurface = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const surface = surfaces.get(tabId);
+    if (!surface) throw new Error(`surface-unknown: ${tabId} is not in the main area`);
+    for (const [paneId, content] of Object.entries(groups.contentById)) {
+      if (content?.surface === tabId) groups.setPaneContent(paneId, PANE_HOME);
+    }
+    surfaces.close(tabId);
+    forgetActiveSurface(tabId);
+    if (surface.kind === "terminal") void api.terminal?.kill(tabId);
+  }, [api]);
+
+  /** 옆에 분할로 열기 (case 20) for a terminal or page: a new pane beside the focused one, or its own pane if it has one. */
+  const openSurfaceBeside = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const surface = surfaces.get(tabId);
+    if (!surface) throw new Error(`surface-unknown: ${tabId} is not in the main area`);
+    const shownIn = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
+    if (shownIn) {
+      groups.focus(shownIn);
+      return;
+    }
+    if (groups.placeOnEdge(groups.focusedId, "right", { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId }) === null) {
+      statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
+      return;
+    }
+    showActiveSurface(activeSurfaceOf(surface));
+  }, [activeSurfaceOf, statusPushToast, t]);
 
   /** Reveal the tab's owning pane and its conversation, wherever presentation last placed it. */
   const openPaneChat = useCallback((tabId: string) => {
@@ -2041,12 +2089,7 @@ export function App() {
       }
       const name = `${t(BUILTIN_LABEL_KEYS[view])} ${surface.ordinal}`;
       // Closing a terminal/web surface ends it and returns the pane to its conversation.
-      const closeSurface = () => {
-        closePane();
-        mainSurfaces.close(surface.tabId);
-        forgetActiveSurface(surface.tabId);
-        if (surface.kind === "terminal") void api.terminal?.kill(surface.tabId);
-      };
+      const closeSurface = () => closeMainSurface(surface.tabId);
       return paneShell(view, (
         <SurfacePane
           api={api}
@@ -2274,6 +2317,12 @@ export function App() {
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}
                 onToggleProjectPin={toggleProjectPin}
+                isProjectExpanded={projectSelection.isProjectExpanded}
+                onSetProjectExpanded={projectSelection.setProjectExpanded}
+                onOpenSessionBeside={openSessionBeside}
+                onOpenSurfaceBeside={openSurfaceBeside}
+                onCloseSurface={closeMainSurface}
+                onMoveSurface={moveSurfaceToProject}
               />}
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main

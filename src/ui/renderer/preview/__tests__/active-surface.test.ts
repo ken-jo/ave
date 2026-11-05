@@ -3,8 +3,11 @@ import {
   clearActiveSurface,
   forgetActiveSurface,
   getActiveSurface,
+  knownSurfaceUsedAt,
+  restoreSurfaceUsedAt,
   showActiveSurface,
   subscribeActiveSurface,
+  surfaceUsedAt,
   updateActiveSurface,
 } from "../active-surface.js";
 
@@ -44,5 +47,17 @@ describe("active surface", () => {
     expect(getActiveSurface()).toEqual(page);
     forgetActiveSurface("browser:2");
     expect(getActiveSurface()).toBeNull();
+  });
+
+  it("brings back saved last-used times, and places a surface saved without one by restore order below every timed one, not at now", () => {
+    restoreSurfaceUsedAt([{ tabId: "terminal:1" }, { tabId: "browser:2", usedAt: 1_000 }, { tabId: "terminal:3" }]);
+    const now = 5_000;
+    expect(surfaceUsedAt("browser:2", now)).toBe(1_000);
+    expect(surfaceUsedAt("terminal:1", now)).toBeLessThan(0);
+    expect(surfaceUsedAt("terminal:3", now)).toBeLessThan(surfaceUsedAt("terminal:1", now));
+    expect(knownSurfaceUsedAt("browser:2")).toBe(1_000);
+    expect(knownSurfaceUsedAt("browser:9")).toBeUndefined();
+    forgetActiveSurface("browser:2");
+    expect(knownSurfaceUsedAt("browser:2")).toBeUndefined();
   });
 });

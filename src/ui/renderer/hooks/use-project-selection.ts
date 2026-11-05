@@ -27,6 +27,10 @@ export interface UseProjectSelectionResult {
   lastViewFor: (root: string) => ProjectLastView | undefined;
   /** Remember where the window is in a project; saved only when it changed. */
   recordLastView: (root: string, place: ProjectLastView) => void;
+  /** Whether an all-projects group is open (case 05); a group not saved as open is folded. */
+  isProjectExpanded: (root: string) => boolean;
+  /** Open or fold an all-projects group; saved only when it changed. */
+  setProjectExpanded: (root: string, expanded: boolean) => void;
 }
 
 /** The project the window works in is the user's choice, saved in `system.projectSelection`; it never follows the focused
@@ -39,6 +43,8 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
   const lastViewsRef = useRef<Record<string, ProjectLastView>>({});
   // Writing the map before the saved one is read would replace it; places recorded meanwhile are written once it arrives.
   const lastViewsLoadedRef = useRef(false);
+  const [expanded, setExpanded] = useState<readonly string[]>([]);
+  const expandedRef = useRef<readonly string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +54,9 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
       const roots = Array.isArray(system?.recentProjectRoots) ? system.recentProjectRoots : [];
       recentRef.current = roots;
       setRecent(roots);
+      const open = Array.isArray(system?.expandedProjectRoots) ? system.expandedProjectRoots : [];
+      expandedRef.current = open;
+      setExpanded(open);
       // A place recorded this launch before the settings arrived is newer than the saved one.
       const recordedEarly = Object.keys(lastViewsRef.current).length > 0;
       lastViewsRef.current = { ...(system?.lastViewByProject ?? {}), ...lastViewsRef.current };
@@ -74,6 +83,33 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
     setSaved(correction);
     void api.updateSettings({ system: { projectSelection: correction } });
   }, [stale, defaultProject, api]);
+
+  // Removed projects leave no trace in the open groups or the recent list (removed here or while Ave was closed): once both
+  // the settings and the project list have loaded, only open projects are kept, and the pruned lists are saved.
+  const settingsLoaded = saved !== undefined;
+  useEffect(() => {
+    if (!settingsLoaded || projects.length === 0) return;
+    const open = (root: string) => findWorkspaceProject(projects, root) !== undefined;
+    const nextRecent = recentRef.current.filter(open);
+    const nextExpanded = expandedRef.current.filter(open);
+    const recentChanged = nextRecent.length !== recentRef.current.length;
+    const expandedChanged = nextExpanded.length !== expandedRef.current.length;
+    if (!recentChanged && !expandedChanged) return;
+    if (recentChanged) {
+      recentRef.current = nextRecent;
+      setRecent(nextRecent);
+    }
+    if (expandedChanged) {
+      expandedRef.current = nextExpanded;
+      setExpanded(nextExpanded);
+    }
+    void api.updateSettings({
+      system: {
+        ...(recentChanged ? { recentProjectRoots: nextRecent } : {}),
+        ...(expandedChanged ? { expandedProjectRoots: nextExpanded } : {}),
+      },
+    });
+  }, [settingsLoaded, projects, api]);
 
   const selection = useMemo<ProjectSelection | undefined>(() => {
     if (saved === undefined || projects.length === 0) return undefined;
@@ -116,5 +152,30 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
     void api.updateSettings({ system: { lastViewByProject: lastViewsRef.current } });
   }, [api]);
 
-  return { selection, selectedProject, recentProjectRoots: recent, selectRoot, selectAll, lastViewFor, recordLastView };
+  const isProjectExpanded = useCallback(
+    (root: string) => expanded.some((each) => projectRootEquals(each, root)),
+    [expanded],
+  );
+
+  const setProjectExpanded = useCallback((root: string, open: boolean) => {
+    const current = expandedRef.current;
+    const isOpen = current.some((each) => projectRootEquals(each, root));
+    if (isOpen === open) return;
+    const next = open ? [...current, root] : current.filter((each) => !projectRootEquals(each, root));
+    expandedRef.current = next;
+    setExpanded(next);
+    void api.updateSettings({ system: { expandedProjectRoots: next } });
+  }, [api]);
+
+  return {
+    selection,
+    selectedProject,
+    recentProjectRoots: recent,
+    selectRoot,
+    selectAll,
+    lastViewFor,
+    recordLastView,
+    isProjectExpanded,
+    setProjectExpanded,
+  };
 }

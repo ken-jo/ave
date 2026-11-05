@@ -16,6 +16,9 @@ export interface ActiveSurface {
 
 let active: ActiveSurface | null = null;
 const listeners = new Set<() => void>();
+/** When each surface was last brought into view, for the sidebar's recency order. Saved with the layout and seeded back on
+ * restore (`restoreSurfaceUsedAt`). */
+const usedAt = new Map<string, number>();
 
 function emit(): void {
   for (const listener of [...listeners]) listener();
@@ -28,6 +31,7 @@ function same(a: ActiveSurface | null, b: ActiveSurface | null): boolean {
 
 /** A terminal or page was brought into view; it becomes the target. */
 export function showActiveSurface(surface: ActiveSurface): void {
+  if (active?.tabId !== surface.tabId) usedAt.set(surface.tabId, Date.now());
   if (same(active, surface)) return;
   active = surface;
   emit();
@@ -53,6 +57,7 @@ const closedListeners = new Set<(tabId: string) => void>();
 /** A surface was closed; when it was the target, there is none. Every close site calls this, so it is also where a closed
  * surface is announced (its pane chat ends with it). */
 export function forgetActiveSurface(tabId: string): void {
+  usedAt.delete(tabId);
   if (active?.tabId === tabId) clearActiveSurface();
   for (const listener of [...closedListeners]) listener(tabId);
 }
@@ -63,6 +68,34 @@ export function subscribeSurfaceClosed(listener: (tabId: string) => void): () =>
   return () => {
     closedListeners.delete(listener);
   };
+}
+
+/**
+ * When a surface was last brought into view. A surface this launch has not shown yet (one restored from the saved layout,
+ * or opened in a side panel's background) counts from the first time anyone asks, so it sorts as new rather than as old: it
+ * is open now, and nothing recorded says otherwise.
+ */
+export function surfaceUsedAt(tabId: string, now: number = Date.now()): number {
+  const known = usedAt.get(tabId);
+  if (known !== undefined) return known;
+  usedAt.set(tabId, now);
+  return now;
+}
+
+/** The recorded time, if any, without recording one: what the layout saves. */
+export function knownSurfaceUsedAt(tabId: string): number | undefined {
+  return usedAt.get(tabId);
+}
+
+/**
+ * Seed the times of restored surfaces, given in their saved (sidebar) order. A surface saved with a time keeps it. One saved
+ * without (an older layout, or a surface never shown) is placed by its restore order below every timed row, never at "now":
+ * reopening Ave does not make an old terminal newer than today's conversations.
+ */
+export function restoreSurfaceUsedAt(surfaces: ReadonlyArray<{ tabId: string; usedAt?: number }>): void {
+  surfaces.forEach((surface, index) => {
+    usedAt.set(surface.tabId, surface.usedAt ?? -(index + 1));
+  });
 }
 
 export function getActiveSurface(): ActiveSurface | null {

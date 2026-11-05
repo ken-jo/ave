@@ -2711,6 +2711,17 @@ describe("SettingsService system — project selection, recent projects and last
     expect(service.get("system").recentProjectRoots).toHaveLength(10);
   });
 
+  it("keeps which all-projects groups are open, by root identity, and refuses anything but a list of roots", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").expandedProjectRoots).toBeUndefined();
+    await service.patch({ system: { expandedProjectRoots: ["/ws/a", "/ws/a/", "relative", 3, "C:\\Work"] } } as never);
+    expect(service.get("system").expandedProjectRoots).toEqual(["/ws/a", "C:\\Work"]);
+    await service.patch({ system: { expandedProjectRoots: "/ws/b" } } as never);
+    expect(service.get("system").expandedProjectRoots).toEqual(["/ws/a", "C:\\Work"]);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system");
+    expect(reloaded.expandedProjectRoots).toEqual(["/ws/a", "C:\\Work"]);
+  });
+
   it("keys the last view by root identity and drops entries that are not a place", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { lastViewByProject: {

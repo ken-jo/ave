@@ -13,12 +13,70 @@ const SCAN_SKIP_DIRS = new Set(["__tests__", "__mocks__", "__probes__", "node_mo
 const TEST_FILE_RE = /\.(?:test|spec)\.(?:ts|tsx)$/;
 const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*|\*)/;
 
+const FS_MODULE = String.raw`["'](?:node:)?(?:fs|original-fs)(?:\/promises)?["']`;
+// A static import, a require, or a dynamic import() of the file system.
+const FS_MODULE_IMPORT_RE = new RegExp(
+  String.raw`\bfrom\s+${FS_MODULE}|\brequire\(\s*${FS_MODULE}\s*\)|\bimport\(\s*${FS_MODULE}\s*\)`,
+);
+const IDENT = String.raw`[A-Za-z_$][\w$]*`;
+// What a declaration binds to the file system: `require(fs)`, `import(fs)` or `await import(fs)`.
+const FS_VALUE = String.raw`(?:await\s+)?(?:require|import)\(\s*${FS_MODULE}\s*\)`;
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Sort a `{ a, b as c }` import list or `{ a, b: c }` destructuring into the bare rename names and the namespaces. */
+function collectMembers(members, separator, bare, namespaces) {
+  for (const member of members.split(",")) {
+    const [name, alias] = member.trim().replace(/^type\s+/, "").split(separator);
+    const local = (alias ?? name)?.trim();
+    if (!local || !/^[A-Za-z_$][\w$]*$/.test(local)) continue;
+    if (name.trim() === "rename" || name.trim() === "renameSync") bare.add(local);
+    if (name.trim() === "promises") namespaces.add(local);
+  }
+}
+
+/**
+ * The calls that rename through the file system in this file: a bare `rename(`/`renameSync(` (or an alias) taken from the
+ * fs modules by import, require or dynamic import; `rename`/`renameSync` on a namespace bound to them (`fs.`, `fsp.`,
+ * `nodeFs.promises.`); and the same call straight on a dynamic import (`(await import("node:fs/promises")).rename(`).
+ */
+export function fsRenameLine(content) {
+  const bare = new Set(["rename", "renameSync"]);
+  const namespaces = new Set();
+  const named = new RegExp(String.raw`import\s+(?:type\s+)?(?:(${IDENT})\s*,\s*)?\{([^}]*)\}\s*from\s*${FS_MODULE}`, "g");
+  for (const [, defaultName, members] of content.matchAll(named)) {
+    if (defaultName) namespaces.add(defaultName);
+    collectMembers(members, /\s+as\s+/, bare, namespaces);
+  }
+  const destructured = new RegExp(String.raw`(?:const|let|var)\s*\{([^}]*)\}\s*=\s*${FS_VALUE}`, "g");
+  for (const [, members] of content.matchAll(destructured)) collectMembers(members, /\s*:\s*/, bare, namespaces);
+  const whole = [
+    new RegExp(String.raw`import\s+\*\s+as\s+(${IDENT})\s+from\s*${FS_MODULE}`, "g"),
+    new RegExp(String.raw`import\s+(${IDENT})\s+from\s*${FS_MODULE}`, "g"),
+    new RegExp(String.raw`(?:const|let|var)\s+(${IDENT})\s*=\s*${FS_VALUE}`, "g"),
+  ];
+  for (const pattern of whole) for (const [, name] of content.matchAll(pattern)) namespaces.add(name);
+  const alternatives = [
+    String.raw`(?<![\w$.])(?:${[...bare].map(escapeRegExp).join("|")})\(`,
+    String.raw`import\(\s*${FS_MODULE}\s*\)\s*\)\s*(?:\.promises)?\.(?:rename|renameSync)\(`,
+  ];
+  if (namespaces.size > 0) {
+    alternatives.push(String.raw`(?<![\w$.])(?:${[...namespaces].map(escapeRegExp).join("|")})(?:\.promises)?\.(?:rename|renameSync)\(`);
+  }
+  return new RegExp(alternatives.join("|"));
+}
+
 // Home-expansion copies count only in files that also resolve the home directory.
 export const SOT_SHAPES = Object.freeze([
   {
     id: "fs-rename",
     summary: "rename()/renameSync() outside the atomic-file and feature-namespace helpers",
-    line: /\b(?:renameSync|rename)\(/,
+    // Only a file that imports the file system can rename through it, and only through the names it imported: a
+    // `.rename()` method of anything else (a tree row, a session) is not a file-system rename.
+    file: FS_MODULE_IMPORT_RE,
+    lineFor: fsRenameLine,
     homes: [
       "src/lib/atomic-file.ts",
       "src/lib/transient-fs-lock-retry.ts",
@@ -62,10 +120,11 @@ export function scanSotShapes(root, shapes = SOT_SHAPES) {
     for (const shape of shapes) {
       if (shape.homes.includes(rel)) continue;
       if (shape.file && !shape.file.test(content)) continue;
+      const pattern = shape.lineFor ? shape.lineFor(content) : shape.line;
       let hits = 0;
       for (const line of lines) {
         if (COMMENT_LINE_RE.test(line)) continue;
-        if (shape.line.test(line)) hits += 1;
+        if (pattern.test(line)) hits += 1;
       }
       if (hits > 0) counts[shape.id][rel] = hits;
     }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseMainLayout, type MainLayoutSnapshot } from "../main-layout.js";
 
 const LIMITS = { maxPanes: 4, primaryPaneId: "main" };
@@ -93,6 +93,23 @@ describe("parseMainLayout", () => {
     expect(refused(listing({ ...shown, projectRoot: "/elsewhere" }))).toBe("openSurfaces[0].projectRoot differs from the pane showing terminal:0000000a-4");
     expect(refused((each) => { each.openSurfaces = {}; })).toBe("openSurfaces is not a list");
     expect(refused((each) => { delete each.openSurfaces; })).toBe("openSurfaces is not a list");
+  });
+
+  it("keeps a surface's last-used time, and drops one that is not a time in milliseconds with a warning, keeping the surface", () => {
+    const hidden = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b", projectRoot: ROOT, usedAt: 1_762_300_000_000 } as const;
+    const saved = { ...layout(), openSurfaces: [hidden] };
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
+    const { usedAt: _dropped, ...untimed } = hidden;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const bad of [-1, 1.5, Number.NaN, "1762300000000", null]) {
+        warn.mockClear();
+        expect(parseMainLayout({ ...layout(), openSurfaces: [{ ...hidden, usedAt: bad }] }, LIMITS)).toEqual({ ok: true, layout: { ...layout(), openSurfaces: [untimed] } });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped openSurfaces[0].usedAt"));
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("accepts a Windows drive path as a terminal's directory", () => {

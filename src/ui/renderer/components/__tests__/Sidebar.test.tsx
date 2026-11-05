@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { triggerIntersection } from "../../../../../test/renderer/setup.js";
+import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
@@ -20,9 +20,12 @@ import { forgetWebSurfaceLocation, noteWebSurfaceFavicon, noteWebSurfaceLocation
 import { emitMainLayoutChange } from "../../preview/main-layout-restore.js";
 import { registerSideTabsSink } from "../../preview/surface-moves.js";
 import type {
+  DynamicNativeMenuAction,
+  DynamicNativeMenuPayload,
   NativeContextMenuAction,
   NativeContextMenuPayload,
 } from "../../../../shared/native-context-menu.js";
+import { setTerminalExited } from "../../preview/terminal-attention.js";
 
 it("names a covered conversation's approval exactly as its untitled sidebar row", () => {
   const title = "그래 두개 진행해보자";
@@ -62,6 +65,8 @@ function renderSidebar(
   const showNativeContextMenu = vi.fn(async (_payload: NativeContextMenuPayload) => ({
     ok: true as const,
   }));
+  const dynamicMenuHandlers = new Set<(action: DynamicNativeMenuAction) => void>();
+  const showDynamicMenu = vi.fn(async (_payload: DynamicNativeMenuPayload) => ({ ok: true as const }));
   const removeRoot = vi.fn(async (root: string) => ({
     ok: true as const, removed: root, roots: [],
   }));
@@ -114,6 +119,10 @@ function renderSidebar(
     onSelectAllProjects: vi.fn(),
     onProjectAdded: vi.fn(),
     onLaunch: vi.fn(),
+    // The all-projects view with every group open shows every row these tests read; a test about one project selects it.
+    projectSelection: { kind: "all" },
+    isProjectExpanded: () => true,
+    onSetProjectExpanded: vi.fn(),
     collapsed: false,
     onToggleCollapse: vi.fn(),
     onOpenUnifiedSearch: vi.fn(),
@@ -140,6 +149,13 @@ function renderSidebar(
   (window as unknown as { ave?: unknown }).ave = {
     ...(previous && typeof previous === "object" ? previous : {}),
     ui: {
+      showDynamicMenu,
+      onDynamicMenuAction: (handler: (action: DynamicNativeMenuAction) => void) => {
+        dynamicMenuHandlers.add(handler);
+        return () => {
+          dynamicMenuHandlers.delete(handler);
+        };
+      },
       showNativeContextMenu,
       onNativeContextMenuAction: (handler: (action: NativeContextMenuAction) => void) => {
         nativeContextActionHandlers.add(handler);
@@ -180,6 +196,12 @@ function renderSidebar(
     rerenderSidebar: (updates: Partial<Parameters<typeof Sidebar>[0]>) => {
       Object.assign(props, updates);
       result.rerender(tree(options.locale));
+    },
+    showDynamicMenu,
+    chooseDynamicMenuItem: (id: string) => {
+      const payload = showDynamicMenu.mock.calls.at(-1)?.[0];
+      if (!payload) throw new Error("dynamic menu was not requested");
+      for (const handler of dynamicMenuHandlers) handler({ requestId: payload.requestId, id });
     },
     emitNativeContextCommand: (command: NativeContextMenuAction["command"]) => {
       const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
@@ -245,6 +267,10 @@ describe("Sidebar plugin view labels follow the UI language", () => {
   });
 });
 
+/** The 기본 프로젝트's group in the all-projects tree: conversations without an open project live there (case 05). */
+const DEFAULT_GROUP = "sidebar-project-group-C-Users-example-workspace-ave-project-ave";
+const OTHER_GROUP = "sidebar-project-group-C-Users-example-workspace-ave-project-other-app";
+
 describe("Sidebar project sessions", () => {
   it("does not fetch workspace roots when the parent supplies projects", async () => {
     const { listRoots, restore } = renderSidebar();
@@ -256,29 +282,23 @@ describe("Sidebar project sessions", () => {
     }
   });
 
-  it("renders no-project conversations as a plain ungrouped list on the General section, and real projects as groups on the project section", async () => {
+  it("files conversations without a project under the 기본 프로젝트 group and project conversations under their own", async () => {
     const { getByTestId, getByText, queryByTestId, restore } = renderSidebar();
     try {
-      // General stays flat while named projects are visible above it.
       expect(queryByTestId("sidebar-current-project")).toBeNull();
-      const unassigned = getByTestId("sidebar-unassigned-sessions");
-      expect(unassigned.textContent).toContain("전체 동기화로 상태 파악");
-      expect(unassigned.textContent).toContain("사이드 패널 개선");
-      expect(getByText("전체 동기화로 상태 파악")).toBeTruthy();
-      expect(getByText("사이드 패널 개선")).toBeTruthy();
+      const defaultGroup = getByTestId(DEFAULT_GROUP);
+      expect(defaultGroup.textContent).toContain("전체 동기화로 상태 파악");
+      expect(defaultGroup.textContent).toContain("사이드 패널 개선");
       expect(getByTestId("sidebar-session-sess-1").getAttribute("aria-current")).toBe("page");
-
-      // The project section contains the named group.
-      await waitFor(() => {
-        expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app").textContent).toContain("other-app");
-      });
-      expect(getByText("다른 프로젝트 대화")).toBeTruthy();
+      expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app").textContent).toContain("other-app");
+      expect(getByTestId(OTHER_GROUP).contains(getByText("다른 프로젝트 대화"))).toBe(true);
+      expect(defaultGroup.textContent).not.toContain("다른 프로젝트 대화");
     } finally {
       restore();
     }
   });
 
-  it("keeps a stale project conversation as a general chat without resurrecting its project", async () => {
+  it("keeps a conversation whose project was removed under the 기본 프로젝트, without resurrecting its project", async () => {
     const staleRoot = "C:\\Users\\example\\workspace\\deleted-project";
     const { getByTestId, queryByTestId, restore } = renderSidebar({
       projects: [{
@@ -297,14 +317,13 @@ describe("Sidebar project sessions", () => {
       }],
     });
     try {
-      expect(getByTestId("sidebar-unassigned-sessions").textContent).toContain("보존된 일반 대화");
-      await waitFor(() => {
-        expect(queryByTestId("sidebar-project-C-Users-example-workspace-deleted-project")).toBeNull();
-      });
+      expect(getByTestId("sidebar-project-group-C-Users-example-workspace-default").textContent).toContain("보존된 일반 대화");
+      expect(queryByTestId("sidebar-project-C-Users-example-workspace-deleted-project")).toBeNull();
     } finally {
       restore();
     }
   });
+
   it("loads a selected project conversation through the existing session loader", async () => {
     const { getByTestId, onLoadSession, restore } = renderSidebar();
     try {
@@ -315,28 +334,28 @@ describe("Sidebar project sessions", () => {
     }
   });
 
-  it("starts a new conversation scoped to the selected project", async () => {
-    const { getByTestId, onNewChatForProject, restore } = renderSidebar();
+  it("starts a new conversation in a group's project from its + button, and folds the group from its row", async () => {
+    const onSetProjectExpanded = vi.fn();
+    const { getByTestId, onNewChatForProject, restore } = renderSidebar({ onSetProjectExpanded });
     try {
-      await waitFor(() => {
-        expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app").textContent).toContain("other-app");
-      });
-      fireEvent.click(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app"));
+      fireEvent.click(getByTestId("sidebar-project-new-C-Users-example-workspace-ave-project-other-app"));
       expect(onNewChatForProject).toHaveBeenCalledWith({
         projectRoot: "C:\\Users\\example\\workspace\\ave-project\\other-app",
         projectName: "other-app",
       });
+      expect(onSetProjectExpanded).not.toHaveBeenCalled();
+      fireEvent.click(getByTestId("sidebar-project-toggle-C-Users-example-workspace-ave-project-other-app"));
+      expect(onSetProjectExpanded).toHaveBeenCalledWith("C:\\Users\\example\\workspace\\ave-project\\other-app", false);
     } finally {
       restore();
     }
   });
+
 });
 
 describe("Sidebar legacy default-root session handling", () => {
   // Production reads scrub legacy default-root metadata; this fixture exercises the renderer boundary independently.
-  it("renders a session tagged with the default project root as ungrouped, not as a phantom 'workspace' project group", async () => {
-    // Matches the default root renderSidebar's workspace.listRoots stub reports below (isDefault: true) — the exact "legacy
-    // default-tagged" shape pre-PR persistence produced (projectRoot=defaultRoot, projectName="workspace").
+  it("files a session tagged with the default project root under the 기본 프로젝트, not under a phantom 'workspace' group", async () => {
     const DEFAULT_ROOT = "C:\\Users\\example\\workspace\\ave-project\\ave";
     const legacySession: SessionSummary = sessionRow({
       id: "legacy-session",
@@ -345,56 +364,53 @@ describe("Sidebar legacy default-root session handling", () => {
       projectRoot: DEFAULT_ROOT,
       projectName: "workspace",
     });
-    const { getByTestId, getByText, queryByTestId, restore } = renderSidebar({
+    const { getByTestId, getAllByRole, restore } = renderSidebar({
       sessions: [legacySession],
       currentSessionId: "legacy-session",
     });
     try {
-      // The default project entry comes from the async workspace.listRoots
-      // stub (like the "other-app" project in the tests above) — wait for
-      // it to settle so the assertion reflects steady state, not the
-      // pre-fetch render where workspaceProjects is still [].
-      await waitFor(() => {
-        expect(getByTestId("sidebar-unassigned-sessions").textContent).toContain("레거시 기본 프로젝트 대화");
-      });
-      expect(getByText("레거시 기본 프로젝트 대화")).toBeTruthy();
-      // No ghost project group synthesized from the default root anywhere in
-      // the project section — only the unrelated "other-app" real project from
-      // renderSidebar's stub. (Can't grep broadly for "workspace" in the
-      // testid: the default root's OWN path legitimately contains that
-      // substring — "C:\Users\example\workspace\..." — so the precise
-      // ghost-group testid is asserted directly instead.)
-      await waitFor(() => expect(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app")).toBeTruthy());
-      expect(queryByTestId("sidebar-project-C-Users-example-workspace-ave-project-ave")).toBeNull();
+      expect(getByTestId(DEFAULT_GROUP).textContent).toContain("레거시 기본 프로젝트 대화");
+      // Two groups — the 기본 프로젝트, named as such, and other-app — and no third one made from the session's own name.
+      const groups = getAllByRole("treeitem").filter((row) => row.getAttribute("aria-level") === "1");
+      expect(groups.map((row) => row.getAttribute("data-testid"))).toEqual([
+        "sidebar-project-C-Users-example-workspace-ave-project-ave",
+        "sidebar-project-C-Users-example-workspace-ave-project-other-app",
+      ]);
+      expect(groups[0]!.textContent).toContain("기본 프로젝트");
+      expect(groups[0]!.textContent).not.toContain("workspace");
     } finally {
       restore();
     }
   });
+
 });
 
 describe("Sidebar stacked sections", () => {
-  it("shows Projects before General without tab controls", () => {
-    const { getByTestId, queryByTestId, restore } = renderSidebar();
+  it("draws one tree, with the 기본 프로젝트 group first and no tab controls", () => {
+    const { getByTestId, getByRole, queryByTestId, restore } = renderSidebar();
     try {
-      const sections = getByTestId("sidebar-sections");
-      expect(Array.from(sections.querySelectorAll("section")).map((section) => section.getAttribute("aria-label"))).toEqual(["프로젝트", "일반"]);
-      expect(sections.querySelector('[role="tablist"]')).toBeNull();
+      const tree = getByRole("tree");
+      expect(tree.getAttribute("aria-label")).toBe("전체 프로젝트 항목");
+      expect(getByTestId("sidebar-sections").querySelector('[role="tablist"]')).toBeNull();
       expect(queryByTestId("sidebar-tabs")).toBeNull();
-      expect(getByTestId("sidebar-projects").textContent).toContain("다른 프로젝트 대화");
-      expect(getByTestId("sidebar-unassigned-sessions").textContent).toContain("전체 동기화로 상태 파악");
+      const groupRows = [...tree.querySelectorAll('[role="treeitem"][aria-level="1"]')].map((row) => row.getAttribute("data-testid"));
+      expect(groupRows).toEqual([
+        "sidebar-project-C-Users-example-workspace-ave-project-ave",
+        "sidebar-project-C-Users-example-workspace-ave-project-other-app",
+      ]);
     } finally { restore(); }
   });
 
-  it("groups all three item types by the bound session and leaves unbound or unknown sessions in General", async () => {
+  it("files a main-area surface by its own project, whichever conversation it is bound to", async () => {
     const root = "/projects/example";
     const sessions = [
       sessionRow({ id: "project-chat", title: "Project chat", projectRoot: root, modifiedAt: new Date().toISOString() }),
       sessionRow({ id: "general-chat", title: "General chat", modifiedAt: new Date().toISOString() }),
     ];
     const mainSurfaces: MainSurface[] = [
-      { tabId: "browser:project", kind: "browser", ordinal: 1, url: "https://project.example/", projectRoot: "/ws" },
-      { tabId: "browser:child", kind: "browser", ordinal: 3, url: "https://child.example/", projectRoot: "/ws" },
-      { tabId: "terminal:project", kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" },
+      { tabId: "browser:project", kind: "browser", ordinal: 1, url: "https://project.example/", projectRoot: root },
+      { tabId: "browser:child", kind: "browser", ordinal: 3, url: "https://child.example/", projectRoot: root },
+      { tabId: "terminal:project", kind: "terminal", ordinal: 1, url: null, projectRoot: root },
       { tabId: "browser:general", kind: "browser", ordinal: 2, url: null, projectRoot: "/ws" },
       { tabId: "terminal:general", kind: "terminal", ordinal: 2, url: null, projectRoot: "/ws" },
       { tabId: "terminal:unknown", kind: "terminal", ordinal: 3, url: null, projectRoot: "/ws" },
@@ -422,12 +438,12 @@ describe("Sidebar stacked sections", () => {
     const unregister = registerBrowserTabHost(api, { sessionId: () => null, hasTab: () => false, selectTab: vi.fn(), closeTab: vi.fn() });
     const onOpenSurface = vi.fn();
     const { getByTestId, onLoadSession, restore } = renderSidebar({
-      sessions, projects: [{ projectRoot: root, projectName: "Example" }], mainSurfaces, onOpenSurface,
+      sessions, projects: [{ projectRoot: "/ws", projectName: "ws", isDefault: true }, { projectRoot: root, projectName: "Example" }], mainSurfaces, onOpenSurface,
     }, { browserTabs: api.browserTabs });
     try {
       act(() => noteWebSurfaceFavicon("browser:project", BROWSER_FAVICON_DATA_URL));
-      const project = getByTestId("sidebar-projects");
-      const general = getByTestId("sidebar-unassigned-sessions");
+      const project = getByTestId("sidebar-project-group-projects-example");
+      const general = getByTestId("sidebar-project-group-ws");
       await waitFor(() => expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true));
       expect(project.contains(getByTestId("sidebar-session-project-chat"))).toBe(true);
       expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
@@ -445,14 +461,12 @@ describe("Sidebar stacked sections", () => {
       fireEvent.click(getByTestId("sidebar-surface-terminal:project"));
       expect(onOpenSurface.mock.calls).toEqual([["browser:project"], ["terminal:project"]]);
       expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
+      // The surface's own project decides, not the conversation that holds it now.
       act(() => receiveControl({ revision: 2, tabs: state.tabs.map((tab) => ({ ...tab, owner: { sessionId: "general-chat" } })) }));
-      expect(general.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
-      expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(false);
+      expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
       expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
       act(() => receiveBindings({ revision: 2, bindings: [{ sessionId: "general-chat", browserTabIds: [], terminalTabIds: ["terminal:project"] }] }));
-      expect(general.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
-      act(() => receiveBindings(bindings));
-      expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(false);
+      expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
     } finally { act(() => { unregister(); noteWebSurfaceFavicon("browser:project", null); }); restore(); }
   });
 
@@ -555,7 +569,7 @@ describe("Sidebar conversation pinning", () => {
       onToggleSessionStar: vi.fn(),
     });
     try {
-      const unassigned = getByTestId("sidebar-unassigned-sessions");
+      const unassigned = getByTestId(DEFAULT_GROUP);
       const rows = Array.from(unassigned.querySelectorAll('[data-testid^="sidebar-session-"]'))
         .filter((el) => {
           // Keep only the row's own load button. Each row also carries a pin and a menu button under the same `sidebar-session`
@@ -580,7 +594,7 @@ describe("Sidebar conversation pinning", () => {
       onToggleSessionStar: vi.fn(),
     });
     try {
-      let unassigned = getByTestId("sidebar-unassigned-sessions");
+      let unassigned = getByTestId(DEFAULT_GROUP);
       let rows = Array.from(unassigned.querySelectorAll('[data-testid^="sidebar-session-"]'))
         .filter((el) => {
           // Keep only the row's own load button. Each row also carries a pin and a menu button under the same `sidebar-session`
@@ -604,6 +618,10 @@ describe("Sidebar conversation pinning", () => {
             onSelectAllProjects={vi.fn()}
             onProjectAdded={vi.fn()}
             onLaunch={vi.fn()}
+            projectSelection={{ kind: "all" }}
+            isProjectExpanded={() => true}
+            onSetProjectExpanded={vi.fn()}
+            projects={[{ projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave", projectName: "ave", isDefault: true }]}
             collapsed={false}
             onToggleCollapse={vi.fn()}
             onOpenUnifiedSearch={vi.fn()}
@@ -631,7 +649,7 @@ describe("Sidebar conversation pinning", () => {
           />
         </TooltipProvider>,
       );
-      unassigned = getByTestId("sidebar-unassigned-sessions");
+      unassigned = getByTestId(DEFAULT_GROUP);
       rows = Array.from(unassigned.querySelectorAll('[data-testid^="sidebar-session-"]'))
         .filter((el) => {
           // Keep only the row's own load button. Each row also carries a pin and a menu button under the same `sidebar-session`
@@ -789,7 +807,7 @@ describe("Sidebar project pinning", () => {
       restore();
     }
   });
-  it("sorts a pinned project to the top of the project section", async () => {
+  it("sorts a pinned project's group ahead of the others", async () => {
     const { getByTestId, restore } = renderSidebar({
       sessions: [],
       projects,
@@ -797,11 +815,7 @@ describe("Sidebar project pinning", () => {
       onToggleProjectPin: vi.fn(),
     });
     try {
-      await waitFor(() => expect(getByTestId("sidebar-projects")).toBeTruthy());
-      const projectsPanel = getByTestId("sidebar-projects");
-      // Scoped to the actual project-root buttons only — the context menu's own items/content also carry a "sidebar-project-"
-      // prefixed testid (e.g. "sidebar-project-menu-pin"), so match on the root-path suffix.
-      const rows = Array.from(projectsPanel.querySelectorAll('[data-testid^="sidebar-project-C-Users"]'));
+      const rows = Array.from(getByTestId("sidebar-tree").querySelectorAll('[role="treeitem"][aria-level="1"]'));
       expect(rows.map((el) => el.getAttribute("data-testid"))).toEqual([
         "sidebar-project-C-Users-example-workspace-ave-project-beta",
         "sidebar-project-C-Users-example-workspace-ave-project-alpha",
@@ -810,6 +824,7 @@ describe("Sidebar project pinning", () => {
       restore();
     }
   });
+
 });
 
 describe("Sidebar project section add-project context menu", () => {
@@ -817,7 +832,7 @@ describe("Sidebar project section add-project context menu", () => {
     { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\alpha", projectName: "alpha", isDefault: false },
   ];
 
-  it("offers add-project when the project section's empty area is right-clicked, and adds through workspace.pickRoot", async () => {
+  it("offers add-project when the all-projects list's empty area is right-clicked, and adds through workspace.pickRoot", async () => {
     const onRefreshProjects = vi.fn();
     const {
       getByTestId,
@@ -831,7 +846,7 @@ describe("Sidebar project section add-project context menu", () => {
       onRefreshProjects,
     });
     try {
-      const tabBody = await waitFor(() => getByTestId("sidebar-projects"));
+      const tabBody = await waitFor(() => getByTestId("sidebar-sections"));
       fireEvent.contextMenu(tabBody);
       expect(showNativeContextMenu).toHaveBeenCalledTimes(1);
       expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({
@@ -859,7 +874,7 @@ describe("Sidebar project section add-project context menu", () => {
     try {
       // Main answers a dismissed dialog with the current roots and `canceled`.
       pickRoot.mockResolvedValueOnce({ ok: true, canceled: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
-      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-projects")));
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-sections")));
       emitNativeContextCommand("project.add");
       await waitFor(() => expect(pickRoot).toHaveBeenCalledTimes(1));
       await act(async () => {});
@@ -869,7 +884,7 @@ describe("Sidebar project section add-project context menu", () => {
 
       // An add that succeeded without saying which folder is a broken answer: no guess, an error.
       pickRoot.mockResolvedValueOnce({ ok: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
-      fireEvent.contextMenu(getByTestId("sidebar-projects"));
+      fireEvent.contextMenu(getByTestId("sidebar-sections"));
       emitNativeContextCommand("project.add");
       await waitFor(() => expect(onProjectError).toHaveBeenCalledWith("add", "invalid-response"));
       expect(onProjectAdded).not.toHaveBeenCalled();
@@ -889,7 +904,7 @@ describe("Sidebar project section add-project context menu", () => {
     });
     pickRoot.mockResolvedValueOnce({ ok: false, error: "persist-failed" } as never);
     try {
-      const tabBody = await waitFor(() => getByTestId("sidebar-projects"));
+      const tabBody = await waitFor(() => getByTestId("sidebar-sections"));
       fireEvent.contextMenu(tabBody);
       emitNativeContextCommand("project.add");
 
@@ -900,22 +915,6 @@ describe("Sidebar project section add-project context menu", () => {
     }
   });
 
-  it("offers add-project from the project section trigger", async () => {
-    const { getByTestId, showNativeContextMenu, emitNativeContextCommand, pickRoot, restore } =
-      renderSidebar({ sessions: [], projects });
-    try {
-      fireEvent.contextMenu(getByTestId("sidebar-projects-heading"));
-      expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({
-        kind: "project",
-        commands: ["project.add"],
-      }));
-
-      emitNativeContextCommand("project.add");
-      await waitFor(() => expect(pickRoot).toHaveBeenCalledTimes(1));
-    } finally {
-      restore();
-    }
-  });
 
   it("keeps the per-row menu authoritative — a right-click on a project row requests exactly one menu, the row's", async () => {
     const onRefreshProjects = vi.fn();
@@ -965,7 +964,7 @@ describe("Sidebar project section add-project context menu", () => {
         warnings: ["close to a sensitive location"],
       });
 
-      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-projects")));
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-sections")));
       emitNativeContextCommand("project.add");
 
       const warning = await waitFor(() => getByTestId("sidebar-project-root-warning"));
@@ -996,7 +995,7 @@ describe("Sidebar project section add-project context menu", () => {
         warnings: ["close to a sensitive location"],
       });
 
-      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-projects")));
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-sections")));
       emitNativeContextCommand("project.add");
 
       fireEvent.click(await waitFor(() => getByTestId("sidebar-project-root-warning-cancel")));
@@ -1207,10 +1206,12 @@ describe("Sidebar conversation row actions", () => {
     const onImport = vi.fn();
     const { getByTestId, showNativeContextMenu, restore } = renderSidebar({
       conversationActions: { ...asActions(state), onImport },
+      projectSelection: { kind: "root", root: "C:\\Users\\example\\workspace\\ave-project\\ave" },
+      selectedProject: { projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave", projectName: "ave", isDefault: true },
     });
-    // The list's own blank area answers with import and nothing row-scoped: import creates a NEW conversation, so it cannot
-    // act on a row.
-    fireEvent.contextMenu(getByTestId("sidebar-unassigned-sessions"));
+    // A project's list answers its blank area with import and nothing row-scoped: import creates a NEW conversation, so it
+    // cannot act on a row.
+    fireEvent.contextMenu(getByTestId("sidebar-sections"));
     const listMenu = showNativeContextMenu.mock.calls.at(-1)?.[0];
     expect(listMenu?.commands).toEqual(["conversation.import"]);
 
@@ -1284,7 +1285,8 @@ describe("Sidebar rail", () => {
 
   it("launches nothing until the selection has loaded", () => {
     const onLaunch = vi.fn();
-    const { getByTestId, restore } = renderSidebar({ onLaunch });
+    // The selection has not been read yet: neither a project nor the all-projects view.
+    const { getByTestId, restore } = renderSidebar({ onLaunch, projectSelection: undefined, selectedProject: undefined });
     try {
       const terminal = getByTestId("sidebar-terminal") as HTMLButtonElement;
       expect(terminal.disabled).toBe(true);
@@ -1431,8 +1433,13 @@ describe("Sidebar current-row scoping", () => {
   });
 });
 
-describe("Sidebar conversation reveal on scroll", () => {
+describe("Sidebar project tree paging", () => {
+  const DEFAULT_ROOT = "C:\\Users\\example\\workspace\\ave-project\\ave";
   const OTHER_ROOT = "C:\\Users\\example\\workspace\\ave-project\\other-app";
+  const inDefault = {
+    projectSelection: { kind: "root" as const, root: DEFAULT_ROOT },
+    selectedProject: { projectRoot: DEFAULT_ROOT, projectName: "ave", isDefault: true },
+  };
 
   /** How many of `conversations` currently have a row in the sidebar. */
   function countRenderedRows(
@@ -1455,91 +1462,43 @@ describe("Sidebar conversation reveal on scroll", () => {
     }));
   }
 
-  const SENTINEL = "sidebar-unassigned-sessions-sentinel";
-
-  it("reveals one page per intersection, rebuilding its observer each time", async () => {
-    const conversations = manyConversations(15, "일반");
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
-      sessions: conversations,
-      currentSessionId: "일반-0",
-    });
+  it("shows a project's first twenty rows, counting its terminals and pages, and opens the rest from the last row", () => {
+    const conversations = manyConversations(22, "일반");
+    const mainSurfaces: MainSurface[] = [1, 2, 3].map((ordinal) => (
+      { tabId: `terminal:0000000a-${ordinal}`, kind: "terminal", ordinal, url: null, projectRoot: DEFAULT_ROOT }
+    ));
+    const { getByTestId, queryByTestId, container, restore } = renderSidebar({ ...inDefault, sessions: conversations, mainSurfaces, currentSessionId: "일반-0" });
     try {
-      const renderedRows = () => countRenderedRows(conversations, queryByTestId);
-
-      // One page up front — the rest is not rendered yet, and nothing claims otherwise: the old capped list ended in an inert "N
-      // more" label.
-      expect(renderedRows()).toBe(6);
-
-      // The sentinel is what asks for the next page, and it must actually be
-      // observed — an unobserved sentinel would silently reveal nothing.
-      // It is then parked back out of view, because this test is about ONE page
-      // per intersection; a sentinel left in view keeps asking, which is the
-      // next test's subject.
-      await act(async () => {
-        expect(triggerIntersection(getByTestId(SENTINEL))).toBe(1);
-        triggerIntersection(getByTestId(SENTINEL), false);
-      });
-      expect(renderedRows()).toBe(12);
-
-      // Still exactly ONE observer: the reveal built a new one and disconnected the old, rather than leaving both watching the
-      // same sentinel.
-      await act(async () => {
-        expect(triggerIntersection(getByTestId(SENTINEL))).toBe(1);
-        triggerIntersection(getByTestId(SENTINEL), false);
-      });
-      expect(renderedRows()).toBe(15);
-
-      // Everything is on screen, so there is nothing left to ask for.
-      expect(queryByTestId(SENTINEL)).toBeNull();
+      const rows = () => container.querySelectorAll('[role="treeitem"]:not([data-tree-key^="more:"])').length;
+      expect(rows()).toBe(20);
+      const more = getByTestId("sidebar-tree-more-project");
+      expect(more.getAttribute("role")).toBe("treeitem");
+      expect(more.textContent).toBe("이전 항목 5개 더 보기");
+      fireEvent.click(more);
+      expect(rows()).toBe(25);
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(22);
+      expect(queryByTestId("sidebar-tree-more-project")).toBeNull();
     } finally {
       restore();
     }
   });
 
-  it("keeps revealing from one intersection while the sentinel stays in view", async () => {
-    const conversations = manyConversations(15, "이어서");
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
-      sessions: conversations,
-      currentSessionId: "이어서-0",
-    });
-    try {
-      const renderedRows = () => countRenderedRows(conversations, queryByTestId);
-      expect(renderedRows()).toBe(6);
-
-      // A sentinel that is still on screen after a reveal has to produce the
-      // NEXT reveal without being poked again — a page shorter than the
-      // scroller would otherwise leave the list stalled with the sentinel
-      // sitting in plain view and nothing to scroll toward.
-      await act(async () => {
-        expect(triggerIntersection(getByTestId(SENTINEL))).toBe(1);
-      });
-      await waitFor(() => expect(renderedRows()).toBe(15));
-      expect(queryByTestId(SENTINEL)).toBeNull();
-    } finally {
-      restore();
-    }
-  });
-
-  it("renders a short list whole, with no sentinel to scroll toward", () => {
+  it("renders a short list whole, with nothing to open", () => {
     const conversations = manyConversations(4, "짧은");
-    const { queryByTestId, restore } = renderSidebar({
-      sessions: conversations,
-      currentSessionId: "짧은-0",
-    });
+    const { queryByTestId, restore } = renderSidebar({ ...inDefault, sessions: conversations, currentSessionId: "짧은-0" });
     try {
-      for (const session of conversations) {
-        expect(queryByTestId(`sidebar-session-${session.id}`)).toBeTruthy();
-      }
-      expect(queryByTestId(SENTINEL)).toBeNull();
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(4);
+      expect(queryByTestId("sidebar-tree-more-project")).toBeNull();
     } finally {
       restore();
     }
   });
 
-  it("pages the list that survives the archive filter, and follows it back down when it shrinks", async () => {
-    const conversations = manyConversations(15, "보관");
+  it("pages the rows that survive the archive filter", () => {
+    const conversations = manyConversations(24, "보관");
     const archived = new Set(["보관-1", "보관-3", "보관-5"]);
     const { getByTestId, queryByTestId, restore } = renderSidebar({
+      ...inDefault,
       sessions: conversations,
       currentSessionId: "보관-0",
       conversationActions: {
@@ -1555,31 +1514,18 @@ describe("Sidebar conversation reveal on scroll", () => {
       },
     });
     try {
-      const renderedRows = () => countRenderedRows(conversations, queryByTestId);
-
-      // A page is a page of rows the reader can SEE: the archived rows leave the list before it is paged, so the first page is
-      // six visible rows and not six minus whatever was archived among them.
-      expect(renderedRows()).toBe(6);
+      // A page is a page of rows the reader can SEE: archived rows leave the list before it is paged.
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(20);
       expect(queryByTestId("sidebar-session-보관-1")).toBeNull();
-      expect(queryByTestId("sidebar-session-보관-6")).not.toBeNull();
-
+      expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 1개 더 보기");
       fireEvent.click(getByTestId("sidebar-toggle-archived"));
-      await act(async () => {
-        triggerIntersection(getByTestId(SENTINEL));
-      });
-      await waitFor(() => expect(renderedRows()).toBe(15));
-
-      // Hiding them again shortens the list under the window. What is rendered follows the list that exists now — the count from
-      // the longer one is not carried over, and nothing is left asking for rows that are gone.
-      fireEvent.click(getByTestId("sidebar-toggle-archived"));
-      await waitFor(() => expect(renderedRows()).toBe(12));
-      expect(queryByTestId(SENTINEL)).toBeNull();
+      expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 4개 더 보기");
     } finally {
       restore();
     }
   });
 
-  it("gives each project group its own page and a control that opens the rest", async () => {
+  it("gives each all-projects group its own page of six and a row that opens the rest", () => {
     const THIRD_ROOT = "C:\\Users\\example\\workspace\\ave-project\\third-app";
     const conversations = [
       ...manyConversations(9, "프로젝트", { projectRoot: OTHER_ROOT, projectName: "other-app" }),
@@ -1591,36 +1537,21 @@ describe("Sidebar conversation reveal on scroll", () => {
       sessions: conversations,
       currentSessionId: "프로젝트-0",
       projects: [
-        {
-          projectRoot: "C:\\Users\\example\\workspace\\ave-project\\ave",
-          projectName: "ave",
-          isDefault: true,
-        },
+        { projectRoot: DEFAULT_ROOT, projectName: "ave", isDefault: true },
         { projectRoot: OTHER_ROOT, projectName: "other-app" },
         { projectRoot: THIRD_ROOT, projectName: "third-app" },
       ],
     });
-    const moreId = "sidebar-project-sessions-more-C-Users-example-workspace-ave-project-other-app";
+    const moreId = "sidebar-tree-more-C-Users-example-workspace-ave-project-other-app";
     try {
-      // Each group shows one page so a long conversation list cannot push
-      // sibling projects below the fold.
-      await waitFor(() => expect(countRenderedRows(otherRows, queryByTestId)).toBe(6));
+      expect(countRenderedRows(otherRows, queryByTestId)).toBe(6);
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
-
-      const more = getByTestId(moreId);
-      expect(more.tagName).toBe("BUTTON");
-      expect(more).toHaveAttribute("aria-expanded", "false");
-      expect(more.textContent).toContain("3");
-
-      fireEvent.click(more);
+      expect(getByTestId(moreId).textContent).toBe("이전 항목 3개 더 보기");
+      fireEvent.click(getByTestId(moreId));
       expect(countRenderedRows(otherRows, queryByTestId)).toBe(9);
-      expect(getByTestId(moreId)).toHaveAttribute("aria-expanded", "true");
+      expect(queryByTestId(moreId)).toBeNull();
       // One group opening says nothing about its neighbours.
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
-
-      fireEvent.click(getByTestId(moreId));
-      expect(countRenderedRows(otherRows, queryByTestId)).toBe(6);
-      expect(getByTestId(moreId)).toHaveAttribute("aria-expanded", "false");
     } finally {
       restore();
     }
@@ -1837,7 +1768,7 @@ describe("Sidebar — every conversation family", () => {
       onOpenSideChat,
     });
     try {
-      const list = getByTestId("sidebar-unassigned-sessions");
+      const list = getByTestId(DEFAULT_GROUP);
       expect(list.contains(getByTestId("sidebar-session-sess-1"))).toBe(true);
       expect(list.contains(getByTestId("sidebar-session-side-1"))).toBe(true);
       expect(list.querySelector('[data-testid^="sidebar-conversation-tree-"]')).toBeNull();
@@ -1862,14 +1793,16 @@ describe("Sidebar — every conversation family", () => {
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
       sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root }],
       projects: [{ projectRoot: root, projectName: "Pane project" }],
-      mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: "/ws" }],
+      mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: root }],
       onOpenSideChat, onOpenPaneChat,
     }, { browserTabs });
     try {
       await waitFor(() => expect(getByTestId("sidebar-surface-chats-" + tabId).contains(getByTestId("sidebar-session-side-1"))).toBe(true));
       expect(getAllByTestId("sidebar-session-side-1")).toHaveLength(1);
       expect(getAllByTestId("sidebar-surface-" + tabId)).toHaveLength(1);
-      expect(getByTestId("sidebar-session-side-1").closest(`[data-testid="sidebar-surface-tree-${tabId}"]`)).toBe(getByTestId("sidebar-surface-tree-" + tabId));
+      // The pane chat sits one level under its surface's row, right after it.
+      expect(getByTestId("sidebar-surface-tree-" + tabId).nextElementSibling).toBe(getByTestId("sidebar-surface-chats-" + tabId));
+      expect(getByTestId("sidebar-row-session-side-1").getAttribute("aria-level")).toBe("3");
       fireEvent.click(getByTestId("sidebar-session-side-1"));
       expect(onOpenPaneChat).toHaveBeenCalledWith(tabId);
       expect(onOpenSideChat).not.toHaveBeenCalled();
@@ -1920,7 +1853,7 @@ describe("Sidebar — every conversation family", () => {
       await act(async () => {});
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
-      expect(view.getByTestId("sidebar-projects").textContent).toContain("이전 터미널 채팅");
+      expect(view.getByTestId("sidebar-sections").textContent).toContain("이전 터미널 채팅");
       fireEvent.click(view.getByTestId("sidebar-session-side-1"));
       expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
@@ -1951,7 +1884,7 @@ describe("Sidebar — every conversation family", () => {
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
-      expect(view.getByTestId("sidebar-unassigned-sessions").textContent).toContain(locale === "ko" ? "이전 터미널 채팅" : "Former terminal chat");
+      expect(view.getByTestId(DEFAULT_GROUP).textContent).toContain(locale === "ko" ? "이전 터미널 채팅" : "Former terminal chat");
       expect(view.getByTestId("sidebar-surface-tree-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(false);
       fireEvent.click(view.getByTestId("sidebar-session-side-1"));
       expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
@@ -1980,7 +1913,7 @@ describe("Sidebar — every conversation family", () => {
         getByTestId("sidebar-conversation-glyph-side-orphan").getAttribute("data-session-family"),
       ).toBe("side-chat");
       expect(
-        getByTestId("sidebar-unassigned-sessions").contains(getByTestId("sidebar-session-side-orphan")),
+        getByTestId(DEFAULT_GROUP).contains(getByTestId("sidebar-session-side-orphan")),
       ).toBe(true);
     } finally {
       restore();
@@ -2046,7 +1979,7 @@ describe("Sidebar pending-answer dot", () => {
       await waitFor(() => getByTestId("sidebar-session-sess-1"));
       // The conversation and its side chat both carry the dot: a card
       // parked in the side chat is news about the conversation it belongs to.
-      const tree = getByTestId("sidebar-unassigned-sessions");
+      const tree = getByTestId(DEFAULT_GROUP);
       expect(tree.contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
       expect(tree.contains(getByTestId("sidebar-pending-answer-side-1"))).toBe(true);
       expect(getByTestId("sidebar-pending-answer-routine-run-1")).toBeTruthy();
@@ -2089,6 +2022,317 @@ describe("Sidebar pending-answer dot", () => {
       expect(quiet.queryByTestId("sidebar-group-plugins-pending-answer")).toBeNull();
     } finally {
       quiet.restore();
+    }
+  });
+});
+
+describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
+  const DEFAULT_ROOT = "C:\\Users\\example\\workspace\\ave-project\\ave";
+  const OTHER_ROOT = "C:\\Users\\example\\workspace\\ave-project\\other-app";
+  const DEFAULT_PROJECT: ProjectIdentity = { projectRoot: DEFAULT_ROOT, projectName: "ave", isDefault: true };
+  const inProject = (project: ProjectIdentity) => ({
+    projectSelection: { kind: "root" as const, root: project.projectRoot },
+    selectedProject: project,
+  });
+  const DAY = 86_400_000;
+  const ago = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+  const treeRows = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>('[role="tree"] [role="treeitem"]')];
+  const key = (row: Element) => row.getAttribute("data-tree-key");
+
+  it("gives exactly one row the tab stop — the current conversation — and keeps every button inside a row out of the tab order", () => {
+    const { container, getByRole, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const rows = treeRows(container);
+      expect(rows.filter((row) => row.tabIndex === 0).map(key)).toEqual(["session:sess-1"]);
+      expect(getByRole("tree").querySelectorAll('button:not([tabindex="-1"])')).toHaveLength(0);
+      // Rows are treeitems with buttons inside, never buttons inside a link.
+      expect(getByRole("tree").querySelector("a button, a [role=treeitem]")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("names a conversation in its row's title, so a truncated name can still be read", () => {
+    const { getByTestId, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      // Inside the sidebar the hover preview shows the full name instead of the native tooltip, and the title becomes the
+      // row's description, as it does for terminal and page rows.
+      expect(getByTestId("sidebar-session-sess-1").getAttribute("aria-description")).toBe("전체 동기화로 상태 파악");
+    } finally {
+      restore();
+    }
+  });
+
+  it("shows a row's full name in the preview when the row itself takes keyboard focus, and hides it when focus leaves", async () => {
+    const { container, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const row = treeRows(container).find((each) => key(each) === "session:sess-1")!;
+      act(() => { row.focus(); });
+      const card = await waitFor(() => { const el = document.querySelector('[data-testid="sidebar-preview"]'); expect(el).not.toBeNull(); return el!; });
+      expect(card.textContent).toContain("전체 동기화로 상태 파악");
+      expect(row.getAttribute("aria-describedby")).toBe(card.id);
+      act(() => { row.blur(); });
+      await waitFor(() => expect(document.querySelector('[data-testid="sidebar-preview"]')).toBeNull());
+    } finally {
+      restore();
+    }
+  });
+
+  it("hands focus to the next row when the focused one goes away, never to the page", async () => {
+    const { container, rerenderSidebar, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const first = treeRows(container).find((row) => key(row) === "session:sess-1")!;
+      first.focus();
+      expect(document.activeElement).toBe(first);
+      // The focused conversation is archived (or closed, or deleted): its row leaves the list.
+      act(() => {
+        rerenderSidebar({
+          sessions: [sessionRow({ id: "sess-2", title: "사이드 패널 개선", modifiedAt: ago(0) })],
+        });
+      });
+      await waitFor(() => expect(key(document.activeElement!)).toBe("session:sess-2"));
+      expect((document.activeElement as HTMLElement).tabIndex).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps the rest of the sidebar when the tree fails to render, and says so in its place", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = sessionRow({ id: "sess-9", modifiedAt: ago(0) });
+    Object.defineProperty(broken, "title", { get: () => { throw new Error("bad row"); } });
+    const { getByTestId, queryByRole, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), sessions: [broken] });
+    try {
+      expect(queryByRole("tree")).toBeNull();
+      expect(getByTestId("sidebar-tree-error").textContent).toContain("대화 목록을 표시하지 못했습니다");
+      expect(getByTestId("sidebar-project-button")).toBeTruthy();
+    } finally {
+      restore();
+      error.mockRestore();
+    }
+  });
+
+  it("walks the rows with the arrow keys, Home and End, and opens with Enter or beside the focused tile with ⌥Enter", () => {
+    const onOpenSessionBeside = vi.fn();
+    const { container, onLoadSession, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), onOpenSessionBeside });
+    try {
+      const rows = treeRows(container);
+      rows[0]!.focus();
+      fireEvent.keyDown(rows[0]!, { key: "ArrowDown" });
+      expect(key(document.activeElement!)).toBe("session:sess-2");
+      expect((document.activeElement as HTMLElement).tabIndex).toBe(0);
+      fireEvent.keyDown(document.activeElement!, { key: "Home" });
+      expect(key(document.activeElement!)).toBe("session:sess-1");
+      fireEvent.keyDown(document.activeElement!, { key: "End" });
+      expect(key(document.activeElement!)).toBe("session:sess-2");
+      fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+      expect(onLoadSession).toHaveBeenCalledWith("sess-2");
+      fireEvent.keyDown(document.activeElement!, { key: "Enter", altKey: true });
+      expect(onOpenSessionBeside).toHaveBeenCalledWith("sess-2");
+      fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+      expect(key(document.activeElement!)).toBe("session:sess-1");
+    } finally {
+      restore();
+    }
+  });
+
+  it("renames the focused conversation with F2 and gives focus back to its row on Escape", async () => {
+    const conversationActions = {
+      isArchived: () => false, isUnread: () => false, isResponding: () => false,
+      onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+    };
+    const { container, getByTestId, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), conversationActions });
+    try {
+      const row = treeRows(container)[0]!;
+      row.focus();
+      fireEvent.keyDown(row, { key: "F2" });
+      const field = getByTestId("sidebar-session-rename-sess-1");
+      fireEvent.keyDown(field, { key: "Escape" });
+      await waitFor(() => expect(key(document.activeElement!)).toBe("session:sess-1"));
+    } finally {
+      restore();
+    }
+  });
+
+  it("opens the row menu from the keyboard as a right-click would", () => {
+    const { container, showNativeContextMenu, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const row = treeRows(container)[0]!;
+      row.focus();
+      fireEvent.keyDown(row, { key: "F10", shiftKey: true });
+      expect(showNativeContextMenu).toHaveBeenCalledTimes(1);
+      expect(showNativeContextMenu.mock.calls[0]![0].commands).toEqual(expect.arrayContaining(["conversation.open"]));
+      fireEvent.keyDown(row, { key: "ContextMenu" });
+      expect(showNativeContextMenu).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("interleaves conversations and terminals by recency under 지난 7일 and 지난 30일", () => {
+    const surfaceAt = Date.now();
+    const { container, getByTestId, restore } = renderSidebar({
+      ...inProject(DEFAULT_PROJECT),
+      sessions: [
+        sessionRow({ id: "new", title: "새 대화", modifiedAt: ago(1) }),
+        sessionRow({ id: "old", title: "지난 대화", modifiedAt: ago(9) }),
+      ],
+      currentSessionId: "new",
+      mainSurfaces: [{ tabId: "terminal:0000000b-1", kind: "terminal", ordinal: 1, url: null, projectRoot: DEFAULT_ROOT }],
+    });
+    try {
+      expect(surfaceAt).toBeLessThanOrEqual(Date.now());
+      expect(treeRows(container).map(key)).toEqual(["surface:terminal:0000000b-1", "session:new", "session:old"]);
+      const last7 = getByTestId("sidebar-tree-header-last7Days");
+      const last30 = getByTestId("sidebar-tree-header-last30Days");
+      expect(last7.textContent).toBe("지난 7일");
+      expect(last30.textContent).toBe("지난 30일");
+      expect(last7.className).toContain("sticky");
+      // The header sits right before the rows it heads.
+      expect(last30.nextElementSibling?.getAttribute("data-tree-key")).toBe("session:old");
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps two projects that share a folder name apart", () => {
+    const first: ProjectIdentity = { projectRoot: "/work/a/app", projectName: "app" };
+    const second: ProjectIdentity = { projectRoot: "/work/b/app", projectName: "app" };
+    const { getByTestId, restore } = renderSidebar({
+      projects: [{ projectRoot: "/home/example/.ave/workspace", projectName: "workspace", isDefault: true }, first, second],
+      sessions: [
+        sessionRow({ id: "in-a", title: "A 대화", modifiedAt: ago(0), projectRoot: first.projectRoot, projectName: "app" }),
+        sessionRow({ id: "in-b", title: "B 대화", modifiedAt: ago(0), projectRoot: second.projectRoot, projectName: "app" }),
+      ],
+    });
+    try {
+      expect(getByTestId("sidebar-project-group-work-a-app").textContent).toContain("A 대화");
+      expect(getByTestId("sidebar-project-group-work-a-app").textContent).not.toContain("B 대화");
+      expect(getByTestId("sidebar-project-group-work-b-app").textContent).toContain("B 대화");
+    } finally {
+      restore();
+    }
+  });
+
+  it("folds a group to its count, unfolds it with →, folds it with ← and climbs from a row to its group", () => {
+    const expanded = new Set<string>([DEFAULT_ROOT]);
+    const onSetProjectExpanded = vi.fn((root: string, open: boolean) => { if (open) expanded.add(root); else expanded.delete(root); });
+    const { container, getByTestId, rerenderSidebar, restore } = renderSidebar({
+      isProjectExpanded: (root) => expanded.has(root),
+      onSetProjectExpanded,
+      mainSurfaces: [{ tabId: "terminal:0000000b-2", kind: "terminal", ordinal: 2, url: null, projectRoot: OTHER_ROOT }],
+    });
+    try {
+      const otherRow = getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app");
+      expect(otherRow.getAttribute("aria-expanded")).toBe("false");
+      // One conversation and one terminal.
+      expect(getByTestId("sidebar-project-count-C-Users-example-workspace-ave-project-other-app").textContent).toBe("2");
+      otherRow.focus();
+      fireEvent.keyDown(otherRow, { key: "ArrowRight" });
+      expect(onSetProjectExpanded).toHaveBeenLastCalledWith(OTHER_ROOT, true);
+      rerenderSidebar({ isProjectExpanded: (root) => expanded.has(root) });
+      expect(getByTestId(OTHER_GROUP).textContent).toContain("다른 프로젝트 대화");
+      const child = treeRows(container).find((row) => key(row) === "session:sess-other")!;
+      expect(child.getAttribute("aria-level")).toBe("2");
+      child.focus();
+      fireEvent.keyDown(child, { key: "ArrowLeft" });
+      expect(document.activeElement).toBe(getByTestId("sidebar-project-C-Users-example-workspace-ave-project-other-app"));
+      fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+      expect(onSetProjectExpanded).toHaveBeenLastCalledWith(OTHER_ROOT, false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("offers open, open beside, move to another project and close on a terminal row, and does what is chosen", () => {
+    const onOpenSurface = vi.fn();
+    const onOpenSurfaceBeside = vi.fn();
+    const onMoveSurface = vi.fn();
+    const onCloseSurface = vi.fn();
+    const tabId = "terminal:0000000b-3";
+    const view = renderSidebar({
+      ...inProject(DEFAULT_PROJECT),
+      mainSurfaces: [{ tabId, kind: "terminal", ordinal: 3, url: null, projectRoot: DEFAULT_ROOT }],
+      onOpenSurface, onOpenSurfaceBeside, onMoveSurface, onCloseSurface,
+    });
+    try {
+      fireEvent.click(view.getByTestId(`sidebar-surface-menu-${tabId}`));
+      const menu = view.showDynamicMenu.mock.calls.at(-1)![0];
+      expect(menu.sections.map((section) => section.items.map((item) => item.label))).toEqual([
+        ["열기", "옆에 분할로 열기", "다른 프로젝트로 이동"],
+        ["닫기 · 실행 중인 명령 종료"],
+      ]);
+      expect(menu.sections[0]!.items[0]!.accelerator).toBe("Enter");
+      expect(menu.sections[0]!.items[1]!.accelerator).toBe("Alt+Enter");
+      expect(menu.sections[0]!.items[2]!.submenu?.map((item) => item.label)).toEqual(["other-app"]);
+      view.chooseDynamicMenuItem(`move:${OTHER_ROOT}`);
+      expect(onMoveSurface).toHaveBeenCalledWith(tabId, OTHER_ROOT);
+      fireEvent.click(view.getByTestId(`sidebar-surface-menu-${tabId}`));
+      view.chooseDynamicMenuItem("beside");
+      expect(onOpenSurfaceBeside).toHaveBeenCalledWith(tabId);
+      fireEvent.click(view.getByTestId(`sidebar-surface-close-${tabId}`));
+      expect(onCloseSurface).toHaveBeenCalledWith(tabId);
+      fireEvent.click(view.getByTestId(`sidebar-surface-${tabId}`));
+      expect(onOpenSurface).toHaveBeenCalledWith(tabId);
+    } finally {
+      view.restore();
+    }
+  });
+
+  it("offers a side panel's tab only to open, with no close, move or split", () => {
+    const tabs = [{ tabId: "terminal:0000000b-4", kind: "terminal" as const, ordinal: 4, url: null, cwd: null }];
+    const unregister = registerSideTabsSink("group-tree", {
+      adopt: vi.fn(), release: vi.fn(), open: vi.fn(), activate: vi.fn(), snapshot: () => tabs,
+    });
+    const view = renderSidebar({ ...inProject(DEFAULT_PROJECT), chatGroupIds: ["group-tree"], onCloseSurface: vi.fn(), onMoveSurface: vi.fn(), onOpenSurfaceBeside: vi.fn() });
+    try {
+      expect(view.queryByTestId("sidebar-surface-close-terminal:0000000b-4")).toBeNull();
+      fireEvent.click(view.getByTestId("sidebar-surface-menu-terminal:0000000b-4"));
+      expect(view.showDynamicMenu.mock.calls.at(-1)![0].sections.map((section) => section.items.map((item) => item.id))).toEqual([["open"]]);
+    } finally {
+      view.restore();
+      unregister();
+    }
+  });
+
+  it("says 종료됨 on a terminal whose shell has ended", () => {
+    const tabId = "terminal:0000000b-5";
+    const view = renderSidebar({
+      ...inProject(DEFAULT_PROJECT),
+      mainSurfaces: [{ tabId, kind: "terminal", ordinal: 5, url: null, projectRoot: DEFAULT_ROOT }],
+    });
+    try {
+      expect(view.queryByTestId(`sidebar-surface-status-${tabId}`)).toBeNull();
+      act(() => setTerminalExited(tabId, true));
+      expect(view.getByTestId(`sidebar-surface-status-${tabId}`).textContent).toBe("종료됨");
+      act(() => setTerminalExited(tabId, false));
+      expect(view.queryByTestId(`sidebar-surface-status-${tabId}`)).toBeNull();
+    } finally {
+      view.restore();
+    }
+  });
+
+  it("keeps the work board and memory under the list, outside its scroller", () => {
+    const onSelect = vi.fn();
+    const { getByTestId, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), onSelect });
+    try {
+      const footer = getByTestId("sidebar-card-footer");
+      expect(footer.closest("[data-radix-scroll-area-viewport]")).toBeNull();
+      expect(getByTestId("sidebar-tree").closest("[data-radix-scroll-area-viewport]")).not.toBeNull();
+      fireEvent.click(getByTestId("sidebar-card-work-board"));
+      fireEvent.click(getByTestId("sidebar-card-memory"));
+      expect(onSelect.mock.calls).toEqual([["work-board"], ["memory"]]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("lists nothing until the selection has loaded", () => {
+    const { queryByRole, restore } = renderSidebar({ projectSelection: undefined, selectedProject: undefined });
+    try {
+      expect(queryByRole("tree")).toBeNull();
+    } finally {
+      restore();
     }
   });
 });

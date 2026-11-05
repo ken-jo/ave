@@ -44,7 +44,12 @@ interface SavedFolderSurface extends SavedSurfaceCommon {
 
 /** A surface in the main area. It belongs to one project, named by its root. Side tabs take the project of their pane's
  * conversation and do not store one. */
-export type SavedMainSurface = (SavedSurface | SavedPluginSurface | SavedFolderSurface) & { projectRoot: string };
+export type SavedMainSurface = (SavedSurface | SavedPluginSurface | SavedFolderSurface) & {
+  projectRoot: string;
+  /** When the surface was last brought into view (epoch ms), for the sidebar's recency order across launches. Absent for a
+   * surface never shown, and in layouts saved before it was kept. */
+  usedAt?: number;
+};
 
 type AnySavedSurface = SavedSurface | SavedPluginSurface | SavedFolderSurface;
 
@@ -174,8 +179,17 @@ function parseSurface(raw: unknown, path: string): AnySavedSurface {
 function parseMainSurface(raw: unknown, path: string): SavedMainSurface {
   const surface = parseSurface(raw, path);
   // The parse above proved `raw` is an object.
-  const projectRoot = absolutePath((raw as Record<string, unknown>).projectRoot, `${path}.projectRoot`);
-  return { ...surface, projectRoot };
+  const record = raw as Record<string, unknown>;
+  const projectRoot = absolutePath(record.projectRoot, `${path}.projectRoot`);
+  const { usedAt } = record;
+  if (usedAt === undefined) return { ...surface, projectRoot };
+  if (typeof usedAt !== "number" || !Number.isSafeInteger(usedAt) || usedAt < 0) {
+    // Only an ordering hint: a bad one is dropped (the surface then sorts by restore order) instead of losing the layout.
+    // Every other field still refuses the whole layout.
+    console.warn(`[main-layout] dropped ${path}.usedAt ${JSON.stringify(usedAt)}: not a time in milliseconds`);
+    return { ...surface, projectRoot };
+  }
+  return { ...surface, projectRoot, usedAt };
 }
 
 function parseSideTab(raw: unknown, path: string): SavedSurface {
