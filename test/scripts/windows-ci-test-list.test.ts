@@ -9,6 +9,8 @@ const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const REQUIRED_SECURITY_SUITES = [
+  // Home-content review must also cover case-insensitive filesystems.
+  "src/ipc/domains/__tests__/permissions.test.ts",
   "src/permissions/__tests__/encoded-bypass-battery.test.ts",
   "src/permissions/__tests__/literal-proof.test.ts",
   "src/permissions/__tests__/literal-rule-identity.test.ts",
