@@ -72,6 +72,48 @@ SOFTWARE.
 
 ---
 
+## Visual Studio Code (tree indent guides)
+
+- **What is included:** source code adapted (not a dependency) from Visual
+  Studio Code's tree widget into
+  `src/ui/renderer/components/sidebar/tree-indent-guides.tsx`: the per-depth
+  indent padding and per-ancestor indent-guide columns of
+  `src/vs/base/browser/ui/tree/abstractTree.ts` (`TreeRenderer`,
+  `_renderIndentGuides`) and the `.monaco-tl-indent` / `.indent-guide` rules of
+  `src/vs/base/browser/ui/tree/media/tree.css`, rewritten for React and
+  Tailwind. Read from `main` at commit
+  `8bf7aa09e11308534151dbfebd787793455781ce` on 2026-11-05.
+- **License:** MIT
+- **Copyright:** Copyright (c) 2015 - present Microsoft Corporation
+- **Repository:** https://github.com/microsoft/vscode
+- **Full license text:** reproduced below.
+
+```text
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## SheetJS Community Edition (`xlsx`)
 
 - **Version:** 0.20.3 (pinned, exact; installed from the official tarball

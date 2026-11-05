@@ -6,6 +6,7 @@ import { loadSidebarSurfacePreview } from "../../utils/sidebar-preview-data.js";
 import { BUILTIN_LABEL_KEYS } from "../../utils/view-location.js";
 import { tabIcon } from "../ChatSidePanelPreview.js";
 import { SidebarPreviewTarget, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
+import { TreeIndentGuides, treeIndentStyle, type TreeGuide } from "./tree-indent-guides.js";
 
 /** What a tree row needs to take part in the tree's keyboard model (case 20). */
 export interface TreeRowProps {
@@ -15,6 +16,8 @@ export interface TreeRowProps {
   tabIndex: 0 | -1;
   /** 1 for a top-level row; 2 under an all-projects group or a terminal's pane chat. */
   level: number;
+  /** The row's indent columns, one per level above it: the ancestors' lines and its own ├ or └ (see `treeGuides`). */
+  guides: readonly TreeGuide[];
   onFocusRow: (treeKey: string) => void;
 }
 
@@ -53,6 +56,7 @@ export function SurfaceRow({
   treeKey,
   tabIndex,
   level,
+  guides,
   onFocusRow,
 }: SurfaceRowProps) {
   const { t } = useTranslation();
@@ -91,7 +95,9 @@ export function SurfaceRow({
         TREE_ROW_FOCUS_CLASS,
         current ? "bg-primary/(--opacity-subtle) text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
       ].join(" ")}
+      style={treeIndentStyle(level)}
     >
+      <TreeIndentGuides guides={guides} />
       <SidebarPreviewTarget handle={preview}>
         <button
           type="button"
