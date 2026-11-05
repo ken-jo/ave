@@ -100,6 +100,16 @@ describe("folder views in the saved layout", () => {
       .toEqual({ kind: "folder", tabId: folderTab, ordinal: 2, path: "/work", selection: null, projectRoot: "/work" });
   });
 
+  it("does not write a location outside the project, however it was planted", () => {
+    const save = (folder: { path: string; selection: string | null }) => savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: "/work", folder });
+    expect(save({ path: "/etc", selection: "/etc/passwd" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/work/../etc", selection: "/work/src/../../etc/hosts" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/workshop", selection: "/workshop/a.txt" })).toMatchObject({ path: "/work", selection: null });
+    expect(save({ path: "/work/src", selection: "/elsewhere/a.txt" })).toMatchObject({ path: "/work/src", selection: null });
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: "C:\\Work", folder: { path: "c:\\work\\src", selection: "D:\\x.txt" } }))
+      .toMatchObject({ path: "c:\\work\\src", selection: null });
+  });
+
   it("survives a save, a parse and a restore, back on the same folder and item", () => {
     const tree = splitLeaf(leaf("main"), "main", "right", "group-2");
     const snapshot = buildMainLayoutSnapshot({
