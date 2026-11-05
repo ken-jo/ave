@@ -19,7 +19,8 @@ import { usePaneActions } from "../PaneFrame.js";
 import { AddRoutineModal, InvalidRoutineRow } from "../RoutinePanel.js";
 import { ScheduleItemPopover, routineTitle, type ScheduleItemDraft } from "./ScheduleItemPopover.js";
 import { useScheduleData } from "./use-schedule-data.js";
-import { chatTitle, useProjectChats } from "./chat-link.js";
+import { formatIpcError } from "../../format-ipc-error.js";
+import { CONNECTED_BAR, chatTitle, useProjectChats } from "./chat-link.js";
 import { layoutDayChips, sameDay, scheduleRange, shiftAnchor, type ScheduleViewMode } from "./schedule-layout.js";
 
 const PX_PER_HOUR = 48;
@@ -161,7 +162,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   useEffect(() => () => { mounted.current = false; }, []);
 
   const { records, invalid, occurrences, runs, loaded, running, refresh } = useScheduleData(api, projectRoot, range);
-  const chats = useProjectChats(api, projectRoot);
+  const chats = useProjectChats(api, projectRoot, records);
 
   // The delete commits when its undo window closes, and when the panel goes away: the user already chose it.
   const pendingRef = useRef<string | null>(null);
@@ -257,7 +258,10 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
   const runAction = async (action: () => Promise<{ ok: boolean; error?: string }>) => {
     const result = await action();
-    if (!result.ok) setNotice(result.error === "paused" ? t("schedulePanel.errorPaused") : result.error ?? t("schedulePanel.errorActionFailed"));
+    if (!result.ok) {
+      setNotice(result.error === "paused" ? t("schedulePanel.errorPaused")
+        : result.error ? formatIpcError(result.error, undefined) : t("schedulePanel.errorActionFailed"));
+    }
     void refresh();
   };
 
@@ -299,7 +303,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         onClose={() => { setSelected(null); dropDraft(entry.routine.id); }}
         onSave={async (patch: RoutineEditPatch) => {
           const result = await api.updateRoutine(entry.routine.id, patch);
-          if (!result.ok) return result.error;
+          if (!result.ok) return formatIpcError(result.error, undefined);
           dropDraft(entry.routine.id);
           setSelected(null);
           void refresh();
@@ -351,7 +355,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         aria-label={chipLabel(entry)}
         style={style}
         onClick={(e) => e.stopPropagation()}
-        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${entry.routine.targetSessionId ? "border-l-4 border-l-info" : ""} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
+        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${entry.routine.targetSessionId ? CONNECTED_BAR : ""} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
       >
         <span className="flex min-w-0 items-center gap-1">
           <StatusIcon status={entry.status} />

@@ -188,7 +188,7 @@ describe("Work Board — schedule cards", () => {
     render(<PlannedScheduleCardView card={card} />);
     const view = screen.getByTestId("board-schedule-card-deps");
     expect(view.getAttribute("data-connected")).toBe("true");
-    expect(view.className).toContain("border-l-info");
+    expect(view.className).toContain("--color-info");
     expect(view.textContent).toContain(t("schedulePanel.runsInConnectedChat"));
     expect(view.textContent).not.toContain(t("schedulePanel.runsInNewChat"));
   });

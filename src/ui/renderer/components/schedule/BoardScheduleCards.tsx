@@ -9,6 +9,7 @@ import { formatLocalClock, formatMediumDateTime } from "../../../../shared/forma
 import type { RoutineRecord } from "../../../../shared/routines-types.js";
 import { describeSchedule } from "../RoutinePanel.js";
 import { routineTitle } from "./ScheduleItemPopover.js";
+import { CONNECTED_BAR } from "./chat-link.js";
 import type { PlannedScheduleCard, RunningScheduleCard, BoardScheduleCards } from "./board-schedule.js";
 
 function runsAs(routine: RoutineRecord): string {
@@ -37,7 +38,7 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
     <button
       type="button"
       className={`w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        card.routine.targetSessionId ? "border-l-4 border-l-info" : ""}`}
+        card.routine.targetSessionId ? CONNECTED_BAR : ""}`}
       data-testid={`board-schedule-card-${card.routine.id}`}
       data-connected={card.routine.targetSessionId ? "true" : undefined}
       onClick={() => onOpen?.(card.routine.id)}
@@ -74,7 +75,7 @@ export function RunningScheduleCardView({ card, onOpenSession }: { card: Running
   const sessionId = card.sessionId;
   const elapsedMinutes = useElapsedMinutes(card.firedAt);
   return (
-    <div className={`w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm ${card.routine.targetSessionId ? "border-l-4 border-l-info" : ""}`}
+    <div className={`w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm ${card.routine.targetSessionId ? CONNECTED_BAR : ""}`}
       data-testid={`board-schedule-running-${card.routine.id}`} data-connected={card.routine.targetSessionId ? "true" : undefined}>
       <div className="flex items-center gap-1.5">
         <ScheduleBadge />

@@ -215,7 +215,8 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       {connectable && (
         <div className="flex items-end gap-2">
           <div className="min-w-0 flex-1">
-            <ChatLinkField value={form.chat} onChange={(value) => set("chat", value)} chats={props.chats ?? []} />
+            <ChatLinkField value={form.chat} onChange={(value) => set("chat", value)} chats={props.chats ?? []}
+              missing={Boolean(routine.orphanedAt) && form.chat === routine.targetSessionId} />
           </div>
           {routine.targetSessionId && !routine.orphanedAt && props.onOpenSession && (
             <Button size="sm" variant="outline" className="h-8 shrink-0" onClick={() => props.onOpenSession?.(routine.targetSessionId!)}>

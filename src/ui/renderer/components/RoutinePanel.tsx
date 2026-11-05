@@ -6,6 +6,7 @@ import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
 import { ChatLinkField, useProjectChats } from "./schedule/chat-link.js";
+import { formatIpcError } from "../format-ipc-error.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import {
   Dialog,
@@ -250,7 +251,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
         onAdded();
         onClose();
       } else {
-        setError(result.error ?? t("routinePanel.errorAddRoutineFailed"));
+        setError(result.error ? formatIpcError(result.error, undefined) : t("routinePanel.errorAddRoutineFailed"));
       }
     } catch (err) {
       setError(errorMessage(err) || t("routinePanel.errorAddRoutineFailed"));

@@ -415,15 +415,31 @@ describe("SchedulePanel — a schedule connected to a chat", () => {
     expect(api.updateRoutine).toHaveBeenLastCalledWith("build", { targetSessionId: null });
   });
 
+  it("explains a refused link in words, not the host's error code", async () => {
+    const api = makeApi({ routines: [routine()], occurrences, chats });
+    api.updateRoutine.mockResolvedValueOnce({ ok: false, error: "chat-not-found" } as never);
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    const field = await within(popover).findByTestId("schedule-chat-link");
+    await waitFor(() => expect(within(field).getByRole("option", { name: "릴리스 준비" })).toBeTruthy());
+    fireEvent.change(field, { target: { value: CHAT } });
+    await act(async () => { fireEvent.click(within(popover).getByRole("button", { name: "저장" })); });
+    expect(within(popover).getByRole("alert").textContent).toBe("그 대화는 더 이상 없습니다.");
+  });
+
   it("says 대화 없음 for an item whose chat was deleted, offers relink, unlink and delete, and does not run it now", async () => {
-    const api = makeApi({ routines: [routine({ targetSessionId: CHAT, orphanedAt: at(3, 10) })], occurrences: [{ routineId: "build", at: at(4, 14), status: "orphaned" }], chats: [chats[1]!] });
+    // The panel's list may still name the deleted chat; the field reads 대화 없음 all the same.
+    const api = makeApi({ routines: [routine({ targetSessionId: CHAT, orphanedAt: at(3, 10) })], occurrences: [{ routineId: "build", at: at(4, 14), status: "orphaned" }], chats });
     const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
     fireEvent.click(await view.findByTestId("schedule-chip"));
     const popover = await view.findByTestId("schedule-item-popover");
     expect(within(popover).getByTestId("schedule-orphaned-note").textContent).toContain("대화 없음");
     const field = within(popover).getByTestId("schedule-chat-link") as HTMLSelectElement;
     expect(field.value).toBe(CHAT);
-    expect(within(field).getByRole("option", { name: "대화 없음" })).toBeTruthy();
+    await waitFor(() => expect(within(field).getByRole("option", { name: "장애 회고" })).toBeTruthy());
+    expect(field.selectedOptions[0]?.textContent).toBe("대화 없음");
+    expect(within(field).queryByRole("option", { name: "릴리스 준비" })).toBeNull();
     expect((within(popover).getByRole("button", { name: "지금 실행" }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(popover).getByRole("button", { name: "삭제" })).toBeTruthy();
   });
