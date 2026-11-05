@@ -982,7 +982,7 @@ jobs:
           set -euo pipefail
           dir="$RUNNER_TEMP/claude-code-release"
           mkdir -p "$dir"
-          curl --fail --silent --show-error --proto '=https' --retry 3 --output "$dir/claude" \
+          curl --fail --silent --show-error --proto '=https' --retry 6 --retry-delay 5 --retry-max-time 180 --output "$dir/claude" \
             "https://downloads.claude.ai/claude-code-releases/$CLAUDE_CODE_RELEASE/darwin-arm64/claude"
           echo "$CLAUDE_CODE_DARWIN_ARM64_SHA256  $dir/claude" | shasum -a 256 -c -
           echo "AVE_CLAUDE_CODE_RELEASE_BINARY=$dir/claude" >> "$GITHUB_ENV"
@@ -1154,7 +1154,7 @@ jobs:
           set -euo pipefail
           dir="$RUNNER_TEMP/claude-code-release-metadata"
           mkdir -p "$dir"
-          fetch() { curl --fail --silent --show-error --proto '=https' --retry 3 --output "$dir/$1" "https://downloads.claude.ai/$2"; }
+          fetch() { curl --fail --silent --show-error --proto '=https' --retry 6 --retry-delay 5 --retry-max-time 180 --output "$dir/$1" "https://downloads.claude.ai/$2"; }
           fetch claude-code.asc keys/claude-code.asc
           fetch manifest.json "claude-code-releases/$CLAUDE_CODE_RELEASE/manifest.json"
           fetch manifest.json.sig "claude-code-releases/$CLAUDE_CODE_RELEASE/manifest.json.sig"
