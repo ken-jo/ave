@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -1512,6 +1513,50 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("supersedes only complete platform checks on successive main pushes", () => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+      concurrency: { group: string };
+      jobs: Record<string, { concurrency?: { group: string; "cancel-in-progress": string } }>;
+    };
+    // Affected selections cover before..HEAD only; cancelling them could lose
+    // verification for a change present solely in a superseded push.
+    expect(workflow.concurrency.group).toContain("github.sha");
+    for (const job of ["build", "vitest", "build-and-test"]) {
+      expect(workflow.jobs[job]!.concurrency).toBeUndefined();
+    }
+    const scopes = [
+      ["windows-permission-tests", "windows"],
+      ["macos-permission-tests", "macos"],
+      ["linux-confinement-tests", "linux"],
+    ];
+    for (const [job, platform] of scopes) {
+      const concurrency = workflow.jobs[job!]!.concurrency!;
+      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}");
+      expect(concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
+    }
+  });
+
+  it.runIf(process.platform !== "win32").each([
+    { label: "selected success", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", status: 0 },
+    { label: "unselected skip", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", status: 0 },
+    { label: "selected skip", selected: "true", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "selected failure", selected: "true", native: "failure", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "selected cancellation", selected: "true", native: "cancelled", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "unresolved impact", selected: "unknown", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "missing impact", selected: "", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "failed build", selected: "false", native: "skipped", build: "failure", vitest: "skipped", docs: "false", status: 1 },
+    { label: "failed tests", selected: "false", native: "skipped", build: "success", vitest: "failure", docs: "false", status: 1 },
+    { label: "documentation path", selected: "false", native: "skipped", build: "success", vitest: "skipped", docs: "true", status: 0 },
+  ])("evaluates the actual aggregate shell for $label", ({ selected, native, build, vitest, docs, status }) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const command = workflow.jobs["build-and-test"].steps[0].run as string;
+    const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+      ...process.env, BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
+      PLATFORM_CHECKS: selected, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+    } });
+    expect(result.status, result.stderr + result.stdout).toBe(status);
+  });
+
   it("runs the native control boundaries in both platform regression jobs", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {
@@ -1586,7 +1631,7 @@ describe("installer smoke and packaging discipline", () => {
     // The hygiene gates follow it, so they run after every verification step
     // has reported, as the ordering scan above requires within one job.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1596,6 +1641,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(results).toContain('if [ "$VITEST_RESULT" != "skipped" ]; then');
     expect(body).toContain("BUILD_RESULT: ${{ needs.build.result }}");
     expect(body).toContain("VITEST_RESULT: ${{ needs.vitest.result }}");
+    expect(results).toContain('if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then');
+    expect(results).toContain('if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi');
+    expect(results).toContain('if [ "$result" != "$expected" ]; then');
+    for (const platform of ["windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
+      const native = jobs.get(platform)!;
+      expect(native).toContain("needs: build");
+      expect(native).toContain("if: needs.build.outputs.platform_checks == 'true'");
+    }
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual(["check:mxc-packaging", "check:mxc-pins"]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");

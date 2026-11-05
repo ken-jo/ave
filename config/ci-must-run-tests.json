@@ -1,5 +1,5 @@
 {
-  "$comment": "Tests every affected-only pull-request run executes whatever changed: security, permissions, sandbox, contract, IPC channel and naming. An entry ending in '/' selects every collected Vitest file under that prefix; any other entry is one collected Vitest file. scripts/run-ci-suite.mjs refuses an entry that selects nothing. Full runs (every non-PR event, category merges from integration/* into main, and untrusted selections for PRs into non-integration bases) run the whole suite anyway. PRs into integration/* always keep the best traced selection and this nonempty must-run set, even when discovery fails. The \"out-of-process\" group lists every test that runs repo code in a child process through tsx or bundles it with esbuild, itself or through a test helper it imports: the import graph cannot see what that child or bundle loads, so these run on every pull request (test/scripts/run-ci-suite.test.ts fails when one is missing). The \"tree-invariants\" group lists every test that reads the tracked tree with `git ls-files` and asserts an invariant over it (the must-run set itself, pre-push tiers, repository identity, documentation readers): a test-only change can break one of those invariants without touching the suite, so they run on every pull request and main push (test/scripts/run-ci-suite.test.ts fails when one is missing).",
+  "$comment": "Affected runs always retain smoke, child-process/bundle and tracked-tree invariants. Other domain groups run only when a changed path matches their triggers. Related tests, literal readers and lock suites are added independently. Full runs ignore this selection and execute every collected test. Unknown changes and failed discovery retain the full fallback.",
   "groups": {
     "permissions": [
       "src/permissions/"
@@ -84,6 +84,74 @@
       "test/scripts/pre-push-tier.test.ts",
       "test/scripts/repository-identity.test.ts",
       "test/scripts/run-ci-suite.test.ts"
+    ],
+    "smoke": [
+      "src/plugins/__tests__/tool-name-policy.test.ts",
+      "src/__tests__/preload-shape.test.ts",
+      "src/plugins/__tests__/public-contract-boundary.test.ts"
+    ]
+  },
+  "triggers": {
+    "permissions": [
+      "src/permissions/",
+      "src/sandbox/",
+      "src/tools/",
+      "src/boot/",
+      "src/main/terminal/",
+      "src/shared/",
+      "src/contract/",
+      "src/data/settings"
+    ],
+    "sandbox": [
+      "src/sandbox/",
+      "src/permissions/",
+      "src/plugins/isolation/",
+      "src/hooks/",
+      "src/tools/",
+      "src/mcp/",
+      "src/main/",
+      "src/boot/",
+      "src/shared/",
+      "resources/",
+      "native/"
+    ],
+    "security": [
+      "src/audit/",
+      "src/data/",
+      "src/permissions/",
+      "src/sandbox/",
+      "src/tools/",
+      "src/engine/",
+      "src/boot/",
+      "src/main/",
+      "src/mcp/",
+      "src/hooks/",
+      "src/plugins/",
+      "src/shared/",
+      "src/lib/",
+      "src/contract/",
+      "src/preload"
+    ],
+    "contract": [
+      "src/contract/",
+      "src/plugins/",
+      "src/tools/",
+      "schemas/",
+      "src/preload",
+      "src/shared/"
+    ],
+    "ipc": [
+      "src/ipc/",
+      "src/preload",
+      "src/contract/",
+      "src/shared/ipc-",
+      "src/ui/renderer/types.ts"
+    ],
+    "naming": [
+      "src/plugins/",
+      "src/boot/",
+      "src/main/storage/",
+      "src/shared/"
     ]
   }
 }

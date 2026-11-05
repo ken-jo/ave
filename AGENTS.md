@@ -327,8 +327,12 @@ flags so every tracked file can be verified in a complete checkout.
 CI builds the exact main + PR merged tree before merge, and its test scope
 follows `scripts/run-ci-suite.mjs`: a test-only diff (collected tests and
 fixture assets only) runs its affected tests and the must-run set, never the
-full suite; a non-test-only category merge, a helper, setup, config, script or
-workflow change off integration bases, and untrusted selections run it whole. Do not manually duplicate
+full suite. Category merges use the same strict affected selection as other
+main-base PRs. A helper, setup, config, script or workflow change off integration
+bases, and untrusted selections run it whole. Mandatory domain suites are
+change-triggered; child-process/bundle and tracked-tree invariants plus smoke
+contracts remain unconditional. Proven renderer-only patches omit native
+platform jobs; selected native jobs must succeed in the existing aggregate. Do not manually duplicate
 the full trio around a push. After failure, rerun only failed or invalidated
 checks. No CI workflow and no release gate runs Playwright. The suite
 (`bun run test:ui-e2e`) is local and seeds only fixture plugins from

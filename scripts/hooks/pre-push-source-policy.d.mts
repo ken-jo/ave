@@ -27,6 +27,8 @@ export function selectMessageCatalogChecks<T extends PrePushChange & { baseSha: 
     readBlob: (sha: string, relativePath: string) => string | null;
     trackedFiles: readonly string[];
     readTrackedFile: (relativePath: string) => string | null;
+    allowKeyChanges?: boolean;
+    includeUnresolvedConsumers?: boolean;
   },
 ):
   | { namespaces: string[]; testFiles: string[]; consumerModules: string[]; reason?: undefined }

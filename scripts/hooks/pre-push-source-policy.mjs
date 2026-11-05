@@ -552,6 +552,7 @@ function readParsedMessageCatalog(source, relativePath) {
   }
   const entries = new Map();
   const orderedEntries = [];
+  const bodies = [];
   for (const binding of fragment ? ["en", "ko"] : [locale]) {
     const statement = statements.shift();
     if (!statement || !ast.isVariableStatement(statement) || !isExported(statement) ||
@@ -567,6 +568,7 @@ function readParsedMessageCatalog(source, relativePath) {
       body = body.expression;
     }
     if (!body || !ast.isObjectLiteralExpression(body)) return null;
+    bodies.push({ start: body.getStart(source), end: body.end });
     const keys = new Set();
     for (const property of body.properties) {
       if (!ast.isPropertyAssignment(property) || !ast.isStringLiteral(property.name)) return null;
@@ -586,11 +588,31 @@ function readParsedMessageCatalog(source, relativePath) {
         statement.typeParameters || !isEnglishKeyType(statement.type)) return null;
   }
   if (fragment && [...entries.values()].some((values) => !("en" in values) || !("ko" in values))) return null;
-  return statements.length === 0 ? { entries, orderedEntries } : null;
+  return statements.length === 0 ? { entries, orderedEntries, bodies } : null;
 }
 
-function readCatalogValueChanges(beforeText, afterText, before, after) {
+function readCatalogValueChanges(beforeText, afterText, before, after, allowKeyChanges = false) {
   if (before === null) return new Set(after.entries.keys());
+  const beforeKeys = new Set(before.entries.keys());
+  const afterKeys = new Set(after.entries.keys());
+  const keySetChanged = beforeKeys.size !== afterKeys.size || [...beforeKeys].some((key) => !afterKeys.has(key));
+  if (allowKeyChanges && keySetChanged) {
+    // Both complete modules have already passed the static-only parser. Keep
+    // every declaration and all source outside the objects byte-identical,
+    // and preserve the relative order of surviving keys in each locale.
+    const scaffolding = (text, parsed) => {
+      let end = 0;
+      const parts = [];
+      for (const body of parsed.bodies) { parts.push(text.slice(end, body.start), "{}"); end = body.end; }
+      parts.push(text.slice(end));
+      return parts.join("");
+    };
+    const commonOrder = (parsed, other) => parsed.orderedEntries.filter(({ key }) => other.has(key)).map(({ binding, key }) => [binding, key]);
+    if (scaffolding(beforeText, before) !== scaffolding(afterText, after) ||
+        JSON.stringify(commonOrder(before, afterKeys)) !== JSON.stringify(commonOrder(after, beforeKeys))) return null;
+    return new Set([...new Set([...beforeKeys, ...afterKeys])].filter((key) =>
+      JSON.stringify(before.entries.get(key)) !== JSON.stringify(after.entries.get(key))));
+  }
   if (before.orderedEntries.length !== after.orderedEntries.length) return null;
   const changedKeys = new Set();
   const beforeParts = [];
@@ -645,7 +667,7 @@ function readCatalogValueChanges(beforeText, afterText, before, after) {
  *
  * Returns { namespaces, testFiles, consumerModules } or { reason }.
  */
-export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, readTrackedFile }) {
+export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, readTrackedFile, allowKeyChanges = false, includeUnresolvedConsumers = false }) {
   const changedNamespaces = new Set();
   for (const entry of entries) {
     if (!isMessageCatalogPath(entry?.path)) return { reason: `${entry?.path} is not a message catalog file` };
@@ -659,7 +681,7 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     if (after === null || entry.status !== "A" && before === null) {
       return { reason: `${entry.path} has a shape the message key reader does not accept; full checks required` };
     }
-    const changedKeys = readCatalogValueChanges(beforeText, afterText, before, after);
+    const changedKeys = readCatalogValueChanges(beforeText, afterText, before, after, allowKeyChanges);
     if (changedKeys === null) {
       return { reason: `${entry.path} has changes outside attributable message values; full checks required` };
     }
@@ -683,13 +705,14 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
   }
   try {
     return withParsedSourceTexts(texts, (sources, resolveDeclarations) =>
-      selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles));
+      selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles, includeUnresolvedConsumers));
   } catch {
     return { reason: "message consumers could not be analyzed; full checks required" };
   }
 }
 
-function selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles) {
+function selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles, includeUnresolvedConsumers = false) {
+  let unresolvedConsumers = false;
   const named = new Set();
   const testFiles = new Set();
   const consumerModules = new Set();
@@ -704,11 +727,12 @@ function selectParsedMessageConsumers(texts, sources, resolveDeclarations, chang
     } catch {
       return { reason: `${path} has an unsupported message consumer shape; full checks required` };
     }
-    if (consumers.unresolved) return { reason: `${path} has an unresolved dynamic message consumer; full checks required` };
+    if (consumers.unresolved && !includeUnresolvedConsumers) return { reason: `${path} has an unresolved dynamic message consumer; full checks required` };
+    unresolvedConsumers ||= consumers.unresolved;
     const namespaces = [...consumers.named];
     for (const namespace of namespaces) named.add(namespace);
     const readsCatalog = !path.startsWith("src/i18n/") && text.includes("i18n/messages");
-    if (!isI18nSuite && namespaces.length === 0 && !readsCatalog) continue;
+    if (!isI18nSuite && namespaces.length === 0 && !readsCatalog && !consumers.unresolved) continue;
     // Playwright specs and screenshot trees are outside every Vitest run.
     if (path.split("/").some((segment) => deniedTestTreeSegments.has(segment))) continue;
     if (isCollectedVitestFile(path)) testFiles.add(path);
@@ -717,7 +741,7 @@ function selectParsedMessageConsumers(texts, sources, resolveDeclarations, chang
     else consumerModules.add(path);
   }
   const unnamed = [...changedNamespaces].filter((namespace) => !named.has(namespace)).sort();
-  if (unnamed.length > 0) {
+  if (unnamed.length > 0 && !(includeUnresolvedConsumers && unresolvedConsumers)) {
     return { reason: `no source file names message namespace ${unnamed.join(", ")}; a computed key may reach it, full checks required` };
   }
   const sortedTests = [...testFiles].sort();

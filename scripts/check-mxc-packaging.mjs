@@ -16,6 +16,25 @@ import PINS from "../src/permissions/mxc-launcher-pins.json" with { type: "json"
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(import.meta.url);
 
+export async function copyPackagingDependencies(source, destination) {
+  const entries = await readdir(source);
+  await mkdir(destination, { recursive: true });
+  let next = 0;
+  // Independent package roots can copy together; every byte and link still
+  // belongs to a separate staging tree before collection or mutation starts.
+  const copies = await Promise.allSettled(Array.from({ length: Math.min(4, entries.length) }, async () => {
+    while (next < entries.length) {
+      const name = entries[next++];
+      await cp(path.join(source, name), path.join(destination, name), {
+        recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+      });
+    }
+  }));
+  // Wait for every in-flight copy before reporting an error or cleaning up.
+  const failed = copies.find(copy => copy.status === "rejected");
+  if (failed) throw failed.reason;
+}
+
 export function packagingCheckArchitectures(argv) {
   if (argv.length === 0) return ["x64", "arm64"];
   if (argv.length === 2 && argv[0] === "--arch" && ["x64", "arm64"].includes(argv[1])) return [argv[1]];
@@ -99,9 +118,7 @@ async function main() {
       await mkdir(modules, { recursive: true });
       // Preserve the complete installed graph and the production root manifest.
       // Adding synthetic direct dependencies changes collector hoisting decisions.
-      await cp(path.join(ROOT, "node_modules"), modules, {
-        recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
-      });
+      await copyPackagingDependencies(path.join(ROOT, "node_modules"), modules);
       const sourceHeaders = JSON.parse(await readFile(path.join(modules, "node-pty/node_modules/node-addon-api/package.json"), "utf8"));
       if (sourceHeaders.name !== "node-addon-api") throw new Error("Expected installed nested PTY build headers");
       await assertPackagingStagePaths(modules, arch);
