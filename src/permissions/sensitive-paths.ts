@@ -573,16 +573,17 @@ export function protectedControlEntryFor(path: string): string | undefined {
     return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
   });
   if (entry) return entry;
-  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")];
-  if (homes.some((home) => {
-    const base = normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
-    return normalized === base || normalized.startsWith(base + "/");
-  })) return "application-home";
+  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")]
+    .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
+  const workspace = homes.slice(0, 2).map((home) => home + "/workspace")
+    .find((base) => normalized === base || normalized.startsWith(base + "/"));
+  if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
   if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
     const base = normalizePath(target).toLowerCase();
     return normalized === base;
   }))) return "runtime-settings-file";
-  if (segments.includes(".ave")) return "application-home";
+  // The managed workspace is user data; nested control homes remain protected.
+  if ((workspace ? normalized.slice(workspace.length).split("/") : segments).includes(".ave")) return "application-home";
   return undefined;
 }
 
