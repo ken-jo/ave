@@ -77,7 +77,8 @@ import {
   type MarketplaceInstalledMessagingConnection,
   type MarketplaceInstalledProviderPreset,
 } from "../shared/marketplace-package-assets.js";
-import { projectRootKey } from "../shared/project-identity.js";
+import { projectRootKey, type ProjectLastView, type ProjectSelection } from "../shared/project-identity.js";
+import { parseTabId } from "../shared/tab-id.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
 import {
   DEFAULT_UPSTREAM_PROXY,
@@ -89,7 +90,7 @@ import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js"
 import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import { normalizeSkippedPluginUpdateKey } from "../shared/skipped-plugin-updates.js";
 import { createLogger } from "../lib/logger.js";
-import { parseMainLayout, type MainLayoutSnapshot } from "../shared/main-layout.js";
+import { isAbsoluteHostPath, parseMainLayout, type MainLayoutSnapshot } from "../shared/main-layout.js";
 import {
   STORED_FIELD,
   acceptField,
@@ -951,8 +952,11 @@ export function isCloseBehavior(value: unknown): value is SystemCloseBehavior {
 const MAX_PROJECT_ROOT_LIST = 200;
 const MAX_PROJECT_LABEL_CHARS = 60;
 
+/** How many recently used projects the project menu remembers. */
+const MAX_RECENT_PROJECT_ROOTS = 10;
+
 /** Deduplicate pinned and archived roots by the shared case/slash-insensitive identity. */
-export function normalizeProjectRootList(raw: unknown[]): string[] {
+export function normalizeProjectRootList(raw: unknown[], limit = MAX_PROJECT_ROOT_LIST): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of raw) {
@@ -963,8 +967,50 @@ export function normalizeProjectRootList(raw: unknown[]): string[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(trimmed);
-    if (out.length >= MAX_PROJECT_ROOT_LIST) break;
+    if (out.length >= limit) break;
   }
+  return out;
+}
+
+/** A selection names every project or one absolute root; anything else (a `"*"` sentinel included) is refused. */
+export function normalizeProjectSelection(raw: unknown): ProjectSelection | undefined {
+  if (!isRecord(raw)) return undefined;
+  if (raw.kind === "all") return Object.keys(raw).length === 1 ? { kind: "all" } : undefined;
+  if (raw.kind !== "root" || Object.keys(raw).length !== 2) return undefined;
+  const root = typeof raw.root === "string" ? raw.root.trim() : "";
+  return isAbsoluteHostPath(root) ? { kind: "root", root } : undefined;
+}
+
+/** Most recent first, by root identity, at most ten; only absolute roots. */
+export function normalizeRecentProjectRoots(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const absolute = raw.filter((entry): entry is string => typeof entry === "string" && isAbsoluteHostPath(entry.trim()));
+  const out = normalizeProjectRootList(absolute, MAX_RECENT_PROJECT_ROOTS);
+  const dropped = raw.length - out.length;
+  if (dropped > 0) log.warn(`system.recentProjectRoots dropped ${dropped} entr${dropped === 1 ? "y" : "ies"} (not an absolute root, repeated, or over ${MAX_RECENT_PROJECT_ROOTS})`);
+  return out;
+}
+
+/** Keyed by `projectRootKey`. An entry that is not a place (or names a surface that is not a tab id) is dropped. */
+export function normalizeLastViewByProject(raw: unknown): Record<string, ProjectLastView> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out: Record<string, ProjectLastView> = {};
+  let count = 0;
+  for (const [root, value] of Object.entries(raw)) {
+    const key = projectRootKey(root);
+    if (!key || !isAbsoluteHostPath(key) || !isRecord(value)) continue;
+    const { view, surface } = value;
+    if (typeof view !== "string" || !isInlineViewKey(view)) continue;
+    if (surface !== undefined && (typeof surface !== "string" || parseTabId(surface) === null)) continue;
+    // Two spellings of one root fold to one key; only a new key counts toward the cap.
+    if (!(key in out)) {
+      if (count >= MAX_PROJECT_ROOT_LIST) continue;
+      count += 1;
+    }
+    out[key] = surface === undefined ? { view } : { view, surface };
+  }
+  const dropped = Object.keys(raw).length - count;
+  if (dropped > 0) log.warn(`system.lastViewByProject dropped ${dropped} entr${dropped === 1 ? "y" : "ies"} (not a place, a repeated root, or over ${MAX_PROJECT_ROOT_LIST})`);
   return out;
 }
 
@@ -1049,6 +1095,9 @@ export function normalizeSystem(input: unknown): SystemSettings {
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
   acceptField(result, "sidebarState", obj.sidebarState, isSidebarState, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
+  acceptNormalizedField(result, "projectSelection", obj.projectSelection, normalizeProjectSelection, "system", STORED_FIELD);
+  acceptNormalizedField(result, "recentProjectRoots", obj.recentProjectRoots, normalizeRecentProjectRoots, "system", STORED_FIELD);
+  acceptNormalizedField(result, "lastViewByProject", obj.lastViewByProject, normalizeLastViewByProject, "system", STORED_FIELD);
   // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);
   if (storedLayout) result.mainLayout = storedLayout;

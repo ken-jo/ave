@@ -231,6 +231,15 @@ export function App() {
   // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(canvasElement);
   const mainSurfaces = useMainSurfaces();
+  // The project a new main surface opens in: the window's project, known once the project list has loaded (set below).
+  const surfaceProjectRootRef = useRef<string | undefined>(undefined);
+  /** The project for a new main surface, or undefined (after telling the user) while the project list is unavailable:
+   * a surface is never created or moved without knowing which project it belongs to. */
+  const surfaceProjectRoot = useCallback((): string | undefined => {
+    const root = surfaceProjectRootRef.current;
+    if (!root) statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown"), ttlMs: 10_000 });
+    return root;
+  }, [statusPushToast, t]);
   const [paneChatOpenTabIds, setPaneChatOpenTabIds] = useState<ReadonlySet<string>>(() => new Set());
   const setPaneChatOpen = useCallback((tabId: string, open: boolean) => {
     setPaneChatOpenTabIds((current) => {
@@ -470,11 +479,16 @@ export function App() {
       tabToSide,
       tabToMain: (fromGroupId, tabId, drop) => {
         const sink = sinkOf(fromGroupId);
+        // Everything that can refuse the move is settled before the side panel lets go of the tab.
+        const held = sink.snapshot().find((each) => each.tabId === tabId);
+        if (!held) return;
+        if (!isMovableTabKind(held.kind)) throw new Error(`surface-not-movable:${held.kind}`);
+        const projectRoot = surfaceProjectRoot();
+        if (!projectRoot) return;
         const tab = sink.release(tabId);
         if (!tab) return;
-        if (!isMovableTabKind(tab.kind)) throw new Error(`surface-not-movable:${tab.kind}`);
-        mainSurfaces.adopt({ tabId, kind: tab.kind, ordinal: tab.ordinal, url: tab.kind === "browser" ? guestUrl(tabId) : null });
-        const location: ViewLocation = { view: VIEW_OF_SURFACE_KIND[tab.kind], surface: tabId };
+        mainSurfaces.adopt({ tabId, kind: held.kind, ordinal: tab.ordinal, url: held.kind === "browser" ? guestUrl(tabId) : null, projectRoot });
+        const location: ViewLocation = { view: VIEW_OF_SURFACE_KIND[held.kind], surface: tabId };
         if (drop) {
           const placed = drop.target === "center" ? null : chatGroups.placeOnEdge(drop.paneId, drop.target, location);
           if (placed === null) {
@@ -495,7 +509,7 @@ export function App() {
         tabToSide(surfaceId, toGroupId);
       },
     };
-  }, [chatGroups, mainSurfaces]);
+  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
 
   const handleSurfaceDrop = useCallback((targetPaneId: string, payload: SurfaceDragPayload, target: DropTarget) => {
     if ("side" in payload.from) {
@@ -514,11 +528,11 @@ export function App() {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
     // Restore terminals at their last directory and pages at their last address.
-    const surface = mainSurfaces.create(closed.kind, closed.url, closed.cwd);
+    const surface = mainSurfaces.create(closed.kind, { url: closed.url, cwd: closed.cwd, projectRoot: closed.projectRoot });
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
 
-  const activeSurfaceOf = useCallback((surface: MainSurface): ActiveSurface => ({
+  const activeSurfaceOf = useCallback((surface: Pick<MainSurface, "kind" | "tabId" | "ordinal" | "cwd">): ActiveSurface => ({
     kind: surface.kind,
     tabId: surface.tabId,
     label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}`,
@@ -787,9 +801,14 @@ export function App() {
     const unshown = fresh
       ? undefined
       : [...mainSurfaces.surfaces].reverse().find((surface) => surface.kind === kind && !shown.has(surface.tabId));
-    const surface = unshown ?? mainSurfaces.create(kind);
+    let surface = unshown;
+    if (!surface) {
+      const projectRoot = surfaceProjectRoot();
+      if (!projectRoot) return;
+      surface = mainSurfaces.create(kind, { projectRoot });
+    }
     chatGroups.setPaneContent(paneId, { view, surface: surface.tabId });
-  }, [chatGroups, mainSurfaces]);
+  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
   const activeViewPane = useMemo(() => ({
     view: chatGroups.contentById[chatGroups.focusedId]?.view ?? "home",
     navigate: (next: InlineViewKey) => {
@@ -973,6 +992,7 @@ export function App() {
     () => defaultProjectFromProjects(workspaceProjects),
     [workspaceProjects],
   );
+  surfaceProjectRootRef.current = (activeProject ?? defaultWorkspaceProject)?.projectRoot;
 
   const handleOpenRoutineSession = useCallback(
     async (sessionId: string) => {

@@ -2,7 +2,7 @@ import { test, expect } from "./fixtures.js";
 import type { ElectronApplication, Page } from "playwright";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -75,12 +75,14 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     const settings = buildLlmSettings("openai-compatible", model);
     (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
       `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    // The project the terminal belongs to: the registered folder, as the running app resolves it.
+    const terminal = { kind: "terminal", tabId, ordinal: 1, cwd: workspace, url: null, projectRoot: realpathSync(workspace) };
     writeFileSync(join(userData, "ave-settings.json"), JSON.stringify({
       ...settings,
       appearance: buildE2eBaseSettings(true, "en").appearance,
       system: { mainLayout: {
-        version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
-        surfaces: { main: { kind: "terminal", tabId, ordinal: 1, cwd: workspace, url: null } },
+        version: 2, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main",
+        surfaces: { main: terminal }, openSurfaces: [terminal],
         panelOpenIds: [], thumbnailOpenIds: [], sideTabs: {},
       } },
     }));

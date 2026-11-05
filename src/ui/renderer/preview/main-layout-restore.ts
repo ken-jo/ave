@@ -1,7 +1,39 @@
-import type { SavedSurface } from "../../../shared/main-layout.js";
+import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, type SavedSurface } from "../../../shared/main-layout.js";
+import { projectRootEquals } from "../../../shared/project-identity.js";
 
 /** Restore pane geometry first and let later-mounted tab stores consume saved surfaces; restored terminals start new shells
  * in saved directories. */
+
+/** A saved main surface this window can put back. */
+type RestorableSurface = SavedSurface & { projectRoot: string };
+
+export interface RestorableLayout extends Omit<MainLayoutSnapshot, "surfaces" | "openSurfaces"> {
+  surfaces: Record<string, RestorableSurface>;
+  openSurfaces: RestorableSurface[];
+}
+
+/** The part of a checked layout this window can restore: main surfaces whose project is still open (compared by root
+ * identity), of a kind this window shows. Each dropped surface is named with its reason (tab ids only; roots can carry the
+ * user's home path). A pane whose surface is dropped shows its conversation. */
+export function restorableLayout(layout: MainLayoutSnapshot, liveRoots: readonly string[]): { layout: RestorableLayout; dropped: string[] } {
+  const dropped: string[] = [];
+  const reasons = new Map<string, string>();
+  const keep = (surface: SavedMainSurface): surface is RestorableSurface => {
+    let reason: string | null = null;
+    if (!liveRoots.some((root) => projectRootEquals(root, surface.projectRoot))) reason = "its project is not open";
+    else if (!isSavedTerminalOrPage(surface)) reason = `this window does not show ${surface.kind} surfaces`;
+    if (reason === null) return true;
+    if (!reasons.has(surface.tabId)) {
+      reasons.set(surface.tabId, reason);
+      dropped.push(`${surface.tabId}: ${reason}`);
+    }
+    return false;
+  };
+  const surfaces: Record<string, RestorableSurface> = {};
+  const openSurfaces = layout.openSurfaces.filter(keep);
+  for (const [paneId, surface] of Object.entries(layout.surfaces)) if (keep(surface)) surfaces[paneId] = surface;
+  return { layout: { ...layout, surfaces, openSurfaces }, dropped };
+}
 
 const pendingSideTabs = new Map<string, SavedSurface[]>();
 const restoredTerminals = new Map<string, string | null>();

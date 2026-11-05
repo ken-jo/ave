@@ -4,21 +4,53 @@ import { isRecord } from "./is-record.js";
 import { parseTabId } from "./tab-id.js";
 import { parseBrowserSessionActor, type SessionTabBindingMetadata } from "./browser-surface.js";
 
-export const MAIN_LAYOUT_VERSION = 1;
+/** Version 2 stamps every main surface with its project. Version 1 is refused and the window starts fresh; there is no
+ * migration. */
+export const MAIN_LAYOUT_VERSION = 2;
 
-export type SavedSurfaceKind = "terminal" | "browser";
+export type SavedSurfaceKind = "terminal" | "browser" | "plugin" | "folder";
 
-export interface SavedSurface {
-  kind: SavedSurfaceKind;
+interface SavedSurfaceCommon {
   /** Keep tab ids stable across launches so terminal identity survives restore. */
   tabId: string;
   ordinal: number;
+  /** Main-owned facts, never control authority. Empty means cleared. */
+  binding?: SessionTabBindingMetadata;
+}
+
+/** A terminal or page. Side tabs are always this kind. */
+export interface SavedSurface extends SavedSurfaceCommon {
+  kind: "terminal" | "browser";
   /** A terminal's last directory (absolute, POSIX or Windows drive), or null. Always null for a page. */
   cwd: string | null;
   /** A page's last http(s) address, or null. Always null for a terminal. */
   url: string | null;
-  /** Main-owned facts, never control authority. Empty means cleared; absence is the legacy format. */
-  binding?: SessionTabBindingMetadata;
+}
+
+/** An extension screen instance; the tab id is the instance id. The title is the one last shown, for the restore. */
+interface SavedPluginSurface extends SavedSurfaceCommon {
+  kind: "plugin";
+  pluginId: string;
+  viewId: string;
+  title: string;
+}
+
+/** A folder view: the folder it shows and the item selected in it, if any. */
+interface SavedFolderSurface extends SavedSurfaceCommon {
+  kind: "folder";
+  path: string;
+  selection: string | null;
+}
+
+/** A surface in the main area. It belongs to one project, named by its root. Side tabs take the project of their pane's
+ * conversation and do not store one. */
+export type SavedMainSurface = (SavedSurface | SavedPluginSurface | SavedFolderSurface) & { projectRoot: string };
+
+type AnySavedSurface = SavedSurface | SavedPluginSurface | SavedFolderSurface;
+
+/** Terminals and pages are the surfaces with live processes, guests and session bindings. */
+export function isSavedTerminalOrPage<T extends { kind: SavedSurfaceKind }>(surface: T): surface is Extract<T, { kind: "terminal" | "browser" }> {
+  return surface.kind === "terminal" || surface.kind === "browser";
 }
 
 export type SavedPaneNode =
@@ -29,15 +61,14 @@ export interface MainLayoutSnapshot {
   version: typeof MAIN_LAYOUT_VERSION;
   tree: SavedPaneNode;
   focusedId: string;
-  /** Panes showing a terminal or page, keyed by pane id. A pane not listed shows its conversation. */
-  surfaces: Record<string, SavedSurface>;
+  /** Panes showing a main surface, keyed by pane id. A pane not listed shows its conversation. */
+  surfaces: Record<string, SavedMainSurface>;
   panelOpenIds: string[];
   /** Panes whose session thumbnails were open. Older layouts restore them closed. */
   thumbnailOpenIds: string[];
   sideTabs: Record<string, SavedSurface[]>;
-  /** Every first-class terminal and page in sidebar order, shown in a pane or not. Absent in older layouts, which kept only
-   * the shown ones. */
-  openSurfaces?: SavedSurface[];
+  /** Every main surface in sidebar order, shown in a pane or not. */
+  openSurfaces: SavedMainSurface[];
 }
 
 export type MainLayoutParse = { ok: true; layout: MainLayoutSnapshot } | { ok: false; reason: string };
@@ -50,10 +81,14 @@ export interface MainLayoutLimits {
 
 const GROUP_ID = /^(main|group-[1-9]\d*)$/;
 
-/** A directory a restored shell can start in: POSIX absolute or a Windows drive path. */
-export function isAbsoluteTerminalCwd(cwd: string): boolean {
-  return cwd.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwd);
+/** An absolute path on either host family: POSIX absolute or a Windows drive path. Shape only; whether it exists is not
+ * checked here. */
+export function isAbsoluteHostPath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 }
+
+const PLUGIN_SEGMENT = /^[^:]+$/;
+const MAX_TITLE_CHARS = 200;
 
 class Refused extends Error {}
 
@@ -86,13 +121,43 @@ function parseTree(raw: unknown, path: string, leaves: string[]): SavedPaneNode 
   };
 }
 
-function parseSurface(raw: unknown, path: string): SavedSurface {
+function parseBinding(raw: Record<string, unknown>, path: string, kind: SavedSurfaceKind): SessionTabBindingMetadata | undefined {
+  if (raw.binding === undefined) return undefined;
+  if (!isRecord(raw.binding) || Object.keys(raw.binding).some((key) => key !== "owner" && key !== "paneSessionId")) refuse(`${path}.binding is invalid`);
+  const owner = raw.binding.owner === undefined ? undefined : parseBrowserSessionActor(raw.binding.owner);
+  if (owner === null || (owner !== undefined && kind !== "browser")) refuse(`${path}.binding.owner is invalid`);
+  const paneSessionId = raw.binding.paneSessionId;
+  if (paneSessionId !== undefined && (typeof paneSessionId !== "string" || paneSessionId.length === 0)) refuse(`${path}.binding.paneSessionId is invalid`);
+  return { ...(owner === undefined ? {} : { owner }), ...(paneSessionId === undefined ? {} : { paneSessionId: paneSessionId as string }) };
+}
+
+function absolutePath(value: unknown, what: string): string {
+  if (typeof value !== "string" || !isAbsoluteHostPath(value)) refuse(`${what} must be an absolute path`);
+  return value;
+}
+
+function parseSurface(raw: unknown, path: string): AnySavedSurface {
   if (!isRecord(raw)) refuse(`${path} is not an object`);
-  const { kind, tabId, ordinal, cwd, url } = raw;
-  if (kind !== "terminal" && kind !== "browser") refuse(`${path}.kind ${JSON.stringify(kind)} is not terminal or browser`);
+  const { kind, tabId, ordinal } = raw;
+  if (kind !== "terminal" && kind !== "browser" && kind !== "plugin" && kind !== "folder") refuse(`${path}.kind ${JSON.stringify(kind)} is not terminal, browser, plugin or folder`);
   if (typeof tabId !== "string" || parseTabId(tabId)?.kind !== kind) refuse(`${path}.tabId ${JSON.stringify(tabId)} is not a ${kind} tab id`);
   if (typeof ordinal !== "number" || !Number.isInteger(ordinal) || ordinal < 1) refuse(`${path}.ordinal must be a positive integer`);
-  if (cwd !== null && (kind !== "terminal" || typeof cwd !== "string" || !isAbsoluteTerminalCwd(cwd))) refuse(`${path}.cwd must be null or a terminal's absolute path`);
+  const binding = parseBinding(raw, path, kind);
+  const common = { tabId: tabId as string, ordinal, ...(binding === undefined ? {} : { binding }) };
+  if (kind === "plugin") {
+    const { pluginId, viewId, title } = raw;
+    if (typeof pluginId !== "string" || !PLUGIN_SEGMENT.test(pluginId)) refuse(`${path}.pluginId must be a colon-free name`);
+    if (typeof viewId !== "string" || !PLUGIN_SEGMENT.test(viewId)) refuse(`${path}.viewId must be a colon-free name`);
+    if (typeof title !== "string" || title.trim().length === 0 || title.length > MAX_TITLE_CHARS) refuse(`${path}.title must be a non-empty name of at most ${MAX_TITLE_CHARS} characters`);
+    return { kind, ...common, pluginId, viewId, title };
+  }
+  if (kind === "folder") {
+    const folder = absolutePath(raw.path, `${path}.path`);
+    const selection = raw.selection === null ? null : absolutePath(raw.selection, `${path}.selection`);
+    return { kind, ...common, path: folder, selection };
+  }
+  const { cwd, url } = raw;
+  if (cwd !== null && (kind !== "terminal" || typeof cwd !== "string" || !isAbsoluteHostPath(cwd))) refuse(`${path}.cwd must be null or a terminal's absolute path`);
   if (url !== null) {
     if (kind !== "browser" || typeof url !== "string") refuse(`${path}.url must be null or a page's address`);
     let protocol: string;
@@ -103,16 +168,21 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
     }
     if (protocol !== "http:" && protocol !== "https:") refuse(`${path}.url must be http or https`);
   }
-  let binding: SessionTabBindingMetadata | undefined;
-  if (raw.binding !== undefined) {
-    if (!isRecord(raw.binding) || Object.keys(raw.binding).some((key) => key !== "owner" && key !== "paneSessionId")) refuse(`${path}.binding is invalid`);
-    const owner = raw.binding.owner === undefined ? undefined : parseBrowserSessionActor(raw.binding.owner);
-    if (owner === null || (owner !== undefined && kind !== "browser")) refuse(`${path}.binding.owner is invalid`);
-    const paneSessionId = raw.binding.paneSessionId;
-    if (paneSessionId !== undefined && (typeof paneSessionId !== "string" || paneSessionId.length === 0)) refuse(`${path}.binding.paneSessionId is invalid`);
-    binding = { ...(owner === undefined ? {} : { owner }), ...(paneSessionId === undefined ? {} : { paneSessionId: paneSessionId as string }) };
-  }
-  return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
+  return { kind, ...common, cwd: cwd as string | null, url: url as string | null };
+}
+
+function parseMainSurface(raw: unknown, path: string): SavedMainSurface {
+  const surface = parseSurface(raw, path);
+  // The parse above proved `raw` is an object.
+  const projectRoot = absolutePath((raw as Record<string, unknown>).projectRoot, `${path}.projectRoot`);
+  return { ...surface, projectRoot };
+}
+
+function parseSideTab(raw: unknown, path: string): SavedSurface {
+  const surface = parseSurface(raw, path);
+  if (surface.kind !== "terminal" && surface.kind !== "browser") refuse(`${path}.kind ${JSON.stringify(surface.kind)} is not terminal or browser`);
+  if ((raw as Record<string, unknown>).projectRoot !== undefined) refuse(`${path}.projectRoot is not stored: a side tab belongs to its pane's conversation`);
+  return surface;
 }
 
 /** Without limits validate shape only; any failed rule rejects the whole layout, naming the path and the rule it broke. */
@@ -131,15 +201,15 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
     inTree(raw.focusedId, "focusedId");
 
     const tabIds = new Set<string>();
-    const claim = (surface: SavedSurface, path: string) => {
+    const claim = (surface: AnySavedSurface, path: string) => {
       if (tabIds.has(surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is used twice`);
       tabIds.add(surface.tabId);
     };
     if (!isRecord(raw.surfaces)) refuse("surfaces is not an object");
-    const surfaces: Record<string, SavedSurface> = {};
+    const surfaces: Record<string, SavedMainSurface> = {};
     for (const [paneId, value] of Object.entries(raw.surfaces)) {
       inTree(paneId, "surfaces");
-      const surface = parseSurface(value, `surfaces.${paneId}`);
+      const surface = parseMainSurface(value, `surfaces.${paneId}`);
       claim(surface, `surfaces.${paneId}`);
       surfaces[paneId] = surface;
     }
@@ -154,26 +224,24 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
       inTree(paneId, "sideTabs");
       if (!Array.isArray(value)) refuse(`sideTabs.${paneId} is not a list`);
       sideTabs[paneId] = value.map((each, index) => {
-        const surface = parseSurface(each, `sideTabs.${paneId}[${index}]`);
+        const surface = parseSideTab(each, `sideTabs.${paneId}[${index}]`);
         claim(surface, `sideTabs.${paneId}[${index}]`);
         return surface;
       });
     }
-    let openSurfaces: SavedSurface[] | undefined;
-    if (raw.openSurfaces !== undefined) {
-      if (!Array.isArray(raw.openSurfaces)) refuse("openSurfaces is not a list");
-      openSurfaces = [];
-      const shown = new Map(Object.values(surfaces).map((surface) => [surface.tabId, surface]));
-      for (const [index, each] of raw.openSurfaces.entries()) {
-        const path = `openSurfaces[${index}]`;
-        const surface = parseSurface(each, path);
-        // A shown surface is listed here too, as the same tab; no tab is listed twice or is also a side tab.
-        const pane = shown.get(surface.tabId);
-        if (pane && pane.kind !== surface.kind) refuse(`${path}.tabId ${surface.tabId} is shown as a ${pane.kind}, not a ${surface.kind}`);
-        if (!pane && tabIds.has(surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is also a side tab`);
-        if (openSurfaces.some((listed) => listed.tabId === surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is listed twice`);
-        openSurfaces.push(surface);
-      }
+    if (!Array.isArray(raw.openSurfaces)) refuse("openSurfaces is not a list");
+    const openSurfaces: SavedMainSurface[] = [];
+    const shown = new Map(Object.values(surfaces).map((surface) => [surface.tabId, surface]));
+    for (const [index, each] of raw.openSurfaces.entries()) {
+      const path = `openSurfaces[${index}]`;
+      const surface = parseMainSurface(each, path);
+      // A shown surface is listed here too, as the same tab in the same project; no tab is listed twice or is also a side tab.
+      const pane = shown.get(surface.tabId);
+      if (pane && pane.kind !== surface.kind) refuse(`${path}.tabId ${surface.tabId} is shown as a ${pane.kind}, not a ${surface.kind}`);
+      if (pane && pane.projectRoot !== surface.projectRoot) refuse(`${path}.projectRoot differs from the pane showing ${surface.tabId}`);
+      if (!pane && tabIds.has(surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is also a side tab`);
+      if (openSurfaces.some((listed) => listed.tabId === surface.tabId)) refuse(`${path}.tabId ${surface.tabId} is listed twice`);
+      openSurfaces.push(surface);
     }
     return {
       ok: true,
@@ -185,7 +253,7 @@ export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLa
         panelOpenIds: [...new Set(raw.panelOpenIds as string[])],
         thumbnailOpenIds: [...new Set(thumbnailOpenIds as string[])],
         sideTabs,
-        ...(openSurfaces === undefined ? {} : { openSurfaces }),
+        openSurfaces,
       },
     };
   } catch (err) {

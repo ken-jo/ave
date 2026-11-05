@@ -58,6 +58,7 @@ import {
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
 import { type InlineViewKey } from "../shared/view-key.js";
+import type { ProjectLastView, ProjectSelection } from "../shared/project-identity.js";
 import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.js";
 import {
   type LlmModelListCache,
@@ -99,6 +100,9 @@ import {
   normalizeMarketplace,
   normalizeProjectRootList,
   normalizeProjectLabels,
+  normalizeProjectSelection,
+  normalizeRecentProjectRoots,
+  normalizeLastViewByProject,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
   withRenamedLlmVendorIds,
@@ -715,6 +719,13 @@ export interface SystemSettings {
   archivedProjectRoots?: string[];
   /** User-chosen display names for project rows, keyed by `projectRootKey`. A label renames the ROW, never the folder on disk. */
   projectLabels?: Record<string, string>;
+  /** Which project the window works in: every project, or one by its root. Absent until the user first chooses; the window then
+   * starts in the 기본 프로젝트. SoT for the shape: `ProjectSelection` in `../shared/project-identity.js`. */
+  projectSelection?: ProjectSelection;
+  /** Recently used project roots for the project menu, most recent first, de-duplicated by root identity, at most ten. */
+  recentProjectRoots?: string[];
+  /** Where each project's window was last, keyed by `projectRootKey`, so switching back returns there. */
+  lastViewByProject?: Record<string, ProjectLastView>;
 }
 
 /** Production release prep; Electron auto-update (electron-updater). `autoCheckEnabled` defaults to TRUE: only the background update *check* (metadata fetch) runs by default. Actual download +
@@ -1311,6 +1322,9 @@ export class SettingsService {
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "sidebarState", partial.system.sidebarState, isSidebarState, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "projectSelection", partial.system.projectSelection, normalizeProjectSelection, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "recentProjectRoots", partial.system.recentProjectRoots, normalizeRecentProjectRoots, "system", PATCHED_FIELD);
+      acceptNormalizedField(next, "lastViewByProject", partial.system.lastViewByProject, normalizeLastViewByProject, "system", PATCHED_FIELD);
       // The reason only is logged on refusal (`normalizeMainLayout`): the value holds page addresses that may carry tokens. A refused patch keeps the saved layout.
       const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
       if (patchedLayout) next.mainLayout = patchedLayout;

@@ -396,12 +396,12 @@ describe("Sidebar stacked sections", () => {
       sessionRow({ id: "general-chat", title: "General chat", modifiedAt: new Date().toISOString() }),
     ];
     const mainSurfaces: MainSurface[] = [
-      { tabId: "browser:project", kind: "browser", ordinal: 1, url: "https://project.example/" },
-      { tabId: "browser:child", kind: "browser", ordinal: 3, url: "https://child.example/" },
-      { tabId: "terminal:project", kind: "terminal", ordinal: 1, url: null },
-      { tabId: "browser:general", kind: "browser", ordinal: 2, url: null },
-      { tabId: "terminal:general", kind: "terminal", ordinal: 2, url: null },
-      { tabId: "terminal:unknown", kind: "terminal", ordinal: 3, url: null },
+      { tabId: "browser:project", kind: "browser", ordinal: 1, url: "https://project.example/", projectRoot: "/ws" },
+      { tabId: "browser:child", kind: "browser", ordinal: 3, url: "https://child.example/", projectRoot: "/ws" },
+      { tabId: "terminal:project", kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" },
+      { tabId: "browser:general", kind: "browser", ordinal: 2, url: null, projectRoot: "/ws" },
+      { tabId: "terminal:general", kind: "terminal", ordinal: 2, url: null, projectRoot: "/ws" },
+      { tabId: "terminal:unknown", kind: "terminal", ordinal: 3, url: null, projectRoot: "/ws" },
     ];
     const state: BrowserTabControlState = { revision: 1, tabs: [{
       tabId: "host-project", rendererTabId: "browser:project", url: "https://project.example/", title: "Project page",
@@ -482,9 +482,9 @@ describe("Sidebar stacked sections", () => {
       onTabOp: () => () => {},
     } } as unknown as AveApi, { sessionId: () => null, hasTab: () => false, selectTab: vi.fn(), closeTab: vi.fn() });
     const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({ mainSurfaces: [
-      { tabId: "browser:icon", kind: "browser", ordinal: 1, url: "https://a.example/" },
-      { tabId: "browser:blank", kind: "browser", ordinal: 2, url: null },
-      { tabId: "browser:unsafe", kind: "browser", ordinal: 3, url: "file:///private/example" },
+      { tabId: "browser:icon", kind: "browser", ordinal: 1, url: "https://a.example/", projectRoot: "/ws" },
+      { tabId: "browser:blank", kind: "browser", ordinal: 2, url: null, projectRoot: "/ws" },
+      { tabId: "browser:unsafe", kind: "browser", ordinal: 3, url: "file:///private/example", projectRoot: "/ws" },
     ] });
     const publish = (faviconDataUrl: string | null) => {
       act(() => noteWebSurfaceFavicon("browser:icon", faviconDataUrl));
@@ -523,8 +523,8 @@ describe("Sidebar stacked sections", () => {
 
   it.each([200, 216, 232])("keeps sections and long mixed rows bounded at %ipx", (width) => {
     const { getByTestId, restore } = renderSidebar({ width, sessions: [sessionRow({ id: "long", title: "long-title-".repeat(50), modifiedAt: new Date().toISOString() })], mainSurfaces: [
-      { tabId: "browser:long", kind: "browser", ordinal: 1, url: `https://example.test/${"long-path".repeat(50)}` },
-      { tabId: "terminal:long", kind: "terminal", ordinal: 1, url: null },
+      { tabId: "browser:long", kind: "browser", ordinal: 1, url: `https://example.test/${"long-path".repeat(50)}`, projectRoot: "/ws" },
+      { tabId: "terminal:long", kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" },
     ] });
     try {
       expect(getByTestId("sidebar-card").style.width).toBe(`${width}px`);
@@ -1861,7 +1861,7 @@ describe("Sidebar — every conversation family", () => {
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
       sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root }],
       projects: [{ projectRoot: root, projectName: "Pane project" }],
-      mainSurfaces: [{ tabId, kind, ordinal: 1, url: null }],
+      mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: "/ws" }],
       onOpenSideChat, onOpenPaneChat,
     }, { browserTabs });
     try {
@@ -1884,7 +1884,7 @@ describe("Sidebar — every conversation family", () => {
       getSessionBindings: () => snapshot,
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }] }, { browserTabs });
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }] }, { browserTabs });
     try {
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
@@ -1940,7 +1940,7 @@ describe("Sidebar — every conversation family", () => {
     const session: SessionSummary = { ...sideChatRow, paneTabId: tabId };
     const conversationActions = { isArchived: () => Boolean(session.archivedAt), isUnread: () => false, isResponding: () => false,
       onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() };
-    const view = renderSidebar({ sessions: [session], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
+    const view = renderSidebar({ sessions: [session], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
     try {
       await waitFor(() => view.getByTestId("sidebar-surface-chats-" + tabId));
       act(() => {
@@ -1961,7 +1961,7 @@ describe("Sidebar — every conversation family", () => {
   it("omits a renderer-only pane claim without a host binding", () => {
     const tabId = "terminal:unbound";
     const onOpenPaneChat = vi.fn();
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null }], onOpenPaneChat });
+    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenPaneChat });
     try {
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();

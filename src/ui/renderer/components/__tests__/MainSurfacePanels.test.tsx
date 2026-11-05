@@ -79,11 +79,12 @@ describe("useMainSurfaces", () => {
     let terminal!: MainSurface;
     let page!: MainSurface;
     act(() => {
-      terminal = result.current.create("terminal");
-      page = result.current.create("browser", "https://example.com/");
+      terminal = result.current.create("terminal", { projectRoot: "/ws" });
+      page = result.current.create("browser", { url: "https://example.com/", projectRoot: "/ws/app" });
     });
     expect(terminal.tabId).toMatch(/^terminal:[0-9a-f]{8}-\d+$/);
     expect(page.tabId).toMatch(/^browser:[0-9a-f]{8}-\d+$/);
+    expect([terminal.projectRoot, page.projectRoot]).toEqual(["/ws", "/ws/app"]);
     expect(result.current.surfaces.map((each) => each.tabId)).toEqual([terminal.tabId, page.tabId]);
 
     // Released (moving to a side panel): gone from here, not remembered as closed.
@@ -101,8 +102,8 @@ describe("useMainSurfaces", () => {
     act(() => { result.current.setCwd(terminal.tabId, "/work/repo"); });
     expect(result.current.get(terminal.tabId)?.cwd).toBe("/work/repo");
     act(() => { result.current.close(terminal.tabId); });
-    expect(result.current.takeLastClosed()).toEqual({ kind: "terminal", url: null, cwd: "/work/repo" });
-    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/next", cwd: null });
+    expect(result.current.takeLastClosed()).toEqual({ kind: "terminal", url: null, cwd: "/work/repo", projectRoot: "/ws" });
+    expect(result.current.takeLastClosed()).toEqual({ kind: "browser", url: "https://example.com/next", cwd: null, projectRoot: "/ws/app" });
     expect(result.current.takeLastClosed()).toBeUndefined();
     unmount();
   });
@@ -110,7 +111,7 @@ describe("useMainSurfaces", () => {
   it("keeps a main browser surface's guest alive while the store lists it", async () => {
     const { result, unmount } = renderHook(() => useMainSurfaces());
     let page!: MainSurface;
-    act(() => { page = result.current.create("browser", "https://example.com/"); });
+    act(() => { page = result.current.create("browser", { url: "https://example.com/", projectRoot: "/ws" }); });
     render(
       <TooltipProvider>
         <SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={makeMockAveApi().api as never} surface={page} paneId="main" frame={{}} onNavigate={() => {}} />
@@ -127,7 +128,7 @@ describe("useMainSurfaces", () => {
 });
 
 describe("SurfacePane", () => {
-  const surface = (kind: MainSurface["kind"], url: string | null = null): MainSurface => ({ tabId: `${kind}:90${kind.length}`, kind, ordinal: 2, url });
+  const surface = (kind: MainSurface["kind"], url: string | null = null): MainSurface => ({ tabId: `${kind}:90${kind.length}`, kind, ordinal: 2, url, projectRoot: "/ws" });
 
   it.each(["address", "back", "forward", "reload"])("revokes restored agent ownership before user %s navigation without a control report", async (action) => {
     __resetBrowserTabBridgeForTest();
@@ -161,7 +162,7 @@ describe("SurfacePane", () => {
     setWebSurfaceElement(tabId, element);
     const unregister = registerBrowserTabHost(api as never, { sessionId: () => null, hasTab: () => false, selectTab: () => {}, closeTab: () => {} });
     try {
-      render(<TooltipProvider><SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url }} paneId="main" frame={{}} onNavigate={navigate} /></TooltipProvider>);
+      render(<TooltipProvider><SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={api as never} surface={{ kind: "browser", tabId, ordinal: 1, url: guest.url, projectRoot: "/ws" }} paneId="main" frame={{}} onNavigate={navigate} /></TooltipProvider>);
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
       await act(async () => {
         if (action === "address") {
