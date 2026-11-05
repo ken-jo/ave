@@ -1796,6 +1796,68 @@ describe("Sidebar — every conversation family", () => {
     } finally { restore(); }
   });
 
+  it("ends a paged group's lines at its \"more\" row, and at the new last row once every row is shown", async () => {
+    const root = "/projects/paged";
+    // One more page's worth than a group shows, newest first.
+    const chats = Array.from({ length: 8 }, (_, index) => sessionRow({
+      id: `paged-${index + 1}`, title: `대화 ${index + 1}`, projectRoot: root,
+      modifiedAt: new Date(Date.now() - (index + 1) * 60 * 1000).toISOString(),
+    }));
+    const { getByTestId, restore } = renderSidebar({ sessions: chats, projects: [{ projectRoot: root, projectName: "Paged" }] });
+    const guidesOf = (row: Element) => [...row.querySelectorAll<HTMLElement>("[data-tree-guide]")].map((guide) => guide.dataset.treeGuide);
+    const moreRow = () => document.querySelector(`[data-tree-key="more:group:${root}"]`);
+    try {
+      await waitFor(() => expect(moreRow()).not.toBeNull());
+      // The last shown chat is not the group's last child: the "more" row is.
+      expect(guidesOf(getByTestId("sidebar-row-session-paged-6"))).toEqual(["mid"]);
+      expect(document.querySelector('[data-testid="sidebar-row-session-paged-7"]')).toBeNull();
+      expect(guidesOf(moreRow()!)).toEqual(["last"]);
+      expect(moreRow()!.querySelector('[data-testid="tree-indent-guides"]')!.getAttribute("aria-hidden")).toBe("true");
+      fireEvent.click(moreRow()!);
+      await waitFor(() => expect(moreRow()).toBeNull());
+      expect(guidesOf(getByTestId("sidebar-row-session-paged-6"))).toEqual(["mid"]);
+      expect(guidesOf(getByTestId("sidebar-row-session-paged-7"))).toEqual(["mid"]);
+      expect(guidesOf(getByTestId("sidebar-row-session-paged-8"))).toEqual(["last"]);
+    } finally { restore(); }
+  });
+
+  it("carries a group's line through a former pane chat's caption, and keeps the lines undimmed on an archived row", async () => {
+    const root = "/projects/former";
+    const browserTabs = {
+      getSessionBindings: async () => ({ revision: 1, bindings: [] }),
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    // The archived pane chat is newer than the other chat, so it has a later sibling in the group.
+    const former = { ...sideChatRow, projectRoot: root, paneTabId: "terminal:closed", archivedAt: "2026-10-29T00:00:00Z" };
+    // An archived main conversation between them: archive dims a main row's content.
+    const archived = sessionRow({ id: "archived-chat", title: "보관한 대화", projectRoot: root, archivedAt: "2026-10-30T00:00:00Z", modifiedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString() });
+    const later = sessionRow({ id: "later-chat", title: "남은 대화", projectRoot: root, modifiedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() });
+    const view = renderSidebar({ sessions: [former, archived, later], projects: [{ projectRoot: root, projectName: "Former" }] }, { browserTabs });
+    const guidesOf = (row: Element) => [...row.querySelectorAll<HTMLElement>("[data-tree-guide]")].map((guide) => guide.dataset.treeGuide);
+    try {
+      await act(async () => {});
+      fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
+      expect(guidesOf(view.getByTestId("sidebar-row-session-side-1"))).toEqual(["mid"]);
+      // The caption under it runs the group's line on toward the later chat; it does not draw a second elbow.
+      const caption = view.getByTestId("sidebar-former-pane-side-1");
+      expect(caption.textContent).toContain("이전 터미널 채팅");
+      expect(guidesOf(caption)).toEqual(["line"]);
+      expect(guidesOf(view.getByTestId("sidebar-row-session-later-chat"))).toEqual(["last"]);
+      // Only the archived row's content is dimmed: its guide strip is outside the dimmed element, and the row is not dimmed.
+      const row = view.getByTestId("sidebar-row-session-archived-chat");
+      expect(row.getAttribute("data-archived")).toBe("true");
+      expect(guidesOf(row)).toEqual(["mid"]);
+      const content = view.getByTestId("sidebar-row-content-archived-chat");
+      expect(content.className).toContain("opacity-70");
+      expect(row.className).not.toContain("opacity-70");
+      const strip = row.querySelector('[data-testid="tree-indent-guides"]')!;
+      expect(content.contains(strip)).toBe(false);
+      expect(strip.closest(".opacity-70")).toBeNull();
+      // An unarchived row carries no dimming at all.
+      expect(view.getByTestId("sidebar-row-content-later-chat").className).not.toContain("opacity-70");
+    } finally { view.restore(); }
+  });
+
   it("hides pane rows and provenance while the host binding snapshot is loading", async () => {
     const tabId = "terminal:loading";
     let resolveBindings!: (state: SessionTabBindingsState) => void;

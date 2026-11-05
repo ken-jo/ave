@@ -210,16 +210,20 @@ function SessionRow({
         active
           ? "bg-primary/(--opacity-subtle) text-primary"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        // Archived rows stay READABLE. Dimming them to the point of illegibility would make the archive a place things go to be
-        // lost, which is what delete is for.
-        archived ? "opacity-70" : "",
-      ].filter(Boolean).join(" ")}
+      ].join(" ")}
       data-archived={archived ? "true" : undefined}
       data-unread={unread ? "true" : undefined}
       data-responding={responding ? "true" : undefined}
       style={treeIndentStyle(tree.level)}
     >
       <TreeIndentGuides guides={tree.guides} />
+      {/* The row's content, apart from its guides: an archived row dims only this, so the lines of the rows around it that
+          pass through it keep their contrast. Archived rows stay READABLE. Dimming them to the point of illegibility would
+          make the archive a place things go to be lost, which is what delete is for. */}
+      <div
+        className={`flex min-w-0 flex-1 items-center ${archived ? "opacity-70" : ""}`}
+        data-testid={`sidebar-row-content-${session.id}`}
+      >
       {/* ── Leading slot. One 14px square that holds the row's KIND at rest and
           its pin on hover. The two never coexist, so the row's text never
           shifts — the reason the swap happens here rather than by revealing a
@@ -368,6 +372,7 @@ function SessionRow({
           <MoreHorizontal className="h-3.5 w-3.5" />
         </button>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -718,7 +723,11 @@ export function ProjectTree({
         />
         {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
           // Under its row's text, so it takes the row's indent and carries on the lines that run past the row.
-          <div className="relative truncate pl-7 text-[10px] text-muted-foreground" style={treeIndentStyle(level, 1.75)}>
+          <div
+            className="relative truncate pl-7 text-[10px] text-muted-foreground"
+            style={treeIndentStyle(level, 1.75)}
+            data-testid={`sidebar-former-pane-${session.id}`}
+          >
             <TreeIndentGuides guides={continuationGuides(lineGuides(key))} reachUp={false} />
             {t(session.paneTabId.startsWith("terminal:") ? "sidebar.formerTerminalChat" : "sidebar.formerPageChat")}
           </div>
