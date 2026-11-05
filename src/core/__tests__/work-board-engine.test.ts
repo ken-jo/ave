@@ -919,6 +919,49 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
     }
   });
 
+  it("tells a decision sent while the stored plan's run is still closing to retry, not that the item is running", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "quick approve" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const { runner, calls } = recordingRunner();
+      // Hold the transcript flush that follows the stored plan, so the run still owns the item when the decision arrives.
+      let releaseFlush!: () => void;
+      let holding: Promise<void> | null = null;
+      const transcriptStorage = memTranscriptStorage();
+      const write = transcriptStorage.write;
+      transcriptStorage.write = async (rel, data) => {
+        if (holding) await holding;
+        return write(rel, data);
+      };
+      let early: Promise<Awaited<ReturnType<typeof engine.decidePlan>>> | null = null;
+      const engine = createWorkBoardEngine({
+        store,
+        getRunner: () => runner,
+        transcriptStorage,
+        emitProgress: (e) => {
+          if (e.phase !== "awaiting_approval" || early) return;
+          holding = new Promise<void>((r) => { releaseFlush = r; });
+          early = (async () => {
+            const got = await store.get(created.itemId);
+            if (got.status !== "found") throw new Error("missing");
+            return engine.decidePlan(created.itemId, { runId: got.item.runId!, planHash: got.item.planApproval!.planHash, decision: "approve" });
+          })();
+        },
+      });
+      const run = engine.runItem(created.itemId);
+      await vi.waitFor(() => expect(early).not.toBeNull());
+      expect((await early!).result).toEqual({ ok: false, reason: "plan_settling" });
+      releaseFlush();
+      expect((await run).status).toBe("awaiting_approval");
+      // Once the run has released the item, the same decision goes through.
+      expect((await decideStoredPlan(engine, store, created.itemId, "approve")).status).toBe("completed");
+      expect(calls.filter((c) => c.input.profileMode === "execute")).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("runs nothing when the decision cannot be stored, and frees the item for a retry", async () => {
     const { store, cleanup } = tempBoard();
     try {

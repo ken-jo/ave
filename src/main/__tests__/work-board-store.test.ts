@@ -1,5 +1,5 @@
 // Inject a temporary board path and clock so real user work-board files remain untouched.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import {
   mkdtempSync,
@@ -12,6 +12,22 @@ import { tmpdir } from "node:os";
 import { WorkBoardStore, itemDigestOf, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
+
+// Lets a test fail the next board write; every other write goes to disk as usual.
+const writeFault = vi.hoisted(() => ({ failNext: false }));
+vi.mock("../storage/feature-namespace.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../storage/feature-namespace.js")>();
+  return {
+    ...actual,
+    writeFileAtomicAtPath: async (...args: Parameters<typeof actual.writeFileAtomicAtPath>) => {
+      if (writeFault.failNext) {
+        writeFault.failNext = false;
+        throw new Error("disk full");
+      }
+      return actual.writeFileAtomicAtPath(...args);
+    },
+  };
+});
 
 function tempBoard(now?: () => number) {
   const dir = mkdtempSync(join(tmpdir(), "ave-wb-"));
@@ -465,6 +481,26 @@ describe("WorkBoardStore — plan approval", () => {
       expect(await status(otherRun.id)).toBe("error");
       expect(await status(editedPlan.id)).toBe("error");
     } finally {
+      await cleanup();
+    }
+  });
+
+  it("leaves the plan pending in memory when the decision cannot be written", async () => {
+    const { store, path, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id, approval } = await planned(store);
+      writeFault.failNext = true;
+      await expect(store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "approved" })).rejects.toThrow("disk full");
+      const got = await store.get(id);
+      if (got.status !== "found") throw new Error("missing");
+      expect(got.item.runStatus).toBe("awaiting_approval");
+      expect(got.item.planApproval?.status).toBe("pending");
+      expect(JSON.parse(readFileSync(path, "utf-8")).items[0].planApproval.status).toBe("pending");
+      // The same decision goes through once the disk accepts it.
+      const retried = await store.decidePlan(id, { runId: "run-1", planHash: approval.planHash, status: "approved" });
+      expect(retried.status).toBe("decided");
+    } finally {
+      writeFault.failNext = false;
       await cleanup();
     }
   });

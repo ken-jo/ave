@@ -113,6 +113,8 @@ export type WorkPlanDecideRefusal =
   | "plan_mismatch"
   | "plan_stale"
   | "already_running"
+  /** The plan was just stored and its run is still closing; the decision can be sent again in a moment. */
+  | "plan_settling"
   | "note_required"
   | "note_too_long"
   | "note_invalid";

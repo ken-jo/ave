@@ -76,6 +76,14 @@ describe("Work Board — plan decision", () => {
     expect((await screen.findByTestId("work-board-plan-decision-error")).textContent).toContain("수정 요청으로 다시 계획");
   });
 
+  it("asks to retry a decision sent while the plan's run is still closing, and keeps the plan open", async () => {
+    const decide = vi.fn(async () => ({ ok: false as const, reason: "plan_settling" as const }));
+    await openDetail(stubApi(awaitingItem(), decide));
+    fireEvent.click(screen.getByTestId("work-board-plan-approve"));
+    expect((await screen.findByTestId("work-board-plan-decision-error")).textContent).toContain("잠시 후 다시 시도");
+    expect(screen.getByTestId("work-board-plan-approve")).toBeTruthy();
+  });
+
   it("says the item is gone when it was deleted before the decision arrived", async () => {
     const decide = vi.fn(async () => ({ ok: false as const, reason: "not_found" as const }));
     await openDetail(stubApi(awaitingItem(), decide));

@@ -954,6 +954,8 @@ function planDecisionRefusalText(reason: PlanDecisionRefusal | string): string {
       return t("workBoard.planDecisionNoteInvalid");
     case "already_running":
       return t("workBoard.planDecisionBusy");
+    case "plan_settling":
+      return t("workBoard.planDecisionSettling");
     case "not_found":
       return t("workBoard.planDecisionItemGone");
     default:
@@ -972,7 +974,6 @@ function PlanDecisionPanel({ api, item, onDecided }: { api: AveApi; item: WorkIt
   if (item.runStatus !== "awaiting_approval" || approval?.status !== "pending" || !item.runId) return null;
   const runId = item.runId;
   const decide = async (decision: WorkPlanDecision) => {
-    if (typeof api.decideWorkPlan !== "function") return;
     setPending(decision);
     setError(null);
     try {

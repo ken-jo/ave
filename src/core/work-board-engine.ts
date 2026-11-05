@@ -426,6 +426,8 @@ export function createWorkBoardEngine(
 
   /** Set the in-process guard before awaiting persisted status to close the duplicate-run race. */
   const inFlight = new Set<number>();
+  // Items whose run has stored a pending plan but has not yet released the item (it is finishing the transcript).
+  const planSettling = new Set<number>();
 
   /** Host-recorded execute child per item, set when the child links and removed when the run settles. Steer and stop resolve the child here, never from a renderer payload. */
   const executingChildByItem = new Map<number, string>();
@@ -471,6 +473,7 @@ export function createWorkBoardEngine(
       executingChildByItem.delete(itemId);
       executingTurnByItem.delete(itemId);
       cancelRequested.delete(itemId);
+      planSettling.delete(itemId);
       inFlight.delete(itemId);
       updateApprovalSurface({ kind: "release", sessionId: originSessionId });
     }
@@ -641,6 +644,7 @@ export function createWorkBoardEngine(
     if (stored === null || stored.status !== "updated") {
       throw new Error(`work item #${itemId} left run ${runId} while it was planning`);
     }
+    planSettling.add(itemId);
     emit({ itemId, phase: "awaiting_approval" });
     await recorder.flush();
     return { status: "awaiting_approval", plan, runSessionId: planResult.childSessionId };
@@ -769,7 +773,11 @@ export function createWorkBoardEngine(
     const refusal = noteRefusal(input.decision, input.note);
     if (refusal !== null) return { result: { ok: false, reason: refusal } };
     const note = input.note !== undefined && input.note.trim().length > 0 ? input.note.trim() : undefined;
-    if (inFlight.has(itemId)) return { result: { ok: false, reason: "already_running" } };
+    if (inFlight.has(itemId)) {
+      // planPhase stores the pending plan, then finishes its transcript before the run releases the item. A decision in that window is
+      // early, not concurrent with a run, so it is told to retry rather than that the item is running.
+      return { result: { ok: false, reason: planSettling.has(itemId) ? "plan_settling" : "already_running" } };
+    }
     // Claimed synchronously before the store write, so a second decision or a run start for this item waits on this one.
     inFlight.add(itemId);
     const status = DECISION_STATUS[input.decision];

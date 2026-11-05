@@ -1231,7 +1231,7 @@ export type AveApi = {
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
     | { ok: false; error: string }
   >;
-  decideWorkPlan?: (
+  decideWorkPlan: (
     itemId: number,
     input: import("../../shared/work-board-types.js").WorkPlanDecideInput,
   ) => Promise<

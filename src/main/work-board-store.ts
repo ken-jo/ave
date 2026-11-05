@@ -162,7 +162,7 @@ export interface PlanDecisionInput {
 
 export type PlanDecisionResult =
   | { status: "decided"; item: WorkItemResolved; planApproval: WorkPlanApproval }
-  | { status: "refused"; reason: Exclude<WorkPlanDecideRefusal, "already_running" | "note_required" | "note_too_long" | "note_invalid"> };
+  | { status: "refused"; reason: Exclude<WorkPlanDecideRefusal, "already_running" | "plan_settling" | "note_required" | "note_too_long" | "note_invalid"> };
 
 /** An item whose stored plan can still be decided: awaiting approval, with a pending decision for its current run and plan. */
 function isDecidablePlan(item: WorkItem): boolean {
@@ -849,9 +849,13 @@ export class WorkBoardStore {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
-      this.cache = board;
+      // The board is mutated below, so the cache takes it only after the write lands; a refusal caches the board as read.
+      const refuse = (reason: Extract<PlanDecisionResult, { status: "refused" }>["reason"]): PlanDecisionResult => {
+        this.cache = board;
+        return { status: "refused" as const, reason };
+      };
       const idx = board.items.findIndex((i) => i.id === id);
-      if (idx === -1) return { status: "refused" as const, reason: "not_found" as const };
+      if (idx === -1) return refuse("not_found");
       const current = board.items[idx];
       const approval = current.planApproval;
       if (
@@ -861,14 +865,14 @@ export class WorkBoardStore {
         current.runId !== input.runId ||
         approval.runId !== input.runId
       ) {
-        return { status: "refused" as const, reason: "not_pending" as const };
+        return refuse("not_pending");
       }
       if (typeof current.plan !== "string" || approval.planHash !== planHashOf(current.plan) || input.planHash !== approval.planHash) {
-        return { status: "refused" as const, reason: "plan_mismatch" as const };
+        return refuse("plan_mismatch");
       }
       // A stale plan can still be sent back for changes (that re-plans the current item) or rejected; it cannot be approved.
       if (input.status === "approved" && approval.itemDigest !== itemDigestOf(current)) {
-        return { status: "refused" as const, reason: "plan_stale" as const };
+        return refuse("plan_stale");
       }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
