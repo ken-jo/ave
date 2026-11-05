@@ -7,6 +7,7 @@ import {
   deferred,
   focusTile,
   mountedTileIds,
+  runComposerSlashAction,
   settingsWithActiveView,
   splitIntoTwoTiles,
 } from "../../../../test/renderer/helpers.js";
@@ -389,11 +390,12 @@ describe("App view history after a restored launch location", () => {
     });
     await waitFor(() => expect(container.querySelector('[data-testid="view-path-nav"]')).not.toBeNull());
 
-    // Starting a new chat discards the VIEW half — it navigates to the chat
-    // surface, which is where they already are, so it is the one navigation
-    // that leaves the history untouched and the seed is still the only entry
-    // when the surviving half lands.
-    await click(container, "sidebar-new-chat");
+    // Going home discards the VIEW half — it navigates to the chat surface,
+    // which is where they already are, so it is the one navigation that leaves
+    // the history untouched and the seed is still the only entry when the
+    // surviving half lands. The rail's launchers wait for the held selection,
+    // so the step is the composer's "/" action.
+    await runComposerSlashAction(container, "홈으로", "홈으로 이동");
     expect(path(container)).toContain("대화");
 
     // Released one commit at a time — over IPC these are separate round trips, and batching them never observes the page half

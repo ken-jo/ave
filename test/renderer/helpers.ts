@@ -4,6 +4,7 @@ import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import type { MessageQueueStore } from "../../src/ui/renderer/state/message-queue-store.js";
 import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
+import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import type { ToolActivityState } from "../../src/ui/renderer/components/ToolActivity.js";
 import { ApprovalSurfaceClaims, ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
 import { expect, vi } from "vitest";
@@ -20,6 +21,27 @@ export async function waitForToast(container: HTMLElement, text: string): Promis
     if (dismiss) fireEvent.click(dismiss);
     throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
   });
+}
+
+/**
+ * Run one of the composer's "/" actions by typing `query` and pressing Enter once the menu offers `label`. The launchers wait
+ * for the project selection, so this is the way to act while a held settings read keeps the selection unloaded.
+ */
+export async function runComposerSlashAction(container: HTMLElement, query: string, label: string): Promise<void> {
+  const composer = await waitFor(() => {
+    const el = container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea));
+    expect(el).not.toBeNull();
+    return el!;
+  });
+  const value = `/${query}`;
+  await act(async () => {
+    fireEvent.change(composer, { target: { value } });
+    composer.setSelectionRange(value.length, value.length);
+    fireEvent.keyUp(composer, { key: value.slice(-1) });
+  });
+  // The menu is portalled out of the app container.
+  await waitFor(() => expect(document.querySelector('[data-testid="inline-slash-menu"]')?.textContent).toContain(label));
+  await act(async () => { fireEvent.keyDown(composer, { key: "Enter" }); });
 }
 
 export function approvalSurfaceStub(): ApprovalSurfaceContextValue {

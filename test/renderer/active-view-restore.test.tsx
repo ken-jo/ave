@@ -1,8 +1,7 @@
 // Verify restored navigation persists across launches without overwriting invalid or pending locations.
 import "./setup.js";
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
-import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import { act, waitFor } from "@testing-library/react";
 import { atHome, renderApp } from "./render-app.js";
 import {
   activeSettingsTab,
@@ -10,6 +9,7 @@ import {
   closeSidebarGroup,
   deferred,
   openSidebarGroup,
+  runComposerSlashAction,
   settingsWithActiveView,
   sidebarNavRowActive,
   type SidebarNavGroup,
@@ -259,18 +259,7 @@ describe("a launch whose stored location has not arrived yet", () => {
     const { container, api } = await renderApp(opts);
     await waitFor(() => expect(atHome(container)).toBe(true));
 
-    const composer = await waitFor(() => {
-      const el = container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea));
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    await act(async () => {
-      fireEvent.change(composer, { target: { value: "/홈으로" } });
-      composer.setSelectionRange(4, 4);
-      fireEvent.keyUp(composer, { key: "로" });
-    });
-    await waitFor(() => expect(document.querySelector('[data-testid="inline-slash-menu"]')?.textContent).toContain("홈으로 이동"));
-    await act(async () => { fireEvent.keyDown(composer, { key: "Enter" }); });
+    await runComposerSlashAction(container, "홈으로", "홈으로 이동");
     await act(async () => {
       release();
     });
