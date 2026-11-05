@@ -61,6 +61,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     pickFolders: unavailable,
     pickBrowserUploadFiles: unavailable,
     browserGuestContentOrigin: unavailable,
+    browserAgentPreview: { decodePng: unavailable, record: unavailable },
     prepareRelease: () => ({}),
     beforeShutdown: () => {},
     ...overrides,

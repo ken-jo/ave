@@ -1139,7 +1139,11 @@ function adapterFixture(options: {
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   modelFocusRelease(registry, guest.id, cdp);
   const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
-  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT));
+  const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT), {
+    // These cases assert page actions, not thumbnails; a capture attempt fails and leaves the tool result as it is.
+    decodePng: () => { throw new Error("no image decoder in this fixture"); },
+    record: () => {},
+  });
   const tools = createBrowserTools({
     tabs: registry,
     pickUploadFiles: async () => null,

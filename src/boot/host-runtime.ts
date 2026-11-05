@@ -8,6 +8,7 @@ import type { InitPluginRuntimeInput } from "./steps/plugin-runtime.js";
 import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.js";
+import type { AgentPreviewHost } from "../main/browser/browser-agent-preview.js";
 import type { OpenOAuthLogin } from "../main/oauth-login.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
@@ -35,6 +36,8 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
   pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
   browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;
+  /** Thumbnails of what the agent's browser tools captured: decoding and keeping them both need Electron. */
+  browserAgentPreview: AgentPreviewHost;
   prepareRelease(input: ReleasePrepInput): ReleasePrepOutput;
   beforeShutdown(): void;
 }

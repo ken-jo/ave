@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Notification, powerMonitor, session, shell } from "electron";
+import { app, BrowserWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { join } from "node:path";
 import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
@@ -19,6 +19,7 @@ import { ElectronAudioCaptureSurface } from "../main/audio-capture-surface.js";
 import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floating-dock-surface.js";
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
+import { getBrowserWorkspaceService } from "../main/browser/browser-workspace-desktop.js";
 import type { BootHost } from "./host-runtime.js";
 import { relaunchDesktopHost } from "./desktop-relaunch.js";
 import { settingsFilePath } from "../data/settings-store.js";
@@ -93,6 +94,10 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
         if (!window || window.isDestroyed()) return null;
         const bounds = window.getContentBounds();
         return { x: bounds.x, y: bounds.y, windowId: window.id };
+      },
+      browserAgentPreview: {
+        decodePng: (png) => nativeImage.createFromBuffer(Buffer.from(png, "base64")),
+        record: (windowId, preview) => getBrowserWorkspaceService().recordAgentCapture(windowId, preview),
       },
       prepareRelease: prepareDesktopRelease,
       beforeShutdown: () => {

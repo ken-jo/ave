@@ -1,7 +1,7 @@
 import type { NativeImage, WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserWorkspacePreview } from "../browser-workspace-preview.js";
-import { captureAgentPreview, type AgentPreviewTab } from "../browser-agent-preview.js";
+import { captureAgentPreview, type AgentPreviewHost, type AgentPreviewTab } from "../browser-agent-preview.js";
 
 function image(bytes = 100): NativeImage {
   const value = { getSize: () => ({ width: 1920, height: 1080 }), isEmpty: () => false, resize: vi.fn(() => value), toJPEG: () => Buffer.alloc(bytes) };
@@ -120,34 +120,38 @@ describe("agent capture fallback", () => {
 });
 
 describe("agent capture thumbnail", () => {
+  // A snapshot capture never decodes; a call to decodePng here would be a wrong path.
+  function host(record: AgentPreviewHost["record"]): AgentPreviewHost {
+    return { decodePng: () => { throw new Error("snapshot captures never decode a PNG"); }, record };
+  }
   function tab(capturePage = vi.fn(async () => image())): AgentPreviewTab & { documentId: number } {
     return { windowId: 1, rendererTabId: "browser:one", documentId: 3, guest: { isDestroyed: () => false, capturePage } as unknown as AgentPreviewTab["guest"] };
   }
   it("encodes the screenshot PNG and records it under the renderer tab and document", async () => {
     const record = vi.fn();
-    const decode = vi.fn(() => image());
-    const result = await captureAgentPreview(tab(), "iVBORw0KGgo=", record, { decode });
-    expect(decode).toHaveBeenCalledWith("iVBORw0KGgo=");
+    const decodePng = vi.fn(() => image());
+    const result = await captureAgentPreview(tab(), "iVBORw0KGgo=", { decodePng, record });
+    expect(decodePng).toHaveBeenCalledWith("iVBORw0KGgo=");
     expect(result).toMatchObject({ width: 320, height: 180, dataUrl: expect.stringMatching(/^data:image\/jpeg;base64,/) });
     expect(record).toHaveBeenCalledWith(1, { tabId: "browser:one", documentGeneration: 3, ...result });
   });
   it("captures the page for a snapshot, and gives up silently on timeout, failure, or a document change", async () => {
     const record = vi.fn();
     const captured = tab();
-    await expect(captureAgentPreview(captured, undefined, record)).resolves.toMatchObject({ width: 320 });
+    await expect(captureAgentPreview(captured, undefined, host(record))).resolves.toMatchObject({ width: 320 });
     expect(captured.guest!.capturePage).toHaveBeenCalledWith(undefined, { stayHidden: true, stayAwake: false });
     const hung = tab(vi.fn(() => new Promise<NativeImage>(() => {})));
-    await expect(captureAgentPreview(hung, undefined, record, { maxMs: 5 })).resolves.toBeUndefined();
-    await expect(captureAgentPreview(tab(vi.fn(async () => { throw new Error("gone"); })), undefined, record)).resolves.toBeUndefined();
+    await expect(captureAgentPreview(hung, undefined, host(record), { maxMs: 5 })).resolves.toBeUndefined();
+    await expect(captureAgentPreview(tab(vi.fn(async () => { throw new Error("gone"); })), undefined, host(record))).resolves.toBeUndefined();
     const moved = tab();
     vi.mocked(moved.guest!.capturePage).mockImplementationOnce(async () => { moved.documentId = 4; return image(); });
-    await expect(captureAgentPreview(moved, undefined, record)).resolves.toBeUndefined();
-    await expect(captureAgentPreview(tab(), "x", record, { decode: () => { throw new Error("bad png"); } })).resolves.toBeUndefined();
+    await expect(captureAgentPreview(moved, undefined, host(record))).resolves.toBeUndefined();
+    await expect(captureAgentPreview(tab(), "x", { decodePng: () => { throw new Error("bad png"); }, record })).resolves.toBeUndefined();
     expect(record).toHaveBeenCalledTimes(1);
   });
   it("returns the thumbnail without recording a tab that has no renderer card", async () => {
     const record = vi.fn();
-    await expect(captureAgentPreview({ ...tab(), rendererTabId: null }, undefined, record)).resolves.toMatchObject({ width: 320 });
+    await expect(captureAgentPreview({ ...tab(), rendererTabId: null }, undefined, host(record))).resolves.toMatchObject({ width: 320 });
     expect(record).not.toHaveBeenCalled();
   });
 });

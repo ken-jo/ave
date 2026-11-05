@@ -95,6 +95,10 @@ const actions = createBrowserPageActions(browserTabRegistry, browserOrigin, () =
   if (!win || win.isDestroyed()) return null;
   const bounds = win.getContentBounds();
   return { x: bounds.x, y: bounds.y, windowId: win.id };
+}, {
+  decodePng: (png) => nativeImage.createFromBuffer(Buffer.from(png, "base64")),
+  // The fixture has no session preview panel to keep a capture for.
+  record: () => {},
 });
 
 async function read(value?: unknown, error?: { code: string; message: string }): Promise<NativeActionResult> {
