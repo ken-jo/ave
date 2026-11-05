@@ -159,11 +159,9 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
       await cdp.detach();
     }
 
-    await page.evaluate(() => {
-      const lane = document.querySelector<HTMLElement>('[data-testid="routine-card"]')
-        ?.closest<HTMLElement>('[data-testid="floating-right-lane"]');
-      if (lane) lane.scrollTop = 0;
-    });
+    // The approval segment checks the approval card on its own, so the user dismisses the alert first.
+    await overlay.getByTestId("routine-card-dismiss").click();
+    await expect(overlay).toHaveCount(0);
     await app.evaluate(({ BrowserWindow }, payload) => {
       const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
       if (!win) throw new Error("No visible window");
@@ -194,6 +192,8 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
       };
       return {
         shrink: getComputedStyle(approval).flexShrink,
+        laneScrollRange: lane.scrollHeight - lane.clientHeight,
+        laneScrollTop: lane.scrollTop,
         buttons: ["deny-button", "approval-deny-menu", "allow-session-button", "approval-allow-menu", "approve-button"]
           .map((id) => {
             const button = approval.querySelector<HTMLElement>(`[data-testid="${id}"]`);
@@ -201,9 +201,21 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
           }),
       };
     });
+    // At 240px the lane holding only the approval card overflows. Its decision row is drawn in view, and scrolling the lane must
+    // keep every decision reachable rather than carrying the row out of view or under another layer.
+    await expect.poll(async () => (await approvalLayout())?.laneScrollRange ?? 0).toBeGreaterThan(0);
+    const approvalBefore = await approvalLayout();
+    expect(approvalBefore!.shrink).toBe("0");
+    const approvalLaneBox = await page.getByTestId("floating-right-lane").filter({ has: approval }).boundingBox();
+    expect(approvalLaneBox).not.toBeNull();
+    await page.mouse.move(Math.round(approvalLaneBox!.x + approvalLaneBox!.width / 2), Math.round(approvalLaneBox!.y + approvalLaneBox!.height / 2));
+    await page.mouse.wheel(0, 600);
+    await expect.poll(async () => (await approvalLayout())?.laneScrollTop ?? 0).toBe(approvalBefore!.laneScrollRange);
+    await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
+    await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-wheel.png") });
+
     // The shared approval row (c7701bb5e) fits its card at the narrow split's 320px height, so no scrolling stands between the
-    // user and its decisions there: every button is reachable as drawn. The scroll-to-reach path is exercised by the alert
-    // card above, which overflows its lane at 240px.
+    // user and its decisions there: every button is reachable as drawn.
     await page.setViewportSize({ width: 390, height: 320 });
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     const approvalShown = await approvalLayout();
