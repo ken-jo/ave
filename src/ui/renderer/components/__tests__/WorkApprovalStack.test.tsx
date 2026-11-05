@@ -299,6 +299,43 @@ describe("Work Board — narrow width", () => {
     expect(await screen.findByTestId("work-approval-head")).toBeTruthy();
   });
 
+  it("orders the tabs [개요 | 확인 필요 N]", async () => {
+    let callback: ResizeObserverCallback | null = null;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(cb: ResizeObserverCallback) { callback = cb; }
+      observe() {}
+      disconnect() {}
+    });
+    const { api } = stubApi([proposal()]);
+    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    await screen.findByTestId("work-approval-head");
+    await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
+    const tabs = within(screen.getByTestId("work-board-tabs")).getAllByRole("tab").map((tab) => tab.getAttribute("data-testid"));
+    expect(tabs).toEqual(["work-board-tab-overview", "work-board-tab-approvals"]);
+  });
+
+  it("stores no tab choice for a focus request in the wide layout, so a later shrink with nothing to review opens overview", async () => {
+    let callback: ResizeObserverCallback | null = null;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(cb: ResizeObserverCallback) { callback = cb; }
+      observe() {}
+      disconnect() {}
+    });
+    const items: WorkApprovalView[] = [proposal()];
+    const { api, fireChanged } = stubApi(items);
+    const { rerender } = render(<WorkBoardPanel api={api} project={PROJECT} />);
+    await screen.findByTestId("work-approval-head");
+    await act(async () => callback?.([{ contentRect: { width: 1200 } } as ResizeObserverEntry], {} as ResizeObserver));
+    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={proposal().key} />);
+    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={null} />);
+    // The item is handled elsewhere, then the window shrinks.
+    items.splice(0, items.length);
+    await act(async () => fireChanged());
+    await waitFor(() => expect(screen.queryByTestId("work-approval-head")).toBeNull());
+    await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
+    expect(screen.getByTestId("work-board-tab-overview").getAttribute("aria-selected")).toBe("true");
+  });
+
   it("switches to 확인 필요 for a popover focus request made while the overview tab is open", async () => {
     let callback: ResizeObserverCallback | null = null;
     vi.stubGlobal("ResizeObserver", class {

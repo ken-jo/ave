@@ -1643,10 +1643,11 @@ export function WorkBoardPanel({
   const narrowTab = narrowTabChoice ?? (approvalCount !== null && approvalCount > 0 ? "approvals" : "overview");
   const setNarrowTab = setNarrowTabChoice;
   const stackHidden = narrow && narrowTab !== "approvals";
-  // A badge-popover navigation names an item in the stack; on a narrow panel that means showing the stack's tab.
+  // A badge-popover navigation names an item in the stack; on a narrow panel that means showing the stack's tab. A wide panel shows the
+  // stack anyway, so nothing is stored there: a choice stored while wide would open an empty 확인 필요 tab after a later shrink.
   useEffect(() => {
-    if (approvalFocusKey !== undefined && approvalFocusKey !== null) setNarrowTabChoice("approvals");
-  }, [approvalFocusKey]);
+    if (narrow && approvalFocusKey !== undefined && approvalFocusKey !== null) setNarrowTabChoice("approvals");
+  }, [approvalFocusKey, narrow]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -2068,16 +2069,7 @@ export function WorkBoardPanel({
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">
-            <Button
-              role="tab"
-              size="sm"
-              variant={narrowTab === "approvals" ? "default" : "outline"}
-              aria-selected={narrowTab === "approvals"}
-              onClick={() => setNarrowTab("approvals")}
-              data-testid="work-board-tab-approvals"
-            >
-              {t("workApprovals.tabApprovals", { count: approvalCount ?? 0 })}
-            </Button>
+            {/* Spec case 17: [개요 | 확인 필요 N]; which one is selected first is decided above, not by the order. */}
             <Button
               role="tab"
               size="sm"
@@ -2087,6 +2079,16 @@ export function WorkBoardPanel({
               data-testid="work-board-tab-overview"
             >
               {t("workApprovals.tabOverview")}
+            </Button>
+            <Button
+              role="tab"
+              size="sm"
+              variant={narrowTab === "approvals" ? "default" : "outline"}
+              aria-selected={narrowTab === "approvals"}
+              onClick={() => setNarrowTab("approvals")}
+              data-testid="work-board-tab-approvals"
+            >
+              {t("workApprovals.tabApprovals", { count: approvalCount ?? 0 })}
             </Button>
           </div>
         )}
