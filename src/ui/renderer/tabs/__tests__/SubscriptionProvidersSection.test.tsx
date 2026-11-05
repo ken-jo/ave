@@ -272,6 +272,14 @@ describe("SubscriptionAuthControls", () => {
     }
   });
 
+  it("does not ask a connected, ready runtime to verify again after a restart", () => {
+    renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: false }) })], {
+      beginLogin: vi.fn(),
+      verifyRuntime: vi.fn(),
+    });
+    expect(screen.queryByTestId("subscription-provider:codex:verify-runtime")).toBeNull();
+  });
+
   it.each([
     ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
     ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],
