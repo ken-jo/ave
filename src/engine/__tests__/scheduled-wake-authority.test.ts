@@ -108,7 +108,7 @@ describe("scheduled wake authority", () => {
   it("stays on a child the woken turn resumed, after the wake has ended", async () => {
     const f = await fixture();
     vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
-    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockImplementation(() => {});
+    vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
     vi.spyOn(ConversationLoop.prototype, "loadSession").mockResolvedValue(true);
     vi.spyOn(ConversationLoop.prototype, "runTurn").mockResolvedValue({ text: "paused", toolCalls: [], route: "default", stopReason: "round-cap" } as never);
     const runner = new SubAgentRunner({ parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: f.memory });

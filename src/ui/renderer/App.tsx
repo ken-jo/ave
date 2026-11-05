@@ -1547,10 +1547,10 @@ export function App() {
       },
     );
     if (!started) return false;
-    setActiveProject(project);
+    followProject(project.projectRoot);
     setActiveView("home");
     return true;
-  }, [streaming, resolveKnownProject, activeProject, defaultWorkspaceProject, focusedSession, setActiveView, t]);
+  }, [streaming, resolveKnownProject, activeProject, defaultWorkspaceProject, focusedSession, followProject, setActiveView, t]);
 
   const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
