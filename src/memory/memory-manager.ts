@@ -1838,10 +1838,14 @@ export class MemoryManager implements PromptMemorySource {
     await withFileLock(indexPath, async () => {
       const current = readUtf8FileSnapshotIfPresent(path, MAX_MANAGED_MEMORY_FILE_BYTES);
       if (!current || current.tooLarge || sha256Text(current.content) !== expectedDigest) return;
-      // An update by id may have renamed it; the old title must still be free in its scope.
-      const holder = this.findExistingManagedMemory(title, metadata.scope);
-      if (holder && holder.metadata.id.toLowerCase() !== metadata.id.toLowerCase()) return;
       const currentBody = this.parseMemoryNote(current.content).content;
+      // An update by id may have renamed it; putting the old title back needs that title free in its scope. A restore that
+      // keeps the title changes nothing about which file holds it.
+      const currentTitle = currentBody.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
+      if (currentTitle !== title) {
+        const holder = this.findExistingManagedMemory(title, metadata.scope);
+        if (holder && holder.metadata.id.toLowerCase() !== metadata.id.toLowerCase()) return;
+      }
       writeFileSync(path, priorContent, "utf-8");
       if (metadata.scope.type === "global") {
         this.updateMemoryIndexLocked(indexPath, safeFilename, title, body);

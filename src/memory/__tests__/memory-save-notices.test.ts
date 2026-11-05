@@ -1,6 +1,6 @@
 // Undo stays simple: undoing a create deletes it, an update puts the earlier bytes back, a delete restores it, and an undo never discards a newer edit.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryManager } from "../memory-manager.js";
@@ -102,6 +102,35 @@ describe("MemorySaveNotices", () => {
 
     await expect(notices.undo(updated.token!)).resolves.toEqual({ ok: false, error: "changed" });
     expect(readFileSync(join(dir, "memories", newest.entry.filename), "utf-8")).toContain("Answer in Japanese.");
+  });
+
+  it("drops a memory's earlier undo records when it is deleted, keeping only the delete's own", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const updated = await save("Reply language", "Answer in English.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+
+    await expect(notices.undo(updated.token!)).resolves.toEqual({ ok: false, error: "not-found" });
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: false, error: "not-found" });
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "deleted", title: "Reply language" });
+  });
+
+  it("undoes an update that kept its title even when a newer same-title copy appeared since", async () => {
+    const created = await save("Release decision", "Ship Monday.");
+    const result = await manager.updateMemoryById(created.entry.id!, "Release decision", "Ship Tuesday.", { source: "assistant" }, "assistant");
+    const token = notices.saved(undefined, result);
+    // A newer same-title copy appears afterwards (another device, an older build).
+    const stored = readFileSync(join(dir, "memories", created.entry.filename), "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1]!, "base64url").toString("utf-8")) as Record<string, unknown>;
+    metadata.id = "9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a";
+    const copy = join(dir, "memories", "release-decision-copy.md");
+    writeFileSync(copy, stored.replace(header[1]!, Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")), "utf-8");
+    // The copy is the newest same-title file, but this restore keeps the title, so the copy does not block it.
+    utimesSync(copy, new Date(2100, 0, 1), new Date(2100, 0, 1));
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "updated", title: "Release decision" });
+    expect(readFileSync(join(dir, "memories", created.entry.filename), "utf-8")).toContain("Ship Monday.");
   });
 
   it("keeps the token when the undo throws, so it can be tried again", async () => {
