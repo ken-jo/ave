@@ -1149,7 +1149,7 @@ describe("rules recorded from live approval cards", () => {
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
   });
 
-  it("stores an edited wildcard allow and warns that it applies only to sandboxed runs", async () => {
+  it("stores an edited wildcard allow and warns about its broader scope", async () => {
     const { deps } = await setup(live);
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });

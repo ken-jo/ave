@@ -2247,9 +2247,9 @@ card's own rule grammar and requires it to decide this very request; an
 invalid or non-matching rule fails with a named error (`invalid-rule`,
 `rule-does-not-match`, `rule-required`, `scope-not-offered`,
 `not-request-owner`) and the request stays pending. Deny rules may be
-wildcards. An allow edited into a wildcard is saved, but it applies only to
-sandboxed runs, and the card explains the rule scope while editing. Host-shell approval may
-include a savable prefix. A forced one-shot request never offers remembered allow.
+wildcards. A saved exact or prefix allow rule lets matching commands run without
+asking, including host-shell runs outside the sandbox. The card explains the
+rule scope while editing. A forced one-shot request never offers remembered allow.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
