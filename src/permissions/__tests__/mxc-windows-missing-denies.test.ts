@@ -95,6 +95,15 @@ describe("pattern denies", () => {
   it("fails closed when it cannot list the pattern's directory", () => {
     expect(() => rankMxcFilesystem(policy([String.raw`${sessions}\**\.ssh`]), exists)).toThrow(/^Windows sandbox policy cannot hold pattern deny/);
   });
+
+  it("refuses the shell with a named reason when the walk passes its cap, and holds every match at the cap", () => {
+    const wide = (count: number) => (directory: string) => directory === sessions
+      ? Array.from({ length: count }, (_, index) => ({ name: `session-${index}.jsonl`, directory: false })).concat([{ name: "id_rsa", directory: false }])
+      : [];
+    expect(() => rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), exists, wide(20_000)))
+      .toThrow(/^Windows sandbox policy cannot hold pattern deny: .*id_rsa \(more than 20000 entries to check under .*sessions\)$/);
+    expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), exists, wide(19_999)).denied).toEqual([win32.join(sessions, "id_rsa")]);
+  });
 });
 
 describe.skipIf(process.platform !== "win32")("native missing deny parents", () => {

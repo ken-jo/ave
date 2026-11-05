@@ -296,8 +296,9 @@ const PATTERN_SEGMENT = /[*?]/;
 // Bounds the walk a pattern deny costs per spawn; past it the spawn fails closed.
 const MXC_PATTERN_WALK_LIMIT = 20_000;
 
-// Native rules are literal paths, so a pattern deny becomes the entries it matches now. That is complete only where the shell cannot create a new match:
-// the region the pattern covers must be read-only to it.
+// Native rules are literal paths, so a pattern deny becomes the entries it matches when the shell starts (as Codex's mxc-sandbox and sandbox-runtime
+// on Windows expand deny globs on the host). That snapshot is complete only where the shell cannot create a new match: the region the pattern covers
+// must be read-only to it. A match created later by another process is covered from the next start.
 function expandPatternDeny(
   pattern: string,
   rules: readonly MxcRule[],
@@ -327,7 +328,9 @@ function expandPatternDeny(
   for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
     if (matched(directory)) { out.push(directory); continue; }
     for (const entry of list(directory)) {
-      if (++visited > MXC_PATTERN_WALK_LIMIT) throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern}`);
+      if (++visited > MXC_PATTERN_WALK_LIMIT) {
+        throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern} (more than ${MXC_PATTERN_WALK_LIMIT} entries to check under ${prefix})`);
+      }
       const path = winPath.join(directory, entry.name);
       if (entry.directory) pending.push(path);
       else if (matched(path)) out.push(path);

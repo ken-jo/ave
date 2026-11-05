@@ -8,7 +8,12 @@ const h = vi.hoisted(() => ({
   registerPort: vi.fn(),
   recordRefusal: vi.fn(),
   closeRelay: vi.fn(async () => {}),
+  readdir: vi.fn(),
 }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readdirSync: (...args: Parameters<typeof actual.readdirSync>) => h.readdir.getMockImplementation() ? h.readdir(...args) : actual.readdirSync(...args) };
+});
 vi.mock("../../permissions/egress-host-listener.js", () => ({
   openHostEgressListener: h.openRelay,
 }));
@@ -96,6 +101,24 @@ describe("prepareMxcShellLaunch", () => {
     }
     expect(await portAccepts(launch.proxyPort)).toBe(false);
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("expands a pattern deny over the filesystem by default, without following links", async () => {
+    h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+    const sessions = String.raw`C:\Users\u\.ave\sessions`;
+    const entry = (name: string, directory: boolean) => ({ name, isDirectory: () => directory });
+    h.readdir.mockImplementation((directory: string) => directory === sessions
+      ? [entry("one", true), entry("link", false)]
+      : directory === `${sessions}\\one` ? [entry(".ssh", true)] : []);
+    const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [sessions], denyRead: [`${sessions}/**/.ssh`] } });
+    try {
+      expect(h.readdir).toHaveBeenCalledWith(sessions, { withFileTypes: true });
+      expect(h.readdir).not.toHaveBeenCalledWith(`${sessions}\\link`, expect.anything());
+      expect(decodeRequest(launch.argv)["filesystem"]["deniedPaths"]).toEqual([`${sessions}\\one\\.ssh`]);
+    } finally {
+      await launch.release();
+      h.readdir.mockReset();
+    }
   });
 
   it("refuses without the ASRT proxy, since the container would have no network path", async () => {
