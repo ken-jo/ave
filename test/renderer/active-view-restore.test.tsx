@@ -1,7 +1,8 @@
 // Verify restored navigation persists across launches without overwriting invalid or pending locations.
 import "./setup.js";
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { act, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
+import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import { atHome, renderApp } from "./render-app.js";
 import {
   activeSettingsTab,
@@ -174,14 +175,6 @@ describe("a launch whose stored location has not arrived yet", () => {
     };
   }
 
-  async function clickNav(container: HTMLElement, testId: string) {
-    const el = container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
-    expect(el, `missing [data-testid="${testId}"]`).not.toBeNull();
-    await act(async () => {
-      el!.click();
-    });
-  }
-
   it("still lands on the stored view when nobody touches the app", async () => {
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container } = await renderApp(opts);
@@ -260,12 +253,24 @@ describe("a launch whose stored location has not arrived yet", () => {
   });
 
   it("records a pick that changes nothing on screen, since it still supersedes the stored one", async () => {
-    // Starting a new chat supersedes stored location even when the active view key does not change.
+    // Going home supersedes stored location even when the active view key does not change. The rail's launchers wait for
+    // the project selection, which this held read also holds, so the pick is the composer's "/" action.
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container, api } = await renderApp(opts);
     await waitFor(() => expect(atHome(container)).toBe(true));
 
-    await clickNav(container, "sidebar-new-chat");
+    const composer = await waitFor(() => {
+      const el = container.querySelector<HTMLTextAreaElement>(testIdSelector(TEST_IDS.composerTextarea));
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    await act(async () => {
+      fireEvent.change(composer, { target: { value: "/홈으로" } });
+      composer.setSelectionRange(4, 4);
+      fireEvent.keyUp(composer, { key: "로" });
+    });
+    await waitFor(() => expect(document.querySelector('[data-testid="inline-slash-menu"]')?.textContent).toContain("홈으로 이동"));
+    await act(async () => { fireEvent.keyDown(composer, { key: "Enter" }); });
     await act(async () => {
       release();
     });

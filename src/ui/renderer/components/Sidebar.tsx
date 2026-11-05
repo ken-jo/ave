@@ -142,9 +142,9 @@ export interface SidebarProps {
   onSelectAllProjects: () => void;
   /** A folder was added as a project (or was one already): the shell switches to it (case 08–09). */
   onProjectAdded: (projectRoot: string, alreadyOpen: boolean) => void;
-  /** Open a new chat, web page or terminal in `project` (case 11–13). The rail asks which project in the all-projects view;
-   * before the selection has loaded, `project` is undefined and the window's project applies. */
-  onLaunch: (kind: SidebarLaunchKind, project: ProjectIdentity | undefined) => void;
+  /** Open a new chat, web page or terminal in `project` (case 11–13). The rail asks which project in the all-projects view,
+   * and launches nothing before the selection has loaded. */
+  onLaunch: (kind: SidebarLaunchKind, project: ProjectIdentity) => void;
   /**
    * The list beside the rail is folded (`sidebarState` "rail", case 21). The rail stays; the shell's band carries the button
    * that unfolds the list again.
@@ -1885,10 +1885,10 @@ export function Sidebar({
       return;
     }
     if (outcome.status !== "added") return;
-    const root = outcome.added ?? outcome.roots.find((each) => !each.isDefault)?.path;
-    const alreadyOpen = root !== undefined && projectsRef.current.some((project) => projectRootEquals(project.projectRoot, root));
+    const root = outcome.added;
+    const alreadyOpen = projectsRef.current.some((project) => projectRootEquals(project.projectRoot, root));
     await onRefreshProjects?.();
-    if (root) onProjectAdded(root, alreadyOpen);
+    onProjectAdded(root, alreadyOpen);
   }, [collapsed, onToggleCollapse, onProjectAdded, onProjectError, onRefreshProjects]);
   const addFlow = useMemo<SidebarAddFlow>(() => ({
     pendingWarning,
@@ -1922,10 +1922,11 @@ export function Sidebar({
         open={pickerFor === kind}
         onOpenChange={(open) => {
           // Viewing one project, a launcher opens there without asking; only the all-projects view asks where (case 06).
-          if (open && !allProjects) {
+          if (open && selectedProject) {
             onLaunch(kind, selectedProject);
             return;
           }
+          if (open && !allProjects) return;
           setPickerFor(open ? kind : null);
         }}
         onPick={(project) => onLaunch(kind, project)}
@@ -1933,9 +1934,11 @@ export function Sidebar({
         <RailButton
           label={selectedProject
             ? t("sidebar.railOpensIn", { label, project: shownName })
-            : t("sidebar.railChooseProject", { label })}
+            : allProjects ? t("sidebar.railChooseProject", { label }) : label}
           icon={icon}
           badge={plus}
+          // Until the selection has loaded there is no project to open in, and nothing opens without one.
+          disabled={!selectedProject && !allProjects}
           data-testid={testId}
         />
       </ProjectPicker>

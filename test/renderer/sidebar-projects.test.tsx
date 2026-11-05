@@ -5,6 +5,7 @@ import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
+import { waitForToast } from "./helpers.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
@@ -62,16 +63,6 @@ async function headerName(): Promise<string> {
   });
 }
 
-/** The status bar shows one toast at a time; dismiss the ones ahead of `text` until it shows. */
-async function waitForToast(container: HTMLElement, text: string): Promise<void> {
-  await waitFor(() => {
-    const message = container.querySelector('[data-testid="status-toast-message"]');
-    if (message?.textContent?.includes(text)) return;
-    const dismiss = message?.closest("div")?.parentElement?.querySelector<HTMLButtonElement>("button[aria-label]");
-    if (dismiss) fireEvent.click(dismiss);
-    throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
-  });
-}
 
 describe("sidebar projects", () => {
   it("opens a new terminal from the rail in the selected project's folder, and names the project on the launcher", async () => {
@@ -121,6 +112,18 @@ describe("sidebar projects", () => {
     await waitFor(() => expect(vi.mocked(api.updateSettings)).toHaveBeenCalledWith(expect.objectContaining({
       system: expect.objectContaining({ projectSelection: { kind: "root", root: "/ws/shop" }, recentProjectRoots: ["/ws/shop"] }),
     })));
+  });
+
+  it("leaves Enter and the arrow keys to the input method while a word is being composed", async () => {
+    await renderInProject({ kind: "root", root: "/ws" });
+    await act(async () => { fireEvent.click(byTestId("sidebar-project-header")!); });
+    const search = await waitFor(() => { const el = byTestId<HTMLInputElement>("project-combobox-search"); expect(el).not.toBeNull(); return el!; });
+    await act(async () => { fireEvent.change(search, { target: { value: "쇼" } }); });
+    // Committing "쇼" with Enter, and moving the candidate with ↓, belong to the input method: nothing is picked or moved.
+    await act(async () => { fireEvent.keyDown(search, { key: "ArrowDown", isComposing: true }); });
+    await act(async () => { fireEvent.keyDown(search, { key: "Enter", keyCode: 229 }); });
+    expect(byTestId("project-menu")).not.toBeNull();
+    expect(byTestId("sidebar-project-header")?.textContent).toContain("기본 프로젝트");
   });
 
   it("lists the menu as search, 전체 프로젝트, 최근, every project, then 새 프로젝트 추가", async () => {

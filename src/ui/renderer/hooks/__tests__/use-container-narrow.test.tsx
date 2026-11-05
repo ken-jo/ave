@@ -62,7 +62,10 @@ describe("useContainerNarrow", () => {
     expect(DOCK_ENTER_WIDTH).toBeGreaterThan(SIDE_PANEL_MIN_WIDTH);
     expect(DOCK_EXIT_WIDTH).toBeGreaterThan(DOCK_ENTER_WIDTH);
     expect(DOCK_ENTER_WIDTH).toBe(SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH);
-    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(60);
+    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(24);
+    // A 1100px window with the narrowest list (200px) beside the rail leaves an 812px tile (measured in the sidebar-sections
+    // e2e), which must dock again once the window is widened to it.
+    expect(DOCK_EXIT_WIDTH).toBeLessThanOrEqual(812);
   });
 
   it("docks when both columns fit inside the container", () => {

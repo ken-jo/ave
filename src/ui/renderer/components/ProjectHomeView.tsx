@@ -53,7 +53,7 @@ export function ProjectHomeView({ project, projects, projectName, surfaces, onOp
               {t("projectHome.openSurfaces", { count: openCount })}
             </h3>
             {openCount === 0 ? (
-              <p className="text-sm text-muted-foreground">{t("projectHome.noOpenSurfaces")}</p>
+              <p className="text-sm text-muted-foreground">{t(project ? "projectHome.noOpenSurfaces" : "projectHome.noOpenSurfacesAll")}</p>
             ) : groups.map((group) => (
               <div key={group.project.projectRoot} className="min-w-0">
                 {project ? null : (

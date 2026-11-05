@@ -963,20 +963,19 @@ export function App() {
   // New Chat is set up further down, with the conversation tiles it starts in.
   const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }) => Promise<void>) | undefined>(undefined);
   /** A launcher opens its surface in `project` (case 11–13): a new terminal starts in the project folder. */
-  const launchInProject = useCallback((kind: SidebarLaunchKind, project: ProjectIdentity | undefined) => {
+  const launchInProject = useCallback((kind: SidebarLaunchKind, project: ProjectIdentity) => {
     if (kind === "chat") {
-      void handleNewChatRef.current?.(project ? { projectRoot: project.projectRoot, projectName: project.projectName } : undefined);
+      void handleNewChatRef.current?.({ projectRoot: project.projectRoot, projectName: project.projectName });
       return;
     }
     const view = kind === "web" ? "web" : "terminal";
-    const projectRoot = project?.projectRoot ?? surfaceProjectRoot();
-    if (!projectRoot) return;
+    // A terminal starts in its project's folder (case 13).
     const surface = mainSurfaces.create(SURFACE_KIND_OF_VIEW[view], {
-      projectRoot,
-      ...(view === "terminal" && project ? { cwd: project.projectRoot } : {}),
+      projectRoot: project.projectRoot,
+      ...(view === "terminal" ? { cwd: project.projectRoot } : {}),
     });
     chatGroups.setPaneContent(chatGroups.focusedId, { view, surface: surface.tabId });
-  }, [chatGroups, mainSurfaces, surfaceProjectRoot]);
+  }, [chatGroups, mainSurfaces]);
 
   // After a folder is added (case 08) or turns out to be a project already (case 09), the window switches to it once the
   // refreshed list holds it, and the notice offers the way back to where it was.

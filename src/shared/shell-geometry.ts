@@ -24,7 +24,13 @@ export const PANE_MIN_WIDTH = 448;
 export const MIN_DOCKED_TRANSCRIPT_WIDTH = 320;
 export const NARROW_DEAD_BAND_PX = 60;
 export const DOCK_ENTER_WIDTH = 784;
-export const DOCK_EXIT_WIDTH = DOCK_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
+/**
+ * The side panel's own hysteresis, narrower than `NARROW_DEAD_BAND_PX`. Since the rail took 60px of the window (Sidebar E),
+ * a 1100px window with a 200px list leaves an 812px tile: wide enough to dock (784), but under a 60px band's exit (844), so a
+ * window widened to 1100 would keep the panel floating. 24px still stops a resize jitter from flapping it.
+ */
+const DOCK_DEAD_BAND_PX = 24;
+export const DOCK_EXIT_WIDTH = DOCK_ENTER_WIDTH + DOCK_DEAD_BAND_PX;
 export const SINGLE_TILE_ENTER_WIDTH = 904;
 export const SINGLE_TILE_EXIT_WIDTH = SINGLE_TILE_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
 export const SETTINGS_NARROW_ENTER_WIDTH = 640;

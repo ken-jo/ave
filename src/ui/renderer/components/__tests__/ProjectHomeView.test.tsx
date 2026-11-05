@@ -41,6 +41,14 @@ describe("ProjectHomeView", () => {
     expect(onOpenView.mock.calls).toEqual([["work-board"], ["memory"]]);
   });
 
+  it("says no project has anything open in the all-projects view, rather than 'this project'", () => {
+    render(
+      <ProjectHomeView project={undefined} projects={[DEFAULT, SHOP]} projectName={nameOf} surfaces={[]}
+        onOpenSurface={vi.fn()} onOpenView={vi.fn()} />,
+    );
+    expect(screen.getByTestId("project-home-surfaces").textContent).toContain("어느 프로젝트에도 열린 터미널이나 페이지가 없습니다");
+  });
+
   it("groups every project's open surfaces under its name in the all-projects view", () => {
     render(
       <ProjectHomeView project={undefined} projects={[DEFAULT, SHOP, BOOK]} projectName={nameOf} surfaces={SURFACES}

@@ -849,6 +849,35 @@ describe("Sidebar project section add-project context menu", () => {
     }
   });
 
+  it("switches to nothing when the folder dialog is dismissed, and reports an add that names no folder", async () => {
+    const onRefreshProjects = vi.fn();
+    const onProjectAdded = vi.fn();
+    const onProjectError = vi.fn();
+    const { getByTestId, emitNativeContextCommand, pickRoot, restore } = renderSidebar({
+      sessions: [], projects, onRefreshProjects, onProjectAdded, onProjectError,
+    });
+    try {
+      // Main answers a dismissed dialog with the current roots and `canceled`.
+      pickRoot.mockResolvedValueOnce({ ok: true, canceled: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
+      fireEvent.contextMenu(await waitFor(() => getByTestId("sidebar-projects")));
+      emitNativeContextCommand("project.add");
+      await waitFor(() => expect(pickRoot).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(onProjectAdded).not.toHaveBeenCalled();
+      expect(onRefreshProjects).not.toHaveBeenCalled();
+      expect(onProjectError).not.toHaveBeenCalled();
+
+      // An add that succeeded without saying which folder is a broken answer: no guess, an error.
+      pickRoot.mockResolvedValueOnce({ ok: true, roots: [{ path: "C:\\Users\\example\\workspace\\ave-project\\alpha", isDefault: false }] } as never);
+      fireEvent.contextMenu(getByTestId("sidebar-projects"));
+      emitNativeContextCommand("project.add");
+      await waitFor(() => expect(onProjectError).toHaveBeenCalledWith("add", "invalid-response"));
+      expect(onProjectAdded).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
   it("surfaces a refused add instead of leaving the right-click a no-op", async () => {
     const onRefreshProjects = vi.fn();
     const onProjectError = vi.fn();
@@ -1251,6 +1280,18 @@ describe("Sidebar rail", () => {
       expect(getByTestId(id).getAttribute("aria-label")).toContain("other-app");
     }
     restore();
+  });
+
+  it("launches nothing until the selection has loaded", () => {
+    const onLaunch = vi.fn();
+    const { getByTestId, restore } = renderSidebar({ onLaunch });
+    try {
+      const terminal = getByTestId("sidebar-terminal") as HTMLButtonElement;
+      expect(terminal.disabled).toBe(true);
+      expect(terminal.getAttribute("aria-label")).toBe("새 터미널");
+      fireEvent.click(terminal);
+      expect(onLaunch).not.toHaveBeenCalled();
+    } finally { restore(); }
   });
 
   it("launches in the selected project without asking", () => {

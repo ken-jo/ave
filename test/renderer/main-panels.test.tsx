@@ -3,7 +3,7 @@ import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
-import { clickSidebarNavRow, deferred, splitIntoTwoTiles } from "./helpers.js";
+import { clickSidebarNavRow, deferred, splitIntoTwoTiles, waitForToast } from "./helpers.js";
 import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
@@ -57,16 +57,6 @@ async function publishPaneBinding(api: unknown, sessionId: string, tabId: string
   await act(async () => browser.browserTabs.emitSessionBindingsChanged([{ sessionId, browserTabIds: [], terminalTabIds: [tabId] }]));
 }
 
-/** The status bar shows one toast at a time; dismiss the ones ahead of `text` (the failed project listing's own) until it shows. */
-async function waitForToast(container: HTMLElement, text: string): Promise<void> {
-  await waitFor(() => {
-    const message = container.querySelector('[data-testid="status-toast-message"]');
-    if (message?.textContent?.includes(text)) return;
-    const dismiss = message?.closest("div")?.parentElement?.querySelector<HTMLButtonElement>("button[aria-label]");
-    if (dismiss) fireEvent.click(dismiss);
-    throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
-  });
-}
 
 describe("main-area terminal and web panels", () => {
   it.each(["web", "terminal"])("retargets an unchanged side browser selected from the sidebar after a main %s surface", async (view) => {
@@ -365,9 +355,13 @@ describe("main-area terminal and web panels", () => {
   it("opens no terminal or page, and says why, while the project list is unavailable", async () => {
     const { container } = await renderApp({ hasApiKey: true, workspaceListRootsResult: { ok: false, error: "listing failed" } });
 
-    await clickSidebarNavRow("features", "sidebar-terminal");
-    await waitForToast(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
-    await clickSidebarNavRow("features", "sidebar-web");
+    // The listing failure is the reason shown; the launchers stay disabled until a project is known (fail closed).
+    await waitForToast(container, "프로젝트: listing failed");
+    for (const launcher of ["sidebar-terminal", "sidebar-web"]) {
+      const button = document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${launcher}"]`);
+      expect(button?.disabled, launcher).toBe(true);
+      await clickSidebarNavRow("features", launcher);
+    }
     expect(shownSurfaces(container)).toEqual([]);
   });
 
@@ -538,6 +532,8 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     const manual = terminalSessionFixture(shownSurfaces(container)[0]!.tabId!, "manual");
     await waitFor(() => expect(terminalApi.listBlocks).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", terminalSessionId: manual.terminalSessionId })));
+    // The directory it was started in is known, so the header names it.
+    await waitFor(() => expect(container.querySelector('[data-testid="pane-header-meta"]')?.textContent).toBe("ws"));
     // What the shell is and where it started are on the header's host chip, not stacked rows over the output.
     const chip = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('[data-testid="pane-header"] [data-testid="terminal-pane-host-chip"]');
@@ -563,6 +559,7 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(terminalApi.spawn.mock.calls.length).toBeGreaterThan(spawnsBeforeClose));
     // Reopened at the directory it was launched in, never at the heuristic command's.
     expect(terminalApi.spawn.mock.calls.at(-1)![0]).toMatchObject({ lane: "manual", cwd: "/ws" });
+    await waitFor(() => expect(container.querySelector('[data-testid="pane-header-meta"]')?.textContent).toBe("ws"));
   });
 
   it("opens a terminal or web pane's own chat beside it, bound to that pane's tab", async () => {

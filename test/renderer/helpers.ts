@@ -11,6 +11,17 @@ export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
 
 // Supply empty approval context when rendering dock-owning bodies outside the app.
+/** The status bar shows one toast at a time; dismiss the ones ahead of `text` until it shows. */
+export async function waitForToast(container: HTMLElement, text: string): Promise<void> {
+  await waitFor(() => {
+    const message = container.querySelector('[data-testid="status-toast-message"]');
+    if (message?.textContent?.includes(text)) return;
+    const dismiss = message?.closest("div")?.parentElement?.querySelector<HTMLButtonElement>("button[aria-label]");
+    if (dismiss) fireEvent.click(dismiss);
+    throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
+  });
+}
+
 export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
   return {
     queue: [],

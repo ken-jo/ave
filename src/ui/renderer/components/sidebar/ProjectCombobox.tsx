@@ -1,6 +1,7 @@
 import { useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import { useTranslation } from "../../../../i18n/react.js";
+import { isComposingKeyEvent } from "../../utils/ime-key-event.js";
 
 /** One pickable row of a project menu or picker. */
 export interface ComboboxOption {
@@ -54,6 +55,8 @@ export function ProjectCombobox({ ariaLabel, placeholder, sectionsFor, initialAc
     document.getElementById(optionId(next.key))?.scrollIntoView?.({ block: "nearest" });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // While a word is being composed (Korean, Japanese…), Enter commits it and the arrows move the candidate: theirs.
+    if (isComposingKeyEvent(event)) return;
     if (event.key === "ArrowDown") { event.preventDefault(); move(1); return; }
     if (event.key === "ArrowUp") { event.preventDefault(); move(-1); return; }
     if (event.key === "Enter" && active) { event.preventDefault(); active.onPick(); }

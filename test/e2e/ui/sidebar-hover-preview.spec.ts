@@ -60,6 +60,15 @@ test("previews sidebar entries on hover and supports keyboard focus in the colla
     await expect(conversation).toHaveCount(0);
     await expect(browser).toHaveCount(0);
     await expect(terminal).toHaveCount(0);
+    // The rail is reachable from the keyboard: Tab walks its controls, and a focused one names itself in its tooltip.
+    const railTerminal = page.getByTestId("sidebar-terminal");
+    await page.getByTestId("sidebar-web").focus();
+    await page.keyboard.press("Tab");
+    await expect(railTerminal).toBeFocused();
+    await expect.poll(() => railTerminal.evaluate((entry) => {
+      const id = entry.getAttribute("aria-describedby");
+      return id ? document.getElementById(id)?.textContent : null;
+    })).toMatch(/터미널|Terminal/);
     await page.screenshot({ path: testInfo.outputPath("collapsed-rail.png") });
   } finally {
     await teardownSeededElectron(ctx, { terminate: true });

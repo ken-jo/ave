@@ -19,11 +19,11 @@ import {
 import { SIDE_PANEL_MIN_RESERVE } from "../side-panel.js";
 
 describe("responsive shell thresholds", () => {
-  it("leaves room for both surface floors and keeps a 60px return band", () => {
+  it("leaves room for both surface floors, a 60px tile return band and a 24px dock return band", () => {
     expect(SINGLE_TILE_ENTER_WIDTH).toBe(2 * PANE_MIN_WIDTH + SHELL_GUTTER);
     expect(DOCK_ENTER_WIDTH).toBe(SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH);
     expect(SINGLE_TILE_EXIT_WIDTH - SINGLE_TILE_ENTER_WIDTH).toBe(60);
-    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(60);
+    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(24);
     // The rail's reserve, the list and the narrowest readable transcript.
     expect(sidebarPushThreshold(232)).toBe(68 + 232 + 320);
   });
