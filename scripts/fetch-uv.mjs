@@ -5,6 +5,7 @@ import { mkdir, chmod, rename, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchBytesWithRetry } from "./lib/fetch-with-retry.mjs";
 import { UV_TARGETS, getUvTargetByDir, resolveUvTarget } from "./uv-targets.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -96,14 +97,6 @@ function selectedTargets() {
     throw new Error("--target mode requires at least one target");
   }
   return [...new Map(selected.map((target) => [target.dir, target])).values()];
-}
-
-async function fetchWithRedirect(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status} ${resp.statusText} — ${url}`);
-  }
-  return resp;
 }
 
 // Parse the decompressed tar directly without external tools.
@@ -292,9 +285,10 @@ async function downloadTarget(target) {
   const url = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${target.archive}`;
   log(`Downloading: ${url}`);
 
-  const resp = await fetchWithRedirect(url);
-  const arrayBuffer = await resp.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const buffer = await fetchBytesWithRetry(url, {
+    httpError: (resp) => `HTTP ${resp.status} ${resp.statusText} — ${url}`,
+    log: (msg) => log(`  ${msg}`),
+  });
 
   log(`  Downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB — extracting ${target.bin}...`);
 
