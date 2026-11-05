@@ -963,20 +963,6 @@ export async function ensureConversationTerminal(sessionId: string, ownerWindowI
 }
 
 /** Main-only reference lookup; renderer terminal ids confer no conversation authority. */
-/** The removal preview's count of live terminals started in `root` or a folder under it; removing that project ends them with its tabs. */
-export function countLiveTerminalsUnderRoot(root: string): number {
-  const key = caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/g, "") || "/";
-  let count = 0;
-  for (const session of sessions.values()) {
-    if (session.exited || session.closing) continue;
-    const cwd = session.info.initialCwd;
-    if (typeof cwd !== "string") continue;
-    const cwdKey = caseFoldForMatch(canonicalizePathForMatch(cwd)).replace(/\/+$/g, "") || "/";
-    if (cwdKey === key || cwdKey.startsWith(key === "/" ? "/" : `${key}/`)) count += 1;
-  }
-  return count;
-}
-
 export function conversationTerminalRef(sessionId: string, ownerWindowId: number): TerminalSessionRef | undefined {
   const owner = conversationTerminals.get(sessionId);
   if (!owner || owner.ownerWindowId !== ownerWindowId) return undefined;

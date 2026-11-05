@@ -280,4 +280,25 @@ describe("ConversationLoop project identity", () => {
     expect(controller.signal.aborted).toBe(true);
     expect((controller.signal.reason as Error).message).toBe("workspace-removal");
   });
+
+  it("answers whether a removal would stop its turn by the same test the removal aborts by, and never for an idle loop", async () => {
+    const defaultRoot = "C:\\Users\\example\\.ave\\workspace";
+    const removedRoot = "C:\\workspace\\alpha";
+    const unrelatedRoot = "D:\\workspace\\beta";
+    const cases = [
+      { projectRoot: removedRoot, options: {}, aborts: true },
+      { projectRoot: unrelatedRoot, options: {}, aborts: false },
+      { projectRoot: unrelatedRoot, options: { globalScopeWasAuthorized: true }, aborts: true },
+    ];
+    for (const { projectRoot, options, aborts } of cases) {
+      const { loop } = makeRevocableProjectLoop(defaultRoot, new Set([projectRoot]));
+      await loop.newConversation("main", { projectRoot, projectName: "p" });
+      expect(loop.wouldWorkspaceRootRemovalAbortTurn(removedRoot, options)).toBe(false);
+      const controller = new AbortController();
+      loop.currentAbortController = controller;
+      expect(loop.wouldWorkspaceRootRemovalAbortTurn(removedRoot, options)).toBe(aborts);
+      loop.revokeWorkspaceRoot(removedRoot, options);
+      expect(controller.signal.aborted).toBe(aborts);
+    }
+  });
 });

@@ -35,6 +35,14 @@ export interface WorkspaceRootRemovalContext {
   globalScopeWasAuthorized: true;
 }
 
+/** The context a removal hands every store and live-scope owner; its preview asks them with the same one. */
+export function workspaceRootRemovalContext(runtimePath: string, activeRoots: readonly string[]): WorkspaceRootRemovalContext {
+  return {
+    preserveRoots: retainedDescendantWorkspaceRoots(runtimePath, activeRoots),
+    globalScopeWasAuthorized: true,
+  };
+}
+
 export type WorkspaceRootRemovalReason = "missing" | "not-directory";
 export type WorkspaceRootRetentionReason =
   | "directory"
@@ -241,10 +249,7 @@ async function finishCommittedWorkspaceRootRemoval(
   const activeRoots = readPermissionSettings(
     options.settingsPath,
   ).permissions.additionalDirectories;
-  const context: WorkspaceRootRemovalContext = {
-    preserveRoots: retainedDescendantWorkspaceRoots(intent.runtimePath, activeRoots),
-    globalScopeWasAuthorized: true,
-  };
+  const context = workspaceRootRemovalContext(intent.runtimePath, activeRoots);
   let prunedGrants = 0;
   const cleanupErrors: unknown[] = [];
 

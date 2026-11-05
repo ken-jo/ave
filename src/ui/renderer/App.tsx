@@ -1161,7 +1161,7 @@ export function App() {
 
   // 프로젝트 제거 (cases 29–31): preview, confirm when something would be lost, then close what pointed at the folder.
   const removeProject = useRemoveProject({
-    surfacesIn: (root) => mainSurfaces.surfaces.filter((surface) => projectRootEquals(surface.projectRoot, root)).map((surface) => surface.tabId),
+    surfacesIn: (root) => mainSurfaces.surfaces.filter((surface) => projectRootEquals(surface.projectRoot, root)).map((surface) => ({ tabId: surface.tabId, kind: surface.kind })),
     closeSurface: closeMainSurface,
     forgetProject: projectSelection.forgetProject,
     refreshProjects: refreshWorkspaceProjects,

@@ -8,8 +8,16 @@ import { addedOutcome, type ProjectErrorReporter } from "./use-add-project-folde
 export interface RemoveProjectPrompt {
   project: ProjectIdentity;
   counts: WorkspaceRemovalCounts;
-  /** The project's terminals and pages in the main area; removal closes them. */
-  savedSurfaces: number;
+  /** The project's terminals in this window; removal closes them, ending what runs in them. */
+  closingTerminals: number;
+  /** The project's other surfaces in this window (pages, folder and plugin views); removal closes them. */
+  closingTabs: number;
+}
+
+/** One of the project's surfaces in this window's main area. */
+interface ProjectSurfaceRef {
+  tabId: string;
+  kind: string;
 }
 
 interface RemoveProjectToast {
@@ -20,8 +28,8 @@ interface RemoveProjectToast {
 }
 
 export interface UseRemoveProjectOptions {
-  /** The project's terminals and pages in the main area. */
-  surfacesIn: (projectRoot: string) => readonly string[];
+  /** The project's surfaces in this window's main area: exactly what removal closes. */
+  surfacesIn: (projectRoot: string) => readonly ProjectSurfaceRef[];
   closeSurface: (tabId: string) => void;
   /** Drop what the window remembers about the project: recent, last view, open group. */
   forgetProject: (projectRoot: string) => void;
@@ -44,7 +52,7 @@ const TOAST_TTL_MS = 10_000;
 
 /** Nothing would be lost: no counted loss and no conversation to unlink, so the undo toast is enough (plan decision 3). */
 function losesNothing(prompt: RemoveProjectPrompt): boolean {
-  return prompt.savedSurfaces === 0 && Object.values(prompt.counts).every((count) => count === 0);
+  return prompt.closingTerminals === 0 && prompt.closingTabs === 0 && Object.values(prompt.counts).every((count) => count === 0);
 }
 
 /**
@@ -91,7 +99,7 @@ export function useRemoveProject(options: UseRemoveProjectOptions): UseRemovePro
       reportError("remove", result.error, result.message);
       return;
     }
-    for (const tabId of surfacesIn(project.projectRoot)) closeSurface(tabId);
+    for (const surface of surfacesIn(project.projectRoot)) closeSurface(surface.tabId);
     forgetProject(project.projectRoot);
     await refreshProjects();
     const removed = t("sidebar.projectRemoved", { name: projectName(project) });
@@ -118,11 +126,16 @@ export function useRemoveProject(options: UseRemoveProjectOptions): UseRemovePro
       optionsRef.current.reportError("remove", preview.error);
       return;
     }
+    const surfaces = optionsRef.current.surfacesIn(project.projectRoot);
+    const closingTerminals = surfaces.filter((surface) => surface.kind === "terminal").length;
     const next: RemoveProjectPrompt = {
       project,
       counts: preview.counts,
-      savedSurfaces: optionsRef.current.surfacesIn(project.projectRoot).length,
+      closingTerminals,
+      closingTabs: surfaces.length - closingTerminals,
     };
+    // Removal re-validates everything it does under its own lock, so a project that gains a terminal or a turn between this
+    // preview and the removal is still removed correctly; only the absent dialog is stale, which the undo toast covers.
     if (losesNothing(next)) {
       await remove(project).catch(reportThrown);
       return;

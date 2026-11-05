@@ -720,11 +720,6 @@
     {
       "type": "types",
       "file": "src/permissions/workspace-root-reconciler.ts",
-      "name": "WorkspaceRootRemovalContext"
-    },
-    {
-      "type": "types",
-      "file": "src/permissions/workspace-root-reconciler.ts",
       "name": "WorkspaceRootRemovalReason"
     },
     {

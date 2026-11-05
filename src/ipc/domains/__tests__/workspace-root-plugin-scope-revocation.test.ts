@@ -89,7 +89,7 @@ const OK_FRAME = "file:///app/index.html";
 function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
   const fn = handlers.get(channel);
   if (!fn) throw new Error(`no handler for ${channel}`);
-  return Promise.resolve(fn({ senderFrame: { url: OK_FRAME } } as never, ...args));
+  return Promise.resolve(fn({ sender: { id: 1 }, senderFrame: { url: OK_FRAME } } as never, ...args));
 }
 
 let root: string;

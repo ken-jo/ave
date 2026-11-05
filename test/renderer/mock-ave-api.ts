@@ -1137,7 +1137,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
           if (!roots.some((root) => root.path === path && !root.isDefault)) return { ok: false, error: "not-an-additional-root" };
           return {
             ok: true,
-            counts: { liveTerminals: 0, streamingSessions: 0, pathGrants: 0, routines: 0, detachableSessions: 0, ...overrides.workspaceRemovalCounts },
+            counts: { streamingSessions: 0, pathGrants: 0, routines: 0, detachableSessions: 0, ...overrides.workspaceRemovalCounts },
           };
         }),
         removeRoot: vi.fn(async (path: string) => {

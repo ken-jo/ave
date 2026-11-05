@@ -103,9 +103,9 @@ const deps = {
   },
 } as never;
 
-function frameEvent(url: string) {
+function frameEvent(url: string, senderId = 1) {
   const frame = { url, processId: 1, routingId: 0, detached: false, isDestroyed: () => false };
-  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: frame, session: defaultSession, getType: () => "window", isDestroyed: () => false });
+  const sender = Object.assign(new EventEmitter(), { id: senderId, mainFrame: frame, session: defaultSession, getType: () => "window", isDestroyed: () => false });
   appWindows.push({ isDestroyed: () => false, webContents: sender });
   return { sender, senderFrame: frame };
 }
@@ -114,6 +114,13 @@ function invoke(channel: string, url: string, ...args: unknown[]): Promise<unkno
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`No handler registered for: ${channel}`);
   return Promise.resolve(handler(frameEvent(url), ...args));
+}
+
+/** The same call from another of the host's windows. */
+function invokeFrom(senderId: number, channel: string, url: string, ...args: unknown[]): Promise<unknown> {
+  const handler = handlers.get(channel);
+  if (!handler) throw new Error(`No handler registered for: ${channel}`);
+  return Promise.resolve(handler(frameEvent(url, senderId), ...args));
 }
 
 const OK_FRAME = "file:///app/index.html";
@@ -1413,7 +1420,7 @@ describe("workspace handlers", () => {
   describe("removal preview and undo (Sidebar E S7, cases 30–31)", () => {
     type PreviewResult = {
       ok: boolean;
-      counts?: { liveTerminals: number; streamingSessions: number; pathGrants: number; routines: number; detachableSessions: number };
+      counts?: { streamingSessions: number; pathGrants: number; routines: number; detachableSessions: number };
       error?: string;
     };
     function previewDeps(overrides: {
@@ -1425,8 +1432,16 @@ describe("workspace handlers", () => {
       revokeRoutineScopes?: ReturnType<typeof vi.fn>;
       detachSessionsFromProject?: ReturnType<typeof vi.fn>;
       subAgentCount?: number;
+      /** Records each loop's (root, context) question. */
+      asked?: Array<[string, unknown]>;
+      sideLoop?: unknown;
     } = {}) {
       const [main = false, side = false, ...panes] = overrides.activeTurns ?? [];
+      // Each loop answers by its own test; "has a turn" says no, so a handler that substitutes it for the test counts nothing.
+      const loopAnswering = (answer: boolean) => ({
+        hasActiveTurn: () => false,
+        wouldWorkspaceRootRemovalAbortTurn: (root: string, context: unknown) => { overrides.asked?.push([root, context]); return answer; },
+      });
       return {
         auditLogger: { log: vi.fn() },
         getMainWindow: () => null,
@@ -1437,15 +1452,15 @@ describe("workspace handlers", () => {
           countSessionsInProject: overrides.countSessionsInProject ?? vi.fn(() => 0),
         },
         conversationLoop: {
-          hasActiveTurn: () => main,
+          ...loopAnswering(main),
           permissionManager: {
             prunePathGrantsUnderRoot: overrides.prunePathGrantsUnderRoot ?? vi.fn(async () => []),
             countPathGrantsUnderRoot: overrides.countPathGrantsUnderRoot ?? vi.fn(async () => 0),
           },
           revokeWorkspaceRoot: () => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0, projectRebound: false }),
         },
-        sideChatConversationLoop: { hasActiveTurn: () => side },
-        paneChatLoops: { all: () => panes.map((active) => ({ hasActiveTurn: () => active })) },
+        sideChatConversationLoop: "sideLoop" in overrides ? overrides.sideLoop : loopAnswering(side),
+        paneChatLoops: { all: () => panes.map((affected) => loopAnswering(affected)) },
         getSubAgentRunner: () => ({
           detachSessionsFromProject: vi.fn(async () => 0),
           countSessionsInProject: vi.fn(() => overrides.subAgentCount ?? 0),
@@ -1469,16 +1484,19 @@ describe("workspace handlers", () => {
       const countSessionsInProject = vi.fn(() => 4);
       const prunePathGrantsUnderRoot = vi.fn(async () => []);
       const revokeRoutineScopes = vi.fn(async () => ({ routinesUpdated: 0, directoriesRemoved: 0 }));
+      const asked: Array<[string, unknown]> = [];
       registerWorkspaceHandlers(previewDeps({
         countPathGrantsUnderRoot, countRoutinesScopedToWorkspaceRoot, countSessionsInProject,
-        prunePathGrantsUnderRoot, revokeRoutineScopes, activeTurns: [true, false, true, false], subAgentCount: 1,
+        prunePathGrantsUnderRoot, revokeRoutineScopes, activeTurns: [true, false, true, false], subAgentCount: 1, asked,
       }));
       try {
         const res = (await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, parentRoot)) as PreviewResult;
         expect(res).toEqual({
           ok: true,
-          counts: { liveTerminals: 0, streamingSessions: 2, pathGrants: 3, routines: 2, detachableSessions: 5 },
+          counts: { streamingSessions: 2, pathGrants: 3, routines: 2, detachableSessions: 5 },
         });
+        // Two of the four loops say the removal would stop their turn; each was asked with the removal's own context.
+        expect(asked).toEqual(Array.from({ length: 4 }, () => [canonicalParent, { ...options, globalScopeWasAuthorized: true }]));
         expect(countPathGrantsUnderRoot).toHaveBeenCalledWith(canonicalParent, options);
         expect(countRoutinesScopedToWorkspaceRoot).toHaveBeenCalledWith(canonicalParent, options);
         expect(countSessionsInProject).toHaveBeenCalledWith(canonicalParent);
@@ -1512,6 +1530,29 @@ describe("workspace handlers", () => {
       registerWorkspaceHandlers(previewDeps({ countSessionsInProject: vi.fn(() => { throw Object.assign(new Error("bad"), { code: "SESSION_METADATA_INVALID" }); }) }));
       try {
         expect(await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, root)).toMatchObject({ ok: false, error: "preview-failed" });
+      } finally {
+        registerWorkspaceHandlers(deps);
+      }
+    });
+
+    it("fails the preview when a conversation loop cannot say whether removal would stop its turn", async () => {
+      registerWorkspaceHandlers(previewDeps({ sideLoop: { hasActiveTurn: () => true } }));
+      try {
+        expect(await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, root)).toMatchObject({ ok: false, error: "preview-failed" });
+      } finally {
+        registerWorkspaceHandlers(deps);
+      }
+    });
+
+    it("accepts the undo token only from the window it was handed to", async () => {
+      registerWorkspaceHandlers(previewDeps());
+      try {
+        const removed = (await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)) as { undoToken?: string };
+        addAllowedDirectoryPersistMock.mockClear();
+        expect(await invokeFrom(2, CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: removed.undoToken })).toEqual({ ok: false, error: "ack-unknown" });
+        expect(addAllowedDirectoryPersistMock).not.toHaveBeenCalled();
+        // One use, as for every token: the refused try consumed it.
+        expect(await invoke(CHANNELS.workspace.pickRoot, OK_FRAME, { ackToken: removed.undoToken })).toEqual({ ok: false, error: "ack-unknown" });
       } finally {
         registerWorkspaceHandlers(deps);
       }

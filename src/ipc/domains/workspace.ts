@@ -30,6 +30,7 @@ import {
   reconcileWorkspaceRoots,
   removeWorkspaceRootWithIntent,
   retainedDescendantWorkspaceRoots,
+  workspaceRootRemovalContext,
   opaqueWorkspaceRootAuditRef,
 } from "../../permissions/workspace-root-reconciler.js";
 import {
@@ -39,7 +40,6 @@ import {
 import { getActivePluginSurfacePermissionScope } from "../../boot/plugin-surface-permissions.js";
 import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session-lifecycle.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { countLiveTerminalsUnderRoot } from "../../main/terminal/pty-manager.js";
 import {
   searchWorkspaceFiles,
   WORKSPACE_FILE_QUERY_MAX_CHARS,
@@ -53,7 +53,8 @@ const MAX_DIR_ENTRIES = 1_000;
 const ACK_TOKEN_TTL_MS = 60_000;
 
 // Keep warned picks in main behind one-time tokens; acknowledgment never accepts a renderer path.
-const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture }>();
+/** Tokens main handed to one window: each is redeemed once, before it expires, and only by the window it was handed to. */
+const pendingPicks = new Map<string, { path: string; expires: number; gesture: PickGesture; senderId: number }>();
 
 // Native workspace gestures retain their direct-UI boundary; agent folder approval uses its own pipeline.
 function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof validateDirectoryAddition> {
@@ -150,9 +151,8 @@ export interface WorkspaceRemoveRootResult {
 
 /** What removing a project would end or prune (case 31). Each count comes from the store that removal changes, by the same predicate. */
 export interface WorkspaceRemovalCounts {
-  /** Live terminals started in the folder or below it. */
-  liveTerminals: number;
-  /** Conversations with a turn running now; removal aborts them. */
+  /** Conversations with a turn running now that removal aborts, by the same per-loop test. The window's own terminals and
+   * pages that removal closes are counted by the renderer, which closes them. */
   streamingSessions: number;
   /** Saved "always allow" path grants under the folder. Undo does not bring them back. */
   pathGrants: number;
@@ -724,6 +724,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const pending = pendingPicks.get(ackToken);
         if (pending) pendingPicks.delete(ackToken); // consume regardless of validity
         if (!pending) return { ok: false, error: "ack-unknown" };
+        // Another window's token is unknown here.
+        if (pending.senderId !== e.sender.id) return { ok: false, error: "ack-unknown" };
         if (now > pending.expires) return { ok: false, error: "ack-expired" };
         return persistValidatedRoot(pending.path, pending.gesture);
       }
@@ -753,6 +755,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           path: dialogPath,
           expires: now + ACK_TOKEN_TTL_MS,
           gesture: "dialog",
+          senderId: e.sender.id,
         });
         return {
           ok: true,
@@ -870,7 +873,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       const stored = active.find((candidate) => rootKey(candidate) === targetKey);
       if (!stored) return { ok: false, error: "not-an-additional-root" };
       const runtimePath = canonicalizePathForMatch(resolvePath(stored));
-      const options = { preserveRoots: retainedDescendantWorkspaceRoots(runtimePath, active) };
+      // The context the removal itself hands each store and loop.
+      const context = workspaceRootRemovalContext(runtimePath, active);
+      const options = { preserveRoots: context.preserveRoots };
       try {
         const permissionManager = deps.conversationLoop?.permissionManager;
         if (typeof permissionManager?.countPathGrantsUnderRoot !== "function") throw new Error("permission manager unavailable");
@@ -882,15 +887,22 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           if (typeof store?.countSessionsInProject !== "function") throw new Error("session store unavailable");
           detachableSessions += store.countSessionsInProject(runtimePath);
         }
-        const loops = [deps.conversationLoop, deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])];
-        const streamingSessions = loops.filter((loop) => loop?.hasActiveTurn?.() === true).length;
+        // The loops removal revokes, each asked by the test its revocation aborts by. A loop that cannot answer is a contract
+        // violation, not a zero.
+        const loops = [deps.conversationLoop, deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])]
+          .filter((loop) => loop !== undefined && loop !== null) as Array<{ wouldWorkspaceRootRemovalAbortTurn?: unknown }>;
+        let streamingSessions = 0;
+        for (const loop of loops) {
+          if (typeof loop.wouldWorkspaceRootRemovalAbortTurn !== "function") throw new Error("conversation loop cannot preview a workspace root removal");
+          if ((loop.wouldWorkspaceRootRemovalAbortTurn as (root: string, options: typeof context) => boolean)(runtimePath, context)) streamingSessions += 1;
+        }
         const [pathGrants, routines] = await Promise.all([
           permissionManager.countPathGrantsUnderRoot(runtimePath, options),
           deps.routinesStore.countRoutinesScopedToWorkspaceRoot(runtimePath, options),
         ]);
         return {
           ok: true,
-          counts: { liveTerminals: countLiveTerminalsUnderRoot(runtimePath), streamingSessions, pathGrants, routines, detachableSessions },
+          counts: { streamingSessions, pathGrants, routines, detachableSessions },
         };
       } catch (error: unknown) {
         log.warn({ err: error, path: opaqueWorkspaceRootAuditRef(runtimePath) }, "workspace root removal preview failed");
@@ -954,7 +966,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const now = Date.now();
         prunePendingPicks(now);
         undoToken = randomBytes(32).toString("base64url");
-        pendingPicks.set(undoToken, { path: removal.runtimePath, expires: now + ACK_TOKEN_TTL_MS, gesture: "undo" });
+        pendingPicks.set(undoToken, { path: removal.runtimePath, expires: now + ACK_TOKEN_TTL_MS, gesture: "undo", senderId: e.sender.id });
       }
       return {
         ok: true,
@@ -1024,6 +1036,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         path: rawPath,
         expires: now + ACK_TOKEN_TTL_MS,
         gesture: "drop",
+        senderId: e.sender.id,
       });
       return {
         ok: true,

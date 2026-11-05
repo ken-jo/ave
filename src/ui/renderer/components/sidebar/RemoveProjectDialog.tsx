@@ -21,14 +21,13 @@ export function RemoveProjectDialog({ prompt, projectName, onConfirm, onCancel }
   const counts = prompt?.counts;
   const losses = counts && prompt
     ? ([
-        ["liveTerminals", counts.liveTerminals, "sidebar.removeProjectLosesTerminals"],
+        ["closingTerminals", prompt.closingTerminals, "sidebar.removeProjectLosesTerminals"],
         ["streamingSessions", counts.streamingSessions, "sidebar.removeProjectLosesTurns"],
-        ["savedSurfaces", prompt.savedSurfaces, "sidebar.removeProjectLosesSurfaces"],
+        ["closingTabs", prompt.closingTabs, "sidebar.removeProjectLosesSurfaces"],
         ["pathGrants", counts.pathGrants, "sidebar.removeProjectLosesGrants"],
         ["routines", counts.routines, "sidebar.removeProjectLosesRoutines"],
       ] as const).filter(([, count]) => count > 0)
     : [];
-  const notRestored = Boolean(counts && (counts.pathGrants > 0 || counts.routines > 0));
   return (
     <Dialog open={prompt !== null} onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent
@@ -56,7 +55,8 @@ export function RemoveProjectDialog({ prompt, projectName, onConfirm, onCancel }
             <p>{t("sidebar.removeProjectKeepsSessions", { count: counts.detachableSessions })}</p>
           </div>
         ) : null}
-        {notRestored ? <p className="text-xs text-muted-foreground">{t("sidebar.removeProjectUndoLimit")}</p> : null}
+        {/* The dialog opens only when something is lost, and 되돌리기 brings back none of it. */}
+        {prompt ? <p className="text-xs text-muted-foreground" data-testid="remove-project-undo-limit">{t("sidebar.removeProjectUndoLimit")}</p> : null}
         <DialogFooter>
           <Button ref={cancelButton} variant="secondary" onClick={onCancel} data-testid="remove-project-cancel">
             {t("sidebar.removeProjectCancel")}
