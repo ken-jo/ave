@@ -1,6 +1,7 @@
 // i18n fragment for the folder view (Miller columns, file viewer, file info card) and its code preview.
 export const en = {
   "folderView.title": "Folder view",
+  "folderView.newFolderView": "New folder view",
   "folderView.codeFirstLines": "Showing the first {count} lines",
   "folderView.treeLabel": "Project files",
   "folderView.pathLabel": "Folder path",
@@ -85,6 +86,7 @@ export const en = {
 
 export const ko = {
   "folderView.title": "폴더 보기",
+  "folderView.newFolderView": "새 폴더 보기",
   "folderView.codeFirstLines": "처음 {count}줄만 표시",
   "folderView.treeLabel": "프로젝트 파일",
   "folderView.pathLabel": "폴더 경로",
