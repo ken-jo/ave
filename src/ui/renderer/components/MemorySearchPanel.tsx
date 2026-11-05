@@ -9,7 +9,7 @@ import type { MemoryDetailResult, MemoryListSummary } from "../../../shared/memo
 import type { AveApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
-import type { ProjectIdentity } from "../../../shared/project-identity.js";
+import { projectRootEquals, type ProjectIdentity } from "../../../shared/project-identity.js";
 import { formatRelativeTime, type RelativeTimeLabels } from "../../../shared/format-time.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
@@ -280,6 +280,13 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
     });
     if (!opened) setToast({ kind: "message", text: t("memorySaveNotice.askAveToFixBusy") });
   };
+  if (summaries && !summaries.ok) {
+    return (
+      <div className="mx-auto w-full max-w-6xl" data-testid="memory-search-panel">
+        <p role="alert" className="text-xs text-destructive">{t("memorySearchPanel.summaryFailed")}</p>
+      </div>
+    );
+  }
   return (
     <div
       className="@container mx-auto flex min-h-0 min-w-0 flex-1 w-full max-w-6xl flex-col overflow-hidden"
@@ -318,7 +325,6 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             </button>
           </div>
         ) : null}
-        {summaries && !summaries.ok && <p role="alert" className="text-xs text-destructive">{t("memorySearchPanel.summaryFailed")}</p>}
         {summaries?.ok && (summaries.incomplete || summaries.limited) && <p role="status" className="text-xs text-muted-foreground">{t("memorySearchPanel.useIncomplete")}</p>}
         {summaries?.ok && <section className="grid grid-cols-2 gap-2 @[700px]:grid-cols-3" aria-label={t("memorySearchPanel.scopes")}>
           <button type="button" aria-pressed={scope !== "global"} className={`min-w-0 rounded-lg border p-3 text-left ${scope !== "global" ? "border-primary" : ""}`} onClick={() => { setScope(scope === "project" ? "all" : "project"); setSelectedKey(null); }}>
@@ -329,7 +335,7 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             <span className="flex justify-between gap-2 text-xs font-semibold"><span>{t("memorySearchPanel.global")}</span><span>{summaries.scopeCounts.global}</span></span>
             <span className="mt-1 block text-[10px] text-muted-foreground">{t("memorySearchPanel.globalScopeDescription")}</span>
           </button>
-          {defaultProject && defaultProject.projectRoot !== project?.projectRoot && <div className="min-w-0 rounded-lg border p-3 text-left text-muted-foreground">
+          {defaultProject && !projectRootEquals(defaultProject.projectRoot, project?.projectRoot) && <div className="min-w-0 rounded-lg border p-3 text-left text-muted-foreground">
             <span className="flex justify-between gap-2 text-xs font-semibold"><span>{t("memorySearchPanel.defaultProject")}</span><span>{summaries.scopeCounts.defaultProject}</span></span>
             <span className="mt-1 block text-[10px]">{t("memorySearchPanel.defaultScopeDescription")}</span>
             {!summaries.scopeCounts.defaultProjectApplicable && <span className="block text-[10px]">{t("memorySearchPanel.notAppliedHere")}</span>}

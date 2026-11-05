@@ -75,6 +75,31 @@ function panelWithMemories() {
 }
 
 describe("MemorySearchPanel", () => {
+  it.each([
+    ["C:\\workspace\\alpha", "c:/WORKSPACE/ALPHA/"],
+    ["/workspace/alpha", "/workspace/alpha/"],
+    ["\\\\server\\share\\workspace", "//SERVER/SHARE/WORKSPACE/"],
+  ])("omits the duplicate default-project card for equivalent roots %s and %s", async (projectRoot, defaultRoot) => {
+    render(<MemorySearchPanel api={memorySearchPanelApi()} project={{ projectRoot, projectName: "alpha" }} defaultProject={{ projectRoot: defaultRoot, projectName: "default", isDefault: true }} onAskAveToFix={noFix} />);
+    const scopes = await screen.findByRole("region", { name: "기억 범위" });
+    expect(within(scopes).queryByText("기본 프로젝트", { exact: true })).toBeNull();
+    expect(within(scopes).getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("shows only the summary failure instead of claiming the project has no memories", async () => {
+    const api = memorySearchPanelApi();
+    const onStartConversation = vi.fn(async () => true);
+    Object.assign(api, { memoryGetSummaries: vi.fn(async () => ({ ok: false, error: "read-failed" })) });
+    render(<MemorySearchPanel api={api} project={PROJECT} onStartConversation={onStartConversation} onAskAveToFix={noFix} />);
+    const warning = await screen.findByRole("alert");
+    expect(warning.textContent).toBe("기억 목록 요약을 불러오지 못했습니다. 패널을 다시 열어 주세요.");
+    expect(screen.getByTestId("memory-search-panel").textContent).toBe(warning.textContent);
+    expect(screen.queryByRole("button", { name: "새 대화에서 알려 주기" })).toBeNull();
+    expect(screen.queryByText(/아직 저장된 기억이 없습니다/)).toBeNull();
+    expect(onStartConversation).not.toHaveBeenCalled();
+    expect(api.memoryGetDetail).not.toHaveBeenCalled();
+  });
+
   it("opens a new conversation from an empty project and shows global memories beside it", async () => {
     const api = memorySearchPanelApi();
     const note = { id: "global-memory", filename: "global.md", title: "모든 프로젝트의 선호", content: "짧게 답변", updatedAt: OLD };

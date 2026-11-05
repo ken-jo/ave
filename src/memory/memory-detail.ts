@@ -142,7 +142,11 @@ function metadataReader(stores: MemoryConversationStores) {
       if (!reader) continue;
       const key = namespace + "\0" + sessionId;
       if (!cache.has(key)) {
-        try { cache.set(key, { metadata: reader.loadSessionMetadata(sessionId), unavailable: false }); }
+        try {
+          const metadata = reader.loadSessionMetadata(sessionId);
+          if (metadata === null) log.warn({ sessionId, store: namespace, reason: "metadata-unavailable" }, "Recorded conversation metadata is unavailable");
+          cache.set(key, { metadata, unavailable: metadata === null });
+        }
         catch (error) {
           if (!isFilesystemError(error) && !(error instanceof SyntaxError)) throw error;
           logBoundaryFailure(error, "conversation-metadata");

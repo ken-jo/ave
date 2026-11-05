@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { open } from "node:fs/promises";
@@ -25,6 +25,24 @@ function saveMessages(sessionId: string, messages: GenericMessage[]): Promise<vo
 }
 
 describe("memory detail", () => {
+  it.each(["deleted", "missing-metadata", "invalid-metadata"] as const)("marks the list origin unavailable for a %s conversation source", async (state) => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    await saveMessages(sessionId, [{ role: "user", meta: { messageId: "source" }, content: "Remember this fact" }]);
+    await manager.saveSessionMetadata(sessionId, { title: "Source conversation" });
+    const { entry } = await manager.saveMemory("Fact", "Remembered", { origin: { v: 1, sessionId, messageId: "source", store: "main" } }, "user");
+    if (state === "deleted") await manager.deleteSession(sessionId);
+    else if (state === "missing-metadata") unlinkSync(join(dir, "sessions", `${sessionId}.meta.json`));
+    else writeFileSync(join(dir, "sessions", `${sessionId}.meta.json`), "{invalid metadata}");
+    expect(manager.loadSessionMetadata(sessionId)).toBeNull();
+    const transcript = vi.spyOn(manager, "loadSession");
+    const result = await readMemorySummaries(manager, {}, { main: manager }, "/workspace/default");
+    expect(result).toMatchObject({ ok: true, entries: [{ id: entry.id, origin: { status: "unavailable", sessionId, messageId: "source" } }] });
+    expect(transcript).not.toHaveBeenCalled();
+    if (state === "deleted") {
+      expect(await readMemoryDetail(manager, entry.id!, {}, { main: manager })).toMatchObject({ ok: true, origin: { status: "unavailable", sessionId } });
+    }
+  });
+
   it("resolves live source text and exact message identity without counting internal transcript rows", async () => {
     const sessionId = "11111111-1111-4111-8111-111111111111";
     const source: GenericMessage = { role: "user", meta: { messageId: "source" }, content: "Use small changes" };

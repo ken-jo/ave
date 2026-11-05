@@ -1,4 +1,4 @@
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect } from "./fixtures.js";
 
@@ -123,4 +123,36 @@ test("starts a conversation from the empty project memory state", async ({ app, 
   await expect(panel.getByRole("complementary", { name: "Global memories" })).toContainText(TITLE);
   await panel.getByRole("button", { name: "Tell Ave in a new conversation" }).click();
   await expect(panel).not.toBeVisible();
+});
+
+test("shows an unavailable deleted origin consistently in the list and detail", async ({ app, mainWindow, aveHome }) => {
+  unlinkSync(join(aveHome, "sessions", `${SOURCE_SESSION_ID}.jsonl`));
+  unlinkSync(join(aveHome, "sessions", `${SOURCE_SESSION_ID}.meta.json`));
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
+    if (!window) throw new Error("Memory panel window unavailable");
+    window.webContents.send("ave:view:activate", { viewKey: "memory" });
+  });
+  const panel = mainWindow.getByTestId("memory-search-panel");
+  const row = panel.getByRole("tabpanel", { name: /Memories/ }).getByRole("button", { name: TITLE, exact: false });
+  await expect(row).toContainText("The source conversation is unavailable or was deleted.");
+  await row.click();
+  await expect(panel.getByRole("region", { name: "Learned in" })).toContainText("The source conversation is unavailable or was deleted.");
+});
+
+test("shows only a failure when the usage log cannot be read", async ({ app, mainWindow, aveHome }, testInfo) => {
+  const usagePath = join(aveHome, "memories", "usage.jsonl");
+  unlinkSync(usagePath);
+  mkdirSync(usagePath);
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
+    if (!window) throw new Error("Memory panel window unavailable");
+    window.webContents.send("ave:view:activate", { viewKey: "memory" });
+  });
+  const panel = mainWindow.getByTestId("memory-search-panel");
+  const failure = "Could not load memory summaries. Reopen the panel to retry.";
+  await expect(panel.getByRole("alert")).toHaveText(failure);
+  await expect(panel).toHaveText(failure);
+  await expect(panel.getByRole("button", { name: "Tell Ave in a new conversation" })).toHaveCount(0);
+  await mainWindow.screenshot({ path: testInfo.outputPath("memory-summary-failed.png"), animations: "disabled" });
 });
