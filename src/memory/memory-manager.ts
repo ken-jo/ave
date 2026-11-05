@@ -1667,7 +1667,10 @@ export class MemoryManager implements PromptMemorySource {
         throw new Error("updateMemoryById: memory not found");
       }
       const targetScope: MemoryScope = options.scope === "global" ? { type: "global" } : found.metadata.scope;
-      const sameTitle = this.findExistingManagedMemory(input.title, targetScope);
+      // Same-title copies are never folded. An older copy that keeps its title and scope takes nothing from another file,
+      // while the lookup below names only the newest copy, which need not be this one.
+      const keepsTitleAndScope = found.title === input.title && this.memoryScopesEqual(found.metadata.scope, targetScope);
+      const sameTitle = keepsTitleAndScope ? undefined : this.findExistingManagedMemory(input.title, targetScope);
       if (sameTitle && sameTitle.metadata.id.toLowerCase() !== safeId) {
         throw new Error("updateMemoryById: title-conflict");
       }

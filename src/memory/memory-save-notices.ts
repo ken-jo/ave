@@ -23,10 +23,12 @@ export interface MemoryNoticeTarget {
   anchorMessageId?: string;
 }
 
+// `memoryId` names the memory a record belongs to. A file name is reused by the next create of the same title, so only the
+// id tells an earlier memory's records from a new one's.
 type UndoRecord =
-  | { kind: "created"; filename: string; title: string; fileDigest: string }
-  | { kind: "updated"; filename: string; title: string; fileDigest: string; priorContent: string }
-  | { kind: "deleted"; filename: string; title: string; priorContent: string };
+  | { kind: "created"; memoryId: string; filename: string; title: string; fileDigest: string }
+  | { kind: "updated"; memoryId: string; filename: string; title: string; fileDigest: string; priorContent: string }
+  | { kind: "deleted"; memoryId: string; filename: string; title: string; priorContent: string };
 
 type UndoStore = Pick<MemoryManager, "deleteMemoryIfUnchanged" | "restoreMemoryIfUnchanged" | "restoreDeletedMemory">;
 
@@ -46,9 +48,9 @@ export class MemorySaveNotices {
     const { op, entry, fileDigest, priorContent } = result;
     const id = requireId(entry);
     const undoToken = op === "created"
-      ? this.remember({ kind: "created", filename: entry.filename, title: entry.title, fileDigest })
+      ? this.remember({ kind: "created", memoryId: id, filename: entry.filename, title: entry.title, fileDigest })
       : priorContent !== undefined
-        ? this.remember({ kind: "updated", filename: entry.filename, title: entry.title, fileDigest, priorContent })
+        ? this.remember({ kind: "updated", memoryId: id, filename: entry.filename, title: entry.title, fileDigest, priorContent })
         : undefined;
     this.emit(target, { status: "saved", op, entry: noticeEntry(id, entry), ...(undoToken ? { undoToken } : {}) });
     return undoToken;
@@ -56,10 +58,13 @@ export class MemorySaveNotices {
 
   /** A delete landed; the returned token restores it. Legacy notes without an id have nothing to restore. */
   deleted(target: MemoryNoticeTarget | undefined, entry: NoteEntry, priorContent: string | null): string | undefined {
-    // A delete scrubs the memory's history; its earlier undo records (with their old text) go too.
-    this.forget(entry.filename);
-    if (!entry.id || priorContent === null) return undefined;
-    const undoToken = this.remember({ kind: "deleted", filename: entry.filename, title: entry.title, priorContent });
+    // Legacy notes without an id never got an undo record, so there is nothing to forget or restore.
+    if (!entry.id) return undefined;
+    // A delete scrubs the memory's history; its earlier undo records (with their old text) go too. This runs after the
+    // delete's lock is released, so a new create may already hold the same file name; its records carry another id.
+    this.forget(entry.id);
+    if (priorContent === null) return undefined;
+    const undoToken = this.remember({ kind: "deleted", memoryId: entry.id, filename: entry.filename, title: entry.title, priorContent });
     this.emit(target, { status: "saved", op: "deleted", entry: noticeEntry(entry.id, entry), undoToken });
     return undoToken;
   }
@@ -89,13 +94,13 @@ export class MemorySaveNotices {
     }
     if (outcome === "changed") return { ok: false, error: "changed" };
     // Undoing a create deletes the memory, which scrubs its history, so no earlier text is kept for it either.
-    if (record.kind === "created") this.forget(record.filename);
+    if (record.kind === "created") this.forget(record.memoryId);
     return { ok: true, undone: record.kind, title: record.title };
   }
 
-  private forget(filename: string): void {
+  private forget(memoryId: string): void {
     for (const [token, record] of this.records) {
-      if (record.filename === filename) this.records.delete(token);
+      if (record.memoryId === memoryId) this.records.delete(token);
     }
   }
 

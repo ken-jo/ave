@@ -115,6 +115,34 @@ describe("MemorySaveNotices", () => {
     await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "deleted", title: "Reply language" });
   });
 
+  it("keeps a new create's undo when the delete of an earlier memory with the same file name is announced after it", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    // The delete's lock is released before its notice; a create of the same title lands in between and reuses the name.
+    const recreated = await save("Reply language", "Answer in English.");
+    expect(recreated.entry.filename).toBe(created.entry.filename);
+    notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: false, error: "not-found" });
+    await expect(notices.undo(recreated.token!)).resolves.toEqual({ ok: true, undone: "created", title: "Reply language" });
+  });
+
+  it("keeps a new create's undo when it lands while an undone create's delete is finishing", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const realDelete = manager.deleteMemoryIfUnchanged.bind(manager);
+    let recreated: Awaited<ReturnType<typeof save>> | undefined;
+    vi.spyOn(manager, "deleteMemoryIfUnchanged").mockImplementationOnce(async (...args) => {
+      const outcome = await realDelete(...args);
+      // After the delete's lock is released and before the undo resumes, a create of the same title reuses the name.
+      recreated = await save("Reply language", "Answer in English.");
+      return outcome;
+    });
+
+    await expect(notices.undo(created.token!)).resolves.toEqual({ ok: true, undone: "created", title: "Reply language" });
+    expect(recreated!.entry.filename).toBe(created.entry.filename);
+    await expect(notices.undo(recreated!.token!)).resolves.toEqual({ ok: true, undone: "created", title: "Reply language" });
+  });
+
   it("undoes an update that kept its title even when a newer same-title copy appeared since", async () => {
     const created = await save("Release decision", "Ship Monday.");
     const result = await manager.updateMemoryById(created.entry.id!, "Release decision", "Ship Tuesday.", { source: "assistant" }, "assistant");

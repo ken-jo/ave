@@ -239,6 +239,33 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     expect(raw.filter((row) => row.memoryId === first.id).map((row) => row.op)).toEqual(["created"]);
   });
 
+  it("edits an older same-title copy that keeps its title, leaving the newer copy untouched", async () => {
+    const { utimesSync } = await import("node:fs");
+    const { entry: older } = await memoryManager.saveMemory("Release decision", "Old copy.", {}, "user");
+    // A newer file with the same title and scope, as a copy from another device or an older build would leave.
+    const stored = readFileSync(join(dir, "memories", older.filename), "utf-8");
+    const header = /<!-- ave:memory-meta:([A-Za-z0-9_-]+) -->/.exec(stored)!;
+    const metadata = JSON.parse(Buffer.from(header[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    metadata.id = "9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a";
+    const copy = join(dir, "memories", "release-decision-copy.md");
+    writeFileSync(copy,
+      stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")).replace("Old copy.", "Newer copy."), "utf-8");
+    utimesSync(join(dir, "memories", older.filename), new Date(2000, 0, 1), new Date(2000, 0, 1));
+    const copyBefore = readFileSync(copy, "utf-8");
+
+    const { op, entry } = await memoryManager.updateMemoryById(older.id!, "Release decision", "Edited old copy.", { source: "user" }, "user");
+
+    expect(op).toBe("updated");
+    expect(entry).toMatchObject({ id: older.id, filename: older.filename, title: "Release decision" });
+    expect(readFileSync(join(dir, "memories", older.filename), "utf-8")).toContain("Edited old copy.");
+    expect(readFileSync(copy, "utf-8")).toBe(copyBefore);
+    // Moving the older copy to a scope where the title is taken still conflicts.
+    const { entry: project } = await memoryManager.saveMemory("Release decision", "Project copy.", { projectRoot: "C:\\workspace\\alpha" }, "user");
+    await expect(memoryManager.updateMemoryById(project.id!, "Release decision", "Moved.", {
+      projectRoot: "C:\\workspace\\alpha", source: "user", scope: "global",
+    }, "user")).rejects.toThrow(/title-conflict/);
+  });
+
   it("refuses zero-width and bidi characters with the stable unsafe-text reason", async () => {
     for (const ch of ["\u200B", "\u200F", "\u202A", "\u202E", "\u2066", "\u2069", "\uFEFF"]) {
       await expect(memoryManager.saveMemory(`Ti${ch}tle`, "body", {}, "user")).rejects.toThrow(/unsafe-text/);
