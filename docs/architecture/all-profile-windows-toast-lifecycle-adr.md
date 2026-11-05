@@ -29,8 +29,14 @@ notification surface is per-user by design:
   `app.setToastActivatorCLSID(WINDOWS_TOAST_ACTIVATOR_CLSID)` where the CLSID is
   `{62FD3EFB-B3D2-4235-9402-6979F52C0286}`
   (`src/main/early-boot-env.ts`). Unpackaged runs use
-  `ai.agent-connector.ave.dev` and their own CLSID, so a development run never
-  re-points the installed app's activator at a bare `electron.exe`.
+  `ai.agent-connector.ave.dev` and their own CLSID, so on a clean machine a
+  development run never re-points the installed app's activator at a bare
+  `electron.exe`. Electron reuses the CLSID stored in an existing
+  `Programs\Electron.lnk` over the one the app sets, so a machine where an
+  earlier dev run already wrote that shortcut with the product CLSID would keep
+  the hijack. Before setting the dev CLSID, an unpackaged run removes that
+  shortcut only when it carries the product CLSID, and stops with an error when
+  it cannot read or remove it rather than adopting the product CLSID.
 - Electron 43 then materializes two per-user artifacts the first time a
   notification presenter initializes, for EACH Windows user who runs the app:
   1. a Start Menu shortcut in that user's Programs known folder

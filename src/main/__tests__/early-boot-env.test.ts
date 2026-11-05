@@ -1,7 +1,7 @@
 // Chromium resolver overrides bypass the Node DNS checks used by the SSRF guard and must stay disabled.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -27,12 +27,14 @@ const mockedElectron = vi.hoisted(() => ({
     isPackaged: false,
   },
   protocol: { registerSchemesAsPrivileged: vi.fn() },
+  shell: { readShortcutLink: vi.fn((): { toastActivatorClsid?: string } => ({})) },
   ensureWorkspaceCwd: vi.fn(() => "/tmp/ave-workspace"),
 }));
 
 vi.mock("electron", () => ({
   app: mockedElectron.app,
   protocol: mockedElectron.protocol,
+  shell: mockedElectron.shell,
 }));
 vi.mock("../ensure-workspace-cwd.js", () => ({
   ensureWorkspaceCwd: mockedElectron.ensureWorkspaceCwd,
@@ -110,6 +112,48 @@ describe("runEarlyBootEnv", () => {
     } finally { mockedElectron.app.isPackaged = false; }
     expect(mockedElectron.app.setAppUserModelId).toHaveBeenLastCalledWith("ai.agent-connector.ave");
     expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenLastCalledWith("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
+  });
+
+  describe("a dev run's Electron.lnk", () => {
+    const shortcutPath = () => join(userDataPath, "Microsoft", "Windows", "Start Menu", "Programs", "Electron.lnk");
+    const writeShortcut = (clsid: string) => {
+      mkdirSync(join(userDataPath, "Microsoft", "Windows", "Start Menu", "Programs"), { recursive: true });
+      writeFileSync(shortcutPath(), "lnk");
+      mockedElectron.shell.readShortcutLink.mockReturnValue({ toastActivatorClsid: clsid });
+    };
+
+    it("removes a shortcut that carries the installed app's toast activator before the dev CLSID is set", () => {
+      setProcessPlatform("win32");
+      writeShortcut("{62fd3efb-b3d2-4235-9402-6979f52c0286}");
+      mockedElectron.app.setToastActivatorCLSID.mockImplementationOnce(() => {
+        expect(existsSync(shortcutPath())).toBe(false);
+      });
+      runEarlyBootEnv();
+      expect(existsSync(shortcutPath())).toBe(false);
+      expect(mockedElectron.app.setToastActivatorCLSID).toHaveBeenCalledWith("{3A31E029-A551-4866-84E0-3F814EE74B69}");
+    });
+
+    it("keeps a shortcut with any other activator, and never touches it in a packaged run", () => {
+      setProcessPlatform("win32");
+      writeShortcut("{3A31E029-A551-4866-84E0-3F814EE74B69}");
+      runEarlyBootEnv();
+      expect(existsSync(shortcutPath())).toBe(true);
+
+      writeShortcut("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
+      mockedElectron.app.isPackaged = true;
+      try {
+        runEarlyBootEnv();
+      } finally { mockedElectron.app.isPackaged = false; }
+      expect(existsSync(shortcutPath())).toBe(true);
+    });
+
+    it("stops the dev boot when the shortcut cannot be read, rather than adopting its activator", () => {
+      setProcessPlatform("win32");
+      writeShortcut("{62FD3EFB-B3D2-4235-9402-6979F52C0286}");
+      mockedElectron.shell.readShortcutLink.mockImplementationOnce(() => { throw new Error("unreadable"); });
+      expect(() => runEarlyBootEnv()).toThrow(/Electron\.lnk/);
+      expect(mockedElectron.app.setToastActivatorCLSID).not.toHaveBeenCalled();
+    });
   });
 
   it("honors a persisted hardware-acceleration ON over the Windows/Linux default", () => {
