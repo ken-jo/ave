@@ -245,9 +245,13 @@ export async function wireConversation(
     broadcastPermissionConfigChanged: () => broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []),
   };
   const routineEngine = createRoutineEngine({
-    createConversationLoop: (input) => createRoutineConversationLoop(
-      routineLoopDeps,
-      { scope: input.scope }),
+    createConversationLoop: (input) => {
+      let routineLoop!: ConversationLoop;
+      routineLoop = createRoutineConversationLoop(
+        { ...routineLoopDeps, sessionHeldElsewhere: sessionHeldElsewhereFor(() => routineLoop) },
+        { scope: input.scope });
+      return routineLoop;
+    },
     // Resolve inherited routine scope from the live active set at fire time.
     getActivePluginIds: () => pluginRuntime.listPluginIds(),
   });
@@ -289,10 +293,11 @@ export async function wireConversation(
   });
 
   let conversationLoop!: ConversationLoop;
-  // Main and group loops share storage, so held-session checks must inspect every other loop.
+  // Main, group and routine loops share storage, so held-session checks must inspect every other loop. A routine loop holds a chat only
+  // while a connected schedule runs in it.
   const groupLoops = new Map<string, ConversationLoop>();
   const sessionHeldElsewhereFor = (self: () => ConversationLoop) =>
-    sessionHeldByOtherLoop(() => [conversationLoop, ...groupLoops.values()], self);
+    sessionHeldByOtherLoop(() => [conversationLoop, ...groupLoops.values(), ...routineEngine.liveLoops()], self);
   const rationaleBindings = createLoopRationaleBindings({
     service: rationaleHostService,
     permissionManager,

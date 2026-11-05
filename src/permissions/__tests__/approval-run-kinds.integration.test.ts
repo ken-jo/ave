@@ -34,6 +34,7 @@ import { approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surf
 import { PermissionManager } from "../permission-manager.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { PermissionTestResources } from "./test-resources.js";
+import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -383,6 +384,26 @@ describe("production run construction approval ownership", () => {
       default:
         throw new Error(`Production run lacks a real approval scenario: ${path.constructor}:${path.binding}`);
     }
+  });
+
+  it("keeps the unattended routine policy when a connected schedule runs headless in a saved chat", async () => {
+    const f = await setup();
+    const chat = randomUUID();
+    await f.memory.saveSession(chat, [{ role: "user", content: "earlier turn" }]);
+    // The chat was shown in a window before: its old approval owner must not receive the woken turn's card.
+    updateApprovalSurface({ kind: "attach", sessionId: chat, surface: f.owner as unknown as WebContents });
+    f.sessions.add(chat);
+    const loop = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: () => false } as Parameters<typeof createRoutineConversationLoop>[0]);
+    expect(await loop.loadSession(chat)).toBe(true);
+    expect(loop.sessionId).toBe(chat);
+    const result = await turnExtensionPolicyContext.run(Object.freeze({ withholdSessionAuthority: true }), () => f.start(loop));
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toContain(NO_APPROVER_MESSAGE);
+    expect(f.owner.send).not.toHaveBeenCalled();
+    expect(f.foreign.send).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+    const held = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: (id: string) => id === chat } as Parameters<typeof createRoutineConversationLoop>[0]);
+    expect(await held.loadSession(chat)).toBe(false);
   });
 
   it.each([true, false])("uses the explicit parent owner for a background child, registered owner: %s", async (registered) => {

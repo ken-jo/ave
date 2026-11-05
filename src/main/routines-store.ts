@@ -112,7 +112,7 @@ function isValidRecord(r: unknown): r is RoutineRecord {
   if (!isRoutineTrigger(x.trigger) || !isRoutineExecution(x.execution)) return false;
   if (x.lastFiredMinuteUTC !== undefined && typeof x.lastFiredMinuteUTC !== "string") return false;
   if (x.lastFiredAt !== undefined && typeof x.lastFiredAt !== "string") return false;
-  if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing") return false;
+  if (x.lastSkippedReason !== undefined && x.lastSkippedReason !== "plugins-missing" && x.lastSkippedReason !== "chat-busy") return false;
   if (x.lastSkippedMinuteUTC !== undefined && typeof x.lastSkippedMinuteUTC !== "string") return false;
   if (x.needsAttention !== undefined) {
     if (!x.needsAttention || typeof x.needsAttention !== "object" || Array.isArray(x.needsAttention)) return false;
@@ -616,6 +616,17 @@ export class RoutinesStore {
       r.lastFailure = failure;
       const repeat = r.schedule?.repeat;
       if (r.trigger === "schedule" && (!repeat || repeat.kind === "none") && r.dismissedAt === r.lastFiredAt) delete r.dismissedAt;
+      return true;
+    });
+  }
+
+  // The fire at `firedAt` did not run because its connected chat was busy. A one-shot stays listed as skipped instead of done; it is not
+  // fired again by itself. A later fire is left as it is; null when the item is gone.
+  async markChatBusy(id: string, firedAt: string): Promise<RoutineRecord | null> {
+    return this.mutate(id, (r) => {
+      if (r.lastFiredAt !== firedAt) return false;
+      r.lastSkippedReason = "chat-busy";
+      if (isOneShot(r) && r.dismissedAt === r.lastFiredAt) delete r.dismissedAt;
       return true;
     });
   }

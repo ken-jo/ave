@@ -33,6 +33,7 @@ import {
   getPrimaryMainWindow,
   isSecondaryMainWindowContents,
   mainWindowForContents,
+  setRoutineChatWaker,
   setSessionContentsLookup,
 } from "../../main/app-state.js";
 import {
@@ -689,6 +690,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
     return holder ? groupTargetContents(holder.owner) ?? null : null;
+  });
+  // A connected schedule's turn, through the host-submitted path goal revival uses. It runs only in a free tile whose window is still
+  // there; a busy or detached tile is skipped, never queued. The caller's policy context (withheld session authority) carries into the turn.
+  setRoutineChatWaker(async (sessionId, { input, displayText }) => {
+    const holder = groupHolding(sessionId);
+    if (!holder) return { status: "not-open" };
+    if (groupTargetContents(holder.owner) === undefined || holder.surfaceRuntime.activity.isBusy() || holder.loop.hasActiveTurn()) {
+      return { status: "busy" };
+    }
+    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => runStreamedTurn(
+      holder.loop,
+      input,
+      holder.buildSink(holder.turns.allocateStreamId()),
+      // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
+      { inputOrigin: "agent-message", displayText, hostSubmitted: true },
+    ));
+    if (!running) return { status: "busy" };
+    await running;
+    return { status: "ran" };
   });
   // Scope secondary tile ids by window so independently numbered renderers never share loops.
   const scopedGroupKey = (owner: WebContents | null, rendererGroupId: string): string =>

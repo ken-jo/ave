@@ -82,8 +82,8 @@ export interface RoutineRecord {
   scope?: RoutineScope;
   createdAt: string;
   lastFiredAt?: string;
-  /** Latest scheduled occurrence skipped because every named plugin was absent. */
-  lastSkippedReason?: "plugins-missing";
+  /** Latest scheduled occurrence skipped: every named plugin was absent, or the connected chat was busy with another turn. */
+  lastSkippedReason?: "plugins-missing" | "chat-busy";
   /** UTC minute of a skipped cron occurrence; distinct from a completed fire. */
   lastSkippedMinuteUTC?: string;
   /** Installed registry ids are checked independently of runtime load state. */

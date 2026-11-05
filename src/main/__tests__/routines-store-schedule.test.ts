@@ -365,6 +365,24 @@ describe("RoutinesStore — 대화에 연결", () => {
     expect(runs).toEqual([]);
   }));
 
+  it("records a fire its busy chat could not take as skipped, keeps a one-shot visible, and clears on the next fire", withRoutinesStore(async ({ store, dir }) => {
+    const oneShot = await store.add(connected({ schedule: { at: pastIso(-60_000) } }));
+    const fired = await store.markFired(oneShot.id);
+    expect(fired?.dismissedAt).toBeDefined();
+    expect((await store.markChatBusy(oneShot.id, "1999-01-01T00:00:00.000Z"))?.lastSkippedReason).toBeUndefined();
+    const skipped = await store.markChatBusy(oneShot.id, fired!.lastFiredAt!);
+    expect(skipped).toMatchObject({ lastSkippedReason: "chat-busy" });
+    expect(skipped?.dismissedAt).toBeUndefined();
+    const reloaded = new RoutinesStore(join(dir, "routines.json"));
+    await reloaded.load();
+    expect(reloaded.list().find((x) => x.id === oneShot.id)?.lastSkippedReason).toBe("chat-busy");
+    const daily = await store.add(connected({ schedule: { at: pastIso(-3 * HOUR), repeat: { kind: "daily" } } }));
+    const first = await store.markFired(daily.id);
+    await store.markChatBusy(daily.id, first!.lastFiredAt!);
+    await store.edit(daily.id, { schedule: { at: pastIso(-60_000), repeat: { kind: "daily" } } });
+    expect((await store.markFired(daily.id))?.lastSkippedReason).toBeUndefined();
+  }));
+
   it("keeps the chat link and 대화 없음 across a restart", withRoutinesStore(async ({ store, dir }) => {
     const r = await store.add(connected());
     await store.markOrphaned(SESSION);

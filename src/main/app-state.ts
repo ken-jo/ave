@@ -104,6 +104,19 @@ export function setSessionContentsLookup(value: SessionContentsLookup | null): v
   sessionContentsLookup = value;
 }
 
+// How a connected schedule's turn entered its chat. Installed by the chat IPC domain, which owns the chat groups: "not-open" when no chat
+// tile holds the chat, "busy" when its tile is running or holding a turn, and "ran" after the turn finished there. Host-only: the routine
+// wiring is the one caller, and nothing a model or tool sends reaches it.
+export type RoutineChatWakeResult = { status: "not-open" } | { status: "busy" } | { status: "ran" };
+type RoutineChatWaker = (sessionId: string, turn: { input: string; displayText: string }) => Promise<RoutineChatWakeResult>;
+let routineChatWaker: RoutineChatWaker | null = null;
+export function setRoutineChatWaker(value: RoutineChatWaker | null): void {
+  routineChatWaker = value;
+}
+export function wakeRoutineChat(sessionId: string, turn: { input: string; displayText: string }): Promise<RoutineChatWakeResult> {
+  return routineChatWaker ? routineChatWaker(sessionId, turn) : Promise.resolve({ status: "not-open" });
+}
+
 // The live main window renderer whose chat tile shows `sessionId`, or null when no open tile holds it. Prompt callers apply their own routing policy.
 export function findSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
   if (sessionId === undefined) return null;

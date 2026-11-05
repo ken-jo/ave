@@ -32,6 +32,8 @@ export interface Routine {
    * the Promise.race winner while the turn continues running.
    */
   signal?: AbortSignal;
+  /** The chat a connected schedule enters. The loop loads that chat instead of starting a routine conversation. */
+  targetSessionId?: string;
 }
 
 export interface RoutineResult {
@@ -40,6 +42,8 @@ export interface RoutineResult {
   summary: string;
   generatedAt: string;
   sessionId?: string;
+  /** No turn ran: another conversation holds the connected chat. */
+  skipped?: "chat-busy";
 }
 
 export interface RoutineEngineDeps {
@@ -88,6 +92,11 @@ export class RoutineEngine {
   private workspaceRootPolicySequence = 0;
 
   constructor(private readonly deps: RoutineEngineDeps) {}
+
+  /** The loops running a routine now. The host counts their sessions as held, so no other loop opens a connected chat mid-run. */
+  liveLoops(): Iterable<ConversationLoop> {
+    return this.activeLoops;
+  }
 
   private workspaceRootKey(root: string): string | null {
     try {
@@ -242,7 +251,10 @@ export class RoutineEngine {
     const loop = this.deps.createConversationLoop(normalizedInput);
     this.activeLoops.add(loop);
     try {
-      const sessionId = await loop.startRoutineConversation(
+      if (input.targetSessionId !== undefined && !(await loop.loadSession(input.targetSessionId))) {
+        return { routineId: input.id, trigger: input.trigger, summary: "", generatedAt, skipped: "chat-busy" };
+      }
+      const sessionId = input.targetSessionId ?? await loop.startRoutineConversation(
         input.id,
         input.title ?? input.id,
         input.firedAt ?? generatedAt,
