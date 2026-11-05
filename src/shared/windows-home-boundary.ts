@@ -366,6 +366,7 @@ public static class HomeDirectoryDacl {
               if ((Attributes(source) & 0x410) != 0) { diagnostics.Add("Legacy configuration is a link or non-regular file: " + oldPath); continue; }
               string hash;
               using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read)) {
+                if (input.Length == 0) continue;
                 using (var digest = System.Security.Cryptography.SHA256.Create()) hash = Convert.ToBase64String(digest.ComputeHash(input));
                 string quote = ((char)34).ToString();
                 var recorded = System.Text.RegularExpressions.Regex.Match(manifest, quote + System.Text.RegularExpressions.Regex.Escape(name) + quote + "\\\\s*:\\\\s*" + quote + "([A-Za-z0-9+/=]+)" + quote);

@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -297,6 +297,41 @@ describe("protected home configuration", () => {
     expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("requires recovery");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
     expect(existsSync(join(dir, "policy.json"))).toBe(true);
+  });
+
+  it("treats zero-byte root placeholders as absent and leaves them in place", () => {
+    const dir = fixture();
+    const names = ["settings.json", "policy.json", "ave-secrets.json"];
+    for (const name of names) writeFileSync(join(dir, name), "");
+    expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
+    expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
+    // Placeholders are not legacy content, so the home starts fresh rather than pending review.
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "fresh", entries: {} });
+    for (const name of names) expect(statSync(join(dir, name)).size).toBe(0);
+    expect(readdirSync(dir).filter((name) => name.includes(".post-migration-"))).toEqual([]);
+  });
+
+  it("leaves a zero-byte placeholder that appears after commit in place, on every boot", () => {
+    const dir = fixture();
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    writeFileSync(join(dir, "policy.json"), "");
+    for (let boot = 0; boot < 2; boot += 1) {
+      _resetAveHomePrivacyForTest();
+      expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
+    }
+    expect(statSync(join(dir, "policy.json")).size).toBe(0);
+    expect(readdirSync(dir).filter((name) => name.includes(".post-migration-"))).toEqual([]);
+  });
+
+  it("still treats a one-byte root file as legacy content and moves it aside", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "policy.json"), "\n");
+    const diagnostics = migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir));
+    expect(readFileSync(asideOf(diagnostics, dir, "policy.json"), "utf8")).toBe("\n");
+    expect(existsSync(join(dir, "policy.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toMatchObject({ state: "bootstrapped:false" });
   });
 
   it("writes a migration marker for a fresh home with no root files", () => {
