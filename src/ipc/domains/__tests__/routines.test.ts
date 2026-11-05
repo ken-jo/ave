@@ -427,6 +427,6 @@ describe("대화에 연결 IPC", () => {
     store.list = vi.fn(() => [{ id: "routine-c", trigger: "schedule", execution: "llm-session", createdAt: "x", targetSessionId: CHAT, lastFiredAt: "2026-11-03T00:00:00.000Z" }]);
     store.listForDisplay = vi.fn(() => ({ routines: [], invalid: [] }));
     const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
-    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }] });
+    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }], running: [] });
   });
 });
