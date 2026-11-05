@@ -3,6 +3,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AveApi, AppSettings } from "../../types.js";
 import { useSidebarState } from "../use-sidebar-state.js";
+import { sidebarPushThreshold } from "../../../../shared/shell-geometry.js";
+import { SIDEBAR_DEFAULT_WIDTH } from "../../../../shared/side-panel.js";
+
+/** Mirror App's verdict for the default list width: narrow while the list cannot be pushed beside readable content. */
+const narrowAt = (width: number) => width < sidebarPushThreshold(SIDEBAR_DEFAULT_WIDTH);
 
 function makeApi(sidebarState?: unknown) {
   const updateSettings = vi.fn(async (_patch: unknown) => ({} as AppSettings));
@@ -13,7 +18,7 @@ function makeApi(sidebarState?: unknown) {
 describe("useSidebarState", () => {
   it("uses hidden at the minimum width and expanded above it without writing a default", async () => {
     const { api, getSettings, updateSettings } = makeApi();
-    const { result, rerender } = renderHook(({ width }) => useSidebarState(api, width), { initialProps: { width: 360 } });
+    const { result, rerender } = renderHook(({ width }) => useSidebarState(api, width, narrowAt(width)), { initialProps: { width: 360 } });
     expect(result.current.sidebarState).toBe("hidden");
     await act(async () => { await getSettings.mock.results[0]?.value; });
     rerender({ width: 900 });
@@ -23,9 +28,27 @@ describe("useSidebarState", () => {
     expect(updateSettings).not.toHaveBeenCalled();
   });
 
+  it("folds an unchosen sidebar to the rail while the list cannot be pushed beside the content, instead of laying it over the content", async () => {
+    const { api, getSettings, updateSettings } = makeApi();
+    const { result, rerender } = renderHook(({ width, narrow }) => useSidebarState(api, width, narrow), { initialProps: { width: 460, narrow: true } });
+    await act(async () => { await getSettings.mock.results[0]?.value; });
+    expect(result.current.sidebarState).toBe("rail");
+    rerender({ width: 900, narrow: false });
+    expect(result.current.sidebarState).toBe("expanded");
+    rerender({ width: 360, narrow: true });
+    expect(result.current.sidebarState).toBe("hidden");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit expanded choice in a narrow window, where it overlays (case 28)", async () => {
+    const { api } = makeApi("expanded");
+    const { result } = renderHook(() => useSidebarState(api, 460, true));
+    await waitFor(() => expect(result.current.sidebarState).toBe("expanded"));
+  });
+
   it.each(["expanded", "rail", "hidden"] as const)("restores %s at every width without persisting the hydration", async (sidebarState) => {
     const { api, updateSettings } = makeApi(sidebarState);
-    const { result, rerender } = renderHook(({ width }) => useSidebarState(api, width), { initialProps: { width: 360 } });
+    const { result, rerender } = renderHook(({ width }) => useSidebarState(api, width, narrowAt(width)), { initialProps: { width: 360 } });
     await waitFor(() => expect(result.current.sidebarState).toBe(sidebarState));
     rerender({ width: 1243 });
     expect(result.current.sidebarState).toBe(sidebarState);
@@ -40,7 +63,7 @@ describe("useSidebarState", () => {
       saved = (patch as { system: { sidebarState: unknown } }).system.sidebarState;
       return {} as AppSettings;
     });
-    const view = renderHook(({ width }) => useSidebarState(api, width), { initialProps: { width: 360 } });
+    const view = renderHook(({ width }) => useSidebarState(api, width, narrowAt(width)), { initialProps: { width: 360 } });
     await act(async () => { await getSettings.mock.results[0]?.value; });
     for (const choice of ["expanded", "rail", "hidden"] as const) {
       act(() => view.result.current.setSidebarState(choice));
@@ -52,7 +75,7 @@ describe("useSidebarState", () => {
     view.rerender({ width: 1243 });
     expect(view.result.current.sidebarState).toBe("hidden");
     view.unmount();
-    const reloaded = renderHook(() => useSidebarState(api, 1243));
+    const reloaded = renderHook(() => useSidebarState(api, 1243, narrowAt(1243)));
     await waitFor(() => expect(reloaded.result.current.sidebarState).toBe("hidden"));
     expect(updateSettings).toHaveBeenCalledTimes(3);
   });
@@ -61,7 +84,7 @@ describe("useSidebarState", () => {
     let resolveSettings!: (settings: AppSettings) => void;
     const { api, getSettings, updateSettings } = makeApi();
     getSettings.mockImplementation(() => new Promise<AppSettings>((resolve) => { resolveSettings = resolve; }));
-    const { result } = renderHook(() => useSidebarState(api, 360));
+    const { result } = renderHook(() => useSidebarState(api, 360, narrowAt(360)));
     act(() => result.current.setSidebarState("rail"));
     await act(async () => { resolveSettings({ system: { sidebarState: "expanded" } } as AppSettings); });
     expect(result.current.sidebarState).toBe("rail");
@@ -70,7 +93,7 @@ describe("useSidebarState", () => {
 
   it("ignores an invalid stored choice", async () => {
     const { api, getSettings, updateSettings } = makeApi("invalid");
-    const { result } = renderHook(() => useSidebarState(api, 360));
+    const { result } = renderHook(() => useSidebarState(api, 360, narrowAt(360)));
     await act(async () => { await getSettings.mock.results[0]?.value; });
     expect(result.current.sidebarState).toBe("hidden");
     expect(updateSettings).not.toHaveBeenCalled();
@@ -80,7 +103,7 @@ describe("useSidebarState", () => {
     const { api, getSettings, updateSettings } = makeApi();
     getSettings.mockRejectedValue(new Error("Settings unavailable"));
     updateSettings.mockRejectedValue(new Error("Settings unavailable"));
-    const { result } = renderHook(() => useSidebarState(api, 360));
+    const { result } = renderHook(() => useSidebarState(api, 360, narrowAt(360)));
     await act(async () => { await Promise.resolve(); });
     await act(async () => { result.current.setSidebarState("rail"); });
     expect(result.current.sidebarState).toBe("rail");

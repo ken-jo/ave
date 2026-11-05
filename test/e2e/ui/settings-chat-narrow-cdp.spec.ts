@@ -297,8 +297,12 @@ test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ 
 
   await setWindowSize(app, 400, 820);
   const sidebarToggle = mainWindow.getByTestId("sidebar-collapse-toggle");
-  if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
-  await expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+  // An unchosen sidebar folds to the rail once the 400px width is measured, so one early read can see it still expanded and
+  // the click would then unfold it again; fold it until the rail holds instead of deciding from a single read.
+  await expect.poll(async () => {
+    if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
+    return sidebarToggle.getAttribute("aria-pressed");
+  }).toBe("false");
   await activateSettingsWithoutResize(app, 'llm');
   await expect(mainWindow.getByTestId(TEST_IDS.viewPathBack)).toBeEnabled();
 
@@ -403,12 +407,11 @@ test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ 
     }
 
     if (await mainWindow.getByTestId(execModeTestId("auto")).count()) {
+      // The interactive auto-approve select was retired with the duplicate deciders (4c7837113); auto mode now
+      // explains how the reviewer decides, and that explanation must stay inside the narrow tab.
       await mainWindow.getByTestId(execModeTestId("auto")).click();
-      const autoApprove = mainWindow.getByTestId('interactive-auto-approve-control');
-      await expect(autoApprove).toBeVisible();
-      await expectNoHorizontalOverflow(mainWindow, `${label}: auto-verify`);
-      await expect(autoApprove.evaluate((element) => getComputedStyle(element).flexDirection)).resolves.toBe('column');
-      await expect(autoApprove.getByTestId('interactive-auto-approve-select')).toHaveCSS('width', /px/);
+      await expect(mainWindow.getByTestId('auto-review-behavior')).toBeVisible();
+      await expectNoHorizontalOverflow(mainWindow, `${label}: auto mode`);
     }
 
     await back.click();

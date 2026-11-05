@@ -66,7 +66,7 @@ describe("App sidebar overlay", () => {
   });
 
   it("lets an open dialog own Escape while the sidebar remains expanded", async () => {
-    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500, settings: { system: { sidebarState: "expanded" } } });
     const { aside } = await mountShell(view.container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     const dialog = document.createElement("div");
@@ -84,14 +84,21 @@ describe("App sidebar overlay", () => {
     }
   });
 
+  it("starts folded to the rail on a narrow shell nobody chose a state for, so nothing covers the content", async () => {
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { aside, main, band } = await mountShell(container);
+    // The shell's width is measured after the first paint; once it is, the list folds.
+    await waitFor(() => expect(currentToggle(container).getAttribute("aria-pressed")).toBe("false"));
+    expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
+    expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
+    expectCollapsedGeometry(main, band);
+  });
+
   it("expanding the sidebar on a narrow shell floats the card over the tile", async () => {
     const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
-    const { toggle, aside, main, band } = await mountShell(container);
-    await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expectCollapsedGeometry(main, band);
-    await act(async () => { fireEvent.click(toggle); });
+    const { aside, main, band } = await mountShell(container);
     expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
+    expectCollapsedGeometry(main, band);
     await act(async () => { fireEvent.click(currentToggle(container)); });
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     expect(main.getAttribute("data-sidebar-overlay")).toBe("true");
@@ -103,7 +110,7 @@ describe("App sidebar overlay", () => {
   });
 
   it("Escape collapses the narrow overlay and hands focus back to the toggle", async () => {
-    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500, settings: { system: { sidebarState: "expanded" } } });
     const { aside, main, band } = await mountShell(container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });
@@ -117,7 +124,7 @@ describe("App sidebar overlay", () => {
   });
 
   it("a pointer down beside the overlay collapses it; one inside the card keeps it open", async () => {
-    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500, settings: { system: { sidebarState: "expanded" } } });
     const { aside, main } = await mountShell(container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
@@ -143,7 +150,7 @@ describe("App sidebar overlay", () => {
   });
 
   it("resizing an expanded sidebar uses a dead band without changing its expanded choice", async () => {
-    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
+    const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500, settings: { system: { sidebarState: "expanded" } } });
     const { toggle, aside, main, band } = await mountShell(view.container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     const threshold = COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH + 320;

@@ -3,8 +3,12 @@ import type { AveApi } from "../types.js";
 import { isSidebarState, type SidebarState } from "../../../shared/sidebar-state.js";
 import { MAIN_WINDOW_MIN_WIDTH } from "../../../shared/shell-geometry.js";
 
-/** Persist explicit visibility choices while leaving an unchosen sidebar responsive to the window width. */
-export function useSidebarState(api: AveApi, shellWidth: number) {
+/**
+ * Persist explicit visibility choices while leaving an unchosen sidebar responsive to the window width. `narrow` is true while
+ * the list cannot be pushed beside readable content: an unchosen sidebar then folds to the rail rather than opening as an
+ * overlay over content nobody asked to cover. An explicit "expanded" still overlays there (case 28).
+ */
+export function useSidebarState(api: AveApi, shellWidth: number, narrow: boolean) {
   const [chosenState, setChosenState] = useState<SidebarState>();
   const chosenStateRef = useRef<SidebarState | undefined>(undefined);
   const selectedRef = useRef(false);
@@ -33,6 +37,6 @@ export function useSidebarState(api: AveApi, shellWidth: number) {
     });
   }, [api]);
 
-  const sidebarState = chosenState ?? (shellWidth <= MAIN_WINDOW_MIN_WIDTH ? "hidden" : "expanded");
+  const sidebarState = chosenState ?? (shellWidth <= MAIN_WINDOW_MIN_WIDTH ? "hidden" : narrow ? "rail" : "expanded");
   return { sidebarState, setSidebarState };
 }

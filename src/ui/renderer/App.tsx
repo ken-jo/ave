@@ -215,7 +215,7 @@ export function App() {
   const { isNarrow: sidebarNarrow, width: shellWidth } = useContainerNarrow(shellElement, {
     enter: pushThreshold, exit: pushThreshold + NARROW_DEAD_BAND_PX,
   });
-  const { sidebarState, setSidebarState } = useSidebarState(api, shellWidth);
+  const { sidebarState, setSidebarState } = useSidebarState(api, shellWidth, sidebarNarrow);
   const sidebarCollapsed = sidebarState === "rail";
   const sidebarHidden = sidebarState === "hidden";
   const sidebarOverlay = sidebarNarrow && sidebarState === "expanded";

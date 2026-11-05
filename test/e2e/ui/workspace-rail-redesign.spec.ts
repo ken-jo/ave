@@ -94,9 +94,11 @@ test.describe("workspace rail redesign", () => {
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
-    // Wait for reserve-width animation before measuring.
+    // Wait for the shell to settle before measuring: the rail toggle starts a padding transition on the main column, and the
+    // reserve's own width transition chases the tile it measures, so mid-transition the reserve can trail the shrinking root.
     await expect.poll(() => motion.evaluate((element) =>
-      Math.round(element.getBoundingClientRect().width) === Math.round(Number.parseFloat((element as HTMLElement).style.width)))).toBe(true);
+      document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running")
+      && Math.round(element.getBoundingClientRect().width) === Math.round(Number.parseFloat((element as HTMLElement).style.width)))).toBe(true);
     // Floating panels leave the transcript column at full width.
     const composer = await page.getByTestId(TEST_IDS.composerTextarea).boundingBox();
     const root = await page.getByTestId(TEST_IDS.chatViewRoot).boundingBox();

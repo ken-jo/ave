@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { ElectronApplication } from "playwright";
+import { openInlineSettings } from "./inline-settings.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,12 +21,25 @@ test("missing-plugin routines retain their status and can be removed", async ({}
     { id: "partial", title: "Partial summary", trigger: "schedule", execution: "llm-session", createdAt: now,
       schedule: { at: now }, lastFiredAt: now, needsAttention: { missingPluginIds: ["other-plugin"] } },
   ] }));
-  let app: ElectronApplication | undefined;
-  try {
-    app = await launchElectron({
+  const launch = () => launchElectron({
     args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
     env: Object.fromEntries(Object.entries(buildIsolatedElectronEnv({ AVE_HOME: aveHome, AVE_DEV: "1", AVE_E2E: "1", AVE_MAIN_ENTRY: MAIN_ENTRY, NODE_ENV: "test", ELECTRON_DISABLE_SECURITY_WARNINGS: "1" })).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   });
+  let app: ElectronApplication | undefined;
+  try {
+    // routines.json was written outside Ave, so home trust holds it back until it is reviewed: the store does not load it.
+    // Approve it the way a user does, in Settings > Permissions, then restart for the store to read it.
+    app = await launch();
+    const reviewPage = await app.firstWindow();
+    await reviewPage.getByTestId("main-toolbar").first().waitFor({ timeout: 60_000 });
+    const settings = await openInlineSettings(app, reviewPage, "permissions");
+    const pendingRoutines = settings.getByTestId("home-trust-row").filter({ hasText: "routine/routines.json" });
+    await pendingRoutines.getByTestId("home-trust-approve").click();
+    await expect(pendingRoutines).toHaveCount(0);
+    await app.close();
+    app = undefined;
+
+    app = await launch();
     const page = await app.firstWindow();
     await page.getByTestId("main-toolbar").first().waitFor({ timeout: 60_000 });
     await page.getByTestId("sidebar-routines").click();
