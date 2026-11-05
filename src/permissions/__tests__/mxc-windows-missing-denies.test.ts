@@ -168,6 +168,25 @@ describe("pattern denies", () => {
     expect(rankMxcFilesystem(policy([`${sessions}/**/id_rsa`]), vanishing, listOnce).denied).toEqual([]);
   });
 
+  it("holds the default layout: a writable workspace beside the read-only sessions root under one home", () => {
+    const aveHome = win32.join(home, ".ave");
+    const workspace = win32.join(aveHome, "workspace");
+    const directories: Record<string, MxcDirectoryEntry[]> = {
+      [aveHome]: [entry("workspace", "directory"), entry("sessions", "directory"), entry("config", "directory")],
+      [workspace]: [],
+      [sessions]: [entry("a", "directory")],
+      [win32.join(sessions, "a")]: [entry("note.txt"), entry(".ssh", "directory")],
+      [win32.join(sessions, "a", ".ssh")]: [],
+    };
+    const grants = rankMxcFilesystem({
+      allowWrite: [workspace], allowRead: [workspace, sessions], denyRead: sessionPatterns, denyWrite: [],
+      protectedFloor: [`${sessions}\\`, `${win32.join(aveHome, "config")}\\`], floorPierces: [sessions],
+    }, existsIn(directories), lister(directories));
+    expect(grants.readwrite).toEqual([workspace]);
+    expect(grants.readonly).toEqual([sessions]);
+    expect(grants.denied).toEqual([win32.join(sessions, "a", ".ssh")]);
+  });
+
   it("expands an unanchored pattern over every read-only grant, and refuses it beside a writable grant", () => {
     const other = win32.join(home, "notes");
     const directories = { ...tree, [other]: [entry("id_rsa")] };
