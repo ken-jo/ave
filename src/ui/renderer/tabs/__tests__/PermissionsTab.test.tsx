@@ -1160,7 +1160,9 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
     const toggle = screen.getByTestId("worker-confinement-toggle");
     expect(toggle).toBeDisabled();
-    expect(toggle.parentElement).toHaveTextContent(t("permissionsTab.osSandboxEnabled"));
+    expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent(
+      t("permissionsTab.workerConfinementEnvForced", { envVar: "AVE_PLUGIN_WORKER_CONFINEMENT" }),
+    );
   });
 
   it("renders platform and runtime status without a restart action when unchanged", async () => {
@@ -1353,7 +1355,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     const block = screen.getByTestId("os-sandbox-windows-substrate");
     expect(block.dataset.shells).toBe("mxc");
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-shells-limits").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxcLimits"));
     expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(t("permissionsTab.osSandboxCapabilityWindows"));
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();

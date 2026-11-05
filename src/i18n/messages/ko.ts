@@ -116,7 +116,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "documentEngine.description": "읽기 전용 미리보기에서 문서 페이지를 렌더링하고 수식을 다시 계산합니다. 설치하지 않아도 기존 뷰어를 사용할 수 있습니다.",
   "documentEngine.size": "버전 {version} · 다운로드 {download} MiB · 디스크 약 {installed} MiB",
   "documentEngine.localOnly": "문서는 이 컴퓨터에서만 처리합니다. 엔진은 별도 복사본을 읽으며 원본 문서에 변경 사항을 저장할 수 없습니다.",
-  "documentEngine.hwpRuntime": "HWP/HWPX 읽기에는 호환되는 Java 런타임도 필요하며, macOS에서는 아직 지원하지 않습니다. 아래 링크에서 가져오기 확장의 소스와 GPL-3.0 라이선스를 확인할 수 있습니다.",
+  "documentEngine.hwpRuntime": "HWP/HWPX는 Java 런타임도 필요하며 macOS는 아직 지원하지 않습니다. 소스와 GPL-3.0 라이선스는 아래 링크에 있습니다.",
   "documentEngine.importerSource": "H2Orestart 소스",
   "documentEngine.importerLicense": "GPL-3.0 라이선스",
   "documentEngine.sourceOpenFailed": "소스 또는 라이선스 페이지를 열지 못했습니다.",
@@ -184,7 +184,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "compactionSettings.title": "대화 압축",
   "compactionSettings.model": "압축 모델",
   "compactionSettings.currentModel": "현재 채팅 모델",
-  "compactionSettings.description": "비워 두면 현재 채팅 모델을 사용합니다. 다른 모델 ID를 입력하면 수동·자동 압축에 이 공급자, 엔드포인트와 인증 정보를 사용합니다. 공급자 경로를 바꾸면 해당 경로에 모델을 저장할 때까지 현재 채팅 모델을 사용합니다. /compact 뒤에 보존할 내용에 대한 지침을 입력할 수 있습니다.",
+  "compactionSettings.description": "비워 두면 현재 채팅 모델을, 다른 모델 ID를 넣으면 이 공급자로 압축합니다. /compact 뒤에 지침을 적어 보존할 내용을 정할 수 있습니다.",
   "compactionSettings.unavailable": "이 실행 환경은 현재 채팅 모델로 압축하며 별도 압축 모델을 지원하지 않습니다.",
   "compactionSettings.saveFailed": "압축 모델을 저장하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도하세요.",
   "documentSettings.title": "문서 열기",
@@ -234,7 +234,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "permissionJudge.off": "사용자 지정 평가기 없음",
   "permissionJudge.shadow": "평가 결과 관찰 · 기본 리뷰 유지",
   "permissionJudge.active": "자동 리뷰에 평가 결과 적용",
-  "permissionJudge.modeHelp": "관찰은 사용자 지정 결과를 기록하며 실제 판단은 기존 자동 리뷰가 계속합니다. 결과 적용은 auto에서 리뷰가 필요한 요청에만 적용됩니다. HIGH이면 모델에게 선택지를 주고 오류이면 일반 승인 카드를 표시합니다. 평가기를 제거해도 기본 리뷰는 유지됩니다. 리뷰를 끄거나 리뷰어 설정이 잘못된 경우 리뷰를 사용할 수 없어 카드로 확인합니다.",
+  "permissionJudge.modeHelp": "관찰은 결과만 기록하고 판단은 기본 리뷰가 합니다. 적용은 auto에서 리뷰가 필요한 요청에 결과를 쓰고, 오류면 승인 카드를 띄웁니다.",
   "permissionJudge.categories": "도구 범주",
   "permissionJudge.shell": "셸",
   "permissionJudge.write": "쓰기",
@@ -465,8 +465,7 @@ export const ko: Record<SeedMessageKey, string> = {
     "Ave 가 화면을 그릴 때 그래픽 카드를 사용할지 설정합니다.",
   "startupTab.hardwareAccelerationLabel":
     "하드웨어 가속 사용",
-  "startupTab.hardwareAccelerationHelp":
-    "다음 실행부터 적용됩니다. 창이 검게 나오거나 깜빡이거나 화면을 그리다 앱이 죽는다면 끄세요 — 일부 사내 관리 PC 와 가상 데스크톱의 그래픽 드라이버는 이 기능을 감당하지 못합니다. 그래서 Windows 와 Linux 에서는 기본값이 꺼짐입니다.",
+  "startupTab.hardwareAccelerationHelp": "다음 실행부터 적용됩니다. 창이 검게 나오거나 깜빡이거나 앱이 죽으면 끄세요. Windows·Linux에서는 기본으로 꺼져 있습니다.",
   "startupTab.hardwareAccelerationEnvForced":
     "환경 변수 {envVar} 가 여기에 저장된 값과 관계없이 이 항목을 켜고 있습니다.",
   "startupTab.corpCaSectionTitle":
@@ -475,14 +474,12 @@ export const ko: Record<SeedMessageKey, string> = {
     "회사에서 발급한 루트 인증서로 TLS 트래픽을 검사하는 네트워크를 위한 설정입니다.",
   "startupTab.corpCaEnabledLabel":
     "회사 루트 인증서 신뢰",
-  "startupTab.corpCaEnabledHelp":
-    "다음 실행부터 적용됩니다. 웹 페이지는 운영체제가 신뢰하는 인증서를 그대로 따르지만, 모델 호출·마켓플레이스 요청·업데이트 확인은 별도로 검증하기 때문에 따르지 않습니다. TLS 트래픽을 검사하는 네트워크에서는 페이지는 잘 열리는데 이쪽만 인증서 오류로 실패하며, 이 설정이 그 문제를 해결합니다. 잘 모르겠으면 켜 두세요 — 해당 인증서가 없는 PC 에서는 아무것도 찾지 못하고 아무것도 바뀌지 않습니다.",
+  "startupTab.corpCaEnabledHelp": "다음 실행부터 적용됩니다. TLS를 검사하는 네트워크에서 모델 호출·마켓플레이스·업데이트의 인증서 오류를 해결합니다. 해당 인증서가 없으면 아무것도 바뀌지 않습니다.",
   "startupTab.corpCaEnabledEnvForced":
     "환경 변수 {envVar} 가 여기에 저장된 값과 관계없이 이 항목을 끄고 있습니다.",
   "startupTab.corpCaCommonNameLabel":
     "인증서 이름",
-  "startupTab.corpCaCommonNameHelp":
-    "시스템 인증서 저장소에 등록된 회사 루트 인증서의 일반 이름(CN)입니다. 아래 기본값은 예시일 뿐이니, 인증서 오류가 계속되면 사내 IT 담당자에게 실제 이름을 확인하세요. 이름의 일부만 적어도 찾습니다.",
+  "startupTab.corpCaCommonNameHelp": "회사 루트 인증서의 일반 이름(CN). 일부만 적어도 찾으며, 정확한 이름은 IT 담당자에게 확인하세요.",
   "startupTab.corpCaCommonNameEnvForced":
     "환경 변수 {envVar} 가 여기에 저장된 값 대신 이 이름을 지정하고 있습니다.",
   "startupTab.corpCaDebugLabel":
@@ -501,8 +498,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "startupTab.launchRegisterFailedTitle": "시작 시 자동 실행을 적용하지 못했습니다",
   "startupTab.shutdownTimeoutLabel":
     "종료 시 정리에 허용할 시간",
-  "startupTab.shutdownTimeoutHelp":
-    "종료하면 Ave 는 루틴, 익스텐션, 백그라운드 프로세스를 정지하고 창 배치를 저장한 뒤 닫힙니다. 이 시간 안에 끝나지 않으면 그대로 닫히며, 아직 기록 중이던 내용은 버려집니다. 종료가 오래 걸리는 익스텐션이 있으면 늘리고, 종료가 느리게 느껴지면 줄이세요.",
+  "startupTab.shutdownTimeoutHelp": "종료할 때 익스텐션과 백그라운드 작업을 기다리는 시간. 넘기면 그대로 닫히며 기록 중이던 내용은 버려집니다.",
   "startupTab.shutdownTimeoutEnvForced":
     "지금은 환경 변수 {envVar} 가 이 값을 지정하고 있어, 여기에 저장된 값 대신 사용됩니다.",
   "startupTab.shutdownTimeoutSeconds": "{seconds}초",
