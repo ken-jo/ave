@@ -227,7 +227,7 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   })];
 }
 
-// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no sensitive-path or proof blocker is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
+// `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no sensitive-path or proof blocker is present. `exactAllowOnly` (literal-evaluation commands) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
   subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
