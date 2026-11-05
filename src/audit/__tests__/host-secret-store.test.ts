@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createNodeSecretEncryption } from "../../data/node-secret-encryption.js";
 import { ensureTailnetPairedShareActorSecret } from "../../main/tailnet-paired-share-authorizer.js";
+import { ELECTRON_DECRYPT_FAILED_MESSAGE } from "../hmac-chain.js";
 import { createHostSecretStore } from "../host-secret-store.js";
 
 let root: string;
@@ -68,7 +69,7 @@ describe("host authority secret store", () => {
       getSelectedStorageBackend: () => "gnome_libsecret" as const,
       encryptStringAsync: async (value: string) => Buffer.from(`sealed:${value}`),
       decryptStringAsync: async (value: Buffer) => {
-        if (unavailableCiphertext) throw new Error("decryption unavailable");
+        if (unavailableCiphertext) throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
         return { shouldReEncrypt: false, result: value.toString("utf8").slice("sealed:".length) };
       },
     };

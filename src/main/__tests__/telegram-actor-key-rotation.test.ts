@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ELECTRON_DECRYPT_FAILED_MESSAGE,
   SafeStorageSecretStore,
   type SafeStorageLike,
   type SecretStore,
@@ -42,7 +43,7 @@ async function encryptedSecrets(): Promise<{ readonly store: SecretStore; breakD
     isAsyncEncryptionAvailable: async () => true,
     encryptStringAsync: async (value: string) => Buffer.from(`enc:${value}`, "utf8"),
     decryptStringAsync: async (value: Buffer) => {
-      if (state.broken) throw new Error("safeStorage could not decrypt this ciphertext");
+      if (state.broken) throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
       return { shouldReEncrypt: false, result: value.toString("utf8").replace(/^enc:/, "") };
     },
   };

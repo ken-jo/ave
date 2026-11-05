@@ -225,6 +225,22 @@ describe("/model", () => {
     expect(offline.deps.modelOverride).toBeUndefined();
   });
 
+  it("checks a Codex model against the provider a rebuild in flight is about to install", async () => {
+    const loop = await codexLoop(async () => []);
+    (loop as { provider: LLMProvider | null }).provider = null;
+    (loop.deps as { subscriptionProviderFactory?: (selection: ActiveChatRuntime) => LLMProvider }).subscriptionProviderFactory = (selection) => ({
+      vendor: "openai",
+      subscriptionRuntime: selection,
+      listSubscriptionModels: async () => ["gpt-5.5-codex", "gpt-5.5-codex-mini"],
+      async *streamTurn(): AsyncIterable<StreamEvent> {},
+    } as LLMProvider);
+    const rebuild = loop.refreshProvider();
+    expect(loop.providerPending).toBe(true);
+    const result = await loop.handleCommand("model", "gpt-5.5-codex-mini", "user-keyboard");
+    await rebuild;
+    expect(result.text).toBe(t("be_conversationLoop.cmdModelSet", { model: "gpt-5.5-codex-mini" }));
+  });
+
   it("switches an Azure deployment but says the name is unverified", async () => {
     const llm = fakeLlmSettings({ provider: "azure-foundry", model: "my-gpt-deployment" });
     llm.vendors["azure-foundry"].baseUrl = "https://example-resource.openai.azure.com/openai/v1";

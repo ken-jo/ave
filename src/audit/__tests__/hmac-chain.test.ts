@@ -19,6 +19,7 @@ import {
   buildChainedEntries,
   computeDailySeal,
   computeLineHmac,
+  ELECTRON_DECRYPT_FAILED_MESSAGE,
   ensureAuditSecret,
   FileSecretStore,
   filterPermissionAuditLines,
@@ -307,7 +308,7 @@ describe("SafeStorageSecretStore", () => {
   it("quarantines an undecryptable data key and every entry it sealed", async () => {
     const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
     first.write("audit-hmac.key", "old-secret");
-    const broken = makeSafeStorage({ decrypt: () => { throw new Error("decrypt failed"); } });
+    const broken = makeSafeStorage({ decrypt: () => { throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE); } });
     await expect(SafeStorageSecretStore.open(broken, secretsDir(), "reject")).rejects.toThrow(/could not be decrypted/);
     const store = await SafeStorageSecretStore.open(broken, secretsDir());
     expect(store.read("audit-hmac.key")).toBe(null);
@@ -339,12 +340,33 @@ describe("SafeStorageSecretStore", () => {
     expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
   });
 
+  // Only known permanent failures quarantine: a message Electron has not used before (a new release, a locked keychain) moves nothing.
+  const unknownReject = () => makeSafeStorage({ decrypt: () => { throw new Error("keychain locked during boot"); } });
+
+  it("rethrows an unknown data-key decrypt failure and quarantines nothing", async () => {
+    const first = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    first.write("audit-hmac.key", "kept-secret");
+    const before = readdirSync(secretsDir()).sort();
+    await expect(SafeStorageSecretStore.open(unknownReject(), secretsDir())).rejects.toThrow("keychain locked during boot");
+    expect(readdirSync(secretsDir()).sort()).toEqual(before);
+    const recovered = await SafeStorageSecretStore.open(makeSafeStorage(), secretsDir());
+    expect(recovered.read("audit-hmac.key")).toBe("kept-secret");
+  });
+
+  it("rethrows an unknown pre-envelope decrypt failure and leaves the entry in place", async () => {
+    mkdirSync(secretsDir(), { recursive: true });
+    writeFileSync(entryPath("audit-hmac.key"), legacyEntry("legacy-secret"));
+    await expect(SafeStorageSecretStore.open(unknownReject(), secretsDir())).rejects.toThrow("keychain locked during boot");
+    expect(readFileSync(entryPath("audit-hmac.key"), "utf8")).toBe(legacyEntry("legacy-secret"));
+    expect(readdirSync(secretsDir()).some((file) => file.includes(".quarantined-"))).toBe(false);
+  });
+
   it("quarantines undecryptable pre-envelope ciphertext before boot rotates the secret", async () => {
     mkdirSync(secretsDir(), { recursive: true });
     writeFileSync(entryPath("audit-hmac.key"), "safe:v1:YmFkLWNpcGhlcnRleHQ=");
     const store = await SafeStorageSecretStore.open(makeSafeStorage({
       decrypt: (raw) => {
-        if (raw === "bad-ciphertext") throw new Error("decrypt failed");
+        if (raw === "bad-ciphertext") throw new Error(ELECTRON_DECRYPT_FAILED_MESSAGE);
         return raw.replace(/^enc:/, "");
       },
     }), secretsDir());

@@ -202,8 +202,20 @@ export class SafeStorageTemporarilyUnavailableError extends Error {
   }
 }
 
-function isTemporarilyUnavailable(error: unknown): boolean {
-  return error instanceof Error && /temporarily unavailable/i.test(error.message);
+/** Electron's rejections from decryptStringAsync; `check:safestorage-sync` asserts the installed Electron still ships both. */
+export const ELECTRON_DECRYPT_FAILED_MESSAGE = "Error while decrypting the ciphertext provided to safeStorage.decryptStringAsync.";
+export const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "safeStorage.decryptStringAsync is temporarily unavailable. Please try again.";
+
+/**
+ * A ciphertext that can never be read: Electron's decrypt failure, or a stored value whose format, encoding or result is wrong.
+ * Only this is quarantined. Any other failure (a new Electron message, a locked keychain) is rethrown and moves no file, since
+ * quarantining the data key would discard every entry it wraps.
+ */
+class UnreadableCiphertextError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "UnreadableCiphertextError";
+  }
 }
 
 /** Use single-line mode-0600 files when OS-backed secret encryption is unavailable. */
@@ -298,22 +310,24 @@ export class SafeStorageSecretStore implements SecretStore {
 
   private async unwrap(stored: string): Promise<{ value: string; shouldReEncrypt: boolean }> {
     if (!stored.startsWith(SAFE_STORAGE_SECRET_PREFIX)) {
-      throw new Error("Secret ciphertext has an unsupported encryption format");
+      throw new UnreadableCiphertextError("Secret ciphertext has an unsupported encryption format");
     }
     const encoded = stored.slice(SAFE_STORAGE_SECRET_PREFIX.length);
     const ciphertext = Buffer.from(encoded, "base64");
     if (this.unreadablePolicy === "reject"
       && (ciphertext.length === 0 || ciphertext.toString("base64") !== encoded)) {
-      throw new Error("Secret ciphertext encoding is invalid");
+      throw new UnreadableCiphertextError("Secret ciphertext encoding is invalid");
     }
     let decrypted: Awaited<ReturnType<SafeStorageLike["decryptStringAsync"]>>;
     try {
       decrypted = await this.safeStorage.decryptStringAsync(ciphertext);
     } catch (error) {
-      if (isTemporarilyUnavailable(error)) throw new SafeStorageTemporarilyUnavailableError();
+      const message = error instanceof Error ? error.message : undefined;
+      if (message === ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE) throw new SafeStorageTemporarilyUnavailableError();
+      if (message === ELECTRON_DECRYPT_FAILED_MESSAGE) throw new UnreadableCiphertextError("Stored secret could not be decrypted", { cause: error });
       throw error;
     }
-    if (typeof decrypted?.result !== "string") throw new Error("Stored secret could not be decrypted");
+    if (typeof decrypted?.result !== "string") throw new UnreadableCiphertextError("Stored secret could not be decrypted");
     return { value: decrypted.result, shouldReEncrypt: decrypted.shouldReEncrypt === true };
   }
 
@@ -331,6 +345,7 @@ export class SafeStorageSecretStore implements SecretStore {
         if (err instanceof SafeStorageTemporarilyUnavailableError) throw err;
         if (this.unreadablePolicy === "reject") throw new Error("Stored secret could not be decrypted");
         if (this.access === "existing-read-only") throw new Error("Stored secret could not be decrypted");
+        if (!(err instanceof UnreadableCiphertextError)) throw err;
         // Same as an unreadable entry: keep the forensic copy and start over, so every entry it wrapped is quarantined on read.
         this.quarantineUnreadableSecret(SAFE_STORAGE_DATA_KEY_FILE, this.keyPath, "decrypt-failed", err);
         await this.mintDataKey();
@@ -395,6 +410,7 @@ export class SafeStorageSecretStore implements SecretStore {
         value = (await this.unwrap(stored)).value;
       } catch (err) {
         if (err instanceof SafeStorageTemporarilyUnavailableError) throw err;
+        if (!(err instanceof UnreadableCiphertextError)) throw err;
         // Reject stores leave unreadable entries in place; reading them fails closed.
         if (this.unreadablePolicy === "quarantine" && this.access === "read-write"
           && this.readStored(p, MAX_SAFE_STORAGE_FILE_BYTES) === stored) {

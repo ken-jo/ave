@@ -52,6 +52,8 @@ const DEPLOYMENT_NAMED_VENDORS: ReadonlySet<string> = new Set(["azure-foundry"])
 
 /** Empty or unreachable subscription catalogs leave model choices unverifiable. */
 async function verifySubscriptionModel(self: ConversationLoop, model: string): Promise<ModelVerification> {
+  // A rebuild in flight (credentials still decrypting) is about to install the provider whose catalog decides this.
+  if (self.providerPending) await self.whenProviderReady();
   const list = self.provider?.listSubscriptionModels;
   if (!list) return "unverifiable";
   let models: readonly string[];
