@@ -4,6 +4,7 @@ import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   isAdmissionDeniedPath,
   isConfiguredSessionReadPath,
 } from "./sensitive-paths.js";
@@ -51,7 +52,14 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
 function runtimeRootSpelling(raw: string, canonical: string): string {
   if (existsSync(canonical)) return canonical;
   const resolved = pathResolve(raw);
-  return existsSync(resolved) ? realpathSync.native(resolved) : canonical;
+  if (!existsSync(resolved)) return canonical;
+  const onDisk = realpathSync.native(resolved);
+  // The on-disk spelling must name the folder the matching form names; anything else (the folder swapped between the two
+  // resolutions) is not a different spelling but a different target, and is refused rather than stored.
+  if (foldCanonicalPathSeparators(onDisk) !== canonical) {
+    throw new Error(`runtime root ${JSON.stringify(raw)} resolves to a different folder than its matching form`);
+  }
+  return onDisk;
 }
 
 function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): string[] {

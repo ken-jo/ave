@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const NAME = "프로젝트";
+// A folder whose realpath names a different target than its matching form, as when it is swapped between the two resolutions.
+const { swapped } = vi.hoisted(() => ({ swapped: { from: "", to: "" } }));
 const NFD = NAME.normalize("NFD");
 const NFC = NAME.normalize("NFC");
 
@@ -16,6 +18,7 @@ vi.mock("node:fs", async (importOriginal) => {
   // An NFD-preserving filesystem: the composed spelling of the folder does not exist.
   const composed = (path: unknown) => typeof path === "string" && path.includes(NFC) && NFC !== NFD;
   const native = ((path: Parameters<typeof actual.realpathSync.native>[0], ...rest: unknown[]) => {
+    if (swapped.from && path === swapped.from && (new Error().stack ?? "").includes("runtimeRootSpelling")) return swapped.to;
     if (composed(path)) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${String(path)}'`), { code: "ENOENT" });
     return (actual.realpathSync.native as (...args: unknown[]) => string)(path, ...rest);
   }) as typeof actual.realpathSync.native;
@@ -58,5 +61,17 @@ describe("runtime allowed directories on an NFD-preserving filesystem", () => {
 
   it("leave the case-folded matching list in its NFC form", () => {
     expect(sanitizeAllowedDirectories([root])[0]).toBe(sanitizeAllowedDirectories([root])[0]!.normalize("NFC"));
+  });
+});
+
+describe("the on-disk spelling is pinned to the matching form's target", () => {
+  it("refuses a realpath that names a different folder", () => {
+    swapped.from = root;
+    swapped.to = join(parent, "elsewhere");
+    try {
+      expect(() => sanitizeRuntimeAllowedDirectories([root])).toThrow(/resolves to a different folder/);
+    } finally {
+      swapped.from = "";
+    }
   });
 });
