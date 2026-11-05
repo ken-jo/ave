@@ -405,6 +405,19 @@ describe("ave:memory entries", () => {
     expect(deps.memorySaveNotices.deleted).toHaveBeenCalledWith(undefined, entry, "<!-- ave:kind=memory -->");
   });
 
+  it("names each search result's id so the panel can offer Ave 에게 고치기, and leaves it out for a legacy note", async () => {
+    const deps = await setupHandlers(makeConversationLoop(SESSION_ID));
+    deps.memoryManager.searchMemoryEntries.mockReturnValueOnce([
+      { id: "mem-1", filename: "proposal.md", title: "Proposal", content: "# Proposal\n\nBody", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { filename: "legacy.md", title: "Legacy", content: "# Legacy\n\nOld", updatedAt: "2026-11-01T00:00:00.000Z" },
+    ] as never);
+
+    const results = await invokeRegisteredHandlerWithEvent(handlers, "ave:memory:entries:search", hostFrameEvent(), "Pro") as Array<Record<string, unknown>>;
+
+    expect(results[0]).toMatchObject({ id: "mem-1", filename: "proposal.md", title: "Proposal", excerpt: "Body" });
+    expect(results[1]).not.toHaveProperty("id");
+  });
+
   it("redeems an undo token only for the host renderer and only in token form", async () => {
     const deps = await setupHandlers(makeConversationLoop(SESSION_ID));
 

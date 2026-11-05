@@ -1774,6 +1774,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
     return memoryManager.searchMemoryEntries(query, project.options).map((note) => ({
+      // The panel fixes a memory by its id; a legacy note without one can only be deleted.
+      ...(note.id ? { id: note.id } : {}),
       filename: note.filename,
       title: note.title,
       content: note.content,

@@ -892,7 +892,7 @@ export type AveApi = {
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;
   memoryUndo: (token: string) => Promise<MemoryUndoIpcResult>;
   onMemorySaveResult: (handler: (event: MemorySaveResultEvent) => void) => () => void;
-  memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<{ filename?: string; title: string; content?: string; excerpt: string; updatedAt: string; projectRoot?: string; projectName?: string }>>;
+  memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<{ id?: string; filename?: string; title: string; content?: string; excerpt: string; updatedAt: string; projectRoot?: string; projectName?: string }>>;
   memoryGetIndex: (opts?: ProjectQueryOptions) => Promise<string>;
   memoryUpdateIndexIfUnchanged: (expectedContent: string, nextContent: string) => Promise<boolean>;
   memoryUpdateIndexSections: (sections: { urgentMemory?: string; references?: string }) => Promise<unknown>;

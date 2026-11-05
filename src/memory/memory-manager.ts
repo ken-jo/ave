@@ -1897,7 +1897,8 @@ export class MemoryManager implements PromptMemorySource {
 
   /**
    * Undo a delete: write the deleted file's bytes back. "changed" when the file name, the id or the title in its
-   * scope has been taken since, so a restore never overwrites or duplicates a newer memory.
+   * scope has been taken since, so a restore never overwrites or duplicates a newer memory. A failure after the file is
+   * written removes it again and throws, so the delete still stands and the same undo can be tried again.
    */
   async restoreDeletedMemory(filename: string, priorContent: string, actor: MemoryHistoryActor): Promise<"restored" | "changed"> {
     const safeFilename = this.validateDeletableMemoryFilename(filename);
@@ -1915,15 +1916,30 @@ export class MemoryManager implements PromptMemorySource {
       if (this.findManagedMemoryById(metadata.id.toLowerCase())) return;
       if (this.findExistingManagedMemory(title, metadata.scope)) return;
       writeFileSync(path, priorContent, "utf-8");
-      if (metadata.scope.type === "global") {
-        this.updateMemoryIndexLocked(indexPath, safeFilename, title, body);
+      let indexed = false;
+      try {
+        if (metadata.scope.type === "global") {
+          this.updateMemoryIndexLocked(indexPath, safeFilename, title, body);
+          indexed = true;
+        }
+        await this.history.record({
+          memoryId: metadata.id,
+          op: "created",
+          actor,
+          fields: { title: historyText(title), contentDigest: sha256Text(body), scope: metadata.scope.type },
+        });
+      } catch (error) {
+        // Put the disk back in its deleted state, so the undo the caller keeps for a retry finds the file name free again.
+        if (indexed) {
+          try {
+            this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
+          } catch (indexError) {
+            log.warn("restoreDeletedMemory: index entry could not be rolled back: %s", (indexError as Error).message);
+          }
+        }
+        rmSync(path, { force: true });
+        throw error;
       }
-      await this.history.record({
-        memoryId: metadata.id,
-        op: "created",
-        actor,
-        fields: { title: historyText(title), contentDigest: sha256Text(body), scope: metadata.scope.type },
-      });
       outcome = "restored";
     });
     if (outcome === "restored") this.memoryIndex = this.readMemoryIndex();
