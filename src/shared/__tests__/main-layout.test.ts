@@ -95,6 +95,16 @@ describe("parseMainLayout", () => {
     expect(refused((each) => { delete each.openSurfaces; })).toBe("openSurfaces is not a list");
   });
 
+  it("keeps a surface's last-used time, and refuses one that is not a time in milliseconds", () => {
+    const hidden = { kind: "browser", tabId: "browser:0000000a-6", ordinal: 2, cwd: null, url: "https://example.com/b", projectRoot: ROOT, usedAt: 1_762_300_000_000 } as const;
+    const saved = { ...layout(), openSurfaces: [hidden] };
+    expect(parseMainLayout(saved, LIMITS)).toEqual({ ok: true, layout: saved });
+    const listing = (usedAt: unknown) => (raw: Record<string, any>) => { raw.openSurfaces = [{ ...hidden, usedAt }]; };
+    for (const bad of [-1, 1.5, Number.NaN, "1762300000000", null]) {
+      expect(refused(listing(bad))).toBe("openSurfaces[0].usedAt must be a time in milliseconds");
+    }
+  });
+
   it("accepts a Windows drive path as a terminal's directory", () => {
     const saved = layout();
     saved.surfaces["group-3"] = { ...saved.surfaces["group-3"]!, kind: "terminal", cwd: "D:/work/repo", url: null };

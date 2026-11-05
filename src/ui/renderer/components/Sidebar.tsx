@@ -37,6 +37,7 @@ import { RAIL_CONTROL_SIZE_CLASS, SHELL_GUTTER } from "../../../shared/shell-geo
 import { Rail, RailButton } from "./sidebar/Rail.js";
 import { ProjectMark, ProjectMenu, type ProjectMenuModel } from "./sidebar/ProjectMenu.js";
 import { ProjectPicker } from "./sidebar/ProjectPicker.js";
+import { ErrorBoundary } from "./ErrorBoundary.js";
 import { ProjectTree, type ConversationRowActions, type ProjectRowActions, type SidebarAddFlow } from "./sidebar/ProjectTree.js";
 import type { InlineViewKey } from "../../../shared/view-key.js";
 import type { PluginCardSummary, PluginUiExtension } from "../types.js";
@@ -1298,41 +1299,44 @@ export function Sidebar({
             {/* Nothing is listed until the selection has loaded: the all-projects groups before then would show a view
                 nobody chose. */}
             {selectedProject || allProjects ? (
-              <ProjectTree
-                selectedProject={selectedProject}
-                projects={allProjectList}
-                projectName={projectName}
-                isProjectExpanded={isProjectExpanded}
-                onSetProjectExpanded={onSetProjectExpanded}
-                addFlow={addFlow}
-                sessions={sessions}
-                surfaces={surfaces}
-                bindingsLoaded={bindingsLoaded}
-                currentSessionId={currentSessionId}
-                conversationSurfaceVisible={activeView === "home"}
-                onLoadSession={onLoadSession}
-                onOpenWorkBoardItem={onOpenWorkBoardItem}
-                onOpenSideChat={onOpenSideChat}
-                onOpenPaneChat={onOpenPaneChat}
-                onNewChatForProject={onNewChatForProject}
-                onRefreshProjects={onRefreshProjects}
-                onProjectError={onProjectError}
-                onProjectNotice={onProjectNotice}
-                onOpenSurface={onOpenSurface}
-                isSurfaceVisible={isSurfaceVisible}
-                onOpenSessionBeside={onOpenSessionBeside}
-                onOpenSurfaceBeside={onOpenSurfaceBeside}
-                onCloseSurface={onCloseSurface}
-                onMoveSurface={onMoveSurface}
-                isSessionStarred={isSessionStarred}
-                onToggleSessionStar={onToggleSessionStar}
-                isProjectPinned={isProjectPinned}
-                onToggleProjectPin={onToggleProjectPin}
-                conversationActions={conversationActions}
-                projectActions={projectActions}
-                pendingAnswerSessionIds={pendingAnswerSessionIds}
-                suggestionsPendingCount={suggestionsPendingCount}
-              />
+              // A row that fails to render takes only the tree down, not the rail, the launchers or the work board.
+              <ErrorBoundary compact boundaryName="sidebar-project-tree" fallback={t("sidebar.treeRenderError")} fallbackTestId="sidebar-tree-error">
+                <ProjectTree
+                  selectedProject={selectedProject}
+                  projects={allProjectList}
+                  projectName={projectName}
+                  isProjectExpanded={isProjectExpanded}
+                  onSetProjectExpanded={onSetProjectExpanded}
+                  addFlow={addFlow}
+                  sessions={sessions}
+                  surfaces={surfaces}
+                  bindingsLoaded={bindingsLoaded}
+                  currentSessionId={currentSessionId}
+                  conversationSurfaceVisible={activeView === "home"}
+                  onLoadSession={onLoadSession}
+                  onOpenWorkBoardItem={onOpenWorkBoardItem}
+                  onOpenSideChat={onOpenSideChat}
+                  onOpenPaneChat={onOpenPaneChat}
+                  onNewChatForProject={onNewChatForProject}
+                  onRefreshProjects={onRefreshProjects}
+                  onProjectError={onProjectError}
+                  onProjectNotice={onProjectNotice}
+                  onOpenSurface={onOpenSurface}
+                  isSurfaceVisible={isSurfaceVisible}
+                  onOpenSessionBeside={onOpenSessionBeside}
+                  onOpenSurfaceBeside={onOpenSurfaceBeside}
+                  onCloseSurface={onCloseSurface}
+                  onMoveSurface={onMoveSurface}
+                  isSessionStarred={isSessionStarred}
+                  onToggleSessionStar={onToggleSessionStar}
+                  isProjectPinned={isProjectPinned}
+                  onToggleProjectPin={onToggleProjectPin}
+                  conversationActions={conversationActions}
+                  projectActions={projectActions}
+                  pendingAnswerSessionIds={pendingAnswerSessionIds}
+                  suggestionsPendingCount={suggestionsPendingCount}
+                />
+              </ErrorBoundary>
             ) : null}
           </div>
         </ScrollArea>

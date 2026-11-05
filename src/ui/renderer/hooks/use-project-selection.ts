@@ -84,6 +84,33 @@ export function useProjectSelection(api: AveApi, projects: readonly ProjectIdent
     void api.updateSettings({ system: { projectSelection: correction } });
   }, [stale, defaultProject, api]);
 
+  // Removed projects leave no trace in the open groups or the recent list (removed here or while Ave was closed): once both
+  // the settings and the project list have loaded, only open projects are kept, and the pruned lists are saved.
+  const settingsLoaded = saved !== undefined;
+  useEffect(() => {
+    if (!settingsLoaded || projects.length === 0) return;
+    const open = (root: string) => findWorkspaceProject(projects, root) !== undefined;
+    const nextRecent = recentRef.current.filter(open);
+    const nextExpanded = expandedRef.current.filter(open);
+    const recentChanged = nextRecent.length !== recentRef.current.length;
+    const expandedChanged = nextExpanded.length !== expandedRef.current.length;
+    if (!recentChanged && !expandedChanged) return;
+    if (recentChanged) {
+      recentRef.current = nextRecent;
+      setRecent(nextRecent);
+    }
+    if (expandedChanged) {
+      expandedRef.current = nextExpanded;
+      setExpanded(nextExpanded);
+    }
+    void api.updateSettings({
+      system: {
+        ...(recentChanged ? { recentProjectRoots: nextRecent } : {}),
+        ...(expandedChanged ? { expandedProjectRoots: nextExpanded } : {}),
+      },
+    });
+  }, [settingsLoaded, projects, api]);
+
   const selection = useMemo<ProjectSelection | undefined>(() => {
     if (saved === undefined || projects.length === 0) return undefined;
     if (saved?.kind === "all") return saved;

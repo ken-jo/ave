@@ -58,7 +58,9 @@ describe("useProjectSelection", () => {
   it("moves a chosen project to the front of the recent list by root identity, capped at ten", async () => {
     const older = Array.from({ length: 10 }, (_, index) => `/work/p${index}`);
     const { api, update } = makeApi({ recentProjectRoots: ["c:/work/beta", ...older] });
-    const { result } = renderHook(() => useProjectSelection(api, PROJECTS));
+    // Every remembered project is still open, so none of them is pruned.
+    const projects = [...PROJECTS, ...older.map((projectRoot) => ({ projectRoot, projectName: projectRoot.slice(6) }))];
+    const { result } = renderHook(() => useProjectSelection(api, projects));
     await waitFor(() => expect(result.current.selectedProject).toEqual(DEFAULT));
     act(() => result.current.selectRoot(BETA.projectRoot));
     expect(result.current.selectedProject).toEqual(BETA);
@@ -87,6 +89,24 @@ describe("useProjectSelection", () => {
     update.mockClear();
     act(() => result.current.setProjectExpanded(ALPHA.projectRoot, true));
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("keeps only open projects in the open groups and the recent list, and saves the pruned lists once", async () => {
+    const { api, update } = makeApi({
+      recentProjectRoots: ["/work/gone", ALPHA.projectRoot],
+      expandedProjectRoots: [ALPHA.projectRoot, "/work/gone"],
+    });
+    const { result, rerender } = renderHook(({ projects }) => useProjectSelection(api, projects), { initialProps: { projects: PROJECTS } });
+    await waitFor(() => expect(result.current.recentProjectRoots).toEqual([ALPHA.projectRoot]));
+    expect(result.current.isProjectExpanded("/work/gone")).toBe(false);
+    expect(result.current.isProjectExpanded(ALPHA.projectRoot)).toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({ system: { recentProjectRoots: [ALPHA.projectRoot], expandedProjectRoots: [ALPHA.projectRoot] } });
+
+    // A project removed later is dropped the same way.
+    rerender({ projects: [DEFAULT, BETA] });
+    await waitFor(() => expect(result.current.recentProjectRoots).toEqual([]));
+    expect(update).toHaveBeenLastCalledWith({ system: { recentProjectRoots: [], expandedProjectRoots: [] } });
   });
 
   it("refuses to select a root that is not an open project", async () => {

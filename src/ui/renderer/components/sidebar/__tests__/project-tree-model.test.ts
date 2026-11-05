@@ -24,15 +24,15 @@ describe("project tree model", () => {
     ]);
   });
 
-  it("files rows under 이번 주, 지난주 and 이전 by age, with pinned rows under their own header", () => {
-    expect([recencyBucket(NOW - 6.9 * DAY, NOW), recencyBucket(NOW - 8 * DAY, NOW), recencyBucket(NOW - 15 * DAY, NOW)])
-      .toEqual(["thisWeek", "lastWeek", "older"]);
+  it("files rows under 지난 7일, 지난 30일 and 이전 by age, with pinned rows under their own header", () => {
+    expect([recencyBucket(NOW - 6.9 * DAY, NOW), recencyBucket(NOW - 8 * DAY, NOW), recencyBucket(NOW - 29.9 * DAY, NOW), recencyBucket(NOW - 30 * DAY, NOW)])
+      .toEqual(["last7Days", "last30Days", "last30Days", "older"]);
     const isPinned = (id: string) => id === "p";
     const entries = treeEntries({ sessions: [session("p", 40), session("a", 1), session("b", 10), session("c", 11), session("d", 50)], surfaces: [], isPinned, surfaceAt: () => NOW });
     expect(bucketEntries(entries, NOW, isPinned).map(({ bucket, entries: rows }) => [bucket, rows.map((row) => row.key)])).toEqual([
       ["pinned", ["session:p"]],
-      ["thisWeek", ["session:a"]],
-      ["lastWeek", ["session:b", "session:c"]],
+      ["last7Days", ["session:a"]],
+      ["last30Days", ["session:b", "session:c"]],
       ["older", ["session:d"]],
     ]);
   });

@@ -546,6 +546,16 @@ export function App() {
     if (placed === null) chatGroups.movePaneContent(fromPane, targetPaneId);
   }, [chatGroups, surfaceMoves]);
 
+  /** Move a terminal or page to another project from its row menu (case 20). The menu is native and answers later, so the
+   * project may have been removed meanwhile; a surface never lands in a project that is not open. */
+  const moveSurfaceToProject = useCallback((tabId: string, projectRoot: string) => {
+    if (!findWorkspaceProject(workspaceProjectsRef.current, projectRoot)) {
+      statusPushToast({ severity: "error", message: t("app.surfaceMoveProjectGone"), ttlMs: 10_000 });
+      throw new Error(`project-unknown: ${projectRoot} is not an open project`);
+    }
+    mainSurfaces.setProjectRoot(tabId, projectRoot);
+  }, [mainSurfaces, statusPushToast, t]);
+
   const reopenClosedSurface = useCallback(() => {
     const closed = mainSurfaces.takeLastClosed();
     if (!closed) return;
@@ -2298,7 +2308,7 @@ export function App() {
                 onOpenSessionBeside={openSessionBeside}
                 onOpenSurfaceBeside={openSurfaceBeside}
                 onCloseSurface={closeMainSurface}
-                onMoveSurface={mainSurfaces.setProjectRoot}
+                onMoveSurface={moveSurfaceToProject}
               />}
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main

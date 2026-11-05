@@ -16,7 +16,8 @@ export interface ActiveSurface {
 
 let active: ActiveSurface | null = null;
 const listeners = new Set<() => void>();
-/** When each surface was last brought into view, for the sidebar's recency order. Held for this launch only. */
+/** When each surface was last brought into view, for the sidebar's recency order. Saved with the layout and seeded back on
+ * restore (`restoreSurfaceUsedAt`). */
 const usedAt = new Map<string, number>();
 
 function emit(): void {
@@ -79,6 +80,22 @@ export function surfaceUsedAt(tabId: string, now: number = Date.now()): number {
   if (known !== undefined) return known;
   usedAt.set(tabId, now);
   return now;
+}
+
+/** The recorded time, if any, without recording one: what the layout saves. */
+export function knownSurfaceUsedAt(tabId: string): number | undefined {
+  return usedAt.get(tabId);
+}
+
+/**
+ * Seed the times of restored surfaces, given in their saved (sidebar) order. A surface saved with a time keeps it. One saved
+ * without (an older layout, or a surface never shown) is placed by its restore order below every timed row, never at "now":
+ * reopening Ave does not make an old terminal newer than today's conversations.
+ */
+export function restoreSurfaceUsedAt(surfaces: ReadonlyArray<{ tabId: string; usedAt?: number }>): void {
+  surfaces.forEach((surface, index) => {
+    usedAt.set(surface.tabId, surface.usedAt ?? -(index + 1));
+  });
 }
 
 export function getActiveSurface(): ActiveSurface | null {

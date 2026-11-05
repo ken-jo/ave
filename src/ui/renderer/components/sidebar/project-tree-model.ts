@@ -9,7 +9,7 @@ export const GROUP_PAGE_SIZE = 6;
 const DAY_MS = 86_400_000;
 
 /** The time headers of a project's list, in display order. Pinned conversations come first under their own header. */
-export type TreeBucket = "pinned" | "thisWeek" | "lastWeek" | "older";
+export type TreeBucket = "pinned" | "last7Days" | "last30Days" | "older";
 
 export type TreeEntry =
   | { kind: "session"; key: string; session: SessionSummary; at: number }
@@ -29,11 +29,11 @@ function sessionTime(session: SessionSummary): number {
   return at;
 }
 
-/** By age, not by calendar: anything from the last seven days is "이번 주", the seven before that "지난주". */
+/** By age, not by calendar: the last seven days are "지난 7일", the rest of the last thirty "지난 30일". */
 export function recencyBucket(at: number, now: number): Exclude<TreeBucket, "pinned"> {
   const age = now - at;
-  if (age < 7 * DAY_MS) return "thisWeek";
-  if (age < 14 * DAY_MS) return "lastWeek";
+  if (age < 7 * DAY_MS) return "last7Days";
+  if (age < 30 * DAY_MS) return "last30Days";
   return "older";
 }
 

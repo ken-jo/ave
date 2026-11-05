@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, MessageSquareText, MoreHorizontal, Pin, Plus } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -291,7 +291,7 @@ function SessionRow({
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={`sidebar-session-${session.id}`}
           data-session-family={family}
-          title={family === "main" ? undefined : familyLabel}
+          title={family === "main" ? session.title : familyLabel}
           onClick={() => {
             if (family !== "main") onOpenFamilyRow?.();
             else void onLoadSession?.(session.id);
@@ -376,8 +376,8 @@ function belongsToProject(root: string | undefined, project: ProjectIdentity, pr
 
 const BUCKET_LABEL_KEYS: Record<TreeBucket, string> = {
   pinned: "sidebar.treePinned",
-  thisWeek: "sidebar.treeThisWeek",
-  lastWeek: "sidebar.treeLastWeek",
+  last7Days: "sidebar.treeLast7Days",
+  last30Days: "sidebar.treeLast30Days",
   older: "sidebar.treeOlder",
 };
 
@@ -589,6 +589,28 @@ export function ProjectTree({
   const rovingKey = focusKey !== null && rowKeys.includes(focusKey)
     ? focusKey
     : currentKey !== undefined && rowKeys.includes(currentKey) ? currentKey : rowKeys[0];
+  // A focused row that goes away (closed, archived, deleted) would drop focus to the page: hand it to the row that took its
+  // place, else the one before it.
+  const previousRowKeys = useRef<readonly string[]>(rowKeys);
+  const rowKeysSignature = rowKeys.join("\n");
+  useEffect(() => {
+    const previous = previousRowKeys.current;
+    previousRowKeys.current = rowKeys;
+    if (focusKey === null || rowKeys.includes(focusKey)) return;
+    const index = previous.indexOf(focusKey);
+    const neighbour = previous.slice(index + 1).find((key) => rowKeys.includes(key))
+      ?? previous.slice(0, Math.max(index, 0)).reverse().find((key) => rowKeys.includes(key))
+      ?? rowKeys[0];
+    if (neighbour === undefined) return;
+    setFocusKey(neighbour);
+    // Only when focus was lost with the row; focus the user moved elsewhere stays there.
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active.isConnected) return;
+    const row = [...(treeRef.current?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])]
+      .find((each) => each.dataset.treeKey === neighbour);
+    row?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the row set changes
+  }, [rowKeysSignature]);
   const actions = new Map<string, RowKeyActions>();
   keyActions.current = actions;
   const treeRow = (key: string, level: number): TreeRowProps => ({

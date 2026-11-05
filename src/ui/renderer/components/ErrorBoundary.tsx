@@ -11,6 +11,8 @@ interface Props {
   /** Optional inline mode — when true, renders a compact one-line fallback suitable for embedding inside a larger UI (badges,
    * status bars). Default is the full centered card. */
   compact?: boolean;
+  /** Test id on the fallback, for a region whose own markup is gone once it fails. */
+  fallbackTestId?: string;
 
   onReset?: (error: Error | undefined) => void;
 }
@@ -44,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
       const showRetry = typeof this.props.onReset === "function";
       if (this.props.compact) {
         return (
-          <div className="flex items-center gap-2 px-3 py-1 text-xs text-muted-foreground border-b border-warning bg-warning/(--opacity-subtle)">
+          <div className="flex items-center gap-2 px-3 py-1 text-xs text-muted-foreground border-b border-warning bg-warning/(--opacity-subtle)" data-testid={this.props.fallbackTestId}>
             <span>{this.props.fallback ?? t("errorBoundary.compactFallback")}</span>
             {showRetry && (
               <Button variant="link" size="sm" className="text-xs h-auto p-0" onClick={this.handleRetry}>{t("errorBoundary.retryButton")}</Button>
@@ -54,7 +56,7 @@ export class ErrorBoundary extends Component<Props, State> {
         );
       }
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
+        <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center" data-testid={this.props.fallbackTestId}>
           <p className="text-sm text-muted-foreground">{this.props.fallback ?? t("errorBoundary.fullFallback")}</p>
           <div className="flex items-center gap-3">
             {showRetry && (

@@ -138,8 +138,8 @@ export function SurfaceRow({
             onClose();
           }}
           className="mr-1 hidden shrink-0 rounded p-1 hover:bg-muted-foreground/(--opacity-subtle) focus-visible:outline-none group-hover:flex group-focus-within:flex"
-          aria-label={t(surface.kind === "terminal" ? "sidebar.closeTerminal" : "sidebar.closePage")}
-          title={t(surface.kind === "terminal" ? "sidebar.closeTerminal" : "sidebar.closePage")}
+          aria-label={t(surface.kind === "terminal" ? "sidebar.closeTerminalEnding" : "sidebar.closePage")}
+          title={t(surface.kind === "terminal" ? "sidebar.closeTerminalEnding" : "sidebar.closePage")}
           data-testid={`sidebar-surface-close-${surface.tabId}`}
         >
           <X className="h-3.5 w-3.5" />

@@ -2052,6 +2052,51 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
     }
   });
 
+  it("names a conversation in its row's title, so a truncated name can still be read", () => {
+    const { getByTestId, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      // Inside the sidebar the hover preview shows the full name instead of the native tooltip, and the title becomes the
+      // row's description, as it does for terminal and page rows.
+      expect(getByTestId("sidebar-session-sess-1").getAttribute("aria-description")).toBe("전체 동기화로 상태 파악");
+    } finally {
+      restore();
+    }
+  });
+
+  it("hands focus to the next row when the focused one goes away, never to the page", async () => {
+    const { container, rerenderSidebar, restore } = renderSidebar(inProject(DEFAULT_PROJECT));
+    try {
+      const first = treeRows(container).find((row) => key(row) === "session:sess-1")!;
+      first.focus();
+      expect(document.activeElement).toBe(first);
+      // The focused conversation is archived (or closed, or deleted): its row leaves the list.
+      act(() => {
+        rerenderSidebar({
+          sessions: [sessionRow({ id: "sess-2", title: "사이드 패널 개선", modifiedAt: ago(0) })],
+        });
+      });
+      await waitFor(() => expect(key(document.activeElement!)).toBe("session:sess-2"));
+      expect((document.activeElement as HTMLElement).tabIndex).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps the rest of the sidebar when the tree fails to render, and says so in its place", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = sessionRow({ id: "sess-9", modifiedAt: ago(0) });
+    Object.defineProperty(broken, "title", { get: () => { throw new Error("bad row"); } });
+    const { getByTestId, queryByRole, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), sessions: [broken] });
+    try {
+      expect(queryByRole("tree")).toBeNull();
+      expect(getByTestId("sidebar-tree-error").textContent).toContain("대화 목록을 표시하지 못했습니다");
+      expect(getByTestId("sidebar-project-button")).toBeTruthy();
+    } finally {
+      restore();
+      error.mockRestore();
+    }
+  });
+
   it("walks the rows with the arrow keys, Home and End, and opens with Enter or beside the focused tile with ⌥Enter", () => {
     const onOpenSessionBeside = vi.fn();
     const { container, onLoadSession, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), onOpenSessionBeside });
@@ -2109,7 +2154,7 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
     }
   });
 
-  it("interleaves conversations and terminals by recency under 이번 주 and 지난주", () => {
+  it("interleaves conversations and terminals by recency under 지난 7일 and 지난 30일", () => {
     const surfaceAt = Date.now();
     const { container, getByTestId, restore } = renderSidebar({
       ...inProject(DEFAULT_PROJECT),
@@ -2123,13 +2168,13 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
     try {
       expect(surfaceAt).toBeLessThanOrEqual(Date.now());
       expect(treeRows(container).map(key)).toEqual(["surface:terminal:0000000b-1", "session:new", "session:old"]);
-      const thisWeek = getByTestId("sidebar-tree-header-thisWeek");
-      const lastWeek = getByTestId("sidebar-tree-header-lastWeek");
-      expect(thisWeek.textContent).toBe("이번 주");
-      expect(lastWeek.textContent).toBe("지난주");
-      expect(thisWeek.className).toContain("sticky");
+      const last7 = getByTestId("sidebar-tree-header-last7Days");
+      const last30 = getByTestId("sidebar-tree-header-last30Days");
+      expect(last7.textContent).toBe("지난 7일");
+      expect(last30.textContent).toBe("지난 30일");
+      expect(last7.className).toContain("sticky");
       // The header sits right before the rows it heads.
-      expect(lastWeek.nextElementSibling?.getAttribute("data-tree-key")).toBe("session:old");
+      expect(last30.nextElementSibling?.getAttribute("data-tree-key")).toBe("session:old");
     } finally {
       restore();
     }
