@@ -3,15 +3,19 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-const dacls = vi.hoisted(() => ({ override: undefined as undefined | ((paths: readonly string[]) => unknown[]) }));
+const dacls = vi.hoisted(() => ({
+  override: undefined as undefined | ((paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => unknown[]),
+}));
 vi.mock("../windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../windows-path-facts.js")>();
   return { ...actual, readWindowsDacls: (paths: readonly string[], options?: unknown) =>
-    dacls.override !== undefined ? dacls.override(paths) : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
+    dacls.override !== undefined
+      ? dacls.override(paths, (rest) => (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown[])(rest, options))
+      : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
 });
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
@@ -651,8 +655,61 @@ describe("Windows owner and ACL overlay", () => {
       const rows = getAveHomeTrustReview()!.rows.filter((entry) => entry.key.toLowerCase() === "skills/notes");
       expect(rows.map((entry) => entry.key).sort()).toEqual(["skills/Notes", "skills/notes"]);
       for (const entry of rows) expect(entry).toMatchObject({ reason: "unreadable", approvable: false });
+      // A key that only folds to both names is ambiguous: it names neither.
+      const review = getAveHomeTrustReview()!;
+      expect(() => approveAveHomeTrustItems(review.snapshotId, ["SKILLS/NOTES"])).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(() => removeAveHomeTrustItem(review.snapshotId, "Skills/notes")).toThrowError(expect.objectContaining({ code: "stale" }));
+      expect(existsSync(join(dir, "skills", "Notes"))).toBe(true);
+      expect(existsSync(join(dir, "skills", "notes"))).toBe(true);
     } finally {
       setProcessPlatform(platform);
+      dacls.override = undefined;
+    }
+  });
+
+  // D3① on Windows: the moved config/ fixtures read with simulated DACL facts; every other path keeps its real facts.
+  function movedConfigurationDacl(isProtected: boolean) {
+    return (paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => paths.map((path) => {
+      if (!["config.old", "config-old"].includes(basename(path))) return actual([path])[0];
+      // The user's full control, inherited by objects and containers (OI|CI): the shape Ave gives its own config/.
+      return { exists: true, directory: true, currentUserSid: user, elevated: false,
+        dacl: { owner: user, protected: isProtected, nullDacl: false, aces: [{ sid: user, type: 0, mask: 0x1f01ff, flags: 3 }] } };
+    });
+  }
+
+  it.runIf(process.platform === "win32").each([
+    { name: "config-old", restart: false },
+    { name: "config.old", restart: true },
+  ])("withholds approve all when a protected, owner-only $name was found beside the home", ({ name, restart }) => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    const moved = join(dir, name);
+    mkdirSync(moved);
+    writeFileSync(join(moved, ".ave-config-migrated"), "ave-home-boundary-v1");
+    dacls.override = movedConfigurationDacl(true);
+    try {
+      boot(dir);
+      if (restart) boot(dir);
+      expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+      const review = getAveHomeTrustReview()!;
+      expect(review.approveAllOffered).toBe(false);
+      expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
+    } finally {
+      dacls.override = undefined;
+    }
+  });
+
+  it.runIf(process.platform === "win32")("does not take an unprotected config.old for a moved config/", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    const moved = join(dir, "config.old");
+    mkdirSync(moved);
+    writeFileSync(join(moved, ".ave-config-migrated"), "ave-home-boundary-v1");
+    dacls.override = movedConfigurationDacl(false);
+    try {
+      boot(dir);
+      expect(manifest(dir)).not.toHaveProperty("oneByOne");
+    } finally {
       dacls.override = undefined;
     }
   });

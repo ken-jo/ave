@@ -916,10 +916,14 @@ function reviewTarget(snapshotId: string): { trust: ActiveTrust; rows: readonly 
 
 /**
  * A row names the item as written; the caller's key may differ in case where the platform folds names (win32), so it matches by
- * the manifest's folded key. An exact match wins, so two names that fold together (both shown blocked) stay distinct.
+ * the manifest's folded key. An exact match wins, so two names that fold together (both shown blocked) stay distinct; a key
+ * that only folds to several of them names none, and reads as stale.
  */
 function reviewRow(rows: readonly AveHomeTrustRow[], key: string): AveHomeTrustRow | undefined {
-  return rows.find((candidate) => candidate.key === key) ?? rows.find((candidate) => foldKey(candidate.key) === foldKey(key));
+  const exact = rows.find((candidate) => candidate.key === key);
+  if (exact !== undefined) return exact;
+  const folded = rows.filter((candidate) => foldKey(candidate.key) === foldKey(key));
+  return folded.length === 1 ? folded[0] : undefined;
 }
 
 /**
