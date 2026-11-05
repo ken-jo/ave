@@ -188,8 +188,8 @@ describe("pattern denies", () => {
   });
 
   it("lifts a pierced floor row whatever its spelling, so the pierced sessions grant survives a writable home", () => {
-    const aveHome = String.raw`D:\cc-verify\h3\home`;
-    const pierce = "d:/cc-verify/h3/home/sessions";
+    const aveHome = String.raw`D:\data\ave-home`;
+    const pierce = "d:/data/ave-home/sessions";
     const sessionsRoot = win32.join(aveHome, "sessions");
     const directories: Record<string, MxcDirectoryEntry[]> = {
       [aveHome]: [entry("sessions", "directory")],
