@@ -37,7 +37,7 @@ bin_dir="$RUNNER_TEMP/cosign-bin"
 rm -rf "$bin_dir"
 mkdir -p "$bin_dir"
 url="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-${arch}"
-curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+curl --fail --silent --show-error --location --retry 6 --retry-delay 5 --retry-max-time 180 --proto '=https' --tlsv1.2 \
   --output "$bin_dir/cosign.download" "$url"
 actual="$(sha256sum "$bin_dir/cosign.download" | cut -d' ' -f1)"
 if [ "$actual" != "$expected" ]; then

@@ -435,7 +435,7 @@ jobs:
             exit 1
           fi
 
-          tag_ref="$(curl --fail --silent --show-error --retry 3 \
+          tag_ref="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}")"
@@ -446,7 +446,7 @@ jobs:
             exit 1
           fi
 
-          tag_object="$(curl --fail --silent --show-error --retry 3 \
+          tag_object="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
@@ -539,7 +539,7 @@ jobs:
             exit 1
           fi
 
-          tag_ref="$(curl --fail --silent --show-error --retry 3 \
+          tag_ref="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}")"
@@ -550,7 +550,7 @@ jobs:
             exit 1
           fi
 
-          tag_object="$(curl --fail --silent --show-error --retry 3 \
+          tag_object="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
@@ -662,7 +662,7 @@ jobs:
             exit 1
           fi
 
-          tag_ref="$(curl --fail --silent --show-error --retry 3 \
+          tag_ref="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${EXPECTED_TAG}")"
@@ -673,7 +673,7 @@ jobs:
             exit 1
           fi
 
-          tag_object="$(curl --fail --silent --show-error --retry 3 \
+          tag_object="$(curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-max-time 180 \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}")"
