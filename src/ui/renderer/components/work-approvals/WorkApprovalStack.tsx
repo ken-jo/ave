@@ -18,7 +18,7 @@ import type {
   WorkPlanApprovalView,
   WorkProposalApprovalView,
 } from "../../../../shared/work-approvals-types.js";
-import { formatLocalClock } from "../../../../shared/format-time.js";
+import { formatMediumDateTime } from "../../../../shared/format-time.js";
 import { PlanDecisionControls, PlanText } from "./PlanDecisionControls.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { errorMessage } from "../../../../shared/error-message.js";
@@ -313,7 +313,7 @@ function PlanFacts({ item }: { item: WorkPlanApprovalView }) {
       value: item.scope.type === "project" ? item.scope.projectRoot : t("workApprovals.planFactNoProject"),
     },
     { label: t("workApprovals.planFactTools"), value: t("workApprovals.planFactToolsValue") },
-    { label: t("workApprovals.planFactPlannedAt"), value: formatLocalClock(item.arrivedAt) },
+    { label: t("workApprovals.planFactPlannedAt"), value: formatMediumDateTime(item.arrivedAt) },
     { label: t("workApprovals.planFactRevisions"), value: t("workApprovals.planFactRevisionsValue", { count: item.revision }) },
   ];
   return (

@@ -78,6 +78,7 @@ export const en = {
   "workApprovals.modeProject": "This project",
   "workApprovals.modeAllProjects": "All projects",
   "workApprovals.popoverCurrentProject": "the project you are viewing",
+  "workApprovals.planSource": "Work board · plan ready",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "workApprovals.title": "확인 필요",
@@ -158,4 +159,5 @@ export const ko: Record<keyof typeof en, string> = {
   "workApprovals.modeProject": "이 프로젝트",
   "workApprovals.modeAllProjects": "전체 프로젝트",
   "workApprovals.popoverCurrentProject": "지금 보는 프로젝트",
+  "workApprovals.planSource": "업무 보드 · 계획 완료",
 };

@@ -24,7 +24,7 @@ export interface WorkApprovalsBadgeProps {
 }
 
 function rowSubtitle(item: WorkApprovalView): string {
-  if (item.kind === "plan") return t("workApprovals.kindPlan");
+  if (item.kind === "plan") return t("workApprovals.planSource");
   if (item.kind === "proposal") return proposalSource(item);
   return t("workApprovals.routineScope");
 }
