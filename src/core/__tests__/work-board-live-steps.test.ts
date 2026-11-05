@@ -8,7 +8,7 @@ import type { ChatEntry, ToolEntryItem } from "../../lib/chat-stream-state.js";
 import type { GuidanceDropReason } from "../../engine/conversation-loop.js";
 import { readRunTranscript } from "../../work-board/run-transcript.js";
 import {
-  boardApprovalGate,
+  runThroughDecision,
   boardParentToolRegistry,
   memTranscriptStorage,
   tempBoardStore as tempBoard,
@@ -64,17 +64,15 @@ async function startExecuting() {
   if (created.status !== "created") throw new Error("setup failed");
   const id = created.itemId;
   const live = liveRunner();
-  const { gate, owner } = boardApprovalGate("allow-once");
   const events: WorkBoardRunEvent[] = [];
   const transcriptStorage = memTranscriptStorage();
   const engine = createWorkBoardEngine({
     store: board.store,
     getRunner: () => live.runner,
-    approvalGate: gate,
     emitProgress: (e) => events.push(e),
     transcriptStorage,
   });
-  const run = engine.runItem(id, { approvalSurface: owner });
+  const run = runThroughDecision(engine, board.store, id, "approve");
   await live.linked;
   return { ...board, id, live, events, engine, run, transcriptStorage };
 }
@@ -247,10 +245,9 @@ describe("WorkBoardEngine — the planning child is recorded as it links", () =>
       },
       parentToolRegistry: () => registry,
     } as unknown as SubAgentRunner;
-    const { gate, owner } = boardApprovalGate("deny-once");
-    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, emitProgress: () => {} });
     try {
-      const run = engine.runItem(id, { approvalSurface: owner });
+      const run = runThroughDecision(engine, board.store, id, "reject");
       await linked;
       await vi.waitFor(async () => {
         const got = await board.store.get(id);
@@ -282,11 +279,10 @@ describe("WorkBoardEngine — a failed planning link write", () => {
       },
       parentToolRegistry: () => registry,
     } as unknown as SubAgentRunner;
-    const { gate, owner } = boardApprovalGate("allow-once");
     const events: WorkBoardRunEvent[] = [];
-    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, approvalGate: gate, emitProgress: (e) => events.push(e) });
+    const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
     try {
-      const result = await engine.runItem(id, { approvalSurface: owner });
+      const result = await runThroughDecision(engine, board.store, id, "approve");
       expect(result).toMatchObject({ status: "error", reason: "disk full" });
       expect(events.some((e) => e.phase === "awaiting_approval")).toBe(false);
     } finally {

@@ -307,7 +307,7 @@ describe("Work Board — narrow width", () => {
       disconnect() {}
     });
     const { api } = stubApi([proposal()]);
-    render(<WorkBoardPanel api={api} project={PROJECT} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     await act(async () => callback?.([{ contentRect: { width: 760 } } as ResizeObserverEntry], {} as ResizeObserver));
     const tabs = within(screen.getByTestId("work-board-tabs")).getAllByRole("tab").map((tab) => tab.getAttribute("data-testid"));
@@ -323,11 +323,11 @@ describe("Work Board — narrow width", () => {
     });
     const items: WorkApprovalView[] = [proposal()];
     const { api, fireChanged } = stubApi(items);
-    const { rerender } = render(<WorkBoardPanel api={api} project={PROJECT} />);
+    const { rerender } = render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     await act(async () => callback?.([{ contentRect: { width: 1200 } } as ResizeObserverEntry], {} as ResizeObserver));
-    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={proposal().key} />);
-    rerender(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={null} />);
+    rerender(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={proposal().key} />));
+    rerender(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} approvalFocusKey={null} />));
     // The item is handled elsewhere, then the window shrinks.
     items.splice(0, items.length);
     await act(async () => fireChanged());

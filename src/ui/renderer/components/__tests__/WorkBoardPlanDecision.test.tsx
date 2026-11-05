@@ -2,6 +2,7 @@
 /** A plan waiting for the user's work approval is decided in the item's detail: approve and run, request changes with a note, or reject.
  * The panel sends the run id and the stored plan hash, never the plan text, and says why a refused decision was refused. */
 import "../../../../../test/renderer/setup.js";
+import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
@@ -42,7 +43,7 @@ function stubApi(item: WorkItemResolved, decideWorkPlan: AveApi["decideWorkPlan"
 }
 
 async function openDetail(api: AveApi) {
-  render(<WorkBoardPanel api={api} />);
+  render(withApprovalSurface(<WorkBoardPanel api={api} />));
   fireEvent.click(await screen.findByTestId("work-board-card"));
   return screen.findByTestId("work-board-plan-decision");
 }
@@ -98,7 +99,7 @@ describe("Work Board — plan decision", () => {
       onWorkBoardRunFinished: noop,
       onWorkBoardRunFailed: noop,
     } as unknown as AveApi;
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     fireEvent.click(await screen.findByTestId("work-board-card"));
     await screen.findByTestId("work-board-detail-no-deadline");
     await waitFor(() => expect(progress).toBeDefined());
@@ -110,7 +111,7 @@ describe("Work Board — plan decision", () => {
 
   it("offers no decision once the plan is no longer pending", async () => {
     const api = stubApi(awaitingItem({ runStatus: "executing", planApproval: { ...awaitingItem().planApproval!, status: "approved" } }), vi.fn());
-    render(<WorkBoardPanel api={api} />);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
     fireEvent.click(await screen.findByTestId("work-board-card"));
     await screen.findByTestId("work-board-run-output");
     expect(screen.queryByTestId("work-board-plan-decision")).toBeNull();
