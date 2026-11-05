@@ -137,6 +137,18 @@ describe("splitPlanSections", () => {
     expect(splitPlanSections("## Summary\na\n## Steps\n```\n## Changes\nb\n## Risks\nc")).toBeNull();
   });
 
+  it("treats a heading indented four spaces or a tab as code, not a section", () => {
+    const indented = ["## Summary", "a", "## Steps", "    ## Changes", "    echo hi", "\t## Risks", "## Changes", "c", "## Risks", "d"].join("\n");
+    expect(splitPlanSections(indented)).toEqual({
+      summary: "a",
+      steps: "    ## Changes\n    echo hi\n\t## Risks",
+      changes: "c",
+      risks: "d",
+    });
+    // Up to three spaces is still a heading.
+    expect(splitPlanSections("## Summary\na\n   ## Steps\nb\n ## Changes\nc\n  ## Risks\nd")).not.toBeNull();
+  });
+
   it("splits only the four second-level headings in the order the prompt asks for", () => {
     expect(splitPlanSections("# Summary\na\n# Steps\nb\n# Changes\nc\n# Risks\nd")).toBeNull();
     expect(splitPlanSections("### Summary\na\n### Steps\nb\n### Changes\nc\n### Risks\nd")).toBeNull();

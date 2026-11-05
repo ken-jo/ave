@@ -51,8 +51,9 @@ export interface PlanSections {
 }
 
 const SECTION_ORDER: ReadonlyArray<keyof PlanSections> = ["summary", "steps", "changes", "risks"];
-const SECTION_HEADING = /^##\s+(summary|steps|changes|risks)\s*:?\s*$/i;
-const FENCE = /^(`{3,}|~{3,})/;
+// As in Markdown, a heading or fence may be indented at most three spaces; four spaces or a tab make the line indented code.
+const SECTION_HEADING = /^ {0,3}##[ \t]+(summary|steps|changes|risks)\s*:?\s*$/i;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 
 /** The plan prompt asks for four `##` headings in this order: Summary, Steps, Changes, Risks. A plan that has exactly those, in that
  * order, outside code fences, is split for display; any other plan is shown whole, so text the model wrote inside a code block cannot
@@ -63,14 +64,14 @@ export function splitPlanSections(plan: string): PlanSections | null {
   let fence: string | null = null;
   for (const line of plan.split("\n")) {
     const trimmed = line.trim();
-    const marker = FENCE.exec(trimmed)?.[1];
+    const marker = FENCE.exec(line)?.[1];
     if (fence !== null) {
       // A fence closes on the same character, at least as long as it opened.
       if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length && trimmed === marker) fence = null;
     } else if (marker !== undefined) {
       fence = marker;
     } else {
-      const heading = SECTION_HEADING.exec(trimmed);
+      const heading = SECTION_HEADING.exec(line);
       if (heading) {
         if (heading[1]!.toLowerCase() !== SECTION_ORDER[bodies.length]) return null;
         bodies.push([]);
@@ -80,7 +81,15 @@ export function splitPlanSections(plan: string): PlanSections | null {
     (bodies.at(-1) ?? preamble).push(line);
   }
   if (fence !== null || bodies.length !== SECTION_ORDER.length) return null;
-  const text = (index: number) => bodies[index]!.join("\n").trim();
+  // Drop blank lines at the edges but keep indentation: trimming an indented first line would turn indented code into a heading.
+  const text = (index: number) => {
+    const lines = bodies[index]!;
+    let start = 0;
+    let end = lines.length;
+    while (start < end && lines[start]!.trim() === "") start += 1;
+    while (end > start && lines[end - 1]!.trim() === "") end -= 1;
+    return lines.slice(start, end).join("\n");
+  };
   const lead = preamble.filter((line) => line.trim().length > 0);
   const summary = [...lead, text(0)].filter((part) => part.length > 0).join("\n");
   return { summary, steps: text(1), changes: text(2), risks: text(3) };
