@@ -1458,12 +1458,13 @@ export function App() {
       setWorkApprovalShowAll(true);
       return;
     }
+    // Only a project that is still open is selected; a shared item opens in the project being viewed.
     if (target.projectRoot !== undefined) {
-      const project = findWorkspaceProject(workspaceProjects, target.projectRoot);
-      if (project) setActiveProject(project);
+      const project = findWorkspaceProject(workspaceProjectsRef.current, target.projectRoot);
+      if (project) projectSelectionRef.current.selectRoot(project.projectRoot);
     }
     setWorkApprovalFocusKey(target.key);
-  }, [handleViewSelectWithDoctor, workspaceProjects]);
+  }, [handleViewSelectWithDoctor]);
   // "스케줄에서 열기": the routine surface, scrolled to and focusing that routine.
   const [routineFocusId, setRoutineFocusId] = useState<string | null>(null);
   const openRoutine = useCallback((routineId: string) => {
