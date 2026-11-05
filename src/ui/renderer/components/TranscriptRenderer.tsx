@@ -22,7 +22,7 @@ import { entryRenderRevision } from "../utils/chat-entry-revision.js";
 import { TerminalObservationCommands, useTerminalObservation } from "./TerminalObservationContent.js";
 import { AssistantCard } from "./AssistantCard.js";
 import { UserMessageEditor } from "./UserMessageEditor.js";
-import { ToolGroupCard, type ToolSandboxMode } from "./ToolGroupCard.js";
+import { ToolGroupCard, toolSandboxModes } from "./ToolGroupCard.js";
 import type { ViewModeState } from "./ViewModeBanner.js";
 import { WorkGroup } from "./WorkGroup.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
@@ -203,11 +203,7 @@ export function TranscriptRenderer({
       for (const tool of candidate.tools) toolUseIdsWithRow.add(tool.toolUseId);
     }
   }
-  // A tool that ran several commands shows the least confined one.
-  const sandboxModesByToolUseId = new Map<string, ToolSandboxMode>();
-  for (const command of terminalObservation.commands) {
-    if (sandboxModesByToolUseId.get(command.toolUseId) !== "unconfined") sandboxModesByToolUseId.set(command.toolUseId, command.sandbox.mode);
-  }
+  const sandboxModesByToolUseId = toolSandboxModes(terminalObservation.commands);
   const rendersOnToolRow = (candidate: PermissionReviewEntry): boolean =>
     toolUseIdsWithRow.has(candidate.toolUseId);
 
@@ -592,6 +588,8 @@ export function TranscriptRenderer({
         } else if (e.kind === "tool_group") {
           if (cls === "intermediate") {
             groupRevisions.push(entryRenderRevision({ entry: e, idx: i, searchHighlight, starred: false }));
+            // Commands are observed after their rows exist: a chip that arrives later must re-render the settled group.
+            groupRevisions.push(`sandbox:${e.tools.map((tool) => sandboxModesByToolUseId.get(tool.toolUseId) ?? "").join(",")}`);
             groupEntries.push({
               idx: i,
               node: (

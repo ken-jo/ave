@@ -3,7 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
-import { ToolGroupCard, type ToolSandboxModesByToolUseId } from "../ToolGroupCard.js";
+import { ToolGroupCard, toolSandboxModes, type ToolSandboxMode, type ToolSandboxModesByToolUseId } from "../ToolGroupCard.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 
 type ToolEntry = Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
@@ -42,5 +42,16 @@ describe("ToolGroupCard sandbox chip", () => {
   it("shows no chip without an observed command", () => {
     renderGroup([tool("t1")]);
     expect(screen.queryByTestId("tool-sandbox")).toBeNull();
+  });
+
+  it("gives a tool that ran several commands the least confined of them, whatever their order", () => {
+    const ran = (toolUseId: string, mode: ToolSandboxMode) => ({ toolUseId, sandbox: { mode, detail: "" } });
+    const modes = toolSandboxModes([
+      ran("a", "disposable"), ran("a", "isolated"),
+      ran("b", "isolated"), ran("b", "disposable"),
+      ran("c", "isolated"), ran("c", "unconfined"), ran("c", "disposable"),
+      ran("d", "disposable"),
+    ]);
+    expect(Object.fromEntries(modes)).toEqual({ a: "isolated", b: "isolated", c: "unconfined", d: "disposable" });
   });
 });

@@ -30,6 +30,18 @@ export type ToolSandboxMode = TerminalObservedCommand["sandbox"]["mode"];
 /** toolUseId → how the shell or terminal command that tool ran was confined. */
 export type ToolSandboxModesByToolUseId = ReadonlyMap<string, ToolSandboxMode>;
 
+// Least confined first. A tool that ran several commands shows the least confined of them.
+const SANDBOX_MODE_ORDER: readonly ToolSandboxMode[] = ["unconfined", "isolated", "disposable"];
+
+export function toolSandboxModes(commands: readonly Pick<TerminalObservedCommand, "toolUseId" | "sandbox">[]): ToolSandboxModesByToolUseId {
+  const modes = new Map<string, ToolSandboxMode>();
+  for (const { toolUseId, sandbox } of commands) {
+    const known = modes.get(toolUseId);
+    if (known === undefined || SANDBOX_MODE_ORDER.indexOf(sandbox.mode) < SANDBOX_MODE_ORDER.indexOf(known)) modes.set(toolUseId, sandbox.mode);
+  }
+  return modes;
+}
+
 /**
  * The verdict belongs to the tool call. Rows with a header cell the chip can
  * sit in render `PermissionReviewStatusCard` inline; the result-only surfaces
@@ -170,15 +182,15 @@ function ToolSourceBadge({ tool }: { tool: ToolItem }) {
   );
 }
 
-/** Per-tool status pill — "실패" (error) or "완료" (done). Single source for the success/failure badge shown on every collapsed
- * tool row (single-tool inline + grouped per-tool). */
+/** How the tool's shell or terminal command ran; rows without an observed command show nothing. */
 function ToolSandboxBadge({ mode }: { mode?: ToolSandboxMode }) {
   const { t } = useTranslation();
   if (!mode) return null;
   return (
     <Badge
       variant="outline"
-      className={cn("shrink-0 px-1 py-0 text-[9px]", mode === "unconfined" ? "border-primary/40 text-primary" : "border-agent/40 text-agent")}
+      className={cn("shrink-0 px-1 py-0 text-[9px]",
+        mode === "unconfined" ? "border-primary/(--opacity-medium) text-primary" : "border-agent/(--opacity-medium) text-agent")}
       title={t(`terminalObservation.sandbox.${mode}`)}
       data-testid="tool-sandbox"
       data-sandbox-mode={mode}
@@ -188,6 +200,8 @@ function ToolSandboxBadge({ mode }: { mode?: ToolSandboxMode }) {
   );
 }
 
+/** Per-tool status pill — "실패" (error) or "완료" (done). Single source for the success/failure badge shown on every collapsed
+ * tool row (single-tool inline + grouped per-tool). */
 function ToolStatusBadge({
   status,
 }: {
