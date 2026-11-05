@@ -1160,7 +1160,9 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
     const toggle = screen.getByTestId("worker-confinement-toggle");
     expect(toggle).toBeDisabled();
-    expect(toggle.parentElement).toHaveTextContent(t("permissionsTab.osSandboxEnabled"));
+    expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent(
+      t("permissionsTab.workerConfinementEnvForced", { envVar: "AVE_PLUGIN_WORKER_CONFINEMENT" }),
+    );
   });
 
   it("renders platform and runtime status without a restart action when unchanged", async () => {
@@ -1353,10 +1355,34 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     const block = screen.getByTestId("os-sandbox-windows-substrate");
     expect(block.dataset.shells).toBe("mxc");
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-shells-limits").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxcLimits"));
     expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(t("permissionsTab.osSandboxCapabilityWindows"));
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
     expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+  });
+
+  it("describes the shell sandbox as on by default on Windows too, as the settings default is", () => {
+    // settings-defaults.ts turns osToolSandbox on for darwin, linux and win32.
+    expect(t("permissionsTab.osSandboxDescription")).toMatch(/macOS, Linux and Windows|macOS·Linux·Windows/);
+    expect(t("permissionsTab.osSandboxDescription")).not.toMatch(/until shell isolation is ready|셸 격리가 준비될 때까지/);
+  });
+
+  it("never claims isolation for Windows while the sandbox is off", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: false, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+      boot: null,
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(document.body.textContent).toContain(t("permissionsTab.osSandboxCapabilityWindows")));
+    const windows = t("permissionsTab.osSandboxCapabilityWindows");
+    // Containment is stated only as what Windows offers, and the off state is said in the same paragraph.
+    expect(windows).toMatch(/where Windows offers|제공하면/);
+    expect(windows).toMatch(/off, tools run unconfined|꺼져 있는 동안 도구는 격리 없이 실행/);
+    expect(screen.queryByTestId("os-sandbox-windows-substrate")).toBeNull();
   });
 
   it("explains an AVE_HOME privacy degrade with available-but-unused MXC on the Permissions tab (native peer snapshot)", async () => {
@@ -2740,6 +2766,21 @@ describe("PermissionsTab unified permission rules", () => {
     await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(inert));
     await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
     expect(table).toHaveTextContent(healthy.pattern);
+  });
+
+  it.each(["en", "ko"] as const)("says a saved exact or prefix shell rule runs matching commands outside the sandbox unasked in %s", async (locale) => {
+    // Host-shell row of the permission decision tree (owner 2026-10-29): with the sandbox off or unavailable, a saved exact OR
+    // prefix allow rule runs matching commands without asking; the approval card says the same.
+    setLocale(locale);
+    const api = installApi([[]]);
+    const prefix = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValue({ rules: [prefix], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const note = await screen.findByTestId("permissions-shell-outside-sandbox");
+    expect(note).toHaveTextContent(t("permissionsTab.shellOutsideSandbox"));
+    expect(note.textContent).toMatch(locale === "en" ? /exact or prefix allow rule/ : /정확히 일치하거나 접두사가 일치하는 허용 규칙/);
+    expect(note.textContent).not.toMatch(/never|Only an exact|그렇게 하지 않습니다|정확히 일치하는 허용 규칙만/);
   });
 
   it.each(["en", "ko"] as const)("lists a retired host terminal rule with a delete action in %s", async (locale) => {

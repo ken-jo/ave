@@ -2,7 +2,7 @@
 export const en = {
   "subscriptionProvidersSection.title": "Subscription providers",
   "subscriptionProvidersSection.description": "Use an existing subscription with a provider-specific official runtime while keeping its login and chat selection in one place.",
-  "subscriptionProvidersSection.securityNotice": "Ave never exposes sign-in URLs, account tokens, or raw runtime output to this settings page. Browser sign-in is opened by the main process.",
+  "subscriptionProvidersSection.securityNotice": "Sign-in URLs, account tokens and runtime output are never shown here.",
   "subscriptionProvidersSection.apiChatLabel": "API-key chat",
   "subscriptionProvidersSection.useApiForChat": "Use API-key chat",
   "subscriptionProvidersSection.statusChecking": "Checking connection",
@@ -92,7 +92,7 @@ export const en = {
 export const ko: Record<keyof typeof en, string> = {
   "subscriptionProvidersSection.title": "구독 공급자",
   "subscriptionProvidersSection.description": "공급자별 공식 런타임의 기존 구독을 사용하면서 로그인과 대화 선택을 한 곳에서 관리합니다.",
-  "subscriptionProvidersSection.securityNotice": "Ave는 이 설정 화면에 로그인 URL, 계정 토큰 또는 원시 런타임 출력을 노출하지 않습니다. 브라우저 로그인은 메인 프로세스가 엽니다.",
+  "subscriptionProvidersSection.securityNotice": "로그인 URL, 계정 토큰, 런타임 출력은 이 화면에 표시되지 않습니다.",
   "subscriptionProvidersSection.apiChatLabel": "API 키 대화",
   "subscriptionProvidersSection.useApiForChat": "API 키 대화 사용",
   "subscriptionProvidersSection.statusChecking": "연결 확인 중",
