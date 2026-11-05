@@ -261,6 +261,18 @@ describe("MemoryCaptureService notices", () => {
     expect(notices.saved).toHaveBeenCalledWith({ sessionId: SESSION_ID }, expect.objectContaining({ op: "created", fileDigest: "f".repeat(64) }));
   });
 
+  it("anchors /remember's notice under the command's row without persisting that row id", async () => {
+    const { manager, saveMemory } = makeMemoryManager();
+    const notices = makeNotices();
+    await createCaptureService(manager, makeMemoryReviewer().memoryReviewer, notices)
+      .captureExplicit({ title: "Status preference", content: SOURCE, sessionId: SESSION_ID, anchorMessageId: TURN_MESSAGE_ID });
+
+    expect(notices.saved).toHaveBeenCalledWith({ sessionId: SESSION_ID, anchorMessageId: TURN_MESSAGE_ID }, expect.anything());
+    const options = saveMemory.mock.calls[0]![2] as { origin?: { messageId?: string } };
+    expect(options.origin).toEqual(expect.objectContaining({ sessionId: SESSION_ID }));
+    expect(options.origin?.messageId).toBeUndefined();
+  });
+
   it("tells /remember's conversation why it did not save, and stays silent for automatic skips", async () => {
     const { manager } = makeMemoryManager();
     const notices = makeNotices();

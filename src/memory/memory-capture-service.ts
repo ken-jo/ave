@@ -48,6 +48,8 @@ export interface ExplicitMemoryCaptureRequest extends ProjectScopedMemoryOptions
   title?: string;
   /** The conversation the save was asked from; absent for a direct save from the memory UI. */
   sessionId?: string;
+  /** The on-screen row the live notice sits under. Never persisted: a slash command has no stored row. */
+  anchorMessageId?: string;
 }
 
 export interface MemoryCaptureReviewer {
@@ -76,6 +78,8 @@ interface PendingCapture {
   trigger: MemoryCaptureTrigger;
   sessionId?: string;
   origin?: MemoryOriginV1;
+  /** Where the live notice sits when no persisted row names it (/remember). */
+  anchorMessageId?: string;
   requestedTitle?: string;
 }
 
@@ -148,7 +152,9 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
 
   // Explicit saves still require review and host validation even when automatic capture is disabled.
   async captureExplicit(request: ExplicitMemoryCaptureRequest): Promise<MemoryCaptureResult> {
-    const target = request.sessionId !== undefined ? { sessionId: request.sessionId } : undefined;
+    const target = request.sessionId !== undefined
+      ? { sessionId: request.sessionId, ...(request.anchorMessageId !== undefined ? { anchorMessageId: request.anchorMessageId } : {}) }
+      : undefined;
     let result: MemoryCaptureResult;
     try {
       result = await this.captureExplicitUnnoticed(request);
@@ -179,6 +185,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
       sourceDigest: sha256Hex(source),
       trigger: "explicit",
       ...(request.sessionId !== undefined ? { origin: this.originFor(request.sessionId, undefined) } : {}),
+      ...(request.sessionId !== undefined && request.anchorMessageId !== undefined ? { anchorMessageId: request.anchorMessageId } : {}),
       ...(requestedTitle ? { requestedTitle } : {}),
     });
   }
@@ -271,10 +278,11 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
       },
       ...(pending.origin ? { origin: pending.origin } : {}),
     }, pending.trigger === "automatic" ? "capture" : "user");
-    // The automatic notice sits under the user row that taught it; /remember has no row of its own.
+    // The automatic notice sits under the user row that taught it; /remember's under its command row, which is not stored.
+    const anchorMessageId = pending.origin?.messageId ?? pending.anchorMessageId;
     const target = pending.sessionId !== undefined
-      ? { sessionId: pending.sessionId, ...(pending.origin?.messageId !== undefined ? { anchorMessageId: pending.origin.messageId } : {}) }
-      : pending.origin ? { sessionId: pending.origin.sessionId } : undefined;
+      ? { sessionId: pending.sessionId, ...(anchorMessageId !== undefined ? { anchorMessageId } : {}) }
+      : pending.origin ? { sessionId: pending.origin.sessionId, ...(anchorMessageId !== undefined ? { anchorMessageId } : {}) } : undefined;
     const undoToken = this.deps.notices.saved(target, saved);
     return { status: "saved", op: saved.op, entry: saved.entry, ...(undoToken ? { undoToken } : {}) };
   }

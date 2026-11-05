@@ -577,13 +577,16 @@ describe("ConversationLoop command routing", () => {
 
     const result = await loop.runTurn("/remember retain this rollout preference", undefined, undefined, {
       ...userKeyboardTurn(),
+      userMessageId: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
     });
 
     expect(captureExplicit).toHaveBeenCalledWith({
       title: "retain this rollout preference",
       content: "retain this rollout preference",
-      // The command is handled before any user row exists, so the save names its conversation only.
+      // The command is handled before any user row exists, so the save names its conversation only; the live notice is
+      // anchored under the command's on-screen row.
       sessionId: loop.sessionId,
+      anchorMessageId: "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
     });
     expect(saveMemory).not.toHaveBeenCalled();
     expect(result.text).toBe(t("be_conversationLoop.cmdRememberSaved", { title: "Reviewed rollout preference" }));

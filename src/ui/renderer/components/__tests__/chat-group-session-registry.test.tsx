@@ -135,6 +135,20 @@ describe("useChatGroupSession", () => {
     expect(result.current.streaming).toBe(true);
   });
 
+  it("hands a new chat's composer draft to the tile", async () => {
+    const registry = new ChatGroupSessionRegistry();
+    const startNewChat = vi.fn(async () => true);
+    const { result } = renderHook(() => {
+      useRegisterChatGroupSession(registry, "main", { ...handleFor(false), startNewChat });
+      return useChatGroupSession(registry, "main");
+    });
+
+    await act(async () => {
+      await result.current.startNewChat({ projectRoot: "/p" }, { draft: "기억 \"x\" 를 고쳐 줘: ", fixMemory: { id: "m1", title: "x", content: "y" } });
+    });
+    expect(startNewChat).toHaveBeenCalledWith({ projectRoot: "/p" }, { draft: "기억 \"x\" 를 고쳐 줘: ", fixMemory: { id: "m1", title: "x", content: "y" } });
+  });
+
   it("falls back to the stand-in when the tile unmounts", () => {
     const registry = new ChatGroupSessionRegistry();
     const tile = renderHook(() => useRegisterChatGroupSession(registry, "group-2", handleFor(true)));

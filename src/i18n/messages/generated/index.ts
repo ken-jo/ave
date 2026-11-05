@@ -122,6 +122,7 @@ import { en as en_mcpAppFullscreenPanel } from "./mcpAppFullscreenPanel.js";
 import { en as en_mcpAppPipPanel } from "./mcpAppPipPanel.js";
 import { en as en_mcpAppView } from "./mcpAppView.js";
 import { en as en_mcpTab } from "./mcpTab.js";
+import { en as en_memorySaveNotice } from "./memorySaveNotice.js";
 import { en as en_memorySearchPanel } from "./memorySearchPanel.js";
 import { en as en_messageQueuePanel } from "./messageQueuePanel.js";
 import { en as en_messageQueueStore } from "./messageQueueStore.js";
@@ -316,6 +317,7 @@ export const generatedEn: Record<string, string> = {
   ...en_mcpAppPipPanel,
   ...en_mcpAppView,
   ...en_mcpTab,
+  ...en_memorySaveNotice,
   ...en_memorySearchPanel,
   ...en_messageQueuePanel,
   ...en_messageQueueStore,

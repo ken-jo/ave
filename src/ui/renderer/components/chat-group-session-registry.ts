@@ -7,6 +7,7 @@ import type { SendMode } from "../hooks/use-send-message.js";
 import type { SessionProjectSummary } from "../hooks/use-sessions.js";
 import type { ApprovalRequest } from "../types.js";
 import type { AskUserQuestionRequest } from "./AskUserQuestionCard.js";
+import type { MemoryFixTarget } from "./MemoryFixCard.js";
 
 /** Publish side-chat visibility so tiles do not adopt questions it already draws and hidden side chats retain sidebar
  * attention. */
@@ -20,6 +21,12 @@ const NO_SESSION_IDS: ReadonlySet<string> = new Set();
 
 /** Window conversation controls resolve through the focused group registry; conversation-local operations stay in their
  * tiles. */
+/** What a new chat opens with: composer text, and for "Ave 에게 고치기" the memory it is about. */
+export interface NewChatOpening {
+  draft: string;
+  fixMemory?: MemoryFixTarget;
+}
+
 export interface ChatGroupSessionHandle {
   /** The transcript. Its IDENTITY is the store's change signal, so it must be held as state and replaced only when the
    * transcript changes — a fresh array per render would republish forever. */
@@ -98,7 +105,8 @@ export interface ChatGroupSessionHandle {
    * refused `chatNew` (the tile has said why). The tile then still shows
    * what its loop still holds.
    */
-  startNewChat: (project?: { projectRoot?: string; projectName?: string }) => Promise<boolean>;
+  /** `opening.draft` fills the new conversation's composer and `fixMemory` names the memory it is for; nothing is sent. */
+  startNewChat: (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => Promise<boolean>;
 }
 
 type Listener = () => void;
@@ -522,8 +530,8 @@ export class ChatGroupSessionRegistry {
       loadSession: async (sessionId: string) => await live()?.loadSession(sessionId) ?? false,
       prefillComposer: (text: string) => live()?.prefillComposer(text),
       appendSystemEntry: (message: string) => live()?.appendSystemEntry(message),
-      startNewChat: async (project?: { projectRoot?: string; projectName?: string }) =>
-        await live()?.startNewChat(project) ?? false,
+      startNewChat: async (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) =>
+        await live()?.startNewChat(project, opening) ?? false,
     });
   }
 

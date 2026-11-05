@@ -20,6 +20,7 @@ import {
   tileDrawsSession,
   useRegisterChatGroupSession,
   type ChatGroupSessionRegistry,
+  type NewChatOpening,
   type PendingAnswers,
   type SideChatSurface,
 } from "./chat-group-session-registry.js";
@@ -53,6 +54,12 @@ import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import type { SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { ProcessingDisplayLevel } from "../../../shared/processing-display-level.js";
+import type { MemoryFixTarget } from "./MemoryFixCard.js";
+
+/** A new chat's opening text, followed by any unsent text that came along with it, so neither is lost. */
+function withOpeningText(opening: string, carried: string): string {
+  return carried.trim() ? `${opening}${carried}` : opening;
+}
 
 /**
  * Everything a tile needs that is NOT its own conversation.
@@ -92,6 +99,8 @@ export interface ChatGroupEnvironment {
   activeChatModel: ActiveChatModel | null;
   checkApiKey: () => Promise<boolean>;
   onOpenSettings: (tab?: string) => void;
+  /** Open the memory panel searching for this text. */
+  onOpenMemory: (query: string) => void;
   /** The active route's effective output limit and who set it (`resolveContextWindowForRoute(...).output`). */
   maxOutputTokens: number;
   maxOutputTokensSource: ResolvedOutputTokenLimit["effectiveSource"];
@@ -417,12 +426,28 @@ export function ChatGroupSession({
   // Set by a new chat started from a conversation with no entries (the composer's project selector does this): that
   // conversation is being replaced, not left, so its text belongs to the one that replaces it.
   const draftCarryFromRef = useRef<string | null>(null);
+  // Text a new chat opens with (startNewChat's `opening.draft`), waiting for the tile to switch to that conversation.
+  const newChatDraftRef = useRef<{ sessionId: string; text: string } | null>(null);
+  // The memory a "Ave 에게 고치기" chat was opened for, shown above that conversation's composer until it is sent.
+  const [memoryFix, setMemoryFix] = useState<{ sessionId: string; memory: MemoryFixTarget } | null>(null);
   useLayoutEffect(() => {
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
     draftSessionIdRef.current = currentSessionId;
     const carry = previous !== null && previous === draftCarryFromRef.current;
     draftCarryFromRef.current = null;
+    const opening = newChatDraftRef.current;
+    if (opening && opening.sessionId === currentSessionId) {
+      newChatDraftRef.current = null;
+      if (previous && !carry) {
+        parkComposerDraft(previous, questionRef.current);
+        setQuestion(opening.text);
+      } else {
+        // Text typed into the conversation being replaced arrives with it, as on the ordinary path, after the opening text.
+        setQuestion(withOpeningText(opening.text, questionRef.current));
+      }
+      return;
+    }
     // No conversation yet (mount, or the tile's session still resolving), or
     // an empty one being replaced: whatever was typed belongs to the
     // conversation that is arriving, so it stays, and a parked draft only
@@ -609,7 +634,7 @@ export function ChatGroupSession({
   }, [env, handleLoadSessionAndRefresh]);
 
   const startNewChat = useCallback(
-    async (project?: { projectRoot?: string; projectName?: string }) => {
+    async (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => {
       if (streaming) { console.warn("new chat blocked during streaming"); return false; }
       const created = await api.chatNew(project);
       if (!created.ok) {
@@ -625,6 +650,13 @@ export function ChatGroupSession({
       // No move to a new id: the carry must not wait for a later, ordinary switch away from this conversation and take the text
       // along then.
       if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
+      if (opening !== undefined && applied !== null) {
+        // The new conversation opens with this text in its composer: set it if the tile already switched (keeping what the
+        // switch carried over), otherwise hand it to the switch.
+        if (draftSessionIdRef.current === applied) setQuestion(withOpeningText(opening.draft, questionRef.current));
+        else newChatDraftRef.current = { sessionId: applied, text: opening.draft };
+        setMemoryFix(opening.fixMemory ? { sessionId: applied, memory: opening.fixMemory } : null);
+      }
       await env.refreshSessions();
       return true;
     },
@@ -911,12 +943,16 @@ export function ChatGroupSession({
     </>
   );
 
+  const dismissMemoryFix = useCallback(() => setMemoryFix(null), []);
   const chatContextValue = useMemo<ChatContextValue>(() => ({
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, setQuestion, chatEndRef, currentSessionId, hidden,
     publishSideChatSurface: setSideChatSurface,
     hasApiKey: env.effectiveLlmReady, settingsLoaded: env.settingsLoaded,
     onOpenSettings: env.onOpenSettings,
+    onOpenMemory: env.onOpenMemory,
+    memoryFix: memoryFix?.sessionId === currentSessionId ? memoryFix.memory : null,
+    onDismissMemoryFix: dismissMemoryFix,
     ...env.search,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     llmContextWindow: env.llmContextWindow, llmInputLimit: env.llmInputLimit,
@@ -939,7 +975,7 @@ export function ChatGroupSession({
     llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
   }), [
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, currentSessionId, hidden, env,
+    question, currentSessionId, hidden, env, memoryFix, dismissMemoryFix,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     tpmLimit, tpmPct, isTpmOverflow,
     attachments, costEstimate, costBadgeClass,
@@ -950,7 +986,11 @@ export function ChatGroupSession({
       <ChatView
         api={api}
         chatGroupId={chatGroupId}
-        onAsk={(q, intent, opts) => handleAsk(q, "default", intent, opts)}
+        onAsk={(q, intent, opts) => {
+          // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
+          if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);
+          return handleAsk(q, "default", intent, opts);
+        }}
         /** opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째 인자로 전달 — queue-auto inject path 활성. */
         onRunMcpPrompt={handleRunMcpPrompt}
         onRunPluginPrompt={handleRunPluginPrompt}

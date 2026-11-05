@@ -184,6 +184,39 @@ describe("MemorySaveNotices", () => {
     expect(history.entries.map((row) => [row.op, row.actor])).toEqual([["created", "assistant"], ["deleted", "user"], ["created", "user"]]);
   });
 
+  it("leaves the memory deleted when restoring its index entry fails, so the same undo works once writes do", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+    const path = join(dir, "memories", created.entry.filename);
+    const failing = vi.spyOn(manager as unknown as { updateMemoryIndexLocked: () => void }, "updateMemoryIndexLocked")
+      .mockImplementationOnce(() => { throw new Error("index write refused"); });
+
+    await expect(notices.undo(token!)).rejects.toThrow("index write refused");
+    expect(existsSync(path)).toBe(false);
+    expect(manager.getMemoryIndex()).not.toContain("Reply language");
+    failing.mockRestore();
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "deleted", title: "Reply language" });
+    expect(readFileSync(path, "utf-8")).toContain("Answer in Korean.");
+    expect(manager.getMemoryIndex()).toContain("Reply language");
+  });
+
+  it("removes the restored file and index entry when recording the restore in history fails", async () => {
+    const created = await save("Reply language", "Answer in Korean.");
+    const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");
+    const token = notices.deleted(undefined, deleted.entry!, deleted.priorContent);
+    const history = (manager as unknown as { history: { record: (...args: unknown[]) => Promise<void> } }).history;
+    const failing = vi.spyOn(history, "record").mockRejectedValueOnce(new Error("history write refused"));
+
+    await expect(notices.undo(token!)).rejects.toThrow("history write refused");
+    expect(existsSync(join(dir, "memories", created.entry.filename))).toBe(false);
+    expect(readFileSync(join(dir, "memories", "MEMORY.md"), "utf-8")).not.toContain("Reply language");
+    failing.mockRestore();
+
+    await expect(notices.undo(token!)).resolves.toEqual({ ok: true, undone: "deleted", title: "Reply language" });
+  });
+
   it("refuses to restore over a memory saved with the same title in the meantime", async () => {
     const created = await save("Reply language", "Answer in Korean.");
     const deleted = await manager.deleteMemory(created.entry.filename, {}, "user");

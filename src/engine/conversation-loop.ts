@@ -934,8 +934,9 @@ export class ConversationLoop {
     args: string,
     inputOrigin: ChatInputOrigin,
     callbacks?: TurnCallbacks,
+    userMessageId?: string,
   ): Promise<TurnResult> {
-    return handleCommand(this, command, args, inputOrigin, callbacks);
+    return handleCommand(this, command, args, inputOrigin, callbacks, userMessageId);
   }
 
   async handlePermissionCommand(
