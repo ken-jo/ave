@@ -6,7 +6,7 @@ import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
-import { RunningScheduleCardView } from "../schedule/BoardScheduleCards.js";
+import { PlannedScheduleCardView, RunningScheduleCardView } from "../schedule/BoardScheduleCards.js";
 import type { AveApi } from "../../types.js";
 import type { RoutineOccurrencesResult, RoutineRecord } from "../../../../shared/routines-types.js";
 import { t } from "../../../../i18n/runtime.js";
@@ -181,6 +181,16 @@ describe("Work Board — schedule cards", () => {
     cleanup();
     // Unmounted with the card: no timer stays behind.
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("draws a card connected to a chat with the blue bar, the alarm mark and where it runs", () => {
+    const card = { routine: { ...routine("deps", "Dependency check"), targetSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, nextAt: iso("2026-11-05T13:00:00") };
+    render(<PlannedScheduleCardView card={card} />);
+    const view = screen.getByTestId("board-schedule-card-deps");
+    expect(view.getAttribute("data-connected")).toBe("true");
+    expect(view.className).toContain("border-l-info");
+    expect(view.textContent).toContain(t("schedulePanel.runsInConnectedChat"));
+    expect(view.textContent).not.toContain(t("schedulePanel.runsInNewChat"));
   });
 
   it("counts only work items in the done badge when this week has skipped items but no run", async () => {

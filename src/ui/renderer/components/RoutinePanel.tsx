@@ -5,6 +5,7 @@ import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
+import { ChatLinkField, useProjectChats } from "./schedule/chat-link.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import {
   Dialog,
@@ -119,6 +120,10 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // Optional: the chat the item enters when it fires. Only a scheduled turn has a chat to enter.
+  const chats = useProjectChats(api, projectRoot);
+  const [targetSessionId, setTargetSessionId] = useState("");
+  const connects = trigger === "schedule" && execution === "llm-session" && targetSessionId !== "";
 
   useEffect(() => {
     let cancelled = false;
@@ -216,6 +221,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
       ...(schedule ? { schedule: schedule as RoutineSchedule } : {}),
       ...(template ? { source: packageRoutineSource(template) } : {}),
       ...(title.trim() ? { title: title.trim() } : {}),
+      ...(connects ? { targetSessionId } : {}),
       ...(execution === "llm-session"
         ? {
             prePrompt: prePrompt.trim(),
@@ -519,6 +525,10 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                   />
                 </Label>
               </div>
+            )}
+
+            {trigger === "schedule" && (
+              <ChatLinkField value={targetSessionId} onChange={setTargetSessionId} chats={chats} disabled={execution !== "llm-session"} />
             )}
 
             {error && <p className="text-sm text-destructive">{error}</p>}

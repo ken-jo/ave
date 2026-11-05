@@ -4,7 +4,8 @@ import { installNativeChatWindow } from "../../../__tests__/support/native-chat-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConversationSurfaceRuntime } from "../../../engine/conversation-surface-runtime.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
-import { sessionAuthorityWithheld, turnExtensionPolicyContext } from "../../../shared/turn-extension-policy.js";
+import { sessionAuthorityWithheld } from "../../../shared/turn-extension-policy.js";
+import { inScheduledWake as wake } from "../../../__tests__/support/scheduled-wake.js";
 
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
@@ -47,7 +48,6 @@ async function setup(activeTurn = false) {
   return wakeRoutineChat;
 }
 
-const wake = <T>(operation: () => T): T => turnExtensionPolicyContext.run(Object.freeze({ withholdSessionAuthority: true }), operation);
 const turn = { input: "check the build", displayText: "Scheduled prompt · Build" };
 
 afterEach(async () => {

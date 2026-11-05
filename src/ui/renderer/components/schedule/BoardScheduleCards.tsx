@@ -1,7 +1,7 @@
 // Schedule cards drawn inside the work board's columns. They are read-only summaries: editing happens in the schedule panel,
 // which a card opens.
 import { useEffect, useState } from "react";
-import { AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { AlarmClock, AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -12,7 +12,8 @@ import { routineTitle } from "./ScheduleItemPopover.js";
 import type { PlannedScheduleCard, RunningScheduleCard, BoardScheduleCards } from "./board-schedule.js";
 
 function runsAs(routine: RoutineRecord): string {
-  return t(routine.execution === "notification-only" ? "schedulePanel.runsAsNotification" : "schedulePanel.runsInNewChat");
+  if (routine.execution === "notification-only") return t("schedulePanel.runsAsNotification");
+  return t(routine.targetSessionId ? "schedulePanel.runsInConnectedChat" : "schedulePanel.runsInNewChat");
 }
 
 /** The repeat rule and how it runs; a one-shot's rule would only repeat its time, so it shows how it runs alone. */
@@ -35,12 +36,15 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
   return (
     <button
       type="button"
-      className="w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className={`w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        card.routine.targetSessionId ? "border-l-4 border-l-info" : ""}`}
       data-testid={`board-schedule-card-${card.routine.id}`}
+      data-connected={card.routine.targetSessionId ? "true" : undefined}
       onClick={() => onOpen?.(card.routine.id)}
     >
       <div className="flex items-center gap-1.5">
         <ScheduleBadge />
+        {card.routine.targetSessionId && <AlarmClock className="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />}
         <span className="min-w-0 truncate text-sm font-semibold">{routineTitle(card.routine)}</span>
       </div>
       <p className="mt-1 truncate text-xs text-foreground">{t("workBoard.scheduleNextRun", { when: formatMediumDateTime(card.nextAt) })}</p>
@@ -70,7 +74,8 @@ export function RunningScheduleCardView({ card, onOpenSession }: { card: Running
   const sessionId = card.sessionId;
   const elapsedMinutes = useElapsedMinutes(card.firedAt);
   return (
-    <div className="w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm" data-testid={`board-schedule-running-${card.routine.id}`}>
+    <div className={`w-full rounded-lg border-2 border-primary bg-background p-3 shadow-sm ${card.routine.targetSessionId ? "border-l-4 border-l-info" : ""}`}
+      data-testid={`board-schedule-running-${card.routine.id}`} data-connected={card.routine.targetSessionId ? "true" : undefined}>
       <div className="flex items-center gap-1.5">
         <ScheduleBadge />
         <span className="min-w-0 truncate text-sm font-semibold">{routineTitle(card.routine)}</span>

@@ -34,7 +34,7 @@ import { approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surf
 import { PermissionManager } from "../permission-manager.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { PermissionTestResources } from "./test-resources.js";
-import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { inScheduledWake } from "../../__tests__/support/scheduled-wake.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -393,16 +393,16 @@ describe("production run construction approval ownership", () => {
     // The chat was shown in a window before: its old approval owner must not receive the woken turn's card.
     updateApprovalSurface({ kind: "attach", sessionId: chat, surface: f.owner as unknown as WebContents });
     f.sessions.add(chat);
-    const loop = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: () => false } as Parameters<typeof createRoutineConversationLoop>[0]);
+    const loop = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: () => false } as unknown as Parameters<typeof createRoutineConversationLoop>[0]);
     expect(await loop.loadSession(chat)).toBe(true);
     expect(loop.sessionId).toBe(chat);
-    const result = await turnExtensionPolicyContext.run(Object.freeze({ withholdSessionAuthority: true }), () => f.start(loop));
+    const result = await inScheduledWake(() => f.start(loop));
     expect(result[0].is_error).toBe(true);
     expect(result[0].content).toContain(NO_APPROVER_MESSAGE);
     expect(f.owner.send).not.toHaveBeenCalled();
     expect(f.foreign.send).not.toHaveBeenCalled();
     expect(f.execute).not.toHaveBeenCalled();
-    const held = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: (id: string) => id === chat } as Parameters<typeof createRoutineConversationLoop>[0]);
+    const held = createRoutineConversationLoop({ ...f.deps, sessionHeldElsewhere: (id: string) => id === chat } as unknown as Parameters<typeof createRoutineConversationLoop>[0]);
     expect(await held.loadSession(chat)).toBe(false);
   });
 

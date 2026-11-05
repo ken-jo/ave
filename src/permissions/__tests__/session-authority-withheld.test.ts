@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const TEST_HOME = join(tmpdir(), `ave-test-withheld-${randomBytes(4).toString("hex")}`);
 process.env.AVE_HOME = TEST_HOME;
 
-import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
+import { inScheduledWake as wake } from "../../__tests__/support/scheduled-wake.js";
 import { recordApproval, lookupUserDecision, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EgressGrantStore } from "../egress-grants.js";
@@ -18,7 +18,6 @@ import { issueUserOwnedBrowserScope } from "../user-owned-browser-scope.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
-const wake = <T>(operation: () => T): T => turnExtensionPolicyContext.run(Object.freeze({ withholdSessionAuthority: true }), operation);
 
 let directory: string;
 beforeEach(() => {
@@ -46,8 +45,8 @@ describe("remembered conversation decisions", () => {
     expect(hit?.decision).toBe("deny");
   });
 
-  it("still applies a project-wide allow the user saved outside the conversation", async () => {
-    await recordApproval("bash_run", '{"command":"pwd"}', "user-keyboard", { scope: "always", verdictAtApproval: "medium", nlJustification: null });
+  it("still applies an allow the user saved for every conversation", async () => {
+    await recordApproval("bash_run", '{"command":"pwd"}', "user-keyboard", { scope: "global", verdictAtApproval: "medium", nlJustification: null });
     const hit = await wake(() => lookupUserDecision("bash_run", '{"command":"pwd"}', "user-keyboard", undefined, undefined, undefined, SESSION));
     expect(hit?.decision).toBe("allow");
   });
