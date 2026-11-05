@@ -2,7 +2,8 @@
 // message (src/audit/hmac-chain.ts). Fail when the installed Electron no longer ships either string, before an upgrade turns
 // every permanent failure into a loud open failure or a transient one into an unexplained rethrow.
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -21,10 +22,10 @@ export function readExpectedMessages(root = ROOT) {
 
 /** The files that hold Electron's native strings: the executable, plus the framework on macOS. */
 export function electronBinaries(root = ROOT) {
-  const dist = join(root, "node_modules/electron/dist");
-  const executable = readFileSync(join(root, "node_modules/electron/path.txt"), "utf-8").trim();
-  const framework = join(dist, "Electron.app/Contents/Frameworks/Electron Framework.framework/Electron Framework");
-  return [join(dist, executable), ...(existsSync(framework) ? [framework] : [])];
+  // The package resolves its own executable and downloads it when missing: CI's cached node_modules carries no dist.
+  const executable = createRequire(join(root, "package.json"))("electron");
+  const framework = join(dirname(executable), "../Frameworks/Electron Framework.framework/Electron Framework");
+  return [executable, ...(existsSync(framework) ? [framework] : [])];
 }
 
 export function checkSafeStorageMessages(root = ROOT, options = {}) {

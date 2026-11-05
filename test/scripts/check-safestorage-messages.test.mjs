@@ -15,7 +15,7 @@ function fixtureRoot(binaryText) {
     `export const ELECTRON_DECRYPT_FAILED_MESSAGE = "${FAILED}";\nexport const ELECTRON_DECRYPT_TEMPORARILY_UNAVAILABLE_MESSAGE = "${TRANSIENT}";\n`);
   if (binaryText !== null) {
     mkdirSync(join(root, "node_modules/electron/dist"), { recursive: true });
-    writeFileSync(join(root, "node_modules/electron/path.txt"), "electron");
+    writeFileSync(join(root, "node_modules/electron/index.js"), 'module.exports = require("node:path").join(__dirname, "dist", "electron");');
     writeFileSync(join(root, "node_modules/electron/dist/electron"), Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(binaryText), Buffer.from([0])]));
   }
   return root;
