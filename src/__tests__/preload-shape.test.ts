@@ -314,6 +314,7 @@ describe("preload contextBridge world shape lock", () => {
             "onTabOp",
             "pause",
             "pausePopup",
+            "refuseTabOp",
             "resume",
             "resumePopup",
             "stop",

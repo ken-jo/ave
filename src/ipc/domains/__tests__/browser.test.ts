@@ -90,6 +90,17 @@ describe("browser IPC", () => {
     expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);
   });
 
+  it("takes a renderer's refusal only from the host frame, for a request id it names", () => {
+    expect(invoke(CHANNELS.browser.refuseTabOp, pluginShellFrameEvent(), { requestId: "browser-op-1" })).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.refuseTabOp, fromWindow(), { requestId: "" })).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.refuseTabOp, fromWindow(), {})).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.refuseTabOp, hostFrameEvent(), { requestId: "browser-op-1" })).toEqual({ ok: false });
+    const refuse = vi.spyOn(browserTabRegistry, "refuseTabOp").mockReturnValue(true);
+    expect(invoke(CHANNELS.browser.refuseTabOp, fromWindow(), { requestId: "browser-op-1" })).toEqual({ ok: true });
+    expect(refuse).toHaveBeenCalledWith(7, "browser-op-1");
+    refuse.mockRestore();
+  });
+
   it("sets and clears the window's active surface, refusing malformed payloads", () => {
     expect(invoke(CHANNELS.surface.setActive, fromWindow(), { kind: "terminal", tabId: "terminal:1" })).toEqual({ ok: true });
     expect(browserTabRegistry.getActiveSurface(7)).toEqual({ kind: "terminal", tabId: "terminal:1" });

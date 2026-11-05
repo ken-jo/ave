@@ -11,6 +11,7 @@ import {
 export function buildBrowserTabsApiSurface(): BrowserTabsApi {
   return {
     bindTab: (request) => ipcRenderer.invoke(CHANNELS.browser.bindTab, request),
+    refuseTabOp: (requestId) => ipcRenderer.invoke(CHANNELS.browser.refuseTabOp, { requestId }),
     getState: async () => {
       const state = parseBrowserTabControlState(await ipcRenderer.invoke(CHANNELS.browser.getState));
       if (!state) throw new Error("invalid-browser-control-state");

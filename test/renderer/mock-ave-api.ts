@@ -223,6 +223,7 @@ function makeBrowserTabsDouble() {
   let bindingState: SessionTabBindingsState = { revision: 0, bindings: [] };
   return {
     bindTab: vi.fn(async () => ({ ok: true as const })),
+    refuseTabOp: vi.fn(async () => ({ ok: true })),
     stop: vi.fn(async () => ({ ok: true as const })),
     pause: vi.fn(async () => ({ ok: true as const })),
     resume: vi.fn(async () => ({ ok: true as const })),

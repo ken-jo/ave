@@ -11,6 +11,7 @@ import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/mai
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface, getActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
+import { getWebSurfaces } from "../../src/ui/renderer/preview/web-surfaces.js";
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
 import type { ChatStreamEvent } from "../../src/lib/chat-stream-state.js";
 import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
@@ -1172,5 +1173,34 @@ describe("main-area terminal and web panels", () => {
       fireEvent.keyDown(window, { key: "ArrowRight", ctrlKey: true, shiftKey: true, altKey: true });
     });
     await waitFor(() => expect(cellOf(terminal.tabId)).not.toBe("pane-cell:main"));
+  });
+});
+
+// A pane chat opened beside an empty page has no tab opener of its own; its agent's first page loads into that page.
+describe("a pane chat's first agent page", () => {
+  it("loads into the empty main page it names, bound to the request, and never into a page that already shows one", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void; refuseTabOp: ReturnType<typeof vi.fn> } };
+    await clickSidebarNavRow("features", "sidebar-web");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const page = shownSurfaces(container)[0]!.tabId!;
+    expect(container.querySelector('[data-testid="web-panel-empty"]')).not.toBeNull();
+
+    await act(async () => browser.browserTabs.emitBrowserTabOp({
+      requestId: "pane-first-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: page,
+    }));
+    await waitFor(() => expect(container.querySelector('[data-testid="web-panel-empty"]')).toBeNull());
+    expect(getWebSurfaces().find((surface) => surface.tabId === page)).toMatchObject({ url: "about:blank", bindRequestId: "pane-first-page" });
+    expect(document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')).toBeNull();
+
+    await act(async () => browser.browserTabs.emitBrowserTabOp({
+      requestId: "pane-second-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: page,
+    }));
+    expect(getWebSurfaces().find((surface) => surface.tabId === page)?.bindRequestId).toBe("pane-first-page");
+    // Neither a page that already shows one nor a page that is gone can take it: main hears so at once, not at its timeout.
+    await act(async () => browser.browserTabs.emitBrowserTabOp({
+      requestId: "pane-gone-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: "browser:gone",
+    }));
+    expect(browser.browserTabs.refuseTabOp.mock.calls).toEqual([["pane-second-page"], ["pane-gone-page"]]);
   });
 });

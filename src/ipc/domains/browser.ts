@@ -100,6 +100,17 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     });
   });
 
+  ipcMain.handle(CHANNELS.browser.refuseTabOp, (e, payload: unknown): { ok: boolean } => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.refuseTabOp, e);
+      return { ok: false };
+    }
+    const win = mainWindowForContents(e.sender);
+    const requestId = (payload as { requestId?: unknown } | null)?.requestId;
+    if (!win || typeof requestId !== "string" || requestId.length === 0) return { ok: false };
+    return { ok: browserTabRegistry.refuseTabOp(win.id, requestId) };
+  });
+
   ipcMain.handle(CHANNELS.browser.stop, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.browser.stop, e);

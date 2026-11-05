@@ -184,7 +184,7 @@ export type BrowserTabOpOutcome =
   | { readonly ok: false; readonly error: "no-window-renderer" | "timeout" | "aborted" | "no-such-tab" | "not-authorized" | "control-paused" | "native-operation-failed" };
 
 type RequestedTabOp =
-  | { readonly op: "new"; readonly url: string; readonly sessionId?: string; readonly actor?: BrowserSessionActor; readonly active?: boolean }
+  | { readonly op: "new"; readonly url: string; readonly sessionId?: string; readonly inTabId?: string; readonly actor?: BrowserSessionActor; readonly active?: boolean }
   | { readonly op: "select" | "close"; readonly tabId: string; readonly actor?: BrowserSessionActor };
 
 interface PendingTabOp {
@@ -480,6 +480,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   // Bind a renderer tab id to an attached guest of the sender's window.
+  /** The renderer could not load an `inTabId` page: the pane's page is gone or already shows one. Settle now, not at the
+   * timeout. Only the window the op went to may refuse it, and only an op that named a page to load into. */
+  refuseTabOp(senderWindowId: number, requestId: string): boolean {
+    const pending = this.pending.get(requestId);
+    if (pending?.request.op !== "new" || pending.request.inTabId === undefined || pending.windowId !== senderWindowId) return false;
+    pending.settle({ ok: false, error: "no-such-tab" });
+    return true;
+  }
+
   bindTab(senderWindowId: number, request: BrowserTabBindRequest): BrowserTabBindResult {
     this.restoreBindings(senderWindowId);
     const entry = this.attached.get(request.webContentsId);
@@ -496,6 +505,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const pendingNew = request.requestId === undefined ? undefined : this.pending.get(request.requestId);
     if (pendingNew?.request.op === "new" && pendingNew.windowId === senderWindowId) {
       if (entry.sequence <= pendingNew.attachmentSequence || tab?.guest || tab?.owner || this.workspaceBindings.get(key)?.owner
+        || (pendingNew.request.op === "new" && pendingNew.request.inTabId !== undefined && pendingNew.request.inTabId !== request.tabId)
         || [...this.tabs.values()].some((other) => other.guest?.id === entry.guest.id)) {
         return { ok: false, error: "guest-not-hosted" };
       }
@@ -1178,7 +1188,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
-      ? { requestId, op: "new", url: "about:blank", active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
+      ? { requestId, op: "new", url: "about:blank", active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }),
+        ...(op.inTabId === undefined ? {} : { inTabId: op.inTabId }) }
       : { requestId, op: op.op, tabId: target!.rendererTabId ?? target!.handle };
     return new Promise<BrowserTabOpOutcome>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1192,7 +1203,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       };
       // Keep the handle main knows (not the renderer id) for close/select.
       const pendingRequest: BrowserTabOpRequest = op.op === "new"
-        ? { requestId, op: "new", url: op.url, active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }) }
+        ? { requestId, op: "new", url: op.url, active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }),
+          ...(op.inTabId === undefined ? {} : { inTabId: op.inTabId }) }
         : { requestId, op: op.op, tabId: op.tabId };
       this.pending.set(requestId, { windowId, request: pendingRequest, actor, attachmentSequence: this.nextAttachment, settle });
       if (options.signal?.aborted) {

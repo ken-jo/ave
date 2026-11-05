@@ -1145,6 +1145,7 @@ function adapterFixture(options: {
     pickUploadFiles: async () => null,
     windowIdForHostedSession: () => 1,
     liveOriginSessionId: () => undefined,
+    opensAgentTabs: () => true,
     loadActions: async () => actions as unknown as import("../../../tools/browser-tools.js").BrowserPageActions<typeof guest>,
   });
   const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;

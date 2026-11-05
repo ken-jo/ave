@@ -99,6 +99,22 @@ describe("BrowserTabRegistry", () => {
     ] } });
   });
 
+  it("settles a load into a named page at once when that window's renderer refuses it, and only then", async () => {
+    const { registry, ops } = setup();
+    const plain = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
+    const plainId = ops.at(-1)!.request.requestId;
+    const named = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://b.example/", inTabId: "browser:pane" });
+    const namedId = ops.at(-1)!.request.requestId;
+    // Another window cannot refuse it, and an op that named no page is not the renderer's to refuse.
+    expect(registry.refuseTabOp(2, namedId)).toBe(false);
+    expect(registry.refuseTabOp(1, plainId)).toBe(false);
+    expect(registry.refuseTabOp(1, namedId)).toBe(true);
+    await expect(named).resolves.toEqual({ ok: false, error: "no-such-tab" });
+    expect(registry.refuseTabOp(1, namedId)).toBe(false);
+    attachTab(registry, { tabId: "browser:1", webContentsId: 11, requestId: plainId }, 1, "about:blank");
+    await expect(plain).resolves.toMatchObject({ ok: true });
+  });
+
   it("keeps an unknown tab user-owned when takeover arrives before its first bind", async () => {
     const { registry, ops } = setup();
     const opened = registry.requestTabOp(1, { op: "new", actor: ACTOR, url: "https://a.example/" });
@@ -915,6 +931,9 @@ describe("strict browser chrome contracts", () => {
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, sessionId: 7 })).toBeNull();
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false }))
       .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "browser:pane" }))
+      .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "browser:pane" });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "" })).toBeNull();
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "page" }))
       .toEqual({ requestId: "r", op: "focus", tabId: "page" });
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "" })).toBeNull();
