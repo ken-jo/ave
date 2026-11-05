@@ -48,6 +48,11 @@ async function isActive(_container: HTMLElement, testId: string): Promise<boolea
 }
 
 async function waitForActive(container: HTMLElement, testId: string): Promise<void> {
+  // A built-in view is a rail button of its own; an extension sits in the extensions flyout.
+  if (groupOf(testId) === "features") {
+    await waitFor(() => expect(container.querySelector(`[data-testid="sidebar-rail"] [data-testid="${testId}"]`)?.getAttribute("aria-current")).toBe("page"));
+    return;
+  }
   await waitFor(() =>
     expect(
       container.querySelector(`[data-testid="sidebar-group-${groupOf(testId)}"]`)?.getAttribute("data-active"),

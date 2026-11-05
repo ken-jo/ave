@@ -132,6 +132,7 @@ import { ko as ko_pluginPerfTab } from "../generated/pluginPerfTab.js";
 import { ko as ko_pluginUninstallDialog } from "../generated/pluginUninstallDialog.js";
 import { ko as ko_pluginUpdatesPill } from "../generated/pluginUpdatesPill.js";
 import { ko as ko_privacyTab } from "../generated/privacyTab.js";
+import { ko as ko_projectHome } from "../generated/projectHome.js";
 import { ko as ko_ptyTerminal } from "../generated/ptyTerminal.js";
 import { ko as ko_reasoningCard } from "../generated/reasoningCard.js";
 import { ko as ko_recentlyDenied } from "../generated/recentlyDenied.js";
@@ -325,6 +326,7 @@ export const koMessages: Record<string, string> = {
   ...ko_pluginUninstallDialog,
   ...ko_pluginUpdatesPill,
   ...ko_privacyTab,
+  ...ko_projectHome,
   ...ko_ptyTerminal,
   ...ko_reasoningCard,
   ...ko_recentlyDenied,

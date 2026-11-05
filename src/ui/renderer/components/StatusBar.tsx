@@ -218,6 +218,19 @@ export function StatusBar(props: StatusBarProps) {
                 className="flex-1 text-left"
                 data-testid="status-toast-message"
               />
+              {toast.action ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    toast.action?.run();
+                    onToastDismiss?.(toast);
+                  }}
+                  className="shrink-0 text-[12px] font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  data-testid="status-toast-action"
+                >
+                  {toast.action.label}
+                </button>
+              ) : null}
               {dismissButton}
               {pendingBadge}
             </div>

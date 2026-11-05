@@ -2,6 +2,8 @@
 
 export const BUILTIN_VIEWS = {
   home: {},
+  // The selected project's home: its open surfaces, work board and memory (or every project's, in the all-projects view).
+  "project-home": {},
   settings: {},
   "work-board": {},
   routines: {},

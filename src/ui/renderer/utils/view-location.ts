@@ -1,5 +1,5 @@
 /** Locations include settings tabs and surface instances, but exclude chat sessions and external marketplace navigation. */
-import { Brain, CalendarClock, CalendarDays, Globe, KanbanSquare, KeyRound, Terminal, type LucideIcon } from "lucide-react";
+import { Brain, CalendarClock, CalendarDays, Globe, House, KanbanSquare, KeyRound, Terminal, type LucideIcon } from "lucide-react";
 import {
   SETTINGS_TAB_LABEL_KEYS,
   normalizeSettingsTab,
@@ -7,7 +7,7 @@ import {
 } from "../../../shared/settings-tabs.js";
 import { parseViewKey, type BuiltinViewKey, type InlineViewKey } from "../../../shared/view-key.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
-import type { ProjectIdentity } from "../../../shared/project-identity.js";
+import { projectRootEquals, type ProjectIdentity } from "../../../shared/project-identity.js";
 
 export interface ViewLocation {
   view: InlineViewKey;
@@ -16,6 +16,9 @@ export interface ViewLocation {
   /** Only meaningful for an instance view (`terminal`, `web`): the surface (tab) id it shows. Two panes may each show a
    * terminal, but never the same one — the one-pane-per-location rule compares this too. */
   surface?: string;
+  /** The project the window had selected here; absent in the all-projects view. Going back to an entry of another project
+   * switches to it. */
+  projectRoot?: string;
 }
 
 /**
@@ -31,7 +34,8 @@ export function toViewLocation(view: InlineViewKey, settingsTab: string): ViewLo
 }
 
 export function sameViewLocation(a: ViewLocation, b: ViewLocation): boolean {
-  return a.view === b.view && a.settingsTab === b.settingsTab && a.surface === b.surface;
+  return a.view === b.view && a.settingsTab === b.settingsTab && a.surface === b.surface
+    && (a.projectRoot === undefined ? b.projectRoot === undefined : projectRootEquals(a.projectRoot, b.projectRoot));
 }
 
 /** One crumb. `target` is absent on the last one — you cannot navigate to where you already are, so it renders as text
@@ -117,6 +121,7 @@ export type PaneViewKey = Exclude<BuiltinViewKey, "home">;
 /** Built-in view → the label its own sidebar entry already uses. Reused rather than restated so a renamed destination
  * cannot be one thing in the rail, a second in the path, and a third in the pane header that carries it. */
 export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
+  "project-home": "mainToolbar.projectHome",
   settings: "mainToolbar.settings",
   "work-board": "mainToolbar.workBoard",
   routines: "mainToolbar.routines",
@@ -129,6 +134,7 @@ export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
 
 /** Sidebar and pane headers share one glyph map; routable views still need a glyph even when absent from the sidebar. */
 export const BUILTIN_VIEW_ICONS: Record<PaneViewKey, LucideIcon> = {
+  "project-home": House,
   settings: KeyRound,
   "work-board": KanbanSquare,
   routines: CalendarClock,

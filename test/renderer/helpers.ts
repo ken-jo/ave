@@ -250,6 +250,18 @@ export async function clickSidebarNavRow(
   rowTestId: string,
   modifiers: { metaKey?: boolean; ctrlKey?: boolean } = {},
 ): Promise<void> {
+  // The built-in views and the launchers are rail buttons of their own; only the extensions keep a flyout.
+  if (group === "features") {
+    const button = await waitFor(() => {
+      const el = document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${rowTestId}"]`);
+      expect(el, `missing [data-testid="${rowTestId}"] on the rail`).not.toBeNull();
+      return el!;
+    });
+    await act(async () => {
+      fireEvent.click(button, modifiers);
+    });
+    return;
+  }
   const menu = await openSidebarGroup(group);
   const row = menu.querySelector<HTMLButtonElement>(`[data-testid="${rowTestId}"]`);
   expect(row, `missing [data-testid="${rowTestId}"] in the ${group} flyout`).not.toBeNull();
@@ -260,6 +272,9 @@ export async function clickSidebarNavRow(
 }
 
 export async function sidebarNavRowActive(group: SidebarNavGroup, rowTestId: string): Promise<boolean> {
+  if (group === "features") {
+    return document.querySelector(`[data-testid="sidebar-rail"] [data-testid="${rowTestId}"]`)?.getAttribute("aria-current") === "page";
+  }
   const menu = await openSidebarGroup(group);
   const active = menu.querySelector(`[data-testid="${rowTestId}"]`)?.getAttribute("aria-current") === "page";
   await closeSidebarGroup(group);

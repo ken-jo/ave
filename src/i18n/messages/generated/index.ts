@@ -141,6 +141,7 @@ import { en as en_pluginPerfTab } from "./pluginPerfTab.js";
 import { en as en_pluginUninstallDialog } from "./pluginUninstallDialog.js";
 import { en as en_pluginUpdatesPill } from "./pluginUpdatesPill.js";
 import { en as en_privacyTab } from "./privacyTab.js";
+import { en as en_projectHome } from "./projectHome.js";
 import { en as en_ptyTerminal } from "./ptyTerminal.js";
 import { en as en_reasoningCard } from "./reasoningCard.js";
 import { en as en_recentlyDenied } from "./recentlyDenied.js";
@@ -334,6 +335,7 @@ export const generatedEn: Record<string, string> = {
   ...en_pluginUninstallDialog,
   ...en_pluginUpdatesPill,
   ...en_privacyTab,
+  ...en_projectHome,
   ...en_ptyTerminal,
   ...en_reasoningCard,
   ...en_recentlyDenied,

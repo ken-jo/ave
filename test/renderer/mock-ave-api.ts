@@ -430,7 +430,15 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     } as unknown as Mock,
     getSettings: vi.fn(overrides.getSettings ?? (async () => projectSnapshot(settings))),
     updateSettings: vi.fn(async (p: unknown) => {
-      settings = { ...(settings as object), ...(p as object) };
+      // Like the settings store, a patch replaces the fields it names within a section and keeps the section's others.
+      const current = settings as Record<string, unknown>;
+      settings = Object.fromEntries([...new Set([...Object.keys(current), ...Object.keys(p as object)])].map((key) => {
+        const before = current[key];
+        const patch = (p as Record<string, unknown>)[key];
+        if (patch === undefined) return [key, before];
+        const section = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
+        return [key, section(before) && section(patch) ? { ...(before as object), ...(patch as object) } : patch];
+      }));
       const snapshot = projectSnapshot(settings);
       settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
       return snapshot;

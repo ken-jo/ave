@@ -59,6 +59,13 @@ export function useViewHistory(
       // Re-selecting where you already are is not a visit. Sidebar entries get clicked again all the time, and recording those
       // fills the history with steps that appear to do nothing when replayed.
       if (here && sameViewLocation(here, location)) return current;
+      // The project becoming known at launch names where the window already is; it is not a step.
+      if (here && here.projectRoot === undefined && location.projectRoot !== undefined
+        && sameViewLocation({ ...here, projectRoot: location.projectRoot }, location)) {
+        const entries = [...current.entries];
+        entries[current.index] = location;
+        return { ...current, entries };
+      }
 
       // The restore REPLACES the root — the user did not travel from `home`,
       // they arrived where they left off, and a restart must not offer "back"
@@ -75,7 +82,7 @@ export function useViewHistory(
       const entries = overflow > 0 ? kept.slice(overflow) : kept;
       return { entries, index: entries.length - 1 };
     });
-  }, [location.view, location.settingsTab, restoresApplied]);
+  }, [location.view, location.settingsTab, location.projectRoot, restoresApplied]);
 
   // Read through a ref so `step` can stay a stable callback while still seeing the freshest entries — and so `navigate` is
   // called OUTSIDE the state updater, which must stay pure (React may invoke updaters more than once).

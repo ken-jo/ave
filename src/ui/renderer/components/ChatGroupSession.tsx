@@ -13,6 +13,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 import { ChatContextProvider, type ChatContextValue } from "../context/ChatContext.js";
 import { ChatView } from "../ChatView.js";
+import { defaultProjectFromProjects, findWorkspaceProject, projectIdentityFromPayload } from "../../../shared/project-identity.js";
 import { chatGroupApi } from "./PaneFrame.js";
 import {
   sessionOwnedBy,
@@ -369,6 +370,16 @@ export function ChatGroupSession({
     onChatNewRefused: reportChatNewRefused,
     focusSessionHolder: env.focusChatGroup,
   });
+  // The tile's own conversation decides the project its panels read files from (plan D1): the window's selection only stands
+  // in until the tile holds a conversation. A conversation without a root belongs to the 기본 프로젝트.
+  const conversationProject = useMemo(() => {
+    if (!currentSessionId) return env.activeProject;
+    const projects = env.workspaceProjects ?? [];
+    const root = currentSessionProject.projectRoot;
+    if (!root) return defaultProjectFromProjects(projects) ?? env.activeProject;
+    return findWorkspaceProject(projects, root) ?? projectIdentityFromPayload(currentSessionProject);
+  }, [currentSessionId, currentSessionProject, env.activeProject, env.workspaceProjects]);
+
   // The Suggestions conversation is named from the catalog by its id, in the language in use now — never by a stored title.
   const currentSessionTitle = sessionDisplayTitle(currentSessionId, storedSessionTitle, t);
   // Written at commit, not in render: a render may be thrown away, and the frame listener (subscribed in an effect) must not
@@ -981,7 +992,7 @@ export function ChatGroupSession({
           ? env.sideChatOpenRequest
           : undefined}
         onSessionsChanged={env.refreshSessions}
-        activeProject={env.activeProject}
+        activeProject={conversationProject}
         workspaceProjects={env.workspaceProjects}
         onNewChatForProject={env.onNewChatForProject}
         onRefreshProjects={env.onRefreshProjects}

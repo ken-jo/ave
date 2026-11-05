@@ -49,27 +49,25 @@ describe("MainToolbar", () => {
     expect(document.querySelector("[data-testid='token-progress-ring']")).toBeNull();
   });
 
-  it("names the location on its leading edge, where the sidebar card ends", () => {
-    // History (back/forward) moved to the sidebar, which owns routes. The PATH stays on the band: it says WHERE THE WINDOW IS,
-    // and giving it a row of its own below the band cost 28px of every screen to repeat that.
+  it("puts back / forward and then the location on its leading edge", () => {
+    // The band carries route history and the path: the sidebar is a rail of launchers and views now, with no strip for history.
     renderWithProvider(defaultProps());
     const crumb = document.querySelector("[data-testid='view-path-breadcrumb']");
     expect(crumb).toBeTruthy();
     expect(crumb!.textContent).toContain("대화");
-    // It is a path, not a Home button — no history controls come with it.
-    expect(screen.queryByTestId(TEST_IDS.viewPathBack)).toBeNull();
+    const back = screen.getByTestId(TEST_IDS.viewPathBack);
+    expect(back.compareDocumentPosition(crumb!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  // The search / star / export controls + the collapse toggle moved to the sidebar cluster strip — the band must NOT host
-  // them anymore.
-  it("no longer renders the search / star / export controls (they live in the sidebar cluster)", () => {
+  // Search lives on the rail, and the band's unfold button belongs to App, not to the toolbar.
+  it("does not render the search / star / export controls", () => {
     renderWithProvider(defaultProps());
     expect(screen.queryByTitle("통합 검색 (Cmd/Ctrl+F)")).toBeNull();
     expect(screen.queryByTitle("현재 세션 핀 고정")).toBeNull();
     expect(screen.queryByTestId("toolbar-export")).toBeNull();
   });
 
-  it("no longer renders the sidebar collapse toggle (it lives in the sidebar cluster)", () => {
+  it("does not render the sidebar collapse toggle itself", () => {
     renderWithProvider(defaultProps());
     expect(screen.queryByTestId("sidebar-collapse-toggle")).toBeNull();
   });

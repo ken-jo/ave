@@ -52,6 +52,7 @@ type ToastInput = {
   ttlMs?: number;
   sticky?: boolean;
   notification?: ToastItem["notification"];
+  action?: ToastItem["action"];
 };
 
 function createToastItem(id: string, input: ToastInput, defaultToastTtlMs: number): ToastItem {
@@ -64,6 +65,7 @@ function createToastItem(id: string, input: ToastInput, defaultToastTtlMs: numbe
     expiresAt: Date.now() + ttlMs,
     ...(input.sticky === true ? { sticky: true as const } : {}),
     notification: input.notification,
+    ...(input.action ? { action: input.action } : {}),
   };
 }
 

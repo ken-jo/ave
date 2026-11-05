@@ -13,7 +13,7 @@ function css(gap: string, gapTight: string, cardInset = "var(--chrome-gap)"): st
 }
 
 function ts(gutter: string, gapTight: string): string {
-  return `export const CHROME_GAP_TIGHT = ${gapTight};\nexport const SHELL_GUTTER = ${gutter};\nexport const COLLAPSED_RAIL_RESERVE = 64;\nexport const CHROME_ICON_BUTTON = 24;\nexport const CHROME_GAP_HAIR = 2;\n`;
+  return `export const CHROME_GAP_TIGHT = ${gapTight};\nexport const SHELL_GUTTER = ${gutter};\nexport const COLLAPSED_RAIL_RESERVE = 64;\n`;
 }
 
 function createRoot(cssSource: string, tsSource: string, containerWidth = 640): string {
@@ -47,7 +47,7 @@ describe("check-shell-geometry-tokens", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px"), ts("8", "4")));
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=6");
+    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=4");
   });
 
   it("rejects a token the module no longer matches", () => {
@@ -120,7 +120,7 @@ describe("check-shell-geometry-tokens", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px"), withHistory));
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=6");
+    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=4");
   });
 
   it("ignores a commented-out constant above the real one", () => {
@@ -128,14 +128,14 @@ describe("check-shell-geometry-tokens", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px"), withDeadCode));
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=6");
+    expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=4");
   });
 
   it("resolves a token written as a var() alias", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px", "var(--chrome-gap)"), ts("8", "4")));
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("OK pairs=6");
+    expect(result.stdout).toContain("OK pairs=4");
   });
 
   it("rejects an alias redefined as a literal that disagrees with the constant", () => {
@@ -158,7 +158,7 @@ describe("check-shell-geometry-tokens", () => {
     const result = runGateScript(SCRIPT, createRoot(awkward, ts("8", "4")));
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("OK pairs=6");
+    expect(result.stdout).toContain("OK pairs=4");
   });
 
   it("fails on a mirrored token whose value is a calc() it cannot reduce", () => {

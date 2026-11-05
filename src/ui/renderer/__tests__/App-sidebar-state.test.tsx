@@ -25,10 +25,15 @@ describe("App sidebar visibility", () => {
     expect(view.container.querySelectorAll('[data-testid="sidebar-collapse-toggle"]')).toHaveLength(1);
     expect(view.container.querySelector('[data-testid="sidebar-hide"]')).toBeNull();
     await act(async () => { fireEvent.click(toggle); });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    // Folded, the list's header button is gone and the band's unfold button takes its place: still one control.
+    const unfold = () => view.container.querySelector('[data-testid="sidebar-collapse-toggle"]');
+    expect(view.container.querySelectorAll('[data-testid="sidebar-collapse-toggle"]')).toHaveLength(1);
+    expect(unfold()?.getAttribute("aria-pressed")).toBe("false");
     expect(view.container.querySelector('[data-testid="primary-sidebar"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="sidebar-rail"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-testid="sidebar-card"]')).toBeNull();
     await view.resizeContainers({ shellWidth: 360, canvasWidth: 360 });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(unfold()?.getAttribute("aria-pressed")).toBe("false");
     expect(view.api.updateSettings).toHaveBeenCalledWith({ system: { sidebarState: "rail" } });
     const saved = await view.api.getSettings();
     view.unmount();

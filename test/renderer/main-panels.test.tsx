@@ -525,7 +525,7 @@ describe("main-area terminal and web panels", () => {
     expect(terminalTab().querySelector('[data-testid="chat-side-panel-tab-terminal-attention"]')).toBeNull();
   });
 
-  it("keeps Manual's current directory unknown and does not reuse a heuristic command as a reopen directory", async () => {
+  it("starts a rail terminal in the project folder and does not reuse a heuristic command as a reopen directory", async () => {
     const { container, api } = await renderApp({ hasApiKey: true, terminal: true });
     const terminalApi = (api as unknown as { terminal: { listBlocks: ReturnType<typeof vi.fn>; spawn: ReturnType<typeof vi.fn> } }).terminal;
     terminalApi.listBlocks.mockImplementation(async (ref: TerminalSessionRef) => ({
@@ -538,7 +538,6 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     const manual = terminalSessionFixture(shownSurfaces(container)[0]!.tabId!, "manual");
     await waitFor(() => expect(terminalApi.listBlocks).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", terminalSessionId: manual.terminalSessionId })));
-    expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
     // What the shell is and where it started are on the header's host chip, not stacked rows over the output.
     const chip = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('[data-testid="pane-header"] [data-testid="terminal-pane-host-chip"]');
@@ -547,9 +546,8 @@ describe("main-area terminal and web panels", () => {
     });
     // A main-area pane is a workspace terminal: its pane chat may ask for approved commands, and the chip says so.
     expect(chip.getAttribute("title")).toContain(t("ptyTerminal.workspaceEnvironment"));
-    // A launch directory is not evidence of the current directory.
-    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual", purpose: "workspace" });
-    expect(terminalApi.spawn.mock.calls[0]![0]).not.toHaveProperty("cwd");
+    // The rail's terminal starts in the selected project's folder (case 13); the heuristic `cd` is not evidence of where it is now.
+    expect(terminalApi.spawn.mock.calls[0]![0]).toMatchObject({ lane: "manual", purpose: "workspace", cwd: "/ws" });
     const spawnsBeforeClose = terminalApi.spawn.mock.calls.length;
 
     const close = container.querySelector('[data-testid="surface-pane"]')!
@@ -563,9 +561,8 @@ describe("main-area terminal and web panels", () => {
     });
     await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
     await waitFor(() => expect(terminalApi.spawn.mock.calls.length).toBeGreaterThan(spawnsBeforeClose));
-    expect(terminalApi.spawn.mock.calls.at(-1)![0]).toMatchObject({ lane: "manual" });
-    expect(terminalApi.spawn.mock.calls.at(-1)![0]).not.toHaveProperty("cwd");
-    expect(container.querySelector('[data-testid="pane-header-meta"]')).toBeNull();
+    // Reopened at the directory it was launched in, never at the heuristic command's.
+    expect(terminalApi.spawn.mock.calls.at(-1)![0]).toMatchObject({ lane: "manual", cwd: "/ws" });
   });
 
   it("opens a terminal or web pane's own chat beside it, bound to that pane's tab", async () => {

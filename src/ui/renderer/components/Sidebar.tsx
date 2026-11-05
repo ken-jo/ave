@@ -3,16 +3,16 @@ import { loadSidebarSurfacePreview } from "../utils/sidebar-preview-data.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
-import { ViewHistoryNav, type ViewPathNavProps } from "./ViewPathNav.js";
 import {
   Blocks,
+  ChevronDown,
   ChevronRight,
   Folder,
-  LayoutGrid,
+  House,
+  MessageSquarePlus,
   MessageSquareText,
   MoreHorizontal,
   PanelLeftClose,
-  PanelLeftOpen,
   Pin,
   PowerOff,
   Plus,
@@ -42,14 +42,18 @@ import {
   type AddProjectFolderOutcome,
   type ProjectErrorReporter,
 } from "../hooks/use-add-project-folder.js";
-import { CLUSTER_LEAD_PAD_DARWIN, RAIL_CONTROL_SIZE_CLASS, SHELL_GUTTER } from "../../../shared/shell-geometry.js";
+import { RAIL_CONTROL_SIZE_CLASS, SHELL_GUTTER } from "../../../shared/shell-geometry.js";
+import { Rail, RailButton } from "./sidebar/Rail.js";
+import { ProjectMark, ProjectMenu, type ProjectMenuModel } from "./sidebar/ProjectMenu.js";
+import { ProjectPicker } from "./sidebar/ProjectPicker.js";
+import { projectTestId } from "./sidebar/ProjectCombobox.js";
 import type { InlineViewKey } from "../../../shared/view-key.js";
 import type { PluginCardSummary, PluginUiExtension } from "../types.js";
 import type { SessionSummary } from "../hooks/use-sessions.js";
 import type { SessionFamily } from "../../../shared/session-lookup.js";
 import { tabIcon } from "./ChatSidePanelPreview.js";
 import { useActiveSurface } from "../preview/active-surface.js";
-import type { ProjectIdentity } from "../../../shared/project-identity.js";
+import type { ProjectIdentity, ProjectSelection } from "../../../shared/project-identity.js";
 import { projectRootEquals, workspaceRootsToProjects } from "../../../shared/project-identity.js";
 import { CHAT_SESSION_DRAG_TYPE } from "./pane-drop.js";
 import {
@@ -67,6 +71,7 @@ const WorkBoardIcon = BUILTIN_VIEW_ICONS["work-board"];
 const RoutinesIcon = BUILTIN_VIEW_ICONS.routines;
 const InsightsIcon = BUILTIN_VIEW_ICONS.insights;
 const SettingsIcon = BUILTIN_VIEW_ICONS.settings;
+const MemoryIcon = BUILTIN_VIEW_ICONS.memory;
 const TerminalViewIcon = BUILTIN_VIEW_ICONS.terminal;
 const WebViewIcon = BUILTIN_VIEW_ICONS.web;
 
@@ -77,6 +82,17 @@ const SESSION_FAMILY_LABEL_KEYS: Record<SessionFamily, string> = {
   "work-board": "sidebar.workBoardConversation",
   "side-chat": "sidebar.sideChatConversation",
 };
+
+/** The sidebar's one add-project flow, run from the project menu and the list's right-click. */
+interface SidebarAddFlow {
+  pendingWarning: ReturnType<typeof useAddProjectFolder>["pendingWarning"];
+  addProject: () => Promise<void>;
+  confirmAddProject: () => Promise<void>;
+  cancelPendingFolder: () => void;
+}
+
+/** What the rail's launchers open. */
+export type SidebarLaunchKind = "chat" | "web" | "terminal";
 
 export interface SidebarProps {
   activeView: InlineViewKey;
@@ -114,14 +130,24 @@ export interface SidebarProps {
    */
   modelConfigured?: boolean | null;
   onOpenSettings: () => void;
-  /** Start a conversation. Always offered: the window decides where it goes — the focused tile when it is idle, a tile of its
-   * own beside it when that one is mid-turn — so the sidebar has no turn state to gate it on. */
-  onNewChat: () => void;
+  /** The window's project selection (plan D1); undefined until it and the project list have loaded. */
+  projectSelection?: ProjectSelection;
+  /** The selected project; undefined in the all-projects view. */
+  selectedProject?: ProjectIdentity;
+  /** Most recent first. */
+  recentProjectRoots?: readonly string[];
+  /** The name a project shows everywhere: its label, 기본 프로젝트, or its folder name. */
+  projectName: (project: ProjectIdentity) => string;
+  onSelectProjectRoot: (projectRoot: string) => void;
+  onSelectAllProjects: () => void;
+  /** A folder was added as a project (or was one already): the shell switches to it (case 08–09). */
+  onProjectAdded: (projectRoot: string, alreadyOpen: boolean) => void;
+  /** Open a new chat, web page or terminal in `project` (case 11–13). The rail asks which project in the all-projects view;
+   * before the selection has loaded, `project` is undefined and the window's project applies. */
+  onLaunch: (kind: SidebarLaunchKind, project: ProjectIdentity | undefined) => void;
   /**
-   * Collapse state is owned by the shell (App.tsx). The collapse/expand toggle
-   * is the FIRST button in the cluster strip next to the traffic lights (see
-   * `onToggleCollapse`). When `true` the card body retracts and the cluster
-   * pops OUT of the floating surface into the bare band.
+   * The list beside the rail is folded (`sidebarState` "rail", case 21). The rail stays; the shell's band carries the button
+   * that unfolds the list again.
    */
   collapsed: boolean;
   /**
@@ -132,7 +158,7 @@ export interface SidebarProps {
    * down on the content beside it, and hands focus back to the toggle.
    */
   overlay?: boolean;
-  /** Toggle the rail — the leading cluster button next to the traffic lights. */
+  /** Fold the list (the button in the list header) or unfold it. */
   onToggleCollapse: () => void;
   /** Expanded card width (px). Ignored while collapsed (fixed icon rail). */
   width?: number;
@@ -143,11 +169,8 @@ export interface SidebarProps {
   /** Drag-end / keyboard commit of the sidebar width (persist). Also drives the resize bar's double-click reset (commits
    * SIDEBAR_DEFAULT_WIDTH). */
   onWidthCommit?: (px: number) => void;
-  /** Open the unified search overlay — second button in the cluster strip. */
+  /** Open the unified search overlay — the rail's search button. */
   onOpenUnifiedSearch: () => void;
-  /** Route path + history. The sidebar renders only the HISTORY half in its cluster strip; App renders the path half on the
-   * canvas. */
-  viewNav: ViewPathNavProps;
   /** Recent main-chat sessions shown under the current project group. */
   sessions?: SessionSummary[];
   /** Workspace projects from the App-level active project source of truth. */
@@ -207,9 +230,9 @@ export interface SidebarProps {
   suggestionsPendingCount?: number;
 }
 
-// Align the sidebar cluster with native-control centers using shared pixel geometry; without a preload bridge no native
-// alignment applies.
-export function isDarwinPlatform(): boolean {
+// The aside starts below the band on darwin, where the traffic lights would cover the rail; without a preload bridge no
+// native alignment applies.
+function isDarwinPlatform(): boolean {
   return (
     (window as unknown as { avePlatform?: { isDarwin: boolean } }).avePlatform?.isDarwin ?? false
   );
@@ -411,7 +434,7 @@ function SidebarSurfaceRow({ surface, visible, onOpen }: {
 // ─── NavGroup ────────────────────────────────────────────────────────────────
 
 /** Sidebar nav groups: "features" holds the built-in views, "plugins" the installed plugin rows. */
-type SidebarGroup = "features" | "plugins";
+type SidebarGroup = "plugins";
 
 interface NavGroupProps {
   group: SidebarGroup;
@@ -805,11 +828,6 @@ function RevealingSessionList({
   );
 }
 
-function projectTestId(root: string, fallback: string): string {
-  const safe = (root || fallback).replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return safe || "default";
-}
-
 function useWorkspaceProjects(enabled: boolean): ProjectIdentity[] {
   const { t } = useTranslation();
   const [projects, setProjects] = useState<ProjectIdentity[]>([]);
@@ -1136,7 +1154,6 @@ function SessionRow({
 /** The conversation list, exported because a chat GROUP renders the same list in its own sidebar. One list component, so
  * the window's sidebar and a group's sidebar cannot show two different pictures of the same conversations. */
 function ProjectSessionList({
-  collapsed,
   sessions,
   currentSessionId,
   conversationSurfaceVisible,
@@ -1160,11 +1177,12 @@ function ProjectSessionList({
   conversationActions,
   projectActions,
   scrollViewportRef,
-  onExpandSidebar,
   pendingAnswerSessionIds,
   suggestionsPendingCount,
+  addFlow,
 }: {
-  collapsed: boolean;
+  /** The sidebar's add-project flow, shared with the project menu. */
+  addFlow: SidebarAddFlow;
   sessions: SessionSummary[];
   currentSessionId?: string;
   onOpenWorkBoardItem?: (itemId: number) => void;
@@ -1200,8 +1218,6 @@ function ProjectSessionList({
   /** The card's scroll viewport. The Chats list reveals itself against THIS scroller, so the list has to be handed the
    * element rather than hunt for an ancestor by selector. */
   scrollViewportRef: RefObject<HTMLDivElement | null>;
-  /** Collapsed rail: expand the sidebar so the folders can be shown. */
-  onExpandSidebar?: () => void;
   /** See `SidebarProps.pendingAnswerSessionIds`. */
   pendingAnswerSessionIds?: ReadonlySet<string>;
   /** See `SidebarProps.suggestionsPendingCount`. */
@@ -1209,30 +1225,9 @@ function ProjectSessionList({
 }) {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
-  // Adding a project is the SAME flow the composer's project selector and the
-  // workspace file-browser tab use — `useAddProjectFolder` owns the
-  // `workspace.pickRoot` + adjacency-acknowledgement state machine, so this is
-  // a third ENTRY POINT into one implementation, not a third implementation.
-  const { pendingWarning, addFolder, confirmPendingFolder, cancelPendingFolder } = useAddProjectFolder();
-  // A refused add is reported for the same reason a refused remove is: the user
-  // asked for a change and did not get one, and the picker dismissing itself
-  // looks identical whether the folder was persisted or rejected.
-  // `needs-acknowledgement` stays quiet because the warning block below IS the
-  // response, and `canceled` is the user's own decision.
-  const applyAddOutcome = async (outcome: AddProjectFolderOutcome): Promise<void> => {
-    if (outcome.status === "failed") {
-      onProjectError?.("add", outcome.error);
-      return;
-    }
-    if (outcome.status !== "added") return;
-    await onRefreshProjects?.();
-  };
-  const addProject = async (): Promise<void> => {
-    await applyAddOutcome(await addFolder());
-  };
-  const confirmAddProject = async (): Promise<void> => {
-    await applyAddOutcome(await confirmPendingFolder());
-  };
+  // Adding a project is the sidebar's one add flow (see `SidebarAddFlow`): the project menu and this list's right-click both
+  // run it, and its adjacency warning shows here.
+  const { pendingWarning, addProject, confirmAddProject, cancelPendingFolder } = addFlow;
   // The one command a right-click offers wherever there is no project row —
   // the Projects heading, its empty area, and the collapsed rail icon.
   const addProjectMenuHandlers = (): NativeContextMenuHandlers => ({
@@ -1314,28 +1309,6 @@ function ProjectSessionList({
     return sortWithPinnedFirst(plain, (session) => isSessionPinned(session.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ordinarySessions, namedProjects, isSessionStarred]);
-
-  // Collapsed rail: deliberately NOT wired to the add-project menu. The rail
-  // renders no projects at all, and it has nowhere to host the adjacency
-  // warning `workspace.pickRoot` can demand before an add completes — a
-  // right-click "add project" there would silently do nothing for exactly the
-  // folders that most need a confirmation. A click expands the sidebar to
-  // show the folders.
-  if (collapsed) {
-    return (
-      <NavItem
-        viewKey="project"
-        label={t("sidebar.projectsLabel")}
-        icon={<Folder className="h-4 w-4" />}
-        isActive={false}
-        onClick={() => {
-          onExpandSidebar?.();
-        }}
-        collapsed
-        data-testid="sidebar-projects-collapsed"
-      />
-    );
-  }
 
   const hasNamedProjects = sessionsByProject.length > 0;
   const projectOfSurface = (surface: SidebarSurface) => {
@@ -1741,87 +1714,12 @@ function ProjectSessionList({
 
 // Keep route navigation in the sidebar cluster and conversation mutations in pane headers; cluster placement stays fixed
 // across collapse.
-function ClusterStrip({
-  collapsed,
-  leadClearance,
-  onToggleCollapse,
-  toggleRef,
-  onOpenUnifiedSearch,
-  viewNav,
-}: {
-  collapsed: boolean;
-  /** True on darwin — left-pad the first button past the OS traffic lights. */
-  leadClearance: boolean;
-  onToggleCollapse: () => void;
-  /** The toggle button — where focus returns when an overlaying card closes. */
-  toggleRef: RefObject<HTMLButtonElement | null>;
-  onOpenUnifiedSearch: () => void;
-  /** Route history. Only the history half renders here — the path half names the content, so it belongs on the canvas, not in
-   * the chrome. */
-  viewNav: ViewPathNavProps;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div
-      className="flex h-(--chrome-control-height) shrink-0 items-center gap-(--chrome-gap-hair) pl-(--chrome-gap-tight) pr-(--chrome-gap-tight)"
-      // Clear the OS lights on darwin. In device px like the lights themselves
-      // (an inline override of the class pad above), so the first button lands
-      // on the same x at every font scale. Win/Linux + non-Electron have no OS
-      // lights, so they keep the plain tight pad.
-      style={leadClearance ? { paddingLeft: `${CLUSTER_LEAD_PAD_DARWIN}px` } : undefined}
-      data-testid="sidebar-cluster"
-    >
-      {/* 펼침/닫힘 — shell-owned collapse toggle. Leftmost, next to the lights. */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            ref={toggleRef}
-            variant="ghost"
-            size="icon"
-            className="h-(--chrome-icon-button) w-(--chrome-icon-button) aspect-square p-0 shrink-0 text-muted-foreground hover:text-foreground"
-            onClick={onToggleCollapse}
-            title={collapsed ? t("mainToolbar.expandSidebar") : t("mainToolbar.collapseSidebar")}
-            aria-label={collapsed ? t("mainToolbar.expandSidebar") : t("mainToolbar.collapseSidebar")}
-            aria-pressed={!collapsed}
-            data-testid="sidebar-collapse-toggle"
-          >
-            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{collapsed ? t("mainToolbar.expandSidebar") : t("mainToolbar.collapseSidebar")}</TooltipContent>
-      </Tooltip>
-
-      {/* 검색 — unified search. Tour anchor "chat-history". */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-(--chrome-icon-button) w-(--chrome-icon-button) aspect-square p-0 shrink-0"
-            onClick={onOpenUnifiedSearch}
-            title={t("mainToolbar.unifiedSearch")}
-            aria-label={t("mainToolbar.unifiedSearch")}
-            data-tour-anchor="chat-history"
-          >
-            <Search className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{t("mainToolbar.unifiedSearch")}</TooltipContent>
-      </Tooltip>
-
-      {/* 뒤로 / 앞으로 — route history. This strip is the sidebar's, and the
-          sidebar is what decides which route is showing, so the control that
-          moves BETWEEN routes belongs to it. */}
-      <ViewHistoryNav
-        canGoBack={viewNav.canGoBack}
-        canGoForward={viewNav.canGoForward}
-        backLabel={viewNav.backLabel}
-        forwardLabel={viewNav.forwardLabel}
-        onBack={viewNav.onBack}
-        onForward={viewNav.onForward}
-      />
-    </div>
-  );
+/** Whether something recorded against `root` belongs to `selected`. The 기본 프로젝트 also holds what names no open project:
+ * a conversation without a root, or one whose project was removed. */
+function belongsToProject(root: string | undefined, selected: ProjectIdentity, projects: readonly ProjectIdentity[]): boolean {
+  if (!selected.isDefault) return Boolean(root) && projectRootEquals(root, selected.projectRoot);
+  if (!root || projectRootEquals(root, selected.projectRoot)) return true;
+  return !projects.some((project) => !project.isDefault && projectRootEquals(project.projectRoot, root));
 }
 
 export function Sidebar({
@@ -1838,7 +1736,14 @@ export function Sidebar({
   subscriptionUnavailable = false,
   subscriptionPending = false,
   modelConfigured = null,
-  onNewChat,
+  projectSelection,
+  selectedProject,
+  recentProjectRoots = [],
+  projectName,
+  onSelectProjectRoot,
+  onSelectAllProjects,
+  onProjectAdded,
+  onLaunch,
   onNewChatForProject,
   collapsed,
   overlay = false,
@@ -1848,7 +1753,6 @@ export function Sidebar({
   onWidthChange,
   onWidthCommit,
   onOpenUnifiedSearch,
-  viewNav,
   sessions = [],
   projects,
   currentSessionId,
@@ -1877,25 +1781,28 @@ export function Sidebar({
   const { t } = useTranslation();
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
-  const surfacePreview = (kind: "browser" | "terminal") => {
-    const surface = surfaces.find((entry) => entry.kind === kind && isSurfaceVisible?.(entry.tabId))
-      ?? surfaces.find((entry) => entry.kind === kind);
-    if (!surface) return undefined;
-    const title = surface.title || surface.url ||
-      `${t(BUILTIN_LABEL_KEYS[kind === "terminal" ? "terminal" : "web"])} ${surface.ordinal}`;
-    return { preview: { kind, title, ...(surface.url ? { url: surface.url } : {}) } as SidebarPreviewData,
-      loadPreview: () => loadSidebarSurfacePreview(surface, title) };
-  };
-  const terminalPreview = surfacePreview("terminal");
-  const browserPreview = surfacePreview("browser");
+  const allProjects = projectSelection?.kind === "all";
+  const allProjectList = useMemo(() => projects ?? [], [projects]);
+  // The list shows the selected project only; the all-projects view shows every project, grouped (case 05, 10).
+  const scoped = useMemo(() => {
+    if (!selectedProject) return { sessions, projects: allProjectList, surfaces };
+    const sessionRoot = new Map(sessions.map((session) => [session.id, session.projectRoot]));
+    const inProject = (root: string | undefined) => belongsToProject(root, selectedProject, allProjectList);
+    return {
+      sessions: sessions.filter((session) => inProject(session.projectRoot)),
+      projects: [selectedProject],
+      surfaces: surfaces.filter((surface) =>
+        inProject(surface.projectRoot ?? (surface.sessionId ? sessionRoot.get(surface.sessionId) : undefined))),
+    };
+  }, [selectedProject, sessions, allProjectList, surfaces]);
+  // Nothing is named until the selection has loaded: "전체 프로젝트" before then would claim a choice nobody made.
+  const shownName = selectedProject ? projectName(selectedProject) : allProjects ? t("sidebar.allProjects") : "";
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
   // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
   // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
   const cardRef = useRef<HTMLDivElement | null>(null);
-  // Collapse/expand animates the card width; an active resize drag must not. The
-  // drag writes width live to `cardRef` below, so a width tween would lag the
-  // pointer — `isResizing` (true only between a drag's first move and its commit)
-  // is the single gate that suppresses the transition for the drag path alone.
+  // Folding animates the card width; an active resize drag must not. `isResizing` (true only between a drag's first move and
+  // its commit) is the single gate that suppresses the transition for the drag path alone.
   const [isResizing, setIsResizing] = useState(false);
   const openRowMenu = useNativeContextMenu();
   /** Expose focused-pane and new-pane actions together; settings shortcuts have no independent view to open in another pane. */
@@ -1950,53 +1857,135 @@ export function Sidebar({
     [onWidthCommit],
   );
 
-  // The collapsed rail shows icons only; `compact` mirrors `collapsed`. There is no hover-expand — the card is a consistent
-  // floating panel in every mode.
-  const compact = collapsed;
   const hasPluginEntries = pluginViews.length > 0
     || failedPluginCards.length > 0
     || inactivePluginCards.length > 0;
-  // A rail group icon lights when the current page is one of its rows.
-  const featuresContainActive =
-    activeView === "work-board" || activeView === "routines" || activeView === "insights" || activeView === "starred"
-    || activeView === "terminal" || activeView === "web";
   const pluginsContainActive =
     pluginViews.some((view) => toViewKey(view) === activeView)
     || failedPluginCards.some((plugin) => toPluginDoctorViewKey(plugin.id) === activeView)
     || inactivePluginCards.some((plugin) => toPluginSettingsViewKey(plugin.id) === activeView);
-  // The rail's projects icon opens INTO the expanded card (the groups open a flyout instead): `onToggleCollapse` is the
-  // shell's only lever, and from the collapsed state toggling is expanding.
-  const expandSidebar = useCallback(() => {
-    if (collapsed) onToggleCollapse();
-  }, [collapsed, onToggleCollapse]);
-  // Overlay dismissal uses the shell toggle and returns focus to it; listeners read the latest callback through a ref.
-  const asideRef = useRef<HTMLElement | null>(null);
-  const toggleRef = useRef<HTMLButtonElement | null>(null);
+
+  // ── The project menu (case 02) opens from the rail's project button or the list header's name: one menu, one opener at a
+  // time. The launcher picker (case 06) opens from a launcher in the all-projects view.
+  const [menuFrom, setMenuFrom] = useState<"rail" | "header" | null>(null);
+  // 새 프로젝트 추가 (case 07–09) is one flow for the menu and the list: the OS folder dialog through `useAddProjectFolder`, an
+  // adjacency warning answered in the list, then a switch to the project. A refused add is reported, because the dialog
+  // closing looks the same whether the folder was added or refused; a cancel is the user's own decision and says nothing.
+  const { pendingWarning, addFolder, confirmPendingFolder, cancelPendingFolder } = useAddProjectFolder();
+  const projectsRef = useRef(allProjectList);
+  projectsRef.current = allProjectList;
+  const applyAddOutcome = useCallback(async (outcome: AddProjectFolderOutcome): Promise<void> => {
+    if (outcome.status === "failed") {
+      onProjectError?.("add", outcome.error);
+      return;
+    }
+    // The warning is answered in the list, so a folded list unfolds to show it.
+    if (outcome.status === "needs-acknowledgement") {
+      if (collapsed) onToggleCollapse();
+      return;
+    }
+    if (outcome.status !== "added") return;
+    const root = outcome.added ?? outcome.roots.find((each) => !each.isDefault)?.path;
+    const alreadyOpen = root !== undefined && projectsRef.current.some((project) => projectRootEquals(project.projectRoot, root));
+    await onRefreshProjects?.();
+    if (root) onProjectAdded(root, alreadyOpen);
+  }, [collapsed, onToggleCollapse, onProjectAdded, onProjectError, onRefreshProjects]);
+  const addFlow = useMemo<SidebarAddFlow>(() => ({
+    pendingWarning,
+    addProject: async () => applyAddOutcome(await addFolder()),
+    confirmAddProject: async () => applyAddOutcome(await confirmPendingFolder()),
+    cancelPendingFolder,
+  }), [pendingWarning, applyAddOutcome, addFolder, confirmPendingFolder, cancelPendingFolder]);
+  const [pickerFor, setPickerFor] = useState<SidebarLaunchKind | null>(null);
+  const menuModel = useMemo<ProjectMenuModel>(() => ({
+    projects: allProjectList,
+    selection: projectSelection,
+    recentProjectRoots,
+    projectName,
+    isProjectPinned,
+    onSelectRoot: onSelectProjectRoot,
+    onSelectAll: onSelectAllProjects,
+    onAddProject: () => void addFlow.addProject(),
+  }), [allProjectList, projectSelection, recentProjectRoots, projectName, isProjectPinned, onSelectProjectRoot, onSelectAllProjects, addFlow]);
+  const menuOpenChange = (from: "rail" | "header") => (open: boolean) => setMenuFrom(open ? from : null);
+  const launchLabel = (kind: SidebarLaunchKind) => kind === "chat"
+    ? t("mainToolbar.newChat")
+    : t(kind === "web" ? "sidebar.newWeb" : "sidebar.newTerminal");
+  const launcher = (kind: SidebarLaunchKind, icon: ReactNode, testId: string) => {
+    const label = launchLabel(kind);
+    const plus = allProjects ? null : <Plus className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full bg-card" aria-hidden="true" />;
+    return (
+      <ProjectPicker
+        key={kind}
+        model={menuModel}
+        launchLabel={label}
+        open={pickerFor === kind}
+        onOpenChange={(open) => {
+          // Viewing one project, a launcher opens there without asking; only the all-projects view asks where (case 06).
+          if (open && !allProjects) {
+            onLaunch(kind, selectedProject);
+            return;
+          }
+          setPickerFor(open ? kind : null);
+        }}
+        onPick={(project) => onLaunch(kind, project)}
+      >
+        <RailButton
+          label={selectedProject
+            ? t("sidebar.railOpensIn", { label, project: shownName })
+            : t("sidebar.railChooseProject", { label })}
+          icon={icon}
+          badge={plus}
+          data-testid={testId}
+        />
+      </ProjectPicker>
+    );
+  };
+  const railView = (viewKey: "work-board" | "routines" | "memory" | "insights", testId: string, Icon: typeof WorkBoardIcon, current: boolean) => {
+    const handlers = viewRowHandlers(viewKey);
+    return (
+      <RailButton
+        key={viewKey}
+        label={t("sidebar.railView", { label: t(BUILTIN_LABEL_KEYS[viewKey]), project: shownName })}
+        icon={<Icon className="h-4 w-4" />}
+        current={current}
+        onClick={handlers.onClick}
+        onContextMenu={handlers.onContextMenu}
+        data-testid={testId}
+        data-viewkey={viewKey}
+      />
+    );
+  };
+
+  // Overlay dismissal uses the shell toggle; listeners read the latest callback through a ref. Only the list overlays (case
+  // 28): the rail stays where it is, outside the trap.
   const onToggleCollapseRef = useRef(onToggleCollapse);
   onToggleCollapseRef.current = onToggleCollapse;
   const overlayOpen = overlay && !collapsed;
   const renderedWidth = overlayOpen ? Math.min(width, maxWidth ?? width) : width;
   useEffect(() => {
     if (!overlayOpen) return;
-    const aside = asideRef.current;
-    if (!aside) return;
-    cardRef.current?.focus({ preventScroll: true });
+    const card = cardRef.current;
+    if (!card) return;
+    card.focus({ preventScroll: true });
+    // Captured now: when the list folds, the card is gone from the document by the time this effect is cleaned up.
+    const shell = card.closest<HTMLElement>('[data-testid="app-shell"]');
     const collapse = () => onToggleCollapseRef.current();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       const active = document.activeElement;
       // A portaled menu or dialog manages its own keyboard scope above this navigation surface.
-      if (active instanceof HTMLElement && !aside.contains(active)
+      if (active instanceof HTMLElement && !card.contains(active)
         && active.closest('[role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]')) return;
       if (event.key === "Tab") {
-        const controls = [...aside.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]')]
+        const controls = [...card.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]')]
           .filter((element) => {
             if (element.tabIndex < 0 || element.matches(':disabled, input[type="hidden"]')
               || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
             for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) {
               const style = getComputedStyle(parent);
               if (style.display === "none" || style.visibility === "hidden") return false;
-              if (parent === aside) break;
+              if (parent === card) break;
             }
             return true;
           });
@@ -2004,8 +1993,8 @@ export function Sidebar({
         const last = controls.at(-1);
         if (!first || !last) {
           event.preventDefault();
-          cardRef.current?.focus({ preventScroll: true });
-        } else if (!aside.contains(active) || active === cardRef.current
+          card.focus({ preventScroll: true });
+        } else if (!card.contains(active) || active === card
           || (event.shiftKey ? active === first : active === last)) {
           event.preventDefault();
           (event.shiftKey ? last : first).focus({ preventScroll: true });
@@ -2015,15 +2004,15 @@ export function Sidebar({
       if (event.key !== "Escape") return;
       // An editor inside the card (rename, search) owns its own Escape.
       const target = event.target;
-      if (target instanceof HTMLElement && aside.contains(target) && target.closest("input, textarea, [contenteditable=true]")) return;
+      if (target instanceof HTMLElement && card.contains(target) && target.closest("input, textarea, [contenteditable=true]")) return;
       collapse();
     };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
-      if (!(target instanceof Node) || aside.contains(target)) return;
+      if (!(target instanceof Node) || card.contains(target)) return;
       // Portaled surfaces (menus, dialogs, tooltips) mount outside the shell column; a pick inside one is not a click beside the
       // card.
-      if (!aside.parentElement?.contains(target)) return;
+      if (!shell?.contains(target)) return;
       collapse();
     };
     document.addEventListener("keydown", onKeyDown);
@@ -2031,12 +2020,13 @@ export function Sidebar({
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
-      // Hand focus back only when the card had it (or dropped it to the body as its rows unmounted). A mode flip that leaves the
-      // card open as a pushed sibling keeps focus where the user put it.
+      // Hand focus to the band's unfold button only when the card had it (or dropped it to the body as its rows unmounted). A
+      // mode flip that leaves the card open as a pushed sibling keeps focus where the user put it.
       const active = document.activeElement;
-      const cardHadFocus = !active || active === document.body || aside.contains(active);
-      const toggle = toggleRef.current;
-      if (cardHadFocus && toggle?.isConnected) toggle.focus({ preventScroll: true });
+      const cardHadFocus = !active || active === document.body || card.contains(active);
+      // The band's unfold button is already in the document: effects are cleaned up after the folded state commits.
+      if (!cardHadFocus || !shell?.isConnected) return;
+      shell.querySelector<HTMLButtonElement>('[data-testid="sidebar-collapse-toggle"]')?.focus({ preventScroll: true });
     };
   }, [overlayOpen]);
   // Subscription readiness is distinct from API-key presence: when a login runtime is selected, never describe its
@@ -2044,90 +2034,180 @@ export function Sidebar({
   const runtimeUnavailable = subscriptionRuntimePolicy ? subscriptionRuntimePolicy.chatUnavailable : subscriptionUnavailable;
   const runtimePending = subscriptionRuntimePolicy ? subscriptionRuntimePolicy.chatPending : subscriptionPending;
   const settingsNeedsApiKey = hasApiKey === false && !runtimeUnavailable && !runtimePending;
-  // On darwin the OS traffic lights (`TRAFFIC_LIGHT_POSITION`) sit just left of
-  // the cluster strip. The aside's top inset (`--shell-card-top-darwin`) is
-  // derived so the strip's buttons land on the lights' line. Win/Linux +
-  // non-Electron have no OS lights to align against.
-  const darwinTopClearance = isDarwinPlatform();
+  const settingsHandlers = viewRowHandlers("settings", { open: onOpenSettings });
+  const settingsLabel = t(BUILTIN_LABEL_KEYS.settings);
+  const settingsNote = runtimePending
+    ? t("subscriptionProvidersSection.statusChecking")
+    : runtimeUnavailable
+      ? t("formatIpcError.subscriptionChatUnavailable")
+      : settingsNeedsApiKey ? t("mainToolbar.apiKeyRequired") : undefined;
+  // On darwin the OS traffic lights sit over the top-left corner, so the rail and the list start below the band there.
+  const darwin = isDarwinPlatform();
+  const homeChord = darwin ? "⌘0" : "Ctrl+0";
 
-  const navListId = "sidebar-nav-list";
   // The scroller the conversation list reveals itself against, handed down rather than looked up: the list is inside this
   // viewport by construction.
   const navScrollViewportRef = useRef<HTMLDivElement | null>(null);
 
+  const rail = (
+    <Rail
+      project={(
+        <ProjectMenu model={menuModel} open={menuFrom === "rail"} onOpenChange={menuOpenChange("rail")} side="right">
+          <RailButton
+            label={t("sidebar.railProjectButton", { project: shownName })}
+            icon={<ProjectMark project={selectedProject} name={shownName} size="md" />}
+            aria-haspopup="dialog"
+            data-testid="sidebar-project-button"
+            className="h-10 w-10"
+          />
+        </ProjectMenu>
+      )}
+      launchers={(
+        <>
+          {launcher("chat", <MessageSquarePlus className="h-4 w-4" />, "sidebar-new-chat")}
+          {launcher("web", <WebViewIcon className="h-4 w-4" />, "sidebar-web")}
+          {launcher("terminal", <TerminalViewIcon className="h-4 w-4" />, "sidebar-terminal")}
+        </>
+      )}
+      views={(
+        <>
+          {railView("work-board", "toolbar-work-board", WorkBoardIcon, activeView === "work-board")}
+          {railView("routines", "sidebar-routines", RoutinesIcon, activeView === "routines")}
+          {railView("memory", "sidebar-memory", MemoryIcon, activeView === "memory")}
+          {railView("insights", "sidebar-starred", InsightsIcon, activeView === "insights" || activeView === "starred")}
+          {/* Extensions keep their flyout until they get a launcher of their own (S4). */}
+          {hasPluginEntries ? (
+            <NavGroup
+              group="plugins"
+              label={t("sidebar.pluginsLabel")}
+              icon={<Blocks className="h-4 w-4" />}
+              containsActive={pluginsContainActive}
+              attention={pluginRequestPending}
+              collapsed
+            >
+              {(close) => {
+                const pick: ViewRowHandlerFactory = (viewKey) =>
+                  viewRowHandlers(viewKey, { after: close });
+                // A Doctor or switched-off row names a settings PAGE, not a view, so it offers only the one destination.
+                const pickShortcut: ViewRowHandlerFactory = (viewKey) =>
+                  viewRowHandlers(viewKey, { after: close, newPane: false });
+                return (
+                  <>
+                    {pluginViews.map((view) => {
+                      const viewKey = toViewKey(view);
+                      const isUnauthed =
+                        view.extension !== undefined &&
+                        pluginAuthStatuses?.get(view.pluginId)?.kind === "unauthed";
+                      return (
+                        <PluginNavItem
+                          key={viewKey}
+                          view={view}
+                          isActive={activeView === viewKey}
+                          isUnauthed={Boolean(isUnauthed)}
+                          rowHandlers={pick}
+                          collapsed={false}
+                          role="menuitem"
+                        />
+                      );
+                    })}
+                    {failedPluginCards.map((plugin) => (
+                      <FailedPluginNavItem
+                        key={`doctor:${plugin.id}`}
+                        plugin={plugin}
+                        rowHandlers={pickShortcut}
+                        collapsed={false}
+                        role="menuitem"
+                      />
+                    ))}
+                    {inactivePluginCards.map((plugin) => (
+                      <InactivePluginNavItem
+                        key={`inactive:${plugin.id}`}
+                        plugin={plugin}
+                        rowHandlers={pickShortcut}
+                        collapsed={false}
+                        role="menuitem"
+                      />
+                    ))}
+                  </>
+                );
+              }}
+            </NavGroup>
+          ) : null}
+        </>
+      )}
+      footer={(
+        <>
+          <RailButton
+            label={t("mainToolbar.unifiedSearch")}
+            icon={<Search className="h-4 w-4" />}
+            onClick={onOpenUnifiedSearch}
+            data-testid="sidebar-search"
+            data-tour-anchor="chat-history"
+          />
+          <RailButton
+            label={settingsNote ? `${settingsLabel} · ${settingsNote}` : settingsLabel}
+            icon={<SettingsIcon className={settingsNeedsApiKey || runtimeUnavailable ? "h-4 w-4 text-destructive" : "h-4 w-4"} />}
+            current={activeView === "settings"}
+            onClick={settingsHandlers.onClick}
+            onContextMenu={settingsHandlers.onContextMenu}
+            data-testid="sidebar-settings"
+            data-tour-anchor="settings-entry"
+            badge={modelConfigured === false ? (
+              <span
+                role="img"
+                data-testid="sidebar-settings-alert"
+                aria-label={t("sidebar.settingsAlertNoModel")}
+                title={t("sidebar.settingsAlertNoModel")}
+                className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-destructive"
+              />
+            ) : undefined}
+          />
+        </>
+      )}
+    />
+  );
+
   return (
-    // Keep the cluster fixed on the native-control centerline while the card surface retracts; pixel chrome geometry must not
-    // scale with text.
     <SidebarPreviewProvider>
     <aside
-      ref={asideRef}
       data-testid="primary-sidebar"
       data-sidebar-overlay={overlayOpen ? "true" : undefined}
       role="navigation"
       aria-label={t("sidebar.ariaLabel")}
       className={[
-        // The card's air, from the same `--shell-card-inset*` tokens the docked side panel's wrapper uses — the two cards are the
-        // same shape and have to sit on the same lines, and the chat group's bottom edge is lined up against this one.
-        "absolute left-(--shell-card-inset) bottom-(--shell-card-inset-bottom) flex min-h-0 flex-col",
-        // Pushed, the card sits under the docked panels' band; overlaying, it is the floating surface of the moment and must cover
-        // everything the tile draws, the work panel floating at its right edge included.
+        // The rail and the list are two cards side by side, one gutter apart, on the same `--shell-card-inset*` lines the docked
+        // side panel uses.
+        "absolute left-(--shell-card-inset) bottom-(--shell-card-inset-bottom) flex min-h-0 gap-(--chrome-gap)",
+        // Pushed, the cards sit under the docked panels' band; an overlaying list is the floating surface of the moment and must
+        // cover everything the tile draws.
         overlayOpen ? "z-50" : "z-30",
-        darwinTopClearance ? "top-(--shell-card-top-darwin)" : "top-(--shell-card-top)",
-        collapsed && "pointer-events-none",
+        darwin ? "top-(--chrome-band-height)" : "top-(--shell-card-top)",
       ].join(" ")}
-      // The aside overlays the Electron drag band. Mark it no-drag so its controls stay clickable; the OS traffic lights still
-      // own their hit region to the left of the cluster.
+      // The aside overlays the Electron drag band. Mark it no-drag so its controls stay clickable.
       style={{
         // @ts-expect-error — Electron-specific CSS extension
         WebkitAppRegion: "no-drag",
       }}
     >
-      {/* ── EXPANDED: the cluster strip sits ON the card surface (its top strip).
-          COLLAPSED: the outer wrapper carries NO surface tokens, so the cluster
-          pops OUT into the bare band; the nav body below keeps its own compact
-          icon-rail surface so nav stays reachable. The width tween animates the
-          surface in/out; the cluster strip itself never unmounts. */}
+      {rail}
+      {collapsed ? null : (
       <div
         ref={cardRef}
         data-testid="sidebar-card"
-        data-surface={collapsed ? "bare" : "card"}
+        data-surface="card"
+        data-sidebar-preview-boundary
         // Overlaying, the card receives focus when it opens (see the overlay effect) — programmatically only, never in the Tab
         // order.
         tabIndex={overlayOpen ? -1 : undefined}
         className={[
-          "flex min-h-0 flex-col outline-none motion-reduce:transition-none",
-          // Collapse/expand animates the card width. The two states differ in
-          // width kind — expanded is `${width}px` (inline), collapsed is content
-          // `auto` (`w-auto`) — so `interpolate-size: allow-keywords` is what lets
-          // the px⇄auto tween run. An active resize drag suppresses the tween
-          // (isResizing) because the drag writes width live to `cardRef`.
-          isResizing
-            ? ""
-            : "transition-[width] duration-[var(--motion-base)] ease-[var(--motion-ease-out)] [interpolate-size:allow-keywords]",
-          collapsed
-            ? // Bare region: width hugs its widest child (the cluster strip,
-              // ≈144px); no surface tokens — transparent, on the band. `items-start`
-              // left-aligns the narrower icon-rail body under the cluster.
-              // `flex-1 min-h-0` stretches the bare column to the aside's bottom
-              // (matching the expanded card) so the collapsed icon-rail body below
-              // — itself `flex-1` — fills top-to-bottom instead of
-              // hugging content height.
-              "w-auto items-start flex-1 min-h-0 pointer-events-none [&>*]:pointer-events-auto"
-            : // Anchor the resize handle relatively and stretch the card to the aside bottom; persisted inline width owns sizing.
-              "ave-surface-raised relative flex-1 min-h-0 overflow-hidden rounded-2xl bg-card",
+          "ave-surface-raised relative flex min-h-0 flex-col overflow-hidden rounded-2xl bg-card outline-none motion-reduce:transition-none",
+          isResizing ? "" : "transition-[width] duration-[var(--motion-base)] ease-[var(--motion-ease-out)]",
         ].join(" ")}
-        style={collapsed ? undefined : {
+        style={{
           width: `${renderedWidth}px`,
           maxWidth: overlayOpen ? maxWidth ?? `calc(100vw - ${SHELL_GUTTER * 2}px)` : undefined,
         }}
       >
-        {/* ── Inner-edge drag-to-resize bar (expanded only) — the SAME shared
-            EdgeResizeBar + useEdgeResize primitive the right ChatSidePanel uses,
-            so drag feel / hit geometry / keyboard / double-click-reset are one
-            code path across both panels. `variant="inset"` keeps the strip
-            inside the card (it is overflow-hidden, unlike the side panel's
-            aside). Adjusts the durable sidebar width between
-            SIDEBAR_MIN_WIDTH/MAX; double-click resets to the default. */}
         {resizable ? (
           <EdgeResizeBar
             width={renderedWidth}
@@ -2143,308 +2223,103 @@ export function Sidebar({
             data-testid="sidebar-resize-handle"
           />
         ) : null}
-        {/* ── Cluster strip — [펼침/닫힘 toggle] → [검색] → [즐겨찾기] → [내보내기],
-            `--chrome-gap-hair` gaps, each button a `--chrome-icon-button` square.
-            Sits on the traffic-light line. When the card is expanded this is the
-            card's top strip; when collapsed it stands bare in the band. Always
-            rendered — never hidden in either state. */}
-        <ClusterStrip
-          collapsed={collapsed}
-          leadClearance={darwinTopClearance}
-          onToggleCollapse={onToggleCollapse}
-          toggleRef={toggleRef}
-          onOpenUnifiedSearch={onOpenUnifiedSearch}
-          viewNav={viewNav}
-        />
-
-      {/* ── Card body — new chat + nav + footer. EXPANDED: inline within the card
-          surface above. COLLAPSED: its own compact icon-rail surface below the
-          bare cluster (mt-1.5 gap), so nav stays reachable while the cluster has
-          popped out of the floating surface. */}
-      <div
-        data-sidebar-preview-boundary
-        className={
-          collapsed
-            ? // Collapsed rail width excludes the sidebar inset and one gutter; it must not inherit the cluster's native-control clearance.
-              "ave-surface-raised mt-2.5 w-(--shell-collapsed-rail-width) flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-card"
-            : "flex min-h-0 flex-1 flex-col overflow-hidden"
-        }
-      >
-      {/* ── New Chat CTA — `pt-2.5` (≈10px) gives the card body breathing room
-          below the cluster strip (R6 — not flush against it). */}
-      <div className={`px-2 pt-2.5 pb-1 ${compact ? "flex justify-center" : ""}`}>
-        {compact ? (
+        {/* ── List header (case 04): the project name opens the same menu as the rail button; the right button folds the list. */}
+        <div className="flex h-(--chrome-control-height) shrink-0 items-center gap-1 px-2 pt-2" data-testid="sidebar-list-header">
+          <ProjectMenu model={menuModel} open={menuFrom === "header"} onOpenChange={menuOpenChange("header")} side="bottom">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={t("sidebar.projectHeaderButton", { project: shownName })}
+              title={selectedProject ? `${shownName} · ${selectedProject.projectRoot}` : shownName}
+              data-testid="sidebar-project-header"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm font-semibold hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              <ProjectMark project={selectedProject} name={shownName} />
+              <span className="min-w-0 truncate">{shownName}</span>
+              {selectedProject?.isDefault ? (
+                <span className="shrink-0 rounded border border-border px-1 text-[10px] font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
+              ) : null}
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            </button>
+          </ProjectMenu>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant="default"
+                variant="ghost"
                 size="icon"
-                className={`${RAIL_CONTROL_SIZE_CLASS} aspect-square p-0 shrink-0`}
-                onClick={onNewChat}
-                aria-label={t("mainToolbar.newChat")}
-                data-testid="sidebar-new-chat"
+                className="h-(--chrome-icon-button) w-(--chrome-icon-button) aspect-square shrink-0 p-0 text-muted-foreground hover:text-foreground"
+                onClick={onToggleCollapse}
+                title={t("mainToolbar.collapseSidebar")}
+                aria-label={t("mainToolbar.collapseSidebar")}
+                aria-pressed
+                data-testid="sidebar-collapse-toggle"
               >
-                <Plus className="h-4 w-4" />
+                <PanelLeftClose className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="right">{t("mainToolbar.newChat")}</TooltipContent>
+            <TooltipContent side="bottom">{t("mainToolbar.collapseSidebar")}</TooltipContent>
           </Tooltip>
-        ) : (
-          <Button
-            variant="default"
-            className="w-full h-9 gap-2"
-            onClick={onNewChat}
-            data-testid="sidebar-new-chat"
-          >
-            <Plus className="h-4 w-4" />
-            <span>{t("mainToolbar.newChat")}</span>
-          </Button>
-        )}
-      </div>
-
-      {/* ── Nav groups + projects (scrollable) ──────────────────────── */}
-      <div id={navListId} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* FEATURES group — the built-in views. Bottom padding is 0 and the
-            plugins list below opens at pt-0 so the two group rows touch, with
-            no band of sidebar ground between them. */}
-        <div className={`px-2 pt-2 pb-0 space-y-0.5 ${compact ? "flex flex-col items-center" : ""}`}>
-          <NavGroup
-            group="features"
-            label={t("sidebar.featuresLabel")}
-            icon={<LayoutGrid className="h-4 w-4" />}
-            containsActive={featuresContainActive}
-            collapsed={compact}
-          >
-            {(close) => (
-              <>
-                <NavItem
-                  viewKey="work-board"
-                  label={t("mainToolbar.workBoard")}
-                  icon={<WorkBoardIcon className="h-4 w-4" />}
-                  isActive={activeView === "work-board"}
-                  {...viewRowHandlers("work-board", { after: close })}
-                  collapsed={false}
-                  role="menuitem"
-                  data-testid="toolbar-work-board"
-                />
-                <NavItem
-                  viewKey="routines"
-                  label={t("mainToolbar.routines")}
-                  icon={<RoutinesIcon className="h-4 w-4" />}
-                  isActive={activeView === "routines"}
-                  {...viewRowHandlers("routines", { after: close })}
-                  collapsed={false}
-                  role="menuitem"
-                  data-testid="sidebar-routines"
-                />
-                {/* 메모리 panel intentionally removed from the sidebar surface
-                    (2026-07 shell refinement). MEMORY.md remains viewable + editable
-                    in Settings → 역할/메모리 (RolesTab memory section); the "memory"
-                    view itself stays routable (main content region + UnifiedSearch deep-link)
-                    so no navigation breaks. */}
-                <NavItem
-                  viewKey="insights"
-                  label={t("mainToolbar.insights")}
-                  icon={<InsightsIcon className="h-4 w-4" />}
-                  isActive={activeView === "insights" || activeView === "starred"}
-                  {...viewRowHandlers("insights", { after: close })}
-                  collapsed={false}
-                  role="menuitem"
-                  data-testid="sidebar-starred"
-                  data-viewkey="insights"
-                />
-                {/* A terminal or a web page as a pane of its own, beside the
-                    conversations — the same surfaces the work panel's tabs
-                    hold, in the main area. */}
-                <NavItem
-                  preview={terminalPreview?.preview}
-                  loadPreview={terminalPreview?.loadPreview}
-                  viewKey="terminal"
-                  label={t(BUILTIN_LABEL_KEYS.terminal)}
-                  icon={<TerminalViewIcon className="h-4 w-4" />}
-                  isActive={activeView === "terminal"}
-                  {...viewRowHandlers("terminal", { after: close })}
-                  collapsed={false}
-                  role="menuitem"
-                  data-testid="sidebar-terminal"
-                />
-                <NavItem
-                  preview={browserPreview?.preview}
-                  loadPreview={browserPreview?.loadPreview}
-                  viewKey="web"
-                  label={t(BUILTIN_LABEL_KEYS.web)}
-                  icon={<WebViewIcon className="h-4 w-4" />}
-                  isActive={activeView === "web"}
-                  {...viewRowHandlers("web", { after: close })}
-                  collapsed={false}
-                  role="menuitem"
-                  data-testid="sidebar-web"
-                />
-              </>
-            )}
-          </NavGroup>
         </div>
-
-        {/* PLUGINS group + PROJECTS — scrollable flex-1 */}
-        {(
-          <>
-            {/* Radix ScrollArea wraps viewport content in a `display: table` div,
-                which sizes to max-content — long unbreakable titles then blow the
-                content wider than the card and get HARD-clipped by the viewport,
-                so row-level `truncate` never produces its ellipsis. Force that
-                wrapper back to block so width is bounded and `…` can kick in. */}
-            <ScrollArea
-              viewportRef={navScrollViewportRef}
-              className="flex-1 min-h-0 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
-            >
-              <div className={`px-2 pt-0 pb-1 space-y-0.5 ${compact ? "flex flex-col items-center" : ""}`}>
-                {/* listPluginUiExtensions is sourced from the code-package runtime;
-                    this DTO has no catalog kind, and bundle packages do not enter it. */}
-                {hasPluginEntries ? (
-                  <NavGroup
-                    group="plugins"
-                    label={t("sidebar.pluginsLabel")}
-                    icon={<Blocks className="h-4 w-4" />}
-                    containsActive={pluginsContainActive}
-                    attention={pluginRequestPending}
-                    collapsed={compact}
-                  >
-                    {(close) => {
-                      const pick: ViewRowHandlerFactory = (viewKey) =>
-                        viewRowHandlers(viewKey, { after: close });
-                      // A Doctor or switched-off row names a settings PAGE, not a view, so it offers only the one destination.
-                      const pickShortcut: ViewRowHandlerFactory = (viewKey) =>
-                        viewRowHandlers(viewKey, { after: close, newPane: false });
-                      return (
-                        <>
-                          {pluginViews.map((view) => {
-                            const viewKey = toViewKey(view);
-                            const isUnauthed =
-                              view.extension !== undefined &&
-                              pluginAuthStatuses?.get(view.pluginId)?.kind === "unauthed";
-                            return (
-                              <PluginNavItem
-                                key={viewKey}
-                                view={view}
-                                isActive={activeView === viewKey}
-                                isUnauthed={Boolean(isUnauthed)}
-                                rowHandlers={pick}
-                                collapsed={false}
-                                role="menuitem"
-                              />
-                            );
-                          })}
-                          {failedPluginCards.map((plugin) => (
-                            <FailedPluginNavItem
-                              key={`doctor:${plugin.id}`}
-                              plugin={plugin}
-                              rowHandlers={pickShortcut}
-                              collapsed={false}
-                              role="menuitem"
-                            />
-                          ))}
-                          {inactivePluginCards.map((plugin) => (
-                            <InactivePluginNavItem
-                              key={`inactive:${plugin.id}`}
-                              plugin={plugin}
-                              rowHandlers={pickShortcut}
-                              collapsed={false}
-                              role="menuitem"
-                            />
-                          ))}
-                        </>
-                      );
-                    }}
-                  </NavGroup>
-                ) : null}
-                <div className={compact ? "pt-1" : hasPluginEntries ? "pt-2" : ""}>
-                  <ProjectSessionList
-                    collapsed={compact}
-                    sessions={sessions}
-                    projects={projects}
-                    currentSessionId={currentSessionId}
-                    conversationSurfaceVisible={activeView === "home"}
-                    onLoadSession={onLoadSession}
-                    onOpenWorkBoardItem={onOpenWorkBoardItem}
-                    onOpenSideChat={onOpenSideChat}
-                    onOpenPaneChat={onOpenPaneChat}
-                    onNewChatForProject={onNewChatForProject}
-                    onRefreshProjects={onRefreshProjects}
-                    onProjectError={onProjectError}
-                    onProjectNotice={onProjectNotice}
-                    surfaces={surfaces}
-                    bindingsLoaded={bindingsLoaded}
-                    onOpenSurface={onOpenSurface}
-                    isSurfaceVisible={isSurfaceVisible}
-                    isSessionStarred={isSessionStarred}
-                    onToggleSessionStar={onToggleSessionStar}
-                    isProjectPinned={isProjectPinned}
-                    onToggleProjectPin={onToggleProjectPin}
-                    conversationActions={conversationActions}
-                    projectActions={projectActions}
-                    pendingAnswerSessionIds={pendingAnswerSessionIds}
-                    suggestionsPendingCount={suggestionsPendingCount}
-                    scrollViewportRef={navScrollViewportRef}
-                    onExpandSidebar={expandSidebar}
-                  />
-                </div>
-              </div>
-            </ScrollArea>
-          </>
-        )}
+        {/* ── The project home row: pinned first, current only while the home is what the window shows. */}
+        <div className="px-2 pt-1.5 pb-1">
+          <button
+            type="button"
+            onClick={() => onSelect("project-home")}
+            aria-current={activeView === "project-home" ? "page" : undefined}
+            aria-keyshortcuts={darwin ? "Meta+0" : "Control+0"}
+            data-testid="sidebar-project-home"
+            className={[
+              "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+              activeView === "project-home" ? "bg-primary/(--opacity-subtle) font-medium text-primary" : "hover:bg-accent hover:text-accent-foreground",
+            ].join(" ")}
+          >
+            <House className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-left">{t("sidebar.projectHomeRow", { name: shownName })}</span>
+            <kbd className="shrink-0 text-[11px] font-normal text-muted-foreground">{homeChord}</kbd>
+          </button>
+        </div>
+        <div className="mx-2 h-px shrink-0 bg-border" aria-hidden="true" />
+        {/* Radix ScrollArea wraps viewport content in a `display: table` div, which sizes to max-content — long unbreakable
+            titles then blow the content wider than the card and get HARD-clipped by the viewport, so row-level `truncate` never
+            produces its ellipsis. Force that wrapper back to block so width is bounded and `…` can kick in. */}
+        <ScrollArea
+          viewportRef={navScrollViewportRef}
+          className="flex-1 min-h-0 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
+        >
+          <div className="px-2 pt-1 pb-1 space-y-0.5">
+            <ProjectSessionList
+              sessions={scoped.sessions}
+              projects={scoped.projects}
+              currentSessionId={currentSessionId}
+              conversationSurfaceVisible={activeView === "home"}
+              onLoadSession={onLoadSession}
+              onOpenWorkBoardItem={onOpenWorkBoardItem}
+              onOpenSideChat={onOpenSideChat}
+              onOpenPaneChat={onOpenPaneChat}
+              onNewChatForProject={onNewChatForProject}
+              onRefreshProjects={onRefreshProjects}
+              onProjectError={onProjectError}
+              onProjectNotice={onProjectNotice}
+              surfaces={scoped.surfaces}
+              bindingsLoaded={bindingsLoaded}
+              onOpenSurface={onOpenSurface}
+              isSurfaceVisible={isSurfaceVisible}
+              isSessionStarred={isSessionStarred}
+              onToggleSessionStar={onToggleSessionStar}
+              isProjectPinned={isProjectPinned}
+              onToggleProjectPin={onToggleProjectPin}
+              conversationActions={conversationActions}
+              projectActions={projectActions}
+              pendingAnswerSessionIds={pendingAnswerSessionIds}
+              suggestionsPendingCount={suggestionsPendingCount}
+              scrollViewportRef={navScrollViewportRef}
+              addFlow={addFlow}
+            />
+          </div>
+        </ScrollArea>
       </div>
-
-      {/* ── Footer ───────────────────────────────────────────────────── */}
-      {/* Bottom-pinned (`mt-auto`). The footer's `border-t` divider and its
-          row share the SAME uniform spacing rhythm as the nav groups above
-          (`py-2` + `space-y-0.5`) — no bespoke margin correction. */}
-      <div className={`border-t border-border px-2 py-2 mt-auto space-y-0.5 ${compact ? "flex flex-col items-center space-y-0.5" : ""}`}>
-        {/* Home and the marketplace jump used to sit here. The conversation
-            list IS the home surface — a row that navigates to "the chat" while
-            the chats are listed a few pixels above it was naming the same
-            destination twice — and the marketplace is reached from Settings →
-            Plugins, where installing is done. */}
-        <NavItem
-          viewKey="settings"
-          label={t(BUILTIN_LABEL_KEYS.settings)}
-          icon={<SettingsIcon className={settingsNeedsApiKey || runtimeUnavailable ? "h-4 w-4 text-destructive" : "h-4 w-4"} />}
-          // Active when settings render inline.
-          isActive={activeView === "settings"}
-          {...viewRowHandlers("settings", { open: onOpenSettings })}
-          collapsed={compact}
-          tone="settings"
-          data-testid="sidebar-settings"
-          data-tour-anchor="settings-entry"
-          iconBadge={
-            modelConfigured === false ? (
-              <span
-                role="img"
-                data-testid="sidebar-settings-alert"
-                aria-label={t("sidebar.settingsAlertNoModel")}
-                title={t("sidebar.settingsAlertNoModel")}
-                className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-destructive"
-              />
-            ) : undefined
-          }
-          trailingSlot={
-            runtimePending && !compact ? (
-              <span className="text-[10px] text-muted-foreground">
-                {t("subscriptionProvidersSection.statusChecking")}
-              </span>
-            ) : runtimeUnavailable && !compact ? (
-              <span className="text-[10px] text-destructive">
-                {t("formatIpcError.subscriptionChatUnavailable")}
-              </span>
-            ) : settingsNeedsApiKey && !compact ? (
-              <span className="text-[10px] text-destructive">
-                {t("mainToolbar.apiKeyRequired")}
-              </span>
-            ) : undefined
-          }
-        />
-      </div>
-      </div>
-      </div>
+      )}
     </aside>
     </SidebarPreviewProvider>
   );

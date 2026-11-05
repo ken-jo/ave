@@ -30,9 +30,9 @@ export const SINGLE_TILE_EXIT_WIDTH = SINGLE_TILE_ENTER_WIDTH + NARROW_DEAD_BAND
 export const SETTINGS_NARROW_ENTER_WIDTH = 640;
 export const SETTINGS_NARROW_EXIT_WIDTH = SETTINGS_NARROW_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
 
-/** Expanded navigation overlays when it cannot leave a readable content column. */
+/** Expanded navigation overlays when the rail, the list and a readable content column do not all fit. */
 export function sidebarPushThreshold(sidebarWidth: number): number {
-  return sidebarWidth + SHELL_GUTTER + MIN_DOCKED_TRANSCRIPT_WIDTH;
+  return COLLAPSED_RAIL_RESERVE + sidebarWidth + MIN_DOCKED_TRANSCRIPT_WIDTH;
 }
 
 /** Files need readable tree and detail columns; narrower workspaces use tree-to-detail navigation. */
@@ -44,31 +44,16 @@ export const BAND_EDGE_PAD = 12;
 /** Measured from the window edge, past the native buttons and their gap. */
 export const BAND_LEAD_PAD_DARWIN = TRAFFIC_LIGHT_RIGHT_EDGE + CHROME_GAP_TIGHT;
 
-/** Card inset is distinct from inter-surface gutter; keep its CSS mirror aligned. */
-const CARD_LEFT_INSET = SHELL_GUTTER;
-
-/** Measure strip padding from the card edge, subtracting its inset from the native-button clearance; backing paint behind OS buttons is safe. */
-const CLUSTER_FIRST_BUTTON_X = TRAFFIC_LIGHT_RIGHT_EDGE + SHELL_GUTTER;
-export const CLUSTER_LEAD_PAD_DARWIN = CLUSTER_FIRST_BUTTON_X - CARD_LEFT_INSET;
-
-export const CHROME_ICON_BUTTON = 24;
-
-export const CHROME_GAP_HAIR = 2;
-
-const CLUSTER_STRIP_CONTROLS = 4;
-const CLUSTER_STRIP_RUN = CLUSTER_STRIP_CONTROLS * CHROME_ICON_BUTTON + (CLUSTER_STRIP_CONTROLS - 1) * CHROME_GAP_HAIR;
-
-/** The bare cluster strip remains when the rail collapses; band content must clear it by one gutter. */
-export function collapsedBandLeadClearance(isDarwin: boolean): number {
-  const firstButtonX = isDarwin ? CLUSTER_FIRST_BUTTON_X : CARD_LEFT_INSET + CHROME_GAP_TIGHT;
-  return firstButtonX + CLUSTER_STRIP_RUN + SHELL_GUTTER;
-}
-
 /** Content titles begin two gutters from the card edge, matching the band label above. */
 export const CONTENT_TITLE_INSET = SHELL_GUTTER * 2;
 
-/** Native-button clearance fixes the collapsed reserve; keep the CSS mirror and geometry identity aligned. The literal is consumed by the source-reading gate. */
-export const COLLAPSED_RAIL_RESERVE = 64;
+/** What the content reserves on its leading edge for the rail: the card inset, the 52px rail card and one gutter. Keep the CSS
+ * mirror aligned; the literal is consumed by the source-reading gate. */
+export const COLLAPSED_RAIL_RESERVE = 68;
+
+/** The band's lead while only the rail shows: the content title's line past the rail. On darwin the rail starts below the band,
+ * and this lead also clears the native buttons. */
+export const RAIL_BAND_LEAD = COLLAPSED_RAIL_RESERVE + CONTENT_TITLE_INSET;
 
 /** The widest rail control must fit the reserve at the largest supported font scale. */
 export const RAIL_CONTROL_REM = 2.25;

@@ -20,8 +20,8 @@ export interface ViewPathNavProps {
   onSelectSegment: (target: ViewLocation) => void;
 }
 
-// A `--chrome-icon-button` square, like every control on the sidebar cluster strip it renders in: px, not rem, so
-// `collapsedBandLeadClearance` (shared/shell-geometry.ts) can add the strip up at every type scale.
+// A `--chrome-icon-button` square, like every control in the title band it renders in: px, not rem, so the band's
+// geometry holds at every type scale.
 const ICON_BUTTON_CLASS =
   "h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0 rounded-lg text-muted-foreground transition-[color,background-color,transform] "
   + "duration-[var(--motion-fast)] ease-[var(--motion-ease-standard)] hover:bg-accent "

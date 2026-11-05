@@ -1,28 +1,31 @@
-/** Shell width chooses sidebar overlay or reserve; dismissal returns focus to the toggle. */
+/** Shell width chooses whether the list beside the rail overlays the content or pushes it; dismissal returns focus to the band's
+ * unfold button. The rail stays in both. */
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import {
-  BAND_EDGE_PAD,
+  COLLAPSED_RAIL_RESERVE,
   CONTENT_TITLE_INSET,
-  SHELL_GUTTER,
-  collapsedBandLeadClearance,
+  RAIL_BAND_LEAD,
 } from "../../../shared/shell-geometry.js";
 import { SIDEBAR_DEFAULT_WIDTH } from "../../../shared/side-panel.js";
 
-/** jsdom has no OS lights: the band's collapsed lead is the plain-platform one. */
-const COLLAPSED_BAND_LEAD = `${Math.max(BAND_EDGE_PAD, collapsedBandLeadClearance(false))}px`;
-const EXPANDED_BAND_LEAD = `${SIDEBAR_DEFAULT_WIDTH + SHELL_GUTTER + CONTENT_TITLE_INSET}px`;
-const EXPANDED_MAIN_RESERVE = `${SIDEBAR_DEFAULT_WIDTH + SHELL_GUTTER}px`;
+/** jsdom has no OS lights: the band's rail-only lead is the plain-platform one. */
+const COLLAPSED_BAND_LEAD = `${RAIL_BAND_LEAD}px`;
+const EXPANDED_BAND_LEAD = `${COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH + CONTENT_TITLE_INSET}px`;
+const EXPANDED_MAIN_RESERVE = `${COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH}px`;
+
+/** The fold button: in the list's header while the list shows, first in the band once it is folded. */
+function currentToggle(container: HTMLElement): HTMLButtonElement {
+  const el = container.querySelector<HTMLButtonElement>('[data-testid="sidebar-collapse-toggle"]');
+  expect(el).not.toBeNull();
+  return el!;
+}
 
 async function mountShell(container: HTMLElement) {
-  const toggle = await waitFor(() => {
-    const el = container.querySelector('[data-testid="sidebar-collapse-toggle"]');
-    expect(el).not.toBeNull();
-    return el as HTMLButtonElement;
-  });
+  const toggle = await waitFor(() => currentToggle(container));
   const aside = container.querySelector('[data-testid="primary-sidebar"]') as HTMLElement;
   const main = container.querySelector("main") as HTMLElement;
   const band = container.querySelector('[data-testid^="custom-titlebar"]') as HTMLElement;
@@ -49,14 +52,17 @@ describe("App sidebar overlay", () => {
     });
     const { aside } = await mountShell(view.container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-    const first = view.container.querySelector('[data-testid="sidebar-resize-handle"]') as HTMLElement;
-    const last = view.container.querySelector('[data-testid="sidebar-settings"]') as HTMLElement;
+    // Only the list overlays; the rail beside it is outside the trap.
+    const card = view.container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
+    const controls = [...card.querySelectorAll<HTMLElement>("button, [tabindex]")].filter((element) => element.tabIndex >= 0);
+    const first = controls[0]!;
+    const last = controls.at(-1)!;
     expect(first).toBeTruthy();
-    expect(last).toBeTruthy();
+    expect(last).not.toBe(first);
     (shift ? first : last).focus();
     await user.tab({ shift });
     expect(document.activeElement).toBe(shift ? last : first);
-    expect(aside.contains(document.activeElement)).toBe(true);
+    expect(card.contains(document.activeElement)).toBe(true);
   });
 
   it("lets an open dialog own Escape while the sidebar remains expanded", async () => {
@@ -86,7 +92,7 @@ describe("App sidebar overlay", () => {
     expectCollapsedGeometry(main, band);
     await act(async () => { fireEvent.click(toggle); });
     expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
-    await act(async () => { fireEvent.click(toggle); });
+    await act(async () => { fireEvent.click(currentToggle(container)); });
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     expect(main.getAttribute("data-sidebar-overlay")).toBe("true");
     const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
@@ -98,26 +104,28 @@ describe("App sidebar overlay", () => {
 
   it("Escape collapses the narrow overlay and hands focus back to the toggle", async () => {
     const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
-    const { toggle, aside, main, band } = await mountShell(container);
+    const { aside, main, band } = await mountShell(container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });
     await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    const unfold = currentToggle(container);
+    expect(unfold.getAttribute("aria-pressed")).toBe("false");
+    expect(band.contains(unfold)).toBe(true);
     expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
     expectCollapsedGeometry(main, band);
-    expect(document.activeElement).toBe(toggle);
+    expect(document.activeElement).toBe(unfold);
   });
 
   it("a pointer down beside the overlay collapses it; one inside the card keeps it open", async () => {
     const { container } = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
-    const { toggle, aside, main } = await mountShell(container);
+    const { aside, main } = await mountShell(container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
     const card = container.querySelector('[data-testid="sidebar-card"]') as HTMLElement;
     await act(async () => { fireEvent.pointerDown(card); });
     expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
     await act(async () => { fireEvent.pointerDown(main); });
     await waitFor(() => expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false));
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(currentToggle(container).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("the expanded sidebar reserves its width on a wide shell", async () => {
@@ -138,7 +146,7 @@ describe("App sidebar overlay", () => {
     const view = await renderApp({ hasApiKey: true, shellWidth: 500, canvasWidth: 500 });
     const { toggle, aside, main, band } = await mountShell(view.container);
     await waitFor(() => expect(aside.getAttribute("data-sidebar-overlay")).toBe("true"));
-    const threshold = SIDEBAR_DEFAULT_WIDTH + 8 + 320;
+    const threshold = COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH + 320;
     await view.resizeContainers({ shellWidth: threshold + 59 });
     expect(aside.getAttribute("data-sidebar-overlay")).toBe("true");
     await view.resizeContainers({ shellWidth: threshold + 60 });
