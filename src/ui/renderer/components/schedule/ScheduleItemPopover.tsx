@@ -53,6 +53,20 @@ export interface ScheduleItemPopoverProps {
   onRunNow: () => void;
   onDelete: () => void;
   onOpenSession?: (sessionId: string) => void;
+  /** What the user has typed so far, held by the panel so a popover re-anchored after a refresh keeps it. */
+  draft?: ScheduleItemDraft;
+  onDraftChange?: (draft: ScheduleItemDraft) => void;
+}
+
+/** The popover's editable fields, as the user typed them. */
+export interface ScheduleItemDraft {
+  title?: string;
+  text?: string;
+  date?: string;
+  time?: string;
+  repeat?: RepeatKind;
+  intervalMinutes?: string;
+  cron?: string;
 }
 
 export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
@@ -73,13 +87,15 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
   type FormKey = keyof typeof initial;
   // Only what the user typed is held here. Every other field follows the latest record, so a refresh after the item fires
   // (which moves `at` forward) neither marks the form dirty nor sends the old time back.
-  const [edits, setEdits] = useState<Partial<typeof initial>>({});
+  const [localEdits, setLocalEdits] = useState<ScheduleItemDraft>({});
+  const edits = props.draft ?? localEdits;
+  const setEdits = (next: ScheduleItemDraft) => (props.onDraftChange ?? setLocalEdits)(next);
   const form = { ...initial, ...edits };
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const changed = (key: FormKey) => edits[key] !== undefined && edits[key] !== initial[key];
   const dirty = (Object.keys(initial) as FormKey[]).some(changed);
-  const set = <K extends FormKey>(key: K, value: (typeof initial)[K]) => setEdits((prev) => ({ ...prev, [key]: value }));
+  const set = <K extends FormKey>(key: K, value: (typeof initial)[K]) => setEdits({ ...edits, [key]: value });
 
   const buildPatch = (): RoutineEditPatch | null => {
     const patch: RoutineEditPatch = {};
@@ -182,7 +198,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
       {scheduled && (isCron ? (
         <label className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">{t("routinePanel.cronExpressionLabel")}</span>
-          <Input value={form.cron} onChange={(e) => { set("cron", e.target.value); set("repeat", "cron"); }} />
+          <Input value={form.cron} onChange={(e) => setEdits({ ...edits, cron: e.target.value, repeat: "cron" })} />
         </label>
       ) : (
         <div className="space-y-2">

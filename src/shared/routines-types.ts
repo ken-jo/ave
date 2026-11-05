@@ -138,7 +138,7 @@ export interface RoutineRun {
 }
 
 export type RoutineOccurrencesResult =
-  | { ok: true; occurrences: RoutineOccurrence[]; runs: RoutineRun[] }
+  | { ok: true; occurrences: RoutineOccurrence[]; runs: RoutineRun[]; running: Array<{ routineId: string; firedAt: string }> }
   | { ok: false; error: string };
 
 export interface AddRoutineInput {

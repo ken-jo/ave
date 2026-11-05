@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, CircleStop, ListTree, Loader2, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
@@ -34,6 +34,7 @@ import type {
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
+import { formatLocalClock } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
@@ -42,6 +43,9 @@ import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
 import { LiveRunPanel, LIVE_STEP_PANEL_ID, type LiveRunEntry } from "./work-board/LiveRunPanel.js";
 import { useBoardApprovals, useToolApprovalSurface } from "./work-board/use-board-approvals.js";
 import type { ApprovalRequest } from "../types.js";
+import { useScheduleData } from "./schedule/use-schedule-data.js";
+import { boardScheduleCards, weekStart } from "./schedule/board-schedule.js";
+import { PlannedScheduleCardView, RunningScheduleCardView, ScheduleWeekBundle } from "./schedule/BoardScheduleCards.js";
 import {
   currentPhaseTurn,
   formatElapsed,
@@ -70,6 +74,10 @@ export interface WorkBoardPanelProps {
   onApprovalFocusConsumed?: () => void;
   /** Open the schedule (routine) surface focused on one routine. */
   onOpenRoutine?: (routineId: string) => void;
+  /** Opens the schedule panel: the "스케줄 열기" link and every schedule card lead there. */
+  onOpenSchedule?: () => void;
+  /** Opens the chat a running schedule item writes to. */
+  onOpenSession?: (sessionId: string) => void;
 }
 
 /** Below this panel width the stack and the lanes become tabs instead of stacking (case board 17). */
@@ -87,6 +95,26 @@ function usePanelNarrow(node: HTMLElement | null): boolean {
     return () => observer.disconnect();
   }, [node]);
   return narrow;
+}
+
+
+/** Schedule cards are shown unless the user turned them off for this project; a per-viewer convenience only. */
+const SHOW_SCHEDULE_KEY = "ave.workBoard.showSchedule:";
+
+function readShowSchedule(projectRoot: string | undefined): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_SCHEDULE_KEY + (projectRoot ?? "")) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function writeShowSchedule(projectRoot: string | undefined, show: boolean): void {
+  try {
+    window.localStorage.setItem(SHOW_SCHEDULE_KEY + (projectRoot ?? ""), String(show));
+  } catch {
+    // Storage can be unavailable; the toggle still applies for this view.
+  }
 }
 
 const TITLE_MAX = 256;
@@ -344,11 +372,6 @@ function LiveRunChip({
   );
 }
 
-function localClock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
 
 /** What every card on the board can do, and what the board knows about each card's run beyond its run state. */
 interface CardActions {
@@ -413,7 +436,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
       <p className={className} data-testid="work-board-live-narration" title={narration?.text}>
         {narration ? (
           <>
-            <span className="tabular-nums">{localClock(narration.at)}</span>
+            <span className="tabular-nums">{formatLocalClock(narration.at)}</span>
             {` · ${narration.text}`}
           </>
         ) : (
@@ -582,6 +605,24 @@ interface BoardColumnProps {
   testId: string;
   /** The narrow board shows one column at a time, its cards two abreast and without the column's own heading (the tab carries it). */
   narrow?: boolean;
+  /** Schedule cards placed among the work items by time (a work item by its due time), and how many schedule entries they stand for. */
+  schedule?: { cards: Array<{ key: string; atMs: number; node: ReactNode }>; count: number; countKey: "workBoard.columnCountWithSchedule" | "workBoard.columnCountWithScheduleRuns" };
+}
+
+type ColumnEntry = { kind: "item"; item: WorkItemResolved } | { kind: "schedule"; node: ReactNode };
+
+/** Work items keep their order; each schedule card goes before the first item due later than it. An item without a due time sorts
+ * last, so a column of undated items lists the schedule cards first. */
+function columnOrder(items: readonly WorkItemResolved[], cards: ReadonlyArray<{ atMs: number; node: ReactNode }>): ColumnEntry[] {
+  const pending = [...cards].sort((a, b) => a.atMs - b.atMs);
+  const out: ColumnEntry[] = [];
+  for (const item of items) {
+    const due = item.due_at ? Date.parse(item.due_at) : Number.POSITIVE_INFINITY;
+    while (pending.length > 0 && pending[0]!.atMs <= due) out.push({ kind: "schedule", node: pending.shift()!.node });
+    out.push({ kind: "item", item });
+  }
+  for (const card of pending) out.push({ kind: "schedule", node: card.node });
+  return out;
 }
 
 function BoardColumn({
@@ -593,7 +634,9 @@ function BoardColumn({
   actions,
   testId,
   narrow = false,
+  schedule,
 }: BoardColumnProps) {
+  const hasSchedule = schedule !== undefined && schedule.cards.length > 0;
   // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
   // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
   // header while the list was clipped below it.
@@ -601,20 +644,23 @@ function BoardColumn({
     <section className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid={testId}>
       <div className={`items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2 ${narrow ? "hidden" : "flex"}`}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h3>
-        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
-          {items.length}
+        <span
+          className="flex h-5 min-w-[20px] items-center justify-center whitespace-nowrap rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground"
+          data-testid={`${testId}-count`}
+        >
+          {hasSchedule ? t(schedule.countKey, { items: String(items.length), schedules: String(schedule.count) }) : items.length}
         </span>
       </div>
       <ScrollArea className="min-h-0 flex-1 px-2 pb-2" data-testid={`${testId}-list`}>
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 && !hasSchedule ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{emptyLabel}</div>
         ) : (
           <div className={narrow ? "grid grid-cols-2 gap-2 pt-2" : "space-y-2"}>
-            {items.map((item) => (
-              <WorkItemCard key={item.id} item={item} run={runState[item.id]} actions={actions} />
-            ))}
+            {columnOrder(items, hasSchedule ? schedule.cards : []).map((entry) => (entry.kind === "schedule" ? entry.node : (
+              <WorkItemCard key={entry.item.id} item={entry.item} run={runState[entry.item.id]} actions={actions} />
+            )))}
           </div>
         )}
       </ScrollArea>
@@ -1444,8 +1490,23 @@ function ReportResultBlock({
 }
 
 export function WorkBoardPanel({
-  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, onOpenRoutine,
+  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, onOpenRoutine, onOpenSchedule, onOpenSession,
 }: WorkBoardPanelProps) {
+  const projectRoot = project?.projectRoot;
+  const [showSchedule, setShowSchedule] = useState(() => readShowSchedule(projectRoot));
+  useEffect(() => { setShowSchedule(readShowSchedule(projectRoot)); }, [projectRoot]);
+  // This week (for the finished-runs bundle) through the next five weeks (so a monthly item still has a next run). Recomputed when
+  // the day turns over: every refresh re-renders, so an open board moves to the new day and week on its own.
+  const today = localDateKey(new Date());
+  const scheduleRange = useMemo(() => {
+    const now = new Date();
+    return { from: weekStart(now), to: new Date(now.getTime() + 35 * 24 * 60 * 60 * 1000) };
+  }, [today]);
+  const scheduleData = useScheduleData(api, projectRoot, scheduleRange,
+    showSchedule && typeof api.listRoutineOccurrences === "function");
+  const scheduleCards = boardScheduleCards({ ...scheduleData, now: new Date() });
+  // A card opens the schedule on that item when the host can focus one, else the schedule itself.
+  const openScheduleItem = (routineId: string) => (onOpenRoutine ? onOpenRoutine(routineId) : onOpenSchedule?.());
   const [items, setItems] = useState<WorkItemResolved[]>([]);
   const [panelNode, setPanelNode] = useState<HTMLDivElement | null>(null);
   const narrow = usePanelNarrow(panelNode);
@@ -1710,7 +1771,43 @@ export function WorkBoardPanel({
     },
   ], [refresh, stepsOpen]));
 
-  const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string, narrow = false) => (
+  // Schedule cards for each column; the board shows them unless 스케줄 같이 보기 is off for this project.
+  const plannedSchedule: BoardColumnProps["schedule"] = {
+    count: scheduleCards.planned.length,
+    countKey: "workBoard.columnCountWithSchedule",
+    cards: scheduleCards.planned.map((card) => ({
+      key: card.routine.id,
+      atMs: Date.parse(card.nextAt),
+      node: <PlannedScheduleCardView key={`schedule:${card.routine.id}`} card={card} onOpen={openScheduleItem} />,
+    })),
+  };
+  const runningSchedule: BoardColumnProps["schedule"] = {
+    count: scheduleCards.running.length,
+    countKey: "workBoard.columnCountWithSchedule",
+    cards: scheduleCards.running.map((card) => ({
+      key: card.routine.id,
+      atMs: Date.parse(card.firedAt),
+      node: <RunningScheduleCardView key={`schedule:${card.routine.id}`} card={card} onOpenSession={onOpenSession} />,
+    })),
+  };
+  const weekSchedule: BoardColumnProps["schedule"] = {
+    count: scheduleCards.week.total,
+    countKey: "workBoard.columnCountWithScheduleRuns",
+    // This week's summary leads the column.
+    cards: scheduleCards.week.total === 0 && scheduleCards.week.skipped.length === 0 ? [] : [{
+      key: "week", atMs: Number.NEGATIVE_INFINITY,
+      node: <ScheduleWeekBundle key="schedule:week" week={scheduleCards.week} onOpen={openScheduleItem} />,
+    }],
+  };
+
+  const renderColumn = (
+    heading: string,
+    columnItems: WorkItemResolved[],
+    emptyLabel: string,
+    testId: string,
+    schedule?: BoardColumnProps["schedule"],
+    narrow = false,
+  ) => (
     <BoardColumn
       heading={heading}
       items={columnItems}
@@ -1720,6 +1817,7 @@ export function WorkBoardPanel({
       actions={cardActions}
       testId={testId}
       narrow={narrow}
+      schedule={showSchedule ? schedule : undefined}
     />
   );
 
@@ -1792,9 +1890,9 @@ export function WorkBoardPanel({
         ))}
       </div>
       <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
-        {statusTab === "planned" && renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", true)}
-        {statusTab === "in-progress" && renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", true)}
-        {statusTab === "completed" && renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", true)}
+        {statusTab === "planned" && renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule, true)}
+        {statusTab === "in-progress" && renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule, true)}
+        {statusTab === "completed" && renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule, true)}
       </div>
     </div>
   ) : (
@@ -1808,9 +1906,9 @@ export function WorkBoardPanel({
       className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
       data-testid="work-board-columns"
     >
-      {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
-      {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
-      {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
+      {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule)}
+      {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule)}
+      {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule)}
     </div>
   );
 
@@ -1818,7 +1916,24 @@ export function WorkBoardPanel({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
         <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Label className="flex items-center gap-1.5 whitespace-nowrap text-xs">
+            <Checkbox
+              checked={showSchedule}
+              onCheckedChange={(c) => {
+                const show = c === true;
+                setShowSchedule(show);
+                writeShowSchedule(projectRoot, show);
+              }}
+              data-testid="work-board-show-schedule"
+            />
+            <span>{t("workBoard.showSchedule")}</span>
+          </Label>
+          {onOpenSchedule && (
+            <Button type="button" variant="link" size="sm" className="h-auto px-0 text-xs" onClick={onOpenSchedule}>
+              {t("workBoard.openSchedule")}
+            </Button>
+          )}
           <Badge variant="outline" className="whitespace-nowrap" title={t("workBoard.panelTitle")} data-testid="work-board-item-count">
             {t("workBoard.itemCount", { count: items.length })}
           </Badge>

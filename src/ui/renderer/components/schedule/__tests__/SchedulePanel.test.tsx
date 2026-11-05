@@ -26,10 +26,10 @@ function routine(patch: Partial<RoutineRecord> = {}): RoutineRecord {
   };
 }
 
-function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurrence[]; runs?: RoutineRun[]; invalid?: Array<{ id: string; field: string; value: string; reason: "invalid-plugin-id" }> }) {
+function makeApi(state: { routines: RoutineRecord[]; occurrences?: RoutineOccurrence[]; runs?: RoutineRun[]; running?: Array<{ routineId: string; firedAt: string }>; invalid?: Array<{ id: string; field: string; value: string; reason: "invalid-plugin-id" }> }) {
   const api = {
     listRoutines: vi.fn(async () => ({ routines: state.routines, invalid: state.invalid ?? [] })),
-    listRoutineOccurrences: vi.fn(async () => ({ ok: true as const, occurrences: state.occurrences ?? [], runs: state.runs ?? [] })),
+    listRoutineOccurrences: vi.fn(async () => ({ ok: true as const, occurrences: state.occurrences ?? [], runs: state.runs ?? [], running: state.running ?? [] })),
     updateRoutine: vi.fn(async (id: string) => ({ ok: true as const, routine: state.routines.find((r) => r.id === id)! })),
     pauseRoutine: vi.fn(async (id: string) => ({ ok: true as const, routine: state.routines.find((r) => r.id === id)! })),
     resumeRoutine: vi.fn(async (id: string) => ({ ok: true as const, routine: state.routines.find((r) => r.id === id)! })),
@@ -239,6 +239,77 @@ describe("SchedulePanel", () => {
     expect(month.getAttribute("aria-selected")).toBe("true");
     expect(document.activeElement).toBe(month);
     expect(week.tabIndex).toBe(-1);
+  });
+
+  it("keeps the open popover and the user's edits when its occurrence fires, and says so when the item is deleted", async () => {
+    const state: Parameters<typeof makeApi>[0] = { routines: [routine()], occurrences: [{ routineId: "build", at: at(4, 14), status: "scheduled" }] };
+    const api = makeApi(state);
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByRole("button", { name: "14:00 빌드 상태 확인, 예정" }));
+    fireEvent.change(within(await view.findByTestId("schedule-item-popover")).getByTestId("schedule-edit-prompt"), { target: { value: "draft prompt" } });
+
+    // The 14:00 occurrence fires: it becomes a run, and the next occurrence is tomorrow.
+    state.occurrences = [{ routineId: "build", at: at(5, 14), status: "scheduled" }];
+    state.runs = [{ routineId: "build", firedAt: new Date(2026, 10, 4, 14, 0, 3).toISOString(), status: "done" }];
+    const fired = (api.onRoutineFired.mock.calls[0] as unknown as [() => void])[0];
+    await act(async () => { fired(); });
+    await waitFor(() => expect(view.getByRole("button", { name: /^14:00 빌드 상태 확인, 완료/ })).toBeTruthy());
+    const popover = view.getByTestId("schedule-item-popover");
+    expect((within(popover).getByTestId("schedule-edit-prompt") as HTMLTextAreaElement).value).toBe("draft prompt");
+
+    // Deleted elsewhere (the agent): the popover closes with a notice, not silently.
+    state.routines = [];
+    await act(async () => { fired(); });
+    await waitFor(() => expect(view.queryByTestId("schedule-item-popover")).toBeNull());
+    expect(view.getByRole("alert").textContent).toContain("스케줄이 삭제되어 상세 창을 닫았습니다.");
+  });
+
+  it("week view: +N lists the hidden items and offers 이 날 일일 보기", async () => {
+    const routines = ["a", "b", "c"].map((id) => routine({ id, title: `항목 ${id}` }));
+    const api = makeApi({ routines, occurrences: routines.map((r) => ({ routineId: r.id, at: at(5, 14), status: "scheduled" as const })) });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-more"));
+    const list = await view.findByTestId("schedule-more-list");
+    expect(within(list).getByTestId("schedule-chip").getAttribute("data-routine-id")).toBe("c");
+    fireEvent.click(view.getByRole("button", { name: "이 날 일일 보기" }));
+    expect(view.getByRole("tab", { name: "일일" }).getAttribute("aria-selected")).toBe("true");
+    expect(view.getByTestId("schedule-range-label").textContent).toContain("11월 5일");
+  });
+
+  it("an open +N list and the hidden item opened from it stay open when that item fires", async () => {
+    const routines = ["a", "b", "c", "d"].map((id) => routine({ id, title: `항목 ${id}` }));
+    const state: Parameters<typeof makeApi>[0] = { routines, occurrences: routines.map((r) => ({ routineId: r.id, at: at(4, 14), status: "scheduled" as const })) };
+    const api = makeApi(state);
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByRole("tab", { name: "일일" }));
+    fireEvent.click(await view.findByTestId("schedule-more"));
+    fireEvent.click(within(await view.findByTestId("schedule-more-list")).getByTestId("schedule-chip"));
+    expect(within(await view.findByTestId("schedule-item-popover")).getByText("항목 d")).toBeTruthy();
+
+    state.occurrences = routines.filter((r) => r.id !== "d").map((r) => ({ routineId: r.id, at: at(4, 14), status: "scheduled" as const }));
+    state.runs = [{ routineId: "d", firedAt: new Date(2026, 10, 4, 14, 0, 4).toISOString(), status: "done" }];
+    const fired = (api.onRoutineFired.mock.calls[0] as unknown as [() => void])[0];
+    await act(async () => { fired(); });
+    await waitFor(() => expect(within(view.getByTestId("schedule-more-list")).getByTestId("schedule-chip").getAttribute("data-status")).toBe("done"));
+    expect(within(view.getByTestId("schedule-item-popover")).getByText("항목 d")).toBeTruthy();
+  });
+
+  it("undoing a delete brings the item back without the edits that were open", async () => {
+    const api = makeApi({ routines: [routine()], occurrences: [{ routineId: "build", at: at(5, 9), status: "scheduled" }] });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    const popover = await view.findByTestId("schedule-item-popover");
+    fireEvent.change(within(popover).getByTestId("schedule-edit-prompt"), { target: { value: "half-typed" } });
+    fireEvent.click(within(popover).getByRole("button", { name: "삭제" }));
+    fireEvent.click(await view.findByRole("button", { name: "실행 취소" }));
+    fireEvent.click(await view.findByTestId("schedule-chip"));
+    expect((within(await view.findByTestId("schedule-item-popover")).getByTestId("schedule-edit-prompt") as HTMLTextAreaElement).value).toBe("check the build");
+  });
+
+  it("shows a run already in progress when the panel opens", async () => {
+    const api = makeApi({ routines: [routine()], runs: [{ routineId: "build", firedAt: at(4, 11, 15), status: "done" }], running: [{ routineId: "build", firedAt: at(4, 11, 15) }] });
+    const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+    await waitFor(() => expect(view.getAllByTestId("schedule-chip").map((c) => c.getAttribute("data-status"))).toContain("running"));
   });
 
   it("shows held-back and missing-extension items above the grid with a delete", async () => {

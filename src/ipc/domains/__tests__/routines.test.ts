@@ -320,6 +320,7 @@ describe("schedule panel IPC", () => {
       ok: true,
       occurrences: [{ routineId: "routine-w", at: "2026-11-05T00:00:00.000Z", status: "scheduled" }],
       runs: [{ routineId: "routine-w", firedAt: "2026-11-03T00:00:00.000Z", status: "failed", sessionId: "s1" }],
+      running: [],
     });
     expect(await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2027-11-02T00:00:00.000Z" })).toEqual({ ok: false, error: "invalid-range" });
     expect(await invoke(ROUTINES.listOccurrences, { from: "x", to: "y" })).toEqual({ ok: false, error: "invalid-range" });
@@ -345,7 +346,7 @@ describe("schedule panel IPC — review fixes", () => {
       [done, other].filter((r) => !filter || r.projectRoot === filter.projectRoot));
     (deps.routinesStore.listForDisplay as ReturnType<typeof vi.fn>).mockReturnValue({ routines: [], invalid: [] });
     const result = await invoke(ROUTINES.listOccurrences, { projectRoot: "/p/a", from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
-    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "once", firedAt: "2026-11-03T00:00:00.000Z", status: "done" }] });
+    expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "once", firedAt: "2026-11-03T00:00:00.000Z", status: "done" }], running: [] });
   });
 });
 
@@ -361,5 +362,16 @@ describe("schedule panel IPC — input shapes", () => {
     expect(await invoke(ROUTINES.add, { projectRoot: "/p", trigger: "schedule", execution: "llm-session", prePrompt: 3 }))
       .toEqual({ ok: false, error: "invalid-input" });
     expect(deps.routinesStore.add).not.toHaveBeenCalled();
+  });
+});
+
+describe("runs in progress", () => {
+  it("reports the scheduler's runs in progress with the occurrences, so a view opened mid-run shows them", async () => {
+    handlers.clear();
+    const { registerRoutineHandlers } = await import("../routines.js");
+    const running = [{ routineId: "routine-a", firedAt: "2026-11-05T00:00:00.000Z" }];
+    registerRoutineHandlers({ ...makeDeps([]), routinesScheduler: { runningNow: vi.fn(() => running) } } as unknown as Parameters<typeof registerRoutineHandlers>[0]);
+    const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    expect((result as { running: unknown }).running).toEqual(running);
   });
 });

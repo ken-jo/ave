@@ -1798,6 +1798,13 @@ export function App() {
           approvalFocusKey={workApprovalFocusKey}
           onApprovalFocusConsumed={() => setWorkApprovalFocusKey(null)}
           onOpenRoutine={openRoutine}
+          onOpenSchedule={() => handleViewSelect("routines")}
+          onOpenSession={(sessionId) => {
+            void (async () => {
+              const loaded = await handleLoadSessionAndRefresh(sessionId);
+              if (loaded !== false) closePane();
+            })();
+          }}
         />
       ));
     }
