@@ -7,6 +7,7 @@ import {
   type MemoryWriteStore,
 } from "../memory-write.js";
 import type { ToolExecutionContext } from "../types.js";
+import type { MemorySaveNotices } from "../../memory/memory-save-notices.js";
 
 // A turn the host saw only keyboard text in; memory_write refuses anything else.
 const emptyCtx: ToolExecutionContext = {
@@ -19,21 +20,28 @@ function makeStore(
   saveMemory: MemoryWriteStore["saveMemory"] = vi.fn(async (title: string) => ({
     op: "created" as const,
     entry: { id: "a1b2c3d4-0000-4000-8000-000000000001", filename: `${title}.md`, title, content: title },
+    fileDigest: "d".repeat(64),
   })),
   updateMemoryById: MemoryWriteStore["updateMemoryById"] = vi.fn(async (id: string, title: string, _content: string, options: { scope?: "global"; projectRoot?: string }) => ({
     op: "updated" as const,
     entry: { id, filename: `${title}.md`, title, content: title, ...(options.scope === "global" || !options.projectRoot ? {} : { projectRoot: options.projectRoot }) },
+    fileDigest: "e".repeat(64),
   })),
 ): { store: MemoryWriteStore; saveMemory: typeof saveMemory; updateMemoryById: typeof updateMemoryById } {
   return { store: { saveMemory, updateMemoryById }, saveMemory, updateMemoryById };
+}
+
+function makeNotices() {
+  return { saved: vi.fn<MemorySaveNotices["saved"]>(() => undefined), skipped: vi.fn<MemorySaveNotices["skipped"]>() };
 }
 
 async function run(
   input: unknown,
   store?: MemoryWriteStore,
   ctx: ToolExecutionContext = emptyCtx,
+  notices = makeNotices(),
 ): Promise<{ output: string; isError?: boolean }> {
-  const tool = createMemoryWriteTool({ memoryManager: store ?? makeStore().store });
+  const tool = createMemoryWriteTool({ memoryManager: store ?? makeStore().store, notices });
   return tool.execute(input, ctx);
 }
 
@@ -57,7 +65,7 @@ describe("memory_write — happy path", () => {
   });
 
   it("keeps a write contract and tells the model the save is immediate and undoable", () => {
-    const tool = createMemoryWriteTool({ memoryManager: makeStore().store });
+    const tool = createMemoryWriteTool({ memoryManager: makeStore().store, notices: makeNotices() });
     expect(tool.category).toBe("write");
     expect(tool.isReadOnly({ title: "t", content: "x" })).toBe(false);
     expect(tool.description).toContain("saved immediately");
@@ -403,5 +411,48 @@ describe("memory_write — store failure", () => {
     const result = await run({ title: "t", content: "x" }, store);
     expect(result.isError).toBe(true);
     expect(result.output).toContain("disk full");
+  });
+});
+
+describe("memory_write — the user's notice", () => {
+  const SESSION = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
+  const TURN = "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f";
+  const inTurn = (extra: Record<string, unknown> = {}): ToolExecutionContext => ({
+    cwd: "", extraAllowedDirectories: [], metadata: { memoryWriteTainted: false, sessionId: SESSION, turnMessageId: TURN, ...extra },
+  });
+
+  it("announces a save under the turn's user row with what the store wrote", async () => {
+    const notices = makeNotices();
+    await run({ title: "stack", content: "Alpha uses pnpm." }, makeStore().store, inTurn(), notices);
+    expect(notices.saved).toHaveBeenCalledWith(
+      { sessionId: SESSION, anchorMessageId: TURN },
+      expect.objectContaining({ op: "created", entry: expect.objectContaining({ title: "stack" }), fileDigest: "d".repeat(64) }),
+    );
+    expect(notices.skipped).not.toHaveBeenCalled();
+  });
+
+  it("does not hand the model an undo token", async () => {
+    const notices = makeNotices();
+    notices.saved.mockReturnValue("11111111-2222-4333-8444-555555555555");
+    const result = await run({ title: "stack", content: "Alpha uses pnpm." }, makeStore().store, inTurn(), notices);
+    expect(result.output).not.toContain("11111111-2222-4333-8444-555555555555");
+  });
+
+  it.each([
+    ["a tainted turn", { title: "t", content: "x" }, { memoryWriteTainted: true }, "external-context"],
+    ["a credential", { title: "token", content: "api_key=sk-abcdefghijklmnopqrstuvwx" }, {}, "credential"],
+    ["the reserved marker", { title: "t", content: "<!-- ave:memory-meta:x -->" }, {}, "unsafe-text"],
+  ])("tells the user why %s was not saved", async (_label, input, extra, reason) => {
+    const notices = makeNotices();
+    const result = await run(input, makeStore().store, inTurn(extra), notices);
+    expect(result.isError).toBe(true);
+    expect(notices.skipped).toHaveBeenCalledWith({ sessionId: SESSION, anchorMessageId: TURN }, reason);
+    expect(notices.saved).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet about the model's own argument mistakes", async () => {
+    const notices = makeNotices();
+    await run({ title: "", content: "x" }, makeStore().store, inTurn(), notices);
+    expect(notices.skipped).not.toHaveBeenCalled();
   });
 });

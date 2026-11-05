@@ -410,6 +410,9 @@ function parseMemoryProjectOptions(raw: unknown): MemoryProjectOptionsResolution
 
 export type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 
+// Undo tokens are host-minted UUIDs; anything else never reaches the undo records.
+const UNDO_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 // Resolve durable row ids; transcript entry ordinals differ from stored row ordinals.
 function historyIndexOfMessageId(history: GenericMessage[], messageId: string): number {
   return history.findIndex((m) => m.meta?.messageId === messageId);
@@ -447,6 +450,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     conversationLoop,
     settingsService,
     memoryManager,
+    memorySaveNotices,
     starredStore,
     feedbackStore,
     auditLogger,
@@ -1747,10 +1751,21 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     try {
-      await memoryManager.deleteMemory(filename, project.options, "user");
-      return { ok: true };
+      const { priorContent, entry } = await memoryManager.deleteMemory(filename, project.options, "user");
+      // A delete from the panel has no conversation to notice in; the panel shows its own toast with this token.
+      const undoToken = entry ? memorySaveNotices.deleted(undefined, entry, priorContent) : undefined;
+      return { ok: true, ...(undoToken ? { undoToken } : {}) };
     } catch {
       // Do not disclose a path, title, or another project's memory scope to the renderer.
+      return { ok: false, error: "write-failed" };
+    }
+  });
+  ipcMain.handle(CHANNELS.memory.undo, async (e, token: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.undo, e); return UNAUTHORIZED_FRAME; }
+    if (typeof token !== "string" || !UNDO_TOKEN_PATTERN.test(token)) return { ok: false, error: "invalid-input" };
+    try {
+      return await memorySaveNotices.undo(token);
+    } catch {
       return { ok: false, error: "write-failed" };
     }
   });

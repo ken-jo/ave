@@ -7,6 +7,7 @@ import type { SettingsService } from "../data/settings-store.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
+import type { MemorySaveNotices } from "../memory/memory-save-notices.js";
 import type { InputClassifier } from "../core/input-classifier.js";
 import type { RouteEngine } from "../core/route-engine.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -86,6 +87,8 @@ export interface AppServices {
   memoryManager: MemoryManager;
   /** Host-owned LLM review gate for explicit and automatic long-term memory. */
   memoryCaptureService?: MemoryCaptureService;
+  /** Live memory save notices and the undo records the memory IPC redeems. */
+  memorySaveNotices: MemorySaveNotices;
   inputClassifier: InputClassifier;
   routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;

@@ -692,6 +692,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memorySearchNotes: vi.fn(async () => []),
     memoryListEntries: vi.fn(async () => []),
     memoryDeleteEntry: vi.fn(async () => ({ ok: true })),
+    memoryUndo: vi.fn(async () => ({ ok: true, undone: "deleted", title: "" })),
+    onMemorySaveResult: vi.fn((_handler: (event: unknown) => void) => () => {}),
     memorySearchEntries: vi.fn(async () => []),
     memoryGetIndex: vi.fn(async () => memoryIndex),
     memoryUpdateIndexIfUnchanged: vi.fn(async () => true),

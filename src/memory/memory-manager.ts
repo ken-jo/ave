@@ -277,6 +277,18 @@ export interface MemorySaveOptions extends ProjectScopedMemoryOptions {
 export interface MemorySaveResult {
   op: "created" | "updated";
   entry: NoteEntry;
+  /** sha256 of the bytes this save wrote; an undo acts only while the file still holds them. */
+  fileDigest: string;
+  /** For an update, the file's bytes before it, so an undo can put them back. */
+  priorContent?: string;
+}
+
+/** What a delete removed: the file's bytes, so an undo can write them back, and the memory they held. */
+export interface MemoryDeleteResult {
+  /** Null when there was no file. */
+  priorContent: string | null;
+  /** The removed memory as it was listed; absent when there was no file. */
+  entry?: NoteEntry;
 }
 
 export interface MemoryReadOptions extends ProjectScopedMemoryOptions {
@@ -1565,6 +1577,8 @@ export class MemoryManager implements PromptMemorySource {
     const indexPath = join(this.memoryDir, "MEMORY.md");
     let filename = "";
     let previousBody: string | undefined;
+    let priorContent: string | undefined;
+    let fileDigest = "";
 
     await withFileLock(indexPath, async () => {
       // One save rule: within a scope, a same-title save updates the existing memory whichever path wrote it. Should two files
@@ -1577,6 +1591,7 @@ export class MemoryManager implements PromptMemorySource {
         previousBody = previous && !previous.tooLarge
           ? this.memoryBodyForPrompt({ filename, title: input.title, content: this.parseMemoryNote(previous.content).content })
           : "";
+        if (previous && !previous.tooLarge) priorContent = previous.content;
       } else {
         filename = this.allocateMemoryFilename(input.title, metadata.id);
       }
@@ -1587,6 +1602,7 @@ export class MemoryManager implements PromptMemorySource {
         visibleContent,
       ].join("\n");
       writeFileSync(join(this.memoryDir, filename), storedContent, "utf-8");
+      fileDigest = sha256Text(storedContent);
       if (metadata.scope.type === "global") {
         this.updateMemoryIndexLocked(indexPath, filename, input.title, input.content);
       } else {
@@ -1611,6 +1627,8 @@ export class MemoryManager implements PromptMemorySource {
     return {
       op: previousBody === undefined ? "created" : "updated",
       entry: this.entryFromMemoryMetadata(filename, input.title, visibleContent, metadata, new Date().toISOString()),
+      fileDigest,
+      ...(priorContent !== undefined ? { priorContent } : {}),
     };
   }
 
@@ -1637,6 +1655,8 @@ export class MemoryManager implements PromptMemorySource {
     const indexPath = join(this.memoryDir, "MEMORY.md");
     let updated: NoteEntry | undefined;
     let previousBody = "";
+    let priorContent: string | undefined;
+    let fileDigest = "";
     await withFileLock(indexPath, async () => {
       const found = this.findManagedMemoryById(safeId);
       const scopeEntry = found
@@ -1647,11 +1667,16 @@ export class MemoryManager implements PromptMemorySource {
         throw new Error("updateMemoryById: memory not found");
       }
       const targetScope: MemoryScope = options.scope === "global" ? { type: "global" } : found.metadata.scope;
-      const sameTitle = this.findExistingManagedMemory(input.title, targetScope);
+      // Same-title copies are never folded. An older copy that keeps its title and scope takes nothing from another file,
+      // while the lookup below names only the newest copy, which need not be this one.
+      const keepsTitleAndScope = found.title === input.title && this.memoryScopesEqual(found.metadata.scope, targetScope);
+      const sameTitle = keepsTitleAndScope ? undefined : this.findExistingManagedMemory(input.title, targetScope);
       if (sameTitle && sameTitle.metadata.id.toLowerCase() !== safeId) {
         throw new Error("updateMemoryById: title-conflict");
       }
       previousBody = this.memoryBodyForPrompt({ filename: found.filename, title: found.title, content: found.content });
+      const prior = readUtf8FileSnapshotIfPresent(join(this.memoryDir, found.filename), MAX_MANAGED_MEMORY_FILE_BYTES);
+      if (prior && !prior.tooLarge) priorContent = prior.content;
       const { capture: _capture, ...rest } = found.metadata;
       const metadata: MemoryMetadataV1 = {
         ...rest,
@@ -1659,11 +1684,13 @@ export class MemoryManager implements PromptMemorySource {
         source: options.source,
         ...(options.kind ? { kind: options.kind } : {}),
       };
-      writeFileSync(join(this.memoryDir, found.filename), [
+      const storedContent = [
         MEMORY_MARKER,
         `${MEMORY_METADATA_PREFIX}${encodeMemoryMetadata(metadata)}${MEMORY_METADATA_SUFFIX}`,
         visibleContent,
-      ].join("\n"), "utf-8");
+      ].join("\n");
+      writeFileSync(join(this.memoryDir, found.filename), storedContent, "utf-8");
+      fileDigest = sha256Text(storedContent);
       if (metadata.scope.type === "global") {
         this.updateMemoryIndexLocked(indexPath, found.filename, input.title, input.content);
       } else {
@@ -1681,11 +1708,15 @@ export class MemoryManager implements PromptMemorySource {
       });
     });
     this.memoryIndex = this.readMemoryIndex();
-    return { op: "updated", entry: updated! };
+    return { op: "updated", entry: updated!, fileDigest, ...(priorContent !== undefined ? { priorContent } : {}) };
   }
 
   /** Delete one managed memory by id within the caller's scope; the same path as deleting its file. */
-  async deleteMemoryById(id: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<NoteEntry> {
+  async deleteMemoryById(
+    id: string,
+    options: ProjectScopedMemoryOptions,
+    actor: MemoryHistoryActor,
+  ): Promise<{ entry: NoteEntry } & MemoryDeleteResult> {
     const safeId = this.validateManagedMemoryId(id, "deleteMemoryById");
     const found = this.findManagedMemoryById(safeId);
     const entry = found
@@ -1694,8 +1725,8 @@ export class MemoryManager implements PromptMemorySource {
     if (!found || !entry || !this.memoryScopeVisibleForMutation(entry, options)) {
       throw new Error("deleteMemoryById: memory not found");
     }
-    await this.deleteMemory(found.filename, options, actor);
-    return entry;
+    const { priorContent } = await this.deleteMemory(found.filename, options, actor);
+    return { entry, priorContent };
   }
 
   /** One memory's change history; the memory must exist in the caller's scope, like any id-based operation. */
@@ -1741,9 +1772,11 @@ export class MemoryManager implements PromptMemorySource {
     this.memoryIndex = this.readMemoryIndex();
   }
 
-  async deleteMemory(filename: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<void> {
+  async deleteMemory(filename: string, options: ProjectScopedMemoryOptions, actor: MemoryHistoryActor): Promise<MemoryDeleteResult> {
     const safeFilename = this.validateDeletableMemoryFilename(filename);
     let deletedId: string | undefined;
+    let priorContent: string | null = null;
+    let deletedEntry: NoteEntry | undefined;
     const path = join(this.memoryDir, safeFilename);
     const indexPath = join(this.memoryDir, "MEMORY.md");
     await withFileLock(indexPath, async () => {
@@ -1771,6 +1804,8 @@ export class MemoryManager implements PromptMemorySource {
           throw new Error("deleteMemory: memory does not belong to the selected scope");
         }
         deletedId = entry.id;
+        priorContent = snapshot.content;
+        deletedEntry = entry;
       }
       // Deleting removes the text the history kept; if that cannot be done the memory stays and the delete fails.
       if (deletedId) await this.history.scrub(deletedId);
@@ -1780,6 +1815,119 @@ export class MemoryManager implements PromptMemorySource {
       if (deletedId) await this.history.record({ memoryId: deletedId, op: "deleted", actor });
     });
     this.memoryIndex = this.readMemoryIndex();
+    return { priorContent, ...(deletedEntry ? { entry: deletedEntry } : {}) };
+  }
+
+  /**
+   * Undo an update: put the file's earlier bytes back only while it still holds exactly the bytes that update wrote, and
+   * only while its earlier title is free in its scope. "changed" otherwise; the undo token is the caller's authority.
+   */
+  async restoreMemoryIfUnchanged(
+    filename: string,
+    expectedDigest: string,
+    priorContent: string,
+    actor: MemoryHistoryActor,
+  ): Promise<"restored" | "changed"> {
+    const safeFilename = this.validateDeletableMemoryFilename(filename);
+    const prior = this.parseMemoryNote(priorContent);
+    if (!prior.metadata || prior.invalidMetadata) throw new Error("restoreMemoryIfUnchanged: not a managed memory");
+    const metadata = prior.metadata;
+    const title = prior.content.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
+    if (!title) throw new Error("restoreMemoryIfUnchanged: memory has no title");
+    const body = prior.content.replace(/^#\s+[^\r\n]+(?:\r?\n)*/, "").trim();
+    const path = join(this.memoryDir, safeFilename);
+    const indexPath = join(this.memoryDir, "MEMORY.md");
+    let outcome = "changed" as "restored" | "changed";
+    await withFileLock(indexPath, async () => {
+      const current = readUtf8FileSnapshotIfPresent(path, MAX_MANAGED_MEMORY_FILE_BYTES);
+      if (!current || current.tooLarge || sha256Text(current.content) !== expectedDigest) return;
+      const currentBody = this.parseMemoryNote(current.content).content;
+      // An update by id may have renamed it; putting the old title back needs that title free in its scope. A restore that
+      // keeps the title changes nothing about which file holds it.
+      const currentTitle = currentBody.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
+      if (currentTitle !== title) {
+        const holder = this.findExistingManagedMemory(title, metadata.scope);
+        if (holder && holder.metadata.id.toLowerCase() !== metadata.id.toLowerCase()) return;
+      }
+      writeFileSync(path, priorContent, "utf-8");
+      if (metadata.scope.type === "global") {
+        this.updateMemoryIndexLocked(indexPath, safeFilename, title, body);
+      } else {
+        this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
+      }
+      await this.history.record({
+        memoryId: metadata.id,
+        op: "updated",
+        actor,
+        fields: { title: historyText(title), contentDigest: sha256Text(body), scope: metadata.scope.type },
+        before: historyText(this.memoryBodyForPrompt({ filename: safeFilename, title, content: currentBody })),
+        after: historyText(body),
+      });
+      outcome = "restored";
+    });
+    if (outcome === "restored") this.memoryIndex = this.readMemoryIndex();
+    return outcome;
+  }
+
+  /**
+   * Undo a create: delete the file only while it still holds exactly the bytes that save wrote.
+   * "changed" when it was edited or removed since; the undo token is the caller's authority, so no scope check.
+   */
+  async deleteMemoryIfUnchanged(filename: string, expectedDigest: string, actor: MemoryHistoryActor): Promise<"deleted" | "changed"> {
+    const safeFilename = this.validateDeletableMemoryFilename(filename);
+    const path = join(this.memoryDir, safeFilename);
+    const indexPath = join(this.memoryDir, "MEMORY.md");
+    let deletedId: string | undefined;
+    let outcome = "changed" as "deleted" | "changed";
+    await withFileLock(indexPath, async () => {
+      const snapshot = readUtf8FileSnapshotIfPresent(path, MAX_MANAGED_MEMORY_FILE_BYTES);
+      if (!snapshot || snapshot.tooLarge || sha256Text(snapshot.content) !== expectedDigest) return;
+      const parsed = this.parseMemoryNote(snapshot.content);
+      if (!parsed.metadata || parsed.invalidMetadata) throw new Error("deleteMemoryIfUnchanged: not a managed memory");
+      deletedId = parsed.metadata.id;
+      await this.history.scrub(deletedId);
+      unlinkIfPresent(path);
+      this.removeMemoryIndexEntryLocked(safeFilename, indexPath);
+      await this.history.record({ memoryId: deletedId, op: "deleted", actor });
+      outcome = "deleted";
+    });
+    if (outcome === "deleted") this.memoryIndex = this.readMemoryIndex();
+    return outcome;
+  }
+
+  /**
+   * Undo a delete: write the deleted file's bytes back. "changed" when the file name, the id or the title in its
+   * scope has been taken since, so a restore never overwrites or duplicates a newer memory.
+   */
+  async restoreDeletedMemory(filename: string, priorContent: string, actor: MemoryHistoryActor): Promise<"restored" | "changed"> {
+    const safeFilename = this.validateDeletableMemoryFilename(filename);
+    const parsed = this.parseMemoryNote(priorContent);
+    if (!parsed.metadata || parsed.invalidMetadata) throw new Error("restoreDeletedMemory: not a managed memory");
+    const metadata = parsed.metadata;
+    const title = parsed.content.match(/^#\s+([^\r\n]+)/)?.[1]?.trim();
+    if (!title) throw new Error("restoreDeletedMemory: memory has no title");
+    const body = parsed.content.replace(/^#\s+[^\r\n]+(?:\r?\n)*/, "").trim();
+    const path = join(this.memoryDir, safeFilename);
+    const indexPath = join(this.memoryDir, "MEMORY.md");
+    let outcome = "changed" as "restored" | "changed";
+    await withFileLock(indexPath, async () => {
+      if (existsSync(path)) return;
+      if (this.findManagedMemoryById(metadata.id.toLowerCase())) return;
+      if (this.findExistingManagedMemory(title, metadata.scope)) return;
+      writeFileSync(path, priorContent, "utf-8");
+      if (metadata.scope.type === "global") {
+        this.updateMemoryIndexLocked(indexPath, safeFilename, title, body);
+      }
+      await this.history.record({
+        memoryId: metadata.id,
+        op: "created",
+        actor,
+        fields: { title: historyText(title), contentDigest: sha256Text(body), scope: metadata.scope.type },
+      });
+      outcome = "restored";
+    });
+    if (outcome === "restored") this.memoryIndex = this.readMemoryIndex();
+    return outcome;
   }
 
   async updateAgentsMd(content: string): Promise<void> {

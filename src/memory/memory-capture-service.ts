@@ -5,6 +5,7 @@ import {
   type ChatInputOrigin,
 } from "../shared/chat-origin.js";
 import type { MemoryReviewerCallOptions } from "./memory-reviewer-service.js";
+import type { MemorySaveNotices, MemorySaveSkipReason } from "./memory-save-notices.js";
 import { hasControlChars } from "../shared/display-safe-text.js";
 import type {
   MemoryKind,
@@ -65,7 +66,7 @@ export interface AutomaticMemoryCaptureSubmitter {
 type MemoryCaptureTrigger = "automatic" | "explicit";
 
 export type MemoryCaptureResult =
-  | { status: "saved"; op: "created" | "updated"; entry: NoteEntry }
+  | { status: "saved"; op: "created" | "updated"; entry: NoteEntry; undoToken?: string }
   | { status: "skipped"; reason: string };
 
 interface PendingCapture {
@@ -98,6 +99,8 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
 
   constructor(private readonly deps: {
     memoryManager: Pick<MemoryManager, "saveMemory">;
+    /** Every save in a conversation shows the same live notice; automatic skips stay silent. */
+    notices: Pick<MemorySaveNotices, "saved" | "skipped">;
     memoryReviewer?: MemoryCaptureReviewer;
     maxPending?: number;
     /** The session store every request's sessionId belongs to; boot serves only main-store conversations. */
@@ -145,6 +148,21 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
 
   // Explicit saves still require review and host validation even when automatic capture is disabled.
   async captureExplicit(request: ExplicitMemoryCaptureRequest): Promise<MemoryCaptureResult> {
+    const target = request.sessionId !== undefined ? { sessionId: request.sessionId } : undefined;
+    let result: MemoryCaptureResult;
+    try {
+      result = await this.captureExplicitUnnoticed(request);
+    } catch (error) {
+      this.deps.notices.skipped(target, (error as Error).message?.includes("unsafe-text") ? "unsafe-text" : "write-failed");
+      throw error;
+    }
+    if (result.status === "skipped") {
+      this.deps.notices.skipped(target, explicitNoticeReason(result.reason));
+    }
+    return result;
+  }
+
+  private async captureExplicitUnnoticed(request: ExplicitMemoryCaptureRequest): Promise<MemoryCaptureResult> {
     if (this.closed) return { status: "skipped", reason: "shutdown" };
     const source = normalizeSourceText(request.content);
     const requestedTitle = normalizeRequestedTitle(request.title);
@@ -239,7 +257,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
 
     // One save rule for every path (owner decision 2026-11-04): an accepted memory is active at once, no review queue.
     const capturedAt = new Date().toISOString();
-    const { op, entry } = await this.deps.memoryManager.saveMemory(reviewed.title, reviewed.content, {
+    const saved = await this.deps.memoryManager.saveMemory(reviewed.title, reviewed.content, {
       ...(pending.scope.projectRoot ? { projectRoot: pending.scope.projectRoot } : {}),
       ...(pending.scope.projectName ? { projectName: pending.scope.projectName } : {}),
       kind: reviewed.kind,
@@ -253,8 +271,22 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
       },
       ...(pending.origin ? { origin: pending.origin } : {}),
     }, pending.trigger === "automatic" ? "capture" : "user");
-    return { status: "saved", op, entry };
+    // The automatic notice sits under the user row that taught it; /remember has no row of its own.
+    const target = pending.sessionId !== undefined
+      ? { sessionId: pending.sessionId, ...(pending.origin?.messageId !== undefined ? { anchorMessageId: pending.origin.messageId } : {}) }
+      : pending.origin ? { sessionId: pending.origin.sessionId } : undefined;
+    const undoToken = this.deps.notices.saved(target, saved);
+    return { status: "saved", op: saved.op, entry: saved.entry, ...(undoToken ? { undoToken } : {}) };
   }
+}
+
+/** The notice a /remember skip shows: a secret, or a failure to save. A reviewer "skip" also reads as not saved. */
+function explicitNoticeReason(reason: string): MemorySaveSkipReason {
+  if (reason === "sensitive-input") return "sensitive-input";
+  // The reviewer found nothing worth keeping: not a failure, and trying again would not change it.
+  if (reason === "reviewer-skip") return "reviewer-skip";
+  if (reason === "reviewer-unavailable" || reason === "invalid-review" || reason === "shutdown" || reason === "input-too-large") return reason;
+  return "write-failed";
 }
 
 function automaticCaptureIneligibility(

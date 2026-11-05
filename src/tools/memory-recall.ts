@@ -1,6 +1,7 @@
 import { createDynamicTool, toolSessionId, type Tool, type ToolExecutionContext, type ToolExecutionResult } from "./base.js";
 import type { MemoryManager, NoteEntry } from "../memory/memory-manager.js";
 import { memoryUseStoreForSessionId, type MemoryUsageRecorder, type MemoryUseVia } from "../memory/memory-usage-log.js";
+import { toolNoticeTarget, type MemorySaveNotices } from "../memory/memory-save-notices.js";
 import { currentAgentObservationIdentity } from "./agent-observation-context.js";
 import { scrubSecretsForLLM } from "../shared/dlp.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -22,6 +23,8 @@ interface MemoryRecallToolDeps {
   memoryManager: MemoryRecallStore;
   /** Records which managed memories the model saw; ids only. */
   memoryUsageLog: MemoryUsageRecorder;
+  /** A delete shows the user a live notice they can undo from. */
+  notices: Pick<MemorySaveNotices, "deleted">;
 }
 
 // Record ids the model actually received. Legacy notes without a managed id and calls with no conversation are not recorded.
@@ -232,7 +235,8 @@ function createMemoryDeleteTool(deps: MemoryRecallToolDeps): Tool {
             isError: true,
           };
         }
-        await deps.memoryManager.deleteMemoryById(entry.id, memoryProjectScope(ctx), "assistant");
+        const deleted = await deps.memoryManager.deleteMemoryById(entry.id, memoryProjectScope(ctx), "assistant");
+        deps.notices.deleted(toolNoticeTarget(ctx.metadata), deleted.entry, deleted.priorContent);
         return { output: JSON.stringify({ deleted: true, id: entry.id }), isError: false };
       } catch (error) {
         return { output: `memory_delete failed: ${errorMessage(error)}`, isError: true };

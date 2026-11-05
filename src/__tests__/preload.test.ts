@@ -863,6 +863,24 @@ describe("preload — plugin webview asset URLs", () => {
     }
   });
 
+  it("bridges memory undo and passes on only well-formed save notices", async () => {
+    const api = await loadAveApi();
+    await (api["memoryUndo"] as (token: string) => Promise<unknown>)("11111111-2222-4333-8444-555555555555");
+    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:undo", "11111111-2222-4333-8444-555555555555");
+
+    const handler = vi.fn();
+    const unsubscribe = (api["onMemorySaveResult"] as (h: (event: unknown) => void) => () => void)(handler);
+    const listener = mockOn.mock.calls.findLast(([channel]) => channel === CHANNELS.memory.saveResult)?.[1] as
+      (event: unknown, payload: unknown) => void;
+    const good = { sessionId: "s", result: { status: "skipped", reason: "credential" } };
+    listener({}, good);
+    listener({}, { sessionId: "s", result: { status: "saved", op: "promoted" } });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(good);
+    unsubscribe();
+    expect(mockRemoveListener).toHaveBeenCalledWith(CHANNELS.memory.saveResult, listener);
+  });
+
   it.each([
     ["memoryGetAgentsMd", "ave:memory:agents-md:get"],
     ["memoryUpdateAgentsMd", "ave:memory:agents-md:update", "# Agents"],

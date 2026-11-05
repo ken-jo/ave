@@ -52,6 +52,7 @@ import {
   type ActiveWorkspaceSurface,
 } from "../shared/browser-surface.js";
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
+import { isMemorySaveResultEvent, type MemorySaveResultEvent } from "../shared/memory-save-result.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
 import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
 import type { ModelCatalogIpcResult } from "../shared/model-catalog/types.js";
@@ -444,6 +445,14 @@ export function buildInternalApiSurface() {
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>
     invokeMemoryDelete(CHANNELS.memory.entriesDelete, filename, opts),
+  memoryUndo: async (token: string) => ipcRenderer.invoke(CHANNELS.memory.undo, token),
+  onMemorySaveResult: (handler: (event: MemorySaveResultEvent) => void) => {
+    const listener = (_event: unknown, payload: unknown) => {
+      if (isMemorySaveResultEvent(payload)) handler(payload);
+    };
+    ipcRenderer.on(CHANNELS.memory.saveResult, listener);
+    return () => ipcRenderer.removeListener(CHANNELS.memory.saveResult, listener);
+  },
   memorySearchEntries: async (query: string, opts?: MemoryProjectOptions) =>
     invokeMemorySearch(CHANNELS.memory.entriesSearch, query, opts),
   memoryGetIndex: async (opts?: MemoryProjectOptions) =>

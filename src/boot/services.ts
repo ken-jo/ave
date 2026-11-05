@@ -20,6 +20,9 @@ import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import { createMemoryWriteTool } from "../tools/memory-write.js";
 import { createMemoryRecallTools } from "../tools/memory-recall.js";
 import { MemoryUsageLog } from "../memory/memory-usage-log.js";
+import { MemorySaveNotices } from "../memory/memory-save-notices.js";
+import { CHANNELS } from "../contract/app-contract.js";
+import { getMainWindows } from "../main/app-state.js";
 import {
   BashTool,
   PowerShellTool,
@@ -52,6 +55,8 @@ export interface CoreServices {
   /** Id-only record of injected/searched/read memories for the main store. */
   memoryUsageLog: MemoryUsageLog;
   memoryCaptureService: MemoryCaptureService;
+  /** Live save notices and the in-process undo records behind them. */
+  memorySaveNotices: MemorySaveNotices;
   inputClassifier: InputClassifier;
   toolRegistry: ToolRegistry;
   routeEngine: RouteEngine;
@@ -154,8 +159,16 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   });
   // Same aveDir as the main store: usage rows sit beside the memories they name.
   const memoryUsageLog = new MemoryUsageLog({ aveDir: memoryManager.getDir() });
+  const memorySaveNotices = new MemorySaveNotices(memoryManager);
+  // Notices carry memory titles, so they go to host main windows only; each window's strip keeps its own conversation's.
+  memorySaveNotices.setSink((event) => {
+    for (const win of getMainWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(CHANNELS.memory.saveResult, event);
+    }
+  });
   const memoryCaptureService = new MemoryCaptureService({
     memoryManager,
+    notices: memorySaveNotices,
     // Only main-store loops (primary and chat groups) receive this service; side chat and sub-agents do not.
     sessionStore: "main",
   });
@@ -170,9 +183,9 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     toolRegistry.register(tool);
   }
   // Local memory saves retain explicit-deny, strict-mode, and staged-origin gates.
-  toolRegistry.register(createMemoryWriteTool({ memoryManager }));
+  toolRegistry.register(createMemoryWriteTool({ memoryManager, notices: memorySaveNotices }));
   // memory_delete removes a visible memory by id, refuses on a tainted turn, and is not auto-approved.
-  for (const tool of createMemoryRecallTools({ memoryManager, memoryUsageLog })) {
+  for (const tool of createMemoryRecallTools({ memoryManager, memoryUsageLog, notices: memorySaveNotices })) {
     toolRegistry.register(tool);
   }
   // Background-shell lookups must stay scoped to the caller’s session.
@@ -189,6 +202,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     memoryManager,
     memoryUsageLog,
     memoryCaptureService,
+    memorySaveNotices,
     inputClassifier,
     toolRegistry,
     routeEngine,

@@ -12,6 +12,7 @@ import type { AuditService } from "../main/audit-service.js";
 import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
+import type { MemorySaveNotices } from "../memory/memory-save-notices.js";
 import type { InputClassifier } from "../core/input-classifier.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { RouteEngine } from "../core/route-engine.js";
@@ -110,6 +111,7 @@ export class BootContext {
   declare remoteA2ABootGates: Readonly<A2ARemoteGateSnapshot>;
   declare memoryManager: MemoryManager;
   declare memoryCaptureService: MemoryCaptureService;
+  declare memorySaveNotices: MemorySaveNotices;
   declare inputClassifier: InputClassifier;
   declare toolRegistry: ToolRegistry;
   declare routeEngine: RouteEngine;
@@ -251,6 +253,7 @@ const BOOT_CONTEXT_FIELDS = [
   "remoteA2ABootGates",
   "memoryManager",
   "memoryCaptureService",
+  "memorySaveNotices",
   "inputClassifier",
   "toolRegistry",
   "routeEngine",
