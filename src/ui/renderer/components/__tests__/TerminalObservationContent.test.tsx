@@ -283,6 +283,18 @@ describe("conversation-owned inline terminal commands", () => {
     expect(rows[1]!.querySelector("summary")!.textContent).toContain("/workspace/project");
   });
 
+  it("marks each tool row with how its observed command ran", async () => {
+    render(<TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal /></TooltipProvider>);
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith({ action: "subscribe-terminal", sessionId: SESSION }));
+    expect(screen.queryByTestId("tool-sandbox")).toBeNull();
+    await emit(snapshot(1, [
+      command({ status: "completed", exitCode: 0 }),
+      command({ id: "second", toolUseId: "tool-two", turnId: "turn-two", status: "completed", exitCode: 0, sandbox: { mode: "unconfined", detail: "explicit-host" } }),
+    ]));
+    for (const group of screen.getAllByTestId("work-group")) fireEvent.click(within(group).getAllByRole("button")[0]!);
+    expect(screen.getAllByTestId("tool-sandbox").map((chip) => chip.getAttribute("data-sandbox-mode"))).toEqual(["isolated", "unconfined"]);
+  });
+
   it("releases while hidden, subscribes afresh when shown again and keeps expanded rows", async () => {
     const view = (observe: boolean) => <TooltipProvider><TranscriptRenderer entries={entries} streaming={false} currentSessionId={SESSION} observeTerminal={observe} /></TooltipProvider>;
     const subscriptions = () => acknowledge.mock.calls.filter(([request]) => request.action === "subscribe-terminal").length;

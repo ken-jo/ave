@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
+import { cn } from "../../../lib/utils.js";
 import { Badge } from "../../../components/ui/badge.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { parseRenderHtmlResult } from "../utils/html-preview.js";
@@ -18,11 +19,28 @@ import { DocumentToolLink } from "./DocumentToolLink.js";
 import { ScheduleToolResultLine } from "./schedule/ScheduleChatChip.js";
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
+import type { TerminalObservedCommand } from "../../../shared/agent-observation.js";
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
 
 /** toolUseId → permission review verdict for that exact tool call. */
 export type PermissionReviewsByToolUseId = ReadonlyMap<string, PermissionReviewEntry>;
+
+export type ToolSandboxMode = TerminalObservedCommand["sandbox"]["mode"];
+/** toolUseId → how the shell or terminal command that tool ran was confined. */
+export type ToolSandboxModesByToolUseId = ReadonlyMap<string, ToolSandboxMode>;
+
+// Least confined first. A tool that ran several commands shows the least confined of them.
+const SANDBOX_MODE_ORDER: readonly ToolSandboxMode[] = ["unconfined", "isolated", "disposable"];
+
+export function toolSandboxModes(commands: readonly Pick<TerminalObservedCommand, "toolUseId" | "sandbox">[]): ToolSandboxModesByToolUseId {
+  const modes = new Map<string, ToolSandboxMode>();
+  for (const { toolUseId, sandbox } of commands) {
+    const known = modes.get(toolUseId);
+    if (known === undefined || SANDBOX_MODE_ORDER.indexOf(sandbox.mode) < SANDBOX_MODE_ORDER.indexOf(known)) modes.set(toolUseId, sandbox.mode);
+  }
+  return modes;
+}
 
 /**
  * The verdict belongs to the tool call. Rows with a header cell the chip can
@@ -164,6 +182,24 @@ function ToolSourceBadge({ tool }: { tool: ToolItem }) {
   );
 }
 
+/** How the tool's shell or terminal command ran; rows without an observed command show nothing. */
+function ToolSandboxBadge({ mode }: { mode?: ToolSandboxMode }) {
+  const { t } = useTranslation();
+  if (!mode) return null;
+  return (
+    <Badge
+      variant="outline"
+      className={cn("shrink-0 px-1 py-0 text-[9px]",
+        mode === "unconfined" ? "border-primary/(--opacity-medium) text-primary" : "border-agent/(--opacity-medium) text-agent")}
+      title={t(`terminalObservation.sandbox.${mode}`)}
+      data-testid="tool-sandbox"
+      data-sandbox-mode={mode}
+    >
+      {t(`toolGroupCard.sandbox.${mode}`)}
+    </Badge>
+  );
+}
+
 /** Per-tool status pill — "실패" (error) or "완료" (done). Single source for the success/failure badge shown on every collapsed
  * tool row (single-tool inline + grouped per-tool). */
 function ToolStatusBadge({
@@ -205,10 +241,12 @@ function SingleToolInline({
   tool,
   sessionId,
   review,
+  sandbox,
 }: {
   tool: Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
   sessionId?: string;
   review?: PermissionReviewEntry;
+  sandbox?: ToolSandboxMode;
 }) {
   const { t } = useTranslation();
   const onOpenRoutine = useOptionalChatContext()?.onOpenRoutine;
@@ -302,6 +340,7 @@ function SingleToolInline({
           <Wrench className="h-3 w-3 flex-shrink-0" />
           <span className="min-w-0 truncate font-medium">{getToolCallLabel(tool.name, tool.input)}</span>
           <ToolSourceBadge tool={tool} />
+          <ToolSandboxBadge mode={sandbox} />
         </button>
         {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
         {isRunning ? (
@@ -359,12 +398,15 @@ export function ToolGroupCard({
   group,
   sessionId,
   permissionReviews,
+  sandboxModes,
 }: {
   group: Extract<ChatEntry, { kind: "tool_group" }>;
   /** Active session id for verbatim IPC fetch. When provided, stub results render as CompactedToolResult. */
   sessionId?: string;
   /** Permission review verdicts to render on their own tool rows. */
   permissionReviews?: PermissionReviewsByToolUseId;
+  /** Sandbox mode of each shell or terminal command, shown on its tool row. */
+  sandboxModes?: ToolSandboxModesByToolUseId;
 }) {
   // All hooks must be declared before any conditional return (Rules of Hooks)
   const { t } = useTranslation();
@@ -398,6 +440,7 @@ export function ToolGroupCard({
         tool={group.tools[0]}
         sessionId={sessionId}
         review={permissionReviews?.get(group.tools[0].toolUseId)}
+        sandbox={sandboxModes?.get(group.tools[0].toolUseId)}
       />
     );
   }
@@ -494,6 +537,7 @@ export function ToolGroupCard({
                     {isExpanded ? <ChevronDown className="h-2.5 w-2.5 flex-shrink-0" /> : <ChevronRight className="h-2.5 w-2.5 flex-shrink-0" />}
                     <span className="min-w-0 truncate">{getToolCallLabel(tool.name, tool.input)}</span>
                     <ToolSourceBadge tool={tool} />
+                    <ToolSandboxBadge mode={sandboxModes?.get(tool.toolUseId)} />
                   </button>
                   {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
                   {tool.status === "running" ? (

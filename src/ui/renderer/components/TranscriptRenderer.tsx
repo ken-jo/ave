@@ -22,7 +22,7 @@ import { entryRenderRevision } from "../utils/chat-entry-revision.js";
 import { TerminalObservationCommands, useTerminalObservation } from "./TerminalObservationContent.js";
 import { AssistantCard } from "./AssistantCard.js";
 import { UserMessageEditor } from "./UserMessageEditor.js";
-import { ToolGroupCard } from "./ToolGroupCard.js";
+import { ToolGroupCard, toolSandboxModes } from "./ToolGroupCard.js";
 import type { ViewModeState } from "./ViewModeBanner.js";
 import { WorkGroup } from "./WorkGroup.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
@@ -203,6 +203,7 @@ export function TranscriptRenderer({
       for (const tool of candidate.tools) toolUseIdsWithRow.add(tool.toolUseId);
     }
   }
+  const sandboxModesByToolUseId = toolSandboxModes(terminalObservation.commands);
   const rendersOnToolRow = (candidate: PermissionReviewEntry): boolean =>
     toolUseIdsWithRow.has(candidate.toolUseId);
 
@@ -260,6 +261,7 @@ export function TranscriptRenderer({
           group={entry}
           sessionId={currentSessionId}
           permissionReviews={permissionReviewsByToolUseId}
+          sandboxModes={sandboxModesByToolUseId}
         />,
       );
       pushTerminalCommands([entry], `terminal-${entry.groupId}`);
@@ -586,6 +588,8 @@ export function TranscriptRenderer({
         } else if (e.kind === "tool_group") {
           if (cls === "intermediate") {
             groupRevisions.push(entryRenderRevision({ entry: e, idx: i, searchHighlight, starred: false }));
+            // Commands are observed after their rows exist: a chip that arrives later must re-render the settled group.
+            groupRevisions.push(`sandbox:${e.tools.map((tool) => sandboxModesByToolUseId.get(tool.toolUseId) ?? "").join(",")}`);
             groupEntries.push({
               idx: i,
               node: (
@@ -594,6 +598,7 @@ export function TranscriptRenderer({
                   group={e}
                   sessionId={currentSessionId}
                   permissionReviews={permissionReviewsByToolUseId}
+                  sandboxModes={sandboxModesByToolUseId}
                 />
               ),
             });
