@@ -799,6 +799,21 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
     return { runner, calls };
   }
 
+  it("asks the plan child for the four headings the plan card shows", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "headings" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const { runner, calls } = recordingRunner();
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
+      await engine.runItem(created.itemId);
+      const instructions = String(calls[0]!.input.instructions);
+      for (const heading of ["## Summary", "## Steps", "## Changes", "## Risks"]) expect(instructions).toContain(heading);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("re-plans the same run on request_changes with the note as fenced data, without changing the plan child's grant", async () => {
     const { store, cleanup } = tempBoard();
     try {

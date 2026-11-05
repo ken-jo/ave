@@ -1448,12 +1448,22 @@ export function App() {
     setWorkBoardFocusItemId(itemId);
   }, [handleViewSelectWithDoctor]);
 
-  // 확인 필요 navigation targets are one-shot, like board items: the popover opens the stack and names the card to focus.
+  // 확인 필요 navigation targets are one-shot, like board items: the popover opens the stack and names the card to focus. A project item
+  // opens in its own project's home, so the window switches to that project first; a shared item opens in the project being viewed.
   const [workApprovalFocusKey, setWorkApprovalFocusKey] = useState<string | null>(null);
-  const openWorkApprovals = useCallback((key?: string) => {
+  const [workApprovalShowAll, setWorkApprovalShowAll] = useState(false);
+  const openWorkApprovals = useCallback((target: { key: string; projectRoot: string | undefined } | "all") => {
     handleViewSelectWithDoctor("work-board");
-    setWorkApprovalFocusKey(key ?? null);
-  }, [handleViewSelectWithDoctor]);
+    if (target === "all") {
+      setWorkApprovalShowAll(true);
+      return;
+    }
+    if (target.projectRoot !== undefined) {
+      const project = findWorkspaceProject(workspaceProjects, target.projectRoot);
+      if (project) setActiveProject(project);
+    }
+    setWorkApprovalFocusKey(target.key);
+  }, [handleViewSelectWithDoctor, workspaceProjects]);
   // "스케줄에서 열기": the routine surface, scrolled to and focusing that routine.
   const [routineFocusId, setRoutineFocusId] = useState<string | null>(null);
   const openRoutine = useCallback((routineId: string) => {
@@ -2004,6 +2014,8 @@ export function App() {
           onFocusConsumed={() => setWorkBoardFocusItemId(null)}
           approvalFocusKey={workApprovalFocusKey}
           onApprovalFocusConsumed={() => setWorkApprovalFocusKey(null)}
+          approvalShowAll={workApprovalShowAll}
+          onApprovalShowAllConsumed={() => setWorkApprovalShowAll(false)}
           onOpenRoutine={openRoutine}
           onOpenSchedule={() => handleViewSelect("routines")}
           onOpenSession={(sessionId) => {
@@ -2188,8 +2200,8 @@ export function App() {
                   workApprovals={{
                     api,
                     projectRoot: (activeProject ?? defaultWorkspaceProject)?.projectRoot,
-                    onOpenItem: (key) => openWorkApprovals(key),
-                    onOpenAll: () => openWorkApprovals(),
+                    onOpenItem: (key, projectRoot) => openWorkApprovals({ key, projectRoot }),
+                    onOpenAll: () => openWorkApprovals("all"),
                   }}
                 />
               </CustomTitleBar>

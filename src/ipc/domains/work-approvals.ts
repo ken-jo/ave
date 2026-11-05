@@ -7,26 +7,36 @@ import type { IpcDeps } from "../types.js";
 import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
-import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
+import { listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
+import { isDecidablePlan, isReplanningPlan, itemDigestOf } from "../../main/work-board-store.js";
+import { projectRootEquals } from "../../shared/project-identity.js";
 import type { RoutineRecord, InvalidRoutine, RoutineFailure } from "../../shared/routines-types.js";
-import type { WorkProposal } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkProposal } from "../../shared/work-board-types.js";
 import type {
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
+  WorkApprovalProject,
   WorkApprovalView,
+  WorkPlanApprovalView,
   WorkProposalApprovalView,
 } from "../../shared/work-approvals-types.js";
 
-type ListRequest = { ok: true; projectRoot: string | undefined } | { ok: false };
+type ListRequest =
+  | { ok: true; mode: "project"; projectRoot: string | undefined }
+  | { ok: true; mode: "all" }
+  | { ok: false };
 
-// Accept only `{ projectRoot?: string }` so renderer input cannot smuggle store options.
+// Accept only `{ projectRoot?: string }` or `{ allProjects: true }` so renderer input cannot smuggle store options.
 function parseListRequest(raw: unknown): ListRequest {
-  if (raw === undefined) return { ok: true, projectRoot: undefined };
+  if (raw === undefined) return { ok: true, mode: "project", projectRoot: undefined };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
   const record = raw as Record<string, unknown>;
+  if (hasOnlyKeys(record, ["allProjects"]) && "allProjects" in record) {
+    return record.allProjects === true ? { ok: true, mode: "all" } : { ok: false };
+  }
   if (!hasOnlyKeys(record, ["projectRoot"])) return { ok: false };
   if (record.projectRoot !== undefined && typeof record.projectRoot !== "string") return { ok: false };
-  return { ok: true, projectRoot: record.projectRoot as string | undefined };
+  return { ok: true, mode: "project", projectRoot: record.projectRoot as string | undefined };
 }
 
 // Titles and summaries are model- or plugin-written text; mask secrets and PII before they reach a renderer, as tool results are.
@@ -53,6 +63,44 @@ function proposalView(proposal: WorkProposal): WorkProposalApprovalView {
       ...(row.resolution !== undefined ? { resolution: masked(row.resolution) } : {}),
     })),
   };
+}
+
+// A plan belongs to its item's project, or is shared when the item has none. A plan whose project is no longer authorized (the user removed
+// it) has no scope, and is neither listed nor counted anywhere.
+function planScope(item: WorkItem, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView["scope"] | null {
+  if (!item.projectRoot) return { type: "unscoped" };
+  const project = projects.find((entry) => projectRootEquals(entry.projectRoot, item.projectRoot));
+  if (!project) return null;
+  return { type: "project", projectRoot: project.projectRoot, isDefault: project.isDefault };
+}
+
+function planView(item: WorkItem, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView | null {
+  const pending = isDecidablePlan(item);
+  if (!pending && !isReplanningPlan(item)) return null;
+  const approval = item.planApproval;
+  if (!approval || !item.runId) return null;
+  const scope = planScope(item, projects);
+  if (scope === null) return null;
+  return {
+    kind: "plan",
+    key: `plan:${item.id}`,
+    scope,
+    title: masked(item.title),
+    arrivedAt: approval.requestedAt,
+    itemId: item.id,
+    runId: item.runId,
+    planHash: approval.planHash,
+    plan: masked(item.plan ?? ""),
+    revision: approval.revision,
+    ...(approval.agentName !== undefined ? { agentName: approval.agentName } : {}),
+    phase: pending ? "pending" : "replanning",
+    stale: pending && approval.itemDigest !== itemDigestOf(item),
+    ...(!pending && approval.note !== undefined ? { changeRequest: masked(approval.note) } : {}),
+  };
+}
+
+function isCounted(view: WorkApprovalView): boolean {
+  return view.kind !== "plan" || view.phase === "pending";
 }
 
 function routineTitle(routine: RoutineRecord): string {
@@ -108,8 +156,17 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
     }
     const request = parseListRequest(raw);
     if (!request.ok) return { ok: false, error: "invalid-input" };
-    const project = resolveAuthorizedWorkspaceProject(request.projectRoot);
-    if (!project.authorized || !project.project) return { ok: false, error: "project-not-allowed" };
+    let homeRoot: string | null = null;
+    if (request.mode === "project") {
+      const project = resolveAuthorizedWorkspaceProject(request.projectRoot);
+      if (!project.authorized || !project.project) return { ok: false, error: "project-not-allowed" };
+      homeRoot = project.project.projectRoot;
+    }
+    const projects: WorkApprovalProject[] = listAuthorizedWorkspaceProjects().map((project) => ({
+      projectRoot: project.projectRoot,
+      projectName: project.projectName,
+      isDefault: project.isDefault === true,
+    }));
     if (!workBoardStore) return { ok: false, error: "work-approvals-source-unavailable", source: "proposal" };
     if (!routinesStore) return { ok: false, error: "work-approvals-source-unavailable", source: "routine-attention" };
 
@@ -122,10 +179,16 @@ export function registerWorkApprovalsHandlers(deps: IpcDeps): void {
       ...routinesStore.listInvalid().map(invalidRoutineView),
     ];
 
-    const items: WorkApprovalView[] = [...proposalViews, ...routineViews];
-    // Proposals (unscoped) and routines (global) belong to every project's list, so the project list and the total match today. Plan
-    // approvals (WA-1) are the project-scoped kind that will make the two differ.
-    const total = items.length;
-    return { ok: true, items, total };
+    const board = await workBoardStore.list();
+    if (board.status !== "ok") return { ok: false, error: "work-approvals-source-unavailable", source: "plan" };
+    const planViews = board.items.map((item) => planView(item, projects)).filter((view): view is WorkPlanApprovalView => view !== null);
+
+    // Proposals (unscoped), routines (global) and plans with no project belong to every project's list; a project's plans only to its own.
+    const everything: WorkApprovalView[] = [...planViews, ...proposalViews, ...routineViews];
+    const items = homeRoot === null
+      ? everything
+      : everything.filter((view) => view.scope.type !== "project" || projectRootEquals(view.scope.projectRoot, homeRoot));
+    const total = everything.filter(isCounted).length;
+    return { ok: true, items, total, projects };
   });
 }

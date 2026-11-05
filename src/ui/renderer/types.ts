@@ -1207,9 +1207,10 @@ export type AveApi = {
   onWorkProposalChanged?: (
     handler: (payload: import("../../shared/work-board-types.js").WorkProposalChangedEventPayload) => void,
   ) => () => void;
-  // Work-level decisions ("확인 필요") for one project plus the all-project badge total. Tool-execution approvals are not included.
+  // Work-level decisions ("확인 필요") for one project, or for every authorized project, plus the all-project badge total.
+  // Tool-execution approvals are not included.
   listWorkApprovals?: (
-    opts?: { projectRoot?: string },
+    opts?: { projectRoot?: string } | { allProjects: true },
   ) => Promise<
     | import("../../shared/work-approvals-types.js").WorkApprovalListResult
     | { ok: false; error: string }

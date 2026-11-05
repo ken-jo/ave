@@ -205,7 +205,8 @@ function buildPlanPrompt(item: WorkItem): string {
     `Work item #${item.id}: ${item.title}`,
     ...(detail ? [``, `Details:`, detail] : []),
     ``,
-    `Respond with the PLAN as your final message: a concise, concrete, step-by-step plan with any assumptions called out under an "Assumptions" heading. The user reviews and approves this plan (and your assumptions) before execution — that approval is the only human checkpoint.`,
+    `Respond with the PLAN as your final message. Use exactly these four Markdown headings, each alone on its line, once, in this order, and keep the heading words in English even when you write the plan in another language: "## Summary" (what you will do, with any assumptions called out), "## Steps" (a concise, concrete, numbered plan), "## Changes" (which files, systems or data the run will change), "## Risks" (what could go wrong, and how to undo it).`,
+    `The user reviews and approves this plan (and your assumptions) before execution — that approval is the only human checkpoint.`,
   ].join("\n");
 }
 

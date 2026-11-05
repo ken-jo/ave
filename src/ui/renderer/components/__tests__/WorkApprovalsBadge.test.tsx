@@ -34,6 +34,29 @@ const ITEMS: WorkApprovalView[] = [
   },
 ];
 
+const PROJECTS = [
+  { projectRoot: "/work/default", projectName: "기본 프로젝트", isDefault: true },
+  { projectRoot: "/work/ave", projectName: "ave", isDefault: false },
+  { projectRoot: "/work/handbook", projectName: "team-handbook", isDefault: false },
+];
+
+function planView(key: string, title: string, projectRoot: string, phase: "pending" | "replanning" = "pending"): WorkApprovalView {
+  return {
+    kind: "plan",
+    key,
+    scope: { type: "project", projectRoot, isDefault: projectRoot === "/work/default" },
+    title,
+    arrivedAt: "2026-06-14T09:00:00.000Z",
+    itemId: Number(key.slice(5)),
+    runId: `run-${key}`,
+    planHash: "b".repeat(64),
+    plan: "plan",
+    revision: 0,
+    phase,
+    stale: false,
+  };
+}
+
 function stubApi(result: unknown) {
   let changed: (() => void) | null = null;
   const list = vi.fn(async () => result);
@@ -47,21 +70,22 @@ function stubApi(result: unknown) {
 describe("WorkApprovalsBadge", () => {
   afterEach(() => cleanup());
 
-  it("shows the list's total for the active project, and its popover rows only navigate", async () => {
+  it("shows the list's total across every project, and its popover rows only navigate", async () => {
     const onOpenItem = vi.fn();
     const onOpenAll = vi.fn();
-    const { api, list } = stubApi({ ok: true, items: ITEMS, total: 2 });
+    const { api, list } = stubApi({ ok: true, items: ITEMS, total: 2, projects: PROJECTS });
     render(<WorkApprovalsBadge api={api} projectRoot="/work/ave" onOpenItem={onOpenItem} onOpenAll={onOpenAll} />);
 
     const badge = await screen.findByTestId("work-approvals-badge");
-    expect(list).toHaveBeenCalledWith({ projectRoot: "/work/ave" });
+    expect(list).toHaveBeenCalledWith({ allProjects: true });
     expect(badge.textContent).toContain("2");
     fireEvent.click(badge);
     const rows = await screen.findAllByTestId("work-approvals-popover-row");
     expect(rows.map((row) => row.getAttribute("data-approval-key"))).toEqual(["proposal:indexer:k:1", "routine:r-1"]);
     expect(screen.queryByTestId("work-approval-proposal-add")).toBeNull();
     fireEvent.click(rows[1]!);
-    expect(onOpenItem).toHaveBeenCalledWith("routine:r-1");
+    // A shared item opens in the project being viewed.
+    expect(onOpenItem).toHaveBeenCalledWith("routine:r-1", undefined);
     await waitFor(() => expect(screen.queryByTestId("work-approvals-popover")).toBeNull());
 
     fireEvent.click(screen.getByTestId("work-approvals-badge"));
@@ -77,7 +101,7 @@ describe("WorkApprovalsBadge", () => {
     } as unknown as Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged">;
     const { container } = render(<WorkApprovalsBadge api={api} onOpenItem={vi.fn()} onOpenAll={vi.fn()} />);
     expect(container.innerHTML).toBe("");
-    await act(async () => resolve({ ok: true, items: [], total: 0 }));
+    await act(async () => resolve({ ok: true, items: [], total: 0, projects: PROJECTS }));
     expect(container.innerHTML).toBe("");
   });
 
@@ -90,12 +114,33 @@ describe("WorkApprovalsBadge", () => {
   });
 
   it("keeps the count live on the change signal", async () => {
-    const result = { ok: true, items: ITEMS.slice(0, 1), total: 1 };
+    const result = { ok: true, items: ITEMS.slice(0, 1), total: 1, projects: PROJECTS };
     const { api, fireChanged } = stubApi(result);
     render(<WorkApprovalsBadge api={api} onOpenItem={vi.fn()} onOpenAll={vi.fn()} />);
     expect((await screen.findByTestId("work-approvals-badge")).textContent).toContain("1");
     Object.assign(result, { items: ITEMS, total: 2 });
     await act(async () => fireChanged());
     await waitFor(() => expect(screen.getByTestId("work-approvals-badge").textContent).toContain("2"));
+  });
+
+  it("groups the popover by project, the viewed project first and the shared items last, and opens a plan in its own project", async () => {
+    const onOpenItem = vi.fn();
+    const items = [
+      ...ITEMS,
+      planView("plan:1", "Default plan", "/work/default"),
+      planView("plan:2", "Ave plan", "/work/ave"),
+      planView("plan:3", "Handbook plan", "/work/handbook"),
+      // Waiting on the agent, not on the user: not in the popover.
+      planView("plan:4", "Re-planning", "/work/handbook", "replanning"),
+    ];
+    const { api } = stubApi({ ok: true, items, total: 5, projects: PROJECTS });
+    render(<WorkApprovalsBadge api={api} projectRoot="/work/ave" onOpenItem={onOpenItem} onOpenAll={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId("work-approvals-badge"));
+    const groups = await screen.findAllByTestId("work-approvals-popover-group");
+    expect(groups.map((group) => group.getAttribute("data-group"))).toEqual(["/work/ave", "/work/default", "/work/handbook", "shared"]);
+    expect(groups[0]!.textContent).toContain("지금 보는 프로젝트");
+    expect(screen.queryByText("Re-planning")).toBeNull();
+    fireEvent.click(screen.getByText("Handbook plan"));
+    expect(onOpenItem).toHaveBeenCalledWith("plan:3", "/work/handbook");
   });
 });

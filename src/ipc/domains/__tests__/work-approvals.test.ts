@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { WORK_APPROVALS } from "../../../shared/ipc-channels.js";
 import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { WorkBoardStore } from "../../../main/work-board-store.js";
+import { WorkBoardStore, itemDigestOf, planHashOf } from "../../../main/work-board-store.js";
 import { RoutinesStore } from "../../../main/routines-store.js";
 import { TEST_OWNER } from "../../../main/__tests__/routines-fixture.js";
 import type { WorkApprovalListResult, WorkApprovalView } from "../../../shared/work-approvals-types.js";
@@ -37,6 +37,11 @@ vi.mock("../../../main/project-root-authorization.js", () => ({
     }
     return { authorized: false, project: null };
   }),
+  // PROJECT_GONE is a project the user removed: its plans must never be listed or counted.
+  listAuthorizedWorkspaceProjects: vi.fn(() => [
+    { projectRoot: DEFAULT_ROOT, projectName: "default", isDefault: true },
+    { projectRoot: PROJECT_A, projectName: "project-a" },
+  ]),
 }));
 
 const INDEXER = { pluginId: "indexer", pluginLabel: "Indexer", grantedKinds: ["stale-index"] };
@@ -117,8 +122,6 @@ describe("work approvals list", () => {
     if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
     expect(keys(result.items)).toEqual(["proposal"]);
     expect(result.total).toBe(1);
-    // There is no all-projects mode until project-scoped plan approvals (WA-1) exist.
-    expect(await list({ allProjects: true })).toEqual({ ok: false, error: "invalid-input" });
   });
 
   it("masks secrets in titles and summaries before they reach the renderer", async () => {
@@ -299,6 +302,9 @@ describe("work approvals list", () => {
     expect(await list({ projectRoot: PROJECT_GONE })).toEqual({ ok: false, error: "project-not-allowed" });
     expect(await list({ projectRoot: PROJECT_A, includeUnscoped: true })).toEqual({ ok: false, error: "invalid-input" });
     expect(await list("not-an-object")).toEqual({ ok: false, error: "invalid-input" });
+    // All projects is its own request; it does not combine with one project, and only `true` turns it on.
+    expect(await list({ allProjects: true, projectRoot: PROJECT_A })).toEqual({ ok: false, error: "invalid-input" });
+    expect(await list({ allProjects: false })).toEqual({ ok: false, error: "invalid-input" });
   });
 
   it("refuses a non-host sender", async () => {
@@ -326,5 +332,154 @@ describe("work approvals changed signal", () => {
     wire();
     await routinesStore.markPluginsMissing(routine.id, ["mail"]);
     expect(changedCount()).toBe(1);
+  });
+});
+
+// A work item run to a stored plan that waits for the user's decision, as the engine leaves it.
+async function pendingPlan(title: string, projectRoot: string | undefined, plan = `PLAN for ${title}`) {
+  const created = await workBoardStore.create({ title, detail: "details", ...(projectRoot ? { projectRoot } : {}) });
+  if (created.status !== "created") throw new Error("setup failed");
+  const runId = `run-${created.itemId}`;
+  await workBoardStore.beginRun(created.itemId, runId, new Date().toISOString());
+  const stored = await workBoardStore.setPlanAwaitingApproval(created.itemId, {
+    runId, plan, runSessionId: "plan-session", revision: 0, itemDigest: itemDigestOf(created.item),
+  });
+  if (stored?.status !== "updated") throw new Error("setup failed");
+  return { id: created.itemId, runId, item: stored.item };
+}
+
+function planKeys(items: WorkApprovalView[]): string[] {
+  return items.filter((item) => item.kind === "plan").map((item) => item.title).sort();
+}
+
+describe("work approvals — plan approvals", () => {
+  it("lists a project's pending plan in that project only, with the shared kinds, and counts every project in the total", async () => {
+    await register();
+    await pendingPlan("plan in A", PROJECT_A);
+    await pendingPlan("plan in default", DEFAULT_ROOT);
+    await pendingPlan("plan with no project", undefined);
+    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+
+    const inA = await list({ projectRoot: PROJECT_A });
+    if (!inA.ok) throw new Error(`list failed: ${JSON.stringify(inA)}`);
+    expect(planKeys(inA.items)).toEqual(["plan in A", "plan with no project"]);
+    expect(inA.items.filter((item) => item.kind === "proposal")).toHaveLength(1);
+    // Three plans and one proposal across every authorized project.
+    expect(inA.total).toBe(4);
+
+    const inDefault = await list({ projectRoot: DEFAULT_ROOT });
+    if (!inDefault.ok) throw new Error("list failed");
+    expect(planKeys(inDefault.items)).toEqual(["plan in default", "plan with no project"]);
+    expect(inDefault.total).toBe(4);
+  });
+
+  it("projects a plan field by field: scope, the stored hash, the masked plan text, and no item detail", async () => {
+    await register();
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    const plan = `1. Rotate ${secret}`;
+    const { id, runId, item } = await pendingPlan(`Fix ${secret}`, DEFAULT_ROOT, plan);
+    const result = await list({ projectRoot: DEFAULT_ROOT });
+    if (!result.ok) throw new Error("list failed");
+    const view = result.items.find((entry) => entry.kind === "plan");
+    expect(view).toEqual({
+      kind: "plan",
+      key: `plan:${id}`,
+      scope: { type: "project", projectRoot: DEFAULT_ROOT, isDefault: true },
+      title: expect.not.stringContaining(secret),
+      arrivedAt: item.planApproval!.requestedAt,
+      itemId: id,
+      runId,
+      // The decision binds to the stored plan, never to the masked text shown.
+      planHash: planHashOf(plan),
+      plan: expect.not.stringContaining(secret),
+      revision: 0,
+      phase: "pending",
+      stale: false,
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain("details");
+  });
+
+  it("never lists or counts a plan in a project the user removed, in any mode", async () => {
+    await register();
+    await pendingPlan("plan in removed project", PROJECT_GONE);
+    await pendingPlan("plan in A", PROJECT_A);
+    for (const request of [{ projectRoot: PROJECT_A }, { projectRoot: DEFAULT_ROOT }, { allProjects: true }]) {
+      const result = await list(request);
+      if (!result.ok) throw new Error("list failed");
+      expect(JSON.stringify(result)).not.toContain("removed project");
+      expect(result.total).toBe(1);
+    }
+  });
+
+  it("lists every authorized project's plans in all-projects mode, with the project list to group them by", async () => {
+    await register();
+    await pendingPlan("plan in A", PROJECT_A);
+    await pendingPlan("plan in default", DEFAULT_ROOT);
+    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    const result = await list({ allProjects: true });
+    if (!result.ok) throw new Error("list failed");
+    expect(planKeys(result.items)).toEqual(["plan in A", "plan in default"]);
+    expect(result.items).toHaveLength(3);
+    expect(result.total).toBe(3);
+    expect(result.projects).toEqual([
+      { projectRoot: DEFAULT_ROOT, projectName: "default", isDefault: true },
+      { projectRoot: PROJECT_A, projectName: "project-a", isDefault: false },
+    ]);
+  });
+
+  it("marks a plan stale once its item changed, and keeps a re-planning item listed but not counted", async () => {
+    await register();
+    const edited = await pendingPlan("edit me", PROJECT_A);
+    await workBoardStore.update(edited.id, { title: "edited title" });
+    const replanned = await pendingPlan("send back", PROJECT_A);
+    const decided = await workBoardStore.decidePlan(replanned.id, {
+      runId: replanned.runId, planHash: replanned.item.planApproval!.planHash, status: "changes_requested", note: "cover the edge cases",
+    });
+    expect(decided.status).toBe("decided");
+
+    const result = await list({ projectRoot: PROJECT_A });
+    if (!result.ok) throw new Error("list failed");
+    const byId = new Map(result.items.flatMap((entry) => (entry.kind === "plan" ? [[entry.itemId, entry] as const] : [])));
+    expect(byId.get(edited.id)).toMatchObject({ phase: "pending", stale: true, title: "edited title" });
+    expect(byId.get(replanned.id)).toMatchObject({ phase: "replanning", changeRequest: "cover the edge cases" });
+    // Only the plan waiting for a decision counts.
+    expect(result.total).toBe(1);
+  });
+
+  it("drops a plan once it is approved or rejected", async () => {
+    await register();
+    const approved = await pendingPlan("approve me", PROJECT_A);
+    const rejected = await pendingPlan("reject me", PROJECT_A);
+    await workBoardStore.decidePlan(approved.id, { runId: approved.runId, planHash: approved.item.planApproval!.planHash, status: "approved" });
+    await workBoardStore.decidePlan(rejected.id, { runId: rejected.runId, planHash: rejected.item.planApproval!.planHash, status: "rejected" });
+    const result = await list({ projectRoot: PROJECT_A });
+    if (!result.ok) throw new Error("list failed");
+    expect(planKeys(result.items)).toEqual([]);
+    expect(result.total).toBe(0);
+  });
+});
+
+describe("work approvals changed signal — work items", () => {
+  it("fires when a plan is stored, decided, and when its item is edited or deleted", async () => {
+    wire();
+    const { id, runId, item } = await pendingPlan("signal", PROJECT_A);
+    const afterPlan = changedCount();
+    // create, beginRun and the stored plan each wrote the board.
+    expect(afterPlan).toBe(3);
+    await workBoardStore.update(id, { title: "renamed" });
+    expect(changedCount()).toBe(afterPlan + 1);
+    await workBoardStore.decidePlan(id, { runId, planHash: item.planApproval!.planHash, status: "rejected" });
+    expect(changedCount()).toBe(afterPlan + 2);
+    await workBoardStore.remove(id);
+    expect(changedCount()).toBe(afterPlan + 3);
+  });
+
+  it("does not fire for a refused write", async () => {
+    const { id } = await pendingPlan("refused", PROJECT_A);
+    wire();
+    const refused = await workBoardStore.decidePlan(id, { runId: "run-other", planHash: "0".repeat(64), status: "approved" });
+    expect(refused.status).toBe("refused");
+    expect(changedCount()).toBe(0);
   });
 });

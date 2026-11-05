@@ -1,7 +1,8 @@
-// 확인 필요: work-level decisions for one project (plus the shared unscoped and global ones), or every project grouped. The top item is a
-// real card; the rest are rows with their own buttons. Every action goes through its source's own channel (proposal accept/dismiss, the
-// routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press.
-// Tool-execution approvals are never here; they stay in their conversation's ApprovalDock.
+// 확인 필요: work-level decisions for one project (plus the shared unscoped and global ones), or every authorized project grouped. The top
+// item is a real card; the rest are rows. Every action goes through its source's own channel (plan decide-plan, proposal accept/dismiss,
+// the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
+// queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
+// conversation's ApprovalDock.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { CheckSquare, Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
@@ -12,9 +13,13 @@ import type { AveApi } from "../../types.js";
 import type { ProjectIdentity } from "../../../../shared/project-identity.js";
 import type {
   RoutineAttentionApprovalView,
+  WorkApprovalProject,
   WorkApprovalView,
+  WorkPlanApprovalView,
   WorkProposalApprovalView,
 } from "../../../../shared/work-approvals-types.js";
+import { formatLocalClock } from "../../../../shared/format-time.js";
+import { PlanDecisionControls, PlanText } from "./PlanDecisionControls.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { errorMessage } from "../../../../shared/error-message.js";
 import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../../../shared/work-board-types.js";
@@ -47,12 +52,19 @@ export function sortByArrival(items: readonly WorkApprovalView[]): WorkApprovalV
   });
 }
 
-/** Proposals (unscoped) and routines (global) are shared by every project home. Plan approvals (WA-1) will be the project-scoped kind. */
-function isShared(item: WorkApprovalView): boolean {
+/** Proposals (unscoped), routines (global) and plans with no project are shared by every project home; a plan in a project is that
+ * project's own. */
+export function isShared(item: WorkApprovalView): boolean {
   return item.scope.type === "unscoped" || item.scope.type === "global";
 }
 
+/** A plan sent back for changes waits for the agent, not the user: it is listed but never counted. */
+export function isCounted(item: WorkApprovalView): boolean {
+  return item.kind !== "plan" || item.phase === "pending";
+}
+
 export function kindLabel(item: WorkApprovalView): string {
+  if (item.kind === "plan") return t("workApprovals.kindPlan");
   if (item.kind === "proposal") return t("workApprovals.kindProposal");
   return item.failure ? t("workApprovals.kindRoutineFailed") : t("workApprovals.kindRoutineAttention");
 }
@@ -135,16 +147,22 @@ function actionsKey(item: WorkApprovalView): string {
 }
 
 interface ItemActionsProps {
-  item: WorkApprovalView;
+  item: WorkProposalApprovalView | RoutineAttentionApprovalView;
   actions: WorkApprovalActions;
   /** The project an accepted proposal joins: the home this stack belongs to (undefined = the default project). */
   targetProjectRoot: string | undefined;
+  /** All-projects mode: the user picks the project an accepted proposal joins. */
+  projectChoices?: readonly WorkApprovalProject[];
   compact?: boolean;
 }
 
-function ItemActions({ item, actions, targetProjectRoot, compact = false }: ItemActionsProps) {
+function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact = false }: ItemActionsProps) {
   const [pending, setPending] = useState<null | "dismiss" | "add" | "add-plan" | "acknowledge">(null);
   const [error, setError] = useState<string | null>(null);
+  const defaultChoice = projectChoices?.find((project) => project.projectRoot === targetProjectRoot)
+    ?? projectChoices?.find((project) => project.isDefault)
+    ?? projectChoices?.[0];
+  const [chosenRoot, setChosenRoot] = useState<string | undefined>(defaultChoice?.projectRoot);
   const size = compact ? "sm" : "default";
 
   if (item.kind === "routine-attention") {
@@ -199,7 +217,7 @@ function ItemActions({ item, actions, targetProjectRoot, compact = false }: Item
         if (!dismissed.ok) setError(formatIpcError(dismissed.error, dismissed.message));
         return;
       }
-      const accepted = await actions.acceptProposal(item.proposalId, targetProjectRoot);
+      const accepted = await actions.acceptProposal(item.proposalId, projectChoices ? chosenRoot : targetProjectRoot);
       if (!accepted.ok) {
         setError(formatIpcError(accepted.error, accepted.message));
         return;
@@ -215,6 +233,22 @@ function ItemActions({ item, actions, targetProjectRoot, compact = false }: Item
   return (
     <div className="flex shrink-0 flex-col items-end gap-1" data-testid="work-approval-actions">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {projectChoices && (
+          <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            {t("workApprovals.proposalPickProject")}
+            <select
+              className="h-7 rounded-md border bg-background px-1.5 text-xs text-foreground"
+              value={chosenRoot ?? ""}
+              disabled={busy}
+              onChange={(event) => setChosenRoot(event.target.value)}
+              data-testid="work-approval-proposal-project"
+            >
+              {projectChoices.map((project) => (
+                <option key={project.projectRoot} value={project.projectRoot}>{projectLabel(project)}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <Button variant="outline" size={size} disabled={busy} onClick={() => void run("dismiss")} data-testid="work-approval-proposal-dismiss">
           {pending === "dismiss" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
           {t("workApprovals.proposalDismiss")}
@@ -268,7 +302,70 @@ function ProposalDetail({ item }: { item: WorkProposalApprovalView }) {
   );
 }
 
-function ItemBody({ item }: { item: WorkApprovalView }) {
+export function projectLabel(project: Pick<WorkApprovalProject, "projectName" | "isDefault">): string {
+  return project.isDefault ? t("workApprovals.defaultProject") : project.projectName;
+}
+
+function PlanFacts({ item }: { item: WorkPlanApprovalView }) {
+  const rows: Array<{ label: string; value: string }> = [
+    {
+      label: t("workApprovals.planFactProject"),
+      value: item.scope.type === "project" ? item.scope.projectRoot : t("workApprovals.planFactNoProject"),
+    },
+    { label: t("workApprovals.planFactTools"), value: t("workApprovals.planFactToolsValue") },
+    { label: t("workApprovals.planFactPlannedAt"), value: formatLocalClock(item.arrivedAt) },
+    { label: t("workApprovals.planFactRevisions"), value: t("workApprovals.planFactRevisionsValue", { count: item.revision }) },
+  ];
+  return (
+    <section className="rounded-md border bg-muted/(--opacity-light) p-2" data-testid="work-approval-plan-facts">
+      <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workApprovals.planFactsHeading")}</h4>
+      <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
+        {rows.map((row) => (
+          <div key={row.label} className="contents">
+            <dt className="text-muted-foreground">{row.label}</dt>
+            <dd className="min-w-0 break-words [overflow-wrap:anywhere]">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-1 text-[11px] font-medium">{t("workApprovals.planFactExactPlan")}</p>
+    </section>
+  );
+}
+
+function PlanBody({ item, api, now, onChanged }: {
+  item: WorkPlanApprovalView;
+  api: Pick<AveApi, "decideWorkPlan">;
+  now: number;
+  onChanged: () => void;
+}) {
+  return (
+    <div className="space-y-2 text-xs">
+      <p className="text-muted-foreground" data-testid="work-approval-plan-meta">
+        {t("workApprovals.planMeta", { age: approvalAge(item.arrivedAt, now) ?? "" })}
+      </p>
+      <section className="rounded-md border p-2" data-testid="work-approval-plan-agent">
+        <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workApprovals.planAgentHeading")}</h4>
+        <div className="mt-1 max-h-72 overflow-auto">
+          <PlanText plan={item.plan} testIdPrefix="work-approval-plan" />
+        </div>
+      </section>
+      <PlanFacts item={item} />
+      <PlanDecisionControls
+        key={`${item.runId}:${item.planHash}`}
+        api={api}
+        itemId={item.itemId}
+        runId={item.runId}
+        planHash={item.planHash}
+        stale={item.stale}
+        onDecided={onChanged}
+        onGone={onChanged}
+        testIdPrefix="work-approval-plan"
+      />
+    </div>
+  );
+}
+
+function ItemBody({ item }: { item: WorkProposalApprovalView | RoutineAttentionApprovalView }) {
   const [expanded, setExpanded] = useState(false);
   if (item.kind === "proposal") {
     return (
@@ -306,9 +403,16 @@ interface FocusableProps {
 }
 
 function HeadCard({
-  item, index, count, actions, targetProjectRoot, focusRef, tabIndex, onFocusItem,
+  item, index, count, actions, targetProjectRoot, projectChoices, api, now, onChanged, focusRef, tabIndex, onFocusItem,
 }: FocusableProps & {
-  index: number; count: number; actions: WorkApprovalActions; targetProjectRoot: string | undefined;
+  index: number;
+  count: number;
+  actions: WorkApprovalActions;
+  targetProjectRoot: string | undefined;
+  projectChoices?: readonly WorkApprovalProject[];
+  api: Pick<AveApi, "decideWorkPlan">;
+  now: number;
+  onChanged: () => void;
 }) {
   return (
     <article
@@ -331,20 +435,41 @@ function HeadCard({
           {t("workApprovals.position", { index: index + 1, total: count })}
         </span>
       </header>
-      <div className="mt-2">
-        <ItemBody item={item} />
-      </div>
-      <div className="mt-3 flex justify-end">
-        <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} />
-      </div>
+      {item.kind === "plan" ? (
+        <div className="mt-2">
+          <PlanBody item={item} api={api} now={now} onChanged={onChanged} />
+        </div>
+      ) : (
+        <>
+          <div className="mt-2">
+            <ItemBody item={item} />
+          </div>
+          <div className="mt-3 flex justify-end">
+            <ItemActions
+              key={actionsKey(item)}
+              item={item}
+              actions={actions}
+              targetProjectRoot={targetProjectRoot}
+              {...(projectChoices ? { projectChoices } : {})}
+            />
+          </div>
+        </>
+      )}
     </article>
   );
 }
 
 function QueuedRow({
-  item, now, actions, targetProjectRoot, focusRef, tabIndex, onFocusItem, onExpand,
+  item, now, actions, targetProjectRoot, selected = false, selectOnly = false, focusRef, tabIndex, onFocusItem, onExpand,
 }: FocusableProps & {
-  now: number; actions: WorkApprovalActions; targetProjectRoot: string | undefined; onExpand: (key: string) => void;
+  now: number;
+  actions: WorkApprovalActions;
+  targetProjectRoot: string | undefined;
+  /** All-projects mode: this row is the card shown beside the list. */
+  selected?: boolean;
+  /** All-projects mode: rows only select; the card beside them carries the buttons. */
+  selectOnly?: boolean;
+  onExpand: (key: string) => void;
 }) {
   const age = approvalAge(item.arrivedAt, now);
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -362,9 +487,11 @@ function QueuedRow({
       data-approval-key={item.key}
       data-testid="work-approval-row"
       aria-label={item.title}
+      aria-current={selected ? "true" : undefined}
       className={cn(
         "flex items-center gap-2 rounded-md border bg-card px-3 py-2 outline-none focus-visible:ring-2 focus-visible:ring-ring",
         item.kind === "routine-attention" && "border-l-4 border-l-destructive",
+        selected && "border-primary bg-accent",
       )}
     >
       <KindChip item={item} />
@@ -379,7 +506,10 @@ function QueuedRow({
       </button>
       {isShared(item) && <SharedChip />}
       {age !== null && <span className="shrink-0 text-[11px] text-muted-foreground">{age}</span>}
-      <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
+      {/* A queued plan is decided only on the card, after it is expanded there. */}
+      {!selectOnly && item.kind !== "plan" && (
+        <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
+      )}
     </li>
   );
 }
@@ -417,24 +547,79 @@ function useRovingFocus(keys: readonly string[]) {
 }
 
 export interface WorkApprovalStackProps {
-  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged">;
+  api: Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged" | "decideWorkPlan">;
   /** The project whose home shows this stack; accepted proposals join it. Undefined means the default project. */
   project?: ProjectIdentity;
   actions: WorkApprovalActions;
   /** Navigation target from the title-bar popover: the item to bring to the top and focus, once. */
   focusKey?: string | null;
   onFocusConsumed?: () => void;
-  /** Reports the visible count so a narrow layout can label its tab. */
+  /** Start in all-projects mode. */
+  showAllProjects?: boolean;
+  /** The popover's 전체 보기: switch to all-projects mode, once. */
+  showAllRequest?: boolean;
+  onShowAllConsumed?: () => void;
+  /** Reports the counted (decidable) items so a narrow layout can label its tab. */
   onCountChange?: (count: number | null) => void;
   /** Injectable clock for ages (tests). */
   now?: () => number;
 }
 
-/** The project-home stack: this project's items plus the shared ones, oldest first, the top one as a real card. */
-export function WorkApprovalStack({ api, project, actions, focusKey, onFocusConsumed, onCountChange, now = Date.now }: WorkApprovalStackProps) {
+interface ApprovalGroup {
+  id: string;
+  label: string;
+  isDefault: boolean;
+  items: WorkApprovalView[];
+}
+
+/** All-projects grouping: each authorized project in the main's order (the default first), then the shared items. */
+function groupByProject(items: readonly WorkApprovalView[], projects: readonly WorkApprovalProject[]): ApprovalGroup[] {
+  const groups: ApprovalGroup[] = projects.map((project) => ({
+    id: project.projectRoot,
+    label: projectLabel(project),
+    isDefault: project.isDefault,
+    items: items.filter((item) => item.scope.type === "project" && item.scope.projectRoot === project.projectRoot),
+  }));
+  groups.push({ id: "shared", label: t("workApprovals.groupShared"), isDefault: false, items: items.filter(isShared) });
+  return groups.filter((group) => group.items.length > 0);
+}
+
+function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="space-y-1.5 opacity-(--opacity-strong)" data-testid="work-approvals-replanning">
+      <h3 className="text-xs text-muted-foreground">{t("workApprovals.replanningHeading", { count: items.length })}</h3>
+      <ul className="space-y-1.5">
+        {items.map((item) => (
+          <li key={item.key} className="rounded-md border border-dashed bg-card px-3 py-2 text-xs" data-approval-key={item.key}>
+            <div className="flex items-center gap-2">
+              <KindChip item={item} />
+              <span className="min-w-0 flex-1 truncate">{item.title}</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.revision + 1 })}</span>
+            </div>
+            {item.changeRequest !== undefined && (
+              <p className="mt-1 text-muted-foreground">{t("workApprovals.replanningRequest", { note: item.changeRequest })}</p>
+            )}
+            <p className="mt-1 text-[11px] text-muted-foreground">{t("workApprovals.replanningFooter")}</p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The project-home stack: this project's items plus the shared ones, oldest first, the top one as a real card. In all-projects mode the
+ * rows are grouped by project and the selected one is the card beside them. */
+export function WorkApprovalStack({
+  api, project, actions, focusKey, onFocusConsumed, showAllProjects = false, showAllRequest, onShowAllConsumed, onCountChange, now = Date.now,
+}: WorkApprovalStackProps) {
   const projectRoot = project?.projectRoot;
-  const request = useMemo<WorkApprovalsRequest>(() => (projectRoot === undefined ? {} : { projectRoot }), [projectRoot]);
-  const { state, refresh } = useWorkApprovals(api, request);
+  const [allProjects, setAllProjects] = useState(showAllProjects);
+  const request = useMemo<WorkApprovalsRequest>(
+    () => (allProjects ? { allProjects: true } : projectRoot === undefined ? {} : { projectRoot }),
+    [allProjects, projectRoot],
+  );
+  const { state, refresh, requestKey } = useWorkApprovals(api, request);
   // A stale acknowledgement means the routine's failure already moved on; re-list so the card shows its current state.
   const stackActions = useMemo<WorkApprovalActions>(() => ({
     ...actions,
@@ -444,21 +629,42 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
       return result;
     },
   }), [actions, refresh]);
+  const relist = useCallback(() => { void refresh(); }, [refresh]);
   const [filter, setFilter] = useState<KindFilter>("all");
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const sorted = useMemo(() => (state.status === "ready" ? sortByArrival(state.items) : []), [state]);
-  const filtered = useMemo(() => (filter === "all" ? sorted : sorted.filter((item) => item.kind === filter)), [filter, sorted]);
+  const decidable = useMemo(() => sorted.filter(isCounted), [sorted]);
+  const replanning = useMemo(
+    () => sorted.filter((item): item is WorkPlanApprovalView => item.kind === "plan" && item.phase === "replanning"),
+    [sorted],
+  );
+  const projects = state.status === "ready" ? state.projects : [];
+  const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => item.kind === filter)), [filter, decidable]);
   const head = filtered.find((item) => item.key === expandedKey) ?? filtered[0] ?? null;
   const queued = filtered.filter((item) => item !== head);
-  const order = useMemo(() => (head ? [head.key, ...queued.map((item) => item.key)] : []), [head, queued]);
+  const groups = useMemo(() => (allProjects ? groupByProject(filtered, projects) : []), [allProjects, filtered, projects]);
+  // All-projects rows list every item (the card is the selected one); a project home lists the rest under its card.
+  const order = useMemo(
+    () => (allProjects ? groups.flatMap((group) => group.items.map((item) => item.key)) : head ? [head.key, ...queued.map((item) => item.key)] : []),
+    [allProjects, groups, head, queued],
+  );
   const roving = useRovingFocus(order);
   const clock = now();
+  const fresh = state.status === "ready" && state.requestKey === requestKey;
 
   useEffect(() => {
-    onCountChange?.(state.status === "ready" ? state.items.length : null);
-  }, [onCountChange, state]);
+    onCountChange?.(state.status === "ready" ? decidable.length : null);
+  }, [decidable.length, onCountChange, state.status]);
 
-  // A popover navigation lands here: show that item as the card and focus it, then report the request consumed (once per request).
+  useEffect(() => {
+    if (!showAllRequest) return;
+    setAllProjects(true);
+    setFilter("all");
+    onShowAllConsumed?.();
+  }, [onShowAllConsumed, showAllRequest]);
+
+  // A popover navigation lands here: show that item as the card and focus it, then report the request consumed (once per request). Only a
+  // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
   const handledFocusKey = useRef<string | null>(null);
   const focusNode = roving.focusKey;
   useEffect(() => {
@@ -466,7 +672,7 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
       handledFocusKey.current = null;
       return;
     }
-    if (state.status !== "ready" || handledFocusKey.current === focusKey) return;
+    if (!fresh || handledFocusKey.current === focusKey) return;
     handledFocusKey.current = focusKey;
     if (sorted.some((item) => item.key === focusKey)) {
       setFilter("all");
@@ -474,7 +680,7 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
       requestAnimationFrame(() => focusNode(focusKey));
     }
     onFocusConsumed?.();
-  }, [focusKey, focusNode, onFocusConsumed, sorted, state.status]);
+  }, [focusKey, focusNode, fresh, onFocusConsumed, sorted]);
 
   if (state.status === "loading") {
     return (
@@ -493,35 +699,102 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
     );
   }
 
-  const projectCount = sorted.filter((item) => !isShared(item)).length;
-  const sharedCount = sorted.length - projectCount;
+  const projectCount = decidable.filter((item) => !isShared(item)).length;
+  const sharedCount = decidable.length - projectCount;
+  const countOf = (kind: WorkApprovalView["kind"]) => decidable.filter((item) => item.kind === kind).length;
   const kinds: Array<{ id: KindFilter; label: string }> = [
-    { id: "all", label: t("workApprovals.filterAll", { count: sorted.length }) },
-    { id: "proposal", label: t("workApprovals.filterProposal", { count: sorted.filter((i) => i.kind === "proposal").length }) },
-    { id: "routine-attention", label: t("workApprovals.filterRoutine", { count: sorted.filter((i) => i.kind === "routine-attention").length }) },
+    { id: "all", label: t("workApprovals.filterAll", { count: decidable.length }) },
+    { id: "plan", label: t("workApprovals.filterPlan", { count: countOf("plan") }) },
+    { id: "proposal", label: t("workApprovals.filterProposal", { count: countOf("proposal") }) },
+    { id: "routine-attention", label: t("workApprovals.filterRoutine", { count: countOf("routine-attention") }) },
   ];
+  const select = (key: string) => {
+    setExpandedKey(key);
+    requestAnimationFrame(() => roving.focusKey(key));
+  };
+  const switchMode = (all: boolean) => {
+    setAllProjects(all);
+    setFilter("all");
+    setExpandedKey(null);
+  };
+
+  const headCard = head && (
+    <HeadCard
+      item={head}
+      index={allProjects ? filtered.indexOf(head) : 0}
+      count={filtered.length}
+      actions={stackActions}
+      targetProjectRoot={projectRoot}
+      {...(allProjects ? { projectChoices: projects } : {})}
+      api={api}
+      now={clock}
+      onChanged={relist}
+      // In all-projects mode the row is the focus target; the card beside it is reached with Tab.
+      focusRef={allProjects ? () => {} : roving.focusRef}
+      tabIndex={allProjects ? -1 : roving.tabIndexFor(head.key)}
+      onFocusItem={roving.setFocusedKey}
+    />
+  );
+  const rowFor = (item: WorkApprovalView) => (
+    <QueuedRow
+      key={item.key}
+      item={item}
+      now={clock}
+      actions={stackActions}
+      targetProjectRoot={projectRoot}
+      selected={allProjects && item === head}
+      selectOnly={allProjects}
+      focusRef={roving.focusRef}
+      tabIndex={roving.tabIndexFor(item.key)}
+      onFocusItem={roving.setFocusedKey}
+      onExpand={select}
+    />
+  );
 
   return (
     <section
       aria-label={t("workApprovals.title")}
       data-testid="work-approvals"
+      data-mode={allProjects ? "all" : "project"}
       className="flex min-h-0 flex-col gap-2"
       onKeyDown={(event) => roving.onKeyDown(event, () => {
         setExpandedKey(null);
         if (order[0]) roving.focusKey(order[0]);
       })}
     >
-      <header className="flex items-center gap-2">
+      <header className="flex flex-wrap items-center gap-2">
         <CheckSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
         <h2 className="text-sm font-semibold">{t("workApprovals.title")}</h2>
-        <Badge variant="outline" data-testid="work-approvals-count">{sorted.length}</Badge>
+        <Badge variant="outline" data-testid="work-approvals-count">{decidable.length}</Badge>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="work-approvals-scope">
-          {t("workApprovals.headerScope", { project: projectCount, shared: sharedCount })}
+          {allProjects
+            ? t("workApprovals.headerAllProjects", { count: decidable.length })
+            : t("workApprovals.headerScope", { project: projectCount, shared: sharedCount })}
         </span>
+        <div role="group" aria-label={t("workApprovals.modeLabel")} className="flex gap-1">
+          <Button
+            size="sm"
+            variant={allProjects ? "outline" : "default"}
+            aria-pressed={!allProjects}
+            onClick={() => switchMode(false)}
+            data-testid="work-approvals-mode-project"
+          >
+            {t("workApprovals.modeProject")}
+          </Button>
+          <Button
+            size="sm"
+            variant={allProjects ? "default" : "outline"}
+            aria-pressed={allProjects}
+            onClick={() => switchMode(true)}
+            data-testid="work-approvals-mode-all"
+          >
+            {t("workApprovals.modeAllProjects")}
+          </Button>
+        </div>
         <span className="text-xs text-muted-foreground">{t("workApprovals.orderArrival")}</span>
       </header>
 
-      {sorted.length >= FILTER_CHIPS_FROM && (
+      {decidable.length >= FILTER_CHIPS_FROM && (
         <div role="group" className="flex flex-wrap gap-1" data-testid="work-approvals-filters">
           {kinds.map((kind) => (
             <Button
@@ -542,41 +815,41 @@ export function WorkApprovalStack({ api, project, actions, focusKey, onFocusCons
         <p className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="work-approvals-empty">
           {t("workApprovals.empty")}
         </p>
+      ) : allProjects ? (
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-64 flex-1 basis-64 space-y-2">
+            {groups.map((group) => (
+              <section key={group.id} data-testid="work-approvals-group" data-group={group.id} className="space-y-1">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  {group.label}
+                  {group.isDefault && (
+                    <Badge variant="outline" className="text-[10px]" data-testid="work-approvals-group-default">
+                      {t("workApprovals.defaultTag")}
+                    </Badge>
+                  )}
+                  <span className="font-normal">{group.items.length}</span>
+                </h3>
+                <ul className="space-y-1.5">{group.items.map(rowFor)}</ul>
+              </section>
+            ))}
+          </div>
+          <div className="min-w-72 flex-[2] basis-80">{headCard}</div>
+        </div>
       ) : (
         <>
-          <HeadCard
-            item={head}
-            index={0}
-            count={filtered.length}
-            actions={stackActions}
-            targetProjectRoot={projectRoot}
-            focusRef={roving.focusRef}
-            tabIndex={roving.tabIndexFor(head.key)}
-            onFocusItem={roving.setFocusedKey}
-          />
+          {headCard}
           {queued.length > 0 && (
             <>
               <h3 className="text-xs text-muted-foreground">{t("workApprovals.queuedHeading", { count: queued.length })}</h3>
-              <ul className="space-y-1.5" data-testid="work-approvals-queue">
-                {queued.map((item) => (
-                  <QueuedRow
-                    key={item.key}
-                    item={item}
-                    now={clock}
-                    actions={stackActions}
-                    targetProjectRoot={projectRoot}
-                    focusRef={roving.focusRef}
-                    tabIndex={roving.tabIndexFor(item.key)}
-                    onFocusItem={roving.setFocusedKey}
-                    onExpand={(key) => { setExpandedKey(key); requestAnimationFrame(() => roving.focusKey(key)); }}
-                  />
-                ))}
-              </ul>
+              <ul className="space-y-1.5" data-testid="work-approvals-queue">{queued.map(rowFor)}</ul>
             </>
           )}
-          <p className="text-[11px] text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
         </>
       )}
+      {head !== null && (
+        <p className="text-[11px] text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
+      )}
+      <ReplanningList items={replanning} />
       <p className="text-[11px] text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
     </section>
   );
