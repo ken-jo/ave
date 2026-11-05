@@ -85,8 +85,8 @@ export function useMemorySaveNotices(
     const keepForRetry = () => replace(key, (n) => ({ ...n, busy: false, undoFailed: true }));
     try {
       const answer = await api.memoryUndo(token);
-      // A write that failed, or a token the host refused to parse, leaves the token held; anything else ends this undo.
-      if (!answer.ok && (answer.error === "write-failed" || answer.error === "invalid-input")) {
+      // Only a write that failed leaves the token held for another try; a refused token would be refused again.
+      if (!answer.ok && answer.error === "write-failed") {
         keepForRetry();
         return;
       }

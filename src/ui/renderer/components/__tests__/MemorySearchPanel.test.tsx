@@ -114,7 +114,7 @@ describe("MemorySearchPanel", () => {
     expect(await within(screen.getByRole("tabpanel")).findByRole("button", { name: /결제 API 타임아웃은 8초/ })).toBeTruthy();
   });
 
-  it.each(["write-failed", "invalid-input"] as const)("keeps the toast's undo for a retry when the host answers %s", async (error) => {
+  it.each(["write-failed"] as const)("keeps the toast's undo for a retry when the host answers %s", async (error) => {
     const api = panelWithMemories();
     const restore = api.memoryUndo.getMockImplementation()!;
     api.memoryUndo.mockImplementationOnce(async () => ({ ok: false, error }));
@@ -135,6 +135,7 @@ describe("MemorySearchPanel", () => {
   it.each([
     ["changed", "더 새로운 기억이 자리를 차지해 되살리지 않았어요"],
     ["not-found", "이 되돌리기는 이제 쓸 수 없어요"],
+    ["invalid-input", "이 되돌리기는 이제 쓸 수 없어요"],
   ] as const)("says why an undo answered %s, without offering it again", async (error, text) => {
     const api = panelWithMemories();
     api.memoryUndo.mockImplementationOnce(async () => ({ ok: false, error }));

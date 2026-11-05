@@ -207,7 +207,8 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
     const retryable = () => setToast({ kind: "deleted", title, undoToken: token, undoFailed: true });
     try {
       const answer = await api.memoryUndo(token);
-      if (!answer.ok && (answer.error === "write-failed" || answer.error === "invalid-input")) {
+      // Only a write that failed keeps the token for another try; a refused token would be refused again.
+      if (!answer.ok && answer.error === "write-failed") {
         retryable();
         return;
       }

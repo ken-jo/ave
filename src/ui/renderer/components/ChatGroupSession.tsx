@@ -975,7 +975,11 @@ export function ChatGroupSession({
       <ChatView
         api={api}
         chatGroupId={chatGroupId}
-        onAsk={(q, intent, opts) => handleAsk(q, "default", intent, opts)}
+        onAsk={(q, intent, opts) => {
+          // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
+          if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);
+          return handleAsk(q, "default", intent, opts);
+        }}
         /** opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째 인자로 전달 — queue-auto inject path 활성. */
         onRunMcpPrompt={handleRunMcpPrompt}
         onRunPluginPrompt={handleRunPluginPrompt}

@@ -85,12 +85,15 @@ describe("MemorySaveNotices", () => {
     expect(screen.getByRole("button", { name: "보기" })).toBeTruthy();
   });
 
-  it("says an undo the host no longer holds has expired, not that the memory changed", async () => {
-    const { emit } = harness(async () => ({ ok: false, error: "not-found" }));
+  it.each(["not-found", "invalid-input"] as const)("ends an undo the host answers %s, saying it can no longer undo", async (error) => {
+    const { emit } = harness(async () => ({ ok: false, error }));
     emit({ sessionId: SESSION, result: { status: "saved", op: "created", entry: ENTRY, undoToken: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: "되돌리기" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("오래된 알림이라 이제는 되돌릴 수 없어요"));
     expect(screen.getByRole("status").textContent).not.toContain("다시 바뀐");
+    // The same token would be refused again, so nothing offers it.
+    expect(screen.queryByRole("button", { name: "되돌리기" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
   });
 
   it("keeps undo available when the undo call fails, so it can be tried again", async () => {
@@ -109,7 +112,7 @@ describe("MemorySaveNotices", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("저장을 되돌렸어요"));
   });
 
-  it.each(["write-failed", "invalid-input"] as const)("keeps the undo for a retry when the host answers %s", async (error) => {
+  it.each(["write-failed"] as const)("keeps the undo for a retry when the host answers %s", async (error) => {
     let calls = 0;
     const { emit, api } = harness(async () => {
       calls += 1;

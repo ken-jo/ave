@@ -14,8 +14,8 @@ const TITLE = "결제 API 타임아웃은 8초";
 
 type HistoryMessage = { index: number; role: "user" | "assistant"; content: string; messageId: string };
 
-function mountApp(firstMessages: HistoryMessage[] = []) {
-  const { api } = makeMockAveApi({ currentSession: FIRST_SESSION });
+function mountApp(firstMessages: HistoryMessage[] = [], sessions?: Array<{ id: string; title: string; modifiedAt: string }>) {
+  const { api } = makeMockAveApi({ currentSession: FIRST_SESSION, ...(sessions ? { sessions } : {}) });
   const { ns } = makeMockAveNamespace();
   (ns as unknown as { workspace: { listRoots: ReturnType<typeof vi.fn> } }).workspace.listRoots.mockImplementation(async () => ({
     ok: true,
@@ -29,6 +29,11 @@ function mountApp(firstMessages: HistoryMessage[] = []) {
     sessionId = NEXT_SESSION;
     sessionProject = project ?? {};
     return { ok: true };
+  });
+  // Loading a conversation from the sidebar makes it the one the next history read names.
+  api.chatSessionResume.mockImplementation(async (id: string) => {
+    sessionId = id;
+    return { ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 };
   });
   api.chatGetHistory.mockImplementation(async () => ({
     sessionId,
@@ -121,5 +126,48 @@ describe("App memory notices and Ave 에게 고치기", () => {
     // Nothing is sent until the user sends it.
     expect(api.chatSend).not.toHaveBeenCalled();
 
+  });
+  it("drops the fix card once its request is sent, so returning to that chat leaves focus where it was", async () => {
+    const sessions = [
+      { id: FIRST_SESSION, title: "첫 대화", modifiedAt: new Date(2026, 0, 2).toISOString() },
+      { id: NEXT_SESSION, title: "고치기 대화", modifiedAt: new Date(2026, 0, 3).toISOString() },
+    ];
+    const { api, emit, container } = mountApp([], sessions);
+    await waitFor(() => expect(api.onMemorySaveResult).toHaveBeenCalled());
+    await waitFor(() => expect(api.chatGetHistory).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    emit({
+      sessionId: FIRST_SESSION,
+      result: { status: "saved", op: "created", entry: { id: "m1", filename: "timeout.md", title: TITLE, scope: "global" } },
+    });
+    fireEvent.click(within(await screen.findByTestId("memory-save-notices")).getByRole("button", { name: "보기" }));
+    const panel = await screen.findByTestId("memory-search-panel");
+    fireEvent.click(await within(await within(panel).findByRole("tabpanel")).findByRole("button", { name: new RegExp(TITLE) }));
+    fireEvent.click(within(panel).getByRole("button", { name: `Ave 에게 기억 고치기: ${TITLE}` }));
+    await screen.findByTestId("memory-fix-card");
+    const composer = () => document.querySelector("textarea") as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(composer()));
+
+    fireEvent.change(composer(), { target: { value: `${composer().value}10초로 바뀌었어` } });
+    fireEvent.keyDown(composer(), { key: "Enter", code: "Enter" });
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId("memory-fix-card")).toBeNull());
+
+    const toggle = container.querySelector<HTMLButtonElement>('[data-testid="sidebar-collapse-toggle"]');
+    if (toggle && toggle.getAttribute("aria-pressed") !== "true") await act(async () => { fireEvent.click(toggle); });
+    const sidebarRow = (id: string) => waitFor(() => {
+      const row = container.querySelector<HTMLButtonElement>(`[data-testid="sidebar-session-${id}"]`);
+      if (!row) throw new Error("row not rendered");
+      return row;
+    });
+    await act(async () => { fireEvent.click(await sidebarRow(FIRST_SESSION)); });
+    await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(FIRST_SESSION));
+    (document.activeElement as HTMLElement | null)?.blur();
+    await act(async () => { fireEvent.click(await sidebarRow(NEXT_SESSION)); });
+    await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(NEXT_SESSION));
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))); });
+
+    expect(document.activeElement).not.toBe(composer());
+    expect(screen.queryByTestId("memory-fix-card")).toBeNull();
   });
 });
