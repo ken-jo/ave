@@ -130,7 +130,14 @@ export async function setupWorkflowStores(
       projectRootForSession: routineProjectRootForSession,
       chatForSession: routineChatForSession,
       removeRoutine: (routineId) => removeRoutineWithRuns(
-        { routinesStore, memoryManager: ctx.memoryManager, permissionManager: ctx.permissionManager },
+        {
+          routinesStore,
+          memoryManager: ctx.memoryManager,
+          endSessionScope: async (sessionId) => {
+            const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+            endSessionScopedPermissions(sessionId, ctx.permissionManager);
+          },
+        },
         routineId,
       ),
     },

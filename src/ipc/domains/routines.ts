@@ -93,7 +93,14 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
     const ok = await removeRoutineWithRuns(
-      { routinesStore, memoryManager, permissionManager: deps.conversationLoop.permissionManager },
+      {
+        routinesStore,
+        memoryManager,
+        endSessionScope: async (sessionId) => {
+          const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+          endSessionScopedPermissions(sessionId, deps.conversationLoop.permissionManager);
+        },
+      },
       id,
     );
     return { ok };
