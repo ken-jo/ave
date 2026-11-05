@@ -56,7 +56,7 @@ export function useSidebarItems(mainSurfaces: readonly MainSurface[], chatGroupI
   }, [browserTabs]);
   const control = useBrowserControlState();
   const surfaces = new Map<string, SidebarSurface>();
-  // Folder views get their project-tree row with Sidebar E S3; until then the launcher brings an open one back.
+  // Folder views have no project-tree row: the rail's folder launcher opens one, and a pane shows it.
   const existing = [...mainSurfaces.filter(isToolMainSurface), ...chatGroupIds.flatMap((id) => getSideTabsSink(id)?.snapshot() ?? [])];
   for (const surface of existing) {
     const browser = surface.kind === "browser" ? control.tabs.find((tab) => tab.rendererTabId === surface.tabId) : undefined;

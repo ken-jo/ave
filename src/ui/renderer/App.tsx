@@ -642,7 +642,7 @@ export function App() {
       statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
       return;
     }
-    showActiveSurface(activeSurfaceOf(surface));
+    if (isToolMainSurface(surface)) showActiveSurface(activeSurfaceOf(surface));
   }, [activeSurfaceOf, statusPushToast, t]);
 
   /** Reveal the tab's owning pane and its conversation, wherever presentation last placed it. */
