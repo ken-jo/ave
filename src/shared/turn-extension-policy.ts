@@ -14,6 +14,13 @@ export interface TurnExtensionPolicy {
   readonly floor?: PermissionCheckContext["floor"];
   readonly overlayTriggerOrigin?: string | null;
   readonly abortSignal?: AbortSignal;
+  /**
+   * A scheduled run that wakes an existing chat (대화에 연결). Set only by the host's routine wake path, never from model or tool
+   * input. Like every routine fire it does not inherit the conversation's session-bound authority (permission tree: delegated
+   * work), so the session-scope lookups see no allow: remembered session approvals, session allow rules, session egress grants
+   * and the shared browser/terminal choice (which falls back to Ask). Deny and ask rules are kept.
+   */
+  readonly withholdSessionAuthority?: boolean;
 }
 
 const DEFAULT_TURN_EXTENSION_POLICY: TurnExtensionPolicy = Object.freeze({
@@ -35,6 +42,11 @@ export function resolveTurnExtensionPolicy(
     remoteControllerAuthority: authority,
     allowExternalHooks: true,
   });
+}
+
+/** True inside a scheduled wake turn: session-scope allows must not be read (see TurnExtensionPolicy.withholdSessionAuthority). */
+export function sessionAuthorityWithheld(): boolean {
+  return turnExtensionPolicyContext.getStore()?.withholdSessionAuthority === true;
 }
 
 /** Outside controlled remote turns, hooks remain allowed. */

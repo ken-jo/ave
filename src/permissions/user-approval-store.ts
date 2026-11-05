@@ -14,6 +14,7 @@ import type {
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
@@ -404,7 +405,10 @@ export async function lookupUserDecision(
       }
     }
   }
-  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
+  // A scheduled wake turn reads no conversation-scope allow; its denies above still apply.
+  const sessionKey = sessionId === undefined || sessionAuthorityWithheld()
+    ? undefined
+    : conversationEntryKey(key, approvalConversationRoot(sessionId));
   const globalKey = globalEntryKey(unscopedKey);
   const keys = [...denyOnlyKeys, key, globalKey];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
