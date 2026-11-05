@@ -232,7 +232,7 @@ export const en = {
   "permissionJudge.off": "No custom evaluators",
   "permissionJudge.shadow": "Observe custom results · keep normal review",
   "permissionJudge.active": "Use custom results for automatic review",
-  "permissionJudge.modeHelp": "Observe records custom results while normal review decides. Apply uses them for reviewer-bound requests in auto; an error falls back to an approval card.",
+  "permissionJudge.modeHelp": "Observe records custom results while normal review decides. Apply uses them for reviewer-bound requests in auto; an error falls back to an approval card. With review off or a misconfigured reviewer, review is unavailable and every such request asks with a card.",
   "permissionJudge.categories": "Tool categories",
   "permissionJudge.shell": "Shell",
   "permissionJudge.write": "Write",

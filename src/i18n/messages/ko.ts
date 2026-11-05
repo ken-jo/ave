@@ -234,7 +234,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "permissionJudge.off": "사용자 지정 평가기 없음",
   "permissionJudge.shadow": "평가 결과 관찰 · 기본 리뷰 유지",
   "permissionJudge.active": "자동 리뷰에 평가 결과 적용",
-  "permissionJudge.modeHelp": "관찰은 결과만 기록하고 판단은 기본 리뷰가 합니다. 적용은 auto에서 리뷰가 필요한 요청에 결과를 쓰고, 오류면 승인 카드를 띄웁니다.",
+  "permissionJudge.modeHelp": "관찰은 결과만 기록하고 판단은 기본 리뷰가 합니다. 적용은 auto에서 리뷰가 필요한 요청에 결과를 쓰고, 오류면 승인 카드를 띄웁니다. 리뷰를 끄거나 리뷰어 설정이 잘못되면 리뷰를 쓸 수 없어 카드로 확인합니다.",
   "permissionJudge.categories": "도구 범주",
   "permissionJudge.shell": "셸",
   "permissionJudge.write": "쓰기",

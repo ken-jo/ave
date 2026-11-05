@@ -1363,6 +1363,28 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
+  it("describes the shell sandbox as on by default on Windows too, as the settings default is", () => {
+    // settings-defaults.ts turns osToolSandbox on for darwin, linux and win32.
+    expect(t("permissionsTab.osSandboxDescription")).toMatch(/macOS, Linux and Windows|macOS·Linux·Windows/);
+    expect(t("permissionsTab.osSandboxDescription")).not.toMatch(/until shell isolation is ready|셸 격리가 준비될 때까지/);
+  });
+
+  it("never claims isolation for Windows while the sandbox is off", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: false, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+      boot: null,
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(document.body.textContent).toContain(t("permissionsTab.osSandboxCapabilityWindows")));
+    const windows = t("permissionsTab.osSandboxCapabilityWindows");
+    // Containment is stated only as what Windows offers, and the off state is said in the same paragraph.
+    expect(windows).toMatch(/where Windows offers|제공하면/);
+    expect(windows).toMatch(/off, tools run unconfined|꺼져 있는 동안 도구는 격리 없이 실행/);
+    expect(screen.queryByTestId("os-sandbox-windows-substrate")).toBeNull();
+  });
+
   it("explains an AVE_HOME privacy degrade with available-but-unused MXC on the Permissions tab (native peer snapshot)", async () => {
     // The exact snapshot a Windows peer recorded: AVE_HOME on another drive keeps inherited principals, the gate degrades before
     // ASRT starts, the MXC start probe still reports available, and no shell or extension uses a sandbox this session.
