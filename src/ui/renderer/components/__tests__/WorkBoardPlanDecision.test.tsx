@@ -62,9 +62,14 @@ describe("Work Board — plan decision", () => {
     const decide = vi.fn(async () => ({ ok: true as const, status: "changes_requested" as const }));
     await openDetail(stubApi(awaitingItem(), decide));
     const requestChanges = screen.getByTestId("work-board-plan-request-changes") as HTMLButtonElement;
-    expect(requestChanges.disabled).toBe(true);
-    fireEvent.change(screen.getByTestId("work-board-plan-note"), { target: { value: "  split it in two  " } });
-    expect(requestChanges.disabled).toBe(false);
+    // An empty note is caught here: the note is flagged and focused, and nothing is sent.
+    fireEvent.click(requestChanges);
+    const note = screen.getByTestId("work-board-plan-note");
+    expect(note.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(note);
+    expect(decide).not.toHaveBeenCalled();
+    fireEvent.change(note, { target: { value: "  split it in two  " } });
+    expect(note.getAttribute("aria-invalid")).toBeNull();
     fireEvent.click(requestChanges);
     await waitFor(() => expect(decide).toHaveBeenCalledWith(5, { runId: "run-7", planHash: HASH, decision: "request_changes", note: "split it in two" }));
   });
@@ -115,6 +120,24 @@ describe("Work Board — plan decision", () => {
     current = awaitingItem();
     act(() => progress!({ itemId: 5, phase: "awaiting_approval", at: "2026-11-04T00:00:01.000Z" }));
     expect(await screen.findByTestId("work-board-plan-decision")).toBeTruthy();
+  });
+
+  it("points a card waiting for the decision at 확인 필요", async () => {
+    // The board reads a stored in-flight run's transcript on mount, which seeds the card's phase from the stored status.
+    const api = { ...stubApi(awaitingItem(), vi.fn()), getWorkBoardRunTranscript: async () => ({ events: [] }) } as unknown as AveApi;
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    const card = await screen.findByTestId("work-board-card");
+    await waitFor(() => expect(card.textContent).toContain("확인 필요"));
+  });
+
+  it("offers only re-planning or rejecting in the detail too, when main says the item changed since the plan", async () => {
+    const decide = vi.fn();
+    await openDetail(stubApi(awaitingItem({ planStale: true }), decide));
+    expect(screen.getByTestId("work-board-plan-stale").textContent).toContain("수정 요청으로 다시 계획");
+    const approve = screen.getByTestId("work-board-plan-approve");
+    expect(approve.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(approve);
+    expect(decide).not.toHaveBeenCalled();
   });
 
   it("offers no decision once the plan is no longer pending", async () => {

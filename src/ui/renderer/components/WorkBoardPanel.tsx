@@ -32,9 +32,6 @@ import type {
   WorkItemUpdateInput,
 } from "../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
-import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
-import type { WorkPlanDecideIpcResult, WorkPlanDecision } from "../../../shared/work-board-types.js";
-import { formatIpcError } from "../format-ipc-error.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 import { localDateKey, localDayStart } from "../../../shared/local-date.js";
 import { formatLocalClock } from "../../../shared/format-time.js";
@@ -64,6 +61,7 @@ import {
   type WorkItemRunState,
 } from "../hooks/use-work-board-run.js";
 import { WorkApprovalStack, type WorkApprovalActions } from "./work-approvals/WorkApprovalStack.js";
+import { PlanDecisionControls } from "./work-approvals/PlanDecisionControls.js";
 
 export interface WorkBoardPanelProps {
   api: AveApi;
@@ -75,6 +73,9 @@ export interface WorkBoardPanelProps {
   /** A 확인 필요 item the title-bar popover asked the stack to show and focus; reported consumed once handled. */
   approvalFocusKey?: string | null;
   onApprovalFocusConsumed?: () => void;
+  /** The popover's 전체 보기: open the stack in all-projects mode; reported consumed once handled. */
+  approvalShowAll?: boolean;
+  onApprovalShowAllConsumed?: () => void;
   /** Open the schedule (routine) surface focused on one routine. */
   onOpenRoutine?: (routineId: string) => void;
   /** Opens the schedule panel: the "스케줄 열기" link and every schedule card lead there. */
@@ -936,67 +937,10 @@ function RunOutputPanel({
   );
 }
 
-type PlanDecisionRefusal = Extract<WorkPlanDecideIpcResult, { ok: false }>["reason"];
-
-/** The user-facing sentence for each refusal; a stale plan names the way forward (send it back for changes). */
-function planDecisionRefusalText(reason: PlanDecisionRefusal | string): string {
-  switch (reason) {
-    case "plan_stale":
-      return t("workBoard.planDecisionStale");
-    case "not_pending":
-    case "plan_mismatch":
-      return t("workBoard.planDecisionNotPending");
-    case "note_required":
-      return t("workBoard.planDecisionNoteRequired");
-    case "note_too_long":
-      return t("workBoard.planDecisionNoteTooLong", { max: MAX_PLAN_NOTE_LENGTH });
-    case "note_invalid":
-      return t("workBoard.planDecisionNoteInvalid");
-    case "already_running":
-      return t("workBoard.planDecisionBusy");
-    case "plan_settling":
-      return t("workBoard.planDecisionSettling");
-    case "not_found":
-      return t("workBoard.planDecisionItemGone");
-    default:
-      return formatIpcError(reason, undefined);
-  }
-}
-
-// The work approval of a stored plan (permission-decision-tree.md "Work approvals"): approve and run, send back with a note, or reject.
-// It is the user's own decision on the item, not a tool-approval card, so it waits here without a timeout and survives a restart. The
-// buttons send the run id and the hash of the plan shown above, never the plan text.
+// The detail's copy of the plan decision; the 확인 필요 plan card shows the same controls.
 function PlanDecisionPanel({ api, item, onDecided }: { api: AveApi; item: WorkItemResolved; onDecided: () => void }) {
   const approval = item.planApproval;
-  const [note, setNote] = useState("");
-  const [pending, setPending] = useState<WorkPlanDecision | null>(null);
-  const [error, setError] = useState<string | null>(null);
   if (item.runStatus !== "awaiting_approval" || approval?.status !== "pending" || !item.runId) return null;
-  const runId = item.runId;
-  const decide = async (decision: WorkPlanDecision) => {
-    setPending(decision);
-    setError(null);
-    try {
-      const trimmed = note.trim();
-      const result = await api.decideWorkPlan(item.id, {
-        runId,
-        planHash: approval.planHash,
-        decision,
-        ...(trimmed.length > 0 ? { note: trimmed } : {}),
-      });
-      if ("ok" in result && result.ok) {
-        setNote("");
-        onDecided();
-        return;
-      }
-      setError(planDecisionRefusalText("reason" in result ? result.reason : result.error));
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setPending(null);
-    }
-  };
-  const busy = pending !== null;
   return (
     <section className="space-y-2 rounded-md border border-primary/(--opacity-medium) p-2.5" data-testid="work-board-plan-decision">
       <div className="flex items-baseline justify-between gap-2">
@@ -1006,40 +950,17 @@ function PlanDecisionPanel({ api, item, onDecided }: { api: AveApi; item: WorkIt
         )}
       </div>
       <p className="text-[11px] text-muted-foreground">{t("workBoard.planDecisionToolNote")}</p>
-      <Textarea
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-        maxLength={MAX_PLAN_NOTE_LENGTH}
-        placeholder={t("workBoard.planDecisionNotePlaceholder")}
-        aria-label={t("workBoard.planDecisionNoteLabel")}
-        disabled={busy}
-        rows={2}
-        data-testid="work-board-plan-note"
+      <PlanDecisionControls
+        key={`${item.runId}:${approval.planHash}`}
+        api={api}
+        itemId={item.id}
+        runId={item.runId}
+        planHash={approval.planHash}
+        stale={item.planStale === true}
+        onDecided={onDecided}
+        onGone={onDecided}
+        testIdPrefix="work-board-plan"
       />
-      <div className="flex flex-wrap justify-end gap-1.5">
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void decide("reject")} data-testid="work-board-plan-reject">
-          {pending === "reject" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
-          {t("workBoard.planDecisionReject")}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy || note.trim().length === 0}
-          title={note.trim().length === 0 ? t("workBoard.planDecisionNoteRequired") : undefined}
-          onClick={() => void decide("request_changes")}
-          data-testid="work-board-plan-request-changes"
-        >
-          {pending === "request_changes" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
-          {t("workBoard.planDecisionRequestChanges")}
-        </Button>
-        <Button size="sm" disabled={busy} onClick={() => void decide("approve")} data-testid="work-board-plan-approve">
-          {pending === "approve" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
-          {t("workBoard.planDecisionApprove")}
-        </Button>
-      </div>
-      {error !== null && (
-        <p role="alert" className="text-[11px] text-destructive" data-testid="work-board-plan-decision-error">{error}</p>
-      )}
     </section>
   );
 }
@@ -1617,7 +1538,8 @@ function ReportResultBlock({
 }
 
 export function WorkBoardPanel({
-  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, onOpenRoutine, onOpenSchedule, onOpenSession,
+  api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
+  onOpenRoutine, onOpenSchedule, onOpenSession,
 }: WorkBoardPanelProps) {
   const projectRoot = project?.projectRoot;
   const [showSchedule, setShowSchedule] = useState(() => readShowSchedule(projectRoot));
@@ -1649,8 +1571,8 @@ export function WorkBoardPanel({
   // A badge-popover navigation names an item in the stack; on a narrow panel that means showing the stack's tab. A wide panel shows the
   // stack anyway, so nothing is stored there: a choice stored while wide would open an empty 확인 필요 tab after a later shrink.
   useEffect(() => {
-    if (narrow && approvalFocusKey !== undefined && approvalFocusKey !== null) setNarrowTabChoice("approvals");
-  }, [approvalFocusKey, narrow]);
+    if (narrow && ((approvalFocusKey !== undefined && approvalFocusKey !== null) || approvalShowAll)) setNarrowTabChoice("approvals");
+  }, [approvalFocusKey, approvalShowAll, narrow]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -2105,6 +2027,8 @@ export function WorkBoardPanel({
             actions={approvalActions}
             focusKey={stackHidden ? undefined : approvalFocusKey}
             onFocusConsumed={onApprovalFocusConsumed}
+            showAllRequest={stackHidden ? undefined : approvalShowAll}
+            onShowAllConsumed={onApprovalShowAllConsumed}
             onCountChange={setApprovalCount}
           />
         </div>

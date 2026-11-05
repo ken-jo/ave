@@ -9,6 +9,40 @@ import type { RoutineFailure } from "./routines-types.js";
 
 // Scope: `project` (with whether it is the default project), `unscoped` (no project yet; accepting chooses one), or `global` (belongs to no project).
 
+/** An authorized project, for grouping the list and choosing where an accepted proposal goes. */
+export interface WorkApprovalProject {
+  projectRoot: string;
+  projectName: string;
+  isDefault: boolean;
+}
+
+/** A work item's stored plan. `pending` waits for the user's decision and is counted; `replanning` was sent back for changes and waits for
+ * the agent, so it is listed (dimmed) but never counted. */
+export interface WorkPlanApprovalView {
+  kind: "plan";
+  key: string;
+  /** A plan whose item has no project is shared by every project home. */
+  scope: { type: "project"; projectRoot: string; isDefault: boolean } | { type: "unscoped" };
+  title: string;
+  arrivedAt: string;
+  itemId: number;
+  runId: string;
+  /** The stored plan's hash, which the decision sends back; never a hash of the masked text below. */
+  planHash: string;
+  /** The plan as the agent wrote it, with secrets masked. Display only. */
+  plan: string;
+  /** How many times the plan was sent back for changes. */
+  revision: number;
+  /** Which plan this is, counting from 1: the waiting plan, or while re-planning the plan being made. Display only. */
+  planNumber: number;
+  agentName?: string;
+  phase: "pending" | "replanning";
+  /** The item changed after the plan was made, so approve would be refused as plan_stale; 수정 요청 re-plans it. */
+  stale: boolean;
+  /** Present while re-planning: what the user asked to change (masked). */
+  changeRequest?: string;
+}
+
 /** A plugin or briefing proposal the user can add to a project or dismiss. */
 
 export interface WorkProposalApprovalView {
@@ -48,16 +82,19 @@ export interface RoutineAttentionApprovalView {
 }
 
 export type WorkApprovalView =
+  | WorkPlanApprovalView
   | WorkProposalApprovalView
   | RoutineAttentionApprovalView;
 
 export type WorkApprovalListResult =
   | {
       ok: true;
-      /** The requested project's decisions plus the unscoped and global ones. */
+      /** The requested project's decisions plus the unscoped and global ones, or every authorized project's in all-projects mode. */
       items: WorkApprovalView[];
-      /** Every decision across all authorized projects, each counted once; the title-bar badge. */
+      /** Every decision waiting for the user across all authorized projects, each counted once; the title-bar badge. */
       total: number;
+      /** The authorized projects, default first. */
+      projects: WorkApprovalProject[];
     }
   /** A source store is not wired. The projection never drops a source silently. */
   | { ok: false; error: "work-approvals-source-unavailable"; source: WorkApprovalView["kind"] }

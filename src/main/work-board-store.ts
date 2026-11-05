@@ -165,7 +165,8 @@ export type PlanDecisionResult =
   | { status: "refused"; reason: Exclude<WorkPlanDecideRefusal, "already_running" | "plan_settling" | "note_required" | "note_too_long" | "note_invalid"> };
 
 /** An item whose stored plan can still be decided: awaiting approval, with a pending decision for its current run and plan. */
-function isDecidablePlan(item: WorkItem): boolean {
+/** A stored plan the user can decide now: its run waits on exactly this plan. */
+export function isDecidablePlan(item: WorkItem): boolean {
   const approval = item.planApproval;
   return (
     item.runStatus === "awaiting_approval" &&
@@ -175,6 +176,18 @@ function isDecidablePlan(item: WorkItem): boolean {
     approval.status === "pending" &&
     approval.runId === item.runId &&
     approval.planHash === planHashOf(item.plan)
+  );
+}
+
+/** A plan the user sent back for changes whose run is planning again; it waits for the agent, not for the user. */
+export function isReplanningPlan(item: WorkItem): boolean {
+  const approval = item.planApproval;
+  return (
+    item.runStatus === "planning" &&
+    typeof item.runId === "string" &&
+    approval !== undefined &&
+    approval.status === "changes_requested" &&
+    approval.runId === item.runId
   );
 }
 
@@ -320,8 +333,14 @@ function cloneItem(it: WorkItem): WorkItem {
   return { ...it };
 }
 
+// A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
 function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
-  return { ...item, status_resolved: resolveWorkItemStatus(item, nowMs) };
+  const approval = item.planApproval;
+  return {
+    ...item,
+    status_resolved: resolveWorkItemStatus(item, nowMs),
+    ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
+  };
 }
 
 // Transient run phases share run-planned; terminal activity verbs record outcomes.
@@ -352,6 +371,8 @@ function runStatusActivityKind(
 export class WorkBoardStore {
   // Fires after every proposals.json write, whichever path made it (plugin HostApi, briefing, accept, dismiss, withdraw).
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
+  // Fires after every board.json write (items, runs and plan approvals), whichever path made it (IPC, engine, model tools, reconcile).
+  readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
   private readonly filePath: string;
@@ -368,6 +389,13 @@ export class WorkBoardStore {
     this.filePath = filePath;
     this.activity = createDirStorage(dirname(filePath));
     this.now = now;
+  }
+
+  // The one board write: the cache takes the board only after it is on disk, then listeners hear about it.
+  private async commit(board: BoardFile): Promise<void> {
+    await writeFileAtomic(this.filePath, board);
+    this.cache = board;
+    this.boardChanged.emit();
   }
 
   async load(): Promise<void> {
@@ -466,8 +494,7 @@ export class WorkBoardStore {
       };
       board.nextId += 1;
       board.items.push(item);
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: "created",
         itemId: item.id,
@@ -535,8 +562,7 @@ export class WorkBoardStore {
       const nowMs = this.now();
       updated.updated_at = new Date(nowMs).toISOString();
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: "updated",
         itemId: updated.id,
@@ -575,8 +601,7 @@ export class WorkBoardStore {
       if (to === "completed") updated.completed_at = iso;
       else delete updated.completed_at;
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: activityKind,
         itemId: updated.id,
@@ -634,8 +659,7 @@ export class WorkBoardStore {
         runUpdatedAt: iso,
       };
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: runStatusActivityKind(runStatus),
         itemId: updated.id,
@@ -680,8 +704,7 @@ export class WorkBoardStore {
       delete updated.runSessionId;
       delete updated.planApproval;
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -727,10 +750,8 @@ export class WorkBoardStore {
           count += 1;
         }
       }
-      if (count > 0) {
-        await writeFileAtomic(this.filePath, board);
-      }
-      this.cache = board;
+      if (count > 0) await this.commit(board);
+      else this.cache = board;
       if (count > 0) log.info("[work-board-store] reconciled %d interrupted run(s) → error", count);
       return count;
     });
@@ -754,8 +775,7 @@ export class WorkBoardStore {
         runUpdatedAt: new Date(nowMs).toISOString(),
       };
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       return {
         status: "updated" as const,
         itemId: id,
@@ -779,8 +799,7 @@ export class WorkBoardStore {
       const iso = new Date(nowMs).toISOString();
       const updated = withRunResult(board.items[idx], result, iso);
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: runStatusActivityKind(result.runStatus),
         itemId: updated.id,
@@ -829,8 +848,7 @@ export class WorkBoardStore {
         ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       };
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: runStatusActivityKind("awaiting_approval"),
         itemId: updated.id,
@@ -888,8 +906,7 @@ export class WorkBoardStore {
       const updated = withRunResult(current, { runStatus: nextRunStatus }, iso);
       updated.planApproval = decided;
       board.items[idx] = updated;
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: runStatusActivityKind(nextRunStatus),
         itemId: updated.id,
@@ -911,8 +928,7 @@ export class WorkBoardStore {
         return { status: "not_found" as const, itemId: id };
       }
       board.items = board.items.filter((i) => i.id !== id);
-      await writeFileAtomic(this.filePath, board);
-      this.cache = board;
+      await this.commit(board);
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

@@ -12,5 +12,6 @@ export function wireWorkApprovalsChanged(
     fanOutToAllWindows(appWindows(), WORK_APPROVALS.changed, undefined);
   };
   ctx.workBoardStore.proposalsChanged.subscribe(broadcast);
+  ctx.workBoardStore.boardChanged.subscribe(broadcast);
   ctx.routinesStore.changed.subscribe(broadcast);
 }

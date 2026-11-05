@@ -381,6 +381,7 @@ vi.mock("../../main/work-board-store.js", () => ({
     load = vi.fn(async () => {});
     reconcileInterruptedRuns = vi.fn(async () => {});
     proposalsChanged = { subscribe: vi.fn(() => () => {}) };
+    boardChanged = { subscribe: vi.fn(() => () => {}) };
   },
 }));
 vi.mock("../../main/session-tasks-store.js", () => ({ SessionTasksStore: class {},

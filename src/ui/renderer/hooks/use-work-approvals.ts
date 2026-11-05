@@ -2,30 +2,33 @@
 // `changed`, and the hook re-lists. The first result is `loading` so callers can hide the badge and show a skeleton until it lands.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
-import type { WorkApprovalView } from "../../../shared/work-approvals-types.js";
+import type { WorkApprovalProject, WorkApprovalView } from "../../../shared/work-approvals-types.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-/** Without a root, main resolves the app-managed default project. */
-export type WorkApprovalsRequest = { projectRoot?: string };
+/** One project's home (without a root, main resolves the app-managed default project), or every authorized project. */
+export type WorkApprovalsRequest = { projectRoot?: string } | { allProjects: true };
 
 export type WorkApprovalsState =
   | { status: "loading" }
-  | { status: "ready"; items: WorkApprovalView[]; total: number }
+  /** `requestKey` names the request this result answers, so a caller can tell a fresh list from one still showing the previous request. */
+  | { status: "ready"; items: WorkApprovalView[]; total: number; projects: WorkApprovalProject[]; requestKey: string }
   /** The projection refused or failed; `error` is the IPC error code, rendered through formatIpcError by the caller. */
   | { status: "error"; error: string };
 
 type WorkApprovalsApi = Pick<AveApi, "listWorkApprovals" | "onWorkApprovalsChanged">;
 
-function requestKey(request: WorkApprovalsRequest): string {
-  return `project:${request.projectRoot ?? ""}`;
+function workApprovalsRequestKey(request: WorkApprovalsRequest): string {
+  return "allProjects" in request ? "all" : `project:${request.projectRoot ?? ""}`;
 }
 
 export function useWorkApprovals(api: WorkApprovalsApi, request: WorkApprovalsRequest): {
   state: WorkApprovalsState;
   refresh: () => Promise<void>;
+  /** The current request's key; compare with a ready state's `requestKey`. */
+  requestKey: string;
 } {
   const [state, setState] = useState<WorkApprovalsState>({ status: "loading" });
-  const key = requestKey(request);
+  const key = workApprovalsRequestKey(request);
   const requestRef = useRef(request);
   requestRef.current = request;
   // A newer list call supersedes an older one; only the latest response is applied.
@@ -40,7 +43,9 @@ export function useWorkApprovals(api: WorkApprovalsApi, request: WorkApprovalsRe
     try {
       const result = await api.listWorkApprovals(requestRef.current);
       if (mine !== generation.current) return;
-      setState(result.ok ? { status: "ready", items: result.items, total: result.total } : { status: "error", error: result.error });
+      setState(result.ok
+        ? { status: "ready", items: result.items, total: result.total, projects: result.projects, requestKey: workApprovalsRequestKey(requestRef.current) }
+        : { status: "error", error: result.error });
     } catch (err) {
       if (mine !== generation.current) return;
       setState({ status: "error", error: errorMessage(err) });
@@ -60,5 +65,5 @@ export function useWorkApprovals(api: WorkApprovalsApi, request: WorkApprovalsRe
     };
   }, [api, refresh, key]);
 
-  return { state, refresh };
+  return { state, refresh, requestKey: key };
 }
