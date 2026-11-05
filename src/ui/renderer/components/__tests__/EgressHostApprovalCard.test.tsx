@@ -74,4 +74,3 @@ describe("EgressHostApprovalCard while boot refuses the home folder", () => {
     expect(notice).toHaveBeenCalledWith(expect.stringContaining("Allowed once only"));
   });
 });
-
