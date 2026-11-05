@@ -16,7 +16,7 @@ import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { PluginUiHostView } from "../../plugin-ui-host.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // One mounted singleton per away display mode; empty slots render nothing.
@@ -133,9 +133,6 @@ import { errorMessage } from "../../shared/error-message.js";
 import type { MemoryFixTarget } from "./components/MemoryFixCard.js";
 
 /** A canvas not laid out yet measures 0x0 — that is "unmeasured", not "no room". */
-const NEW_CHAT_DRAFT_ATTEMPTS = 40;
-const NEW_CHAT_DRAFT_RETRY_MS = 50;
-
 function measuredCanvasSize(canvas: HTMLElement | null) {
   return canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0
     ? { width: canvas.clientWidth, height: canvas.clientHeight }
@@ -348,6 +345,12 @@ export function App() {
 
   const [pendingSessionDrop, setPendingSessionDrop] =
     useState<{ chatGroupId: string; sessionId: string } | null>(null);
+  // New Chat with an opening draft beside a busy tile: started in the adopted tile once it publishes its handle.
+  const [pendingNewChatOpening, setPendingNewChatOpening] = useState<{
+    chatGroupId: string;
+    project?: { projectRoot: string; projectName?: string };
+    opening: NewChatOpening;
+  } | null>(null);
 
   // Hold the requested project on the adopted tile until hydration; a refused adoption must leave the window project
   // unchanged.
@@ -462,6 +465,20 @@ export function App() {
     if (deliver()) return;
     return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
   }, [pendingSessionDrop, chatGroupSessions]);
+
+  useEffect(() => {
+    if (!pendingNewChatOpening) return;
+    const { chatGroupId, project, opening } = pendingNewChatOpening;
+    const deliver = () => {
+      const tile = chatGroupSessions.read(chatGroupId);
+      if (!tile) return false;
+      setPendingNewChatOpening(null);
+      void tile.startNewChat(project, opening);
+      return true;
+    };
+    if (deliver()) return;
+    return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
+  }, [pendingNewChatOpening, chatGroupSessions]);
 
   /** Move surface ownership and pane location together; the surface itself stays mounted. */
   const surfaceMoves = useMemo<SurfaceMoves>(() => {
@@ -1026,7 +1043,7 @@ export function App() {
   }, [mainSurfaces.surfaces, navigateToLocation, settingsTab, statusPushToast, t]);
 
   // New Chat is set up further down, with the conversation tiles it starts in.
-  const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }) => Promise<void>) | undefined>(undefined);
+  const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => Promise<void>) | undefined>(undefined);
   /** A launcher opens its surface in `project` (case 11–13): a new terminal starts in the project folder. */
   const launchInProject = useCallback((kind: SidebarLaunchKind, project: ProjectIdentity) => {
     if (kind === "chat") {
@@ -1637,7 +1654,7 @@ export function App() {
     return true;
   }, [streaming, resolveKnownProject, activeProject, defaultWorkspaceProject, focusedSession, followProject, setActiveView, t]);
 
-  const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
+  const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
     if (streaming) {
       // New Chat beside a busy tile adopts another group; at the ceiling it refuses without changing the current conversation.
@@ -1647,13 +1664,20 @@ export function App() {
       if (nextProject) {
         setFreshProjectByGroup((current) => new Map(current).set(adopted, nextProject));
       }
+      if (opening) {
+        setPendingNewChatOpening({
+          chatGroupId: adopted,
+          ...(nextProject ? { project: { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName } } : {}),
+          opening,
+        });
+      }
       setActiveView("home");
       return;
     }
     // Start chatNew on the focused tile's loop and reset that tile's transcript.
     const started = await focusedSession.startNewChat(nextProject
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
-      : undefined);
+      : undefined, opening);
     if (!started) return;
     followProject(nextProject?.projectRoot);
     setActiveView("home");
@@ -1663,23 +1687,9 @@ export function App() {
   ]);
   handleNewChatRef.current = handleNewChat;
 
-  // A draft prepared elsewhere (Doctor's migration) lands in a fresh conversation's composer once that tile publishes its handle.
-  // Beside a busy tile it goes to the adopted tile; at the ceiling it goes nowhere rather than into the running conversation.
-  useEffect(() => onNewChatDraft((draft) => {
-    const fill = (target: string, attempts = 0) => {
-      const tile = chatGroupSessions.read(target);
-      if (tile) tile.prefillComposer(draft);
-      else if (attempts < NEW_CHAT_DRAFT_ATTEMPTS) setTimeout(() => fill(target, attempts + 1), NEW_CHAT_DRAFT_RETRY_MS);
-    };
-    if (streaming) {
-      const adopted = adoptGroupBeside(chatGroupsRef.current.focusedId);
-      if (adopted === null) return;
-      setActiveView("home");
-      fill(adopted);
-      return;
-    }
-    void handleNewChat().then(() => setTimeout(() => fill(chatGroupsRef.current.focusedId), 0));
-  }), [adoptGroupBeside, chatGroupSessions, handleNewChat, setActiveView, streaming]);
+  // A draft prepared elsewhere (Doctor's migration) opens a new conversation the way New Chat does, with the draft in its
+  // composer: refused, or at the pane ceiling, it changes nothing in the conversation on screen.
+  useEffect(() => onNewChatDraft((draft) => { void handleNewChatRef.current?.(undefined, { draft }); }), []);
 
   // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
