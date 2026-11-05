@@ -1162,6 +1162,16 @@ project (identified by its path) is an ordinary project scope: its memories are
 not global and do not feed the global long-term overview. Global memories apply
 in every project. Saving from the UI always names the target scope.
 
+Each managed memory has an append-only change history (created, updated,
+activated, discarded, deleted) that records who acted. Rows keep only a
+masked, bounded title and excerpt of the changed text. Deleting a memory
+removes that text from its history rows and keeps what happened, who did it,
+when, and a digest. If the text cannot be removed, the delete fails. The
+history file is size-capped, and a read reports where rotation cut it. A
+failed history write never fails the memory change, and later reads of that
+memory report its history as incomplete. A crash between the memory write and
+its history row leaves no row and no mark.
+
 ## Insights
 
 Insights is the default home for calendar-based activity review:

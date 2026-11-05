@@ -408,7 +408,7 @@ describe("fresh home writes through the stores", () => {
     );
     const memory = new MemoryManager({ aveDir: dir });
     memory.load();
-    await memory.saveMemory("Build", "Run the tests before pushing.");
+    await memory.saveMemory("Build", "Run the tests before pushing.", {}, "user");
     expect(getAveHomeTrustReview()!.rows).toEqual([]);
     expect(boot(dir)).toEqual({ pending: false, state: "fresh" });
     expect(getAveHomeTrustReview()!.rows).toEqual([]);
@@ -436,7 +436,7 @@ describe("fresh home writes through the stores", () => {
     removeAveHomeTrustItem(getAveHomeTrustReview()!.snapshotId, "memories/MEMORY.md");
     const memory = new MemoryManager({ aveDir: dir });
     memory.load();
-    await memory.saveMemory("Build", "Run the tests before pushing.");
+    await memory.saveMemory("Build", "Run the tests before pushing.", {}, "user");
     expect(boot(dir).pending).toBe(false);
   });
 });

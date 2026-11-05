@@ -241,7 +241,7 @@ export class MemoryCaptureService implements AutomaticMemoryCaptureSubmitter {
         sourceDigest: pending.sourceDigest,
         capturedAt,
       },
-    });
+    }, pending.trigger === "automatic" ? "capture" : "user");
     return state === "active"
       ? { status: "saved", entry }
       : { status: "candidate", entry };

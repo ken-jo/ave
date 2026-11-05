@@ -330,7 +330,7 @@ describe("ave:memory:entries:*", () => {
       "my-memory.md",
     );
 
-    expect(services.memoryManager.deleteMemory).toHaveBeenCalledWith("my-memory.md", {});
+    expect(services.memoryManager.deleteMemory).toHaveBeenCalledWith("my-memory.md", {}, "user");
   });
 
   it("memory search rejects unauthorized frames", async () => {

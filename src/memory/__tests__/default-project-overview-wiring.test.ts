@@ -34,7 +34,7 @@ describe("default project long-term overview wiring", () => {
   it("builds the default project's overview on idle and puts it in that project's prompt", async () => {
     await memoryManager.saveMemory("Default rule", "Default project uses pnpm.", {
       projectRoot: DEFAULT_ROOT, projectName: "default", kind: "fact",
-    });
+    }, "user");
     const memoryReviewer = createMemoryReviewer(async () => "DEFAULT-PROJECT-OVERVIEW: pnpm");
     const memoryConsolidationService = new MemoryConsolidationService({
       memoryManager,

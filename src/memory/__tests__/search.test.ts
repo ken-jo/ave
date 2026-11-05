@@ -21,37 +21,37 @@ afterEach(async () => {
 
 describe("MemoryManager.searchMemoryEntries", () => {
   it("returns empty array for empty query", async () => {
-    await mm.saveMemory("프로젝트 목표", "분기 매출 달성");
+    await mm.saveMemory("프로젝트 목표", "분기 매출 달성", {}, "user");
     const results = mm.searchMemoryEntries("");
     expect(results.length).toBeGreaterThanOrEqual(1);
   });
 
   it("matches title substring (case-insensitive)", async () => {
-    await mm.saveMemory("Meeting Notes", "weekly sync discussion");
-    await mm.saveMemory("장보기 목록", "사과 바나나");
+    await mm.saveMemory("Meeting Notes", "weekly sync discussion", {}, "user");
+    await mm.saveMemory("장보기 목록", "사과 바나나", {}, "user");
     const results = mm.searchMemoryEntries("meeting");
     expect(results.length).toBe(1);
     expect(results[0].title).toBe("Meeting Notes");
   });
 
   it("matches body substring", async () => {
-    await mm.saveMemory("기타 기억", "quarterly review 내용 정리");
-    await mm.saveMemory("다른 기억", "무관한 내용");
+    await mm.saveMemory("기타 기억", "quarterly review 내용 정리", {}, "user");
+    await mm.saveMemory("다른 기억", "무관한 내용", {}, "user");
     const results = mm.searchMemoryEntries("quarterly");
     expect(results.length).toBe(1);
     expect(results[0].title).toBe("기타 기억");
   });
 
   it("scopes saved notes by projectRoot while keeping legacy notes for the default project", async () => {
-    await mm.saveMemory("Legacy Note", "shared baseline");
+    await mm.saveMemory("Legacy Note", "shared baseline", {}, "user");
     await mm.saveMemory("Alpha Note", "alpha secret", {
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
-    });
+    }, "user");
     await mm.saveMemory("Beta Note", "beta secret", {
       projectRoot: "C:\\workspace\\beta",
       projectName: "beta",
-    });
+    }, "user");
 
     expect(mm.searchMemoryEntries("secret", { projectRoot: "C:\\workspace\\alpha" }).map((entry) => entry.title))
       .toEqual(["Alpha Note"]);
@@ -66,7 +66,7 @@ describe("MemoryManager.searchMemoryEntries", () => {
 
   it("caps results at 50", async () => {
     for (let i = 0; i < 60; i++) {
-      await mm.saveMemory(`기억 ${i}`, "공통 키워드 hello");
+      await mm.saveMemory(`기억 ${i}`, "공통 키워드 hello", {}, "user");
     }
     const results = mm.searchMemoryEntries("hello");
     expect(results.length).toBe(50);
@@ -109,7 +109,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("updates MEMORY.md when saving a memory and injects it via getMemoryIndex", async () => {
-    await mm.saveMemory("Meeting Notes", "weekly sync discussion");
+    await mm.saveMemory("Meeting Notes", "weekly sync discussion", {}, "user");
     const index = readFileSync(join(dir, "memories", "MEMORY.md"), "utf-8");
     expect(index).toContain("[Meeting Notes](./meeting-notes.md)");
     expect(mm.getMemoryIndex()).toContain("weekly sync discussion");
@@ -124,7 +124,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("updates MEMORY.md sections under the current file lock without dropping saved memories", async () => {
-    await mm.saveMemory("Meeting Notes", "weekly sync discussion");
+    await mm.saveMemory("Meeting Notes", "weekly sync discussion", {}, "user");
     await mm.updateMemoryIndex("# Ave Memory Index\n\n## Urgent Memory\n\nold urgent\n\n## References\n\nold link\n\n## Saved Memories\n\n- [Meeting Notes](./meeting-notes.md) — weekly sync discussion\n");
 
     await mm.updateMemoryIndexSections({
@@ -166,7 +166,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("does not allow saved memory titles to overwrite MEMORY.md", async () => {
-    const entry = await mm.saveMemory("MEMORY", "reserved index collision");
+    const entry = await mm.saveMemory("MEMORY", "reserved index collision", {}, "user");
 
     expect(entry.filename.toLowerCase()).not.toBe("memory.md");
     expect(existsSync(join(dir, "memories", entry.filename))).toBe(true);
@@ -176,9 +176,9 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("removes deleted memories from MEMORY.md and the cached index", async () => {
-    await mm.saveMemory("Meeting Notes", "weekly sync discussion");
+    await mm.saveMemory("Meeting Notes", "weekly sync discussion", {}, "user");
 
-    await mm.deleteMemory("meeting-notes.md");
+    await mm.deleteMemory("meeting-notes.md", {}, "user");
 
     expect(existsSync(join(dir, "memories", "meeting-notes.md"))).toBe(false);
     const index = readFileSync(join(dir, "memories", "MEMORY.md"), "utf-8");
@@ -187,7 +187,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("does not allow MEMORY.md to be deleted as a normal memory entry", async () => {
-    await expect(mm.deleteMemory("MEMORY.md")).rejects.toThrow(/MEMORY\.md is an index file/);
+    await expect(mm.deleteMemory("MEMORY.md", {}, "user")).rejects.toThrow(/MEMORY\.md is an index file/);
     expect(existsSync(join(dir, "memories", "MEMORY.md"))).toBe(true);
   });
 
