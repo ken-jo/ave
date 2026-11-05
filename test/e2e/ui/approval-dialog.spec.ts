@@ -68,10 +68,11 @@ test('approval dock floats over the route without changing its layout', async ({
     && Math.abs(window.innerHeight - 841) <= 1
   ))).toBe(true);
 
+  // At 460px a sidebar nobody chose a state for folds to the rail once the width is measured; wait for that, then unfold it
+  // as the user would, so the read cannot race the fold.
   const sidebarToggle = mainWindow.getByTestId('sidebar-collapse-toggle');
-  if ((await sidebarToggle.getAttribute('aria-pressed')) !== 'true') {
-    await sidebarToggle.click();
-  }
+  await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'false');
+  await sidebarToggle.click();
   await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true');
 
   const openWorkBoard = async () => {
