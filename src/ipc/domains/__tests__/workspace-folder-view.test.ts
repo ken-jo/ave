@@ -36,6 +36,7 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 }));
 
 import { registerWorkspaceHandlers } from "../workspace.js";
+import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
@@ -158,6 +159,22 @@ describe("workspace.listDir folder-view entries", () => {
     try {
       const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
       expect(res).toMatchObject({ ok: true, entries: [], hidden: 1 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hides a sensitive name that is a link, and counts it", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "linked-secret");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "plain.txt"), "x");
+    linkFile("plain.txt", join(dir, ".env"));
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res.ok).toBe(true);
+      expect(res.entries?.map((entry) => entry.name)).toEqual(["plain.txt"]);
+      expect(res.hidden).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -422,6 +439,36 @@ describe("workspace.openPath links to network locations", () => {
   });
 });
 
+describe("the open path's link chain with `..`", () => {
+  it("refuses a link whose target climbs out of another link, which a lexical follow would place beside it", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "climb-open");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "x.txt"), "x");
+    symlinkSync("../out/sub", join(dir, "linkdir"), process.platform === "win32" ? "dir" : undefined);
+    linkFile("linkdir/../x.txt", join(dir, "trick"));
+    try {
+      expect(await linkChainVerdict(join(dir, "x.txt"))).toBe("local");
+      expect(await linkChainVerdict(join(dir, "trick"))).toBe("network");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("walks a requested `..` from the physical folder, so a link before it is still judged", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "climb-request");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "x.txt"), "x");
+    symlinkSync("//fileserver/share/sub", join(dir, "mnt"), process.platform === "win32" ? "dir" : undefined);
+    try {
+      expect(await linkChainVerdict(`${dir}/mnt/../x.txt`)).toBe("network");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("workspace.listDir under a root spelled in NFD", () => {
   it("keeps in-project links inside when the root's name is decomposed (a Finder-made Korean folder)", async ({ skip }) => {
     needsFileLinks(skip);
@@ -439,7 +486,9 @@ describe("workspace.listDir under a root spelled in NFD", () => {
       const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), nfdRoot)) as ListResult;
       const outsideOf = (name: string) => res.entries?.find((entry) => entry.name === name)?.outside;
       expect(outsideOf("relative")).toBe(false);
-      expect(outsideOf("absolute")).toBe(false);
+      // Link targets compare as spelled, with no NFC folding: the composed spelling of the root is outside on macOS (fail
+      // closed), and the decomposed spelling elsewhere is inside.
+      expect(outsideOf("absolute")).toBe(process.platform === "darwin");
       expect(outsideOf("away")).toBe(true);
     } finally {
       additionalDirectories.value = [root];
@@ -469,7 +518,8 @@ describe("workspace.listDir links to network locations", () => {
       expect(outsideOf("mnt")).toBe(true);
       expect(outsideOf("through-folder")).toBe(true);
       expect(outsideOf("local")).toBe(false);
-      expect(outsideOf("up")).toBe(false);
+      // A `..` in a target is not judged lexically: fail closed, even when it would land inside.
+      expect(outsideOf("up")).toBe(true);
       // Only the listed folder and its project root are resolved, never a link.
       expect(realpath.mock.calls.every(([path]) => String(path) === dir || String(path) === root)).toBe(true);
     } finally {
@@ -478,6 +528,42 @@ describe("workspace.listDir links to network locations", () => {
     }
   });
 
+
+  it("marks a link whose target climbs through another link outside", async ({ skip }) => {
+    needsFileLinks(skip);
+    const dir = join(root, "climb");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "x.txt"), "x");
+    // The OS resolves `linkdir/..` to the parent of `../out/sub`, not to `climb`: `trick` names `../out/x.txt`.
+    symlinkSync("../out/sub", join(dir, "linkdir"), process.platform === "win32" ? "dir" : undefined);
+    linkFile("linkdir/../x.txt", join(dir, "trick"));
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res.entries?.find((entry) => entry.name === "trick")).toMatchObject({ type: "link", outside: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks a link outside when its target names an NFC sibling of an NFD folder (Linux keeps both)", async ({ skip }) => {
+    needsFileLinks(skip);
+    if (process.platform !== "linux") skip();
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-nfc-sibling-")));
+    const nfdRoot = join(parent, "프로젝트".normalize("NFD"));
+    const nfcSibling = join(parent, "프로젝트".normalize("NFC"));
+    mkdirSync(nfdRoot);
+    mkdirSync(nfcSibling);
+    writeFileSync(join(nfcSibling, "a.txt"), "sibling");
+    linkFile(join(nfcSibling, "a.txt"), join(nfdRoot, "sibling"));
+    additionalDirectories.value = [root, nfdRoot];
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), nfdRoot)) as ListResult;
+      expect(res.entries?.find((entry) => entry.name === "sibling")?.outside).toBe(true);
+    } finally {
+      additionalDirectories.value = [root];
+      await cleanupTmpDir(parent);
+    }
+  });
 
   it("marks a link to a UNC path outside without resolving it", async ({ skip }) => {
     needsFileLinks(skip);

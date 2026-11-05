@@ -484,16 +484,38 @@ including startup, user commands and scrollback. Explicit user-selected host blo
 attachments are a separate untrusted-context path defined by the
 [terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
 
-The default-application icon reuses the existing attachment opener. Successful
-preview reads supply bounded, frame-bound read receipts instead of adding paths
-to the attachment allowlist. Opening requires the registered main-frame identity,
-the same caller's canonical read target and current read scope, with session,
-navigation, sensitive-path and dangerous-extension checks. This is a user action:
-it emits no agent observation and grants no document write authority.
-Preview-derived receipts admit only explicit passive formats and inert source
-types; reading a script, shortcut or active web file cannot authorize execution
-through its default application. Picker/drop authorizations retain their own
-existing contract.
+Every open in the OS default application runs one sequence,
+`openVerifiedExternalFile` in `src/main/external-open-target.ts`. It walks the
+link chain with lstat and readlink only, refusing UNC and device hops before
+any realpath. It also refuses a link target with a `..` segment, because the OS
+resolves that against physical parents. It then resolves the target, applies the
+sensitive-path floor and the allowed-extension list
+(`src/shared/preview-external-open.ts`) to both the requested name and the
+target, and requires a regular file with no POSIX execute bit. The whole
+judgement runs again on a fresh resolution immediately before the open, so the
+file that is opened is the one every check judged. Each caller adds only its
+own authority:
+
+- `attach.openExternal` serves both the attachment picker or drop path, which
+  uses its picker allowlist, and the preview's default-application icon, which
+  uses bounded, frame-bound read receipts from successful preview reads that add
+  no paths to the attachment allowlist. Both now meet the same allowed-extension
+  and execute-bit refusals;
+- the folder view's `workspace.openPath` uses project containment: the target
+  must lie inside the registered project root it names.
+
+Every caller requires the registered main-frame identity, checked again before
+the open. The folder view's open also requires a user gesture
+(`user-keyboard-required` otherwise). This is a user action: it emits
+no agent observation and grants no document write authority.
+
+`folder` is an instance view and a main-surface kind. A folder surface belongs
+to one project, is saved in the v2 main layout with its folder and selection,
+and is neither an agent tool surface nor movable to a side panel. Its listing
+(`workspace.listDir`) hides sensitive entries, links included, and counts them.
+It never resolves through a link: a link is outside when its target is a network
+or device path, has a `..` segment, leaves the root as spelled (compared without
+NFC folding), or passes through another link.
 
 ### Host runtime and subprocesses
 

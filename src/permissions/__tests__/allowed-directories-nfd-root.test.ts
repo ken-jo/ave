@@ -11,7 +11,7 @@ const NAME = "프로젝트";
 // A folder whose realpath names a different target than its matching form, as when it is swapped between the two resolutions:
 // the canonicalization resolves it first, and the runtime-root spelling resolves the same path a second time, which is the
 // call that sees the other folder.
-const { swapped } = vi.hoisted(() => ({ swapped: { from: "", to: "", calls: 0 } }));
+const { swapped } = vi.hoisted(() => ({ swapped: { from: "", to: "", calls: 0, vanish: false } }));
 const NFD = NAME.normalize("NFD");
 const NFC = NAME.normalize("NFC");
 
@@ -20,7 +20,10 @@ vi.mock("node:fs", async (importOriginal) => {
   // An NFD-preserving filesystem: the composed spelling of the folder does not exist.
   const composed = (path: unknown) => typeof path === "string" && path.includes(NFC) && NFC !== NFD;
   const native = ((path: Parameters<typeof actual.realpathSync.native>[0], ...rest: unknown[]) => {
-    if (swapped.from && path === swapped.from && ++swapped.calls === 2) return swapped.to;
+    if (swapped.from && path === swapped.from && ++swapped.calls === 2) {
+      if (swapped.vanish) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${String(path)}'`), { code: "ENOENT" });
+      return swapped.to;
+    }
     if (composed(path)) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${String(path)}'`), { code: "ENOENT" });
     return (actual.realpathSync.native as (...args: unknown[]) => string)(path, ...rest);
   }) as typeof actual.realpathSync.native;
@@ -83,6 +86,26 @@ describe("the on-disk spelling is pinned to the matching form's target", () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("left out"));
     } finally {
       swapped.from = "";
+      warn.mockRestore();
+    }
+  });
+
+  it("leaves out only a root whose folder disappears before its realpath, and keeps the others", () => {
+    const other = join(parent, "other");
+    mkdirSync(other, { recursive: true });
+    swapped.from = root;
+    swapped.vanish = true;
+    swapped.calls = 0;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const directories = buildRuntimeAllowedDirectories([root, other], parent);
+      expect(swapped.calls).toBe(2);
+      expect(directories).toContain(other);
+      expect(directories.some((dir) => dir.normalize("NFC") === root.normalize("NFC"))).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("left out"));
+    } finally {
+      swapped.from = "";
+      swapped.vanish = false;
       warn.mockRestore();
     }
   });

@@ -1,7 +1,7 @@
 // One default-app open sequence for every host channel that hands a file to the OS (attach.openExternal, workspace.openPath).
 import { shell } from "electron";
 import { promises as fs } from "node:fs";
-import { basename, parse, resolve } from "node:path";
+import { basename, isAbsolute, parse, resolve, sep } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
@@ -61,6 +61,11 @@ function isNetworkOrDevice(path: string): boolean {
   return isWindowsNetworkOrDevicePath(path, "win32");
 }
 
+/** Whether a readlink string has a `..` segment. */
+function climbs(path: string): boolean {
+  return path.split(/[\\/]+/u).includes("..");
+}
+
 /**
  * Walk `path` one component at a time with lstat and readlink only, following each link lexically, so nothing is resolved
  * through a link before its target is known to be local. "network" when any hop names a UNC or device location (resolving it
@@ -68,7 +73,9 @@ function isNetworkOrDevice(path: string): boolean {
  */
 export async function linkChainVerdict(path: string): Promise<"local" | "network" | "missing"> {
   if (isNetworkOrDevice(path)) return "network";
-  const start = resolve(path);
+  // The requested path keeps its own `..` segments: `resolve` would fold them against the spelled parent, skipping a link
+  // before them, while the walk below takes each `..` from the physical folder it has reached, as the OS does.
+  const start = isAbsolute(path) ? path : `${process.cwd()}${sep}${path}`;
   let current = parse(start).root;
   const rest = start.slice(current.length).split(/[\\/]+/u).filter(Boolean);
   let hops = 0;
@@ -87,6 +94,9 @@ export async function linkChainVerdict(path: string): Promise<"local" | "network
     }
     if (++hops > MAX_LINK_HOPS) return "network";
     const target = await fs.readlink(next);
+    // A link target's `..` folds against the physical parent of whatever comes before it, which a lexical follow cannot see:
+    // such a target is refused like a hop that cannot be judged local.
+    if (climbs(target)) return "network";
     const followed = resolve(current, target);
     if (isNetworkOrDevice(target) || isNetworkOrDevice(followed)) return "network";
     current = parse(followed).root;

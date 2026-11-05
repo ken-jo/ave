@@ -53,7 +53,15 @@ function runtimeRootSpelling(raw: string, canonical: string): string | null {
   if (existsSync(canonical)) return canonical;
   const resolved = pathResolve(raw);
   if (!existsSync(resolved)) return canonical;
-  const onDisk = realpathSync.native(resolved);
+  let onDisk: string;
+  try {
+    onDisk = realpathSync.native(resolved);
+  } catch {
+    // The folder went away between the existence check and the realpath: there is no spelling to keep, so only this root
+    // is left out.
+    console.warn("[allowed-directories] a runtime root was left out: its folder could not be resolved");
+    return null;
+  }
   // The on-disk spelling must name the folder the matching form names. Anything else (the folder swapped between the two
   // resolutions, a link chain the matching form read lexically) is a different target: that one root is left out, so it
   // matches nothing, and every other root keeps working. Nothing widens.

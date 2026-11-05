@@ -240,9 +240,23 @@ function containingRoot(dir: string): { key: string; path: string } | null {
   return best;
 }
 
-/** A path compared by meaning, not spelling: one separator, NFC (Finder writes NFD names), and the platform's case folding. */
+/**
+ * A link target compared as the filesystem spells it: one separator and the platform's case folding, as the sandbox's
+ * `isWithin` does, but no NFC folding. On ext4 an NFD folder and its NFC sibling are different folders, so folding here would
+ * call a link into the sibling inside the root.
+ */
 function lexicalKey(path: string): string {
-  return caseFoldForMatch(foldCanonicalPathSeparators(path.normalize("NFC")));
+  // Not `foldCanonicalPathSeparators`, which also NFC-normalizes. Network and device targets are refused before this point.
+  return caseFoldForMatch(path.replace(/[\\/]+/gu, "/"));
+}
+
+/**
+ * Whether a readlink string has a `..` segment. Resolving one lexically folds it against the spelled parent, but the OS folds
+ * it against the physical parent of whatever the preceding components resolve to: `linkdir/../x` with `linkdir -> ../out/sub`
+ * lands in `../out`, not beside `linkdir`. Such a target is not judged lexically at all.
+ */
+function linkTargetClimbs(target: string): boolean {
+  return target.split(/[\\/]+/u).includes("..");
 }
 
 /** A UNC or device spelling, judged as Windows reads it on every platform: such a link is never resolved, only marked outside. */
@@ -259,14 +273,16 @@ function isLinkTargetNetworkOrDevice(target: string): boolean {
 async function linkPointsOutside(realDir: string, linkName: string, realRoot: string): Promise<boolean> {
   const target = await fs.readlink(join(realDir, linkName));
   if (isLinkTargetNetworkOrDevice(target)) return true;
+  // A `..` in the target is resolved by the OS against physical parents, which this lexical check cannot see: outside.
+  if (linkTargetClimbs(target)) return true;
   const lexical = resolvePath(realDir, target);
   if (isLinkTargetNetworkOrDevice(lexical)) return true;
   const rootKey = lexicalKey(realRoot);
   const targetKey = lexicalKey(lexical);
   if (!keyWithin(rootKey, targetKey)) return true;
-  // Inside the root: walk from the root down, refusing any link on the way, including the target itself. The root and the
-  // target may spell the root differently (NFD against NFC, a short 8.3 name), so the walk counts components below the root
-  // and takes them from the target's own spelling instead of cutting the string at the root's length.
+  // Inside the root: walk from the root down, refusing any link on the way, including the target itself. The walk counts
+  // components below the root and takes them from the target's own spelling instead of cutting the string at the root's
+  // length.
   const below = targetKey.slice(rootKey.length).split("/").filter(Boolean).length;
   const parts = lexical.split(/[\\/]+/u).filter(Boolean);
   let current = realRoot;
