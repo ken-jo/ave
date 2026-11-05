@@ -23,7 +23,8 @@ function isTransientStatus(status) {
 
 function isTransientNetworkError(error) {
   // undici reports connection failures as `TypeError: fetch failed` and mid-body drops as `TypeError: terminated`.
-  if (error instanceof TypeError) return true;
+  // Other TypeErrors (e.g. `Invalid URL`) are deterministic and fail on the first attempt.
+  if (error instanceof TypeError && (error.message === "fetch failed" || error.message === "terminated")) return true;
   for (let current = error; current && typeof current === "object"; current = current.cause) {
     if (TRANSIENT_NETWORK_CODES.has(current.code)) return true;
     if (typeof current.message === "string" && current.message.includes("socket hang up")) return true;
