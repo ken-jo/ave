@@ -10,7 +10,7 @@ vi.mock("../windows-path-facts.js", async (original) => {
     dacls.override !== undefined ? dacls.override(paths) : (actual.readWindowsDacls as (p: readonly string[], o?: unknown) => unknown)(paths, options) };
 });
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
@@ -438,7 +438,7 @@ describe("fresh home writes through the stores", () => {
 });
 
 describe("approve all stays closed", () => {
-  // Like the D3① test above: the fixture makes the moved config/ owner-only with POSIX mode bits, which Windows ignores.
+  // The fixture makes the moved config/ owner-only with POSIX mode bits, which Windows ignores; the next test covers Windows.
   it.runIf(process.platform !== "win32")("never offers approve all for a home whose commit saw a moved config/ beside it, even after a restart", () => {
     const dir = home();
     put(dir, "AGENTS.md", "# instructions");
@@ -453,6 +453,19 @@ describe("approve all stays closed", () => {
     expect(review.approveAllOffered).toBe(false);
     expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
     expect(approveAveHomeTrustItems(review.snapshotId, ["AGENTS.md"])).toBe(1);
+  });
+
+  // Ave's own config/, moved aside by the user, carries the protection the D3① heuristic checks on every OS (a DACL on Windows).
+  it("never offers approve all after Ave's own config/ was moved aside", () => {
+    const dir = home();
+    put(dir, "AGENTS.md", "# instructions");
+    boot(dir);
+    renameSync(join(dir, "config"), join(dir, "config.old"));
+    boot(dir);
+    expect(manifest(dir)).toMatchObject({ state: "bootstrapped:false", oneByOne: true });
+    const review = getAveHomeTrustReview()!;
+    expect(review.approveAllOffered).toBe(false);
+    expect(() => approveAveHomeTrustItems(review.snapshotId)).toThrowError(expect.objectContaining({ code: "not-offered" }));
   });
 
   it("does not reopen approve all when the manifest is corrupted", () => {
