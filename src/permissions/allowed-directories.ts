@@ -49,15 +49,17 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
  * not exist but the folder does, the folder's realpath is the root. Comparisons are not widened: an NFD sibling of an
  * NFC-allowed folder on ext4 stays a different folder.
  */
-function runtimeRootSpelling(raw: string, canonical: string): string {
+function runtimeRootSpelling(raw: string, canonical: string): string | null {
   if (existsSync(canonical)) return canonical;
   const resolved = pathResolve(raw);
   if (!existsSync(resolved)) return canonical;
   const onDisk = realpathSync.native(resolved);
-  // The on-disk spelling must name the folder the matching form names; anything else (the folder swapped between the two
-  // resolutions) is not a different spelling but a different target, and is refused rather than stored.
+  // The on-disk spelling must name the folder the matching form names. Anything else (the folder swapped between the two
+  // resolutions, a link chain the matching form read lexically) is a different target: that one root is left out, so it
+  // matches nothing, and every other root keeps working. Nothing widens.
   if (foldCanonicalPathSeparators(onDisk) !== canonical) {
-    throw new Error(`runtime root ${JSON.stringify(raw)} resolves to a different folder than its matching form`);
+    console.warn("[allowed-directories] a runtime root was left out: its realpath names a different folder than its matching form");
+    return null;
   }
   return onDisk;
 }
@@ -71,6 +73,7 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
     const canonical = canonicalizePathForMatch(raw);
     const folded = caseFoldForMatch(canonical);
     const value = foldCase ? folded : runtimeRootSpelling(raw, canonical);
+    if (value === null) continue;
     if (isFilesystemRootPath(folded)) continue;
     // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
     if (isAdmissionDeniedPath(folded)) continue;
@@ -105,6 +108,7 @@ function sanitizeAllowedDirectoryEntries(
     const canonical = canonicalizePathForMatch(expanded);
     const folded = caseFoldForMatch(canonical);
     const value = foldCase ? folded : runtimeRootSpelling(expanded, canonical);
+    if (value === null) continue;
     if (isFilesystemRootPath(folded)) continue;
     if (isAdmissionDeniedPath(folded)) continue;
     if (seen.has(folded)) continue;
