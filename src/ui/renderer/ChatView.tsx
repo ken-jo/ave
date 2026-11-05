@@ -36,7 +36,7 @@ import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/previ
 import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
 import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
 import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
-import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { tabVisibleTo, useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
 import { forgetActiveSurface } from "./preview/active-surface.js";
@@ -245,8 +245,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   // Persist terminal directories and page addresses with the pane layout.
-  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
-  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId };
   const sidePanelVisibleRef = useRef(false);
   // A tab that moved away and left the panel empty takes the panel with it: an open panel with no tabs is the workspace
   // launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
@@ -284,7 +284,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       },
       visibleTabId: () => {
         if (!sidePanelVisibleRef.current) return null;
-        const { tabs, activeTabId } = savedTabsRef.current;
+        // The panel shows only this chat's tabs (ChatSidePanel's own rule), so another chat's active agent page is not visible here.
+        const { activeTabId, currentSessionId: shownSession } = savedTabsRef.current;
+        const tabs = savedTabsRef.current.tabs.filter((tab) => tabVisibleTo(tab, shownSession));
         return (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0])?.id ?? null;
       },
     });
@@ -496,6 +498,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     closeContainerTab("subagent");
   }, [currentSessionId, closeContainerTab]);
 
+  // A chat with nothing of its own in the panel, only another chat's agent pages, starts with the panel closed.
+  const panelOnSwitchRef = useRef({ tabs: workspaceTabs.tabs, onSidePanelOpenChange });
+  panelOnSwitchRef.current = { tabs: workspaceTabs.tabs, onSidePanelOpenChange };
+  useEffect(() => {
+    const { tabs, onSidePanelOpenChange: setOpen } = panelOnSwitchRef.current;
+    if (tabs.some((tab) => !tabVisibleTo(tab, currentSessionId))
+      && !tabs.some((tab) => tab.kind !== "subagent" && tabVisibleTo(tab, currentSessionId))) setOpen(false);
+  }, [currentSessionId]);
+
   // Auto-open for new live sub-agent spawns, never for rows restored from disk.
   useEffect(() => {
     let sawLiveSpawn = false;
@@ -521,9 +532,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
     hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
-    openAgentTab: (url, requestId, active) => {
+    openAgentTab: (url, requestId, active, owner) => {
       const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
-      if (store.openAgentBrowserTab(url, requestId, active) !== null && active) openPanel(true);
+      if (store.openAgentBrowserTab(url, requestId, active, owner) !== null && active) openPanel(true);
     },
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);

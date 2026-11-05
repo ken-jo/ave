@@ -10,7 +10,7 @@ function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { call
     calls,
     sessionId: () => sessionId,
     hasTab: (tabId) => tabs.includes(tabId),
-    openAgentTab: vi.fn((url, requestId, active) => calls.push(`new ${url} ${requestId} ${active}`)),
+    openAgentTab: vi.fn((url, requestId, active, owner) => calls.push(`new ${url} ${requestId} ${active} ${owner}`)),
     selectTab: vi.fn((tabId) => calls.push(`select ${tabId}`)),
     closeTab: vi.fn((tabId) => calls.push(`close ${tabId}`)),
   };
@@ -151,23 +151,25 @@ describe("routeBrowserTabOp", () => {
       expect(candidate.calls).toEqual([]);
     } finally { setWebSurfaceElement("browser:focus", null); guest.remove(); }
   });
-  it("opens beside the exact named conversation, and uses the first view only when none is named", () => {
+  it("opens beside the exact named conversation, owned by it, and refuses a new tab that names none", () => {
     const first = host("s1", []);
     const second = host("s2", []);
     routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", active: false }, [first, second]);
     routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", active: true }, [first, second]);
-    routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/", active: true }, [first, second]);
-    expect(second.calls).toEqual(["new https://a.example/ r1 false"]);
-    expect(first.calls).toEqual(["new https://c.example/ r3 true"]);
+    // No guessing at an owner: the first view's chat is not the agent's.
+    expect(() => routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/", active: true }, [first, second]))
+      .toThrow("browser-tab-op-unowned");
+    expect(second.calls).toEqual(["new https://a.example/ r1 false s2"]);
+    expect(first.calls).toEqual([]);
   });
 
   it("never opens the agent's new tab in a host that only holds tabs (the main area's web panels)", () => {
     const { openAgentTab: _unused, ...mainArea } = host(null, ["browser:7"]);
     const panels = mainArea as BrowserTabHost & { calls: string[] };
     const chat = host("s1", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", active: false }, [panels, chat]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s1", active: false }, [panels, chat]);
     routeBrowserTabOp({ requestId: "r2", op: "select", tabId: "browser:7" }, [panels, chat]);
-    expect(chat.calls).toEqual(["new https://a.example/ r1 false"]);
+    expect(chat.calls).toEqual(["new https://a.example/ r1 false s1"]);
     expect(panels.calls).toEqual(["select browser:7"]);
   });
 

@@ -2,6 +2,7 @@ import "./setup.js";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "./render-app.js";
+import { emitAgentTabNew } from "./helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { t } from "../../src/i18n/runtime.js";
 import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../src/shared/browser-workspace.js";
@@ -15,10 +16,8 @@ describe("chat columns", () => {
       emitBrowserTabOp: (request: unknown) => void;
       getState: ReturnType<typeof vi.fn>;
     };
-    await act(async () => {
-      browserTabs.emitBrowserTabOp({ requestId: "page-one", op: "new", url: "https://one.example/", active: true });
-      browserTabs.emitBrowserTabOp({ requestId: "page-two", op: "new", url: "https://two.example/", active: true });
-    });
+    await emitAgentTabNew(view.container, view.api, { requestId: "page-one", url: "https://one.example/", active: true });
+    await emitAgentTabNew(view.container, view.api, { requestId: "page-two", url: "https://two.example/", active: true });
     const hosts = await waitFor(() => {
       const hosts = [...view.container.querySelectorAll<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]')];
       expect(hosts).toHaveLength(2);
