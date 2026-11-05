@@ -145,6 +145,8 @@ export interface SidebarProps {
   /** Open a new chat, web page or terminal in `project` (case 11–13). The rail asks which project in the all-projects view,
    * and launches nothing before the selection has loaded. */
   onLaunch: (kind: SidebarLaunchKind, project: ProjectIdentity) => void;
+  /** The project list could not be read, so no project is known: the launchers say so and retry the list instead of opening. */
+  projectListUnavailable?: boolean;
   /**
    * The list beside the rail is folded (`sidebarState` "rail", case 21). The rail stays; the shell's band carries the button
    * that unfolds the list again.
@@ -1763,6 +1765,7 @@ export function Sidebar({
   onRefreshProjects,
   onProjectError,
   onProjectNotice,
+  projectListUnavailable = false,
   mainSurfaces = [],
   browserTabs,
   chatGroupIds = [],
@@ -1911,6 +1914,7 @@ export function Sidebar({
   const launchLabel = (kind: SidebarLaunchKind) => kind === "chat"
     ? t("mainToolbar.newChat")
     : t(kind === "web" ? "sidebar.newWeb" : "sidebar.newTerminal");
+  const listUnavailable = !selectedProject && !allProjects && projectListUnavailable;
   const launcher = (kind: SidebarLaunchKind, icon: ReactNode, testId: string) => {
     const label = launchLabel(kind);
     const plus = allProjects ? null : <Plus className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full bg-card" aria-hidden="true" />;
@@ -1926,6 +1930,11 @@ export function Sidebar({
             onLaunch(kind, selectedProject);
             return;
           }
+          // No project is known because the list failed: the launcher retries the list and opens nothing.
+          if (open && listUnavailable) {
+            void onRefreshProjects?.();
+            return;
+          }
           if (open && !allProjects) return;
           setPickerFor(open ? kind : null);
         }}
@@ -1934,11 +1943,14 @@ export function Sidebar({
         <RailButton
           label={selectedProject
             ? t("sidebar.railOpensIn", { label, project: shownName })
-            : allProjects ? t("sidebar.railChooseProject", { label }) : label}
+            : allProjects
+              ? t("sidebar.railChooseProject", { label })
+              : listUnavailable ? t("sidebar.railProjectsUnavailable", { label }) : label}
           icon={icon}
           badge={plus}
-          // Until the selection has loaded there is no project to open in, and nothing opens without one.
-          disabled={!selectedProject && !allProjects}
+          // Until the selection has loaded there is no project to open in, and nothing opens without one. A failed list keeps
+          // the button live as its retry.
+          disabled={!selectedProject && !allProjects && !listUnavailable}
           data-testid={testId}
         />
       </ProjectPicker>

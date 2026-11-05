@@ -80,9 +80,21 @@ test('approval dock floats over the route without changing its layout', async ({
   await openWorkBoard();
   const workBoardPanel = mainWindow.getByTestId('work-board-panel');
   await expect(workBoardPanel).toBeVisible();
-  const routeBefore = await workBoardPanel.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  // The sidebar's unfold animates the route's left edge; measure only once two frames in a row agree.
+  const routeBefore = await workBoardPanel.evaluate(async (element) => {
+    const read = () => {
+      const rect = element.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    };
+    const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    let previous = read();
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await frame();
+      const current = read();
+      if (JSON.stringify(current) === JSON.stringify(previous)) return current;
+      previous = current;
+    }
+    throw new Error('work-board-panel never settled');
   });
 
   // Release sidebar focus before checking card autofocus; another surface must keep its caret.

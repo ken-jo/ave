@@ -352,16 +352,23 @@ describe("main-area terminal and web panels", () => {
     expect(shownSurfaces(container).map((surface) => surface.tabId)).not.toContain(closingId);
   });
 
-  it("opens no terminal or page, and says why, while the project list is unavailable", async () => {
+  it("opens no terminal or page while the project list is unavailable, says why on the launcher, and retries from it", async () => {
     const { container } = await renderApp({ hasApiKey: true, workspaceListRootsResult: { ok: false, error: "listing failed" } });
+    const listRoots = (window as unknown as { ave: { workspace: { listRoots: ReturnType<typeof vi.fn> } } }).ave.workspace.listRoots;
 
-    // The listing failure is the reason shown; the launchers stay disabled until a project is known (fail closed).
     await waitForToast(container, "프로젝트: listing failed");
-    for (const launcher of ["sidebar-terminal", "sidebar-web"]) {
-      const button = document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${launcher}"]`);
-      expect(button?.disabled, launcher).toBe(true);
-      await clickSidebarNavRow("features", launcher);
-    }
+    const launcher = (id: string) => document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${id}"]`)!;
+    await waitFor(() => expect(launcher("sidebar-terminal").getAttribute("aria-label")).toBe("새 터미널 · 프로젝트 목록을 불러오지 못했습니다 · 다시 시도"));
+    expect(launcher("sidebar-terminal").disabled).toBe(false);
+    const readsBefore = listRoots.mock.calls.length;
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(listRoots.mock.calls.length).toBe(readsBefore + 1));
+    expect(shownSurfaces(container)).toEqual([]);
+
+    // The retry that succeeds gives the launchers their project back.
+    listRoots.mockResolvedValue({ ok: true, defaultRoot: "/ws", roots: [{ path: "/ws", isDefault: true }] });
+    await clickSidebarNavRow("features", "sidebar-web");
+    await waitFor(() => expect(launcher("sidebar-terminal").getAttribute("aria-label")).not.toContain("다시 시도"));
     expect(shownSurfaces(container)).toEqual([]);
   });
 

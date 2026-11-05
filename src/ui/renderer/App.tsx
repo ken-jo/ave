@@ -1083,14 +1083,18 @@ export function App() {
     handleProjectError("list", code);
   }, [handleProjectError]);
 
+  // The last list read failed: the launchers say so and offer a retry rather than sitting disabled with no reason.
+  const [projectListFailed, setProjectListFailed] = useState(false);
   const refreshWorkspaceProjects = useCallback(async () => {
     try {
       const result = await window.ave?.workspace?.listRoots?.();
       if (!result?.ok) {
         // Report unreadable project lists instead of silently presenting them as empty.
         if (result?.error) reportProjectListFault(result.error);
+        setProjectListFailed(true);
         return;
       }
+      setProjectListFailed(false);
       if (result.settingsFault) reportProjectListFault(result.settingsFault);
       else reportedListFault.current = null;
       const roots = Array.isArray(result.roots) ? result.roots : [];
@@ -1099,6 +1103,7 @@ export function App() {
       setWorkspaceProjects(projects);
     } catch {
       // The backend still defaults chat creation to the anchored workspace root.
+      setProjectListFailed(true);
     }
   }, [reportProjectListFault, t]);
 
@@ -2180,6 +2185,7 @@ export function App() {
                 onSelectAllProjects={projectSelection.selectAll}
                 onProjectAdded={handleProjectAdded}
                 onLaunch={launchInProject}
+                projectListUnavailable={projectListFailed}
                 onNewChatForProject={onNewChatForProject}
                 onRefreshProjects={refreshWorkspaceProjects}
                 onProjectError={handleProjectError}
