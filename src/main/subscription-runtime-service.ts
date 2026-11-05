@@ -1059,7 +1059,7 @@ class BridgedAcpSubscriptionTextSession implements SubscriptionTextSession {
   }
 }
 
-// Settings surfaces may reuse a settled read this long; a user's "check again" and every chat/selection gate read live.
+// Settings reads, including the renderer's composer gate, may reuse a settled read this long; a user's "check again" and main's own chat-open and selection checks read live.
 const SETTINGS_READ_CACHE_TTL_MS = 5 * 60_000;
 
 export interface SubscriptionReadOptions {
@@ -1086,6 +1086,7 @@ export class SubscriptionRuntimeService {
   private readonly cachedStatuses = new Map<SubscriptionRuntimeId, CachedRead<SubscriptionRuntimeStatus>>();
   private readonly cachedCatalogs = new Map<SubscriptionRuntimeId, CachedRead<SubscriptionRuntimeCatalog>>();
   private readonly readGenerationByProvider = new Map<SubscriptionRuntimeId, number>();
+  private readonly mutationsInFlight = new Map<SubscriptionRuntimeId, number>();
   // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
@@ -1239,21 +1240,25 @@ export class SubscriptionRuntimeService {
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     if (!isAcpRuntime(runtimeId)) throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
-    this.invalidateSafety(runtimeId);
-    await this.stopSessionsFor(runtimeId);
-    return this.withStableErrors(async () => this.projectAcpStatus(
-      await this.acpRegistry.setExecutable(runtimeId, pickerPath),
-    ));
+    return this.mutating(runtimeId, async () => {
+      this.invalidateSafety(runtimeId);
+      await this.stopSessionsFor(runtimeId);
+      return this.withStableErrors(async () => this.projectAcpStatus(
+        await this.acpRegistry.setExecutable(runtimeId, pickerPath),
+      ));
+    });
   }
 
   async forgetExecutable(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     if (!isAcpRuntime(runtimeId)) throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
-    this.invalidateSafety(runtimeId);
-    await this.stopSessionsFor(runtimeId);
-    return this.withStableErrors(async () => this.projectAcpStatus(
-      await this.acpRegistry.forgetExecutable(runtimeId),
-    ));
+    return this.mutating(runtimeId, async () => {
+      this.invalidateSafety(runtimeId);
+      await this.stopSessionsFor(runtimeId);
+      return this.withStableErrors(async () => this.projectAcpStatus(
+        await this.acpRegistry.forgetExecutable(runtimeId),
+      ));
+    });
   }
 
   // Authenticate, then prove the provider's isolated governed transport is safe to use.
@@ -1327,7 +1332,7 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     this.invalidateSafety(runtimeId);
     await this.stopSessionsFor(runtimeId);
-    return this.withStableErrors(async () => {
+    return this.mutating(runtimeId, () => this.withStableErrors(async () => {
       if (runtimeId === "codex") {
         if (method === "browser") return this.projectCodexStatus(await this.codexClient.startBrowserLogin());
         const result = await this.codexClient.startDeviceCodeLogin();
@@ -1349,7 +1354,7 @@ export class SubscriptionRuntimeService {
         throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
       }
       return this.projectAcpStatus(await this.acpRegistry.startDeviceCodeLogin(runtimeId));
-    });
+    }));
   }
 
   async openPendingVerificationUrl(
@@ -1371,21 +1376,21 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     this.invalidateSafety(runtimeId);
     await this.stopSessionsFor(runtimeId);
-    return this.withStableErrors(async () => {
+    return this.mutating(runtimeId, () => this.withStableErrors(async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.cancelLogin());
       if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().cancelLogin();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.cancelLogin());
       }
       return this.projectAcpStatus(await this.acpRegistry.cancelLogin(runtimeId));
-    });
+    }));
   }
 
   async logout(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     this.invalidateSafety(runtimeId);
     await this.stopSessionsFor(runtimeId);
-    return this.withStableErrors(async () => {
+    return this.mutating(runtimeId, () => this.withStableErrors(async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.logout());
       if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().logout();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
@@ -1395,7 +1400,7 @@ export class SubscriptionRuntimeService {
         throw new SubscriptionRuntimeServiceError("subscription-logout-not-supported");
       }
       return this.projectAcpStatus(await this.acpRegistry.logout(runtimeId));
-    });
+    }));
   }
 
   /** Dismiss the runtime's notice. Only plan usage carries notices; any other runtime refuses. */
@@ -1633,6 +1638,20 @@ export class SubscriptionRuntimeService {
     this.revokeSafety(provider);
   }
 
+  // A state change bumps the read generation when it starts (invalidateSafety) and again when it ends, and no read that
+  // overlaps it is kept: a status read while a logout is still running would otherwise cache the account as connected.
+  private async mutating<T>(provider: SubscriptionRuntimeId, mutation: () => Promise<T>): Promise<T> {
+    this.mutationsInFlight.set(provider, (this.mutationsInFlight.get(provider) ?? 0) + 1);
+    try {
+      return await mutation();
+    } finally {
+      const remaining = (this.mutationsInFlight.get(provider) ?? 1) - 1;
+      if (remaining === 0) this.mutationsInFlight.delete(provider);
+      else this.mutationsInFlight.set(provider, remaining);
+      this.invalidateCachedReads(provider);
+    }
+  }
+
   // Live reads always refresh the cache; a read is kept only if no mutation or proof landed while it ran.
   private async readThrough<T>(
     cache: Map<SubscriptionRuntimeId, CachedRead<T>>,
@@ -1648,7 +1667,12 @@ export class SubscriptionRuntimeService {
     }
     const generation = this.readGeneration(runtimeId);
     const value = await read();
-    if (!this.stopped && this.readGeneration(runtimeId) === generation && isSettledStatus(statusOf(value))) {
+    if (
+      !this.stopped
+      && !this.mutationsInFlight.has(runtimeId)
+      && this.readGeneration(runtimeId) === generation
+      && isSettledStatus(statusOf(value))
+    ) {
       cache.set(runtimeId, this.cachedRead(value));
     }
     return value;

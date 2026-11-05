@@ -79,4 +79,20 @@ describe("SecretDocumentStore committed-document reads", () => {
     expect(await store.get("alpha")).toBeNull();
     expect(await store.has("alpha")).toBe(false);
   });
+
+  it("stops reporting a credential as present once it fails to decrypt, until it is saved again", async () => {
+    const enc = encryption();
+    const store = new SecretDocumentStore({ path, policy: "packaged", encryption: enc });
+    await store.set("alpha", "fixture-value");
+    expect(await store.has("alpha")).toBe(true);
+
+    // The keychain was reset: the stored ciphertext no longer decrypts.
+    enc.decryptStringAsync.mockRejectedValueOnce(new Error("keychain reset"));
+    await expect(store.get("alpha")).rejects.toThrow();
+    expect(await store.has("alpha")).toBe(false);
+
+    await store.set("alpha", "fresh-value");
+    expect(await store.has("alpha")).toBe(true);
+    expect(await store.get("alpha")).toBe("fresh-value");
+  });
 });

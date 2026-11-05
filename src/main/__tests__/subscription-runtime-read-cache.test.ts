@@ -97,6 +97,57 @@ describe("SubscriptionRuntimeService settings read cache", () => {
     }
   });
 
+  it("keeps no status read while a logout is still running", async () => {
+    const { client, setStatus } = claudeClient();
+    const gate = deferred<void>();
+    client.logout.mockImplementationOnce(async () => {
+      await gate.promise;
+      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
+      setStatus(signedOut);
+      return signedOut;
+    });
+    const runtime = await service({ claude: client });
+    try {
+      const logout = runtime.logout("claude-code");
+      // The card refreshes while the CLI is still signing out: the account still reads as connected.
+      expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("connected");
+      gate.resolve();
+      await logout;
+      expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("keeps no status read that began during a logout and ended after it", async () => {
+    const { client, setStatus } = claudeClient();
+    const logoutGate = deferred<void>();
+    const readGate = deferred<void>();
+    client.logout.mockImplementationOnce(async () => {
+      await logoutGate.promise;
+      const signedOut = claudeCodeSubscriptionStatus("unverified", "signed-out", "2.1.0");
+      setStatus(signedOut);
+      return signedOut;
+    });
+    const runtime = await service({ claude: client });
+    try {
+      const logout = runtime.logout("claude-code");
+      client.getStatus.mockImplementationOnce(async () => {
+        const connected = claudeCodeSubscriptionStatus("ready", "connected", "2.1.0");
+        await readGate.promise;
+        return connected;
+      });
+      const read = runtime.getStatus("claude-code", { allowCached: true });
+      logoutGate.resolve();
+      await logout;
+      readGate.resolve();
+      expect((await read).connection).toBe("connected");
+      expect((await runtime.getStatus("claude-code", { allowCached: true })).connection).toBe("signed-out");
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it("reuses a cached status until it expires, while uncached reads stay live", async () => {
     const { client } = claudeClient();
     const runtime = await service({ claude: client });

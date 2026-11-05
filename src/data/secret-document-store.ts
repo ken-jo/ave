@@ -339,7 +339,11 @@ export class SecretDocumentStore {
   private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
   // Ciphertext a read was asked to re-encrypt, by entry; the next mutation rewrites entries still holding it. No plaintext is kept.
   private readonly pendingReEncryption = new Map<string, string>();
-  // The parsed (still encrypted) committed document; plaintext is never retained.
+  // Ciphertext whose last decrypt failed, by entry (a reset keychain, say). Presence checks skip the decrypt, so without this
+  // record a credential nothing can read would keep reporting as set.
+  private readonly undecryptable = new Map<string, string>();
+  // The parsed committed document as stored: encrypted entries stay ciphertext and no decrypted value is kept. A
+  // `plain-development` entry is plaintext in the file itself, and the packaged policy refuses those.
   private cachedState?: { stamp: string; state: StoredState; compatible: boolean };
 
   constructor(options: SecretDocumentStoreOptions) {
@@ -398,10 +402,13 @@ export class SecretDocumentStore {
     const state = this.readCommittedState();
     this.assertCompatibleBackend(state);
     if (!Object.hasOwn(state.document.entries, key)) return false;
-    if (state.document.entries[key].encoding === "plain-development") {
+    const entry = state.document.entries[key];
+    if (entry.encoding === "plain-development") {
       if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
     } else if (!await this.isEncryptionUsable()) {
       throw new SecretEncryptionUnavailableError();
+    } else if (this.undecryptable.get(key) === entry.value) {
+      return false;
     }
     return true;
   }
@@ -601,7 +608,14 @@ export class SecretDocumentStore {
   }
 
   private async decryptEntry(key: string, value: string): Promise<string> {
-    const decrypted = await this.decrypt(value);
+    let decrypted: SecretDecryptionResult;
+    try {
+      decrypted = await this.decrypt(value);
+    } catch (error) {
+      if (error instanceof SecretDocumentDecryptionError) this.undecryptable.set(key, value);
+      throw error;
+    }
+    this.undecryptable.delete(key);
     if (decrypted.shouldReEncrypt) this.pendingReEncryption.set(key, value);
     return decrypted.result;
   }
