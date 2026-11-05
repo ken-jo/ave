@@ -49,6 +49,7 @@ function plan(overrides: Partial<WorkPlanApprovalView> = {}): WorkPlanApprovalVi
     planHash: HASH,
     plan: STRUCTURED_PLAN,
     revision: 0,
+    planNumber: 1,
     phase: "pending",
     stale: false,
     ...overrides,
@@ -116,6 +117,30 @@ describe("splitPlanSections", () => {
     expect(splitPlanSections("Just do it.\n1. one\n2. two")).toBeNull();
     // Missing one heading is not a split plan.
     expect(splitPlanSections("## Summary\nx\n## Steps\ny\n## Risks\nz")).toBeNull();
+  });
+
+  it("ignores headings inside code fences, so model text cannot spoof a section", () => {
+    const fenced = [
+      "## Summary", "Run a script.",
+      "## Steps", "```bash", "# Changes", "echo hi", "```",
+      "~~~", "## Changes", "nothing to see", "~~~",
+      "## Changes", "scripts/run.sh",
+      "## Risks", "none",
+    ].join("\n");
+    expect(splitPlanSections(fenced)).toEqual({
+      summary: "Run a script.",
+      steps: "```bash\n# Changes\necho hi\n```\n~~~\n## Changes\nnothing to see\n~~~",
+      changes: "scripts/run.sh",
+      risks: "none",
+    });
+    // A fence left open swallows the rest, so the plan is shown whole.
+    expect(splitPlanSections("## Summary\na\n## Steps\n```\n## Changes\nb\n## Risks\nc")).toBeNull();
+  });
+
+  it("splits only the four second-level headings in the order the prompt asks for", () => {
+    expect(splitPlanSections("# Summary\na\n# Steps\nb\n# Changes\nc\n# Risks\nd")).toBeNull();
+    expect(splitPlanSections("### Summary\na\n### Steps\nb\n### Changes\nc\n### Risks\nd")).toBeNull();
+    expect(splitPlanSections("## Summary\na\n## Changes\nc\n## Steps\nb\n## Risks\nd")).toBeNull();
   });
 });
 
@@ -218,7 +243,8 @@ describe("확인 필요 — the plan card", () => {
   it("lists a re-planning plan after the decisions, dimmed and uncounted", async () => {
     const onCountChange = vi.fn();
     const { api } = stubApi(okList([
-      plan({ key: "plan:5", itemId: 5, phase: "replanning", revision: 1, changeRequest: "Cover refunds", arrivedAt: "2026-06-15T10:00:00.000Z" }),
+      // As main reports it after the first change request: the stored revision is still 0, and the plan being made is the second.
+      plan({ key: "plan:5", itemId: 5, phase: "replanning", revision: 0, planNumber: 2, changeRequest: "Cover refunds", arrivedAt: "2026-06-15T10:00:00.000Z" }),
       proposal(),
     ]));
     renderStack(api, { onCountChange });
@@ -230,6 +256,41 @@ describe("확인 필요 — the plan card", () => {
     expect(waiting.textContent).toContain("2번째 계획");
     expect(within(waiting).queryByRole("button", { name: /승인/ })).toBeNull();
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(1));
+  });
+});
+
+describe("확인 필요 — keys inside a field stay with the field", () => {
+  afterEach(() => cleanup());
+
+  it("does not take ↑ ↓ or Esc from the note", async () => {
+    const { api } = stubApi(okList([plan(), proposal()]));
+    renderStack(api);
+    const note = await screen.findByTestId("work-approval-plan-note");
+    note.focus();
+    for (const key of ["ArrowUp", "ArrowDown", "Escape"]) {
+      expect(fireEvent.keyDown(note, { key })).toBe(true);
+      expect(document.activeElement).toBe(note);
+    }
+  });
+
+  it("does not take ↑ ↓ from the project picker", async () => {
+    const { api } = stubApi(okList([proposal()]));
+    render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} showAllProjects />);
+    const picker = await screen.findByTestId("work-approval-proposal-project");
+    picker.focus();
+    for (const key of ["ArrowUp", "ArrowDown"]) {
+      expect(fireEvent.keyDown(picker, { key })).toBe(true);
+      expect(document.activeElement).toBe(picker);
+    }
+  });
+
+  it("still moves between rows with the arrow keys", async () => {
+    const { api } = stubApi(okList([plan(), proposal()]));
+    renderStack(api);
+    const head = await screen.findByTestId("work-approval-head");
+    head.focus();
+    expect(fireEvent.keyDown(head, { key: "ArrowDown" })).toBe(false);
+    expect(document.activeElement).toBe(screen.getByTestId("work-approval-row"));
   });
 });
 
@@ -255,6 +316,24 @@ describe("확인 필요 — all projects", () => {
     // Selecting a row makes it the card.
     fireEvent.click(within(groups[2]!).getByTestId("work-approval-row-title"));
     expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Handbook plan");
+  });
+
+  it("shows the first row of the grouped list as the card, the row Esc returns to", async () => {
+    // The handbook plan arrived first, but the default project's group comes first.
+    const list = okList([
+      plan({ key: "plan:2", itemId: 2, title: "Handbook plan", arrivedAt: "2026-06-15T09:00:00.000Z", scope: { type: "project", projectRoot: "/work/handbook", isDefault: false } }),
+      plan({ key: "plan:1", itemId: 1, title: "Default plan", scope: { type: "project", projectRoot: "/work/default", isDefault: true } }),
+    ]);
+    const { api } = stubApi(list);
+    render(<WorkApprovalStack api={api} project={CHECKOUT} actions={actions()} now={() => NOW} showAllProjects />);
+    const head = await screen.findByTestId("work-approval-head");
+    expect(within(head).getByTestId("work-approval-title").textContent).toBe("Default plan");
+    const rows = screen.getAllByTestId("work-approval-row");
+    rows[1]!.focus();
+    fireEvent.keyDown(rows[1]!, { key: "Escape" });
+    expect(document.activeElement).toBe(rows[0]);
+    expect(rows[0]!.getAttribute("data-approval-key")).toBe("plan:1");
+    expect(within(screen.getByTestId("work-approval-head")).getByTestId("work-approval-title").textContent).toBe("Default plan");
   });
 
   it("asks which project an accepted proposal joins", async () => {

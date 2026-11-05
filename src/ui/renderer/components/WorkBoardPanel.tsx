@@ -956,7 +956,7 @@ function PlanDecisionPanel({ api, item, onDecided }: { api: AveApi; item: WorkIt
         itemId={item.id}
         runId={item.runId}
         planHash={approval.planHash}
-        stale={false}
+        stale={item.planStale === true}
         onDecided={onDecided}
         onGone={onDecided}
         testIdPrefix="work-board-plan"

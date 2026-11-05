@@ -393,6 +393,7 @@ describe("work approvals — plan approvals", () => {
       planHash: planHashOf(plan),
       plan: expect.not.stringContaining(secret),
       revision: 0,
+      planNumber: 1,
       phase: "pending",
       stale: false,
     });
@@ -442,7 +443,8 @@ describe("work approvals — plan approvals", () => {
     if (!result.ok) throw new Error("list failed");
     const byId = new Map(result.items.flatMap((entry) => (entry.kind === "plan" ? [[entry.itemId, entry] as const] : [])));
     expect(byId.get(edited.id)).toMatchObject({ phase: "pending", stale: true, title: "edited title" });
-    expect(byId.get(replanned.id)).toMatchObject({ phase: "replanning", changeRequest: "cover the edge cases" });
+    // The plan being made after the first change request is the second plan; the stored revision is still 0 until it lands.
+    expect(byId.get(replanned.id)).toMatchObject({ phase: "replanning", changeRequest: "cover the edge cases", revision: 0, planNumber: 2 });
     // Only the plan waiting for a decision counts.
     expect(result.total).toBe(1);
   });

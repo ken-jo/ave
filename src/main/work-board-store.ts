@@ -333,8 +333,14 @@ function cloneItem(it: WorkItem): WorkItem {
   return { ...it };
 }
 
+// A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
 function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
-  return { ...item, status_resolved: resolveWorkItemStatus(item, nowMs) };
+  const approval = item.planApproval;
+  return {
+    ...item,
+    status_resolved: resolveWorkItemStatus(item, nowMs),
+    ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
+  };
 }
 
 // Transient run phases share run-planned; terminal activity verbs record outcomes.

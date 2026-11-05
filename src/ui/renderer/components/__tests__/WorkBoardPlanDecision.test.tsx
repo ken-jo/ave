@@ -130,6 +130,16 @@ describe("Work Board — plan decision", () => {
     await waitFor(() => expect(card.textContent).toContain("확인 필요"));
   });
 
+  it("offers only re-planning or rejecting in the detail too, when main says the item changed since the plan", async () => {
+    const decide = vi.fn();
+    await openDetail(stubApi(awaitingItem({ planStale: true }), decide));
+    expect(screen.getByTestId("work-board-plan-stale").textContent).toContain("수정 요청으로 다시 계획");
+    const approve = screen.getByTestId("work-board-plan-approve");
+    expect(approve.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(approve);
+    expect(decide).not.toHaveBeenCalled();
+  });
+
   it("offers no decision once the plan is no longer pending", async () => {
     const api = stubApi(awaitingItem({ runStatus: "executing", planApproval: { ...awaitingItem().planApproval!, status: "approved" } }), vi.fn());
     render(withApprovalSurface(<WorkBoardPanel api={api} />));

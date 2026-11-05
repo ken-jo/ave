@@ -31,7 +31,10 @@ export interface WorkPlanApprovalView {
   planHash: string;
   /** The plan as the agent wrote it, with secrets masked. Display only. */
   plan: string;
+  /** How many times the plan was sent back for changes. */
   revision: number;
+  /** Which plan this is, counting from 1: the waiting plan, or while re-planning the plan being made. Display only. */
+  planNumber: number;
   agentName?: string;
   phase: "pending" | "replanning";
   /** The item changed after the plan was made, so approve would be refused as plan_stale; 수정 요청 re-plans it. */

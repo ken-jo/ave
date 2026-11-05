@@ -50,32 +50,40 @@ export interface PlanSections {
   risks: string;
 }
 
-const SECTION_HEADING = /^#{1,4}\s*(summary|steps|changes|risks)\s*:?\s*$/i;
+const SECTION_ORDER: ReadonlyArray<keyof PlanSections> = ["summary", "steps", "changes", "risks"];
+const SECTION_HEADING = /^##\s+(summary|steps|changes|risks)\s*:?\s*$/i;
+const FENCE = /^(`{3,}|~{3,})/;
 
-/** The plan prompt asks for four headings (Summary, Steps, Changes, Risks). A plan that has each exactly once is split for display; any
- * other plan is shown whole. Text before the first heading belongs to the summary. Display only: the decision binds to the whole plan. */
+/** The plan prompt asks for four `##` headings in this order: Summary, Steps, Changes, Risks. A plan that has exactly those, in that
+ * order, outside code fences, is split for display; any other plan is shown whole, so text the model wrote inside a code block cannot
+ * pose as a section. Text before the first heading belongs to the summary. Display only: the decision binds to the whole plan. */
 export function splitPlanSections(plan: string): PlanSections | null {
-  const sections = new Map<keyof PlanSections, string[]>();
-  let preamble: string[] = [];
-  let current: string[] | null = null;
+  const bodies: string[][] = [];
+  const preamble: string[] = [];
+  let fence: string | null = null;
   for (const line of plan.split("\n")) {
-    const match = SECTION_HEADING.exec(line.trim());
-    if (match) {
-      const name = match[1]!.toLowerCase() as keyof PlanSections;
-      if (sections.has(name)) return null;
-      current = [];
-      sections.set(name, current);
-    } else if (current) {
-      current.push(line);
+    const trimmed = line.trim();
+    const marker = FENCE.exec(trimmed)?.[1];
+    if (fence !== null) {
+      // A fence closes on the same character, at least as long as it opened.
+      if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length && trimmed === marker) fence = null;
+    } else if (marker !== undefined) {
+      fence = marker;
     } else {
-      preamble.push(line);
+      const heading = SECTION_HEADING.exec(trimmed);
+      if (heading) {
+        if (heading[1]!.toLowerCase() !== SECTION_ORDER[bodies.length]) return null;
+        bodies.push([]);
+        continue;
+      }
     }
+    (bodies.at(-1) ?? preamble).push(line);
   }
-  if (sections.size !== 4) return null;
-  const text = (name: keyof PlanSections) => (sections.get(name) ?? []).join("\n").trim();
-  preamble = preamble.filter((line) => line.trim().length > 0);
-  const summary = [...preamble, text("summary")].filter((part) => part.length > 0).join("\n");
-  return { summary, steps: text("steps"), changes: text("changes"), risks: text("risks") };
+  if (fence !== null || bodies.length !== SECTION_ORDER.length) return null;
+  const text = (index: number) => bodies[index]!.join("\n").trim();
+  const lead = preamble.filter((line) => line.trim().length > 0);
+  const summary = [...lead, text(0)].filter((part) => part.length > 0).join("\n");
+  return { summary, steps: text(1), changes: text(2), risks: text(3) };
 }
 
 function Markdown({ text }: { text: string }) {

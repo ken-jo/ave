@@ -8,10 +8,10 @@ import { WORK_APPROVALS } from "../../shared/ipc-channels.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 import { listAuthorizedWorkspaceProjects, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
-import { isDecidablePlan, isReplanningPlan, itemDigestOf } from "../../main/work-board-store.js";
+import { isDecidablePlan, isReplanningPlan } from "../../main/work-board-store.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import type { RoutineRecord, InvalidRoutine, RoutineFailure } from "../../shared/routines-types.js";
-import type { WorkItem, WorkProposal } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkItemResolved, WorkProposal } from "../../shared/work-board-types.js";
 import type {
   RoutineAttentionApprovalView,
   WorkApprovalListResult,
@@ -74,7 +74,7 @@ function planScope(item: WorkItem, projects: readonly WorkApprovalProject[]): Wo
   return { type: "project", projectRoot: project.projectRoot, isDefault: project.isDefault };
 }
 
-function planView(item: WorkItem, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView | null {
+function planView(item: WorkItemResolved, projects: readonly WorkApprovalProject[]): WorkPlanApprovalView | null {
   const pending = isDecidablePlan(item);
   if (!pending && !isReplanningPlan(item)) return null;
   const approval = item.planApproval;
@@ -94,7 +94,10 @@ function planView(item: WorkItem, projects: readonly WorkApprovalProject[]): Wor
     revision: approval.revision,
     ...(approval.agentName !== undefined ? { agentName: approval.agentName } : {}),
     phase: pending ? "pending" : "replanning",
-    stale: pending && approval.itemDigest !== itemDigestOf(item),
+    // The store's own judgement, the same one the item's detail shows.
+    stale: pending && item.planStale === true,
+    // The plan this card is about: the waiting one, or the one being made after a change request.
+    planNumber: approval.revision + (pending ? 1 : 2),
     ...(!pending && approval.note !== undefined ? { changeRequest: masked(approval.note) } : {}),
   };
 }

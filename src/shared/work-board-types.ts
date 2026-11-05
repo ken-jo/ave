@@ -130,6 +130,8 @@ export type WorkPlanDecideIpcResult =
 
 export interface WorkItemResolved extends WorkItem {
   status_resolved: WorkItemStatusResolved;
+  /** Present with a pending plan approval: the item changed after the plan was made, so approve is refused (plan_stale). Judged in main. */
+  planStale?: boolean;
 }
 
 export interface WorkItemCreateInput {

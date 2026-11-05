@@ -52,6 +52,7 @@ function planView(key: string, title: string, projectRoot: string, phase: "pendi
     planHash: "b".repeat(64),
     plan: "plan",
     revision: 0,
+    planNumber: 1,
     phase,
     stale: false,
   };

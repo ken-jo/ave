@@ -485,6 +485,22 @@ describe("WorkBoardStore — plan approval", () => {
     }
   });
 
+  it("judges whether the item changed since its pending plan, for every reader", async () => {
+    const { store, cleanup } = tempBoard(fixedClock);
+    try {
+      const { id } = await planned(store);
+      const fresh = await store.get(id);
+      expect(fresh.status === "found" && fresh.item.planStale).toBe(false);
+      await store.update(id, { detail: "changed after planning" });
+      const edited = await store.get(id);
+      expect(edited.status === "found" && edited.item.planStale).toBe(true);
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.find((item) => item.id === id)?.planStale).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("leaves the plan pending in memory when the decision cannot be written", async () => {
     const { store, path, cleanup } = tempBoard(fixedClock);
     try {

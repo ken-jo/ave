@@ -527,9 +527,10 @@ function useRovingFocus(keys: readonly string[]) {
   }, []);
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLElement>, onEscape: () => void) => {
     if (keys.length === 0) return;
-    // The focused node decides, not state: a focus change and a key press can land in the same tick.
-    const active = typeof document === "undefined" ? null : document.activeElement;
-    const current = keys.findIndex((key) => nodes.current.get(key) === active);
+    // Only a key pressed on a card or row itself moves focus. Inside a field (the note, the project picker) or a button, the arrows and
+    // Esc belong to that control.
+    const current = keys.findIndex((key) => nodes.current.get(key) === event.target);
+    if (current === -1) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const next = event.key === "ArrowDown" ? Math.min(keys.length - 1, current + 1) : Math.max(0, current - 1);
@@ -595,7 +596,7 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
             <div className="flex items-center gap-2">
               <KindChip item={item} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.revision + 1 })}</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
             </div>
             {item.changeRequest !== undefined && (
               <p className="mt-1 text-muted-foreground">{t("workApprovals.replanningRequest", { note: item.changeRequest })}</p>
@@ -640,9 +641,11 @@ export function WorkApprovalStack({
   );
   const projects = state.status === "ready" ? state.projects : [];
   const filtered = useMemo(() => (filter === "all" ? decidable : decidable.filter((item) => item.kind === filter)), [filter, decidable]);
-  const head = filtered.find((item) => item.key === expandedKey) ?? filtered[0] ?? null;
-  const queued = filtered.filter((item) => item !== head);
   const groups = useMemo(() => (allProjects ? groupByProject(filtered, projects) : []), [allProjects, filtered, projects]);
+  // All-projects mode reads top to bottom by group, so its first item (the one Esc returns to) is the first row, not the oldest.
+  const listed = useMemo(() => (allProjects ? groups.flatMap((group) => group.items) : filtered), [allProjects, filtered, groups]);
+  const head = listed.find((item) => item.key === expandedKey) ?? listed[0] ?? null;
+  const queued = listed.filter((item) => item !== head);
   // All-projects rows list every item (the card is the selected one); a project home lists the rest under its card.
   const order = useMemo(
     () => (allProjects ? groups.flatMap((group) => group.items.map((item) => item.key)) : head ? [head.key, ...queued.map((item) => item.key)] : []),
@@ -721,8 +724,8 @@ export function WorkApprovalStack({
   const headCard = head && (
     <HeadCard
       item={head}
-      index={allProjects ? filtered.indexOf(head) : 0}
-      count={filtered.length}
+      index={allProjects ? listed.indexOf(head) : 0}
+      count={listed.length}
       actions={stackActions}
       targetProjectRoot={projectRoot}
       {...(allProjects ? { projectChoices: projects } : {})}
