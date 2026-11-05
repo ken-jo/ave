@@ -272,8 +272,17 @@ describe("SubscriptionAuthControls", () => {
     }
   });
 
-  it("does not ask a connected, ready runtime to verify again after a restart", () => {
-    renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: false }) })], {
+  it("keeps Verify for a connected, ready runtime until it is proven, so a failed first-turn proof can be retried", () => {
+    const verifyRuntime = vi.fn();
+    const { unmount } = renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: false }) })], {
+      beginLogin: vi.fn(),
+      verifyRuntime,
+    });
+    fireEvent.click(screen.getByTestId("subscription-provider:codex:verify-runtime"));
+    expect(verifyRuntime).toHaveBeenCalledWith("codex");
+    unmount();
+
+    renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: true }) })], {
       beginLogin: vi.fn(),
       verifyRuntime: vi.fn(),
     });
