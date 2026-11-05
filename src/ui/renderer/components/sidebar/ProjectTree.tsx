@@ -36,6 +36,7 @@ import {
   type TreeEntry,
 } from "./project-tree-model.js";
 import { SurfaceRow, TREE_ROW_FOCUS_CLASS, type TreeRowProps } from "./SurfaceRow.js";
+import { continuationGuides, TreeIndentGuides, treeGuides, treeIndentStyle, type TreeGuide } from "./tree-indent-guides.js";
 
 /** What assistive tech reads for each family's glyph. */
 const SESSION_FAMILY_LABEL_KEYS: Record<SessionFamily, string> = {
@@ -216,7 +217,9 @@ function SessionRow({
       data-archived={archived ? "true" : undefined}
       data-unread={unread ? "true" : undefined}
       data-responding={responding ? "true" : undefined}
+      style={treeIndentStyle(tree.level)}
     >
+      <TreeIndentGuides guides={tree.guides} />
       {/* ── Leading slot. One 14px square that holds the row's KIND at rest and
           its pin on hover. The two never coexist, so the row's text never
           shifts — the reason the swap happens here rather than by revealing a
@@ -584,6 +587,12 @@ export function ProjectTree({
     }
   }
   const rowKeys = lines.filter((line) => line.type !== "header" && line.type !== "empty").map((line) => line.key);
+  // The indent guides of every line, drawn from the same flat order the keyboard walks. A time header ends every run of
+  // siblings above it, as a level-0 break.
+  const guidesOf = new Map<string, TreeGuide[]>();
+  treeGuides(lines.map((line) => line.type === "header" ? 0 : line.type === "group" ? 1 : line.level))
+    .forEach((guides, index) => guidesOf.set(lines[index]!.key, guides));
+  const lineGuides = (key: string): TreeGuide[] => guidesOf.get(key) ?? [];
   const currentKey = conversationSurfaceVisible && currentSessionId
     ? sessionEntryKey(currentSessionId)
     : activeSurface && isSurfaceVisible?.(activeSurface.tabId) ? `surface:${activeSurface.tabId}` : undefined;
@@ -618,6 +627,7 @@ export function ProjectTree({
     treeKey: key,
     tabIndex: key === rovingKey ? 0 : -1,
     level,
+    guides: lineGuides(key),
     onFocusRow: setFocusKey,
   });
   /** Put focus back on a row once a rename it held has closed. */
@@ -707,7 +717,9 @@ export function ProjectTree({
           t={t}
         />
         {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
-          <div className="truncate pl-7 text-[10px] text-muted-foreground">
+          // Under its row's text, so it takes the row's indent and carries on the lines that run past the row.
+          <div className="relative truncate pl-7 text-[10px] text-muted-foreground" style={treeIndentStyle(level, 1.75)}>
+            <TreeIndentGuides guides={continuationGuides(lineGuides(key))} reachUp={false} />
             {t(session.paneTabId.startsWith("terminal:") ? "sidebar.formerTerminalChat" : "sidebar.formerPageChat")}
           </div>
         )}
@@ -905,7 +917,8 @@ export function ProjectTree({
             aria-label={t(expanded ? "sidebar.collapseProjectGroup" : "sidebar.expandProjectGroup", { project: name })}
             title={root}
             data-testid={`sidebar-project-toggle-${testId}`}
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[13px] font-medium text-foreground focus-visible:outline-none"
+            // px-2 puts the chevron where every other row puts its leading icon, so the guide under the group lines up.
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-foreground focus-visible:outline-none"
           >
             {expanded
               ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -992,15 +1005,18 @@ export function ProjectTree({
             data-testid={`sidebar-tree-more-${line.scope === "project" ? "project" : projectTestId(line.scope.slice("group:".length), "group")}`}
             onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(line.key); }}
             onClick={() => showMore(line.scope, page)}
-            className={`w-full cursor-pointer rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
+            className={`relative w-full cursor-pointer rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
+            style={treeIndentStyle(line.level, 0.5)}
           >
+            <TreeIndentGuides guides={row.guides} />
             {t("sidebar.treeMore", { count: line.hidden })}
           </div>
         );
       }
       case "empty":
         return (
-          <div key={line.key} role="presentation" className="px-2 py-1.5 text-[11px] text-muted-foreground">
+          <div key={line.key} role="presentation" className="relative px-2 py-1.5 text-[11px] text-muted-foreground" style={treeIndentStyle(line.level, 0.5)}>
+            <TreeIndentGuides guides={lineGuides(line.key)} />
             {t("sidebar.noProjectSessions")}
           </div>
         );
@@ -1008,7 +1024,8 @@ export function ProjectTree({
   };
 
   // A group's rows and a terminal's pane chats sit in a plain container under their row: the tree stays flat for the
-  // keyboard (levels say the nesting), and the container is only layout.
+  // keyboard (levels say the nesting), and the container only groups them. The indent and the lines are each row's own
+  // (`TreeIndentGuides`), so a container adds no margin or border of its own.
   const renderLines = (from: readonly TreeLine[]): ReactNode[] => {
     const out: ReactNode[] = [];
     let index = 0;
@@ -1022,7 +1039,7 @@ export function ProjectTree({
           <Fragment key={line.key}>
             {renderGroupRow(line)}
             {line.expanded ? (
-              <div role="none" className="ml-3 space-y-0.5" data-testid={`sidebar-project-group-${projectTestId(line.project.projectRoot, line.project.projectName)}`}>
+              <div role="none" className="space-y-0.5" data-testid={`sidebar-project-group-${projectTestId(line.project.projectRoot, line.project.projectName)}`}>
                 {renderLines(children)}
               </div>
             ) : null}
@@ -1038,7 +1055,7 @@ export function ProjectTree({
           <Fragment key={line.key}>
             {renderLine(line)}
             {chats.length > 0 ? (
-              <div role="none" className="ml-4 border-l border-border/(--opacity-half) pl-2" data-testid={`sidebar-surface-chats-${tabId}`}>
+              <div role="none" className="space-y-0.5" data-testid={`sidebar-surface-chats-${tabId}`}>
                 {chats.map(renderLine)}
               </div>
             ) : null}

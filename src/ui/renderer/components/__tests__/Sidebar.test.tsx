@@ -1734,6 +1734,68 @@ describe("Sidebar — every conversation family", () => {
     } finally { restore(); }
   });
 
+  it("draws the tree's connector lines per level: ancestor lines, ├ for a child with later siblings, └ for the last", async () => {
+    const tabId = "terminal:guides";
+    const root = "/projects/guides";
+    const paneChats = [
+      { ...sideChatRow, id: "side-a", title: "첫 패널 채팅", paneTabId: tabId, projectRoot: root },
+      { ...sideChatRow, id: "side-b", title: "둘째 패널 채팅", paneTabId: tabId, projectRoot: root },
+    ];
+    // Older than the terminal (a surface never shown counts as used now), so it is the group's last row.
+    const olderChat = sessionRow({ id: "older-chat", title: "예전 대화", modifiedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), projectRoot: root });
+    const browserTabs = {
+      getSessionBindings: async () => ({ revision: 1, bindings: paneChats.map((chat) => ({ sessionId: chat.id, browserTabIds: [], terminalTabIds: [tabId] })) }),
+      onSessionBindingsChanged: () => () => {},
+    } as unknown as AveApi["browserTabs"];
+    const { getByTestId, restore } = renderSidebar({
+      sessions: [...paneChats, olderChat],
+      projects: [{ projectRoot: root, projectName: "Guides" }],
+      mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: root }],
+    }, { browserTabs });
+    const guidesOf = (row: HTMLElement) => [...row.querySelectorAll<HTMLElement>("[data-tree-guide]")].map((guide) => guide.dataset.treeGuide);
+    try {
+      await waitFor(() => expect(getByTestId("sidebar-surface-chats-" + tabId).contains(getByTestId("sidebar-row-session-side-b"))).toBe(true));
+      const group = getByTestId("sidebar-project-projects-guides");
+      const terminal = getByTestId("sidebar-surface-tree-" + tabId);
+      const first = getByTestId("sidebar-row-session-side-a");
+      const second = getByTestId("sidebar-row-session-side-b");
+      const older = getByTestId("sidebar-row-session-older-chat");
+      // The order the guides are drawn for: the group, its terminal, the terminal's two chats, then the older chat.
+      const rows = [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+      const at = [group, terminal, first, second, older].map((row) => rows.indexOf(row));
+      expect(at).toEqual([...at].sort((a, b) => a - b));
+      expect(at[4]! - at[0]!).toBe(4);
+      // A top-level row has no indent; each row has one column per level above it.
+      expect(guidesOf(group)).toEqual([]);
+      expect(group.querySelector('[data-testid="tree-indent-guides"]')).toBeNull();
+      expect(guidesOf(terminal)).toEqual(["mid"]);
+      expect(guidesOf(first)).toEqual(["line", "mid"]);
+      expect(guidesOf(second)).toEqual(["line", "last"]);
+      expect(guidesOf(older)).toEqual(["last"]);
+      // Indented by padding on the row itself, so its hover and focus ring keep the full width.
+      expect(terminal.style.paddingLeft).toBe("1rem");
+      expect(second.style.paddingLeft).toBe("2rem");
+      expect(group.style.paddingLeft).toBe("");
+      // ├ draws the full-height line and an arm; └ draws one element, down then right.
+      expect(terminal.querySelector<HTMLElement>('[data-tree-guide="mid"]')!.children).toHaveLength(2);
+      const lastElbow = older.querySelector<HTMLElement>('[data-tree-guide="last"]')!;
+      expect(lastElbow.children).toHaveLength(1);
+      expect(lastElbow.firstElementChild!.className).toContain("border-l");
+      expect(lastElbow.firstElementChild!.className).toContain("border-b");
+      // Decoration only: hidden from assistive tech and click-through, with the row's aria-level unchanged.
+      for (const row of [terminal, first, second, older]) {
+        const strip = row.querySelector<HTMLElement>('[data-testid="tree-indent-guides"]')!;
+        expect(strip.getAttribute("aria-hidden")).toBe("true");
+        expect(strip.className).toContain("pointer-events-none");
+        for (const guide of row.querySelectorAll("[data-tree-guide]")) expect(guide.getAttribute("aria-hidden")).toBe("true");
+      }
+      expect([terminal, first, second, older].map((row) => row.getAttribute("aria-level"))).toEqual(["2", "3", "3", "2"]);
+      // The containers carry no indent or line of their own any more; the rows do.
+      expect(getByTestId("sidebar-surface-chats-" + tabId).className).not.toMatch(/\bml-|border-l/);
+      expect(getByTestId("sidebar-project-group-projects-guides").className).not.toMatch(/\bml-|border-l/);
+    } finally { restore(); }
+  });
+
   it("hides pane rows and provenance while the host binding snapshot is loading", async () => {
     const tabId = "terminal:loading";
     let resolveBindings!: (state: SessionTabBindingsState) => void;
