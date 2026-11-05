@@ -3,13 +3,13 @@ import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
-import { clickSidebarNavRow, deferred, splitIntoTwoTiles, waitForToast } from "./helpers.js";
+import { clickSidebarNavRow, deferred, splitIntoTwoTiles, submitChatMessage, waitForToast } from "./helpers.js";
 import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
-import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
+import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface, getActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 import { getWebSurfaces } from "../../src/ui/renderer/preview/web-surfaces.js";
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
@@ -1202,5 +1202,48 @@ describe("a pane chat's first agent page", () => {
       requestId: "pane-gone-page", op: "new", url: "about:blank", active: false, sessionId: "pane-chat", inTabId: "browser:gone",
     }));
     expect(browser.browserTabs.refuseTabOp.mock.calls).toEqual([["pane-second-page"], ["pane-gone-page"]]);
+  });
+});
+
+
+// An agent's page belongs to the chat whose agent opened it. Another chat in the same tile neither lists it nor keeps the
+// panel open for it, and the page itself stays loaded for when its chat comes back.
+describe("agent pages follow the chat that opened them", () => {
+  it("closes the panel and unlists the page in another chat, and lists it again back in its own", async () => {
+    const owner = MOCK_DEFAULT_SESSION_ID;
+    const other = "sess-agent-page-other";
+    const { container, api } = await renderApp({
+      hasApiKey: true,
+      browserTabs: true,
+      sessions: [
+        { id: owner, title: "page owner", modifiedAt: new Date(2, 0, 2).toISOString() },
+        { id: other, title: "another chat", modifiedAt: new Date(2, 0, 1).toISOString() },
+      ],
+    });
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void } };
+    const collapse = container.querySelector('[data-testid="sidebar-collapse-toggle"]');
+    if (collapse && collapse.getAttribute("aria-pressed") !== "true") await act(async () => { fireEvent.click(collapse); });
+    const toggle = () => container.querySelector('[data-testid="pane-panel-toggle"]')!;
+    const listed = () => container.querySelectorAll('[data-testid="chat-side-panel-tab"]').length;
+    const row = (id: string) => waitFor(() => {
+      const found = container.querySelector<HTMLElement>(`[data-testid="sidebar-session-${id}"]`);
+      if (!found) throw new Error(`sidebar row for ${id} not rendered`);
+      return found;
+    });
+    // A turn gives the tile its conversation; the agent opens the page from it.
+    await submitChatMessage(container, "find a flight");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "agent-page", op: "new", url: "about:blank", active: true, sessionId: owner }));
+    await waitFor(() => expect(toggle().getAttribute("aria-pressed")).toBe("true"));
+    expect(listed()).toBe(1);
+
+    await act(async () => fireEvent.click(await row(other)));
+    await waitFor(() => expect(toggle().getAttribute("aria-pressed")).toBe("false"));
+    expect(listed()).toBe(0);
+    expect(document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')).not.toBeNull();
+
+    await act(async () => fireEvent.click(await row(owner)));
+    await act(async () => fireEvent.click(toggle()));
+    await waitFor(() => expect(listed()).toBe(1));
   });
 });
