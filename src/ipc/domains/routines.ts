@@ -15,7 +15,7 @@ import { ROUTINES } from "../../shared/ipc-channels.js";
 import { toSessionListRow } from "../../memory/memory-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
-import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope } from "../../main/routines-store.js";
+import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope, removeRoutineWithRuns } from "../../main/routines-store.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -92,14 +92,17 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
-    const ok = await routinesStore.remove(id);
-    if (ok) {
-      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
-      for (const session of memoryManager.listSessionsByRoutine(id)) {
-        await memoryManager.deleteSession(session.id);
-        endSessionScopedPermissions(session.id, deps.conversationLoop.permissionManager);
-      }
-    }
+    const ok = await removeRoutineWithRuns(
+      {
+        routinesStore,
+        memoryManager,
+        endSessionScope: async (sessionId) => {
+          const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+          endSessionScopedPermissions(sessionId, deps.conversationLoop.permissionManager);
+        },
+      },
+      id,
+    );
     return { ok };
   });
 

@@ -11,7 +11,7 @@ import { futureIso, tempRoutinesStore } from "../../main/__tests__/routines-fixt
 import { toolExecutionContext as ctx } from "./tool-context-fixture.js";
 
 // A conversation in a project, as every routine_schedule call needs.
-const ANY_PROJECT = { projectRootForSession: () => "/work/project" };
+const ANY_PROJECT = { projectRootForSession: () => "/work/project", chatForSession: () => undefined, removeRoutine: async () => false };
 const chatCtx = () => ({ ...ctx(), metadata: { sessionId: "chat" } });
 
 
@@ -144,7 +144,7 @@ describe("routine_schedule tool — owner fields", () => {
   it("lists the item under the calling chat's project and records the agent as creator", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store, { projectRootForSession: (id) => (id === "chat-1" ? "/work/checkout" : undefined) });
+      const tool = createRoutineScheduleTool(store, { ...ANY_PROJECT, projectRootForSession: (id) => (id === "chat-1" ? "/work/checkout" : undefined) });
       const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" },
         { ...ctx(), cwd: "/somewhere/else", metadata: { sessionId: "chat-1" } });
       expect(result.isError).toBe(false);
@@ -155,13 +155,104 @@ describe("routine_schedule tool — owner fields", () => {
   it("refuses when the calling conversation has no project, instead of using the process cwd", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      const tool = createRoutineScheduleTool(store, { projectRootForSession: () => undefined });
+      const tool = createRoutineScheduleTool(store, { ...ANY_PROJECT, projectRootForSession: () => undefined });
       for (const metadata of [{}, { sessionId: "chat-without-project" }]) {
         const result = await tool.execute({ execution: "llm-session", schedule: { at: futureIso() }, prePrompt: "p" },
           { ...ctx(), cwd: "/tmp", metadata });
         expect(result.isError).toBe(true);
       }
       expect(store.list()).toEqual([]);
+    } finally { await cleanup(); }
+  });
+});
+
+describe("routine_schedule tool — 대화에 연결 and this chat's items", () => {
+  const CHAT = "aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaa1";
+  const OTHER = "bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbb2";
+  const CHILD = "cccccccc-3333-4ccc-8ccc-ccccccccccc3";
+  // The calling session's chat: a sub-agent of CHAT counts as CHAT; a session with no saved main chat has none.
+  const deps = (removeRoutine = async (_id: string) => true) => ({
+    projectRootForSession: () => "/work/project",
+    chatForSession: (sessionId: string) => (sessionId === CHAT || sessionId === CHILD ? CHAT : undefined),
+    removeRoutine,
+  });
+  const from = (sessionId: string) => ({ ...ctx(), metadata: { sessionId } });
+  const daily = { at: futureIso(), repeat: { kind: "daily" } };
+
+  it("connects to the calling chat only, never to a session the model names", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store, deps());
+      const added = await tool.execute({ execution: "llm-session", schedule: daily, prePrompt: "check the build", connectToThisChat: true, targetSessionId: OTHER }, from(CHILD));
+      expect(added.isError).toBe(false);
+      expect(store.list()[0]).toMatchObject({ targetSessionId: CHAT, createdBy: "agent" });
+      expect(JSON.parse(added.output)).toMatchObject({ connectedToThisChat: true });
+      const plain = await tool.execute({ execution: "llm-session", schedule: daily, prePrompt: "x", targetSessionId: OTHER }, from(CHAT));
+      expect(plain.isError).toBe(false);
+      expect(store.list().find((r) => r.prePrompt === "x")?.targetSessionId).toBeUndefined();
+    } finally { await cleanup(); }
+  });
+
+  it("refuses to connect a notification, or from a session with no saved chat", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const tool = createRoutineScheduleTool(store, deps());
+      const notification = await tool.execute({ execution: "notification-only", schedule: daily, notificationTitle: "t", connectToThisChat: true }, from(CHAT));
+      expect(notification.isError).toBe(true);
+      const noChat = await tool.execute({ execution: "llm-session", schedule: daily, prePrompt: "p", connectToThisChat: true }, from(OTHER));
+      expect(noChat.isError).toBe(true);
+      expect(store.list()).toEqual([]);
+    } finally { await cleanup(); }
+  });
+
+  it("updates an item connected to this chat, and refuses any other item", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const mine = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "old", schedule: daily, targetSessionId: CHAT, projectRoot: "/work/project", createdBy: "user" } as never);
+      const theirs = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "theirs", schedule: daily, targetSessionId: OTHER, projectRoot: "/work/project", createdBy: "user" } as never);
+      const unlinked = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "free", schedule: daily, projectRoot: "/work/project", createdBy: "user" } as never);
+      const tool = createRoutineScheduleTool(store, deps());
+      const ok = await tool.execute({ action: "update", routineId: mine.id, prePrompt: "new", title: "Build" }, from(CHILD));
+      expect(ok.isError).toBe(false);
+      expect(store.list().find((r) => r.id === mine.id)).toMatchObject({ prePrompt: "new", title: "Build", targetSessionId: CHAT });
+      for (const id of [theirs.id, unlinked.id, "no-such-item"]) {
+        const refused = await tool.execute({ action: "update", routineId: id, prePrompt: "hijack" }, from(CHAT));
+        expect(refused.isError).toBe(true);
+        expect(JSON.parse(refused.output).error).toContain("connected to this chat");
+      }
+      expect(store.list().find((r) => r.id === theirs.id)?.prePrompt).toBe("theirs");
+      expect((await tool.execute({ action: "update", prePrompt: "x" }, from(CHAT))).isError).toBe(true);
+      // The model cannot move its item to another chat or cut it loose.
+      const relink = await tool.execute({ action: "update", routineId: mine.id, prePrompt: "x", targetSessionId: OTHER }, from(CHAT));
+      expect(relink.isError).toBe(true);
+      expect(JSON.parse(relink.output).error).toContain("does not take: targetSessionId");
+      expect(store.list().find((r) => r.id === mine.id)).toMatchObject({ prePrompt: "new", targetSessionId: CHAT });
+    } finally { await cleanup(); }
+  });
+
+  it("removes an item connected to this chat through the host's removal, and refuses any other item", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const mine = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "mine", schedule: daily, targetSessionId: CHAT, projectRoot: "/work/project", createdBy: "agent" } as never);
+      const theirs = await store.add({ trigger: "schedule", execution: "llm-session", prePrompt: "theirs", schedule: daily, targetSessionId: OTHER, projectRoot: "/work/project", createdBy: "user" } as never);
+      const removed: string[] = [];
+      const tool = createRoutineScheduleTool(store, deps(async (id) => { removed.push(id); return true; }));
+      expect((await tool.execute({ action: "remove", routineId: theirs.id }, from(CHAT))).isError).toBe(true);
+      expect((await tool.execute({ action: "remove", routineId: mine.id }, from(CHAT))).isError).toBe(false);
+      expect(removed).toEqual([mine.id]);
+      expect((await tool.execute({ action: "rename", routineId: mine.id }, from(CHAT))).isError).toBe(true);
+    } finally { await cleanup(); }
+  });
+
+  it("keys a remembered approval by the action and the connection", async () => {
+    const { store, cleanup } = tempRoutinesStore();
+    try {
+      const key = createRoutineScheduleTool(store, deps()).approvalCacheKey as (input: unknown) => string;
+      expect(key({ execution: "llm-session" })).toBe("action:add:connect:no:scope:deny-all");
+      expect(key({ execution: "llm-session", connectToThisChat: true, allowedPlugins: ["b-plugin", "a-plugin"] })).toBe("action:add:connect:this-chat:scope:allow:a-plugin,b-plugin");
+      expect(key({ action: "update", routineId: "r1" })).toBe("action:update:connect:this-chat:item:r1");
+      expect(key({ action: "remove", routineId: "r1" })).toBe("action:remove:connect:this-chat:item:r1");
+      expect(key({ action: "rename" })).toBe("action:invalid");
     } finally { await cleanup(); }
   });
 });

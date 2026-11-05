@@ -44,6 +44,7 @@ import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_ROUTINE_SOURCE_LE
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
+import type { MemoryManager } from "../memory/memory-manager.js";
 
 // Routine validation bounds. The store validates every routine it persists; the `routine_schedule` tool validates the same fields before it calls the
 // store, and imports these so the two cannot disagree about a limit.
@@ -887,4 +888,25 @@ function validateRoutineContent(
   return input.schedule
     ? { ...input.schedule, ...(normalizedAt !== undefined ? { at: normalizedAt } : {}) }
     : undefined;
+}
+
+interface RemoveRoutineDeps {
+  routinesStore: Pick<RoutinesStore, "remove">;
+  memoryManager: Pick<MemoryManager, "listSessionsByRoutine" | "deleteSession">;
+  /** Ends a deleted run session's session-scoped permissions. Injected: the plugin child bundles this module, and the
+   * permissions code must stay out of its module graph. */
+  endSessionScope: (sessionId: string) => void | Promise<void>;
+}
+
+/** Delete a schedule item and its own runs' sessions. A connected chat is never one of them: its runs carry no routine id. The
+ * panel's delete and the agent's routine_schedule remove share this. */
+export async function removeRoutineWithRuns(deps: RemoveRoutineDeps, id: string): Promise<boolean> {
+  const ok = await deps.routinesStore.remove(id);
+  if (ok) {
+    for (const session of deps.memoryManager.listSessionsByRoutine(id)) {
+      await deps.memoryManager.deleteSession(session.id);
+      await deps.endSessionScope(session.id);
+    }
+  }
+  return ok;
 }

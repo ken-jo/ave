@@ -51,6 +51,16 @@ describe("PaneFrame", () => {
     expect(screen.queryByTestId("pane-panel-slot")).toBeNull();
   });
 
+  it("keeps the title accessory right after the title, not pushed to the actions", () => {
+    render(pane({ title: "Routines", titleAccessory: <span data-testid="pane-accessory">chip</span> }));
+    const title = screen.getByTestId("pane-header").querySelector("h2")!;
+    const group = title.parentElement!;
+    // The group takes the free width; the title only its own, so the accessory follows it.
+    expect(screen.getByTestId("pane-accessory").parentElement).toBe(group);
+    expect(group.className).toMatch(/\bflex-1\b/);
+    expect(title.className).not.toMatch(/\bflex-1\b/);
+  });
+
   it("draws the icon ahead of the title", () => {
     render(pane({ title: "Routines", icon: <svg data-testid="pane-icon" /> }));
     const header = screen.getByTestId("pane-header");

@@ -52,7 +52,7 @@ import { ToolRegistry, TOOL_SEARCH_TOOL_NAME } from "../registry.js";
 import { registerRequestPluginMetaTool, registerToolSearchMetaTool } from "../../boot/tools.js";
 
 // A conversation in a project, as every routine_schedule call needs.
-const ANY_PROJECT = { projectRootForSession: () => "/work/project" };
+const ANY_PROJECT = { projectRootForSession: () => "/work/project", chatForSession: () => undefined, removeRoutine: async () => false };
 
 
 function ctx(sessionId = "session-x"): ToolExecutionContext {
@@ -355,12 +355,12 @@ describe("routine_schedule tool", () => {
       const tool = createRoutineScheduleTool(store, ANY_PROJECT);
 
       expect(tool.approvalCacheKey?.({ allowedPlugins: ["meeting", "local-indexer"] })).toBe(
-        "scope:allow:local-indexer,meeting",
+        "action:add:connect:no:scope:allow:local-indexer,meeting",
       );
       expect(tool.approvalCacheKey?.({ allowedPlugins: ["local-indexer", "meeting"] })).toBe(
-        "scope:allow:local-indexer,meeting",
+        "action:add:connect:no:scope:allow:local-indexer,meeting",
       );
-      expect(tool.approvalCacheKey?.({ allowedPlugins: [] })).toBe("scope:deny-all");
+      expect(tool.approvalCacheKey?.({ allowedPlugins: [] })).toBe("action:add:connect:no:scope:deny-all");
     } finally {
       await cleanupTmpDir(tmp);
     }

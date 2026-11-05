@@ -1503,9 +1503,12 @@ function approvalReviewRows(
     );
   } else if (category === "write") {
     rows.push(
-      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "id"], inputSummary), monospace: true, testId: "tool-approval-input" },
+      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "routineId", "id"], inputSummary), monospace: true, testId: "tool-approval-input" },
       ...kept(
         optRow(t("toolApprovalDialog.rowChange"), ["operation", "action", "mode", "patch", "content", "body", "text"], { monospace: true }),
+        parsed?.connectToThisChat === true
+          ? { label: t("toolApprovalDialog.rowConnection"), value: t("toolApprovalDialog.connectToThisChat"), testId: "tool-approval-connect-row" }
+          : null,
         optRow(t("toolApprovalDialog.rowRecovery"), ["diff", "backup", "rollback", "undo"]),
       ),
     );

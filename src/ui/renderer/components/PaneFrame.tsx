@@ -396,18 +396,21 @@ export function PaneFrame({
         } : {})}
       >
         {icon ? <span className="flex shrink-0 items-center text-muted-foreground">{icon}</span> : null}
-        <h2
-          className="min-w-0 flex-1 truncate text-caption font-medium text-foreground"
-          title={attention ?? description}
-        >
-          {title}
-          {meta ? (
-            <span className="ml-(--chrome-gap-tight) font-mono font-normal text-muted-foreground" title={meta.title} data-testid="pane-header-meta">
-              {meta.text}
-            </span>
-          ) : null}
-        </h2>
-        {titleAccessory}
+        {/* The title and its accessory share the free width, so the accessory sits right after the title. */}
+        <div className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight)">
+          <h2
+            className="min-w-0 truncate text-caption font-medium text-foreground"
+            title={attention ?? description}
+          >
+            {title}
+            {meta ? (
+              <span className="ml-(--chrome-gap-tight) font-mono font-normal text-muted-foreground" title={meta.title} data-testid="pane-header-meta">
+                {meta.text}
+              </span>
+            ) : null}
+          </h2>
+          {titleAccessory}
+        </div>
         {headerActions.map((action) =>
           action.items ? (
             <DropdownMenu key={action.id}>

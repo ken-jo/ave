@@ -38,7 +38,8 @@ import { setApprovalConversationRootResolver } from "../../permissions/user-appr
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import { t } from "../../i18n/index.js";
 import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
-import { createRoutineProjectRootResolver, findSessionLiveLoop } from "./session-live-loop.js";
+import { removeRoutineWithRuns } from "../../main/routines-store.js";
+import { createRoutineChatResolver, createRoutineProjectRootResolver, findSessionLiveLoop } from "./session-live-loop.js";
 
 const log = createLogger("ave");
 
@@ -113,9 +114,33 @@ export async function setupWorkflowStores(
     loadSessionMetadata: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId),
     defaultProjectRoot: () => defaultWorkspaceProject().projectRoot,
   });
+  const mainChatStore = sessionMetadataStores[0];
+  const routineChatForSession = createRoutineChatResolver({
+    resolveRootSessionId: (sessionId) => ctx.resolveRootSessionId(sessionId),
+    get findLoopBySessionId() { return ctx.findLoopBySessionId; },
+    get sideChatConversationLoop() { return ctx.sideChatConversationLoop; },
+    get paneChatLoops() { return ctx.paneChatLoops; },
+    loadMainChatMetadata: (sessionId) => mainChatStore.hasSessionMetadataFile(sessionId) || mainChatStore.hasSessionTranscript(sessionId)
+      ? mainChatStore.loadSessionMetadata(sessionId) ?? {}
+      : undefined,
+  });
   const workflowDeps: WorkflowToolDeps = {
     routinesStore,
-    routineProjectRootForSession,
+    routineScheduleDeps: {
+      projectRootForSession: routineProjectRootForSession,
+      chatForSession: routineChatForSession,
+      removeRoutine: (routineId) => removeRoutineWithRuns(
+        {
+          routinesStore,
+          memoryManager: ctx.memoryManager,
+          endSessionScope: async (sessionId) => {
+            const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+            endSessionScopedPermissions(sessionId, ctx.permissionManager);
+          },
+        },
+        routineId,
+      ),
+    },
     sessionTasksStore,
     sessionGoalStore,
     skillStore,

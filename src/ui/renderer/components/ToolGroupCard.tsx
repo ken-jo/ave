@@ -15,6 +15,8 @@ import { McpAppView } from "./McpAppView.js";
 import { CompactedToolResult } from "./CompactedToolResult.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { DocumentToolLink } from "./DocumentToolLink.js";
+import { ScheduleToolResultLine } from "./schedule/ScheduleChatChip.js";
+import { useOptionalChatContext } from "../context/ChatContext.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
@@ -209,6 +211,7 @@ function SingleToolInline({
   review?: PermissionReviewEntry;
 }) {
   const { t } = useTranslation();
+  const onOpenRoutine = useOptionalChatContext()?.onOpenRoutine;
   const isRunning = tool.status === "running";
   const isError = tool.status === "error";
   const [open, setOpen] = useState(false);
@@ -313,6 +316,7 @@ function SingleToolInline({
       </div>
       <LiveToolOutput tool={tool} />
       <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
+      <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={isError} onOpenRoutine={onOpenRoutine} />
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-[10px] ave-anim-fade-in">
           {tool.input && (
@@ -364,6 +368,7 @@ export function ToolGroupCard({
 }) {
   // All hooks must be declared before any conditional return (Rules of Hooks)
   const { t } = useTranslation();
+  const onOpenRoutine = useOptionalChatContext()?.onOpenRoutine;
   const tools = [...group.tools].sort((a, b) => a.displayOrder - b.displayOrder);
   const [open, setOpen] = useState(false);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(() => new Set());
@@ -502,6 +507,7 @@ export function ToolGroupCard({
                 </div>
                 <LiveToolOutput tool={tool} />
                 <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={tool.status === "error"} />
+                <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={tool.status === "error"} onOpenRoutine={onOpenRoutine} />
                 {isExpanded && (
                   <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-[10px] ave-anim-fade-in">
                     {tool.input && (

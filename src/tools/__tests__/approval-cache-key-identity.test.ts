@@ -424,9 +424,9 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
   });
 
   it("declaring only a policy approvalCacheKey never widens memory", async () => {
-    const tool = createRoutineScheduleTool({} as never, { projectRootForSession: () => undefined });
+    const tool = createRoutineScheduleTool({} as never, { projectRootForSession: () => undefined, chatForSession: () => undefined, removeRoutine: async () => false });
     expect(await approvalIdentityFor(tool, { execution: "notification-only", schedule: {} }, dir)).toEqual({
-      approvalCacheKey: "routine_schedule:scope:deny-all",
+      approvalCacheKey: "routine_schedule:action:add:connect:no:scope:deny-all",
       approvalMemory: { kind: "args" },
     });
   });
