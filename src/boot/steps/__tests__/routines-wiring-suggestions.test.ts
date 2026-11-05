@@ -146,6 +146,8 @@ describe("a schedule connected to a chat", () => {
     const { handlers, send, routinesStore } = wire(async (input) => {
       withheld = sessionAuthorityWithheld();
       expect(input).toMatchObject({ id: "routine-a", prePrompt: "check the build", targetSessionId: TARGET });
+      expect(input.displayText).toEqual(expect.stringContaining("check the build"));
+      expect(input.displayText).toEqual(expect.stringContaining("Morning"));
       return { summary: "built", sessionId: TARGET };
     }, { [TARGET]: {} });
     handlers.llm!({ routine: connected });

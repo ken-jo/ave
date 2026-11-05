@@ -49,10 +49,8 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       withholdSessionAuthority: true,
     }), async (): Promise<RunResult> => {
       const prompt = routine.prePrompt ?? "";
-      const live = await wakeRoutineChat(targetSessionId, {
-        input: prompt,
-        displayText: t("be_boot.routineWakeNote", { title, prompt }),
-      });
+      const displayText = t("be_boot.routineWakeNote", { title, prompt });
+      const live = await wakeRoutineChat(targetSessionId, { input: prompt, displayText });
       if (live.status === "ran") return { summary: "", sessionId: targetSessionId };
       if (live.status === "busy") return { summary: "", skipped: "chat-busy" };
       return routineEngine.runRoutine({
@@ -63,6 +61,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         scope: routine.scope,
         firedAt,
         targetSessionId,
+        displayText,
       });
     });
   };

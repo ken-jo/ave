@@ -34,6 +34,8 @@ export interface Routine {
   signal?: AbortSignal;
   /** The chat a connected schedule enters. The loop loads that chat instead of starting a routine conversation. */
   targetSessionId?: string;
+  /** What the chat shows for the scheduled prompt (its marker), instead of the bare prompt. */
+  displayText?: string;
 }
 
 export interface RoutineResult {
@@ -264,6 +266,7 @@ export class RoutineEngine {
       try {
         const result = await loop.runTurn(input.prePrompt, undefined, input.signal, {
           inputOrigin: "plugin-emitted",
+          ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
         });
         summary = extractSummaryTag(result.text ?? "");
       } catch (err) {
