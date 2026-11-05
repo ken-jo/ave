@@ -194,10 +194,6 @@ const CLASSIFIED: Record<string, Classified> = {
     sites: { userKeyboardLiteral: 3 },
     classification: "the trust origin of forced explicit approval cards a person answers; not a turn origin",
   },
-  "core/work-board-engine.ts": {
-    sites: { userKeyboardLiteral: 1 },
-    classification: "the trust origin of a work-board plan card a person approves; not a turn origin",
-  },
   "engine/a2a-agent-message-bus.ts": {
     sites: { queueGuidanceWithDisposition: 2 },
     classification: "A2A peer messages: agent-message guidance",

@@ -14,8 +14,8 @@ import type {
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
-// Run state is derived only from host events and the persisted transcript; the shared host gate owns the approval decision,
-// so awaiting-approval is informational here. The board card and the step panel (LS-2) both read this one state.
+// Run state is derived only from host events and the persisted transcript. A plan waiting for the user's work approval is not in
+// flight: the run call has returned, and the decision continues it later through decide-plan. The board card and the step panel (LS-2) both read this one state.
 
 export type RunPhase = RunProgressEventPayload["phase"];
 
@@ -109,6 +109,8 @@ function phaseForRunResult(status: WorkItemRunResult["status"]): RunPhase | unde
   switch (status) {
     case "completed":
       return "done";
+    case "awaiting_approval":
+      return "awaiting_approval";
     case "denied":
       return "denied";
     case "error":
@@ -449,8 +451,10 @@ export function useWorkBoardRun(
     }
     if (typeof api.onWorkBoardRunStarted === "function") {
       unsubs.push(
-        api.onWorkBoardRunStarted(({ itemId }) => {
-          resetRun(itemId, { busy: true });
+        api.onWorkBoardRunStarted(({ itemId, resumed }) => {
+          // A decision that continues the run keeps its planning turns; a new run starts clean.
+          if (resumed) patch(itemId, { busy: true, reason: undefined });
+          else resetRun(itemId, { busy: true });
         }),
       );
     }

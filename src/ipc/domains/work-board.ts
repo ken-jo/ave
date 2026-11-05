@@ -9,7 +9,11 @@ import type {
   WorkBoardCancelIpcResult,
   WorkBoardSteerIpcResult,
   WorkItemRunResult,
+  WorkPlanDecideInput,
+  WorkPlanDecideIpcResult,
+  WorkPlanDecision,
 } from "../../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH } from "../../shared/work-board-types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
@@ -74,6 +78,23 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
   if (!item.projectRoot) return true;
   const resolved = resolveAuthorizedWorkspaceProject(item.projectRoot, item.projectName);
   return resolved.authorized && resolved.project !== null;
+}
+
+const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
+const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Accept exactly `{ runId, planHash, decision, note? }`; anything else is invalid input, never a partial decision. */
+function parseDecidePlanInput(raw: unknown): WorkPlanDecideInput | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "runId" && key !== "planHash" && key !== "decision" && key !== "note")) return null;
+  const { runId, planHash, decision, note } = record;
+  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId)) return null;
+  if (typeof planHash !== "string" || !PLAN_HASH_PATTERN.test(planHash)) return null;
+  if (typeof decision !== "string" || !PLAN_DECISIONS.includes(decision as WorkPlanDecision)) return null;
+  if (note !== undefined && typeof note !== "string") return null;
+  return { runId, planHash, decision: decision as WorkPlanDecision, ...(note !== undefined ? { note } : {}) };
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
@@ -278,6 +299,67 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!result.ok) return result;
     return redactedCount > 0 ? { ok: true, messageId: result.messageId, redactedCount } : { ok: true, messageId: result.messageId };
   });
+
+  // The user's work approval of a stored plan (permission-decision-tree.md "Work approvals"): a user action on a host work object, outside
+  // the tool tree. Same boundary as steer: a sender-validated board-window main frame with a consumed local keyboard gesture, refused
+  // otherwise. The renderer names the run and the hash of the plan it showed, never the plan text; the engine checks both against the
+  // stored item inside the board lock, stores the decision, and only then continues the run. A continuing run broadcasts its own
+  // started/finished pair (`resumed`), so the board keeps the planning turns it already has.
+  ipcMain.handle(
+    WORK_BOARD.decidePlan,
+    async (e, id: unknown, input: unknown, intent?: unknown): Promise<WorkPlanDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+      if (!validateHostRendererSender(e)) {
+        auditUnauthorized(auditLogger, WORK_BOARD.decidePlan, e);
+        return UNAUTHORIZED_FRAME;
+      }
+      if (!workBoardEngine) return NO_ENGINE;
+      if (!hasUserKeyboardIntent(intent)) return { ok: false, reason: "user-gesture-required" };
+      if (!isBoardOwnerFrame(e)) {
+        auditUnauthorized(auditLogger, WORK_BOARD.decidePlan, e);
+        return UNAUTHORIZED_FRAME;
+      }
+      if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false, reason: "invalid-input" };
+      const parsed = parseDecidePlanInput(input);
+      if (parsed === null) return { ok: false, reason: "invalid-input" };
+      if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not_found" };
+      // Bound the note before redaction does any work on it; the engine checks the redacted note again.
+      if (parsed.note !== undefined && parsed.note.length > MAX_PLAN_NOTE_LENGTH) return { ok: false, reason: "note_too_long" };
+      let redactedCount = 0;
+      const note = parsed.note === undefined
+        ? undefined
+        : sanitizeOutgoingInput(deps.settingsService, (event) => {
+          if (event.kind === "privacy.redacted") redactedCount += event.count;
+        }, parsed.note);
+      const outcome = await workBoardEngine.decidePlan(
+        id,
+        { runId: parsed.runId, planHash: parsed.planHash, decision: parsed.decision, ...(note !== undefined ? { note } : {}) },
+        { approvalSurface: e.sender },
+      );
+      if (!outcome.result.ok) return outcome.result;
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: `work-board:${id}`,
+        type: "approval",
+        // The decision only; the note body stays on the item.
+        output: JSON.stringify({
+          event: "work-approval:decided",
+          runId: parsed.runId,
+          plan: parsed.planHash.slice(0, 8),
+          decision: outcome.result.status,
+          note: note !== undefined,
+        }),
+      });
+      broadcastItemChanged(id, "updated");
+      if (outcome.continuation) {
+        broadcastToAppWindows(deps, WORK_BOARD.runStarted, { itemId: id, at: new Date().toISOString(), resumed: true });
+        void outcome.continuation.then(
+          (result) => broadcastToAppWindows(deps, WORK_BOARD.runFinished, { itemId: id, status: result.status, at: new Date().toISOString() }),
+          (err: unknown) => broadcastToAppWindows(deps, WORK_BOARD.runFailed, { itemId: id, reason: errorMessage(err), at: new Date().toISOString() }),
+        );
+      }
+      return redactedCount > 0 ? { ...outcome.result, redactedCount } : outcome.result;
+    },
+  );
 
   // Stop a running execution through the ordinary sub-agent interrupt; the run settles as `cancelled`. Same gate as steer.
   ipcMain.handle(WORK_BOARD.cancelRun, async (e, id: number, intent?: unknown): Promise<WorkBoardCancelIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {

@@ -507,3 +507,48 @@ describe("SteerAckBook — only this board's steers, never growing without bound
     expect(book.size).toBe(0);
   });
 });
+
+describe("useWorkBoardRun — a plan waiting for the user's decision", () => {
+  function decisionHarness() {
+    const started: Array<(p: { itemId: number; resumed?: true }) => void> = [];
+    const finished: Array<(p: { itemId: number; status: string }) => void> = [];
+    const progress: Array<(p: RunProgressEventPayload) => void> = [];
+    const api = {
+      onWorkBoardRunProgress: (h: (p: RunProgressEventPayload) => void) => { progress.push(h); return () => {}; },
+      onWorkBoardRunStarted: (h: (p: { itemId: number; resumed?: true }) => void) => { started.push(h); return () => {}; },
+      onWorkBoardRunFinished: (h: (p: { itemId: number; status: string }) => void) => { finished.push(h); return () => {}; },
+      onWorkBoardRunFailed: () => () => {},
+      runWorkBoardItem: vi.fn(() => new Promise(() => {})),
+    } as unknown as AveApi;
+    return {
+      api,
+      emit: (ev: Omit<RunProgressEventPayload, "at">) => act(() => { for (const h of progress) h({ at: "2026-11-04T03:00:00.000Z", ...ev }); }),
+      start: (itemId: number, resumed?: true) => act(() => { for (const h of started) h({ itemId, ...(resumed ? { resumed } : {}) }); }),
+      finish: (itemId: number, status: string) => act(() => { for (const h of finished) h({ itemId, status }); }),
+    };
+  }
+
+  it("shows a run that returned awaiting_approval as waiting, not finished or failed", () => {
+    const { api, start, emit, finish } = decisionHarness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    start(4);
+    emit({ itemId: 4, phase: "planning", turn: 1, text: "looking" });
+    emit({ itemId: 4, phase: "awaiting_approval" });
+    finish(4, "awaiting_approval");
+    expect(result.current.runState[4]).toMatchObject({ busy: false, phase: "awaiting_approval" });
+    expect(result.current.runState[4]?.reason).toBeUndefined();
+  });
+
+  it("keeps the planning turns when the decision continues the run, and starts clean for a new run", () => {
+    const { api, start, emit } = decisionHarness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    start(4);
+    emit({ itemId: 4, phase: "planning", turn: 1, text: "looking" });
+    emit({ itemId: 4, phase: "awaiting_approval" });
+    start(4, true);
+    expect(result.current.runState[4]?.busy).toBe(true);
+    expect(result.current.runState[4]?.turns).toHaveLength(1);
+    start(4);
+    expect(result.current.runState[4]?.turns).toHaveLength(0);
+  });
+});

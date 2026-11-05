@@ -2,11 +2,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WebContents } from "electron";
-import { ApprovalGate, type ApprovalChoice, type ApprovalRequest } from "../../permissions/approval-gate.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import type { WorkItemListResult, WorkItemResolved } from "../../shared/work-board-types.js";
+import type { WorkItemListResult, WorkItemResolved, WorkItemRunResult, WorkPlanDecision } from "../../shared/work-board-types.js";
+import type { WorkBoardEngine } from "../../core/work-board-engine.js";
 import type { TranscriptStorage } from "../run-transcript.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -52,27 +51,41 @@ export function tempBoardStore(): {
   };
 }
 
-/** Deliver signed cards through the real gate and answer as their registered owner. */
-export function boardApprovalGate(choice: ApprovalChoice): {
-  gate: ApprovalGate;
-  owner: WebContents;
-  requests: Array<ApprovalRequest & { durableApprovalRecordAllowed: boolean }>;
-} {
-  const requests: Array<ApprovalRequest & { durableApprovalRecordAllowed: boolean }> = [];
-  const owner = {
-    isDestroyed: () => false,
-    send: (channel: string, request: ApprovalRequest) => {
-      if (channel !== "ave:approval:request") return;
-      const snapshot = gate.getRequestSnapshot(request.id);
-      if (!snapshot) throw new Error("Missing board approval snapshot");
-      requests.push({ ...request, durableApprovalRecordAllowed: snapshot.durableApprovalRecordAllowed });
-      queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
-        requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac,
-      }, owner));
-    },
-  } as unknown as WebContents;
-  const gate = new ApprovalGate((sessionId, terminalTabId) => approvalSurfaceRegistry.resolve(sessionId, terminalTabId));
-  return { gate, owner, requests };
+/** Run the item to its stored plan, then make the user's work approval decision on exactly that stored plan and settle the run the
+ * decision continues. A reject settles at once as denied; a refused decision throws, since the stored plan is the one being decided. */
+export async function runThroughDecision(
+  engine: WorkBoardEngine,
+  store: WorkBoardStore,
+  itemId: number,
+  decision: WorkPlanDecision,
+  opts: { surface?: WebContents | null; note?: string; agentName?: string } = {},
+): Promise<WorkItemRunResult> {
+  const planned = await engine.runItem(itemId, {
+    ...(opts.agentName ? { agentName: opts.agentName } : {}),
+    ...(opts.surface !== undefined ? { approvalSurface: opts.surface } : {}),
+  });
+  if (planned.status !== "awaiting_approval") return planned;
+  return decideStoredPlan(engine, store, itemId, decision, opts);
+}
+
+/** Decide the plan the store holds for the item now, as the board's decision panel does, and settle what the decision continues. */
+export async function decideStoredPlan(
+  engine: WorkBoardEngine,
+  store: WorkBoardStore,
+  itemId: number,
+  decision: WorkPlanDecision,
+  opts: { surface?: WebContents | null; note?: string } = {},
+): Promise<WorkItemRunResult> {
+  const got = await store.get(itemId);
+  if (got.status !== "found" || !got.item.planApproval || !got.item.runId) throw new Error(`item ${itemId} has no stored plan to decide`);
+  const outcome = await engine.decidePlan(
+    itemId,
+    { runId: got.item.runId, planHash: got.item.planApproval.planHash, decision, ...(opts.note !== undefined ? { note: opts.note } : {}) },
+    opts.surface !== undefined ? { approvalSurface: opts.surface } : {},
+  );
+  if (!outcome.result.ok) throw new Error(`plan decision refused: ${outcome.result.reason}`);
+  if (!outcome.continuation) return { status: "denied", ...(got.item.plan ? { plan: got.item.plan } : {}), reason: "rejected" };
+  return outcome.continuation;
 }
 
 /** Use the real registry with every permission category and a plugin read tool so scope derivation cannot drift from execution. */

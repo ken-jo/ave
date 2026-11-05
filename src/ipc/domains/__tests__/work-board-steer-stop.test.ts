@@ -8,6 +8,7 @@ import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../engine/parent-directive.js";
+import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -143,5 +144,109 @@ describe("work-board steer and stop IPC", () => {
     const oversized = `someone@example.com [File #1 — path: ${"x".repeat(PARENT_DIRECTIVE_MAX_CHARS)}`;
     await expect(handler(WORK_BOARD.steerRun)(event, 7, oversized, GESTURE)).resolves.toEqual({ ok: false, reason: "message-too-long" });
     expect(steerRun).not.toHaveBeenCalled();
+  });
+});
+
+// A plan decision is a work approval (permission-decision-tree.md "Work approvals"): a user action on a host work object, outside the
+// tool tree, behind the same boundary as steer and stop. It forwards only the run id, the plan hash and the decision.
+const HASH = "a".repeat(64);
+const INPUT = { runId: "run-1", planHash: HASH, decision: "approve" } as const;
+
+function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuation?: Promise<unknown> } = {}) {
+  const sent: Array<[string, unknown]> = [];
+  const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: (channel: string, payload: unknown) => sent.push([channel, payload]) };
+  const window = { isDestroyed: () => false, webContents: owner };
+  const decidePlan = vi.fn(async (_id: number, input: { decision: string }) => ({
+    result: { ok: true as const, status: input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "changes_requested" },
+    ...(opts.continuation ? { continuation: opts.continuation } : {}),
+  }));
+  const log = vi.fn();
+  registerWorkBoardHandlers({
+    workBoardStore: {
+      get: async (id: number) => id === 7
+        ? { status: "found", item: { id: 7, title: "t", status: "planned", status_resolved: "planned", priority: "medium", created_at: "x", updated_at: "x" } }
+        : { status: "not_found", itemId: id },
+    },
+    workBoardEngine: { decidePlan },
+    settingsService: { get: (key: string) => (key === "privacy" ? (opts.privacy ?? { piiRedactEnabled: false }) : undefined) },
+    auditLogger: { log },
+    getMainWindow: () => window,
+    getAppWindows: () => [window],
+  } as unknown as IpcDeps);
+  const event = { sender: owner, senderFrame: owner.mainFrame };
+  return { event, decidePlan, log, sent, owner };
+}
+
+describe("work-board decide-plan IPC", () => {
+  it("forwards the decision with the deciding window as the surface and audits it without the note", async () => {
+    const { event, decidePlan, log, owner } = setupDecide();
+    await expect(handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, note: "PRIVATE-NOTE" }, GESTURE)).resolves.toEqual({ ok: true, status: "approved" });
+    expect(decidePlan).toHaveBeenCalledWith(7, { runId: "run-1", planHash: HASH, decision: "approve", note: "PRIVATE-NOTE" }, { approvalSurface: owner });
+    expect(log).toHaveBeenCalledTimes(1);
+    const record = log.mock.calls[0]![0] as { sessionId: string; type: string; output: string };
+    expect(record).toMatchObject({ sessionId: "work-board:7", type: "approval" });
+    expect(JSON.parse(record.output)).toEqual({ event: "work-approval:decided", runId: "run-1", plan: HASH.slice(0, 8), decision: "approved", note: true });
+    expect(record.output).not.toContain("PRIVATE-NOTE");
+  });
+
+  it("broadcasts the continued run as resumed, then its result", async () => {
+    let settle!: (value: unknown) => void;
+    const continuation = new Promise((r) => { settle = r; });
+    const { event, sent } = setupDecide({ continuation });
+    await handler(WORK_BOARD.decidePlan)(event, 7, INPUT, GESTURE);
+    expect(sent.find(([channel]) => channel === WORK_BOARD.runStarted)?.[1]).toMatchObject({ itemId: 7, resumed: true });
+    expect(sent.some(([channel]) => channel === WORK_BOARD.runFinished)).toBe(false);
+    settle({ status: "completed" });
+    await vi.waitFor(() => expect(sent.find(([channel]) => channel === WORK_BOARD.runFinished)?.[1]).toMatchObject({ itemId: 7, status: "completed" }));
+  });
+
+  it.each([
+    ["no intent", undefined],
+    ["intent without a consumed gesture", { inputOrigin: "user-keyboard", userActivation: false }],
+    ["another origin", { inputOrigin: "queue-auto", userActivation: true }],
+  ])("refuses a decision with %s instead of downgrading it", async (_label, intent) => {
+    const { event, decidePlan, log } = setupDecide();
+    await expect(handler(WORK_BOARD.decidePlan)(event, 7, INPUT, intent)).resolves.toEqual({ ok: false, reason: "user-gesture-required" });
+    expect(decidePlan).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unverified sender and a non-owner frame as UNAUTHORIZED and audits them", async () => {
+    const { event, decidePlan } = setupDecide();
+    vi.mocked(validateHostRendererSender).mockReturnValue(false);
+    await expect(handler(WORK_BOARD.decidePlan)(event, 7, INPUT, GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    vi.mocked(validateHostRendererSender).mockReturnValue(true);
+    const subframe = { ...event, senderFrame: { url: "file:///index.html" } };
+    await expect(handler(WORK_BOARD.decidePlan)(subframe, 7, INPUT, GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    expect(auditUnauthorized).toHaveBeenCalledTimes(2);
+    expect(decidePlan).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["plan text instead of a hash", { ...INPUT, planHash: "PLAN: do A" }],
+    ["an extra field (the plan body)", { ...INPUT, plan: "PLAN: do A" }],
+    ["an unknown decision", { ...INPUT, decision: "allow-always" }],
+    ["a non-string note", { ...INPUT, note: 3 }],
+    ["no payload", undefined],
+  ])("refuses %s as invalid input", async (_label, input) => {
+    const { event, decidePlan } = setupDecide();
+    await expect(handler(WORK_BOARD.decidePlan)(event, 7, input, GESTURE)).resolves.toEqual({ ok: false, reason: "invalid-input" });
+    expect(decidePlan).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown item and an oversized note before the engine", async () => {
+    const { event, decidePlan } = setupDecide();
+    await expect(handler(WORK_BOARD.decidePlan)(event, 8, INPUT, GESTURE)).resolves.toEqual({ ok: false, reason: "not_found" });
+    await expect(handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) }, GESTURE))
+      .resolves.toEqual({ ok: false, reason: "note_too_long" });
+    expect(decidePlan).not.toHaveBeenCalled();
+  });
+
+  it("redacts PII from the note before the engine sees it and reports the count", async () => {
+    const { event, decidePlan } = setupDecide({ privacy: { piiRedactEnabled: true } });
+    const result = await handler(WORK_BOARD.decidePlan)(event, 7, { ...INPUT, decision: "request_changes", note: "mail me at someone@example.com" }, GESTURE);
+    expect(result).toMatchObject({ ok: true, redactedCount: 1 });
+    const sentNote = (decidePlan.mock.calls[0]![1] as unknown as { note: string }).note;
+    expect(sentNote).not.toContain("someone@example.com");
   });
 });

@@ -1,4 +1,5 @@
-/** Sequence isolated plan and execution children around per-run approval; persist their output and execution session id on the board. */
+/** Sequence isolated plan and execution children around the user's work approval of each plan; persist their output and execution session
+ * id on the board. The approval is a decision stored on the item (permission-decision-tree.md "Work approvals"), not a tool-approval card. */
 import { randomUUID } from "node:crypto";
 import type { WebContents } from "electron";
 import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
@@ -7,12 +8,8 @@ import {
   PARENT_ALL_TOOL_SCOPE,
   type SubAgentRunner,
 } from "../engine/subagent-runner.js";
-import type {
-  ApprovalGate,
-  ApprovalDecision,
-} from "../permissions/approval-gate.js";
 import type { LoadedAgentProfile } from "../main/agent-profile-store.js";
-import type { WorkBoardStore } from "../main/work-board-store.js";
+import { itemDigestOf, type WorkBoardStore } from "../main/work-board-store.js";
 import type {
   WorkItem,
   WorkItemResolved,
@@ -24,8 +21,13 @@ import type {
   WorkBoardSteerAck,
   WorkBoardSteerResult,
   WorkProposalInput,
+  WorkPlanApprovalStatus,
+  WorkPlanDecideRefusal,
+  WorkPlanDecideResult,
+  WorkPlanDecision,
 } from "../shared/work-board-types.js";
 import {
+  MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
   MAX_PROPOSAL_BLOCKERS,
   MAX_PROPOSAL_EVIDENCE,
@@ -42,6 +44,7 @@ import type { SubAgentActivityUpdate } from "../engine/subagent-runner.js";
 import { toolStepsOf, toolStepsSignature } from "../work-board/tool-steps.js";
 import { errorMessage } from "../shared/error-message.js";
 import { requiredTier } from "../permissions/permission-manager.js";
+import { formatPlanRevisionDirective, hasUnsafeDirectiveControlChars } from "../engine/parent-directive.js";
 import type { ToolRegistry } from "../tools/registry.js";
 
 const log = createLogger("work-board-engine");
@@ -106,7 +109,6 @@ export interface WorkBoardEngineDeps {
   store: WorkBoardStore;
   /** The runner is unavailable until parent-loop construction; report early calls as errors. */
   getRunner: () => SubAgentRunner | undefined;
-  approvalGate: ApprovalGate;
   /** A named profile's model applies to both child phases. */
   getAgentProfile?: (name: string) => Promise<LoadedAgentProfile | null>;
   emitProgress: (event: WorkBoardRunEvent) => void;
@@ -123,7 +125,8 @@ interface RunItemOptions {
 }
 
 interface RunItemResult {
-  status: "completed" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
+  /** awaiting_approval: the plan is stored with a pending decision and the run continues only through decidePlan. */
+  status: "completed" | "awaiting_approval" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
   output?: string;
   plan?: string;
   runSessionId?: string;
@@ -131,9 +134,35 @@ interface RunItemResult {
   reason?: string;
 }
 
+/** The user's decision on a stored plan, named by its run and the hash of the plan they saw; the plan text itself is never sent. */
+interface DecidePlanInput {
+  runId: string;
+  planHash: string;
+  decision: WorkPlanDecision;
+  /** Already redacted by the caller; bounded and checked here. Required for request_changes. */
+  note?: string;
+}
+
+interface DecidePlanOptions {
+  /** Set by the host entrypoint: the window the execute (or re-plan) child's tool cards appear in. */
+  approvalSurface?: WebContents | null;
+}
+
+interface DecidePlanOutcome {
+  result: WorkPlanDecideResult;
+  /** Present when the decision continues the run (approve executes, request_changes re-plans); settles with that phase's result. */
+  continuation?: Promise<RunItemResult>;
+}
+
 export interface WorkBoardEngine {
-  /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. */
+  /** Combine in-process and persisted active-status guards per item; finished reruns start clean while preserving history. Returns
+   * awaiting_approval once the plan is stored; nothing waits for the user here. */
   runItem(itemId: number, opts?: RunItemOptions): Promise<RunItemResult>;
+
+  /** Record the user's work approval of the pending plan, then continue the run: approve executes it, request_changes re-plans the same
+   * run with the note as fenced non-principal guidance, reject ends it as denied. A decision that does not match the stored pending plan
+   * (another run, another plan, a changed item for approve) is refused and nothing runs. */
+  decidePlan(itemId: number, input: DecidePlanInput, opts?: DecidePlanOptions): Promise<DecidePlanOutcome>;
 
   /** The execute child's session id while that child is linked and the run is still in flight; undefined in every other phase. */
   executingChildSessionId(itemId: number): string | undefined;
@@ -178,6 +207,11 @@ function buildPlanPrompt(item: WorkItem): string {
     ``,
     `Respond with the PLAN as your final message: a concise, concrete, step-by-step plan with any assumptions called out under an "Assumptions" heading. The user reviews and approves this plan (and your assumptions) before execution — that approval is the only human checkpoint.`,
   ].join("\n");
+}
+
+/** A re-plan keeps the original planning rules and adds the prior plan and the user's change request as quoted host-fenced data. */
+function buildRevisionPlanPrompt(item: WorkItem, priorPlan: string, note: string): string {
+  return [buildPlanPrompt(item), ``, formatPlanRevisionDirective(priorPlan, note)].join("\n");
 }
 
 function buildExecutePrompt(item: WorkItem, plan: string): string {
@@ -349,33 +383,51 @@ function parseBriefingActionItems(
   return { ok: true, items };
 }
 
-/** Only explicit allow decisions execute; rejection and approval timeout deny. */
-function isDenied(decision: ApprovalDecision): boolean {
-  return decision.choice.startsWith("deny");
-}
-
-/** Clamp durable plan approvals to this run and drop rememberPattern; one click must never authorize future plans. */
-function clampToOnceForRun(decision: ApprovalDecision): ApprovalDecision {
-  if (decision.choice === "allow-always" || decision.choice === "allow-session") {
-    return { ...decision, choice: "allow-once", rememberPattern: undefined };
-  }
-  return decision;
-}
-
 const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set<string>([
   "planning",
   "awaiting_approval",
   "executing",
 ]);
 
+type PlanDecisionStatus = Exclude<WorkPlanApprovalStatus, "pending">;
+
+const DECISION_STATUS: Record<WorkPlanDecision, PlanDecisionStatus> = {
+  approve: "approved",
+  reject: "rejected",
+  request_changes: "changes_requested",
+};
+
+/** One run's transcript appends, serialized and drained before terminal returns; write failures never fail the run. */
+interface RunRecorder {
+  record: (e: Parameters<RunTranscriptWriter["append"]>[0]) => void;
+  flush: () => Promise<void>;
+}
+
+/** What a plan phase needs: the first plan of a run, or a re-plan after the user asked for changes. */
+interface PlanPhaseInput {
+  itemId: number;
+  item: WorkItem;
+  runId: string;
+  runner: SubAgentRunner;
+  planTools: string[];
+  profile: LoadedAgentProfile | null;
+  agentName?: string;
+  revision: number;
+  /** Present on a re-plan: the plan the user sent back and their already-masked, bounded note. */
+  revisionRequest?: { priorPlan: string; note: string };
+  recorder: RunRecorder;
+}
+
 export function createWorkBoardEngine(
   deps: WorkBoardEngineDeps,
 ): WorkBoardEngine {
-  const { store, getRunner, approvalGate, getAgentProfile, emitProgress, onRunComplete, transcriptStorage } =
+  const { store, getRunner, getAgentProfile, emitProgress, onRunComplete, transcriptStorage } =
     deps;
 
   /** Set the in-process guard before awaiting persisted status to close the duplicate-run race. */
   const inFlight = new Set<number>();
+  // Items whose run has stored a pending plan but has not yet released the item (it is finishing the transcript).
+  const planSettling = new Set<number>();
 
   /** Host-recorded execute child per item, set when the child links and removed when the run settles. Steer and stop resolve the child here, never from a renderer payload. */
   const executingChildByItem = new Map<number, string>();
@@ -394,6 +446,39 @@ export function createWorkBoardEngine(
     emitProgress({ ...event, at: new Date().toISOString() });
   };
 
+  function openRecorder(itemId: number, runId: string): RunRecorder {
+    const transcript: RunTranscriptWriter | null = transcriptStorage
+      ? createRunTranscript(transcriptStorage, itemId, runId)
+      : null;
+    let chain: Promise<void> = Promise.resolve();
+    return {
+      record: (e) => {
+        if (!transcript) return;
+        chain = chain
+          .then(() => transcript.append(e))
+          .catch((err) => log.warn("run transcript append failed (id=%d): %s", itemId, (err as Error).message));
+      },
+      flush: () => chain,
+    };
+  }
+
+  /** Runs `body` as this item's one in-flight phase. The caller has already added the item to `inFlight` synchronously, so a concurrent
+   * run or decision cannot slip in between its check and this call. The approval surface is attached for the phase's child tool cards. */
+  async function guarded<T>(itemId: number, surface: WebContents | null | undefined, body: () => Promise<T>): Promise<T> {
+    const originSessionId = workBoardOriginSessionId(itemId);
+    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: surface ?? null });
+    try {
+      return await body();
+    } finally {
+      executingChildByItem.delete(itemId);
+      executingTurnByItem.delete(itemId);
+      cancelRequested.delete(itemId);
+      planSettling.delete(itemId);
+      inFlight.delete(itemId);
+      updateApprovalSurface({ kind: "release", sessionId: originSessionId });
+    }
+  }
+
   async function runItem(
     itemId: number,
     opts: RunItemOptions = {},
@@ -411,17 +496,29 @@ export function createWorkBoardEngine(
       };
     }
     inFlight.add(itemId);
-    const originSessionId = workBoardOriginSessionId(itemId);
-    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: opts.approvalSurface ?? null });
-    try {
-      return await runItemGuarded(itemId, item, opts);
-    } finally {
-      executingChildByItem.delete(itemId);
-      executingTurnByItem.delete(itemId);
-      cancelRequested.delete(itemId);
-      inFlight.delete(itemId);
-      updateApprovalSurface({ kind: "release", sessionId: originSessionId });
-    }
+    return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
+  }
+
+  /** A named profile that no longer exists fails the run explicitly; no profile means the default model. */
+  async function resolveProfile(agentName: string | undefined): Promise<{ ok: true; profile: LoadedAgentProfile | null } | { ok: false; reason: string }> {
+    if (!agentName) return { ok: true, profile: null };
+    const profile = (await getAgentProfile?.(agentName)) ?? null;
+    return profile ? { ok: true, profile } : { ok: false, reason: `agent profile not found: ${agentName}` };
+  }
+
+  /** Settle the run as error from a thrown failure; the persist itself may fail and is only logged. */
+  async function failRun(itemId: number, err: unknown, recorder: RunRecorder | null): Promise<RunItemResult> {
+    const reason = errorMessage(err);
+    log.warn("work-board run error (id=%d): %s", itemId, reason);
+    await store
+      .setRunResult(itemId, { runStatus: "error" })
+      .catch((persistErr) =>
+        log.warn("work-board run error-state persist failed (id=%d): %s", itemId, (persistErr as Error).message),
+      );
+    recorder?.record({ phase: "error", kind: "error", message: reason });
+    emit({ itemId, phase: "error", message: reason });
+    await recorder?.flush();
+    return { status: "error", reason };
   }
 
   async function runItemGuarded(
@@ -447,246 +544,313 @@ export function createWorkBoardEngine(
     }
 
     // Resolve one profile for both phases; missing named profiles fail explicitly.
-    let profile: LoadedAgentProfile | null = null;
-    if (opts.agentName) {
-      profile = (await getAgentProfile?.(opts.agentName)) ?? null;
-      if (!profile) {
-        await store.setRunResult(itemId, { runStatus: "error" });
-        emit({
-          itemId,
-          phase: "error",
-          message: `agent profile not found: ${opts.agentName}`,
-        });
-        return {
-          status: "error",
-          reason: `agent profile not found: ${opts.agentName}`,
-        };
-      }
+    const resolved = await resolveProfile(opts.agentName);
+    if (!resolved.ok) {
+      await store.setRunResult(itemId, { runStatus: "error" });
+      emit({ itemId, phase: "error", message: resolved.reason });
+      return { status: "error", reason: resolved.reason };
     }
 
-    const originSessionId = workBoardOriginSessionId(itemId);
     const runId = randomUUID();
     const startedAt = new Date(Date.now()).toISOString();
-
-    // Serialize and drain transcript appends before terminal returns, including catch; write failures must not fail the run.
-    const transcript: RunTranscriptWriter | null = transcriptStorage
-      ? createRunTranscript(transcriptStorage, itemId, runId)
-      : null;
-    let transcriptChain: Promise<void> = Promise.resolve();
-    const record = (e: Parameters<RunTranscriptWriter["append"]>[0]): void => {
-      if (!transcript) return;
-      transcriptChain = transcriptChain
-        .then(() => transcript.append(e))
-        .catch((err) =>
-          log.warn("runItem transcript append failed (id=%d): %s", itemId, (err as Error).message),
-        );
-    };
-    const flushTranscript = (): Promise<void> => transcriptChain;
+    const recorder = openRecorder(itemId, runId);
 
     try {
       // Archive prior runs before resetting latest fields so denied reruns cannot display stale success.
       await store.beginRun(itemId, runId, startedAt);
-
-      emit({ itemId, phase: "planning" });
-
-      // Persisted as it links, like the execute child: a board that mounts mid-plan (opened from the run's row) reads the child from the
-      // listed item and can claim its tool approvals.
-      let planLinkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
-      const planResult = await runner.spawn(
-        {
-          title: `Plan: ${item.title}`,
-          instructions: buildPlanPrompt(item),
-          toolScope: exactToolScope(planTools),
-          originSessionId,
-          ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
-          profileMode: "plan",
-          profileModel: profile?.model,
-          maxRounds: PLAN_ROUND_BUDGET,
-        },
-        {
-          // The planning child's session is reported as it links, like the execute child's: the board claims both children's tool
-          // approvals, and a planning child can ask for one too.
-          onLinked: ({ childSessionId }) => {
-            emit({ itemId, phase: "planning", runSessionId: childSessionId });
-            planLinkedPersist = store
-              .setRunSessionId(itemId, childSessionId)
-              .then(
-                () => ({ failed: false as const }),
-                (error: unknown) => ({ failed: true as const, error }),
-              );
-          },
-          onActivity: makeActivityRecorder({
-            onTurn: (turn, text) => {
-              emit({ itemId, phase: "planning", turn, text });
-              record({ phase: "planning", kind: "turn", turn, text });
-            },
-            onTools: (tools) => emit({ itemId, phase: "planning", tools }),
-            onToolFinished: (tool) => record({ phase: "planning", kind: "tool", turn: tool.turn, tool }),
-          }).onActivity,
-          onError: (message) => emit({ itemId, phase: "error", message }),
-        },
-      );
-      const planLinkOutcome = await planLinkedPersist;
-      if (planLinkOutcome.failed) throw planLinkOutcome.error;
-      const plan = planResult.summary;
-      record({ phase: "awaiting_approval", kind: "plan", text: plan });
-      await store.setRunResult(itemId, {
-        runStatus: "awaiting_approval",
-        plan,
-        runSessionId: planResult.childSessionId,
-      });
-
-      // Use a fresh agent-action approval id and clamp to once so every plan requires explicit new consent.
-      emit({ itemId, phase: "awaiting_approval" });
-      const rawDecision = await approvalGate.requestAndWait({
-        id: `work-board-run:${itemId}:${randomUUID()}`,
-        sessionId: originSessionId,
-        category: "agent-action",
-        kind: "agent-action",
-        allowedChoices: ["allow-once", "deny-once"],
-        durableApprovalRecordAllowed: false,
-        toolName: "work_board_run",
-        toolCategory: "meta",
-        reason: `Work item #${itemId} "${item.title}" — approve plan to execute?`,
-        args: { plan },
-        source: "builtin",
-        createdAt: Date.now(),
-        trustOrigin: "user-keyboard",
-      });
-      const decision = clampToOnceForRun(rawDecision);
-
-      if (isDenied(decision)) {
-        await store.setRunResult(itemId, { runStatus: "denied", plan });
-        record({ phase: "denied", kind: "decision", message: decision.choice });
-        const reason = decision.rememberPattern ?? decision.choice;
-        emit({ itemId, phase: "denied", message: reason });
-        await flushTranscript();
-        return { status: "denied", plan, reason };
-      }
-
-      // Full execution scope still passes every tool through its own approval gate.
-      await store.setRunStatus(itemId, "executing");
-      emit({ itemId, phase: "executing" });
-
-      // The plan child's id is stored until the execute child links; replace it then so an in-flight "open session" opens the execute session.
-      // The store serializes writes per file, so this lands before the terminal result write below.
-      // The write settles into a captured outcome so a rejection is never left unhandled while the child runs.
-      let linkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
-      const executeActivity = makeActivityRecorder({
-        onTurn: (turn, text) => {
-          emit({ itemId, phase: "executing", turn, text });
-          record({ phase: "executing", kind: "turn", turn, text });
-        },
-        onTools: (tools) => emit({ itemId, phase: "executing", tools }),
-        onToolFinished: (tool) => record({ phase: "executing", kind: "tool", turn: tool.turn, tool }),
-      });
-      // Which turn received a steer: read when the loop acknowledges the injection (see steerRun).
-      executingTurnByItem.set(itemId, executeActivity.lastTurn);
-      const execResult = await runner.spawn(
-        {
-          title: `Execute: ${item.title}`,
-          instructions: buildExecutePrompt(item, plan),
-          toolScope: PARENT_ALL_TOOL_SCOPE,
-          originSessionId,
-          ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
-          profileMode: "execute",
-          profileModel: profile?.model,
-        },
-        {
-          onLinked: ({ childSessionId }) => {
-            // The host's own record of this run's execute child: steer and stop resolve it here, never from renderer input.
-            executingChildByItem.set(itemId, childSessionId);
-            emit({ itemId, phase: "executing", runSessionId: childSessionId });
-            linkedPersist = store
-              .setRunSessionId(itemId, childSessionId)
-              .then(
-                () => ({ failed: false as const }),
-                (error: unknown) => ({ failed: true as const, error }),
-              );
-          },
-          onActivity: executeActivity.onActivity,
-          // The runner reports some interrupted unwinds through onError; a stop the user asked for is not an error.
-          onError: (message) => {
-            if (!cancelRequested.has(itemId)) emit({ itemId, phase: "error", message });
-          },
-        },
-      );
-      // A failed link write is a store failure; surface it through the run's error path rather than dropping it, even if the child finished.
-      const linkOutcome = await linkedPersist;
-      if (linkOutcome.failed) throw linkOutcome.error;
-      // A user stop settles as cancelled (owner decision 2026-11-04), checked before the generic failure branch.
-      if (execResult.ok === false && execResult.stopReason === "interrupted" && cancelRequested.has(itemId)) {
-        await store.setRunResult(itemId, { runStatus: "cancelled", plan });
-        record({ phase: "cancelled", kind: "decision", message: "user-stopped" });
-        emit({ itemId, phase: "cancelled", message: "user-stopped" });
-        await flushTranscript();
-        return { status: "cancelled", plan, reason: "user-stopped" };
-      }
-      // Treat ok:false as error, never as completed output containing the error summary.
-      if (execResult.ok === false) {
-        const reason = execResult.error ?? execResult.summary;
-        log.warn("runItem execute failed (id=%d): %s", itemId, reason);
-        await store.setRunResult(itemId, { runStatus: "error" });
-        record({ phase: "error", kind: "error", message: reason });
-        emit({ itemId, phase: "error", message: reason });
-        await flushTranscript();
-        return { status: "error", reason };
-      }
-
-      const output = execResult.summary;
-
-      await store.setRunResult(itemId, {
-        runStatus: "completed",
-        plan,
-        output,
-        runSessionId: execResult.childSessionId,
-      });
-      record({ phase: "done", kind: "output", text: output });
-      emit({
+      return await planPhase({
         itemId,
-        phase: "done",
-        runSessionId: execResult.childSessionId,
+        item,
+        runId,
+        runner,
+        planTools,
+        profile: resolved.profile,
+        ...(opts.agentName ? { agentName: opts.agentName } : {}),
+        revision: 0,
+        recorder,
       });
-      await flushTranscript();
-      // Persist success before fire-and-forget learning; memory append failure must not change run status.
-      if (onRunComplete) {
-        // Invoke the hook inside then so synchronous throws also become caught rejections.
-        void Promise.resolve()
-          .then(() =>
-            onRunComplete({
-              itemId,
-              title: item.title,
-              ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
-              ...(item.projectName ? { projectName: item.projectName } : {}),
-            }),
-          )
-          .catch((e) =>
-            log.warn("runItem onRunComplete failed (id=%d): %s", itemId, (e as Error).message),
-          );
-      }
-      return {
-        status: "completed",
-        plan,
-        output,
-        runSessionId: execResult.childSessionId,
-      };
     } catch (err) {
-      const reason = errorMessage(err);
-      log.warn("runItem error (id=%d): %s", itemId, reason);
-      await store
-        .setRunResult(itemId, { runStatus: "error" })
-        .catch((persistErr) =>
-          log.warn(
-            "runItem error-state persist failed (id=%d): %s",
-            itemId,
-            (persistErr as Error).message,
-          ),
-        );
-      record({ phase: "error", kind: "error", message: reason });
+      return failRun(itemId, err, recorder);
+    }
+  }
+
+  /** Plan, then store the plan with its pending decision and return. Nothing waits here: the decision is a work approval the user makes
+   * later through decidePlan (permission-decision-tree.md "Work approvals"), however long that takes and across restarts. */
+  async function planPhase(input: PlanPhaseInput): Promise<RunItemResult> {
+    const { itemId, item, runId, runner, planTools, profile, recorder } = input;
+    emit({ itemId, phase: "planning" });
+    // Persisted as it links, like the execute child: a board that mounts mid-plan (opened from the run's row) reads the child from the
+    // listed item and can claim its tool approvals.
+    let planLinkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
+    const planResult = await runner.spawn(
+      {
+        title: `Plan: ${item.title}`,
+        instructions: input.revisionRequest
+          ? buildRevisionPlanPrompt(item, input.revisionRequest.priorPlan, input.revisionRequest.note)
+          : buildPlanPrompt(item),
+        toolScope: exactToolScope(planTools),
+        originSessionId: workBoardOriginSessionId(itemId),
+        ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
+        profileMode: "plan",
+        profileModel: profile?.model,
+        maxRounds: PLAN_ROUND_BUDGET,
+      },
+      {
+        // The planning child's session is reported as it links, like the execute child's: the board claims both children's tool
+        // approvals, and a planning child can ask for one too.
+        onLinked: ({ childSessionId }) => {
+          emit({ itemId, phase: "planning", runSessionId: childSessionId });
+          planLinkedPersist = store
+            .setRunSessionId(itemId, childSessionId)
+            .then(
+              () => ({ failed: false as const }),
+              (error: unknown) => ({ failed: true as const, error }),
+            );
+        },
+        onActivity: makeActivityRecorder({
+          onTurn: (turn, text) => {
+            emit({ itemId, phase: "planning", turn, text });
+            recorder.record({ phase: "planning", kind: "turn", turn, text });
+          },
+          onTools: (tools) => emit({ itemId, phase: "planning", tools }),
+          onToolFinished: (tool) => recorder.record({ phase: "planning", kind: "tool", turn: tool.turn, tool }),
+        }).onActivity,
+        onError: (message) => emit({ itemId, phase: "error", message }),
+      },
+    );
+    const planLinkOutcome = await planLinkedPersist;
+    if (planLinkOutcome.failed) throw planLinkOutcome.error;
+    // A failed plan child's summary is its error text, never a plan the user could approve.
+    if (planResult.ok === false) {
+      const reason = planResult.error ?? planResult.summary;
+      log.warn("work-board plan failed (id=%d): %s", itemId, reason);
+      await store.setRunResult(itemId, { runStatus: "error" });
+      recorder.record({ phase: "error", kind: "error", message: reason });
       emit({ itemId, phase: "error", message: reason });
-      await flushTranscript();
+      await recorder.flush();
       return { status: "error", reason };
     }
+    const plan = planResult.summary;
+    recorder.record({ phase: "awaiting_approval", kind: "plan", text: plan });
+    const stored = await store.setPlanAwaitingApproval(itemId, {
+      runId,
+      plan,
+      runSessionId: planResult.childSessionId,
+      revision: input.revision,
+      // The item the prompt was built from: an edit made during planning makes this plan stale.
+      itemDigest: itemDigestOf(item),
+      ...(input.agentName ? { agentName: input.agentName } : {}),
+    });
+    if (stored === null || stored.status !== "updated") {
+      throw new Error(`work item #${itemId} left run ${runId} while it was planning`);
+    }
+    planSettling.add(itemId);
+    emit({ itemId, phase: "awaiting_approval" });
+    await recorder.flush();
+    return { status: "awaiting_approval", plan, runSessionId: planResult.childSessionId };
+  }
+
+  /** Run the approved plan. The decision is already stored and the run already marked executing; full execution scope still passes
+   * every tool call through its own permission tree (CHILD → H). */
+  async function executePhase(itemId: number, item: WorkItem, plan: string, profile: LoadedAgentProfile | null, runner: SubAgentRunner, recorder: RunRecorder): Promise<RunItemResult> {
+    const originSessionId = workBoardOriginSessionId(itemId);
+    emit({ itemId, phase: "executing" });
+
+    // The plan child's id is stored until the execute child links; replace it then so an in-flight "open session" opens the execute session.
+    // The store serializes writes per file, so this lands before the terminal result write below.
+    // The write settles into a captured outcome so a rejection is never left unhandled while the child runs.
+    let linkedPersist: Promise<{ failed: false } | { failed: true; error: unknown }> = Promise.resolve({ failed: false });
+    const executeActivity = makeActivityRecorder({
+      onTurn: (turn, text) => {
+        emit({ itemId, phase: "executing", turn, text });
+        recorder.record({ phase: "executing", kind: "turn", turn, text });
+      },
+      onTools: (tools) => emit({ itemId, phase: "executing", tools }),
+      onToolFinished: (tool) => recorder.record({ phase: "executing", kind: "tool", turn: tool.turn, tool }),
+    });
+    // Which turn received a steer: read when the loop acknowledges the injection (see steerRun).
+    executingTurnByItem.set(itemId, executeActivity.lastTurn);
+    const execResult = await runner.spawn(
+      {
+        title: `Execute: ${item.title}`,
+        instructions: buildExecutePrompt(item, plan),
+        toolScope: PARENT_ALL_TOOL_SCOPE,
+        originSessionId,
+        ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
+        profileMode: "execute",
+        profileModel: profile?.model,
+      },
+      {
+        onLinked: ({ childSessionId }) => {
+          // The host's own record of this run's execute child: steer and stop resolve it here, never from renderer input.
+          executingChildByItem.set(itemId, childSessionId);
+          emit({ itemId, phase: "executing", runSessionId: childSessionId });
+          linkedPersist = store
+            .setRunSessionId(itemId, childSessionId)
+            .then(
+              () => ({ failed: false as const }),
+              (error: unknown) => ({ failed: true as const, error }),
+            );
+        },
+        onActivity: executeActivity.onActivity,
+        // The runner reports some interrupted unwinds through onError; a stop the user asked for is not an error.
+        onError: (message) => {
+          if (!cancelRequested.has(itemId)) emit({ itemId, phase: "error", message });
+        },
+      },
+    );
+    // A failed link write is a store failure; surface it through the run's error path rather than dropping it, even if the child finished.
+    const linkOutcome = await linkedPersist;
+    if (linkOutcome.failed) throw linkOutcome.error;
+    // A user stop settles as cancelled (owner decision 2026-11-04), checked before the generic failure branch.
+    if (execResult.ok === false && execResult.stopReason === "interrupted" && cancelRequested.has(itemId)) {
+      await store.setRunResult(itemId, { runStatus: "cancelled", plan });
+      recorder.record({ phase: "cancelled", kind: "decision", message: "user-stopped" });
+      emit({ itemId, phase: "cancelled", message: "user-stopped" });
+      await recorder.flush();
+      return { status: "cancelled", plan, reason: "user-stopped" };
+    }
+    // Treat ok:false as error, never as completed output containing the error summary.
+    if (execResult.ok === false) {
+      const reason = execResult.error ?? execResult.summary;
+      log.warn("work-board execute failed (id=%d): %s", itemId, reason);
+      await store.setRunResult(itemId, { runStatus: "error" });
+      recorder.record({ phase: "error", kind: "error", message: reason });
+      emit({ itemId, phase: "error", message: reason });
+      await recorder.flush();
+      return { status: "error", reason };
+    }
+
+    const output = execResult.summary;
+
+    await store.setRunResult(itemId, {
+      runStatus: "completed",
+      plan,
+      output,
+      runSessionId: execResult.childSessionId,
+    });
+    recorder.record({ phase: "done", kind: "output", text: output });
+    emit({
+      itemId,
+      phase: "done",
+      runSessionId: execResult.childSessionId,
+    });
+    await recorder.flush();
+    // Persist success before fire-and-forget learning; memory append failure must not change run status.
+    if (onRunComplete) {
+      // Invoke the hook inside then so synchronous throws also become caught rejections.
+      void Promise.resolve()
+        .then(() =>
+          onRunComplete({
+            itemId,
+            title: item.title,
+            ...(item.projectRoot ? { projectRoot: item.projectRoot } : {}),
+            ...(item.projectName ? { projectName: item.projectName } : {}),
+          }),
+        )
+        .catch((e) =>
+          log.warn("work-board onRunComplete failed (id=%d): %s", itemId, (e as Error).message),
+        );
+    }
+    return {
+      status: "completed",
+      plan,
+      output,
+      runSessionId: execResult.childSessionId,
+    };
+  }
+
+  /** Check the note against the decision before anything is stored: a change request needs one, and every note is bounded and free of
+   * control characters. The caller has already applied outgoing PII redaction. */
+  function noteRefusal(decision: WorkPlanDecision, note: string | undefined): WorkPlanDecideRefusal | null {
+    if (note === undefined || note.trim().length === 0) return decision === "request_changes" ? "note_required" : null;
+    if (note.length > MAX_PLAN_NOTE_LENGTH) return "note_too_long";
+    if (hasUnsafeDirectiveControlChars(note)) return "note_invalid";
+    return null;
+  }
+
+  async function decidePlan(itemId: number, input: DecidePlanInput, opts: DecidePlanOptions = {}): Promise<DecidePlanOutcome> {
+    const refusal = noteRefusal(input.decision, input.note);
+    if (refusal !== null) return { result: { ok: false, reason: refusal } };
+    const note = input.note !== undefined && input.note.trim().length > 0 ? input.note.trim() : undefined;
+    if (inFlight.has(itemId)) {
+      // planPhase stores the pending plan, then finishes its transcript before the run releases the item. A decision in that window is
+      // early, not concurrent with a run, so it is told to retry rather than that the item is running.
+      return { result: { ok: false, reason: planSettling.has(itemId) ? "plan_settling" : "already_running" } };
+    }
+    // Claimed synchronously before the store write, so a second decision or a run start for this item waits on this one.
+    inFlight.add(itemId);
+    const status = DECISION_STATUS[input.decision];
+    let decided: Awaited<ReturnType<WorkBoardStore["decidePlan"]>>;
+    try {
+      decided = await store.decidePlan(itemId, {
+        runId: input.runId,
+        planHash: input.planHash,
+        status,
+        ...(note !== undefined ? { note } : {}),
+      });
+    } catch (err) {
+      // The decision was not stored, so nothing runs.
+      inFlight.delete(itemId);
+      throw err;
+    }
+    if (decided.status === "refused") {
+      inFlight.delete(itemId);
+      return { result: { ok: false, reason: decided.reason } };
+    }
+    const { item, planApproval } = decided;
+    log.info(
+      "[work-approval:decided] %s run=%s plan=%s decision=%s",
+      workBoardOriginSessionId(itemId),
+      planApproval.runId,
+      planApproval.planHash.slice(0, 8),
+      planApproval.status,
+    );
+    const recorder = openRecorder(itemId, planApproval.runId);
+    // The transcript row carries the decision, never the note body.
+    recorder.record({ phase: "awaiting_approval", kind: "decision", message: planApproval.status });
+
+    if (status === "rejected") {
+      inFlight.delete(itemId);
+      emit({ itemId, phase: "denied", message: "rejected" });
+      await recorder.flush();
+      return { result: { ok: true, status } };
+    }
+
+    const plan = item.plan;
+    if (typeof plan !== "string") {
+      inFlight.delete(itemId);
+      throw new Error(`work item #${itemId} has a decided plan approval but no plan`);
+    }
+    const continuation = guarded(itemId, opts.approvalSurface, async () => {
+      try {
+        const runner = getRunner();
+        if (!runner) throw new Error("sub-agent runner not available");
+        const resolved = await resolveProfile(planApproval.agentName);
+        if (!resolved.ok) throw new Error(resolved.reason);
+        if (status === "approved") {
+          return await executePhase(itemId, item, plan, resolved.profile, runner, recorder);
+        }
+        const planTools = planReadOnlyToolNames(runner.parentToolRegistry());
+        if (planTools.length === 0) throw new Error(PLAN_TOOLS_EMPTY);
+        if (note === undefined) throw new Error("a change request reached re-planning without its note");
+        return await planPhase({
+          itemId,
+          item,
+          runId: planApproval.runId,
+          runner,
+          planTools,
+          profile: resolved.profile,
+          ...(planApproval.agentName ? { agentName: planApproval.agentName } : {}),
+          revision: planApproval.revision + 1,
+          revisionRequest: { priorPlan: plan, note },
+          recorder,
+        });
+      } catch (err) {
+        return failRun(itemId, err, recorder);
+      }
+    });
+    return { result: { ok: true, status }, continuation };
   }
 
   async function runBriefing(
@@ -807,6 +971,7 @@ export function createWorkBoardEngine(
 
   return {
     runItem,
+    decidePlan,
     runBriefing,
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,

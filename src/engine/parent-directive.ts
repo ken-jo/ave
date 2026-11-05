@@ -67,6 +67,15 @@ export function formatParentDirective(maskedText: string): string {
   return fenceDirective(t("be_parentDirective.hostInstruction"), maskedText);
 }
 
+/** Frame a work-board re-plan request: the plan the user sent back and their note, quoted together inside the same host fence. Like a
+ * steer it is non-principal guidance; it changes what the plan child is asked, never what it may do. */
+export function formatPlanRevisionDirective(priorPlan: string, note: string): string {
+  return fenceDirective(
+    t("be_parentDirective.planRevisionInstruction"),
+    [t("be_parentDirective.planRevisionPriorPlanLabel"), priorPlan, "", t("be_parentDirective.planRevisionNoteLabel"), note].join("\n"),
+  );
+}
+
 /** Frame a work-board user steer: the same host fence, with host wording that names the user as the sender. The envelope is non-principal
  * guidance (permission-decision-tree.md S→T, "Delegated work"): it is never the user-keyboard principal inside the child. */
 export function formatUserSteerDirective(maskedText: string): string {

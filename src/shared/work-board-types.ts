@@ -32,7 +32,7 @@ export type WorkItemStatusResolved =
  */
 export type WorkItemPriority = "high" | "medium" | "low";
 
-/** Run lifecycle is independent of board status; absent means never run, denied means approval rejected or expired, error means planning or
+/** Run lifecycle is independent of board status; absent means never run, denied means the user rejected the plan, error means planning or
  * execution failed, and cancelled means the user stopped the execution (owner decision 2026-11-04: shown as stopped, never as an error). */
 export type WorkItemRunStatus =
   | "idle"
@@ -67,7 +67,66 @@ export interface WorkItem {
   runId?: string;
   /** Archive prior runs in this append-only index so reruns retain transcript history. */
   runHistory?: WorkItemRunHistoryEntry[];
+  /** The user's decision on this run's plan (work approval, permission-decision-tree.md "Work approvals"). Engine-written only. */
+  planApproval?: WorkPlanApproval;
 }
+
+/** Longest note the user may attach to a plan decision. */
+export const MAX_PLAN_NOTE_LENGTH = 2000;
+
+export type WorkPlanApprovalStatus = "pending" | "approved" | "rejected" | "changes_requested";
+
+/** A plan approval is a work-level decision stored on the item, not a tool-approval card: it has no timeout and survives restart. */
+export interface WorkPlanApproval {
+  /** The run that produced the plan. */
+  runId: string;
+  /** sha256 of the stored plan, computed by the host. A decision binds to exactly this plan. */
+  planHash: string;
+  /** sha256 of the item's title, detail and projectRoot when the plan was made; a changed item makes the plan stale. */
+  itemDigest: string;
+  requestedAt: string;
+  status: WorkPlanApprovalStatus;
+  /** The user's note. A change request carries one; it reaches the re-plan child only as fenced non-principal guidance. */
+  note?: string;
+  decidedAt?: string;
+  /** How many times the user asked for changes on this run. */
+  revision: number;
+  /** The named agent profile the run started with, so the execute phase uses the same model after the approval. */
+  agentName?: string;
+}
+
+export type WorkPlanDecision = "approve" | "reject" | "request_changes";
+
+/** What the renderer sends for a plan decision: the run and the hash of the plan it showed, never the plan text. */
+export interface WorkPlanDecideInput {
+  runId: string;
+  planHash: string;
+  decision: WorkPlanDecision;
+  note?: string;
+}
+
+/** Why a plan decision was refused. not_pending: no pending approval for that run; plan_mismatch: the plan changed; plan_stale: the
+ * item changed after the plan was made, so a change request must re-plan it. */
+export type WorkPlanDecideRefusal =
+  | "not_found"
+  | "not_pending"
+  | "plan_mismatch"
+  | "plan_stale"
+  | "already_running"
+  /** The plan was just stored and its run is still closing; the decision can be sent again in a moment. */
+  | "plan_settling"
+  | "note_required"
+  | "note_too_long"
+  | "note_invalid";
+
+export type WorkPlanDecideResult =
+  | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> }
+  | { ok: false; reason: WorkPlanDecideRefusal };
+
+/** The decide-plan IPC adds the boundary's own refusals and the outgoing PII redaction count, as steer does. */
+export type WorkPlanDecideIpcResult =
+  | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
+  | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
   status_resolved: WorkItemStatusResolved;
@@ -313,7 +372,8 @@ export type RunProgressEventPayload = WorkBoardRunEvent;
 
 /** IPC forwards the engine result unchanged; not_found means an unknown item ID. */
 export interface WorkItemRunResult {
-  status: "completed" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
+  /** awaiting_approval: planning finished and the plan waits for the user's decision; the run resumes through decide-plan. */
+  status: "completed" | "awaiting_approval" | "denied" | "not_found" | "error" | "already_running" | "cancelled";
   output?: string;
   plan?: string;
   runSessionId?: string;

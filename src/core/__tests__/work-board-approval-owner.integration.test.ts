@@ -17,6 +17,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
 import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { workBoardOriginSessionId } from "../../shared/work-board-types.js";
+import { decideStoredPlan } from "../../work-board/__tests__/board-test-fixtures.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
@@ -116,31 +117,29 @@ async function boardRun() {
   const store = new WorkBoardStore(join(root, "board.json"));
   const created = await store.create({ title: "Deliver the work item", projectRoot: workspace });
   if (created.status !== "created") throw new Error("Unable to create board item");
-  const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => undefined });
+  const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => undefined });
   const approve = (request: ApprovalRequest, contents: WebContents) => gate.resolveFromDesktopRenderer(request.id, {
     requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
   }, contents);
-  return { owner, foreign, execute, gate, engine, itemId: created.itemId, auditLog, approve, path, scripts };
+  return { owner, foreign, execute, gate, engine, store, itemId: created.itemId, auditLog, approve, path, scripts };
 }
 
+// The plan approval is a work approval stored on the item (permission-decision-tree.md "Work approvals"), so it sends no card. The execute
+// child it authorizes enters CHILD → H: its tool calls are cards on the window that made the decision, judged by the current mode.
 describe("Work Board registered approval owner", () => {
-  it("delivers plan and execution-child cards through the real runner, loop, executor and gate", async () => {
+  it("sends no card for the plan, then delivers the execute child's tool card to the deciding window through the real gate", async () => {
     const f = await boardRun();
-    const running = f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents });
-    const plan = await f.owner.waitForCard(0);
-    expect(f.owner.cards).toHaveLength(1);
-    expect(plan.sessionId).toBe(workBoardOriginSessionId(f.itemId));
-    expect(plan.toolName).toBe("work_board_run");
+    expect((await f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents })).status).toBe("awaiting_approval");
+    expect(f.owner.cards).toHaveLength(0);
     expect(f.foreign.cards).toHaveLength(0);
-    expect(f.gate.listPendingRendererRequests(f.foreign.contents)).toEqual([]);
-    expect(f.approve(plan, f.foreign.contents)).toBeNull();
-    expect(f.execute).not.toHaveBeenCalled();
-    expect(f.approve(plan, f.owner.contents)?.choice).toBe("allow-once");
+    expect(approvalSurfaceRegistry.resolve(workBoardOriginSessionId(f.itemId))).toBeNull();
 
-    const action = await f.owner.waitForCard(1);
-    expect(f.owner.cards).toHaveLength(2);
+    const running = decideStoredPlan(f.engine, f.store, f.itemId, "approve", { surface: f.owner.contents });
+    const action = await f.owner.waitForCard(0);
+    expect(f.owner.cards).toHaveLength(1);
+    // Default mode: the execute child's write is an ordinary ask, exactly as before the plan approval moved off the gate.
     expect(action.toolName).toBe("board_write");
-    expect(action.sessionId).not.toBe(plan.sessionId);
+    expect(action.sessionId).not.toBe(workBoardOriginSessionId(f.itemId));
     expect(approvalSurfaceRegistry.resolve(action.sessionId)).toBe(f.owner.contents);
     expect(f.foreign.cards).toHaveLength(0);
     expect(f.gate.listPendingRendererRequests(f.foreign.contents)).toEqual([]);
@@ -152,30 +151,40 @@ describe("Work Board registered approval owner", () => {
     expect(await readFile(f.path, "utf8")).toBe("approved board execution");
     expect(f.approve(action, f.owner.contents)).toBeNull();
     expect(f.execute).toHaveBeenCalledTimes(1);
-    expect(f.auditLog.mock.calls.filter(([record]) => record.output?.includes("[approval:surface-owner-required]"))).toHaveLength(2);
+    // The foreign window's answer to the execute child's card is refused and audited; the plan itself sent no card to refuse.
+    expect(f.auditLog.mock.calls.filter(([record]) => record.output?.includes("[approval:surface-owner-required]"))).toHaveLength(1);
     expect(approvalSurfaceRegistry.resolve(workBoardOriginSessionId(f.itemId))).toBeNull();
   });
 
-  it("cannot transfer a live board run through a second run request", async () => {
+  it("cannot transfer a live board run through a second run request or a second decision", async () => {
     const f = await boardRun();
-    const running = f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents });
-    const plan = await f.owner.waitForCard(0);
-    expect(f.owner.cards).toHaveLength(1);
+    expect((await f.engine.runItem(f.itemId, { approvalSurface: f.owner.contents })).status).toBe("awaiting_approval");
+    const stored = await f.store.get(f.itemId);
+    if (stored.status !== "found" || !stored.item.planApproval || !stored.item.runId) throw new Error("missing plan");
+    const running = decideStoredPlan(f.engine, f.store, f.itemId, "approve", { surface: f.owner.contents });
+    const action = await f.owner.waitForCard(0);
     expect((await f.engine.runItem(f.itemId, { approvalSurface: f.foreign.contents })).status).toBe("already_running");
+    const again = await f.engine.decidePlan(
+      f.itemId,
+      { runId: stored.item.runId, planHash: stored.item.planApproval.planHash, decision: "approve" },
+      { approvalSurface: f.foreign.contents },
+    );
+    expect(again.result).toEqual({ ok: false, reason: "already_running" });
     expect(approvalSurfaceRegistry.resolve(workBoardOriginSessionId(f.itemId))).toBe(f.owner.contents);
     expect(f.gate.listPendingRendererRequests(f.foreign.contents)).toEqual([]);
-    f.gate.resolveFromDesktopRenderer(plan.id, { requestId: plan.id, choice: "deny-once", nonce: plan.nonce, hmac: plan.hmac }, f.owner.contents);
-    expect((await running).status).toBe("denied");
+    f.gate.resolveFromDesktopRenderer(action.id, { requestId: action.id, choice: "deny-once", nonce: action.nonce, hmac: action.hmac }, f.owner.contents);
+    await running;
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it("denies a background board plan explicitly when there is no approval surface", async () => {
+  it("keeps a background plan waiting, and an approval without a window denies the execute child's tool call", async () => {
     const f = await boardRun();
-    const result = await f.engine.runItem(f.itemId);
-    expect(result.status).toBe("denied");
-    expect(result.reason).toBe("Nobody can approve this request; do not retry.");
+    // No surface is not a reason to deny the plan: the decision is stored and waits for the user.
+    expect((await f.engine.runItem(f.itemId)).status).toBe("awaiting_approval");
+    await decideStoredPlan(f.engine, f.store, f.itemId, "approve");
     expect(f.owner.cards).toHaveLength(0);
     expect(f.foreign.cards).toHaveLength(0);
+    // Headless means deny still holds for every tool call the child makes.
     expect(f.execute).not.toHaveBeenCalled();
   });
 });
