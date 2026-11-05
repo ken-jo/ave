@@ -1,5 +1,5 @@
 // Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
@@ -42,17 +42,29 @@ export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cw
   return computeDefaultAllowedDirectoryEntries(cwd, false);
 }
 
+/** Whether two spellings name one folder, by device and inode; false when either is gone. */
+function sameFolder(a: string, b: string): boolean {
+  try {
+    const left = statSync(a, { bigint: true });
+    const right = statSync(b, { bigint: true });
+    return left.dev === right.dev && left.ino === right.ino;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A runtime root as the filesystem spells it. The matching form is NFC (`foldCanonicalPathSeparators`), which names the folder
  * on APFS and NTFS, but a filesystem that keeps bytes as written (ext4) holds a folder made on macOS in NFD: there the NFC
  * string names nothing, and every realpath'd path under the folder would compare as outside it. When the matching form does
- * not exist but the folder does, the folder's realpath is the root. Comparisons are not widened: an NFD sibling of an
- * NFC-allowed folder on ext4 stays a different folder.
+ * not exist, or names another folder (an NFC sibling of the NFD folder, which ext4 keeps apart), but the folder does, the
+ * folder's realpath is the root. Comparisons are not widened: an NFD sibling of an NFC-allowed folder on ext4 stays a
+ * different folder.
  */
 function runtimeRootSpelling(raw: string, canonical: string): string | null {
-  if (existsSync(canonical)) return canonical;
   const resolved = pathResolve(raw);
   if (!existsSync(resolved)) return canonical;
+  if (sameFolder(canonical, resolved)) return canonical;
   let onDisk: string;
   try {
     onDisk = realpathSync.native(resolved);

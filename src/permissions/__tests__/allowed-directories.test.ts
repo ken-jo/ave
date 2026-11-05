@@ -537,3 +537,19 @@ describe("buildAllowedScope", () => {
     expect(occurrences).toBe(1);
   });
 });
+
+describe("runtime roots when an NFD folder has an NFC sibling (ext4 keeps both)", () => {
+  it.runIf(process.platform === "linux")("keeps the registered folder, never its sibling", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ave-nfc-sibling-"));
+    const nfd = join(parent, "프로젝트".normalize("NFD"));
+    const nfc = join(parent, "프로젝트".normalize("NFC"));
+    mkdirSync(nfd);
+    mkdirSync(nfc);
+    try {
+      expect(sanitizeRuntimeAllowedDirectories([nfd])).toEqual([nfd]);
+      expect(sanitizeRuntimeAllowedDirectories([nfc])).toEqual([nfc]);
+    } finally {
+      await cleanupTmpDir(parent);
+    }
+  });
+});

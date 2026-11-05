@@ -34,6 +34,10 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     existsSync: (path: Parameters<typeof actual.existsSync>[0]) => !composed(path) && actual.existsSync(path),
+    statSync: ((path: Parameters<typeof actual.statSync>[0], ...rest: unknown[]) => {
+      if (composed(path)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return (actual.statSync as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof actual.statSync,
     realpathSync,
   };
 });
