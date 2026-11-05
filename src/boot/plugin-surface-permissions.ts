@@ -17,6 +17,8 @@ export interface PluginSurfacePermissionScope {
     removedRoot: string,
     options?: { readonly preserveRoots?: readonly string[] },
   ): { sessionDirectoriesRemoved: number; turnDirectoriesRemoved: number };
+  /** The removal preview's question to every live-scope owner. Session grants run no turn, so removal aborts none here. */
+  countTurnsAbortedByWorkspaceRootRemoval(removedRoot: string, options?: { readonly preserveRoots?: readonly string[] }): number;
 }
 
 export interface PluginSurfacePermissionScopeOptions {
@@ -42,6 +44,9 @@ export function createPluginSurfacePermissionScope(
   };
 
   return {
+    countTurnsAbortedByWorkspaceRootRemoval(): number {
+      return 0;
+    },
     revokeWorkspaceRoot(
       removedRoot: string,
       revocation: { readonly preserveRoots?: readonly string[] } = {},

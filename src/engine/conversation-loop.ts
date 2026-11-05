@@ -596,6 +596,11 @@ export class ConversationLoop {
     return this.hasActiveTurn() && workspaceRootRemovalAffectsTurn(this, root, options);
   }
 
+  /** The removal preview's question to every live-scope owner: this loop's running turn, if removal would stop it. */
+  countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
+    return this.wouldWorkspaceRootRemovalAbortTurn(root, options) ? 1 : 0;
+  }
+
   addSessionAdditionalDirectory(path: string): void {
     if (!this.sessionAdditionalDirectories.includes(path)) {
       this.sessionAdditionalDirectories.push(path);

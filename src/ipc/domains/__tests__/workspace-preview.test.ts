@@ -1435,12 +1435,14 @@ describe("workspace handlers", () => {
       /** Records each loop's (root, context) question. */
       asked?: Array<[string, unknown]>;
       sideLoop?: unknown;
+      routineTurns?: number;
+      subAgentTurns?: number;
     } = {}) {
       const [main = false, side = false, ...panes] = overrides.activeTurns ?? [];
       // Each loop answers by its own test; "has a turn" says no, so a handler that substitutes it for the test counts nothing.
       const loopAnswering = (answer: boolean) => ({
         hasActiveTurn: () => false,
-        wouldWorkspaceRootRemovalAbortTurn: (root: string, context: unknown) => { overrides.asked?.push([root, context]); return answer; },
+        countTurnsAbortedByWorkspaceRootRemoval: (root: string, context: unknown) => { overrides.asked?.push([root, context]); return answer ? 1 : 0; },
       });
       return {
         auditLogger: { log: vi.fn() },
@@ -1464,7 +1466,13 @@ describe("workspace handlers", () => {
         getSubAgentRunner: () => ({
           detachSessionsFromProject: vi.fn(async () => 0),
           countSessionsInProject: vi.fn(() => overrides.subAgentCount ?? 0),
+          revokeWorkspaceRoot: () => ({ activeChildrenVisited: 0, liveScopesRevoked: 0 }),
+          countTurnsAbortedByWorkspaceRootRemoval: vi.fn(() => overrides.subAgentTurns ?? 0),
         }),
+        routineEngine: {
+          revokeWorkspaceRoot: () => ({ activeLoopsVisited: 0, liveScopesRevoked: 0 }),
+          countTurnsAbortedByWorkspaceRootRemoval: vi.fn(() => overrides.routineTurns ?? 0),
+        },
         routinesStore: {
           revokeWorkspaceRoot: overrides.revokeRoutineScopes ?? vi.fn(async () => ({ routinesUpdated: 0, directoriesRemoved: 0 })),
           countRoutinesScopedToWorkspaceRoot: overrides.countRoutinesScopedToWorkspaceRoot ?? vi.fn(async () => 0),
@@ -1532,6 +1540,18 @@ describe("workspace handlers", () => {
         expect(await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, root)).toMatchObject({ ok: false, error: "preview-failed" });
       } finally {
         registerWorkspaceHandlers(deps);
+      }
+    });
+
+    it("counts a running routine turn, and a running sub-agent, that removal would stop when no chat turn runs", async () => {
+      for (const [overrides, expected] of [[{ routineTurns: 1 }, 1], [{ subAgentTurns: 2 }, 2]] as const) {
+        registerWorkspaceHandlers(previewDeps(overrides));
+        try {
+          const res = (await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, root)) as PreviewResult;
+          expect(res).toMatchObject({ ok: true, counts: { streamingSessions: expected } });
+        } finally {
+          registerWorkspaceHandlers(deps);
+        }
       }
     });
 

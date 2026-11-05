@@ -982,27 +982,43 @@ export class SubAgentRunner {
     return detached;
   }
 
+  /** A wire child bound to the removed project whose run has not finished: removal cancels it. */
+  private wireChildCancelledByWorkspaceRoot(child: ActiveSubAgentChild, canonicalRoot: string): boolean {
+    if (!child.wireProjectRoot || !projectRootEquals(child.wireProjectRoot, canonicalRoot)) return false;
+    const trackedRun = this.inFlight.get(child.childSessionId)?.run
+      ?? this.trackedRuns.get(child.childSessionId);
+    return !(trackedRun && (trackedRun.terminalCommitClaimed || isA2ATerminalTaskState(trackedRun.taskState)));
+  }
+
+  /**
+   * The removal preview: the children whose work `revokeWorkspaceRoot` would stop, by the same two tests: a wire child of the
+   * removed project is cancelled, and any child loop is asked the test its revocation aborts by.
+   */
+  countTurnsAbortedByWorkspaceRootRemoval(root: string, options?: WorkspaceRootRevocationOptions): number {
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = canonicalizePathForMatch(root);
+    } catch {
+      return 0;
+    }
+    let count = 0;
+    for (const child of this.activeChildren.values()) {
+      // Cancelling a tracked run stops it; without one the cancel aborts the loop's turn, which stops something only if running.
+      const running = Boolean(this.inFlight.get(child.childSessionId)?.run ?? this.trackedRuns.get(child.childSessionId))
+        || child.loop.hasActiveTurn();
+      if ((running && this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot))
+        || child.loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, options)) count += 1;
+    }
+    return count;
+  }
+
   private cancelActiveWireChildForWorkspaceRoot(
     child: ActiveSubAgentChild,
     canonicalRoot: string,
   ): void {
-    if (
-      !child.wireProjectRoot
-      || !projectRootEquals(child.wireProjectRoot, canonicalRoot)
-    ) {
-      return;
-    }
+    if (!this.wireChildCancelledByWorkspaceRoot(child, canonicalRoot)) return;
     const trackedRun = this.inFlight.get(child.childSessionId)?.run
       ?? this.trackedRuns.get(child.childSessionId);
-    if (
-      trackedRun
-      && (
-        trackedRun.terminalCommitClaimed
-        || isA2ATerminalTaskState(trackedRun.taskState)
-      )
-    ) {
-      return;
-    }
     if (trackedRun?.abort) trackedRun.abort();
     else child.loop.abortCurrentTurn();
     if (!trackedRun) return;

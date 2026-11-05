@@ -327,6 +327,24 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     }
   };
 
+  /**
+   * Everything that holds a live scope over workspace roots, in revocation order. Removal revokes each; its preview asks each
+   * how many running turns that revocation would stop, so the two walk one list. Throws when the sub-agent runner cannot be
+   * reached, unless asked to go on without it.
+   */
+  function workspaceLiveScopeOwners(options: { withoutSubAgents?: boolean } = {}): unknown[] {
+    const owners: unknown[] = [
+      deps.conversationLoop,
+      deps.sideChatConversationLoop,
+      ...(deps.paneChatLoops?.all() ?? []),
+      deps.routineEngine,
+      // Revoke plugin session grants too; they are independent live scope owners.
+      getActivePluginSurfacePermissionScope(),
+    ];
+    if (!options.withoutSubAgents) owners.push(deps.getSubAgentRunner?.());
+    return owners;
+  }
+
   async function finalizeRemovedWorkspaceRoot(
     root: string,
     source: string,
@@ -340,19 +358,13 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       errors.push(error);
       auditLifecycleWarning(source, root, "revoke-live-scopes", error);
     }
-    const liveScopeOwners: unknown[] = [
-      deps.conversationLoop,
-      deps.sideChatConversationLoop,
-      ...(deps.paneChatLoops?.all() ?? []),
-      deps.routineEngine,
-      // Revoke plugin session grants too; they are independent live scope owners.
-      getActivePluginSurfacePermissionScope(),
-    ];
+    let liveScopeOwners: unknown[];
     try {
-      liveScopeOwners.push(deps.getSubAgentRunner?.());
+      liveScopeOwners = workspaceLiveScopeOwners();
     } catch (error: unknown) {
       errors.push(error);
       auditLifecycleWarning(source, root, "revoke-live-scopes", error);
+      liveScopeOwners = workspaceLiveScopeOwners({ withoutSubAgents: true });
     }
     for (const candidate of liveScopeOwners) {
       const loop = candidate as WorkspaceLoopLifecycle | undefined;
@@ -887,14 +899,17 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           if (typeof store?.countSessionsInProject !== "function") throw new Error("session store unavailable");
           detachableSessions += store.countSessionsInProject(runtimePath);
         }
-        // The loops removal revokes, each asked by the test its revocation aborts by. A loop that cannot answer is a contract
-        // violation, not a zero.
-        const loops = [deps.conversationLoop, deps.sideChatConversationLoop, ...(deps.paneChatLoops?.all() ?? [])]
-          .filter((loop) => loop !== undefined && loop !== null) as Array<{ wouldWorkspaceRootRemovalAbortTurn?: unknown }>;
+        // Every live-scope owner removal revokes (chat, side and pane loops, routines, plugin grants, sub-agents) says how many
+        // running turns its revocation would stop, by the test it aborts by. An owner that cannot answer is a contract violation,
+        // not a zero.
         let streamingSessions = 0;
-        for (const loop of loops) {
-          if (typeof loop.wouldWorkspaceRootRemovalAbortTurn !== "function") throw new Error("conversation loop cannot preview a workspace root removal");
-          if ((loop.wouldWorkspaceRootRemovalAbortTurn as (root: string, options: typeof context) => boolean)(runtimePath, context)) streamingSessions += 1;
+        for (const owner of workspaceLiveScopeOwners()) {
+          if (owner === undefined || owner === null) continue;
+          const count = (owner as { countTurnsAbortedByWorkspaceRootRemoval?: unknown }).countTurnsAbortedByWorkspaceRootRemoval;
+          if (typeof count !== "function") throw new Error("a live-scope owner cannot preview a workspace root removal");
+          const turns: unknown = count.call(owner, runtimePath, context);
+          if (typeof turns !== "number" || !Number.isSafeInteger(turns) || turns < 0) throw new Error("a live-scope owner answered the removal preview with no count");
+          streamingSessions += turns;
         }
         const [pathGrants, routines] = await Promise.all([
           permissionManager.countPathGrantsUnderRoot(runtimePath, options),

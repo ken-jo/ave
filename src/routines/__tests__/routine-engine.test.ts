@@ -235,6 +235,35 @@ describe("RoutineEngine workspace lifecycle", () => {
     expect(inputs[1]?.scope?.directories).toEqual([]);
   });
 
+  it("counts the running routine turns a removal would abort, asking each active loop with revocation's arguments, and records nothing", async () => {
+    let releaseTurn: ((value: { text: string; toolCalls: never[]; route: string }) => void) | undefined;
+    const wouldWorkspaceRootRemovalAbortTurn = vi.fn(() => true);
+    const loop = {
+      ...makeLoop(),
+      wouldWorkspaceRootRemovalAbortTurn,
+      runTurn: vi.fn(() => new Promise<{ text: string; toolCalls: never[]; route: string }>((resolveTurn) => { releaseTurn = resolveTurn; })),
+    };
+    const engine = new RoutineEngine({ createConversationLoop: () => loop as any });
+    expect(engine.countTurnsAbortedByWorkspaceRootRemoval(resolve("routine-count-root"))).toBe(0);
+    const pending = engine.runRoutine({ id: "active", trigger: "schedule", prePrompt: "run" });
+    await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(1));
+
+    const options = { preserveRoots: [resolve("routine-count-root", "child")], globalScopeWasAuthorized: true };
+    expect(engine.countTurnsAbortedByWorkspaceRootRemoval(resolve("routine-count-root"), options)).toBe(1);
+    expect(wouldWorkspaceRootRemovalAbortTurn).toHaveBeenCalledWith(expect.any(String), {
+      preserveRoots: [expect.any(String)],
+      globalScopeWasAuthorized: true,
+    });
+    wouldWorkspaceRootRemovalAbortTurn.mockReturnValueOnce(false);
+    expect(engine.countTurnsAbortedByWorkspaceRootRemoval(resolve("routine-count-root"), options)).toBe(0);
+    // A preview is not a revocation: future fires under the root are still allowed.
+    expect((engine as unknown as { workspaceRootPolicy: Map<string, unknown> }).workspaceRootPolicy.size).toBe(0);
+
+    releaseTurn?.({ text: "<summary>done</summary>", toolCalls: [], route: "llm" });
+    await pending;
+    expect(engine.countTurnsAbortedByWorkspaceRootRemoval(resolve("routine-count-root"), options)).toBe(0);
+  });
+
   it("revokes an active loop and stops visiting it after completion", async () => {
     let releaseTurn: ((value: { text: string; toolCalls: never[]; route: string }) => void) | undefined;
     const revokeWorkspaceRoot = vi.fn(() => ({

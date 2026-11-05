@@ -142,6 +142,35 @@ export class RoutineEngine {
     this.recordWorkspaceRootPolicy(root, true);
   }
 
+  private preservedRootsUnder(canonicalRoot: string, preserveRoots: readonly string[] | undefined): string[] {
+    return [...new Set(
+      (preserveRoots ?? [])
+        .map((preserveRoot) => this.workspaceRootKey(preserveRoot))
+        .filter((preserveRoot): preserveRoot is string =>
+          preserveRoot !== null
+          && preserveRoot !== canonicalRoot
+          && RoutineEngine.isAtOrBelow(canonicalRoot, preserveRoot),
+        ),
+    )];
+  }
+
+  /**
+   * The removal preview: how many running routine turns `revokeWorkspaceRoot` would abort, asked of each active loop with
+   * the arguments revocation passes it. Records no policy.
+   */
+  countTurnsAbortedByWorkspaceRootRemoval(
+    root: string,
+    options?: { preserveRoots?: readonly string[]; globalScopeWasAuthorized?: boolean },
+  ): number {
+    const canonicalRoot = this.workspaceRootKey(root);
+    if (!canonicalRoot) return 0;
+    const revocation = {
+      preserveRoots: this.preservedRootsUnder(canonicalRoot, options?.preserveRoots),
+      globalScopeWasAuthorized: options?.globalScopeWasAuthorized,
+    };
+    return [...this.activeLoops].filter((loop) => loop.wouldWorkspaceRootRemovalAbortTurn(canonicalRoot, revocation)).length;
+  }
+
   /** Revoke a root from live loops and stale future-fire scope snapshots. */
   revokeWorkspaceRoot(
     root: string,
@@ -155,15 +184,7 @@ export class RoutineEngine {
   } {
     const canonicalRoot = this.recordWorkspaceRootPolicy(root, false);
     if (!canonicalRoot) return { activeLoopsVisited: 0, liveScopesRevoked: 0 };
-    const preservedRoots = [...new Set(
-      (options?.preserveRoots ?? [])
-        .map((preserveRoot) => this.workspaceRootKey(preserveRoot))
-        .filter((preserveRoot): preserveRoot is string =>
-          preserveRoot !== null
-          && preserveRoot !== canonicalRoot
-          && RoutineEngine.isAtOrBelow(canonicalRoot, preserveRoot),
-        ),
-    )];
+    const preservedRoots = this.preservedRootsUnder(canonicalRoot, options?.preserveRoots);
     // A separately registered descendant is a narrower, later policy override:
     // the parent stays denied while the child remains eligible for future fires.
     for (const preserveRoot of preservedRoots) {
