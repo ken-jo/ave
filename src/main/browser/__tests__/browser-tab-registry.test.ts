@@ -915,6 +915,9 @@ describe("strict browser chrome contracts", () => {
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, sessionId: 7 })).toBeNull();
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false }))
       .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "browser:pane" }))
+      .toEqual({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "browser:pane" });
+    expect(parseBrowserTabOpRequest({ requestId: "r", op: "new", url: "about:blank", active: false, inTabId: "" })).toBeNull();
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "page" }))
       .toEqual({ requestId: "r", op: "focus", tabId: "page" });
     expect(parseBrowserTabOpRequest({ requestId: "r", op: "focus", tabId: "" })).toBeNull();
