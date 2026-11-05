@@ -668,7 +668,12 @@ export function WorkApprovalStack({
 
   // A popover navigation lands here: show that item as the card and focus it, then report the request consumed (once per request). Only a
   // list that answers the current request counts: after the popover switched projects, the previous project's list is still on screen.
+  // A target that is no longer listed (decided elsewhere, or waiting on the agent) lands on the card on top, or on the stack when it is
+  // empty, so the popover never leaves focus on the page body.
   const handledFocusKey = useRef<string | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const firstKeyRef = useRef<string | undefined>(undefined);
+  firstKeyRef.current = order[0];
   const focusNode = roving.focusKey;
   useEffect(() => {
     if (!focusKey) {
@@ -677,13 +682,18 @@ export function WorkApprovalStack({
     }
     if (!fresh || handledFocusKey.current === focusKey) return;
     handledFocusKey.current = focusKey;
-    if (sorted.some((item) => item.key === focusKey)) {
+    const listedNow = decidable.some((item) => item.key === focusKey);
+    if (listedNow) {
       setFilter("all");
       setExpandedKey(focusKey);
-      requestAnimationFrame(() => focusNode(focusKey));
     }
+    requestAnimationFrame(() => {
+      const target = listedNow ? focusKey : firstKeyRef.current;
+      if (target !== undefined) focusNode(target);
+      else sectionRef.current?.focus();
+    });
     onFocusConsumed?.();
-  }, [focusKey, focusNode, fresh, onFocusConsumed, sorted]);
+  }, [decidable, focusKey, focusNode, fresh, onFocusConsumed]);
 
   if (state.status === "loading") {
     return (
@@ -759,7 +769,9 @@ export function WorkApprovalStack({
       aria-label={t("workApprovals.title")}
       data-testid="work-approvals"
       data-mode={allProjects ? "all" : "project"}
-      className="flex min-h-0 flex-col gap-2"
+      ref={sectionRef}
+      tabIndex={-1}
+      className="flex min-h-0 flex-col gap-2 outline-none"
       onKeyDown={(event) => roving.onKeyDown(event, () => {
         setExpandedKey(null);
         if (order[0]) roving.focusKey(order[0]);

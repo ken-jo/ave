@@ -306,6 +306,26 @@ describe("확인 필요 — keys inside a field stay with the field", () => {
   });
 });
 
+describe("확인 필요 — a popover target that is no longer listed", () => {
+  afterEach(() => cleanup());
+
+  it("focuses the card on top instead of leaving focus on the page body", async () => {
+    const onFocusConsumed = vi.fn();
+    const { api } = stubApi(okList([plan(), proposal()]));
+    renderStack(api, { focusKey: "plan:999", onFocusConsumed });
+    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("work-approval-head")));
+  });
+
+  it("focuses the stack itself when nothing is left to review", async () => {
+    const onFocusConsumed = vi.fn();
+    const { api } = stubApi(okList([]));
+    renderStack(api, { focusKey: "plan:999", onFocusConsumed });
+    await waitFor(() => expect(onFocusConsumed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("work-approvals")));
+  });
+});
+
 describe("확인 필요 — all projects", () => {
   afterEach(() => cleanup());
 

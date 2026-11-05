@@ -173,4 +173,16 @@ describe("WorkApprovalsBadge", () => {
       card.remove();
     }
   });
+
+  it("returns focus to the badge after 전체 보기, never to the page body", async () => {
+    const onOpenAll = vi.fn();
+    const { api } = stubApi({ ok: true, items: ITEMS, total: 2, projects: PROJECTS });
+    render(<WorkApprovalsBadge api={api} projectRoot="/work/ave" onOpenItem={vi.fn()} onOpenAll={onOpenAll} />);
+    const badge = await screen.findByTestId("work-approvals-badge");
+    fireEvent.click(badge);
+    fireEvent.click(await screen.findByTestId("work-approvals-popover-view-all"));
+    await waitFor(() => expect(screen.queryByTestId("work-approvals-popover")).toBeNull());
+    expect(onOpenAll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(badge);
+  });
 });

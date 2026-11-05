@@ -79,9 +79,15 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
   // Hidden until the first result and at zero: an empty badge would be noise on most launches.
   if (state.status !== "ready" || state.total === 0) return null;
   const clock = now();
-  const select = (action: () => void) => {
+  // A row opens a card that takes focus, so its navigation waits for the close. 전체 보기 focuses nothing of its own, so it runs at once and
+  // the popover returns focus to the badge as usual.
+  const openRow = (action: () => void) => {
     pendingAction.current = action;
     setOpen(false);
+  };
+  const openAll = () => {
+    setOpen(false);
+    onOpenAll();
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -124,7 +130,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
                   <li key={item.key}>
                     <button
                       type="button"
-                      onClick={() => select(() => onOpenItem(item.key, item.scope.type === "project" ? item.scope.projectRoot : undefined))}
+                      onClick={() => openRow(() => onOpenItem(item.key, item.scope.type === "project" ? item.scope.projectRoot : undefined))}
                       data-testid="work-approvals-popover-row"
                       data-approval-key={item.key}
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
@@ -150,7 +156,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
           <button
             type="button"
             className="shrink-0 font-medium text-foreground underline-offset-2 hover:underline"
-            onClick={() => select(onOpenAll)}
+            onClick={openAll}
             data-testid="work-approvals-popover-view-all"
           >
             {t("workApprovals.popoverViewAll")}

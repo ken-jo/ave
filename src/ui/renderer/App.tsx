@@ -1461,6 +1461,7 @@ export function App() {
     // Only a project that is still open is selected; a shared item opens in the project being viewed.
     if (target.projectRoot !== undefined) {
       const project = findWorkspaceProject(workspaceProjectsRef.current, target.projectRoot);
+      // An explicit row jump leaves the all-projects view on purpose (board 15: "그 프로젝트 홈으로 이동"), unlike followProject.
       if (project) projectSelectionRef.current.selectRoot(project.projectRoot);
     }
     setWorkApprovalFocusKey(target.key);
