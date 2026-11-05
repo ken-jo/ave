@@ -12,14 +12,35 @@ import type {
 import { listRoutineOccurrences } from "../../routines/occurrences.js";
 import { isRoutineScheduleShape } from "../../routines/schedule-advance.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
-import { toSessionListRow } from "../../memory/memory-manager.js";
+import { toSessionListRow, type MemoryManager } from "../../memory/memory-manager.js";
+import type { PermissionManager } from "../../permissions/permission-manager.js";
 import type { RoutineRunRow } from "../../shared/session-lookup.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
-import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope } from "../../main/routines-store.js";
+import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope, type RoutinesStore } from "../../main/routines-store.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { defaultWorkspaceProject } from "../../main/project-root-authorization.js";
+
+export interface RemoveRoutineDeps {
+  routinesStore: Pick<RoutinesStore, "remove">;
+  memoryManager: Pick<MemoryManager, "listSessionsByRoutine" | "deleteSession">;
+  permissionManager: PermissionManager | undefined;
+}
+
+/** Delete a schedule item and its own runs' sessions. A connected chat is never one of them: its runs carry no routine id. The
+ * panel's delete and the agent's routine_schedule remove share this. */
+export async function removeRoutineWithRuns(deps: RemoveRoutineDeps, id: string): Promise<boolean> {
+  const ok = await deps.routinesStore.remove(id);
+  if (ok) {
+    const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+    for (const session of deps.memoryManager.listSessionsByRoutine(id)) {
+      await deps.memoryManager.deleteSession(session.id);
+      endSessionScopedPermissions(session.id, deps.permissionManager);
+    }
+  }
+  return ok;
+}
 
 // The month grid spans at most six weeks; a little slack keeps a range that starts mid-day valid.
 const MAX_OCCURRENCE_RANGE_MS = 43 * 24 * 60 * 60 * 1000;
@@ -92,14 +113,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!routinesStore) return { ok: false, error: "no-store" };
-    const ok = await routinesStore.remove(id);
-    if (ok) {
-      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
-      for (const session of memoryManager.listSessionsByRoutine(id)) {
-        await memoryManager.deleteSession(session.id);
-        endSessionScopedPermissions(session.id, deps.conversationLoop.permissionManager);
-      }
-    }
+    const ok = await removeRoutineWithRuns(
+      { routinesStore, memoryManager, permissionManager: deps.conversationLoop.permissionManager },
+      id,
+    );
     return { ok };
   });
 

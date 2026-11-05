@@ -3,6 +3,7 @@ import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
 import type { RoutinesStore } from "../main/routines-store.js";
 import type { RoutineExecution, RoutineRepeat, RoutineSchedule } from "../main/routines-store.js";
+import type { RoutineEditPatch } from "../shared/routines-types.js";
 import {
   MAX_CRON_EXPR_LENGTH,
   MAX_FUTURE_OFFSET_MS,
@@ -92,17 +93,42 @@ function parseAllowedPlugins(raw: unknown): string[] | null {
   return [...new Set(ids)];
 }
 
+type RoutineScheduleAction = "add" | "update" | "remove";
+
+function parseAction(raw: unknown): RoutineScheduleAction | null {
+  if (raw === undefined) return "add";
+  return raw === "add" || raw === "update" || raw === "remove" ? raw : null;
+}
+
+/** What "이 세션 동안 허용" remembers: the action, whether it connects to this chat, and the plugin scope (add) or the item (update, remove). */
 function routineScheduleApprovalCacheKey(rawInput: unknown): string {
   const input = (rawInput ?? {}) as Record<string, unknown>;
+  const action = parseAction(input.action);
+  if (!action) return "action:invalid";
+  // An agent update or remove only ever reaches an item connected to its own chat.
+  if (action !== "add") return `action:${action}:connect:this-chat:item:${typeof input.routineId === "string" ? input.routineId : "invalid"}`;
+  const connect = input.connectToThisChat === true ? "this-chat" : "no";
   const allowedPlugins = parseAllowedPlugins(input.allowedPlugins);
-  if (!allowedPlugins) return "scope:invalid";
-  if (allowedPlugins.length === 0) return "scope:deny-all";
-  return `scope:allow:${[...allowedPlugins].sort().join(",")}`;
+  if (!allowedPlugins) return `action:add:connect:${connect}:scope:invalid`;
+  if (allowedPlugins.length === 0) return `action:add:connect:${connect}:scope:deny-all`;
+  return `action:add:connect:${connect}:scope:allow:${[...allowedPlugins].sort().join(",")}`;
 }
 
 export interface RoutineScheduleToolDeps {
   /** The project (or default workspace) root of the conversation that called the tool, or undefined when it has none. */
   projectRootForSession: (sessionId: string) => string | undefined;
+  /** The saved main chat the calling session belongs to (a sub-agent's is its root chat's), or undefined when there is none. The host
+   * binds 대화에 연결 to this; the model never names a session. */
+  chatForSession: (sessionId: string) => string | undefined;
+  /** Remove an item the way the schedule panel's delete does (its own runs' sessions go with it; a connected chat never does). */
+  removeRoutine: (routineId: string) => Promise<boolean>;
+}
+
+const UPDATE_FIELDS = new Set(["action", "routineId", "title", "prePrompt", "schedule"]);
+const REMOVE_FIELDS = new Set(["action", "routineId"]);
+
+function errorResult(message: string): { output: string; isError: true } {
+  return { output: JSON.stringify({ error: message }), isError: true };
 }
 
 export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineScheduleToolDeps): Tool {
@@ -114,8 +140,14 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
     approvalCacheKey: routineScheduleApprovalCacheKey,
     jsonSchema: {
       type: "object",
-      required: ["execution", "schedule"],
       properties: {
+        action: {
+          type: "string",
+          enum: ["add", "update", "remove"],
+          description: t("be_routineSchedule.actionDescription"),
+        },
+        routineId: { type: "string", description: t("be_routineSchedule.routineIdDescription") },
+        connectToThisChat: { type: "boolean", description: t("be_routineSchedule.connectToThisChatDescription") },
         execution: {
           type: "string",
           enum: ["llm-session", "notification-only"],
@@ -166,12 +198,64 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
     },
     execute: async (rawInput, ctx) => {
       const a = (rawInput ?? {}) as Record<string, unknown>;
+      const action = parseAction(a.action);
+      if (!action) return errorResult("action must be 'add', 'update' or 'remove'");
+      if (action !== "add") {
+        const sessionId = ctx?.metadata?.sessionId;
+        const chat = typeof sessionId === "string" && sessionId ? deps.chatForSession(sessionId) : undefined;
+        const allowed = action === "update" ? UPDATE_FIELDS : REMOVE_FIELDS;
+        const extra = Object.keys(a).filter((key) => !allowed.has(key));
+        if (extra.length > 0) return errorResult(`${action} does not take: ${extra.join(", ")}`);
+        if (typeof a.routineId !== "string" || !a.routineId) return errorResult(`${action} needs routineId`);
+        // Only an item connected to this chat; every other item is the user's to change.
+        const record = chat === undefined ? undefined : store.list().find((r) => r.id === a.routineId);
+        if (!record || record.targetSessionId !== chat) {
+          return errorResult(`routine_schedule can ${action} only a schedule item connected to this chat`);
+        }
+        if (action === "remove") {
+          return (await deps.removeRoutine(record.id))
+            ? { output: JSON.stringify({ routineId: record.id, removed: true }), isError: false }
+            : errorResult("the schedule item could not be removed");
+        }
+        const patch: RoutineEditPatch = {};
+        if (a.title !== undefined) {
+          if (typeof a.title !== "string") return errorResult("title must be a string");
+          patch.title = a.title.trim() ? a.title.trim() : null;
+        }
+        if (a.prePrompt !== undefined) {
+          if (typeof a.prePrompt !== "string" || !a.prePrompt.trim()) return errorResult("prePrompt must be non-empty");
+          patch.prePrompt = a.prePrompt.trim();
+        }
+        if (a.schedule !== undefined) {
+          const schedule = parseSchedule(a.schedule);
+          if (!schedule) return errorResult("invalid schedule");
+          patch.schedule = schedule;
+        }
+        if (Object.keys(patch).length === 0) return errorResult("update needs title, prePrompt or schedule");
+        try {
+          const updated = await store.edit(record.id, patch);
+          if (!updated) return errorResult("the schedule item could not be updated");
+          return { output: JSON.stringify({ routineId: updated.id, schedule: updated.schedule }), isError: false };
+        } catch (err) {
+          return errorResult((err as Error).message ?? "routine_schedule update failed");
+        }
+      }
       // The item is listed under the calling conversation's project, resolved from its session. The tool cwd is not used: it can fall
       // back to the process cwd, which would file the item under an unrelated directory.
       const sessionId = ctx?.metadata?.sessionId;
       const projectRoot = typeof sessionId === "string" && sessionId ? deps.projectRootForSession(sessionId)?.trim() ?? "" : "";
       if (!projectRoot) {
         return { output: JSON.stringify({ error: "routine_schedule needs a chat that belongs to a project" }), isError: true };
+      }
+
+      // 대화에 연결: the host binds the calling chat; a session id in the input is never read.
+      let targetSessionId: string | undefined;
+      if (a.connectToThisChat === true) {
+        if (a.execution !== "llm-session") return errorResult("connectToThisChat needs execution='llm-session': a notification has no turn");
+        targetSessionId = typeof sessionId === "string" && sessionId ? deps.chatForSession(sessionId) : undefined;
+        if (!targetSessionId) return errorResult("connectToThisChat needs a saved chat to connect to");
+      } else if (a.connectToThisChat !== undefined && a.connectToThisChat !== false) {
+        return errorResult("connectToThisChat must be a boolean");
       }
 
       const execution = a.execution;
@@ -262,11 +346,12 @@ export function createRoutineScheduleTool(store: RoutinesStore, deps: RoutineSch
             directories: [],
           },
           ...(source !== undefined ? { source } : {}),
+          ...(targetSessionId !== undefined ? { targetSessionId } : {}),
           projectRoot,
           createdBy: "agent",
         });
         return {
-          output: JSON.stringify({ routineId: record.id, schedule: record.schedule }),
+          output: JSON.stringify({ routineId: record.id, schedule: record.schedule, ...(targetSessionId ? { connectedToThisChat: true } : {}) }),
           isError: false,
         };
       } catch (err) {

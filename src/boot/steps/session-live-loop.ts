@@ -49,3 +49,29 @@ export function createRoutineProjectRootResolver<L extends SessionLiveLoop>(
     return liveLoop?.getSessionProjectRoot() ?? metadata?.projectRoot ?? deps.defaultProjectRoot();
   };
 }
+
+export interface RoutineChatDeps<L extends SessionLiveLoop> extends SessionLiveLoopSources<L> {
+  resolveRootSessionId(sessionId: string): string;
+  /** The main conversation store's sidecar for `sessionId`, or undefined when the main store has never saved it. */
+  loadMainChatMetadata(sessionId: string): { routineId?: string } | null | undefined;
+}
+
+/**
+ * The chat 대화에 연결 binds: the calling conversation's root, when it is a main chat (open in a tile, or saved by the main
+ * store). A side chat, a pane chat, a schedule item's own run and an unknown session have none, and the tool refuses.
+ */
+export function createRoutineChatResolver<L extends SessionLiveLoop>(
+  deps: RoutineChatDeps<L>,
+): (requestingSessionId: string) => string | undefined {
+  return (requestingSessionId) => {
+    const sessionId = deps.resolveRootSessionId(requestingSessionId);
+    if (deps.sideChatConversationLoop?.getSessionId() === sessionId) return undefined;
+    for (const loop of deps.paneChatLoops?.all() ?? []) {
+      if (loop.getSessionId() === sessionId) return undefined;
+    }
+    const metadata = deps.loadMainChatMetadata(sessionId);
+    // A run's session is deleted with its item, so a connection to it would not outlive that item.
+    if (metadata?.routineId) return undefined;
+    return deps.findLoopBySessionId?.(sessionId) || metadata ? sessionId : undefined;
+  };
+}

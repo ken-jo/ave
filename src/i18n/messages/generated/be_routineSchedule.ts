@@ -31,6 +31,13 @@ export const en = {
     "List of extension IDs to expose in execution=llm-session routines. If omitted or [], no extension tools are available.",
   "be_routineSchedule.sourceDescription":
     "Optional origin marker for idempotency. Only set this when a system prompt explicitly instructs you to (format 'suggestion:<pluginId>:<intent>'). Leave unset for ordinary user-requested routines.",
+  "be_routineSchedule.actionDescription":
+    "add (default) registers a new item. update and remove change only an item connected to this chat, named by routineId " +
+    "(update takes title, prePrompt or schedule). Any other item is the user's to change in the schedule panel.",
+  "be_routineSchedule.routineIdDescription": "update/remove only: the id of an item connected to this chat",
+  "be_routineSchedule.connectToThisChatDescription":
+    "add with execution=llm-session only: when true, each run continues in this chat instead of a new conversation. " +
+    "Set it when the user asks for the result here (e.g. 'remind me in this chat').",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "be_routineSchedule.toolDescription":
@@ -64,4 +71,11 @@ export const ko: Record<keyof typeof en, string> = {
     "execution=llm-session 루틴에서 노출할 익스텐션 id 목록. 미지정 또는 []이면 익스텐션 도구를 사용하지 않습니다.",
   "be_routineSchedule.sourceDescription":
     "멱등성용 출처 마커(선택). 시스템 프롬프트가 명시적으로 지시할 때만 설정하십시오(형식 'suggestion:<pluginId>:<intent>'). 일반 사용자 요청 루틴에서는 미설정.",
+  "be_routineSchedule.actionDescription":
+    "add(기본값)는 새 항목을 등록합니다. update·remove 는 routineId 로 지정한, 이 대화에 연결된 항목만 바꿉니다 " +
+    "(update 는 title·prePrompt·schedule). 그 밖의 항목은 사용자가 스케줄 패널에서 바꿉니다.",
+  "be_routineSchedule.routineIdDescription": "update/remove 전용: 이 대화에 연결된 항목의 id",
+  "be_routineSchedule.connectToThisChatDescription":
+    "add·execution=llm-session 전용: true 이면 실행마다 새 대화 대신 이 대화에서 이어집니다. " +
+    "사용자가 결과를 이 대화에서 받기를 원할 때 설정하십시오(예: '이 대화에서 알려줘').",
 };

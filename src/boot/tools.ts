@@ -9,7 +9,7 @@ import { createWebFetchTool } from "../tools/web-fetch.js";
 import { createRequestPluginTool } from "../tools/request-plugin.js";
 import { createToolSearchTool } from "../tools/tool-search.js";
 import { createAskUserQuestionTool } from "../tools/ask-user-question.js";
-import { createRoutineScheduleTool } from "../tools/routine-schedule.js";
+import { createRoutineScheduleTool, type RoutineScheduleToolDeps } from "../tools/routine-schedule.js";
 import { createSessionTasksTool } from "../tools/session-tasks.js";
 import { createSessionGoalTool } from "../tools/session-goal.js";
 import {
@@ -80,8 +80,8 @@ export interface WorkflowToolDeps {
   /** Lazy-resolved gate — populated after BrowserWindow is ready. */
   getAskUserQuestionGate?: () => AskUserQuestionGate | undefined;
   routinesStore?: RoutinesStore;
-  /** Required with routinesStore: the calling conversation's project for routine_schedule. */
-  routineProjectRootForSession?: (sessionId: string) => string | undefined;
+  /** Required with routinesStore: the calling conversation's project and chat, and the panel's delete, for routine_schedule. */
+  routineScheduleDeps?: RoutineScheduleToolDeps;
   sessionTasksStore?: SessionTasksStore;
   sessionGoalStore?: SessionGoalStore;
   /** Lazy-resolved sub-agent runner — populated after ConversationLoop wiring. */
@@ -138,9 +138,9 @@ export function registerBuiltinTools(
     );
   }
   if (workflowDeps?.routinesStore) {
-    const projectRootForSession = workflowDeps.routineProjectRootForSession;
-    if (!projectRootForSession) throw new Error("registerBuiltinTools: routinesStore requires routineProjectRootForSession");
-    builtins.push(createRoutineScheduleTool(workflowDeps.routinesStore, { projectRootForSession }));
+    const routineScheduleDeps = workflowDeps.routineScheduleDeps;
+    if (!routineScheduleDeps) throw new Error("registerBuiltinTools: routinesStore requires routineScheduleDeps");
+    builtins.push(createRoutineScheduleTool(workflowDeps.routinesStore, routineScheduleDeps));
   }
   if (workflowDeps?.sessionTasksStore) {
     builtins.push(createSessionTasksTool(workflowDeps.sessionTasksStore));
