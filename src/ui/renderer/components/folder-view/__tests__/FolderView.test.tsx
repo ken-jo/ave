@@ -59,6 +59,13 @@ async function openView() {
   await waitFor(() => expect(row(`${ROOT}/data`)).toBeDefined());
 }
 
+// A root chosen in the folder dialog is stored NFC; listDir builds entry paths from the realpath, which is NFD for a Korean
+// folder made in Finder.
+const NFC_ROOT = "/p/프로젝트".normalize("NFC");
+const NFD_ROOT = "/p/프로젝트".normalize("NFD");
+listings[NFC_ROOT] = { ok: true, entries: [dir(`${NFD_ROOT}/문서`.normalize("NFD")), file(`${NFD_ROOT}/a.txt`)], truncated: false, hidden: 0 };
+listings[`${NFD_ROOT}/문서`.normalize("NFD")] = { ok: true, entries: [file(`${NFD_ROOT}/문서/메모.md`.normalize("NFD"))], truncated: false, hidden: 0 };
+
 describe("FolderView", () => {
   it("lists the project root first, folders before files, with the first row focused and the key hint", async () => {
     await openView();
@@ -156,6 +163,29 @@ describe("FolderView", () => {
     expect(onLocationChange).not.toHaveBeenCalledWith({ path: ROOT, selection: null });
     fireEvent.click(row(`${ROOT}/data`));
     await waitFor(() => expect(onLocationChange).toHaveBeenLastCalledWith({ path: `${ROOT}/data`, selection: `${ROOT}/data` }));
+  });
+
+  it("walks, labels and restores a project whose root is NFC while its entries are NFD", async () => {
+    const docs = `${NFD_ROOT}/문서`.normalize("NFD");
+    const memo = `${docs}/메모.md`.normalize("NFD");
+    const onLocationChange = vi.fn();
+    const view = render(<FolderView projectRoot={NFC_ROOT} onLocationChange={onLocationChange} />);
+    await waitFor(() => expect(row(docs)).toBeDefined());
+    fireEvent.click(row(docs));
+    await waitFor(() => expect(row(memo)).toBeDefined());
+    fireEvent.click(row(memo));
+    await screen.findByTestId("folder-viewer");
+    // The path line names the folders under the root, not a slice cut at the NFC root's length.
+    expect(screen.getByTestId("folder-status").textContent?.normalize("NFC")).toContain("문서/메모.md");
+    expect([...screen.getByTestId("folder-path").querySelectorAll("button")].map((each) => each.textContent?.normalize("NFC")))
+      .toEqual(["프로젝트", "문서"]);
+    await waitFor(() => expect(onLocationChange).toHaveBeenLastCalledWith({ path: docs, selection: memo }));
+    view.unmount();
+
+    // The saved location reopens: the walk matches the NFD entries listDir returns.
+    render(<FolderView projectRoot={NFC_ROOT} initialLocation={{ path: docs, selection: memo }} />);
+    await screen.findByTestId("folder-viewer");
+    expect(columns()).toEqual([NFC_ROOT, docs]);
   });
 
   it("ignores a restored location outside its project", async () => {

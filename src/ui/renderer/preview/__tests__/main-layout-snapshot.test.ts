@@ -110,6 +110,17 @@ describe("folder views in the saved layout", () => {
       .toMatchObject({ path: "c:\\work\\src", selection: null });
   });
 
+  it("keeps an NFD location under a root stored in NFC (a Korean folder made in Finder)", () => {
+    const root = "/work/프로젝트".normalize("NFC");
+    const folder = "/work/프로젝트/문서".normalize("NFD");
+    const selection = "/work/프로젝트/문서/메모.md".normalize("NFD");
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: root, folder: { path: folder, selection } }))
+      .toMatchObject({ path: folder, selection });
+    // A sibling whose name only starts like the root is still outside.
+    expect(savedFolderOf({ tabId: folderTab, ordinal: 1, projectRoot: root, folder: { path: "/work/프로젝트2".normalize("NFD"), selection: null } }))
+      .toMatchObject({ path: root });
+  });
+
   it("survives a save, a parse and a restore, back on the same folder and item", () => {
     const tree = splitLeaf(leaf("main"), "main", "right", "group-2");
     const snapshot = buildMainLayoutSnapshot({

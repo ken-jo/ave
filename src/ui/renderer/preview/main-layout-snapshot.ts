@@ -1,6 +1,6 @@
 import { isAbsoluteHostPath, MAIN_LAYOUT_VERSION, type MainLayoutSnapshot, type SavedMainSurface, type SavedPaneNode, type SavedSurface } from "../../../shared/main-layout.js";
 import type { PaneNode } from "../components/pane-tree.js";
-import { projectRootKey } from "../../../shared/project-identity.js";
+import { isInsideRoot } from "../utils/project-path.js";
 import { leafIds } from "../components/pane-tree.js";
 import type { ViewLocation } from "../utils/view-location.js";
 
@@ -19,13 +19,9 @@ export function savedSurfaceOf(
   return { kind: surface.kind, tabId: surface.tabId, ordinal: surface.ordinal, cwd: keepCwd, url: keepUrl };
 }
 
-/** Whether `path` is the project root or below it, by spelling: no `..` segment, the root's key as a whole-segment prefix. */
+/** Whether `path` is the project root or below it (`utils/project-path.ts`: NFC on both sides, no `..` segment). */
 function insideProject(projectRoot: string, path: string): boolean {
-  if (!isAbsoluteHostPath(path)) return false;
-  const root = projectRootKey(projectRoot);
-  const key = projectRootKey(path);
-  if (root === undefined || key === undefined || key.split("/").includes("..")) return false;
-  return key === root || key.startsWith(root.endsWith("/") ? root : `${root}/`);
+  return isAbsoluteHostPath(path) && isInsideRoot(projectRoot, path);
 }
 
 /** A folder view as saved: the folder it shows and the selected item, or its project root before the view has reported. A

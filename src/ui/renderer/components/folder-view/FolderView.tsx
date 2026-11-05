@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { FolderLocation } from "../../preview/main-surfaces.js";
+import { isInsideRoot, prefixesUnderRoot } from "../../utils/project-path.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
@@ -44,15 +45,9 @@ export interface FolderViewProps {
   onLocationChange?: ((location: FolderLocation) => void) | undefined;
 }
 
-function isWithin(dir: string, path: string): boolean {
-  return path === dir || path.startsWith(`${dir}/`) || path.startsWith(`${dir}\\`);
-}
-
-/** The folders between the root and `path`, outermost first, then `path` itself. */
+/** The folders between the root and `path`, outermost first, then `path` itself, in `path`'s own spelling (listDir's). */
 function chainTo(root: string, path: string): string[] {
-  const separator = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  const parts = path.slice(root.length).split(/[\\/]/).filter(Boolean);
-  return parts.map((_, index) => `${root}${root.endsWith(separator) ? "" : separator}${parts.slice(0, index + 1).join(separator)}`);
+  return prefixesUnderRoot(root, path) ?? [];
 }
 
 export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSideChat, initialLocation, onLocationChange }: FolderViewProps) {
@@ -68,7 +63,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
   // A restored view walks back to where it was, one listing at a time, like a search result.
   const [revealQueue, setRevealQueue] = useState<string[]>(() => {
     const target = initialLocation?.selection ?? initialLocation?.path;
-    return target && target !== projectRoot && isWithin(projectRoot, target) ? chainTo(projectRoot, target) : [];
+    return target && target !== projectRoot && isInsideRoot(projectRoot, target) ? chainTo(projectRoot, target) : [];
   });
   const rootRef = useRef<HTMLDivElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -241,7 +236,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     const timer = setTimeout(() => {
       void window.ave.workspace.searchFiles(trimmed).then((result) => {
         if (cancelled) return;
-        setMatches(result.ok ? result.matches.filter((match) => isWithin(folder, match.path)).slice(0, SEARCH_RESULT_LIMIT) : []);
+        setMatches(result.ok ? result.matches.filter((match) => isInsideRoot(folder, match.path)).slice(0, SEARCH_RESULT_LIMIT) : []);
       }, () => { if (!cancelled) setMatches([]); });
     }, SEARCH_DEBOUNCE_MS);
     return () => { cancelled = true; clearTimeout(timer); };

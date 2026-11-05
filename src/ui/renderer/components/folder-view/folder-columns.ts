@@ -3,6 +3,7 @@ import type { WorkspaceDirEntry, WorkspaceListDirResult } from "../../../../ipc/
 import { resolveFilePreviewRoute } from "../../preview/preview-renderers.js";
 import { resolveGrammar } from "../../hooks/use-highlighted-code.js";
 import { isComposerImageExtension } from "../../../../shared/composer-image-input.js";
+import { componentsUnderRoot } from "../../utils/project-path.js";
 
 export type FolderEntry = WorkspaceDirEntry;
 type FolderListError = NonNullable<WorkspaceListDirResult["error"]>;
@@ -113,8 +114,7 @@ export function folderKeyIntent(key: string): FolderKeyIntent {
 export function pathSegments(root: string, path: string): string[] {
   const rootName = root.split(/[\\/]/).filter(Boolean).pop() ?? root;
   if (path === root) return [rootName];
-  const rest = path.startsWith(root) ? path.slice(root.length) : path;
-  return [rootName, ...rest.split(/[\\/]/).filter(Boolean)];
+  return [rootName, ...(componentsUnderRoot(root, path) ?? path.split(/[\\/]/).filter(Boolean))];
 }
 
 /** Keep the first segment and the last `tail`; the hidden middle is returned for the "…" menu (case 24). */
