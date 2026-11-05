@@ -1,5 +1,6 @@
 import type { MemoryHistoryRead } from "../memory/memory-history.js";
 import type { MemoryUseStore, MemoryUseVia } from "../memory/memory-usage-log.js";
+import type { MemoryKind, NoteEntry } from "../memory/memory-manager.js";
 
 export interface MemoryUsageRow {
   memoryId: string;
@@ -26,8 +27,36 @@ export type MemoryResolvedOrigin =
   | { status: "absent" }
   /** The recorded conversation or message could not be read; other detail data remains available. */
   | { status: "unavailable"; sessionId: string; messageId?: string }
-  /** Session-only sources have no message fields. Ordinal counts all stored messages starting at one. */
-  | { status: "resolved"; sessionId: string; messageId?: string; title?: string; quote?: string; messageOrdinal?: number };
+  /** Session-only sources have no message fields. A message link uses its durable id, never a row position. */
+  | { status: "resolved"; sessionId: string; messageId?: string; title?: string; quote?: string };
+
+export type MemoryOriginSummary =
+  | { status: "absent" }
+  /** A recorded location and optional live title; the transcript is read only when opening its detail. */
+  | { status: "recorded"; sessionId: string; messageId?: string; title?: string }
+  | { status: "unavailable"; sessionId: string; messageId?: string };
+
+export interface MemoryListSummary {
+  id: string;
+  kind?: MemoryKind;
+  origin: MemoryOriginSummary;
+  /** All matching retained use rows, rather than the 200-row detail page. */
+  useCount: number;
+  lastUsedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type MemorySummariesResult =
+  | {
+      ok: true;
+      notes: NoteEntry[];
+      entries: MemoryListSummary[];
+      scopeCounts: { project: number; global: number; defaultProject: number; defaultProjectApplicable: boolean };
+      incomplete?: true;
+      limited?: true;
+    }
+  | { ok: false; error: "project-not-allowed" | "read-failed" | "unauthorized-frame" };
 
 export type MemoryDetailResult =
   | { ok: true; history: MemoryHistoryRead; origin: MemoryResolvedOrigin; usage: MemoryUsageRead }

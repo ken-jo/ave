@@ -864,6 +864,18 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.memory.detailGet, id);
   });
 
+  it("bridges batched memory summaries with optional project scope", async () => {
+    const api = await loadAveApi();
+    const project = { projectRoot: "/workspace/project", projectName: "project" };
+    const summaries = { ok: false, error: "read-failed" } as const;
+    mockInvoke.mockResolvedValue(summaries);
+    const getSummaries = api["memoryGetSummaries"] as AveApi["memoryGetSummaries"];
+    expect(await getSummaries(project)).toEqual(summaries);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.memory.summariesGet, project);
+    await getSummaries();
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.memory.summariesGet);
+  });
+
   it("bridges memory deletion with optional project scope and exposes no candidate or direct-save bridge", async () => {
     const api = await loadAveApi();
     const project = { projectRoot: "/workspace/project", projectName: "project" };

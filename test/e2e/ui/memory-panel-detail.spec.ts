@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect } from "./fixtures.js";
 
@@ -28,6 +28,17 @@ const test = base.extend({
       `<!-- ave:memory-meta:${Buffer.from(JSON.stringify(metadata)).toString("base64url")} -->`,
       `# ${TITLE}\n\n${AFTER}\n`,
     ].join("\n"), { mode: 0o600 });
+    utimesSync(join(memories, "payment-timeout.md"), new Date(AT), new Date(AT));
+    const idleAt = new Date(Date.now() - 38 * 24 * 60 * 60 * 1000).toISOString();
+    writeFileSync(join(memories, "retired-reference.md"), [
+      "<!-- ave:kind=memory -->",
+      `<!-- ave:memory-meta:${Buffer.from(JSON.stringify({
+        v: 1, id: "39c71802-a1a5-4b7b-aee1-841458e40a25", scope: { type: "global" },
+        kind: "reference", state: "active", source: "user", createdAt: idleAt,
+      })).toString("base64url")} -->`,
+      "# Retired callback reference\n\nAn older reference.\n",
+    ].join("\n"), { mode: 0o600 });
+    utimesSync(join(memories, "retired-reference.md"), new Date(idleAt), new Date(idleAt));
     const messages = [
       { role: "user", meta: { messageId: SOURCE_MESSAGE_ID }, content: QUOTE },
       ...Array.from({ length: 24 }, (_, index) => [
@@ -60,6 +71,12 @@ test("shows live origin, history and filtered uses at wide and narrow sizes", as
   });
   const panel = mainWindow.getByTestId("memory-search-panel");
   await expect(panel).toBeVisible();
+  await expect(panel.getByRole("region", { name: "Memory scopes" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Tell Ave in a new conversation" })).toBeVisible();
+  await expect(panel.getByRole("complementary", { name: "Global memories" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: /Retired callback reference.*Unused for 38 days/ })).toBeVisible();
+  await expect(panel.getByTestId("memory-recent-strip")).toContainText("Payment gateway investigation");
+  await mainWindow.screenshot({ path: testInfo.outputPath("memory-empty-global.png"), animations: "disabled" });
   await panel.getByRole("tabpanel", { name: /Memories/ }).getByRole("button", { name: TITLE, exact: false }).click();
   await expect(panel.getByText(QUOTE, { exact: true })).toBeVisible();
   await expect(panel.getByText("Payment gateway investigation", { exact: false }).first()).toBeVisible();
@@ -94,4 +111,16 @@ test("shows live origin, history and filtered uses at wide and narrow sizes", as
   await expect(mainWindow.locator('[data-chat-entry-index="0"]').getByText(QUOTE, { exact: true })).toBeInViewport();
   await expect(mainWindow.locator('[data-chat-entry-index="48"]')).not.toBeInViewport();
   await mainWindow.screenshot({ path: testInfo.outputPath("memory-source-message.png"), animations: "disabled" });
+});
+
+test("starts a conversation from the empty project memory state", async ({ app, mainWindow }) => {
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
+    if (!window) throw new Error("Memory panel window unavailable");
+    window.webContents.send("ave:view:activate", { viewKey: "memory" });
+  });
+  const panel = mainWindow.getByTestId("memory-search-panel");
+  await expect(panel.getByRole("complementary", { name: "Global memories" })).toContainText(TITLE);
+  await panel.getByRole("button", { name: "Tell Ave in a new conversation" }).click();
+  await expect(panel).not.toBeVisible();
 });

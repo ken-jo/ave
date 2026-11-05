@@ -68,7 +68,7 @@ export function MemoryDetailContent({ detail, onOpenSession, onSameOrigin }: {
               : <>
                 <div className="rounded-lg border p-3 space-y-2">
                   <p className="font-medium break-words">{origin.title || t("memorySearchPanel.sessionFallbackTitle", { id: origin.sessionId.slice(0, 8) })}</p>
-                  <p className="text-muted-foreground">{origin.messageOrdinal ? t("memorySearchPanel.messageOrdinal", { ordinal: origin.messageOrdinal }) : t("memorySearchPanel.noMessagePosition")}</p>
+                  {!origin.messageId && <p className="text-muted-foreground">{t("memorySearchPanel.noMessagePosition")}</p>}
                   {origin.quote !== undefined && <blockquote className="border-l-2 pl-2 whitespace-pre-wrap break-words">{origin.quote}</blockquote>}
                   {origin.quote !== undefined && <p className="text-muted-foreground">{t("memorySearchPanel.savedFromMessage")}</p>}
                 </div>

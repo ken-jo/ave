@@ -6,7 +6,7 @@ import type { MemoryDetailResult } from "../../../../shared/memory-detail.js";
 
 const DETAIL: Extract<MemoryDetailResult, { ok: true }> = {
   ok: true,
-  origin: { status: "resolved", sessionId: "source", messageId: "message-2", title: "Timeout discussion", quote: "Keep the gateway timeout at 8 seconds", messageOrdinal: 2 },
+  origin: { status: "resolved", sessionId: "source", messageId: "message-2", title: "Timeout discussion", quote: "Keep the gateway timeout at 8 seconds" },
   history: { entries: [
     { v: 1, memoryId: "timeout", at: "2026-11-01T10:00:00Z", op: "created", actor: "capture", after: "8 seconds" },
     { v: 1, memoryId: "timeout", at: "2026-11-02T10:00:00Z", op: "updated", actor: "assistant", before: "8 seconds", after: "10 seconds", sessionId: "correction" },
@@ -24,7 +24,8 @@ describe("memory detail", () => {
     const onSameOrigin = vi.fn();
     render(<MemoryDetailContent detail={DETAIL} onOpenSession={onOpenSession} onSameOrigin={onSameOrigin} />);
     expect(screen.getByText(DETAIL.origin.status === "resolved" ? DETAIL.origin.quote! : "")).toBeTruthy();
-    expect(screen.getByText("2번째 메시지")).toBeTruthy();
+    expect(screen.queryByText(/번째 메시지/)).toBeNull();
+    expect(screen.queryByText("/remember · 메시지 위치 없음")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "대화에서 보기" }));
     expect(onOpenSession).toHaveBeenCalledWith("source", "message-2");
     fireEvent.click(screen.getByRole("button", { name: "이 대화의 다른 기억" }));

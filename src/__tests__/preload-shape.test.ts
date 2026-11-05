@@ -520,6 +520,7 @@ describe("preload contextBridge world shape lock", () => {
           "memoryGetAgentsMd": "function",
           "memoryGetDetail": "function",
           "memoryGetIndex": "function",
+          "memoryGetSummaries": "function",
           "memoryGetUserPrefs": "function",
           "memoryListEntries": "function",
           "memoryListSessions": "function",

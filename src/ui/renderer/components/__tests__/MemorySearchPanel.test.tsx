@@ -14,12 +14,26 @@ function setupUser(): UserEventDriver {
   return (userEvent as unknown as { setup: () => UserEventDriver }).setup();
 }
 
+function summariesForNotes(notes: Awaited<ReturnType<AveApi["memoryListEntries"]>>) {
+  return {
+    ok: true as const,
+    notes,
+    entries: notes.filter((note) => note.id).map((note) => ({
+      id: note.id!, kind: note.kind,
+      origin: note.origin ? { status: "recorded" as const, sessionId: note.origin.sessionId } : { status: "absent" as const },
+      useCount: 0, createdAt: note.createdAt, updatedAt: note.updatedAt,
+    })),
+    scopeCounts: { project: notes.filter((note) => !note.id || note.projectRoot).length, global: notes.filter((note) => note.id && !note.projectRoot).length, defaultProject: 0, defaultProjectApplicable: false },
+  };
+}
+
 function memorySearchPanelApi(): AveApi {
   const { api } = makeMockAveApi();
   Object.assign(api, {
     memoryGetIndex: vi.fn(async () => ""),
     memoryGetDetail: vi.fn(async () => ({ ok: true, origin: { status: "absent" }, history: { entries: [] }, usage: { entries: [] } })),
     memoryListEntries: vi.fn(async () => []),
+    memoryGetSummaries: vi.fn(async (opts?: Parameters<AveApi["memoryListEntries"]>[0]) => summariesForNotes(opts ? await api.memoryListEntries(opts) : await api.memoryListEntries())),
     memoryListSessions: vi.fn(async () => [
       {
         sessionId: "11111111-2222-3333-4444-555555555555",
@@ -61,6 +75,76 @@ function panelWithMemories() {
 }
 
 describe("MemorySearchPanel", () => {
+  it("opens a new conversation from an empty project and shows global memories beside it", async () => {
+    const api = memorySearchPanelApi();
+    const note = { id: "global-memory", filename: "global.md", title: "모든 프로젝트의 선호", content: "짧게 답변", updatedAt: OLD };
+    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries: vi.fn(async () => ({ ...summariesForNotes([note]), scopeCounts: { project: 0, global: 1, defaultProject: 3, defaultProjectApplicable: false } })) });
+    const onStartConversation = vi.fn(async () => true);
+    render(<MemorySearchPanel api={api} project={PROJECT} defaultProject={{ projectRoot: "C:\\workspace\\default", projectName: "default", isDefault: true }} onStartConversation={onStartConversation} onAskAveToFix={noFix} />);
+    const globalList = await screen.findByRole("complementary", { name: "전역 기억" });
+    expect(within(globalList).getByRole("button", { name: /모든 프로젝트의 선호/ })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "기억 범위" }).textContent).toContain("여기엔 적용 안 됨");
+    fireEvent.click(screen.getByRole("button", { name: "새 대화에서 알려 주기" }));
+    await waitFor(() => expect(onStartConversation).toHaveBeenCalledTimes(1));
+    expect(api.memoryGetDetail).not.toHaveBeenCalled();
+  });
+
+  it("does not label an unscoped legacy note as global", async () => {
+    const api = memorySearchPanelApi();
+    const note = { filename: "legacy.md", title: "이전 기억", content: "이전 형식의 본문", updatedAt: OLD };
+    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries: vi.fn(async () => summariesForNotes([note])) });
+    render(<MemorySearchPanel api={api} project={{ ...PROJECT, isDefault: true }} onAskAveToFix={noFix} />);
+    const row = await screen.findByRole("button", { name: /^이전 기억/ });
+    expect(row.textContent).not.toContain("전역");
+  });
+
+  it("shows idle wording and a recent saved band with source and save time", async () => {
+    const api = memorySearchPanelApi();
+    const oldAt = new Date(Date.now() - 38 * 24 * 60 * 60 * 1000).toISOString();
+    const notes = [
+      { id: "unused", filename: "unused.md", title: "안 쓰는 콜백", content: "지난 연동", createdAt: oldAt, updatedAt: oldAt },
+      { id: "recent", filename: "recent.md", title: "새로 배운 선호", content: "세 줄 요약", createdAt: RECENT, updatedAt: RECENT },
+    ];
+    const summaries = summariesForNotes(notes);
+    summaries.entries[1]!.origin = { status: "recorded", sessionId: "review-source" };
+    Object.assign(api, { memoryListEntries: vi.fn(async () => notes), memoryGetSummaries: vi.fn(async () => ({ ...summaries, entries: summaries.entries.map((entry) => entry.id === "recent" ? { ...entry, origin: { status: "recorded", sessionId: "review-source", title: "원본 논의" } } : entry) })) });
+    render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
+    const idleRow = await screen.findByRole("button", { name: /안 쓰는 콜백/ });
+    expect(idleRow.textContent).toContain("38일 동안 안 쓰임");
+    expect(idleRow.textContent).not.toContain("0회");
+    const band = await screen.findByTestId("memory-recent-strip");
+    expect(band.textContent).toContain("지난 7일 · 묻지 않고 바로 저장됨");
+    expect(band.textContent).toContain("원본 논의");
+    expect(band.textContent).toContain("1시간 전");
+  });
+
+  it("loads one summary batch and no full details for a list of memories", async () => {
+    const api = memorySearchPanelApi();
+    const notes = Array.from({ length: 60 }, (_, index) => ({ id: `memory-${index}`, filename: `memory-${index}.md`, title: `기억 ${index}`, content: `본문 ${index}`, updatedAt: OLD }));
+    const memoryGetSummaries = vi.fn(async () => summariesForNotes(notes));
+    Object.assign(api, { memoryListEntries: vi.fn(async () => notes), memoryGetSummaries });
+    render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
+    await screen.findByRole("button", { name: /^기억 59/ });
+    expect(memoryGetSummaries).toHaveBeenCalledTimes(1);
+    expect(api.memoryGetDetail).not.toHaveBeenCalled();
+  });
+
+  it("keeps a selected memory detail cached when the search changes", async () => {
+    const api = memorySearchPanelApi();
+    const note = { id: "cached-memory", filename: "cached.md", title: "검색할 기억", content: "본문", updatedAt: OLD };
+    const memoryGetSummaries = vi.fn(async () => summariesForNotes([note]));
+    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries, memorySearchEntries: vi.fn(async () => [{ ...note, excerpt: note.content }]) });
+    render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
+    fireEvent.click(await screen.findByRole("button", { name: /^검색할 기억/ }));
+    await screen.findByRole("tab", { name: /변경 이력/ });
+    expect(api.memoryGetDetail).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByRole("textbox", { name: "메모리 검색" }), { target: { value: "검색할" } });
+    await waitFor(() => expect(api.memorySearchEntries).toHaveBeenCalledWith("검색할"));
+    await screen.findByRole("tab", { name: /변경 이력/ });
+    expect(api.memoryGetDetail).toHaveBeenCalledTimes(1);
+    expect(memoryGetSummaries).toHaveBeenCalledTimes(1);
+  });
+
   it("shows all memories from the source conversation after opening one search result", async () => {
     const api = memorySearchPanelApi();
     const origin = { v: 1 as const, sessionId: "shared-source" };
@@ -84,7 +168,7 @@ describe("MemorySearchPanel", () => {
     const api = panelWithMemories();
     Object.assign(api, { memoryGetDetail: vi.fn(async () => ({
       ok: true,
-      origin: { status: "resolved", sessionId: "source-session", messageId: "source-message", title: "원본 대화", quote: "타임아웃을 기억해 줘", messageOrdinal: 2 },
+      origin: { status: "resolved", sessionId: "source-session", messageId: "source-message", title: "원본 대화", quote: "타임아웃을 기억해 줘" },
       history: { entries: [{ v: 1, memoryId: "m1", at: RECENT, op: "created", actor: "capture", after: "게이트웨이 기준" }] },
       usage: { entries: [{ memoryId: "m1", at: RECENT, via: "injected", sessionId: "used-session" }] },
     })) });

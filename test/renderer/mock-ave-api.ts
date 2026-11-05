@@ -1,4 +1,6 @@
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
+import type { AveApi } from "../../src/ui/renderer/types.js";
+import type { MemorySummariesResult } from "../../src/shared/memory-detail.js";
 /** Mockable AveApi surface for renderer tests. Every method is a `vi.fn()` so tests can spy on calls,
  * and the default return values are sensible empty/pass values so <App /> can mount without crashing. */
 import { vi, type Mock } from "vitest";
@@ -700,6 +702,24 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memorySearchNotes: vi.fn(async () => []),
     memoryListEntries: vi.fn(async () => []),
     memoryGetDetail: vi.fn(async () => ({ ok: false as const, error: "not-found" as const })),
+    memoryGetSummaries: vi.fn(async (options?: Parameters<AveApi["memoryListEntries"]>[0]): Promise<MemorySummariesResult> => {
+      const notes: Awaited<ReturnType<AveApi["memoryListEntries"]>> = await api.memoryListEntries!(options);
+      return {
+        ok: true,
+        notes,
+        entries: notes.flatMap((note) => note.id ? [{
+          id: note.id, kind: note.kind, createdAt: note.createdAt, updatedAt: note.updatedAt,
+          origin: note.origin ? { status: "recorded" as const, sessionId: note.origin.sessionId, messageId: note.origin.messageId } : { status: "absent" as const },
+          useCount: 0,
+        }] : []),
+        scopeCounts: {
+          project: notes.filter((note) => note.projectRoot || !note.id).length,
+          global: notes.filter((note) => note.id && !note.projectRoot).length,
+          defaultProject: 0,
+          defaultProjectApplicable: options?.includeUnscoped === true,
+        },
+      };
+    }),
     memoryDeleteEntry: vi.fn(async () => ({ ok: true })),
     memoryUndo: vi.fn(async () => ({ ok: true, undone: "deleted", title: "" })),
     onMemorySaveResult: vi.fn((_handler: (event: unknown) => void) => () => {}),

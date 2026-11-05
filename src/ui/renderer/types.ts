@@ -1,4 +1,4 @@
-import type { MemoryDetailResult } from "../../shared/memory-detail.js";
+import type { MemoryDetailResult, MemorySummariesResult } from "../../shared/memory-detail.js";
 import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
@@ -893,6 +893,7 @@ export type AveApi = {
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryGetDetail: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryDetailResult>;
+  memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
   memoryListEntries: (opts?: ProjectQueryOptions) => Promise<MemoryEntry[]>;
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;
   memoryUndo: (token: string) => Promise<MemoryUndoIpcResult>;

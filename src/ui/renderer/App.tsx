@@ -2002,7 +2002,16 @@ export function App() {
         <MemorySearchPanel
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
+          defaultProject={defaultWorkspaceProject}
           initialQuery={memoryPanelQuery}
+          onStartConversation={async () => {
+            const project = activeProject ?? defaultWorkspaceProject;
+            const started = await focusedSession.startNewChat(project
+              ? { projectRoot: project.projectRoot, projectName: project.projectName }
+              : undefined);
+            if (started) closePane();
+            return started;
+          }}
           onAskAveToFix={async (memory) => {
             const opened = await handleAskAveToFix(memory);
             if (opened) closePane();
