@@ -1422,6 +1422,7 @@ export class SubscriptionRuntimeService {
       status = await this.verify(safeSelection.provider);
       this.assertRunning();
       safetyEpoch = this.safetyEpoch(safeSelection.provider);
+      if (status.capabilities.chat) notifyAutoVerified(safeSelection.provider);
     }
     if (!status.capabilities.chat) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
 
@@ -1741,6 +1742,18 @@ export class SubscriptionRuntimeService {
       throw stableError(error);
     }
   }
+}
+
+const autoVerifiedListeners = new Set<(provider: SubscriptionRuntimeId) => void>();
+
+// A turn's re-proof changes status outside every settings mutation, so the IPC layer is told to publish it.
+export function onSubscriptionRuntimeAutoVerified(listener: (provider: SubscriptionRuntimeId) => void): () => void {
+  autoVerifiedListeners.add(listener);
+  return () => { autoVerifiedListeners.delete(listener); };
+}
+
+function notifyAutoVerified(provider: SubscriptionRuntimeId): void {
+  for (const listener of autoVerifiedListeners) listener(provider);
 }
 
 let service: SubscriptionRuntimeService | null = null;

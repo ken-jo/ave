@@ -19,6 +19,7 @@ import { AcpSubscriptionSessionError } from "../acp-subscription-session-client.
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../acp-subscription-session-client.js";
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import {
+  onSubscriptionRuntimeAutoVerified,
   SubscriptionRuntimeService,
   subscriptionRuntimeErrorCode,
 } from "../subscription-runtime-service.js";
@@ -288,6 +289,30 @@ describe("SubscriptionRuntimeService", () => {
     expect(session.provider).toBe("grok-build");
     expect(registry.openTextSession).toHaveBeenCalledWith("grok-build", expect.any(Object));
     await session.stop();
+  });
+  it("announces the proof a first turn makes after a restart, once", async () => {
+    const rawSession = {
+      provider: "grok-build" as const,
+      streamTurn: async function* (): AsyncGenerator<StreamEvent> {},
+      cancelActiveTurn: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    const registry = {
+      getStatus: vi.fn(async () => GROK_CONNECTED),
+      verify: vi.fn(async () => GROK_CONNECTED),
+      openTextSession: vi.fn(async () => rawSession),
+      stopAll: vi.fn(async () => undefined),
+    } as unknown as AcpSubscriptionRuntimeRegistry;
+    const service = await runtimeService(registry);
+    const announced: string[] = [];
+    const unsubscribe = onSubscriptionRuntimeAutoVerified((provider) => announced.push(provider));
+    try {
+      expect((await service.getStatus("grok-build")).capabilities.chat).toBe(false);
+      await (await service.openTextSession({ kind: "subscription", provider: "grok-build" })).stop();
+      await (await service.openTextSession({ kind: "subscription", provider: "grok-build" })).stop();
+      expect(announced).toEqual(["grok-build"]);
+      expect(registry.verify).toHaveBeenCalledTimes(1);
+    } finally { unsubscribe(); }
   });
   it("prevents a held service reference from opening an in-flight session after stop", async () => {
     const { promise: pendingStatus, resolve: resolveStatus } = deferred<AcpSubscriptionStatus>();

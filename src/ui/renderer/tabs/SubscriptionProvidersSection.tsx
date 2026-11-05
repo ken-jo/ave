@@ -234,6 +234,8 @@ export function SubscriptionAuthControls({
   const signedOutUnverified = runtime === "unverified" && connection === "signed-out";
   const hasRuntimeSelection = runtime !== "not-configured" && runtime !== "checking";
   const needsRuntimeSelection = runtime === "not-configured";
+  // Chat no longer waits on this: main re-proves a connected, ready runtime on its first turn and announces the result. Verify
+  // stays offered while the runtime is unproven, so a first-turn proof that failed can be retried from here.
   const needsVerification = (runtime === "unverified" && !signedOutUnverified)
     || (runtime === "ready" && connected && !chatReady);
   const isBusy = provider.busyAction !== null && provider.busyAction !== undefined;

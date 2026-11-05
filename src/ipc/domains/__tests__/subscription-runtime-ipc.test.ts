@@ -12,6 +12,7 @@ import { makeAppIpcInvoker } from "./test-helpers.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const runtimeServiceMock = vi.hoisted(() => ({
   get: vi.fn(),
+  onAutoVerified: vi.fn((_listener: (provider: string) => void) => vi.fn()),
   errorCode: vi.fn((error: unknown) => {
     if (
       error !== null
@@ -52,6 +53,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../../../main/subscription-runtime-service.js", () => ({
   getSubscriptionRuntimeService: runtimeServiceMock.get,
+  onSubscriptionRuntimeAutoVerified: runtimeServiceMock.onAutoVerified,
   subscriptionRuntimeErrorCode: runtimeServiceMock.errorCode,
   SubscriptionRuntimeServiceError: runtimeServiceMock.RuntimeError,
 }));
@@ -438,6 +440,22 @@ describe("common subscription runtime IPC", () => {
     await expect(second).resolves.toMatchObject({ ok: false });
     expect(patch).toHaveBeenCalledTimes(2);
     expect(bound.at(-1)).toEqual({ kind: "api" });
+  });
+
+  it("announces a status a chat turn proved", async () => {
+    const send = vi.fn();
+    const deps = { ...makeStatefulSelectionDeps({ provider: "openai", vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "subscription", provider: "codex" } }).deps };
+    deps.getAppWindows = vi.fn(() => [{ isDestroyed: vi.fn(() => false), webContents: { isDestroyed: vi.fn(() => false), send } }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const dispose = registerSettingsHandlers(deps as never);
+    const listener = runtimeServiceMock.onAutoVerified.mock.calls.at(-1)![0];
+    listener("codex");
+    expect(send).toHaveBeenCalledWith("ave:settings:subscription:status-updated", expect.objectContaining({ provider: "codex" }));
+    // The registration hands back the service's own unsubscribe, so the listener can be removed.
+    const unsubscribe = runtimeServiceMock.onAutoVerified.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
+    dispose();
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it("announces the subscription restored when overlapping switches fail to save", async () => {

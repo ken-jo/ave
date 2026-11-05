@@ -72,6 +72,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import {
   getSubscriptionRuntimeService,
+  onSubscriptionRuntimeAutoVerified,
   subscriptionRuntimeErrorCode,
   SubscriptionRuntimeServiceError,
   type SubscriptionRuntimeService,
@@ -495,7 +496,9 @@ export interface SettingsHandlerHooks {
   marketplaceSettingsChanged(): void;
 }
 
-export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerHooks): void {
+/** Registers the settings IPC handlers. Returns the disposer for the subscription auto-verify listener, the one registration
+ * here that outlives ipcMain's handler table. */
+export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerHooks): () => void {
   const { settingsService, conversationLoop, auditLogger } = deps;
   let activeChatRuntimeTransitionRevision = 0;
   // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
@@ -507,6 +510,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     };
     broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
+  const stopAutoVerifiedListener = onSubscriptionRuntimeAutoVerified(publishSubscriptionRuntimeStatusUpdated);
 
   const auditSubscriptionMutation = (
     action: string,
@@ -1527,4 +1531,5 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     });
     return { ok: true };
   });
+  return stopAutoVerifiedListener;
 }
