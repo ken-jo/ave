@@ -375,11 +375,9 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       name: BROWSER_TOOL.tabNew,
       description: t("be_browserTools.tabNewDescription"),
       category: "network",
-      // A chat that cannot open tabs is refused without asking: approving it would approve nothing.
-      categoryForInput: (raw, ctx) => {
-        const scope = policy.windowOf(ctx?.sessionId);
-        return scope && !policy.tabNewTarget(scope).ok ? "read" : urlCategory(raw);
-      },
+      // Classified by its URL alone, like every other call. Whether this chat can open a tab is decided at execution, where the
+      // pane may have changed since the card; a category taken from that state would let a later network open run as a read.
+      categoryForInput: urlCategory,
       approvalMemoryScope: (raw) => urlScope(raw, "agent"),
       jsonSchema: object({ url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.tabNew),

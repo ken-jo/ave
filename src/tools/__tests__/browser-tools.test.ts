@@ -351,7 +351,7 @@ describe("browser tools", () => {
     expect(observed.completed).toEqual([]);
   });
 
-  it("refuses browser_tab_new at once in a chat that cannot open tabs, naming its attached page", async () => {
+  it("refuses browser_tab_new at once in a chat that cannot open tabs, naming its attached page, under its ordinary network card", async () => {
     const h = harness({ noTabOpener: true });
     const attached = h.userTab("https://www.google.com/");
     h.tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${attached.guest.id}` });
@@ -360,7 +360,8 @@ describe("browser tools", () => {
     expect(result.output).toContain(`it works in ${attached.handle} (https://www.google.com/)`);
     expect(result.output).toContain("browser_navigate");
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
-    expect(h.cards).toHaveLength(0);
+    // The category never follows pane state, so the call is asked like any network open before it is refused.
+    expect(h.cards.map((card) => card.toolName)).toEqual([BROWSER_TOOL.tabNew]);
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
   });
 
