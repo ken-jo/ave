@@ -8,20 +8,24 @@ import {
 } from "../memory-write.js";
 import type { ToolExecutionContext } from "../types.js";
 
+// A turn the host saw only keyboard text in; memory_write refuses anything else.
 const emptyCtx: ToolExecutionContext = {
   cwd: "",
   extraAllowedDirectories: [],
-  metadata: {},
+  metadata: { memoryWriteTainted: false },
 };
 
 function makeStore(
   saveMemory: MemoryWriteStore["saveMemory"] = vi.fn(async (title: string) => ({
-    filename: `${title}.md`,
-    title,
-    content: title,
+    op: "created" as const,
+    entry: { id: "a1b2c3d4-0000-4000-8000-000000000001", filename: `${title}.md`, title, content: title },
   })),
-): { store: MemoryWriteStore; saveMemory: typeof saveMemory } {
-  return { store: { saveMemory }, saveMemory };
+  updateMemoryById: MemoryWriteStore["updateMemoryById"] = vi.fn(async (id: string, title: string, _content: string, options: { scope?: "global"; projectRoot?: string }) => ({
+    op: "updated" as const,
+    entry: { id, filename: `${title}.md`, title, content: title, ...(options.scope === "global" || !options.projectRoot ? {} : { projectRoot: options.projectRoot }) },
+  })),
+): { store: MemoryWriteStore; saveMemory: typeof saveMemory; updateMemoryById: typeof updateMemoryById } {
+  return { store: { saveMemory, updateMemoryById }, saveMemory, updateMemoryById };
 }
 
 async function run(
@@ -34,37 +38,38 @@ async function run(
 }
 
 describe("memory_write — happy path", () => {
-  it("saves a host-validated candidate via saveMemory and reports the filename", async () => {
+  it("saves an active memory at once and reports what it saved", async () => {
     const { store, saveMemory } = makeStore();
     const result = await run({ title: "user-prefers-dark", content: "The user prefers dark mode." }, store);
     expect(result.isError).toBe(false);
     expect(saveMemory).toHaveBeenCalledTimes(1);
     expect(saveMemory).toHaveBeenCalledWith("user-prefers-dark", "The user prefers dark mode.", {
-      source: "assistant",
-      state: "candidate",
-    }, "assistant");
+      source: "assistant"
+    }, "assistant", {});
     const parsed = JSON.parse(result.output);
-    expect(parsed).toMatchObject({
+    expect(parsed).toEqual({
       saved: true,
-      candidate: true,
-      state: "candidate",
+      op: "created",
+      id: "a1b2c3d4-0000-4000-8000-000000000001",
       title: "user-prefers-dark",
+      scope: "global",
     });
-    expect(parsed.filename).toBe("user-prefers-dark.md");
   });
 
-  it("keeps a write contract while advertising candidate-only submission", () => {
+  it("keeps a write contract and tells the model the save is immediate and undoable", () => {
     const tool = createMemoryWriteTool({ memoryManager: makeStore().store });
     expect(tool.category).toBe("write");
     expect(tool.isReadOnly({ title: "t", content: "x" })).toBe(false);
-    expect(tool.description).toContain("candidate long-term memory");
-    expect(tool.description).toContain("not active memory");
+    expect(tool.description).toContain("saved immediately");
+    expect(tool.description).toContain("can undo");
+    expect(tool.description).toContain("memory_search first");
+    expect(tool.description).not.toContain("candidate");
   });
 
   it("trims surrounding whitespace before persisting", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "  spaced  ", content: "  a fact  " }, store);
-    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant", state: "candidate" }, "assistant");
+    expect(saveMemory).toHaveBeenCalledWith("spaced", "a fact", { source: "assistant" }, "assistant", {});
   });
 
   it("uses the host-selected project rather than model-provided scope", async () => {
@@ -75,15 +80,75 @@ describe("memory_write — happy path", () => {
       {
         cwd: "C:\\workspace\\alpha",
         extraAllowedDirectories: [],
-        metadata: {},
+        metadata: { memoryWriteTainted: false },
       },
     );
 
     expect(saveMemory).toHaveBeenCalledWith("project fact", "Alpha uses a staged rollout.", {
       projectRoot: "C:\\workspace\\alpha",
-      source: "assistant",
-      state: "candidate",
-    }, "assistant");
+      source: "assistant"
+    }, "assistant", {});
+  });
+});
+
+describe("memory_write — id, scope and the turn's taint", () => {
+  const alpha: ToolExecutionContext = { cwd: "C:\\workspace\\alpha", extraAllowedDirectories: [], metadata: { memoryWriteTainted: false } };
+
+  it("updates the memory named by id in the current project instead of saving a new one", async () => {
+    const { store, saveMemory, updateMemoryById } = makeStore();
+    const result = await run({ id: " mem-1 ", title: "Package manager", content: "Use pnpm." }, store, alpha);
+    expect(result.isError, result.output).toBe(false);
+    expect(saveMemory).not.toHaveBeenCalled();
+    expect(updateMemoryById).toHaveBeenCalledWith("mem-1", "Package manager", "Use pnpm.", {
+      projectRoot: "C:\\workspace\\alpha", source: "assistant",
+    }, "assistant", {});
+    expect(JSON.parse(result.output)).toMatchObject({ saved: true, op: "updated", id: "mem-1", scope: "project" });
+  });
+
+  it("saves to global memory only when the model asks for scope global", async () => {
+    const { store, saveMemory, updateMemoryById } = makeStore();
+    const saved = await run({ title: "Reply language", content: "Answer in Korean.", scope: "global" }, store, alpha);
+    expect(saveMemory).toHaveBeenCalledWith("Reply language", "Answer in Korean.", { source: "assistant" }, "assistant", {});
+    expect(JSON.parse(saved.output)).toMatchObject({ scope: "global" });
+
+    await run({ id: "mem-2", title: "Reply language", content: "Answer in Korean.", scope: "global" }, store, alpha);
+    expect(updateMemoryById).toHaveBeenCalledWith("mem-2", "Reply language", "Answer in Korean.", {
+      projectRoot: "C:\\workspace\\alpha", source: "assistant", scope: "global",
+    }, "assistant", {});
+  });
+
+  it.each([
+    ["a non-string id", { id: 7, title: "t", content: "x" }, "`id`"],
+    ["an empty id", { id: "  ", title: "t", content: "x" }, "`id`"],
+    ["a project scope", { title: "t", content: "x", scope: "project" }, "`scope`"],
+  ])("rejects %s", async (_label, input, mention) => {
+    const { store, saveMemory, updateMemoryById } = makeStore();
+    const result = await run(input, store);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain(mention);
+    expect(saveMemory).not.toHaveBeenCalled();
+    expect(updateMemoryById).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the host marked the turn tainted", { memoryWriteTainted: true }],
+    ["the host did not say", {}],
+  ])("refuses with external-context when %s", async (_label, metadata) => {
+    const { store, saveMemory, updateMemoryById } = makeStore();
+    for (const input of [{ title: "t", content: "x" }, { id: "mem-1", title: "t", content: "x" }]) {
+      const result = await run(input, store, { cwd: "", extraAllowedDirectories: [], metadata });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("external-context");
+    }
+    expect(saveMemory).not.toHaveBeenCalled();
+    expect(updateMemoryById).not.toHaveBeenCalled();
+  });
+
+  it("reports the store's unsafe-text refusal with that stable reason", async () => {
+    const { store } = makeStore(vi.fn(async () => { throw new Error("saveMemory: unsafe-text: zero-width and bidi control characters are not allowed"); }));
+    const result = await run({ title: "t", content: "hidden\u200Btext" }, store);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("unsafe-text");
   });
 });
 
@@ -96,24 +161,23 @@ describe("memory_write — provenance", () => {
       {
         cwd: "",
         extraAllowedDirectories: [],
-        metadata: { sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10", turnMessageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f" },
+        metadata: { memoryWriteTainted: false, sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10", turnMessageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f" },
       },
     );
     expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", {
       source: "assistant",
-      state: "candidate",
       origin: {
         v: 1,
         sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10",
         messageId: "7d1c2a4e-9f0b-4c3d-8e6f-5a4b3c2d1e0f",
       },
-    }, "assistant");
+    }, "assistant", { sessionId: "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10" });
   });
 
   it("ignores provenance the model puts in its arguments", async () => {
     const { store, saveMemory } = makeStore();
     await run({ title: "stack", content: "Alpha uses pnpm.", origin: { sessionId: "forged" }, sessionId: "forged" }, store);
-    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant", state: "candidate" }, "assistant");
+    expect(saveMemory).toHaveBeenCalledWith("stack", "Alpha uses pnpm.", { source: "assistant" }, "assistant", {});
   });
 });
 

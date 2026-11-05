@@ -92,11 +92,6 @@ type MemoryProjectOptions = {
   includeUnscoped?: boolean;
 };
 
-/** An explicit save always names its scope; the default project and global memory are separate. */
-type MemorySaveScope =
-  | { scope: "global" }
-  | { scope: "project"; projectRoot: string; projectName?: string };
-
 function invokeWithOptionalMemoryOptions<T>(
   channel: string,
   opts?: MemoryProjectOptions,
@@ -124,16 +119,6 @@ function invokeMemoryDelete<T>(
   return opts === undefined
     ? ipcRenderer.invoke(channel, filename) as Promise<T>
     : ipcRenderer.invoke(channel, filename, opts) as Promise<T>;
-}
-
-function invokeMemoryCandidateAction<T>(
-  channel: string,
-  id: string,
-  opts?: MemoryProjectOptions,
-): Promise<T> {
-  return opts === undefined
-    ? ipcRenderer.invoke(channel, { id }) as Promise<T>
-    : ipcRenderer.invoke(channel, { id, opts }) as Promise<T>;
 }
 
 /** What an uninstall channel answers, as the renderer reads it. */
@@ -457,16 +442,8 @@ export function buildInternalApiSurface() {
 
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
-  memoryListCandidates: async (opts?: MemoryProjectOptions) =>
-    invokeWithOptionalMemoryOptions(CHANNELS.memory.candidatesList, opts),
-  memorySaveEntry: async (title: string, content: string, scope: MemorySaveScope) =>
-    ipcRenderer.invoke(CHANNELS.memory.entriesSave, title, content, scope),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>
     invokeMemoryDelete(CHANNELS.memory.entriesDelete, filename, opts),
-  memoryActivateCandidate: async (id: string, opts?: MemoryProjectOptions) =>
-    invokeMemoryCandidateAction(CHANNELS.memory.candidateActivate, id, opts),
-  memoryDeleteCandidate: async (id: string, opts?: MemoryProjectOptions) =>
-    invokeMemoryCandidateAction(CHANNELS.memory.candidateDelete, id, opts),
   memorySearchEntries: async (query: string, opts?: MemoryProjectOptions) =>
     invokeMemorySearch(CHANNELS.memory.entriesSearch, query, opts),
   memoryGetIndex: async (opts?: MemoryProjectOptions) =>

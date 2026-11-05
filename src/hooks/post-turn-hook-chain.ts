@@ -147,7 +147,8 @@ export class PostTurnHookChain {
           ...sessionMeta,
           title: detector.newTitle,
         });
-        log.info(`update-title: session ${ctx.sessionId} title set to "${detector.newTitle}"`);
+        // No user content in logs: the id and the title's length only.
+        log.info("update-title: session %s title set (%d chars)", ctx.sessionId, detector.newTitle.length);
       }
     } catch (err) {
       log.warn("update-title failed: %s", err);

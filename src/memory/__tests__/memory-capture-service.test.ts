@@ -25,13 +25,13 @@ function reviewedCapture(overrides: Partial<Record<string, unknown>> = {}): stri
   });
 }
 
-function makeMemoryManager(existing: NoteEntry[] = []) {
+function makeMemoryManager() {
   const saved: NoteEntry[] = [];
   const saveMemory = vi.fn(async (
     title: string,
     content: string,
     options: Partial<NoteEntry> = {},
-  ): Promise<NoteEntry> => {
+  ): Promise<{ op: "created"; entry: NoteEntry }> => {
     const entry: NoteEntry = {
       id: `memory-${saved.length + 1}`,
       filename: `memory-${saved.length + 1}.md`,
@@ -41,16 +41,11 @@ function makeMemoryManager(existing: NoteEntry[] = []) {
       ...options,
     };
     saved.push(entry);
-    return entry;
+    return { op: "created", entry };
   });
-  const listMemoryEntries = vi.fn(() => [...existing, ...saved]);
   return {
-    manager: { saveMemory, listMemoryEntries } as unknown as Pick<
-      MemoryManager,
-      "saveMemory" | "listMemoryEntries"
-    >,
+    manager: { saveMemory } as unknown as Pick<MemoryManager, "saveMemory">,
     saveMemory,
-    listMemoryEntries,
   };
 }
 
@@ -75,9 +70,8 @@ function enqueueTrustedAutomatic(service: MemoryCaptureService, input = SOURCE):
 function createCaptureService(
   memoryManager: ConstructorParameters<typeof MemoryCaptureService>[0]["memoryManager"],
   memoryReviewer: MemoryCaptureReviewer,
-  mode: "auto" | "off" | "review",
 ) {
-  return new MemoryCaptureService({ memoryManager, memoryReviewer, getMode: () => mode, sessionStore: "main" });
+  return new MemoryCaptureService({ memoryManager, memoryReviewer, sessionStore: "main" });
 }
 
 const SESSION_ID = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
@@ -89,7 +83,6 @@ describe("MemoryCaptureService", () => {
     const { memoryReviewer, review } = makeMemoryReviewer();
     const service = new MemoryCaptureService({
       memoryManager: manager,
-      getMode: () => "auto",
       sessionStore: "main",
     });
     service.setMemoryReviewer(memoryReviewer);
@@ -111,7 +104,6 @@ describe("MemoryCaptureService", () => {
       "The user prefers concise status updates in Korean.",
       expect.objectContaining({
         kind: "preference",
-        state: "active",
         source: "capture",
         capture: expect.objectContaining({
           v: 1,
@@ -127,7 +119,7 @@ describe("MemoryCaptureService", () => {
   it("records the conversation an explicit save came from, and nothing for a direct UI save", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "auto");
+    const service = createCaptureService(manager, memoryReviewer);
 
     await service.captureExplicit({ title: "Status preference", content: SOURCE, sessionId: SESSION_ID });
     await service.captureExplicit({ title: "Status preference", content: SOURCE });
@@ -137,25 +129,31 @@ describe("MemoryCaptureService", () => {
     expect(saveMemory.mock.calls[1]![2]).not.toHaveProperty("origin");
   });
 
-  it("keeps unattended captures as candidates in review mode", async () => {
+  it("returns what it saved, and a reviewer skip saves nothing", async () => {
     const { manager, saveMemory } = makeMemoryManager();
-    const { memoryReviewer } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "review");
+    const saved = await createCaptureService(manager, makeMemoryReviewer().memoryReviewer)
+      .captureExplicit({ title: "Status preference", content: SOURCE });
+    expect(saved).toMatchObject({ status: "saved", op: "created", entry: { title: "Communication preference" } });
 
-    enqueueTrustedAutomatic(service);
-    await service.runOnIdle();
+    const skip = reviewedCapture({ action: "skip", title: "", content: "", kind: "", evidence: "", confidence: 0 });
+    const skipped = await createCaptureService(manager, makeMemoryReviewer(skip).memoryReviewer)
+      .captureExplicit({ title: "Status preference", content: SOURCE });
+    expect(skipped).toEqual({ status: "skipped", reason: "reviewer-skip" });
+    expect(saveMemory).toHaveBeenCalledTimes(1);
+  });
 
-    expect(saveMemory).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      expect.objectContaining({ state: "candidate", source: "capture" }), "capture",
-    );
+  it("refuses the retired candidate action from the reviewer", async () => {
+    const { manager, saveMemory } = makeMemoryManager();
+    const service = createCaptureService(manager, makeMemoryReviewer(reviewedCapture({ action: "candidate" })).memoryReviewer);
+    const result = await service.captureExplicit({ title: "Status preference", content: SOURCE });
+    expect(result.status).toBe("skipped");
+    expect(saveMemory).not.toHaveBeenCalled();
   });
 
   it("rejects tainted automatic turns before any model or storage call", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "auto");
+    const service = createCaptureService(manager, memoryReviewer);
 
     service.enqueueAutomatic({
       sessionId: "session-1",
@@ -173,7 +171,7 @@ describe("MemoryCaptureService", () => {
   it("never falls back to raw automatic input after an invalid reviewer result", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer } = makeMemoryReviewer("not json");
-    const service = createCaptureService(manager, memoryReviewer, "auto");
+    const service = createCaptureService(manager, memoryReviewer);
 
     enqueueTrustedAutomatic(service);
     await service.runOnIdle();
@@ -181,31 +179,11 @@ describe("MemoryCaptureService", () => {
     expect(saveMemory).not.toHaveBeenCalled();
   });
 
-  it("diverts an automatic title collision with user memory to a candidate", async () => {
-    const { manager, saveMemory } = makeMemoryManager([{
-      filename: "user.md",
-      title: "Communication preference",
-      content: "Existing user-controlled preference.",
-      source: "user",
-      state: "active",
-    }]);
-    const { memoryReviewer } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "auto");
 
-    enqueueTrustedAutomatic(service);
-    await service.runOnIdle();
-
-    expect(saveMemory).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      expect.objectContaining({ state: "candidate", source: "capture" }), "capture",
-    );
-  });
-
-  it("runs explicit user saves through the same reviewer even when auto capture is off", async () => {
+  it("runs explicit user saves through the same reviewer", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "off");
+    const service = createCaptureService(manager, memoryReviewer);
 
     const result = await service.captureExplicit({
       title: "Status preference",
@@ -225,7 +203,6 @@ describe("MemoryCaptureService", () => {
       "Communication preference",
       "The user prefers concise status updates in Korean.",
       expect.objectContaining({
-        state: "active",
         source: "user",
         projectRoot: "C:\\workspace\\alpha",
         projectName: "alpha",
@@ -237,7 +214,7 @@ describe("MemoryCaptureService", () => {
   it("does not send explicit sensitive input to the reviewer", async () => {
     const { manager, saveMemory } = makeMemoryManager();
     const { memoryReviewer, review } = makeMemoryReviewer();
-    const service = createCaptureService(manager, memoryReviewer, "off");
+    const service = createCaptureService(manager, memoryReviewer);
 
     const result = await service.captureExplicit({
       content: "api_key=sk-abcdefghijklmnopqrst",
@@ -255,7 +232,7 @@ describe("MemoryCaptureService with the real store", () => {
     const store = new RealMemoryManager({ aveDir: dir });
     try {
       const { memoryReviewer } = makeMemoryReviewer();
-      const service = createCaptureService(store, memoryReviewer, "auto");
+      const service = createCaptureService(store, memoryReviewer);
 
       enqueueTrustedAutomatic(service);
       await service.runOnIdle();

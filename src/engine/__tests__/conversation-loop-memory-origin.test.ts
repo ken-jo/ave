@@ -58,4 +58,32 @@ describe("ConversationLoop memory origin anchor", () => {
     expect(run).toHaveBeenCalledOnce();
     expect(run.mock.calls[0]![0]).toMatchObject({ turnMessageId });
   });
+
+  it("tells memory tools whether the turn carried anything but the user's own keyboard text", async () => {
+    async function observedTaint(options: Record<string, unknown>): Promise<unknown> {
+      const seen: Array<Record<string, unknown>> = [];
+      const toolRegistry = new ToolRegistry();
+      toolRegistry.register(createDynamicTool({
+        name: "observe_metadata",
+        description: "Record the host metadata",
+        source: "builtin",
+        category: "read",
+        jsonSchema: { type: "object", properties: {} },
+        isReadOnly: () => true,
+        execute: async (_input, ctx) => {
+          seen.push({ ...ctx.metadata });
+          return { output: "ok", isError: false };
+        },
+      }));
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({ toolRegistry, disableSessionPersistence: true }));
+      (loop as unknown as { provider: LLMProvider | null }).provider = new ScriptedTurnProvider(toolThenAnswer());
+      await loop.runTurn("remember that alpha uses pnpm", undefined, undefined, options as never);
+      expect(seen).toHaveLength(1);
+      return seen[0]!.memoryWriteTainted;
+    }
+
+    expect(await observedTaint({ ...userKeyboardTurn() })).toBe(false);
+    // A turn that did not come from the user's keyboard may not write memory.
+    expect(await observedTaint({ inputOrigin: "plugin-emitted" })).toBe(true);
+  });
 });

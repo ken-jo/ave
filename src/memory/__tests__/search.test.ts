@@ -166,7 +166,7 @@ describe("MemoryManager AGENTS.md and MEMORY.md layout", () => {
   });
 
   it("does not allow saved memory titles to overwrite MEMORY.md", async () => {
-    const entry = await mm.saveMemory("MEMORY", "reserved index collision", {}, "user");
+    const { entry: entry } = await mm.saveMemory("MEMORY", "reserved index collision", {}, "user");
 
     expect(entry.filename.toLowerCase()).not.toBe("memory.md");
     expect(existsSync(join(dir, "memories", entry.filename))).toBe(true);

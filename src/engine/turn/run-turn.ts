@@ -635,6 +635,7 @@ async function runTurnInSpan(
           onPermissionProvenanceChanged: (provenance) => { lifecycleProvenance = provenance; },
           memoryQuery: input,
           turnMessageId: turnUserMessage.meta.messageId,
+          isMemoryWriteTainted: () => memoryCaptureTaint.size > 0,
           ...(onStopHook ? { onStopHook } : {}),
         },
       ),

@@ -123,8 +123,7 @@ import type { UsageDailySummaryInput, UsageDailySummaryResult } from "../../ipc/
 // `a2aRemote` block, expressed once by the IPC projection type.
 import type { RendererSettingsSnapshot as AppSettings } from "../../ipc/domains/settings.js";
 import type { HomeDocsStatus } from "../../ipc/domains/home-docs.js";
-import type { MemoryCaptureMode } from "../../data/settings-store.js";
-export type { AppSettings, MemoryCaptureMode };
+export type { AppSettings };
 
 // Approval / permission contracts are the host types themselves (the full
 // ApprovalRequest crosses the IPC boundary — see approval-gate.ts IPC_APPROVAL_REQUEST).
@@ -350,11 +349,6 @@ export type ProjectQueryOptions = {
   includeUnscoped?: boolean;
 };
 
-/** Where an explicit memory save lands; the default project's memory and global memory are separate scopes. */
-type MemorySaveScope =
-  | { scope: "global" }
-  | { scope: "project"; projectRoot: string; projectName?: string };
-
 /** Host-owned metadata attached to a managed long-term memory. */
 type MemoryEntry = {
   filename: string;
@@ -365,16 +359,13 @@ type MemoryEntry = {
   projectName?: string;
   id?: string;
   kind?: "preference" | "constraint" | "fact" | "goal" | "reference" | "note";
-  state?: "candidate" | "active";
+  state?: "active";
   source?: "user" | "assistant" | "import";
   createdAt?: string;
   confirmedAt?: string;
   expiresAt?: string;
   pinned?: boolean;
 };
-
-/** A review-only memory always has an immutable id and remains outside prompts. */
-export type MemoryCandidate = MemoryEntry & { id: string; state: "candidate" };
 
 type MemoryMutationResult =
   | { ok: true; entry?: MemoryEntry }
@@ -894,11 +885,7 @@ export type AveApi = {
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryListEntries: (opts?: ProjectQueryOptions) => Promise<Array<{ filename: string; title: string; content: string; updatedAt?: string; projectRoot?: string; projectName?: string }>>;
-  memoryListCandidates: (opts?: ProjectQueryOptions) => Promise<MemoryCandidate[]>;
-  memorySaveEntry: (t: string, c: string, scope: MemorySaveScope) => Promise<unknown>;
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
-  memoryActivateCandidate: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
-  memoryDeleteCandidate: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryMutationResult>;
   memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<{ filename?: string; title: string; content?: string; excerpt: string; updatedAt: string; projectRoot?: string; projectName?: string }>>;
   memoryGetIndex: (opts?: ProjectQueryOptions) => Promise<string>;
   memoryUpdateIndexIfUnchanged: (expectedContent: string, nextContent: string) => Promise<boolean>;

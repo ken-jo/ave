@@ -23,7 +23,7 @@ afterEach(async () => {
 
 describe("MemoryManager long-term-memory consolidation", () => {
   it("keeps default-project memory out of the global overview and consolidates it as its own project", async () => {
-    const defaultWorkspace = await memoryManager.saveMemory(
+    const { entry: defaultWorkspace } = await memoryManager.saveMemory(
       "Default workspace source",
       "Default raw source detail.",
       { projectRoot: DEFAULT_WORKSPACE_ROOT, projectName: "default", kind: "fact" }, "user",
@@ -55,13 +55,9 @@ describe("MemoryManager long-term-memory consolidation", () => {
   });
 
   it("uses a bounded exact scope, preserves source notes, and keeps a derived overview out of ordinary context", async () => {
-    const global = await memoryManager.saveMemory("Global source", "Global raw source detail.", {
+    const { entry: global } = await memoryManager.saveMemory("Global source", "Global raw source detail.", {
       kind: "fact",
     }, "user");
-    await memoryManager.saveMemory("Global candidate", "Candidate must not be consolidated.", {
-      state: "candidate",
-      source: "assistant",
-    }, "assistant");
     await memoryManager.saveMemory("Alpha source", "Alpha raw source detail.", {
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
@@ -96,7 +92,6 @@ describe("MemoryManager long-term-memory consolidation", () => {
       status: "updated",
       entry: {
         kind: "reference",
-        state: "active",
         source: "assistant",
         derivation: { type: "consolidated-overview", sourceFingerprint: globalSnapshot.sourceFingerprint },
       },
@@ -126,7 +121,7 @@ describe("MemoryManager long-term-memory consolidation", () => {
     if (result.status !== "updated") throw new Error("expected derived overview");
     const derivedBefore = readFileSync(join(dir, "memories", result.entry.filename), "utf-8");
 
-    const manual = await memoryManager.saveMemory(
+    const { entry: manual } = await memoryManager.saveMemory(
       "Long-term Memory Overview",
       "A normal user memory must not overwrite the derived overview.", {}, "user",
     );

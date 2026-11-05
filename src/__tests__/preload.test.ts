@@ -851,23 +851,16 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith("ave:memory:index:get");
   });
 
-  it("bridges candidate review actions with immutable ids and optional project scope", async () => {
+  it("bridges memory deletion with optional project scope and exposes no candidate or direct-save bridge", async () => {
     const api = await loadAveApi();
-    const candidateId = "ce882fc4-19c5-4e9e-98cd-6405a608b73f";
     const project = { projectRoot: "/workspace/project", projectName: "project" };
 
-    await (api["memoryListCandidates"] as () => Promise<unknown>)();
-    await (api["memoryActivateCandidate"] as (id: string, opts?: typeof project) => Promise<unknown>)(candidateId);
-    await (api["memoryDeleteCandidate"] as (id: string, opts?: typeof project) => Promise<unknown>)(candidateId, project);
     await (api["memoryDeleteEntry"] as (filename: string, opts?: typeof project) => Promise<unknown>)("note.md", project);
 
-    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:candidates:list");
-    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:candidates:activate", { id: candidateId });
-    expect(mockInvoke).toHaveBeenCalledWith("ave:memory:candidates:delete", {
-      id: candidateId,
-      opts: project,
-    });
     expect(mockInvoke).toHaveBeenCalledWith("ave:memory:entries:delete", "note.md", project);
+    for (const removed of ["memoryListCandidates", "memoryActivateCandidate", "memoryDeleteCandidate", "memorySaveEntry"]) {
+      expect(api[removed]).toBeUndefined();
+    }
   });
 
   it.each([

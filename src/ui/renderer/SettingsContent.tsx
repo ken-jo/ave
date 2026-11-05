@@ -565,8 +565,6 @@ export function SettingsContent({
               setIdlePreferenceRefresh={s.setIdlePreferenceRefresh}
               idleMemoryConsolidation={s.idleMemoryConsolidation}
               setIdleMemoryConsolidation={s.setIdleMemoryConsolidation}
-              memoryCaptureMode={s.memoryCaptureMode}
-              setMemoryCaptureMode={s.setMemoryCaptureMode}
               subAgentAutonomousWake={s.subAgentAutonomousWake}
               subAgentMaxRounds={s.subAgentMaxRounds}
               setSubAgentMaxRounds={s.setSubAgentMaxRounds}

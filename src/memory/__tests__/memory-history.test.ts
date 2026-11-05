@@ -30,7 +30,7 @@ function historyRows(): Array<Record<string, unknown>> {
 
 describe("MemoryManager change history", () => {
   it("appends one row per change, in order, with the acting party", async () => {
-    const created = await memoryManager.saveMemory("Review style", "Prefer small diffs.", {
+    const { entry: created } = await memoryManager.saveMemory("Review style", "Prefer small diffs.", {
       projectRoot: ALPHA, projectName: "alpha", kind: "preference",
     }, "user");
     // The actor is whoever saves now, not the stored source: Ave updating a user's memory is recorded as Ave.
@@ -57,9 +57,9 @@ describe("MemoryManager change history", () => {
   });
 
   it("removes a deleted memory's text from the history file, keeping only what happened", async () => {
-    const created = await memoryManager.saveMemory("Partner codename Bluebird", "Launch partner is Bluebird Corp.", { kind: "fact" }, "user");
+    const { entry: created } = await memoryManager.saveMemory("Partner codename Bluebird", "Launch partner is Bluebird Corp.", { kind: "fact" }, "user");
     await memoryManager.saveMemory("Partner codename Bluebird", "Launch partner is Bluebird Holdings.", { kind: "fact" }, "assistant");
-    const other = await memoryManager.saveMemory("Unrelated", "Keep this text.", { kind: "fact" }, "user");
+    const { entry: other } = await memoryManager.saveMemory("Unrelated", "Keep this text.", { kind: "fact" }, "user");
 
     await memoryManager.deleteMemory(created.filename, {}, "user");
 
@@ -68,19 +68,43 @@ describe("MemoryManager change history", () => {
     expect(raw).toContain("Unrelated");
     expect(historyRows().filter((row) => row.memoryId === created.id).map((row) => row.op))
       .toEqual(["created", "updated", "deleted"]);
-    expect(historyRows().find((row) => row.memoryId === created.id && row.op === "updated"))
-      .toMatchObject({ actor: "assistant", fields: { contentDigest: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    // The digest goes too: a short deleted text could otherwise be confirmed by hashing guesses.
+    const updated = historyRows().find((row) => row.memoryId === created.id && row.op === "updated")!;
+    expect(updated).toMatchObject({ actor: "assistant" });
+    expect((updated.fields as { contentDigest?: string } | undefined)?.contentDigest).toBeUndefined();
+    expect((await memoryManager.getMemoryHistory(other.id!, {})).entries[0]!.fields?.contentDigest).toMatch(/^[0-9a-f]{64}$/);
     expect((await memoryManager.getMemoryHistory(other.id!, {})).entries).toHaveLength(1);
   });
 
-  it("removes a discarded candidate's text from the history file too", async () => {
-    const candidate = await memoryManager.saveMemory("Candidate Bluebird", "Bluebird detail.", { state: "candidate", source: "assistant" }, "assistant");
-    await memoryManager.deleteMemoryCandidate(candidate.id!, {}, "user");
+  it("names the conversation that asked for a change, by id only", async () => {
+    const session = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
+    const { entry } = await memoryManager.saveMemory("Timeout", "8 seconds.", {}, "user");
+    await memoryManager.saveMemory("Timeout", "10 seconds.", { source: "assistant" }, "assistant", { sessionId: session });
+    await memoryManager.updateMemoryById(entry.id!, "Timeout", "12 seconds.", { source: "assistant" }, "assistant", { sessionId: "not a session" });
+
+    const rows = (await memoryManager.getMemoryHistory(entry.id!, {})).entries;
+    expect(rows.map((row) => row.sessionId)).toEqual([undefined, session, undefined]);
+  });
+
+  it("treats a stored row with a malformed session id as unreadable for its memory", async () => {
+    const { entry } = await memoryManager.saveMemory("Old row", "Body.", {}, "user");
+    const historyPath = join(dir, "memories", "history.jsonl");
+    const row = JSON.parse(readFileSync(historyPath, "utf-8").trim().split("\n")[0]!) as Record<string, unknown>;
+    appendFileSync(historyPath, `${JSON.stringify({ ...row, op: "updated", sessionId: "<script>" })}\n`, "utf-8");
+
+    const history = await memoryManager.getMemoryHistory(entry.id!, {});
+    expect(history.entries.map((r) => r.op)).toEqual(["created"]);
+    expect(history.historyIncomplete).toBe(true);
+  });
+
+  it("removes the text from the history file when a memory is deleted by id too", async () => {
+    const { entry: created } = await memoryManager.saveMemory("Codename Bluebird", "Bluebird detail.", { source: "assistant" }, "assistant");
+    await memoryManager.deleteMemoryById(created.id!, {}, "assistant");
     expect(readFileSync(join(dir, "memories", "history.jsonl"), "utf-8")).not.toContain("Bluebird");
   });
 
   it("refuses the delete, keeping the memory, when the history text cannot be removed", async () => {
-    const created = await memoryManager.saveMemory("Keep me", "Body.", { kind: "fact" }, "user");
+    const { entry: created } = await memoryManager.saveMemory("Keep me", "Body.", { kind: "fact" }, "user");
     const historyPath = join(dir, "memories", "history.jsonl");
     rmSync(historyPath);
     mkdirSync(historyPath);
@@ -90,27 +114,34 @@ describe("MemoryManager change history", () => {
   });
 
   it("masks the title it records", async () => {
-    const created = await memoryManager.saveMemory("token sk-abcdefghijklmnopqrstuvwx", "Body.", { kind: "fact" }, "user");
+    const { entry: created } = await memoryManager.saveMemory("token sk-abcdefghijklmnopqrstuvwx", "Body.", { kind: "fact" }, "user");
     const history = await memoryManager.getMemoryHistory(created.id!, {});
     expect(history.entries[0]!.fields!.title).not.toContain("sk-abcdefghijklmnopqrstuvwx");
   });
 
-  it("records candidate approval and discard with the party that acted", async () => {
-    const approved = await memoryManager.saveMemory("Candidate A", "Approve me.", { state: "candidate", source: "assistant" }, "assistant");
-    const discarded = await memoryManager.saveMemory("Candidate B", "Discard me.", { state: "candidate", source: "assistant" }, "assistant");
-    await memoryManager.activateMemoryCandidate(approved.id!, {}, "user");
-    await memoryManager.deleteMemoryCandidate(discarded.id!, {}, "assistant");
+  it("records an update and a delete by id with the party that acted", async () => {
+    const { entry: created } = await memoryManager.saveMemory("Fix me", "Old text.", {}, "user");
+    await memoryManager.updateMemoryById(created.id!, "Fix me", "New text.", { source: "assistant" }, "assistant");
+    await memoryManager.deleteMemoryById(created.id!, {}, "user");
 
-    const rows = historyRows();
-    expect(rows.filter((row) => row.memoryId === approved.id).map((row) => [row.op, row.actor]))
-      .toEqual([["created", "assistant"], ["activated", "user"]]);
-    expect(rows.filter((row) => row.memoryId === discarded.id).map((row) => [row.op, row.actor]))
-      .toEqual([["created", "assistant"], ["discarded", "assistant"]]);
+    expect(historyRows().filter((row) => row.memoryId === created.id).map((row) => [row.op, row.actor]))
+      .toEqual([["created", "user"], ["updated", "assistant"], ["deleted", "user"]]);
+  });
+
+  it("treats a stored row with a retired op as unreadable for its memory", async () => {
+    const { entry: created } = await memoryManager.saveMemory("Old row", "Body.", {}, "user");
+    const historyPath = join(dir, "memories", "history.jsonl");
+    const row = JSON.parse(readFileSync(historyPath, "utf-8").trim().split("\n")[0]!) as Record<string, unknown>;
+    appendFileSync(historyPath, `${JSON.stringify({ ...row, op: "activated" })}\n`, "utf-8");
+
+    const history = await memoryManager.getMemoryHistory(created.id!, {});
+    expect(history.entries.map((entry) => entry.op)).toEqual(["created"]);
+    expect(history.historyIncomplete).toBe(true);
   });
 
   it("masks and bounds before/after text instead of copying whole bodies", async () => {
     const secret = "api_key=sk-abcdefghijklmnopqrstuvwx";
-    const created = await memoryManager.saveMemory("Long note", `Old body ${secret}`, { kind: "fact" }, "user");
+    const { entry: created } = await memoryManager.saveMemory("Long note", `Old body ${secret}`, { kind: "fact" }, "user");
     await memoryManager.saveMemory("Long note", `${"new body ".repeat(700)}`, { kind: "fact" }, "user");
 
     const history = await memoryManager.getMemoryHistory(created.id!, {});
@@ -122,7 +153,7 @@ describe("MemoryManager change history", () => {
 
   it("does not fail the change when the history write fails, and reports the gap on the next read", async () => {
     mkdirSync(join(dir, "memories", "history.jsonl"));
-    const created = await memoryManager.saveMemory("Still saved", "The memory write must succeed.", { kind: "fact" }, "user");
+    const { entry: created } = await memoryManager.saveMemory("Still saved", "The memory write must succeed.", { kind: "fact" }, "user");
     expect(memoryManager.listMemoryEntries().map((entry) => entry.id)).toContain(created.id);
 
     const history = await memoryManager.getMemoryHistory(created.id!, {});
@@ -130,7 +161,7 @@ describe("MemoryManager change history", () => {
   });
 
   it("reads history only for a memory visible in the caller's scope", async () => {
-    const local = await memoryManager.saveMemory("Alpha only", "Alpha detail.", { projectRoot: ALPHA, projectName: "alpha" }, "user");
+    const { entry: local } = await memoryManager.saveMemory("Alpha only", "Alpha detail.", { projectRoot: ALPHA, projectName: "alpha" }, "user");
     await expect(memoryManager.getMemoryHistory(local.id!, { projectRoot: "C:\\workspace\\beta" }))
       .rejects.toThrow(/memory not found/);
   });

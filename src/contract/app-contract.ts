@@ -138,11 +138,7 @@ export const CHANNELS = {
   },
   memory: {
     entriesList: "ave:memory:entries:list",
-    entriesSave: "ave:memory:entries:save",
     entriesDelete: "ave:memory:entries:delete",
-    candidatesList: "ave:memory:candidates:list",
-    candidateActivate: "ave:memory:candidates:activate",
-    candidateDelete: "ave:memory:candidates:delete",
     entriesSearch: "ave:memory:entries:search",
     indexGet: "ave:memory:index:get",
     indexUpdateIfUnchanged: "ave:memory:index:update-if-unchanged",

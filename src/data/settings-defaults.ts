@@ -164,8 +164,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     idlePreferenceRefresh: false,
     // Derived long-term overviews send eligible active notes to the configured model only on opt-in.
     idleMemoryConsolidation: false,
-    // Existing installs do not start a new provider-backed capture path until the user chooses review or auto in Settings.
-    memoryCaptureMode: "off",
     // Wake delivers background results through the normal parent turn and its fail-closed prompt gate; mailbox-only delivery waits for another user turn.
     subAgentAutonomousWake: true,
     // External A2A wire routes are independently opt-in and default OFF.
