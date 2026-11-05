@@ -1128,7 +1128,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
       const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority);
       if (manager !== undefined) {
-        approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok && saved.action === "allow" ? saved.scope : undefined);
+        approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
       }
       if (!saved.ok) return saved;
       auditLogger.log({

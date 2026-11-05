@@ -1,6 +1,6 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +18,10 @@ import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
+import { consumeHostShellExecutionPermitForSpawn, canonicalizeHostShellAllowedDirectories, resolveHostShellWorkingDirectory } from "../../../permissions/host-shell-execution-permit.js";
+import { parseHostShellExecutionInput } from "../../../permissions/host-shell-execution-plan.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
+import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { BashTool } from "../../../tools/shell-tools.js";
@@ -39,6 +43,9 @@ const SESSION_ID = "approval-owner-session";
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
+  __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
+  __resetWindowsSandboxSubstrateForTest();
   vi.restoreAllMocks();
   approvals.__resetSessionStoreForTest();
   vi.unstubAllEnvs();
@@ -174,6 +181,61 @@ async function subject(mode: "auto" | "default" = "auto") {
 }
 
 describe("live native approval ownership", () => {
+  it.each(["project allow", "user deny", "user deny with allow answer"] as const)("applies a card's saved %s to its pending host request", async (scenario) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const project = resources.makeTmpDir("ave-host-rule-project-");
+    if (process.platform === "win32") {
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability(windowsProxyOnlyCapability());
+      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false });
+      setWindowsSandboxSubstrate(substrate, mxcShellCapability());
+      expect(getHostShellExecutionPlan()).toMatchObject({ sandboxed: true, substrate: "mxc" });
+    }
+    mkdirSync(join(project, ".git"), { recursive: true });
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute").mockImplementation(async (input, ctx) => {
+      const parsed = parseHostShellExecutionInput(input)!;
+      const authority = consumeHostShellExecutionPermitForSpawn({
+        permit: ctx.hostShellExecutionPermit, plan: ctx.hostShellExecutionPlan!, toolName: "bash",
+        toolUseId: ctx.metadata.toolUseId as string, command: parsed.command, requestedCwd: parsed.cwd,
+        executionCwd: ctx.cwd, resolvedCwd: resolveHostShellWorkingDirectory(ctx.cwd, parsed.cwd),
+        timeoutSeconds: parsed.timeoutSeconds, executionMode: parsed.executionMode, justification: parsed.justification,
+        runInBackground: parsed.runInBackground, allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories),
+      });
+      expect(authority).toBeDefined();
+      return { output: "approved", isError: false };
+    });
+    f.registry.register(bash);
+    const running = f.executor.executeAll([{ id: "saved-rule-host", name: "bash",
+      input: { command: "echo sbon-c2", executionMode: "host", justification: "Verify saved rule" } }], {
+      sessionId: SESSION_ID, executionCwd: project,
+      permissionContext: userPermissionContext({ additionalDirectories: [project] }),
+    });
+    cleanup.push(async () => { f.gate.disposeAll(); await running; });
+    const card = await f.waitForCard();
+    const action = scenario === "project allow" ? "allow" : "deny";
+    expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: action, scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action, scope: action === "allow" ? "project" : "always", pattern: "Bash(echo *)" },
+      intent: { inputOrigin: "user-keyboard", userActivation: true },
+    })).toMatchObject({ ok: true });
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: scenario !== "user deny" ? "allow-once" : "deny-once" });
+    const [result] = await running;
+    expect(result.content).not.toContain("Permission policy changed");
+    if (action === "allow") {
+      expect(result.is_error, JSON.stringify(result)).toBeUndefined();
+      expect(result.content).toBe("approved");
+      expect(execute).toHaveBeenCalledOnce();
+    } else {
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("Bash(echo *)");
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["session", "project"] as const)("accepts only the exact policy delta for a %s card rule", async (scope) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
@@ -275,7 +337,7 @@ describe("live native approval ownership", () => {
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     const answer = await result;
     expect(f.gate.allowsPolicyTransition({ ...answer }, before, f.manager.getPolicyEpoch())).toBe(false);
-    const allowed = scenario === "one save" || scenario === "sequential saves";
+    const allowed = scenario === "one save" || scenario === "sequential saves" || scenario === "deny save";
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(allowed);
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
     expect(f.execute).not.toHaveBeenCalled();

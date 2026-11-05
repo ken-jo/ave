@@ -367,11 +367,7 @@ export async function authorizeToolInvocation(
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
-      ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
-      : context.directoryAuthorization?.pendingRationale
-      ? context.directoryAuthorization.permission
-      : services.permissionManager
+    const checkCurrentPermission = (): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -405,6 +401,11 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
+    permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
+      ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
+      : context.directoryAuthorization?.pendingRationale
+      ? context.directoryAuthorization.permission
+      : checkCurrentPermission();
     if (!permissionResult) {
       throw new Error("Permission evaluation returned no result");
     }
@@ -1145,12 +1146,17 @@ export async function authorizeToolInvocation(
         // This is intentionally immediately after the local decision. A P2
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
-        const approvalInvalidationReason = services.permissionManager !== undefined &&
-            approvalPolicyEpoch !== services.permissionManager.getPolicyEpoch() &&
-            !services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, services.permissionManager.getPolicyEpoch())
+        const currentPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+        const policyChanged = approvalPolicyEpoch !== currentPolicyEpoch;
+        const sameCardPolicyTransition = policyChanged && currentPolicyEpoch !== undefined &&
+          services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
+        // A saved rule decides this pending action too; a card answer cannot override its deny.
+        if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
+        const approvalInvalidationReason = policyChanged && !sameCardPolicyTransition
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
-            ? "remote-controller-revoked" : undefined;
+            ? "remote-controller-revoked"
+            : sameCardPolicyTransition && permissionResult.decision === "deny" ? permissionResult.reason : undefined;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {
