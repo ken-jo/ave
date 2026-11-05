@@ -9,10 +9,13 @@ const h = vi.hoisted(() => ({
   recordRefusal: vi.fn(),
   closeRelay: vi.fn(async () => {}),
   readdir: vi.fn(),
+  lstat: vi.fn(),
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, readdirSync: (...args: Parameters<typeof actual.readdirSync>) => h.readdir.getMockImplementation() ? h.readdir(...args) : actual.readdirSync(...args) };
+  return { ...actual,
+    readdirSync: (...args: Parameters<typeof actual.readdirSync>) => h.readdir.getMockImplementation() ? h.readdir(...args) : actual.readdirSync(...args),
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => h.lstat.getMockImplementation() ? h.lstat(...args) : actual.lstatSync(...args) };
 });
 vi.mock("../../permissions/egress-host-listener.js", () => ({
   openHostEgressListener: h.openRelay,
@@ -103,21 +106,27 @@ describe("prepareMxcShellLaunch", () => {
     expect(h.closeRelay).toHaveBeenCalledOnce();
   });
 
-  it("expands a pattern deny over the filesystem by default, without following links", async () => {
+  it("expands a pattern deny over the filesystem by default, denies a placeholder directory whole and leaves links alone", async () => {
     h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
     const sessions = String.raw`C:\Users\u\.ave\sessions`;
-    const entry = (name: string, directory: boolean) => ({ name, isDirectory: () => directory });
+    // Listing reports every reparse point as a link; lstat separates a real link from a cloud placeholder directory.
+    const entry = (name: string, kind: "directory" | "file" | "reparse") => ({ name, isDirectory: () => kind === "directory", isSymbolicLink: () => kind === "reparse" });
     h.readdir.mockImplementation((directory: string) => directory === sessions
-      ? [entry("one", true), entry("link", false)]
-      : directory === `${sessions}\\one` ? [entry(".ssh", true)] : []);
+      ? [entry("one", "directory"), entry("link", "reparse"), entry("cloud", "reparse"), entry("gone", "reparse")]
+      : directory === `${sessions}\\one` ? [entry(".ssh", "directory")] : []);
+    h.lstat.mockImplementation((path: string) => {
+      if (path === `${sessions}\\gone`) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return { isSymbolicLink: () => path === `${sessions}\\link`, isDirectory: () => path === `${sessions}\\cloud` };
+    });
     const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [sessions], denyRead: [`${sessions}/**/.ssh`] } });
     try {
       expect(h.readdir).toHaveBeenCalledWith(sessions, { withFileTypes: true });
-      expect(h.readdir).not.toHaveBeenCalledWith(`${sessions}\\link`, expect.anything());
-      expect(decodeRequest(launch.argv)["filesystem"]["deniedPaths"]).toEqual([`${sessions}\\one\\.ssh`]);
+      for (const name of ["link", "cloud", "gone"]) expect(h.readdir).not.toHaveBeenCalledWith(`${sessions}\\${name}`, expect.anything());
+      expect(decodeRequest(launch.argv)["filesystem"]["deniedPaths"]).toEqual([`${sessions}\\cloud`, `${sessions}\\one\\.ssh`]);
     } finally {
       await launch.release();
       h.readdir.mockReset();
+      h.lstat.mockReset();
     }
   });
 

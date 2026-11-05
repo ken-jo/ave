@@ -2,7 +2,7 @@
 // This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -45,8 +45,20 @@ export interface PrepareMxcShellLaunchInput {
   readonly list?: (directory: string) => readonly MxcDirectoryEntry[];
 }
 
+// Listing reports every Windows reparse point as a link; lstat tells a real link (symlink, junction) from a placeholder directory such as a cloud file.
 function listDirectory(directory: string): MxcDirectoryEntry[] {
-  return readdirSync(directory, { withFileTypes: true }).map((entry) => ({ name: entry.name, directory: entry.isDirectory() }));
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry): MxcDirectoryEntry[] => {
+    if (entry.isDirectory()) return [{ name: entry.name, kind: "directory" }];
+    if (!entry.isSymbolicLink()) return [{ name: entry.name, kind: "file" }];
+    let target: ReturnType<typeof lstatSync>;
+    try { target = lstatSync(winPath.join(directory, entry.name)); }
+    catch (error) {
+      // Removed since the listing: nothing is left to deny.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return [{ name: entry.name, kind: target.isSymbolicLink() ? "link" : target.isDirectory() ? "reparse-directory" : "file" }];
+  });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */

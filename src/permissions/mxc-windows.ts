@@ -8,7 +8,7 @@ import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommand
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 
 import { errorMessage } from "../shared/error-message.js";
-import { compileGlobMatcher } from "../lib/glob-matcher.js";
+import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
@@ -284,7 +284,9 @@ function dedupe(paths: readonly string[]): string[] {
 
 export interface MxcDirectoryEntry {
   readonly name: string;
-  readonly directory: boolean;
+  // "reparse-directory": a directory behind a reparse point that is not a link (a cloud placeholder such as OneDrive Files On-Demand). Its contents
+  // cannot be walked, yet the shell can read them, so it is denied as a whole. A "link" (symlink or junction) is not descended.
+  readonly kind: "file" | "directory" | "link" | "reparse-directory";
 }
 
 interface MxcRule {
@@ -293,50 +295,120 @@ interface MxcRule {
 }
 
 const PATTERN_SEGMENT = /[*?]/;
-// Bounds the walk a pattern deny costs per spawn; past it the spawn fails closed.
+const WINDOWS_ABSOLUTE = /^(?:[a-z]:[\\/]|[\\/]{2})/i;
+// Bounds the one walk all pattern denies share per spawn; past it the spawn fails closed.
 const MXC_PATTERN_WALK_LIMIT = 20_000;
+
+function patternDenyRefusal(pattern: string, reason: string): Error {
+  return new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern} (${reason})`);
+}
+
+interface CompiledPatternDeny {
+  readonly pattern: string;
+  readonly matches: (path: string) => boolean;
+}
+
+// Every pattern's last segment must match an entry's name, so a name lookup narrows the full matches an entry needs to a handful.
+function patternMatcher(patterns: readonly CompiledPatternDeny[]): (path: string, name: string) => boolean {
+  const byName = new Map<string, CompiledPatternDeny[]>();
+  const bySegment: Array<{ readonly segment: RegExp; readonly pattern: CompiledPatternDeny }> = [];
+  const always: CompiledPatternDeny[] = [];
+  for (const compiled of patterns) {
+    const last = compiled.pattern.replaceAll("\\", "/").split("/").at(-1) ?? "";
+    if (last === "" || last.includes("**")) always.push(compiled);
+    else if (PATTERN_SEGMENT.test(last) || !/^[\x20-\x7e]*$/.test(last)) bySegment.push({ segment: globToRegExp(last, { caseInsensitive: true }), pattern: compiled });
+    else {
+      const key = last.toLowerCase();
+      byName.set(key, [...(byName.get(key) ?? []), compiled]);
+    }
+  }
+  const test = ({ matches }: CompiledPatternDeny, path: string): boolean => {
+    const slashed = path.replaceAll("\\", "/");
+    return matches(slashed) || matches(`${slashed}/`);
+  };
+  return (path, name) => {
+    for (const compiled of always) if (test(compiled, path)) return true;
+    for (const compiled of byName.get(name.toLowerCase()) ?? []) if (test(compiled, path)) return true;
+    for (const { segment, pattern } of bySegment) if (segment.test(name) && test(pattern, path)) return true;
+    return false;
+  };
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
 
 // Native rules are literal paths, so a pattern deny becomes the entries it matches when the shell starts (as Codex's mxc-sandbox and sandbox-runtime
 // on Windows expand deny globs on the host). That snapshot is complete only where the shell cannot create a new match: the region the pattern covers
-// must be read-only to it. A match created later by another process is covered from the next start.
-function expandPatternDeny(
-  pattern: string,
+// must be read-only to it. A match created later by another process is covered from the next start. An unanchored pattern (`**/.ssh`) covers every
+// granted root. All patterns share one walk and one entry cap.
+function expandPatternDenies(
+  patterns: readonly string[],
   rules: readonly MxcRule[],
   exists: (path: string) => boolean,
   list: ((directory: string) => readonly MxcDirectoryEntry[]) | undefined,
 ): string[] {
-  const segments = winPath.normalize(pattern).split("\\");
-  const literal = segments.slice(0, segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)));
-  const prefix = winPath.normalize(literal.join("\\") + (literal.length === 1 ? "\\" : ""));
-  const reached = rules.filter((rule) => rule.kind !== "deny" &&
-    (isWindowsPathAtOrUnder(rule.path, prefix) || isWindowsPathAtOrUnder(prefix, rule.path)));
-  if (reached.length === 0) return [];
-  // The most specific rule at or above the pattern's literal prefix decides what the shell may do there.
-  const nearest = rules.filter((rule) => isWindowsPathAtOrUnder(prefix, rule.path))
-    .sort((a, b) => foldPath(b.path).length - foldPath(a.path).length)[0];
-  if (list === undefined || nearest?.kind === "readwrite" ||
-      reached.some((rule) => rule.kind === "readwrite" && isWindowsPathAtOrUnder(rule.path, prefix))) {
-    throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern}`);
-  }
-  const match = compileGlobMatcher(pattern.replaceAll("\\", "/"), { caseInsensitive: true });
-  const matched = (path: string): boolean => match(path.replaceAll("\\", "/")) || match(`${path.replaceAll("\\", "/")}/`);
-  const roots = (nearest?.kind === "readonly" ? [prefix] : reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path))
-    .filter(exists);
-  const out: string[] = [];
-  let visited = 0;
-  const pending = [...roots];
-  for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
-    if (matched(directory)) { out.push(directory); continue; }
-    for (const entry of list(directory)) {
-      if (++visited > MXC_PATTERN_WALK_LIMIT) {
-        throw new Error(`Windows sandbox policy cannot hold pattern deny: ${pattern} (more than ${MXC_PATTERN_WALK_LIMIT} entries to check under ${prefix})`);
-      }
-      const path = winPath.join(directory, entry.name);
-      if (entry.directory) pending.push(path);
-      else if (matched(path)) out.push(path);
+  const grants = rules.filter((rule) => rule.kind !== "deny");
+  const compiled: CompiledPatternDeny[] = [];
+  const walkRoots = new Map<string, { readonly root: string; readonly pattern: string }>();
+  const addRoot = (root: string, pattern: string): void => {
+    if (exists(root) && !walkRoots.has(foldPath(root))) walkRoots.set(foldPath(root), { root, pattern });
+  };
+  for (const pattern of patterns) {
+    const glob = pattern.replaceAll("\\", "/");
+    if (!WINDOWS_ABSOLUTE.test(pattern)) {
+      if (grants.length === 0) continue;
+      if (grants.some((rule) => rule.kind === "readwrite")) throw patternDenyRefusal(pattern, "an unanchored pattern reaches a writable grant");
+      if (list === undefined) throw patternDenyRefusal(pattern, "no directory lister");
+      compiled.push({ pattern, matches: compileGlobMatcher(glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true }) });
+      for (const rule of grants) addRoot(rule.path, pattern);
+      continue;
+    }
+    const segments = winPath.normalize(pattern).split("\\");
+    const literal = segments.slice(0, segments.findIndex((segment) => PATTERN_SEGMENT.test(segment)));
+    const prefix = winPath.normalize(literal.join("\\") + (literal.length === 1 ? "\\" : ""));
+    const reached = grants.filter((rule) => isWindowsPathAtOrUnder(rule.path, prefix) || isWindowsPathAtOrUnder(prefix, rule.path));
+    if (reached.length === 0) continue;
+    // The most specific rule at or above the pattern's literal prefix decides what the shell may do there.
+    const nearest = rules.filter((rule) => isWindowsPathAtOrUnder(prefix, rule.path))
+      .sort((a, b) => foldPath(b.path).length - foldPath(a.path).length)[0];
+    if (nearest?.kind === "readwrite" || reached.some((rule) => rule.kind === "readwrite" && isWindowsPathAtOrUnder(rule.path, prefix))) {
+      throw patternDenyRefusal(pattern, "the shell can write where it matches");
+    }
+    if (list === undefined) throw patternDenyRefusal(pattern, "no directory lister");
+    compiled.push({ pattern, matches: compileGlobMatcher(glob, { caseInsensitive: true }) });
+    for (const root of nearest?.kind === "readonly" ? [prefix] : reached.filter((rule) => strictlyUnder(rule.path, prefix)).map((rule) => rule.path)) {
+      addRoot(root, pattern);
     }
   }
-  return out.sort();
+  if (compiled.length === 0 || list === undefined) return [];
+  const matched = patternMatcher(compiled);
+  // Walking an outer root covers every root beneath it.
+  const roots = [...walkRoots.values()].filter(({ root }, index, all) =>
+    !all.some((other, otherIndex) => otherIndex !== index && strictlyUnder(root, other.root)));
+  const out: string[] = [];
+  let visited = 0;
+  for (const { root, pattern } of roots) {
+    const pending = [root];
+    if (matched(root, winPath.basename(root))) { out.push(root); continue; }
+    for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
+      let entries: readonly MxcDirectoryEntry[];
+      try { entries = list(directory); }
+      catch (error) {
+        // Removed since its parent was listed: nothing is left to deny.
+        if (errorCode(error) === "ENOENT") continue;
+        throw patternDenyRefusal(pattern, `cannot list ${directory} under ${root}: ${errorMessage(error)}`);
+      }
+      for (const entry of entries) {
+        if (++visited > MXC_PATTERN_WALK_LIMIT) throw patternDenyRefusal(pattern, `more than ${MXC_PATTERN_WALK_LIMIT} entries to check under ${root}`);
+        const path = `${directory}${directory.endsWith("\\") ? "" : "\\"}${entry.name}`;
+        // A matched directory is denied whole and not descended.
+        if (entry.kind === "reparse-directory" || matched(path, entry.name)) out.push(path);
+        else if (entry.kind === "directory") pending.push(path);
+      }
+    }
+  }
+  return dedupe(out).sort();
 }
 
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
@@ -369,27 +441,21 @@ export function rankMxcFilesystem(
   }
   const allGrants = [...readwrite, ...readonlyOut];
   const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor]);
-  const literalDenies = readDenies.filter((deny) => !PATTERN_SEGMENT.test(deny));
+  // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
+  const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
+  const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
   const rules: MxcRule[] = [
     ...readwrite.map((path) => ({ path, kind: "readwrite" as const })),
     ...readonlyOut.map((path) => ({ path, kind: "readonly" as const })),
     ...literalDenies.filter((deny) => allGrants.some((grant) => strictlyUnder(deny, grant))).map((path) => ({ path, kind: "deny" as const })),
   ];
-  const listings = new Map<string, readonly MxcDirectoryEntry[]>();
-  const listOnce = list && ((directory: string): readonly MxcDirectoryEntry[] => {
-    const key = foldPath(directory);
-    const known = listings.get(key);
-    if (known !== undefined) return known;
-    const entries = list(directory);
-    listings.set(key, entries);
-    return entries;
-  });
-  const patternMatches = readDenies.filter((deny) => PATTERN_SEGMENT.test(deny))
-    .flatMap((pattern) => expandPatternDeny(pattern, rules, exists, listOnce));
-  for (const deny of [...literalDenies, ...patternMatches]) {
+  const patternMatches = expandPatternDenies(readDenies.filter(isPatternDeny), rules, exists, list);
+  for (const deny of literalDenies) {
     if (allGrants.some((grant) => strictlyUnder(deny, grant))) denied.push(deny);
   }
-  const raised = denied.map((deny) => {
+  // A match removed since the walk needs no deny: checked once more as the policy is handed over.
+  const presentMatches = patternMatches.filter((match) => allGrants.some((grant) => strictlyUnder(match, grant) || foldPath(match) === foldPath(grant)) && exists(match));
+  const raised = [...denied.map((deny) => {
     if (exists(deny)) return deny;
     let firstMissing = winPath.normalize(deny);
     for (;;) {
@@ -405,7 +471,7 @@ export function rankMxcFilesystem(
     }
     // The shell cannot create this directory this spawn; recompute precise denies next spawn. Approved file tools can still create it.
     return firstMissing;
-  });
+  }), ...presentMatches];
   return {
     readwrite: readwrite.map(withoutTrailingSeparator),
     readonly: dedupe(readonlyOut).filter((path) => !readwrite.some((grant) => foldPath(grant) === foldPath(path))).map(withoutTrailingSeparator),
