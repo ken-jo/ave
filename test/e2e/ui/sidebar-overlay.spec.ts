@@ -9,7 +9,9 @@ test("fits a saved wide sidebar inside a narrow window and restores its preferre
   });
   try {
     const { page } = context;
-    for (const width of [360, 900, 1243]) {
+    // A 480px list pushes beside the rail (68) and a readable column (320) from 868px, and once overlaid it stays so until the
+    // 60px dead band is passed (928px): 1000 is the first wide step clear of both.
+    for (const width of [360, 1000, 1243]) {
       await setWindowSize(context.app, width, 768);
       const card = page.getByTestId("sidebar-card");
       const overlay = width === 360;
@@ -27,13 +29,31 @@ test("fits a saved wide sidebar inside a narrow window and restores its preferre
       expect(saved.system.sidebarWidth).toBe(480);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
       if (overlay) {
+        // Only the list overlays and traps Tab (case 28). Settings moved to the rail's footer with the project rail (#424), so
+        // the trap wraps between the list card's own first and last controls.
         const first = page.getByTestId("sidebar-resize-handle");
-        const last = page.getByTestId("sidebar-settings");
-        await last.focus();
-        await page.keyboard.press("Tab");
-        await expect(first).toBeFocused();
+        await first.focus();
         await page.keyboard.press("Shift+Tab");
-        await expect(last).toBeFocused();
+        const wrapped = await page.evaluate(() => {
+          const card = document.querySelector('[data-testid="sidebar-card"]');
+          const active = document.activeElement;
+          return { inCard: Boolean(card && active && card.contains(active)), isFirst: active?.getAttribute("data-testid") === "sidebar-resize-handle" };
+        });
+        expect(wrapped).toEqual({ inCard: true, isFirst: false });
+        // A row's menu button shows only while its row has focus, so the trap's last control can be one revealed on the way:
+        // Tab walks forward inside the card and wraps to the first control without leaving it.
+        let back = false;
+        for (let step = 0; step < 4 && !back; step++) {
+          await page.keyboard.press("Tab");
+          const now = await page.evaluate(() => {
+            const card = document.querySelector('[data-testid="sidebar-card"]');
+            const active = document.activeElement;
+            return { inCard: Boolean(card && active && card.contains(active)), isFirst: active?.getAttribute("data-testid") === "sidebar-resize-handle" };
+          });
+          expect(now.inCard).toBe(true);
+          back = now.isFirst;
+        }
+        await expect(first).toBeFocused();
       }
       await page.screenshot({ path: testInfo.outputPath(`sidebar-wide-preference-${width}.png`) });
     }
