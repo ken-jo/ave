@@ -71,7 +71,7 @@ import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWorkPanel.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
-import { MemorySaveNoticeRows, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
+import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
 import { MemoryFixCard } from "./components/MemoryFixCard.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
@@ -378,8 +378,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     () => ({ undo: undoMemoryNotice, dismiss: dismissMemoryNotice, toggleDetail: toggleMemoryNoticeDetail }),
     [undoMemoryNotice, dismissMemoryNotice, toggleMemoryNoticeDetail],
   );
-  // Only whether the composer is empty matters here, so typing does not redraw the transcript.
-  const composerHasText = question.trim() !== "";
+  // Only whether the composer is empty matters here. The rows read it from this flag, so neither typing nor emptying the
+  // composer redraws the transcript.
+  const composerTextFlag = useComposerTextFlag(question.trim() !== "");
   const userTextByMessageId = useMemo(() => {
     const byId = new Map<string, string>();
     for (const entry of visibleEntries) if (entry.kind === "user" && entry.messageId) byId.set(entry.messageId, entry.text);
@@ -390,7 +391,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     // 다시 시도 puts the /remember command back in the composer: sending stays the user's own keystroke.
     const retry = commandText !== undefined && /^\/remember\s/.test(commandText)
       ? {
-          disabled: composerHasText,
+          composerHasText: composerTextFlag,
           onRetry: () => {
             setQuestion(commandText);
             requestAnimationFrame(() => composerRef.current?.focus());
@@ -405,7 +406,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         {...(retry ? { retry } : {})}
       />
     );
-  }, [userTextByMessageId, composerHasText, setQuestion, memoryNoticeController, onOpenMemory]);
+  }, [userTextByMessageId, composerTextFlag, setQuestion, memoryNoticeController, onOpenMemory]);
   const renderAfterUserMessage = useCallback((messageId: string) => {
     const anchored = memoryNoticeList.filter((notice) => notice.anchorMessageId === messageId);
     return anchored.length > 0 ? renderMemoryNotices(anchored, messageId) : null;
@@ -425,6 +426,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     setQuestion(task.prompt);
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [setQuestion]);
+  // A fix chat opens with its request already in the composer, so the cursor goes there for the user to add the correction.
+  useEffect(() => {
+    if (!memoryFix) return;
+    const frame = requestAnimationFrame(() => composerRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [memoryFix]);
 
   // Single-click reuses an ephemeral preview; double-click pins a durable tab.
   const routeActivity = useCallback((target: string, web: boolean, mode: "ephemeral" | "pinned") => {

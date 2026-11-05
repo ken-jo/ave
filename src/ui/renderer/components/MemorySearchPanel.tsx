@@ -160,7 +160,8 @@ const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_LIMIT = 5;
 
 type PanelToast =
-  | { kind: "deleted"; title: string; undoToken?: string }
+  /** `undoFailed`: the last undo could not write; the host kept the token, so the same button tries again. */
+  | { kind: "deleted"; title: string; undoToken?: string; undoFailed?: true }
   | { kind: "message"; text: string };
 
 export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, onAskAveToFix }: MemorySearchPanelProps) {
@@ -203,12 +204,24 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
 
   const handleUndoDelete = async (title: string, token: string) => {
     setBusy(true);
+    const retryable = () => setToast({ kind: "deleted", title, undoToken: token, undoFailed: true });
     try {
       const answer = await api.memoryUndo(token);
-      setToast({ kind: "message", text: answer.ok ? t("memorySaveNotice.panelRestored", { title }) : t("memorySaveNotice.panelNotRestored") });
+      if (!answer.ok && (answer.error === "write-failed" || answer.error === "invalid-input")) {
+        retryable();
+        return;
+      }
+      setToast({
+        kind: "message",
+        text: answer.ok
+          ? t("memorySaveNotice.panelRestored", { title })
+          : answer.error === "changed"
+            ? t("memorySaveNotice.panelNotRestored")
+            : t("memorySaveNotice.panelUndoExpired"),
+      });
       await refresh();
     } catch {
-      setToast({ kind: "message", text: t("memorySaveNotice.panelNotRestored") });
+      retryable();
     } finally {
       setBusy(false);
     }
@@ -241,7 +254,11 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
         {toast ? (
           <div role="status" className="flex min-w-0 items-center gap-2 rounded-md border px-3 py-2 text-xs" data-testid="memory-panel-toast">
             <span className="min-w-0 flex-1 truncate">
-              {toast.kind === "deleted" ? t("memorySaveNotice.panelDeleted", { title: toast.title }) : toast.text}
+              {toast.kind === "deleted"
+                ? toast.undoFailed
+                  ? t("memorySaveNotice.undoFailed", { title: toast.title })
+                  : t("memorySaveNotice.panelDeleted", { title: toast.title })
+                : toast.text}
             </span>
             {toast.kind === "deleted" && toast.undoToken ? (
               <button
@@ -250,7 +267,7 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
                 disabled={busy}
                 onClick={() => void handleUndoDelete(toast.title, toast.undoToken!)}
               >
-                {t("memorySaveNotice.undo")}
+                {toast.undoFailed ? t("memorySaveNotice.retry") : t("memorySaveNotice.undo")}
               </button>
             ) : null}
             <button type="button" className="shrink-0 text-muted-foreground" aria-label={t("memorySaveNotice.dismiss")} onClick={() => setToast(null)}>

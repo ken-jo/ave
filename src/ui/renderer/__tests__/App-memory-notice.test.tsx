@@ -111,6 +111,8 @@ describe("App memory notices and Ave 에게 고치기", () => {
       const composer = document.querySelector("textarea") as HTMLTextAreaElement | null;
       expect(composer?.value).toBe(`기억 "${TITLE}" 를 고쳐 줘: 게이트웨이가 10초로 바뀌었어`);
     });
+    // The cursor waits in the composer, after the request, for the user to add the correction.
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector("textarea")));
     // The card above the composer names the memory being fixed.
     const card = await screen.findByTestId("memory-fix-card");
     expect(card.textContent).toContain("메모리에서 열림 · 고칠 기억");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { AveApi } from "../types.js";
 import type { MemorySaveNoticeResult, MemorySaveSkipReason } from "../../../shared/memory-save-result.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -20,6 +20,8 @@ export interface MemoryNotice {
   state: NoticeState;
   busy?: boolean;
   detailOpen?: boolean;
+  /** The last undo could not write; the host kept the token, so the same button tries again. */
+  undoFailed?: boolean;
 }
 
 export interface MemorySaveNoticesController {
@@ -80,8 +82,14 @@ export function useMemorySaveNotices(
     const token = notice.state.result.undoToken;
     const { title } = notice.state.result.entry;
     replace(key, (n) => ({ ...n, busy: true }));
+    const keepForRetry = () => replace(key, (n) => ({ ...n, busy: false, undoFailed: true }));
     try {
       const answer = await api.memoryUndo(token);
+      // A write that failed, or a token the host refused to parse, leaves the token held; anything else ends this undo.
+      if (!answer.ok && (answer.error === "write-failed" || answer.error === "invalid-input")) {
+        keepForRetry();
+        return;
+      }
       replace(key, (n) => ({
         key: n.key,
         ...(n.anchorMessageId ? { anchorMessageId: n.anchorMessageId } : {}),
@@ -91,11 +99,57 @@ export function useMemorySaveNotices(
       }));
     } catch {
       // The host keeps the token when an undo throws, so the same button can try again.
-      replace(key, (n) => ({ ...n, busy: false }));
+      keepForRetry();
     }
   }, [api, replace]);
 
   return { notices, undo, dismiss, toggleDetail };
+}
+
+/**
+ * Whether the composer holds text, for 다시 시도. The transcript draws the notice rows through a memoized renderer, so the
+ * rows read this flag themselves instead of taking it as a value that would redraw the whole transcript on every change.
+ */
+export interface ComposerTextFlag {
+  get: () => boolean;
+  subscribe: (listener: () => void) => () => void;
+}
+
+export function useComposerTextFlag(hasText: boolean): ComposerTextFlag {
+  const [flag] = useState(() => {
+    let value = hasText;
+    const listeners = new Set<() => void>();
+    return {
+      get: () => value,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+      set: (next: boolean) => {
+        if (next === value) return;
+        value = next;
+        for (const listener of listeners) listener();
+      },
+    };
+  });
+  useLayoutEffect(() => flag.set(hasText), [flag, hasText]);
+  return flag;
+}
+
+function RetryButton({ className, composerHasText, onRetry }: { className: string; composerHasText: ComposerTextFlag; onRetry: () => void }) {
+  const { t } = useTranslation();
+  const disabled = useSyncExternalStore(composerHasText.subscribe, composerHasText.get);
+  return (
+    <button
+      type="button"
+      className={className}
+      disabled={disabled}
+      title={disabled ? t("memorySaveNotice.retryComposerBusy") : undefined}
+      onClick={onRetry}
+    >
+      {t("memorySaveNotice.retry")}
+    </button>
+  );
 }
 
 export interface MemorySaveNoticeRowsProps {
@@ -104,7 +158,7 @@ export interface MemorySaveNoticeRowsProps {
   /** Open the memory panel searching for this title. */
   onOpenMemory: (title: string) => void;
   /** 다시 시도 for a failed /remember, offered only when its command row is known. */
-  retry?: { onRetry: () => void; disabled: boolean };
+  retry?: { onRetry: () => void; composerHasText: ComposerTextFlag };
 }
 
 const DETAIL_KEYS: Record<Exclude<SkipGroup, "nothing">, string> = {
@@ -125,7 +179,10 @@ export function MemorySaveNoticeRows({ notices, controller, onOpenMemory, retry 
         const { state } = notice;
         const group = state.kind === "skipped" ? skipGroup(state.reason) : null;
         const detailKey = group !== null && group !== "nothing" ? DETAIL_KEYS[group] : null;
-        const title = state.kind === "saved" ? state.result.entry.title : state.kind === "not-undone" ? state.title : null;
+        // A deleted memory has nothing to show in the panel, so its notice offers only 되돌리기.
+        const title = state.kind === "saved"
+          ? (state.result.op === "deleted" ? null : state.result.entry.title)
+          : state.kind === "not-undone" ? state.title : null;
         return (
           <div
             key={notice.key}
@@ -133,10 +190,14 @@ export function MemorySaveNoticeRows({ notices, controller, onOpenMemory, retry 
             className="flex min-w-0 flex-col gap-1 rounded-md border bg-background px-3 py-1.5 text-xs text-muted-foreground"
           >
             <div className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 flex-1 truncate">{noticeText(state, t)}</span>
+              <span className="min-w-0 flex-1 truncate">
+                {state.kind === "saved" && notice.undoFailed
+                  ? t("memorySaveNotice.undoFailed", { title: state.result.entry.title })
+                  : noticeText(state, t)}
+              </span>
               {state.kind === "saved" && state.result.undoToken ? (
                 <button type="button" className={linkClass} disabled={notice.busy === true} onClick={() => void controller.undo(notice.key)}>
-                  {t("memorySaveNotice.undo")}
+                  {notice.undoFailed ? t("memorySaveNotice.retry") : t("memorySaveNotice.undo")}
                 </button>
               ) : null}
               {title !== null ? (
@@ -145,15 +206,7 @@ export function MemorySaveNoticeRows({ notices, controller, onOpenMemory, retry 
                 </button>
               ) : null}
               {group === "failed" && retry ? (
-                <button
-                  type="button"
-                  className={linkClass}
-                  disabled={retry.disabled}
-                  title={retry.disabled ? t("memorySaveNotice.retryComposerBusy") : undefined}
-                  onClick={retry.onRetry}
-                >
-                  {t("memorySaveNotice.retry")}
-                </button>
+                <RetryButton className={linkClass} composerHasText={retry.composerHasText} onRetry={retry.onRetry} />
               ) : null}
               {detailKey !== null ? (
                 <button

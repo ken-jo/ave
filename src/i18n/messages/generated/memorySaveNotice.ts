@@ -35,6 +35,8 @@ export const en = {
   "memorySaveNotice.fixCardLabel": "Opened from memory · memory to fix",
   "memorySaveNotice.fixCardHint": "The request is filled in below. Add what is correct and send it, and Ave fixes this memory. Nothing changes until you send.",
   "memorySaveNotice.fixCardDismiss": "Close the memory card",
+  "memorySaveNotice.undoFailed": "Could not undo · {title}",
+  "memorySaveNotice.panelUndoExpired": "This undo is no longer available",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "memorySaveNotice.saved": "기억에 저장 · {title}",
@@ -72,4 +74,6 @@ export const ko: Record<keyof typeof en, string> = {
   "memorySaveNotice.fixCardLabel": "메모리에서 열림 · 고칠 기억",
   "memorySaveNotice.fixCardHint": "아래 입력창에 요청이 채워져 있습니다. 바르게 고칠 내용을 덧붙여 보내면 Ave 가 이 기억을 고칩니다. 보내기 전에는 아무것도 바뀌지 않습니다.",
   "memorySaveNotice.fixCardDismiss": "고칠 기억 카드 닫기",
+  "memorySaveNotice.undoFailed": "되돌리지 못했어요 · {title}",
+  "memorySaveNotice.panelUndoExpired": "이 되돌리기는 이제 쓸 수 없어요",
 };

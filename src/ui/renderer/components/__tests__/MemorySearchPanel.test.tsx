@@ -114,6 +114,53 @@ describe("MemorySearchPanel", () => {
     expect(await within(screen.getByRole("tabpanel")).findByRole("button", { name: /결제 API 타임아웃은 8초/ })).toBeTruthy();
   });
 
+  it.each(["write-failed", "invalid-input"] as const)("keeps the toast's undo for a retry when the host answers %s", async (error) => {
+    const api = panelWithMemories();
+    const restore = api.memoryUndo.getMockImplementation()!;
+    api.memoryUndo.mockImplementationOnce(async () => ({ ok: false, error }));
+    render(<MemorySearchPanel api={api as unknown as AveApi} onAskAveToFix={noFix} />);
+
+    fireEvent.click(await within(await screen.findByRole("tabpanel")).findByRole("button", { name: /결제 API 타임아웃은 8초/ }));
+    fireEvent.click(screen.getByRole("button", { name: "기억 삭제: 결제 API 타임아웃은 8초" }));
+    fireEvent.click(await screen.findByRole("button", { name: "되돌리기" }));
+
+    expect(await screen.findByText("되돌리지 못했어요 · 결제 API 타임아웃은 8초")).toBeTruthy();
+    expect(screen.queryByText("더 새로운 기억이 자리를 차지해 되살리지 않았어요")).toBeNull();
+    api.memoryUndo.mockImplementationOnce(restore);
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect(await screen.findByText("\"결제 API 타임아웃은 8초\" 를 되살렸습니다")).toBeTruthy();
+    expect(api.memoryUndo).toHaveBeenNthCalledWith(2, "11111111-2222-4333-8444-555555555555");
+  });
+
+  it.each([
+    ["changed", "더 새로운 기억이 자리를 차지해 되살리지 않았어요"],
+    ["not-found", "이 되돌리기는 이제 쓸 수 없어요"],
+  ] as const)("says why an undo answered %s, without offering it again", async (error, text) => {
+    const api = panelWithMemories();
+    api.memoryUndo.mockImplementationOnce(async () => ({ ok: false, error }));
+    render(<MemorySearchPanel api={api as unknown as AveApi} onAskAveToFix={noFix} />);
+
+    fireEvent.click(await within(await screen.findByRole("tabpanel")).findByRole("button", { name: /결제 API 타임아웃은 8초/ }));
+    fireEvent.click(screen.getByRole("button", { name: "기억 삭제: 결제 API 타임아웃은 8초" }));
+    fireEvent.click(await screen.findByRole("button", { name: "되돌리기" }));
+
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "되돌리기" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
+  });
+
+  it("offers Ave 에게 고치기 on a search result, as a notice's 보기 or 최근 저장 opens one", async () => {
+    const api = panelWithMemories();
+    // Found only by the search, so the row cannot come from the full list shown before the query.
+    api.memorySearchEntries.mockImplementation(async () => [
+      { id: "m9", filename: "gateway.md", title: "게이트웨이 재시도는 두 번", excerpt: "운영 기준", updatedAt: RECENT },
+    ]);
+    render(<MemorySearchPanel api={api as unknown as AveApi} onAskAveToFix={noFix} initialQuery={{ text: "게이트웨이", nonce: 1 }} />);
+
+    fireEvent.click(await within(await screen.findByRole("tabpanel")).findByRole("button", { name: /게이트웨이 재시도는 두 번/ }));
+    expect(screen.getByRole("button", { name: "Ave 에게 기억 고치기: 게이트웨이 재시도는 두 번" })).toBeTruthy();
+  });
+
   it("asks Ave to fix a memory in its own project, and offers nothing for the instructions file", async () => {
     const api = panelWithMemories();
     const onAskAveToFix = vi.fn(async () => false);

@@ -1,7 +1,8 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
+import { memo, useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemorySaveNoticeRows, useMemorySaveNotices } from "../MemorySaveNotices.js";
+import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type ComposerTextFlag } from "../MemorySaveNotices.js";
 import type { MemorySaveResultEvent, MemoryUndoResult } from "../../../../shared/memory-save-result.js";
 
 const SESSION = "0b6f3f43-3c5e-4f5f-9a51-2b0b6c1e9d10";
@@ -9,18 +10,26 @@ const TOKEN = "11111111-2222-4333-8444-555555555555";
 const ENTRY = { id: "m1", filename: "timeout.md", title: "결제 API 타임아웃은 10초", scope: "project" as const };
 
 type Api = Parameters<typeof useMemorySaveNotices>[0];
+type Retry = { onRetry: () => void; composerHasText: ComposerTextFlag };
+
+/** A fixed composer state for 다시 시도. */
+function composerFlag(hasText: boolean): ComposerTextFlag {
+  return { get: () => hasText, subscribe: () => () => {} };
+}
 
 function Rows({ api, sessionId, onOpenMemory, retry }: {
   api: Api;
   sessionId: string;
   onOpenMemory: (title: string) => void;
-  retry?: { onRetry: () => void; disabled: boolean };
+  retry?: Retry;
 }) {
   const controller = useMemorySaveNotices(api, sessionId);
   return <MemorySaveNoticeRows notices={controller.notices} controller={controller} onOpenMemory={onOpenMemory} {...(retry ? { retry } : {})} />;
 }
 
-function harness(undo: () => Promise<MemoryUndoResult> = async () => ({ ok: true, undone: "created", title: ENTRY.title }), retry?: { onRetry: () => void; disabled: boolean }) {
+type IpcUndoResult = MemoryUndoResult | { ok: false; error: "invalid-input" | "write-failed" };
+
+function harness(undo: () => Promise<IpcUndoResult> = async () => ({ ok: true, undone: "created", title: ENTRY.title }), retry?: Retry) {
   let emit: (event: MemorySaveResultEvent) => void = () => {};
   const unsubscribe = vi.fn();
   const api = {
@@ -69,6 +78,8 @@ describe("MemorySaveNotices", () => {
     const { emit } = harness(async () => ({ ok: false, error: "changed" }));
     emit({ sessionId: SESSION, result: { status: "saved", op: "deleted", entry: ENTRY, undoToken: TOKEN } });
     expect(screen.getByRole("status").textContent).toContain("기억에서 삭제 · 결제 API 타임아웃은 10초");
+    // A deleted memory has nothing to show in the panel, so its notice offers only 되돌리기.
+    expect(screen.queryByRole("button", { name: "보기" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "되돌리기" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("다시 바뀐 기억이라 되돌리지 않았어요"));
     expect(screen.getByRole("button", { name: "보기" })).toBeTruthy();
@@ -92,10 +103,25 @@ describe("MemorySaveNotices", () => {
     emit({ sessionId: SESSION, result: { status: "saved", op: "created", entry: ENTRY, undoToken: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: "되돌리기" }));
     await waitFor(() => expect(calls).toBe(1));
-    await waitFor(() => expect((screen.getByRole("button", { name: "되돌리기" }) as HTMLButtonElement).disabled).toBe(false));
-    expect(screen.getByRole("status").textContent).toContain("기억에 저장");
-    fireEvent.click(screen.getByRole("button", { name: "되돌리기" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "다시 시도" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByRole("status").textContent).toContain("되돌리지 못했어요 · 결제 API 타임아웃은 10초");
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("저장을 되돌렸어요"));
+  });
+
+  it.each(["write-failed", "invalid-input"] as const)("keeps the undo for a retry when the host answers %s", async (error) => {
+    let calls = 0;
+    const { emit, api } = harness(async () => {
+      calls += 1;
+      return calls === 1 ? { ok: false, error } : { ok: true, undone: "created", title: ENTRY.title };
+    });
+    emit({ sessionId: SESSION, result: { status: "saved", op: "created", entry: ENTRY, undoToken: TOKEN } });
+    fireEvent.click(screen.getByRole("button", { name: "되돌리기" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("되돌리지 못했어요 · 결제 API 타임아웃은 10초"));
+    expect(screen.getByRole("status").textContent).not.toContain("오래된 알림");
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("저장을 되돌렸어요"));
+    expect(api.memoryUndo).toHaveBeenNthCalledWith(2, TOKEN);
   });
 
   it.each([
@@ -115,7 +141,7 @@ describe("MemorySaveNotices", () => {
   });
 
   it("tells a reviewer skip apart from a failure, with nothing to retry", () => {
-    const { emit } = harness(undefined, { onRetry: vi.fn(), disabled: false });
+    const { emit } = harness(undefined, { onRetry: vi.fn(), composerHasText: composerFlag(false) });
     emit({ sessionId: SESSION, result: { status: "skipped", reason: "reviewer-skip" } });
     expect(screen.getByRole("status").textContent).toContain("저장하지 않음 · 기억해 둘 만한 내용을 찾지 못했어요");
     expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
@@ -124,13 +150,13 @@ describe("MemorySaveNotices", () => {
 
   it("offers 다시 시도 on a failed save only when a retry is given, disabled while the composer holds text", () => {
     const onRetry = vi.fn();
-    const first = harness(undefined, { onRetry, disabled: false });
+    const first = harness(undefined, { onRetry, composerHasText: composerFlag(false) });
     first.emit({ sessionId: SESSION, result: { status: "skipped", reason: "invalid-review" } });
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(onRetry).toHaveBeenCalledOnce();
     first.view.unmount();
 
-    const busy = harness(undefined, { onRetry, disabled: true });
+    const busy = harness(undefined, { onRetry, composerHasText: composerFlag(true) });
     busy.emit({ sessionId: SESSION, result: { status: "skipped", reason: "invalid-review" } });
     expect((screen.getByRole("button", { name: "다시 시도" }) as HTMLButtonElement).disabled).toBe(true);
     busy.view.unmount();
@@ -138,6 +164,39 @@ describe("MemorySaveNotices", () => {
     const none = harness();
     none.emit({ sessionId: SESSION, result: { status: "skipped", reason: "invalid-review" } });
     expect(screen.queryByRole("button", { name: "다시 시도" })).toBeNull();
+  });
+
+  it("follows the composer for 다시 시도 without redrawing what holds the rows", () => {
+    let emit: (event: MemorySaveResultEvent) => void = () => {};
+    const api = {
+      onMemorySaveResult: vi.fn((handler: (event: MemorySaveResultEvent) => void) => { emit = handler; return () => {}; }),
+      memoryUndo: vi.fn(async () => ({ ok: true as const, undone: "created" as const, title: ENTRY.title })),
+    };
+    let transcriptRenders = 0;
+    // Stands in for the memoized transcript: it redraws only when what it is handed changes.
+    const Transcript = memo(function Transcript({ flag }: { flag: ComposerTextFlag }) {
+      transcriptRenders += 1;
+      const controller = useMemorySaveNotices(api, SESSION);
+      return <MemorySaveNoticeRows notices={controller.notices} controller={controller} onOpenMemory={() => {}} retry={{ onRetry: () => {}, composerHasText: flag }} />;
+    });
+    let setText: (value: string) => void = () => {};
+    function View() {
+      const [text, set] = useState("");
+      setText = set;
+      const flag = useComposerTextFlag(text.trim() !== "");
+      return <Transcript flag={flag} />;
+    }
+    render(<View />);
+    act(() => emit({ sessionId: SESSION, result: { status: "skipped", reason: "invalid-review" } }));
+    const before = transcriptRenders;
+    const button = () => screen.getByRole("button", { name: "다시 시도" }) as HTMLButtonElement;
+    expect(button().disabled).toBe(false);
+
+    act(() => setText("새 질문"));
+    expect(button().disabled).toBe(true);
+    act(() => setText(""));
+    expect(button().disabled).toBe(false);
+    expect(transcriptRenders).toBe(before);
   });
 
   it("keeps the latest three notices, lets one be dismissed, and clears on a conversation switch", () => {
