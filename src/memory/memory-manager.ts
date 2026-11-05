@@ -1568,10 +1568,9 @@ export class MemoryManager implements PromptMemorySource {
 
     await withFileLock(indexPath, async () => {
       // One save rule: within a scope, a same-title save updates the existing memory whichever path wrote it. Should two files
-      // share the title, the newest is updated and the others are folded into it on this write.
+      // share the title, only the newest is updated; the others stay as they are for the user to view or delete.
       const existing = this.findExistingManagedMemory(input.title, metadata.scope);
       if (existing) {
-        await this.foldDuplicateMemoriesLocked(existing.duplicates, indexPath, actor);
         filename = existing.filename;
         metadata = this.mergeExistingMemoryMetadata(existing.metadata, metadata, options);
         const previous = readUtf8FileSnapshotIfPresent(join(this.memoryDir, filename), MAX_MANAGED_MEMORY_FILE_BYTES);
@@ -3721,12 +3720,12 @@ export class MemoryManager implements PromptMemorySource {
 
   /**
    * The memory a same-title save in `scope` updates: the newest such file (by modification time, then name, so the choice
-   * never depends on directory order). Any other files with that title and scope are returned as duplicates to fold.
+   * never depends on directory order). Other files with that title and scope are left alone.
    */
   private findExistingManagedMemory(
     title: string,
     scope: MemoryScope,
-  ): { filename: string; metadata: MemoryMetadataV1; duplicates: Array<{ filename: string; id: string }> } | undefined {
+  ): { filename: string; metadata: MemoryMetadataV1 } | undefined {
     const matches: Array<{ filename: string; metadata: MemoryMetadataV1; mtimeMs: number }> = [];
     for (const filename of readdirIfPresent(this.memoryDir)) {
       if (!filename.endsWith(".md") || this.isMemoryIndexFilename(filename)) continue;
@@ -3742,26 +3741,8 @@ export class MemoryManager implements PromptMemorySource {
     }
     if (matches.length === 0) return undefined;
     matches.sort((x, y) => y.mtimeMs - x.mtimeMs || (x.filename < y.filename ? -1 : x.filename > y.filename ? 1 : 0));
-    const [newest, ...rest] = matches;
-    return {
-      filename: newest!.filename,
-      metadata: newest!.metadata,
-      duplicates: rest.map((match) => ({ filename: match.filename, id: match.metadata.id })),
-    };
-  }
-
-  /** Remove same-title duplicates the save is folding into the memory it updates; each leaves a deleted history row. */
-  private async foldDuplicateMemoriesLocked(
-    duplicates: ReadonlyArray<{ filename: string; id: string }>,
-    indexPath: string,
-    actor: MemoryHistoryActor,
-  ): Promise<void> {
-    for (const duplicate of duplicates) {
-      await this.history.scrub(duplicate.id);
-      unlinkIfPresent(join(this.memoryDir, duplicate.filename));
-      this.removeMemoryIndexEntryLocked(duplicate.filename, indexPath);
-      await this.history.record({ memoryId: duplicate.id, op: "deleted", actor });
-    }
+    const newest = matches[0]!;
+    return { filename: newest.filename, metadata: newest.metadata };
   }
 
   private validateManagedMemoryId(id: string, operation: string): string {

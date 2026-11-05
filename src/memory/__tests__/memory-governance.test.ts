@@ -211,7 +211,7 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     expect(memoryManager.listMemoryEntries().find((entry) => entry.id === imported.id)).toMatchObject({ source: "assistant", state: "active" });
   });
 
-  it("updates the newest of two same-title files and folds the other into it", async () => {
+  it("updates only the newest of two same-title files and leaves the other untouched", async () => {
     const { utimesSync } = await import("node:fs");
     const { entry: first } = await memoryManager.saveMemory("Release decision", "Old copy.", {}, "user");
     // A second file with the same title and scope, as a copy from another device or an older build would leave.
@@ -223,16 +223,20 @@ describe("MemoryManager — scoped long-term memory governance", () => {
     writeFileSync(join(dir, "memories", "release-decision-copy.md"),
       stored.replace(header[1], Buffer.from(JSON.stringify(metadata), "utf-8").toString("base64url")).replace("Old copy.", "Newer copy."), "utf-8");
     utimesSync(join(dir, "memories", first.filename), new Date(2000, 0, 1), new Date(2000, 0, 1));
+    const olderBefore = readFileSync(join(dir, "memories", first.filename), "utf-8");
 
     const { op, entry } = await memoryManager.saveMemory("Release decision", "Final.", {}, "assistant");
 
     expect(op).toBe("updated");
     expect(entry.id).toBe(secondId);
-    expect(memoryManager.listMemoryEntries().filter((note) => note.title === "Release decision").map((note) => note.id)).toEqual([secondId]);
-    expect(existsSync(join(dir, "memories", first.filename))).toBe(false);
+    expect(readFileSync(join(dir, "memories", "release-decision-copy.md"), "utf-8")).toContain("Final.");
+    // The older copy is never deleted by a save: the user cleans it up from the panel.
+    expect(readFileSync(join(dir, "memories", first.filename), "utf-8")).toBe(olderBefore);
+    expect(memoryManager.listMemoryEntries().filter((note) => note.title === "Release decision").map((note) => note.id).sort())
+      .toEqual([first.id, secondId].sort());
     expect((await memoryManager.getMemoryHistory(secondId, {})).entries.at(-1)?.op).toBe("updated");
     const raw = readFileSync(join(dir, "memories", "history.jsonl"), "utf-8").trim().split("\n").map((line) => JSON.parse(line) as { memoryId: string; op: string });
-    expect(raw.filter((row) => row.memoryId === first.id).map((row) => row.op)).toEqual(["created", "deleted"]);
+    expect(raw.filter((row) => row.memoryId === first.id).map((row) => row.op)).toEqual(["created"]);
   });
 
   it("refuses zero-width and bidi characters with the stable unsafe-text reason", async () => {
