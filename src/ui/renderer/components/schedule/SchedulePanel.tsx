@@ -37,7 +37,7 @@ const SCHEDULE_UNDO_MS = 6_000;
 const NARROW_ENTER = 760;
 const NARROW_EXIT = 820;
 
-type EntryStatus = "scheduled" | "paused" | "missed" | "done" | "failed" | "running";
+type EntryStatus = "scheduled" | "paused" | "missed" | "orphaned" | "done" | "failed" | "running";
 
 interface ScheduleEntry {
   key: string;
@@ -96,6 +96,7 @@ function statusClass(status: EntryStatus): string {
     case "running": return "border-2 border-primary bg-background text-foreground";
     case "paused": return "border-dashed border-muted-foreground bg-muted text-muted-foreground";
     case "missed": return "border-dotted border-warning bg-background text-warning";
+    case "orphaned": return "border-dotted border-muted-foreground bg-muted text-muted-foreground line-through";
     default: return "border-dashed border-border bg-background text-foreground";
   }
 }
@@ -103,7 +104,7 @@ function statusClass(status: EntryStatus): string {
 function StatusIcon({ status }: { status: EntryStatus }) {
   if (status === "running") return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />;
   if (status === "paused") return <Pause className="h-3 w-3 shrink-0" aria-hidden="true" />;
-  if (status === "failed" || status === "missed") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
+  if (status === "failed" || status === "missed" || status === "orphaned") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
   return <Repeat2 className="h-3 w-3 shrink-0" aria-hidden="true" />;
 }
 

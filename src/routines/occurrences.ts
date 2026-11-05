@@ -27,7 +27,7 @@ export function listRoutineOccurrences(records: readonly RoutineRecord[], range:
       if (missedAt >= range.from && missedAt < range.to) out.push({ routineId: record.id, at: record.schedule.at!, status: "missed" });
       continue;
     }
-    const status = record.pausedAt ? "paused" : "scheduled";
+    const status = record.orphanedAt ? "orphaned" : record.pausedAt ? "paused" : "scheduled";
     for (const at of expand(record, start, range.to, range.now)) out.push({ routineId: record.id, at, status });
   }
   return out.sort((a, b) => a.at.localeCompare(b.at) || a.routineId.localeCompare(b.routineId));

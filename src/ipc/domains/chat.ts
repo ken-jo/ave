@@ -1606,6 +1606,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
       await memoryManager.deleteSession(sessionId);
+      // Schedules connected to it become 대화 없음: they never run until the user relinks, unlinks or deletes them.
+      await deps.routinesStore?.markOrphaned(sessionId);
       // Its "This session" rules, approvals and network hosts end with it.
       const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
       endSessionScopedPermissions(sessionId, conversationLoop.permissionManager);
