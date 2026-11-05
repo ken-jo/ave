@@ -124,6 +124,7 @@ import { formatIpcError } from "./format-ipc-error.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 import { errorMessage } from "../../shared/error-message.js";
+import type { MemoryFixTarget } from "./components/MemoryFixCard.js";
 
 /** A canvas not laid out yet measures 0x0 — that is "unmeasured", not "no room". */
 function measuredCanvasSize(canvas: HTMLElement | null) {
@@ -1381,8 +1382,9 @@ export function App() {
   }, [activeView]);
 
   // "Ave 에게 고치기": a new chat in the memory's project (the current one for a global memory) whose composer names the
-  // memory. Nothing changes until the user sends; Ave then edits it with memory_write {id}.
-  const handleAskAveToFix = useCallback(async (memory: { title: string; projectRoot?: string; projectName?: string }) => {
+  // memory, with a card above it showing the memory. Nothing changes until the user sends; Ave then edits it with
+  // memory_write {id}.
+  const handleAskAveToFix = useCallback(async (memory: MemoryFixTarget & { projectRoot?: string; projectName?: string }) => {
     if (streaming) return false;
     const project = memory.projectRoot
       ? resolveKnownProject(projectIdentityFromPayload({ projectRoot: memory.projectRoot, projectName: memory.projectName }))
@@ -1390,7 +1392,10 @@ export function App() {
     if (!project) return false;
     const started = await focusedSession.startNewChat(
       { projectRoot: project.projectRoot, projectName: project.projectName },
-      t("memorySaveNotice.askAveToFixPrefill", { title: memory.title }),
+      {
+        draft: t("memorySaveNotice.askAveToFixPrefill", { title: memory.title }),
+        fixMemory: { id: memory.id, title: memory.title, content: memory.content },
+      },
     );
     if (!started) return false;
     setActiveProject(project);

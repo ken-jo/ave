@@ -33,10 +33,11 @@ function NoteRow({
   note: NoteResult;
   busy: boolean;
   onDelete: (note: NoteResult & { filename: string }) => void;
-  onAskAveToFix: (note: NoteResult) => void;
+  onAskAveToFix: (note: NoteResult & { id: string }) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const fixId = note.id;
   return (
     <div className="w-full rounded-lg border bg-background shadow-sm transition-shadow hover:shadow-md">
       <button
@@ -56,15 +57,18 @@ function NoteRow({
       </button>
       {expanded && isActionable(note) ? (
         <div className="flex justify-end gap-2 border-t px-3 py-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            aria-label={t("memorySaveNotice.askAveToFixAriaLabel", { title: note.title })}
-            onClick={() => onAskAveToFix(note)}
-          >
-            {t("memorySaveNotice.askAveToFix")}
-          </Button>
+          {/* Ave fixes a memory by its id; a legacy note without one can only be deleted. */}
+          {fixId ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              aria-label={t("memorySaveNotice.askAveToFixAriaLabel", { title: note.title })}
+              onClick={() => onAskAveToFix({ ...note, id: fixId })}
+            >
+              {t("memorySaveNotice.askAveToFix")}
+            </Button>
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -148,7 +152,7 @@ export interface MemorySearchPanelProps {
   /** A search to open with (a memory notice's 보기); a new nonce applies it again. */
   initialQuery?: { text: string; nonce: number } | null;
   /** Open a new chat whose composer asks Ave to fix this memory; false when it could not open. */
-  onAskAveToFix: (memory: { title: string; projectRoot?: string; projectName?: string }) => Promise<boolean>;
+  onAskAveToFix: (memory: { id: string; title: string; content: string; projectRoot?: string; projectName?: string }) => Promise<boolean>;
 }
 
 /** 최근 저장: memories saved in the last week, newest first. */
@@ -210,9 +214,11 @@ export function MemorySearchPanel({ api, project, onOpenSession, initialQuery, o
     }
   };
 
-  const handleAskAveToFix = async (note: NoteResult) => {
+  const handleAskAveToFix = async (note: NoteResult & { id: string }) => {
     const opened = await onAskAveToFix({
+      id: note.id,
       title: note.title,
+      content: note.excerpt,
       ...(note.projectRoot ? { projectRoot: note.projectRoot } : {}),
       ...(note.projectName ? { projectName: note.projectName } : {}),
     });

@@ -9,6 +9,7 @@ import type { Attachment } from "../types/attachments.js";
 import type { SubscriptionRuntimeUiPolicy } from "../utils/subscription-runtime-ui-policy.js";
 import type { SideChatSurface } from "../components/chat-group-session-registry.js";
 import type { ProcessingDisplayLevel } from "../../../shared/processing-display-level.js";
+import type { MemoryFixTarget } from "../components/MemoryFixCard.js";
 
 /**
  * Cross-cutting chat-view state bundle. Groups props by concern so ChatView
@@ -58,6 +59,9 @@ export interface ChatContextValue {
   onOpenSettings: (tab?: string) => void;
   /** Open the memory panel searching for this text (a memory notice's 보기). */
   onOpenMemory: (query: string) => void;
+  /** The memory this conversation was opened to fix ("Ave 에게 고치기"), shown above the composer until sent. */
+  memoryFix: MemoryFixTarget | null;
+  onDismissMemoryFix: () => void;
 
   searchOpen: boolean;
   searchQuery: string;

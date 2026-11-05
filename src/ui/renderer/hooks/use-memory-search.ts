@@ -8,6 +8,8 @@ export interface NoteResult {
   excerpt: string;
   updatedAt?: string;
   filename?: string;
+  /** Absent on a legacy note without front matter; such a note can be deleted but not fixed by id. */
+  id?: string;
   projectRoot?: string;
   projectName?: string;
   /** The MEMORY.md instructions file shown first; it is edited in 지침, not deleted or fixed from here. */
@@ -100,6 +102,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       if (!aliveRef.current) return;
       const mappedNotes = (notes ?? []).map((note) => ({
         filename: note.filename,
+        ...(note.id ? { id: note.id } : {}),
         title: note.title,
         excerpt: stripTopHeading(note.content),
         updatedAt: note.updatedAt,

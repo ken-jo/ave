@@ -144,9 +144,9 @@ describe("useChatGroupSession", () => {
     });
 
     await act(async () => {
-      await result.current.startNewChat({ projectRoot: "/p" }, "기억 \"x\" 를 고쳐 줘: ");
+      await result.current.startNewChat({ projectRoot: "/p" }, { draft: "기억 \"x\" 를 고쳐 줘: ", fixMemory: { id: "m1", title: "x", content: "y" } });
     });
-    expect(startNewChat).toHaveBeenCalledWith({ projectRoot: "/p" }, "기억 \"x\" 를 고쳐 줘: ");
+    expect(startNewChat).toHaveBeenCalledWith({ projectRoot: "/p" }, { draft: "기억 \"x\" 를 고쳐 줘: ", fixMemory: { id: "m1", title: "x", content: "y" } });
   });
 
   it("falls back to the stand-in when the tile unmounts", () => {

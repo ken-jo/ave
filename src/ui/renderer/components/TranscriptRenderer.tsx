@@ -132,6 +132,8 @@ export interface SharedTranscriptProps {
   /** Controls which model work items are visible inside each WorkGroup. */
   processingDisplayLevel?: ProcessingDisplayLevel;
   onPreviewTarget?: (target: ChatPreviewTarget) => void;
+  /** Drawn right under the user row with this message id (a memory notice anchored to that message). */
+  renderAfterUserMessage?: (messageId: string) => React.ReactNode;
 }
 
 const NO_STAR: () => string | null = () => null;
@@ -153,6 +155,7 @@ export function TranscriptRenderer({
   workGroupsForceOpen = false,
   processingDisplayLevel = DEFAULT_PROCESSING_DISPLAY_LEVEL,
   onPreviewTarget,
+  renderAfterUserMessage,
 }: SharedTranscriptProps): React.ReactElement {
   const { t } = useTranslation();
   const terminalObservation = useTerminalObservation(currentSessionId, observeTerminal, entries.length);
@@ -424,6 +427,10 @@ export function TranscriptRenderer({
             )}
           </div>
         );
+      }
+      if (renderAfterUserMessage && entry.messageId) {
+        const after = renderAfterUserMessage(entry.messageId);
+        if (after) rendered.push(<div key={`after-${idx}`} className="min-w-0">{after}</div>);
       }
       // Only the active turn's start can need the placeholder, so only it pays for the scan (a scan per user message made long
       // sessions quadratic).
@@ -820,6 +827,7 @@ export function TranscriptRenderer({
     onToggleStar,
     onPreviewTarget,
     openNativeContextMenu,
+    renderAfterUserMessage,
     searchHighlight,
     searchIdx,
     searchMatchSet,

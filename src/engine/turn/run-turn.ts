@@ -280,8 +280,7 @@ async function runTurnInSpan(
         routeResult = { route: "llm", input: turnInput };
       } else {
         self.currentAbortController = null;
-        return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks,
-        );
+        return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks, options.userMessageId);
       }
     }
 

@@ -153,6 +153,7 @@ export async function handleCommand(
     args: string,
     inputOrigin: ChatInputOrigin,
     callbacks?: TurnCallbacks,
+    userMessageId?: string,
   ): Promise<TurnResult> {
     if (!isUserKeyboardOrigin(inputOrigin)) {
       const result = t("be_conversationLoop.nonKeyboardSlashCommandBlocked");
@@ -179,8 +180,10 @@ export async function handleCommand(
           const capture = await memoryCaptureService.captureExplicit({
             title,
             content: args,
-            // A slash command is not persisted as a user row, so the origin names the conversation only.
+            // A slash command is not persisted as a user row, so the origin names the conversation only; the live notice
+            // still sits under the command's row on screen.
             sessionId: self.sessionId,
+            ...(userMessageId !== undefined ? { anchorMessageId: userMessageId } : {}),
             ...(self.getSessionMemoryProjectContext?.()
               ?? self.getSessionProjectContext?.()
               ?? {}),

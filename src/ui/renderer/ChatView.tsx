@@ -71,6 +71,8 @@ import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWorkPanel.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
+import { MemorySaveNoticeRows, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
+import { MemoryFixCard } from "./components/MemoryFixCard.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
@@ -166,7 +168,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const {
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, setQuestion, chatEndRef, currentSessionId, hidden,
-    hasApiKey, settingsLoaded, onOpenSettings, onOpenMemory,
+    hasApiKey, settingsLoaded, onOpenSettings, onOpenMemory, memoryFix, onDismissMemoryFix,
     searchOpen, searchMatches, searchMatchSet, searchIdx, searchHighlight,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget, autoCompactEnabled,
     tpmLimit, tpmPct,
@@ -368,6 +370,49 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // Tool-derived local paths have no authorized OS-open channel; offer system-open only for web items.
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
+
+  // Memory notices sit under the message they came from; one whose row is not on screen follows the last row.
+  const { notices: memoryNoticeList, undo: undoMemoryNotice, dismiss: dismissMemoryNotice, toggleDetail: toggleMemoryNoticeDetail } =
+    useMemorySaveNotices(api, currentSessionId);
+  const memoryNoticeController = useMemo(
+    () => ({ undo: undoMemoryNotice, dismiss: dismissMemoryNotice, toggleDetail: toggleMemoryNoticeDetail }),
+    [undoMemoryNotice, dismissMemoryNotice, toggleMemoryNoticeDetail],
+  );
+  // Only whether the composer is empty matters here, so typing does not redraw the transcript.
+  const composerHasText = question.trim() !== "";
+  const userTextByMessageId = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const entry of visibleEntries) if (entry.kind === "user" && entry.messageId) byId.set(entry.messageId, entry.text);
+    return byId;
+  }, [visibleEntries]);
+  const renderMemoryNotices = useCallback((notices: MemoryNotice[], anchorMessageId?: string) => {
+    const commandText = anchorMessageId !== undefined ? userTextByMessageId.get(anchorMessageId) : undefined;
+    // 다시 시도 puts the /remember command back in the composer: sending stays the user's own keystroke.
+    const retry = commandText !== undefined && /^\/remember\s/.test(commandText)
+      ? {
+          disabled: composerHasText,
+          onRetry: () => {
+            setQuestion(commandText);
+            requestAnimationFrame(() => composerRef.current?.focus());
+          },
+        }
+      : undefined;
+    return (
+      <MemorySaveNoticeRows
+        notices={notices}
+        controller={memoryNoticeController}
+        onOpenMemory={onOpenMemory}
+        {...(retry ? { retry } : {})}
+      />
+    );
+  }, [userTextByMessageId, composerHasText, setQuestion, memoryNoticeController, onOpenMemory]);
+  const renderAfterUserMessage = useCallback((messageId: string) => {
+    const anchored = memoryNoticeList.filter((notice) => notice.anchorMessageId === messageId);
+    return anchored.length > 0 ? renderMemoryNotices(anchored, messageId) : null;
+  }, [memoryNoticeList, renderMemoryNotices]);
+  const trailingMemoryNotices = memoryNoticeList.filter(
+    (notice) => notice.anchorMessageId === undefined || !userTextByMessageId.has(notice.anchorMessageId),
+  );
   // Offer interrupted-session continuation; never run it automatically.
   const interruptedOffer = useMemo(
     () => (streaming || viewMode || !currentSessionId || !onContinueFromLastUser
@@ -747,6 +792,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       debugStreamEnabled={debugStreamEnabled}
       processingDisplayLevel={processingDisplayLevel}
       onPreviewTarget={handlePreviewTarget}
+      renderAfterUserMessage={renderAfterUserMessage}
     />
   );
 
@@ -792,7 +838,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         hasApiKey={hasApiKey}
         hasAskQuestions={hasAskQuestions}
         suggestedRepliesActive={suggestedRepliesActive}
-        transcriptEntries={transcriptEntries}
+        transcriptEntries={<>
+          {transcriptEntries}
+          {trailingMemoryNotices.length > 0 ? renderMemoryNotices(trailingMemoryNotices) : null}
+        </>}
         chatEndRef={chatEndRef}
         streaming={streaming}
         emptyState={
@@ -832,6 +881,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         notices={<>
+          {memoryFix && visibleEntries.length === 0 ? <MemoryFixCard memory={memoryFix} onDismiss={onDismissMemoryFix} /> : null}
           <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={autoCompactEnabled} />
           {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.80 && (
             <div className={`${chatSurface({ edge: "quiet", elevation: "flat" })} mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-warning`} role="status" aria-live="polite">
@@ -842,7 +892,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         </>}
         emptyConversation={emptyConversation}
         onOpenSettings={onOpenSettings}
-        onOpenMemory={onOpenMemory}
         workflowApi={workflowApi}
         api={api}
         currentSessionId={currentSessionId}

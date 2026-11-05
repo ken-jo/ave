@@ -1,4 +1,4 @@
-// i18n fragment. Source: src/ui/renderer/components/MemorySaveNoticeStrip.tsx and src/ui/renderer/components/MemorySearchPanel.tsx.
+// i18n fragment. Source: src/ui/renderer/components/MemorySaveNotices.tsx, src/ui/renderer/components/MemoryFixCard.tsx and src/ui/renderer/components/MemorySearchPanel.tsx.
 export const en = {
   "memorySaveNotice.saved": "Saved to memory · {title}",
   "memorySaveNotice.deleted": "Deleted from memory · {title}",
@@ -22,6 +22,19 @@ export const en = {
   "memorySaveNotice.askAveToFixPrefill": "Fix the memory \"{title}\": ",
   "memorySaveNotice.askAveToFixBusy": "Could not open a chat to fix it right now",
   "memorySaveNotice.recentTitle": "Recently saved",
+  "memorySaveNotice.undoneUpdate": "Change undone · {title}",
+  "memorySaveNotice.notUndoneExpired": "This notice is too old to undo now",
+  "memorySaveNotice.skippedNothing": "Not saved · nothing in it worth keeping as a memory",
+  "memorySaveNotice.retry": "Try again",
+  "memorySaveNotice.retryComposerBusy": "Clear the message box to try again",
+  "memorySaveNotice.details": "Details",
+  "memorySaveNotice.detailSecret": "Values that look like keys, passwords or tokens are never kept in memory. Say it again without the value.",
+  "memorySaveNotice.detailInstruction": "It had hidden characters or instruction markers, or the turn read outside content such as a web page or file. Type it in yourself to save it.",
+  "memorySaveNotice.detailTooLarge": "It is too long to keep as one memory. Shorten it and try again.",
+  "memorySaveNotice.detailFailed": "Reviewing or saving the memory did not finish. Nothing was saved; try again shortly.",
+  "memorySaveNotice.fixCardLabel": "Opened from memory · memory to fix",
+  "memorySaveNotice.fixCardHint": "The request is filled in below. Add what is correct and send it, and Ave fixes this memory. Nothing changes until you send.",
+  "memorySaveNotice.fixCardDismiss": "Close the memory card",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "memorySaveNotice.saved": "기억에 저장 · {title}",
@@ -46,4 +59,17 @@ export const ko: Record<keyof typeof en, string> = {
   "memorySaveNotice.askAveToFixPrefill": "기억 \"{title}\" 를 고쳐 줘: ",
   "memorySaveNotice.askAveToFixBusy": "지금은 고치기 대화를 열 수 없어요",
   "memorySaveNotice.recentTitle": "최근 저장",
+  "memorySaveNotice.undoneUpdate": "변경을 되돌렸어요 · {title}",
+  "memorySaveNotice.notUndoneExpired": "오래된 알림이라 이제는 되돌릴 수 없어요",
+  "memorySaveNotice.skippedNothing": "저장하지 않음 · 기억해 둘 만한 내용을 찾지 못했어요",
+  "memorySaveNotice.retry": "다시 시도",
+  "memorySaveNotice.retryComposerBusy": "입력창을 비우면 다시 시도할 수 있어요",
+  "memorySaveNotice.details": "자세히",
+  "memorySaveNotice.detailSecret": "키, 비밀번호, 토큰처럼 보이는 값은 기억에 남기지 않아요. 그 값을 빼고 다시 말해 주세요.",
+  "memorySaveNotice.detailInstruction": "숨은 문자나 지시문 표시가 있거나, 웹 페이지·파일 같은 외부 내용을 읽은 뒤였어요. 직접 입력해서 말해 주면 저장할 수 있어요.",
+  "memorySaveNotice.detailTooLarge": "한 기억으로 두기엔 너무 길어요. 줄여서 다시 해 주세요.",
+  "memorySaveNotice.detailFailed": "기억을 검토하거나 저장하는 중에 끝나지 못했어요. 아무것도 저장되지 않았으니 잠시 뒤 다시 해 주세요.",
+  "memorySaveNotice.fixCardLabel": "메모리에서 열림 · 고칠 기억",
+  "memorySaveNotice.fixCardHint": "아래 입력창에 요청이 채워져 있습니다. 바르게 고칠 내용을 덧붙여 보내면 Ave 가 이 기억을 고칩니다. 보내기 전에는 아무것도 바뀌지 않습니다.",
+  "memorySaveNotice.fixCardDismiss": "고칠 기억 카드 닫기",
 };

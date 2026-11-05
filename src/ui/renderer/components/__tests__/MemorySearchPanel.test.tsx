@@ -42,7 +42,7 @@ const PROJECT = { projectRoot: "C:\\workspace\\alpha", projectName: "alpha" };
 function panelWithMemories() {
   const api = memorySearchPanelApi() as unknown as ReturnType<typeof makeMockAveApi>["api"];
   let entries = [
-    { filename: "timeout.md", title: "결제 API 타임아웃은 8초", content: "# 결제 API 타임아웃은 8초\n\n게이트웨이 기준", updatedAt: RECENT, projectRoot: PROJECT.projectRoot, projectName: "alpha" },
+    { id: "m1", filename: "timeout.md", title: "결제 API 타임아웃은 8초", content: "# 결제 API 타임아웃은 8초\n\n게이트웨이 기준", updatedAt: RECENT, projectRoot: PROJECT.projectRoot, projectName: "alpha" },
     { filename: "old.md", title: "오래된 메모", content: "# 오래된 메모\n\n지난달", updatedAt: OLD },
   ];
   const deletedEntry = entries[0]!;
@@ -122,13 +122,21 @@ describe("MemorySearchPanel", () => {
     fireEvent.click(await within(await screen.findByRole("tabpanel")).findByRole("button", { name: /결제 API 타임아웃은 8초/ }));
     fireEvent.click(screen.getByRole("button", { name: "Ave 에게 기억 고치기: 결제 API 타임아웃은 8초" }));
     await waitFor(() => expect(onAskAveToFix).toHaveBeenCalledWith({
-      title: "결제 API 타임아웃은 8초", projectRoot: PROJECT.projectRoot, projectName: "alpha",
+      id: "m1", title: "결제 API 타임아웃은 8초", content: "게이트웨이 기준", projectRoot: PROJECT.projectRoot, projectName: "alpha",
     }));
     expect(await screen.findByText("지금은 고치기 대화를 열 수 없어요")).toBeTruthy();
 
     fireEvent.click(within(screen.getByRole("tabpanel")).getAllByRole("button")[0]!);
     expect(screen.queryByRole("button", { name: /기억 삭제: MEMORY/ })).toBeNull();
     expect(screen.getAllByRole("button", { name: /기억 삭제:/ })).toHaveLength(1);
+  });
+
+  it("offers no 고치기 for a legacy note without an id, which can still be deleted", async () => {
+    render(<MemorySearchPanel api={panelWithMemories() as unknown as AveApi} onAskAveToFix={noFix} />);
+
+    fireEvent.click(await within(await screen.findByRole("tabpanel")).findByRole("button", { name: /오래된 메모/ }));
+    expect(screen.getByRole("button", { name: "기억 삭제: 오래된 메모" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ave 에게 기억 고치기: 오래된 메모" })).toBeNull();
   });
 
   it("lists memories saved in the last week as 최근 저장, newest first", async () => {
