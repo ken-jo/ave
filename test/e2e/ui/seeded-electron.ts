@@ -349,7 +349,7 @@ export async function setWindowSize(
   if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
     throw new Error(`Invalid window content size: ${w}x${h}`);
   }
-  const { windowId, workArea } = await app.evaluate(({ BrowserWindow, screen }, size) => {
+  const { windowId, workArea, workAreaContentLimit } = await app.evaluate(({ BrowserWindow, screen }, size) => {
     const windows = BrowserWindow.getAllWindows().filter(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
@@ -368,12 +368,14 @@ export async function setWindowSize(
     }
     target.setPosition(workArea.x, workArea.y);
     target.setContentSize(size.w, size.h);
-    return { windowId: target.id, workArea };
+    const workAreaContentLimit = [workArea.width - (bounds.width - content.width), workArea.height - (bounds.height - content.height)];
+    return { windowId: target.id, workArea, workAreaContentLimit };
   }, { w, h });
   let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
   // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
   try {
     await expect.poll(async () => {
+      actual = undefined;
       const measured = await app.evaluate(async ({ BrowserWindow }, id) => {
         const target = BrowserWindow.fromId(id);
         if (!target || target.isDestroyed()) throw new Error("Main window closed during resize");
@@ -394,8 +396,14 @@ export async function setWindowSize(
         && Math.abs(measured.content[1] - h) <= 1;
     }, { timeout: 5_000, message: `Wait for window content ${w}x${h}` }).toBe(true);
   } catch (cause) {
-    const clamped = actual && (Math.abs(actual.content[0] - w) > 1 || Math.abs(actual.content[1] - h) > 1);
-    const reason = clamped ? "Display work area clamped requested window content" : "Window renderer did not settle";
-    throw new Error(`${reason}: requested ${w}x${h}; actual content ${actual?.content.join("x") ?? "unavailable"}; renderer ${JSON.stringify(actual?.renderer)}; display work area ${workArea.width}x${workArea.height} at ${workArea.x},${workArea.y}`, { cause });
+    const nativeMismatch = actual && (Math.abs(actual.content[0] - w) > 1 || Math.abs(actual.content[1] - h) > 1);
+    const rendererMismatch = actual && (Math.abs(actual.renderer.width - w) > 1 || Math.abs(actual.renderer.height - h) > 1);
+    const limitedRequest = [Math.min(w, workAreaContentLimit[0]), Math.min(h, workAreaContentLimit[1])];
+    const clampedByWorkArea = actual && nativeMismatch && (w > workAreaContentLimit[0] || h > workAreaContentLimit[1])
+      && Math.abs(actual.content[0] - limitedRequest[0]) <= 1
+      && Math.abs(actual.content[1] - limitedRequest[1]) <= 1;
+    const facts = [nativeMismatch && "native mismatch", rendererMismatch && "renderer mismatch", clampedByWorkArea && "clamped by work area"]
+      .filter(Boolean).join("; ") || "resize probe failed (no current sample)";
+    throw new Error(`Window resize failed: ${facts}; requested ${w}x${h}; actual content ${actual?.content.join("x") ?? "unavailable"}; renderer ${JSON.stringify(actual?.renderer) ?? "unavailable"}; display work area ${workArea.width}x${workArea.height} at ${workArea.x},${workArea.y}`, { cause });
   }
 }

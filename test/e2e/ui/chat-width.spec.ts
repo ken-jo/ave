@@ -1,9 +1,7 @@
 import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from './fixtures.js';
 
-// Guard layout checks when the build or relevant DOM nodes are unavailable.
-
-const CHAT_OUTER_SELECTOR = '.chat-composer-column';
+const CHAT_OUTER_SELECTOR = '.chat-composer-column:has([data-testid="composer-input-bar"])';
 
 // The reading-column cap is 58rem; cross it by one pixel after reserving shell space and parent padding.
 function readingCapWindowWidth(column: Element): number {
@@ -19,12 +17,7 @@ test.describe('chat column width constraints', () => {
     await setWindowSize(app, wideWidth, 860);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
-    const found = await chatOuter
-      .waitFor({ state: 'attached', timeout: 15_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    test.skip(!found, 'Chat outer container not found — skipping width check.');
+    await expect(chatOuter).toBeVisible();
 
     const box = await chatOuter.boundingBox();
     expect(box).not.toBeNull();
@@ -37,12 +30,7 @@ test.describe('chat column width constraints', () => {
     await setWindowSize(app, 1024, 720);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
-    const found = await chatOuter
-      .waitFor({ state: 'attached', timeout: 15_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    test.skip(!found, 'Chat outer container not found — skipping narrow-viewport check.');
+    await expect(chatOuter).toBeVisible();
 
     const box = await chatOuter.boundingBox();
     expect(box).not.toBeNull();
@@ -55,12 +43,7 @@ test.describe('chat column width constraints', () => {
     await setWindowSize(app, wideWidth, 860);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
-    const found = await chatOuter
-      .waitFor({ state: 'attached', timeout: 15_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    test.skip(!found, 'Chat outer container not found — skipping centering check.');
+    await expect(chatOuter).toBeVisible();
 
     const chatBox = await chatOuter.boundingBox();
     const parent = chatOuter.locator('..');

@@ -7,8 +7,9 @@ import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/shared/shell-geometry.
 
 test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ app, mainWindow: page }, testInfo) => {
   // Both columns appear at a 1064px tile: 320px transcript + 280px thumbnails + 464px panel reserve.
-  const shellReserve = await page.evaluate(() => innerWidth - document.querySelector<HTMLElement>('[data-testid="pane"]')!.clientWidth);
-  const wideWidth = Math.ceil(shellReserve + MIN_DOCKED_TRANSCRIPT_WIDTH + CHAT_THUMBNAIL_WIDTH + SIDE_PANEL_MIN_RESERVE);
+  const shellReserve = await page.evaluate(() => innerWidth - document.querySelector<HTMLElement>('[data-testid="pane"]')!.getBoundingClientRect().width);
+  // This is not a boundary test: leave 8px for fractional layout and display-scale rounding.
+  const wideWidth = Math.ceil(shellReserve + MIN_DOCKED_TRANSCRIPT_WIDTH + CHAT_THUMBNAIL_WIDTH + SIDE_PANEL_MIN_RESERVE + 8);
   await setWindowSize(app, wideWidth, 860);
   const thumbnailsToggle = page.getByTestId(TEST_IDS.paneThumbnailToggle);
   const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
@@ -30,6 +31,10 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
     const panelBox = (await panel.boundingBox())!;
     return panelBox.x - thumbnailBox.x - thumbnailBox.width;
   }).toBeGreaterThanOrEqual(-1);
+  // Compare the settled columns after the opening width/transform transition.
+  await panel.evaluate(async (element) => {
+    await Promise.all(element.getAnimations().map((animation) => animation.finished));
+  });
   const boxes = { chat: (await chat.boundingBox())!, thumbnails: (await thumbnails.boundingBox())!, panel: (await panel.boundingBox())! };
   expect(boxes.chat.width).toBeGreaterThanOrEqual(MIN_DOCKED_TRANSCRIPT_WIDTH);
   expect(boxes.thumbnails.x).toBeGreaterThanOrEqual(boxes.chat.x + boxes.chat.width - 1);
