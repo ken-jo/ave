@@ -495,7 +495,6 @@ describe("opaque command text requires approval", () => {
     const result = powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD);
     const staticLiteralCommands = new Set([
       "iwr https://x.invalid -Body literal -Body other",
-      "Get-Content UnknownProvider::notes.txt",
     ]);
     if (command === "Get-Content ($env:APPDATA+$tail)") expect(result.outcome).not.toBe("static-complete");
     else if (staticLiteralCommands.has(command)) {

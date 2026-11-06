@@ -325,7 +325,7 @@ export function buildHostShellExecutionPlan(input: {
 // An unpinned native parser needs one-shot authority before startup. Existing
 // explicit-host and partial-sandbox gates remain independent of startup proof.
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan, toolName?: string): boolean {
-  return (plan.mode === "plain" && toolName === "powershell" && !isPowerShellStartupPinned(plan.platform)) || (plan.mode === "plain" &&
+  return (plan.mode === "plain" && toolName === "powershell" && !isPowerShellStartupPinned(plan.platform, plan)) || (plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
     plan.capability.kind === "none" &&
     plan.requiresExplicitUserApproval === true);

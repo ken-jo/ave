@@ -5,6 +5,7 @@ import { isHostGitWorkspaceAvailable } from "../shared/host-git.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "../shared/verified-executable.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
+import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { literalShellWord, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { parsePowerShellCommand, type ParsedPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import type { ParsedShellCommand } from "./rules/shell-prefix-policy.js";
@@ -78,10 +79,10 @@ function proveNative(argv: readonly string[], cwd: string): VerifiedNativePlan |
 }
 
 /** Host tools bind one literal simple command; other callers retain default refusal. */
-export function prepareVerifiedShellCommand(identity: VerifiedShellIdentity): VerifiedShellCommand | undefined {
+export function prepareVerifiedShellCommand(identity: VerifiedShellIdentity, executionPlan?: HostShellExecutionPlan): VerifiedShellCommand | undefined {
   if (identity.command.length > MAX_LITERAL_COMMAND_LENGTH
     || !/^[\t ]*(?:git|bash)(?:[\t ]|$)/.test(identity.command)) return undefined;
-  if (identity.dialect === "powershell" && !isPowerShellStartupPinned()) return undefined;
+  if (identity.dialect === "powershell" && !isPowerShellStartupPinned(executionPlan?.platform, executionPlan)) return undefined;
   let plan: VerifiedNativePlan | undefined;
   let parsed: ParsedShellCommand | ParsedPowerShellCommand;
   if (identity.dialect === "bash") {
