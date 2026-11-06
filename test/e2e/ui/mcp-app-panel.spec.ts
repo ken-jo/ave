@@ -1,24 +1,16 @@
 import { test, expect, type ElectronFixtures } from './fixtures.js';
-import { launchElectron, buildIsolatedElectronEnv, buildLlmSettings, MAIN_ENTRY } from './seeded-electron.js';
+import { buildLlmSettings } from './seeded-electron.js';
+import { admitFixturePlugins } from './admit-fixture-plugins.js';
 import type { ElectronApplication, Page } from 'playwright';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { writeFileSync } from 'node:fs';
 
 type FixtureContext = Pick<ElectronFixtures, 'app' | 'mainWindow' | 'aveHome' | 'userDataDir' | 'tempHome'>;
-async function admittedApp({ app, mainWindow, aveHome, userDataDir, tempHome }: FixtureContext) {
-  await mainWindow.getByTestId('sidebar-settings').click();
-  await mainWindow.getByRole('tab', { name: 'Permissions', exact: true }).click();
-  await mainWindow.getByTestId('home-trust-approve-all').click();
-  await expect(mainWindow.getByTestId('home-trust-done')).toBeVisible();
-  await app.close();
-  const restarted = await launchElectron({
-    args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`],
-    env: buildIsolatedElectronEnv({ HOME: tempHome, USERPROFILE: tempHome, AVE_HOME: aveHome, AVE_DEV: '1' }),
-  });
-  const page = await restarted.firstWindow();
+async function admittedApp(context: FixtureContext) {
+  const { app, mainWindow: page } = await admitFixturePlugins(context);
   await page.getByTestId('sidebar-group-plugins').waitFor();
-  return { app: restarted, page };
+  return { app, page };
 }
 async function openPanel(app: ElectronApplication, page: Page) {
   await page.getByTestId('sidebar-group-plugins').click();
@@ -120,7 +112,7 @@ test('an app draft queued during streaming starts its next turn with app provena
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { app, page } = await admittedApp({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome });
   try {
-    await page.getByTestId('pane-close').click();
+    await expect(page.locator('[data-composer-surface="main"] textarea')).toBeVisible();
     const settings = buildLlmSettings('openai-compatible', 'fixture-model');
     const llm = settings.llm as { vendors: Record<string, { baseUrl?: string }> };
     llm.vendors['openai-compatible'].baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
