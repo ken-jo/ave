@@ -7,6 +7,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import { POSIX_SHARED_TMP } from "../../permissions/base-allowed-directories.js";
+import { configuredTestTmpRoot } from "./test-tmp-root.js";
 
 const RUN_DIR_RE = /^(?:h|sbx|t)-[A-Za-z0-9]{6}$/;
 
@@ -117,8 +118,14 @@ export function assertTestTmpRoot(testTmp: string): void {
   }
 }
 
-/** Keep temp outside the Ave home for sandbox writes, with short POSIX paths for shebang and socket limits. */
-export function runTmpRoot(platform: NodeJS.Platform = process.platform, home: string = homedir()): string {
+/** Keep temp outside the Ave home for sandbox writes, with short POSIX paths for shebang and socket limits.
+ * An explicit AVE_TEST_TMP_ROOT holds the run temp directories too, so a caller-isolated run writes nothing under the home. */
+export function runTmpRoot(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  configured: string | undefined = configuredTestTmpRoot(home),
+): string {
+  if (configured !== undefined) return configured;
   if (platform === "win32") return join(home, ".ave-test-tmp");
   // Canonicalize macOS /tmp to /private/tmp.
   const sharedTmp = platform === "darwin" ? join("/private", POSIX_SHARED_TMP) : POSIX_SHARED_TMP;

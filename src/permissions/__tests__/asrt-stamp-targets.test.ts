@@ -8,6 +8,8 @@ import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import * as homeGuard from "../../shared/ave-home-test-guard.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { configuredTestTmpRoot } from "../../__tests__/support/test-tmp-root.js";
 import { observeWindowsGrantIdentity } from "../../__tests__/support/windows-grant-identity.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
@@ -113,6 +115,27 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   it("allows the Windows run temp root but not its profile siblings", () => {
     expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave-test-tmp", "t-run", "fixture")])).not.toThrow();
     expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave-test-tmp-sibling", "fixture")])).toThrow(refusal);
+  });
+
+  it("allows the explicit AVE_TEST_TMP_ROOT global setup provided in the profile, but not its siblings or an env override", () => {
+    const root = join(inject("realAccountHome"), "ave-explicit-test-root");
+    withProvidedContext("explicitTestTmpRoot", root, () => {
+      expect(() => homeGuard.checkSandboxStampTargets([join(root, "t-run", "fixture")])).not.toThrow();
+      expect(() => homeGuard.checkSandboxStampTargets([`${root}-sibling`])).toThrow(refusal);
+    });
+    // A test that sets the variable itself sanctions nothing: workers trust only what global setup validated and provided.
+    const saved = process.env.AVE_TEST_TMP_ROOT;
+    try {
+      process.env.AVE_TEST_TMP_ROOT = root;
+      withProvidedContext("explicitTestTmpRoot", null, () => {
+        expect(() => homeGuard.checkSandboxStampTargets([join(root, "t-run", "fixture")])).toThrow(refusal);
+      });
+    } finally {
+      if (saved === undefined) delete process.env.AVE_TEST_TMP_ROOT;
+      else process.env.AVE_TEST_TMP_ROOT = saved;
+    }
+    // Global setup refuses a relative root before any worker starts.
+    expect(() => configuredTestTmpRoot(inject("realAccountHome"), "relative-root")).toThrow("AVE_TEST_TMP_ROOT must be absolute");
   });
 
   it("refuses the default floor before native initialization", async () => {

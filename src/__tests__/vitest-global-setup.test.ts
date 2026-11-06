@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, parse } from "node:path";
 import type { TestProject } from "vitest/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -131,11 +131,17 @@ describe("vitest global setup", () => {
     const home = homedir();
     const root = join(scratch(), "test-tmp");
     process.env.AVE_TEST_TMP_ROOT = root;
-    const teardown = await setup(project());
+    const provided: Provided = new Map();
+    const teardown = await setup(project(true, "forks", provided));
     try {
+      // Workers read this validated root, never AVE_TEST_TMP_ROOT itself.
+      expect(provided.get("explicitTestTmpRoot")).toBe(root);
       expect(homedir()).toBe(home);
       expect(dirname(process.env.AVE_TEST_RUN_HOME!)).toBe(root);
-      expect(runDirs(root)).toHaveLength(2);
+      // The run temp directory lives under the explicit root too, not under the account home or the shared default.
+      expect(dirname(tmpdir())).toBe(root);
+      expect(runTmpRoot()).toBe(root);
+      expect(runDirs(root)).toHaveLength(3);
     } finally { await teardown(); }
     expect(runDirs(root)).toEqual([]);
   });
@@ -143,6 +149,13 @@ describe("vitest global setup", () => {
   it("rejects a relative isolated scratch root before creating run directories", async () => {
     process.env.AVE_TEST_TMP_ROOT = "relative-test-tmp";
     await expect(setup(project())).rejects.toThrow("AVE_TEST_TMP_ROOT must be absolute");
+    expect(() => runTmpRoot()).toThrow("AVE_TEST_TMP_ROOT must be absolute");
+  });
+
+  it("rejects an isolated scratch root that contains the account home instead of falling back", async () => {
+    // The filesystem root contains every account home, so this can never sanction the real data.
+    process.env.AVE_TEST_TMP_ROOT = parse(homedir()).root;
+    await expect(setup(project())).rejects.toThrow("AVE_TEST_TMP_ROOT must not contain");
   });
 
   it("makes one set of owned run directories for every project in the run and removes it after the last", async () => {
@@ -163,6 +176,9 @@ describe("vitest global setup", () => {
     expect(jsdomProvided.get("realProgramData")).toBe(nodeProvided.get("realProgramData"));
     expect(nodeProvided.get("realAccountHome")).toBeTypeOf("string");
     expect(jsdomProvided.get("realAccountHome")).toBe(nodeProvided.get("realAccountHome"));
+    // No AVE_TEST_TMP_ROOT: every project is told so, and the second reuses the first's answer.
+    expect(nodeProvided.get("explicitTestTmpRoot")).toBeNull();
+    expect(jsdomProvided.get("explicitTestTmpRoot")).toBeNull();
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {
