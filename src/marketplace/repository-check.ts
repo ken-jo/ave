@@ -1,6 +1,7 @@
 /** Repository checks reuse install validators so publication and runtime acceptance agree. */
 import { messages } from "../i18n/messages/index.js";
-import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
+import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type CatalogExclusion, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
+import { parseStrictJson } from "./catalog/strict-json.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
 import { isDataContentKind, parseContent } from "./content/kinds.js";
 import { checkContentFiles, isContentKind } from "./content/rules.js";
@@ -93,13 +94,14 @@ function checkRetiredNotificationDeclaration(document: unknown, minAppVersion: s
   }
 }
 
-function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<string, unknown>, alertsReleaseVersion: string, report: (message: string) => void): void {
+function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<string, unknown>, alertsReleaseVersion: string, report: (message: string) => void, excluded: readonly CatalogExclusion[] = []): void {
   const prefix = `${entry.name}@`;
   const versions = new Map((entry.versions ?? []).map((version) => [version.version, version]));
   for (const [key, document] of released) {
     if (!key.startsWith(prefix)) continue;
     const version = versions.get(key.slice(prefix.length));
     if (!version) {
+      if (excluded.some((item) => item.packageId === `plugin/${entry.name}` && key === `${entry.name}@${item.version}`)) continue;
       report(`a released plugin.json was supplied for ${key}, which the index does not list`);
       continue;
     }
@@ -128,8 +130,9 @@ function checkPlugin(
   descriptor: PackageDescriptor,
   options: RepositoryCheckOptions,
   report: (message: string) => void,
+  excluded: readonly CatalogExclusion[],
 ): void {
-  if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, options.alertsReleaseVersion, report);
+  if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, options.alertsReleaseVersion, report, excluded);
   const manifestPath = repoPath(entry.path, "plugin.json");
   const manifest = tree.read(manifestPath);
   const artifact = (descriptor.payload as { artifact: PluginArtifactPins }).artifact;
@@ -205,13 +208,24 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
   });
 }
 
-function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: RepositoryCheckOptions, problems: RepositoryProblem[]): void {
+function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: RepositoryCheckOptions, problems: RepositoryProblem[], excluded: readonly CatalogExclusion[]): void {
   const subject = `${entry.kind}/${entry.name}`;
   const report = (text: string) => problems.push({ subject, message: text });
   const path = repoPath(entry.path, MARKETPLACE_DESCRIPTOR_FILE);
   const bytes = tree.read(path);
   if (!bytes) {
     report(`${path} is missing`);
+    return;
+  }
+  let document: unknown;
+  try { document = parseStrictJson(bytes.toString("utf8")); } catch (error) {
+    report(`${path}: ${errorMessage(error)}`);
+    return;
+  }
+  // Foreign-only listings carry metadata without versions; mixed listings still validate their descriptor and tree.
+  if (!entry.versions && isRecord(document) && document.kind === entry.kind && document.name === entry.name
+    && excluded.some((item) => item.packageId === subject && item.version === document.version && item.hostProtocol === document.hostProtocol)) {
+    if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, options.alertsReleaseVersion, report, excluded);
     return;
   }
   const checked = validateDescriptorText(bytes.toString("utf8"), { expected: { kind: entry.kind, name: entry.name }, direct: false });
@@ -227,7 +241,7 @@ function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: Reposi
     if (differs.length > 0) report(`the index's newest version differs from ${path} in ${differs.join(", ")}`);
   }
   try {
-    if (descriptor.kind === "plugin") checkPlugin(tree, entry, descriptor, options, report);
+    if (descriptor.kind === "plugin") checkPlugin(tree, entry, descriptor, options, report, excluded);
     else if (descriptor.kind === "mcp") checkMcp(tree, entry, descriptor, report);
     else checkContent(tree, entry, descriptor, options);
   } catch (error) {
@@ -255,14 +269,18 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   const index = validateIndexText(indexBytes.toString("utf8"), { official: options.official, sourceId: options.sourceId });
   if (!index.ok) return [{ subject: INDEX_PATH, message: index.error }];
   for (const diagnostic of index.value.diagnostics) problems.push(diagnostic);
-  for (const entry of index.value.index.packages) checkPackage(tree, entry, options, problems);
-  const plugins = new Set(index.value.index.packages.filter((entry) => entry.kind === "plugin").map((entry) => entry.name));
+  const listedEntries = new Map(index.value.index.packages.map((entry) => [`${entry.kind}/${entry.name}`, entry]));
+  for (const item of index.value.excluded) {
+    if (!listedEntries.has(item.packageId)) listedEntries.set(item.packageId, item.package);
+  }
+  for (const entry of listedEntries.values()) checkPackage(tree, entry, options, problems, index.value.excluded);
+  const plugins = new Set([...listedEntries.values()].filter((entry) => entry.kind === "plugin").map((entry) => entry.name));
   for (const key of options.releasedManifests?.keys() ?? []) {
     if (!plugins.has(key.slice(0, key.lastIndexOf("@")))) {
       problems.push({ subject: key, message: "a released plugin.json was supplied for a plugin the index does not list" });
     }
   }
-  const listed = new Set(index.value.index.packages.map((entry) => entry.path));
+  const listed = new Set([...listedEntries.values()].map((entry) => entry.path));
   for (const dir of unlisted(tree, listed)) {
     problems.push({ subject: repoPath(dir, MARKETPLACE_DESCRIPTOR_FILE), message: "no index entry points at this package" });
   }

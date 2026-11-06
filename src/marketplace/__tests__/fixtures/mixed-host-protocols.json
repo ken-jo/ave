@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "name": "ave",
+  "displayName": "Catalog",
+  "packages": [{
+    "kind": "plugin",
+    "name": "meeting",
+    "path": "plugins/meeting",
+    "latest": "0.10.3",
+    "versions": [{
+      "version": "0.10.3",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "minAppVersion": "0.14.0",
+      "hostProtocol": "5",
+      "authority": {
+        "capabilities": [],
+        "requires": { "minAppVersion": "0.14.0", "hostProtocol": "5" }
+      },
+      "artifact": { "release": { "repo": "acme/catalog", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } },
+      "publishedAt": "2026-11-06T00:00:00Z"
+    }, {
+      "version": "0.10.2",
+      "commit": "cccccccccccccccccccccccccccccccccccccccc",
+      "minAppVersion": "0.14.0",
+      "hostProtocol": "3",
+      "authority": {
+        "capabilities": [],
+        "pluginAccess": { "plugins": [{ "pluginId": "calendar", "events": ["calendar.event.added"] }] },
+        "requires": { "minAppVersion": "0.14.0", "hostProtocol": "3" }
+      },
+      "artifact": { "release": { "repo": "acme/catalog", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" } },
+      "publishedAt": "2026-10-16T17:14:55Z"
+    }]
+  }]
+}

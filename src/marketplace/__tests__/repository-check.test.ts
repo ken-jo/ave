@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkMarketplaceRepository, type RepositoryTree } from "../repository-check.js";
+import mixedHostProtocols from "./fixtures/mixed-host-protocols.json" with { type: "json" };
 
 const COMMIT = "a".repeat(40);
 const SHA = "b".repeat(64);
@@ -75,6 +76,93 @@ function index(files: Map<string, unknown>) {
 }
 
 describe("checkMarketplaceRepository", () => {
+  it.each([false, true])("validates mixed descriptors while keeping foreign-only descriptors listed (foreign-only %j)", (foreignOnly) => {
+    const files = validFiles();
+    const input = structuredClone(mixedHostProtocols);
+    const entry = input.packages[0]!;
+    entry.name = "alpha";
+    entry.path = "plugins/alpha";
+    entry.latest = "0.10.2";
+    if (foreignOnly) entry.versions.shift();
+    const old = entry.versions.find((version) => version.hostProtocol === "3")!;
+    index(files).packages[0] = entry;
+    const descriptorAuthority = foreignOnly ? old.authority : { capabilities: [], requires: old.authority.requires };
+    files.set("plugins/alpha/ave-package.json", descriptor("plugin", "alpha", { authority: descriptorAuthority, artifact: old.artifact }, {
+      version: old.version, minAppVersion: old.minAppVersion, hostProtocol: old.hostProtocol,
+    }));
+    expect(checkMarketplaceRepository(tree(files), {
+      ...OFFICIAL, releasedManifests: new Map([[`alpha@${old.version}`, { historical: true }]]),
+    })).toEqual(foreignOnly ? [] : [{ subject: "plugin/alpha", message: expect.stringContaining("the index's newest version differs from plugins/alpha/ave-package.json") }]);
+  });
+
+  it("checks stale mixed-package descriptors and their tree layout and process entry", () => {
+    const files = validFiles();
+    const entry = structuredClone(mixedHostProtocols.packages[0]!);
+    entry.name = "alpha";
+    entry.path = "plugins/alpha";
+    const current = entry.versions[0]!;
+    const old = entry.versions[1]!;
+    const treeArtifact = { tree: "plugins/alpha" };
+    Object.assign(current, { artifact: treeArtifact });
+    index(files).packages[0] = entry;
+    const oldAuthority = { capabilities: [], requires: old.authority.requires };
+    files.set("plugins/alpha/ave-package.json", descriptor("plugin", "alpha", { authority: oldAuthority, artifact: treeArtifact }, {
+      version: old.version, minAppVersion: old.minAppVersion, hostProtocol: old.hostProtocol,
+    }));
+    files.delete("plugins/alpha/source/package.json");
+    files.set("plugins/alpha/unexpected.txt", "Outside the install layout.");
+    files.set("plugins/alpha/plugin.json", { name: "alpha", version: old.version, extensions: {
+      "ai.agent-connector.ave": { process: { command: "./dist/plugin" }, tools: [], ...oldAuthority },
+    } });
+    expect(check(files)).toEqual(expect.arrayContaining([
+      { subject: "plugin/alpha", message: expect.stringContaining("the index's newest version differs from plugins/alpha/ave-package.json") },
+      { subject: "plugin/alpha", message: "plugins/alpha/unexpected.txt: the tree rung installs plugin.json, dist/ and assets/ only" },
+      { subject: "plugin/alpha", message: expect.stringContaining("a process entry is never installed from the tree rung, which this file declares") },
+    ]));
+  });
+
+  it("keeps current authority failures fatal even when the package also lists foreign versions", () => {
+    const files = validFiles();
+    const entry = structuredClone(mixedHostProtocols.packages[0]!);
+    entry.name = "alpha";
+    entry.path = "plugins/alpha";
+    Object.assign(entry.versions[0]!.authority, { pluginAccess: entry.versions[1]!.authority.pluginAccess });
+    index(files).packages[0] = entry;
+    expect(check(files)).toEqual(expect.arrayContaining([
+      { subject: "plugin/alpha", message: expect.stringContaining("additional properties") },
+    ]));
+  });
+
+  it("validates a current descriptor strictly even if its version matches a foreign exclusion", () => {
+    const files = validFiles();
+    const entry = structuredClone(mixedHostProtocols.packages[0]!);
+    entry.name = "alpha";
+    entry.path = "plugins/alpha";
+    entry.versions.shift();
+    entry.latest = "0.10.2";
+    index(files).packages[0] = entry;
+    const old = entry.versions[0]!;
+    files.set("plugins/alpha/ave-package.json", descriptor("plugin", "alpha", { authority: old.authority, artifact: old.artifact }, {
+      version: old.version, minAppVersion: old.minAppVersion, hostProtocol: "5",
+    }));
+    expect(check(files)).toEqual([{ subject: "plugin/alpha", message: expect.stringContaining("additional properties") }]);
+  });
+
+  it("validates a current released manifest even when a foreign version shares its version label", () => {
+    const files = validFiles();
+    const entry = structuredClone(mixedHostProtocols.packages[0]!);
+    entry.name = "alpha";
+    entry.path = "plugins/alpha";
+    entry.versions[1]!.version = entry.versions[0]!.version;
+    index(files).packages[0] = entry;
+    const current = entry.versions[0]!;
+    files.set("plugins/alpha/ave-package.json", descriptor("plugin", "alpha", { authority: current.authority, artifact: current.artifact }, {
+      version: current.version, minAppVersion: current.minAppVersion, hostProtocol: current.hostProtocol,
+    }));
+    const problems = checkMarketplaceRepository(tree(files), { ...OFFICIAL, releasedManifests: new Map([[`alpha@${current.version}`, {}]]) });
+    expect(problems).toEqual(expect.arrayContaining([{ subject: "plugin/alpha", message: expect.stringContaining("the released plugin.json of 0.10.3") }]));
+  });
+
   it("checks the optional conditional policy and rejects an invalid successor mapping", () => {
     const files = validFiles();
     const entry = { kind: "plugin", name: "alpha", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,

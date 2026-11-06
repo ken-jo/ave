@@ -162,6 +162,7 @@ interface SourceSnapshot {
   packages: CatalogPackage[];          // §4, after validation and normalization
   revocations: Revocation[];           // this source's own policy/revocations.json (§10.4)
   diagnostics: SnapshotDiagnostic[];   // per-package rejections, shown in the Sources view
+  excluded?: CatalogExclusion[];      // informational protocol exclusions; §4.2
 }
 ```
 
@@ -313,6 +314,22 @@ interface IndexVersion {
 
 ### 4.2 Rules
 
+- Before authority validation, code-plugin versions declaring a readable
+  `hostProtocol` other than the host's protocol are excluded from install and
+  update candidates. Missing or malformed declarations still undergo normal
+  validation. Current-protocol authority errors reject the entire package.
+- Exclusions use a separate `excluded` channel, never error diagnostics. Each
+  record retains the package identity, original version index, protocol, reason
+  `foreign-host-protocol`, and validated package metadata without authority or
+  artifact pins. Display versions must satisfy the schema's semver pattern and
+  length limit; otherwise the label is `versions[i]`. Logs contain aggregate
+  counts only. Snapshots written before this channel existed may omit it.
+- A package with only foreign versions stays published and listed for repository
+  checks, while the app snapshot omits it from eligible packages. A folder's
+  excluded version does not also receive a missing-index-version diagnostic.
+  An installed plugin identified by an exclusion retains its listing metadata,
+  host-protocol guidance and removal action in the installed list and detail
+  sheet, with no install authority, artifact rungs or candidate versions.
 - `(kind, name)` is unique and `path` is unique; when two entries claim the
   same pair or the same path, every claimant is dropped with a diagnostic,
   because the client cannot tell which one the author meant. An entry that

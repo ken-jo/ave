@@ -71,6 +71,16 @@ export interface IndexVersion {
   publishedAt: string;
 }
 
+/** Informational exclusions preserve listing metadata, never install authority or artifact pins. */
+export interface CatalogExclusion {
+  packageId: string;
+  versionIndex: number;
+  version: string;
+  hostProtocol: string;
+  reason: "foreign-host-protocol";
+  package: Omit<IndexPackage, "versions" | "latest">;
+}
+
 /** Zero object ids retain legacy grant evidence only; they are not trees and must never reach git. */
 export const NULL_OBJECT_ID = "0".repeat(40);
 

@@ -22,6 +22,7 @@ import {
   MARKETPLACE_INDEX_FILE,
   NULL_OBJECT_ID,
   type AgentPluginComponents,
+  type CatalogExclusion,
   type IndexPackage,
   type MarketplaceIndex,
   type PackageDescriptor,
@@ -30,6 +31,7 @@ import {
   type RevocationsFile,
 } from "./types.js";
 import { parseVersionRange } from "./version-range.js";
+import { supportsHostProtocol } from "./host-protocol.js";
 
 const log = createMarketplaceLogger("marketplace-catalog");
 
@@ -102,14 +104,36 @@ interface Validators {
   revocations: ValidateFunction;
   conditionalRevocations: ValidateFunction;
   snapshot: ValidateFunction;
+  exclusion: ValidateFunction;
 }
 
 const SNAPSHOT_PIN = { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/commit" }, { type: "string", pattern: "^local-[0-9a-f]{64}$" }] };
+const EXCLUSION_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["packageId", "versionIndex", "version", "hostProtocol", "reason", "package"],
+  properties: {
+    packageId: { type: "string" },
+    versionIndex: { type: "integer", minimum: 0, maximum: 499 },
+    version: { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/semver" }, { type: "string", pattern: "^versions\\[[0-9]{1,3}\\]$" }] },
+    hostProtocol: indexSchema.definitions.indexVersion.properties.hostProtocol,
+    reason: { const: "foreign-host-protocol" },
+    package: {
+      ...indexSchema.definitions.indexPackage,
+      properties: {
+        ...Object.fromEntries(Object.keys(indexSchema.definitions.indexPackage.properties).filter((key) => key !== "versions" && key !== "latest")
+          .map((key) => [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
+        kind: { const: "plugin" },
+      },
+    },
+  },
+};
 
 let compiled: Validators | null = null;
 
 /** Only the current catalog schema is supported; reject other versions before schema validation. */
 const CATALOG_SCHEMA_VERSION = 2;
+const HOST_PROTOCOL_PATTERN = new RegExp(indexSchema.definitions.indexVersion.properties.hostProtocol.pattern, "u");
+const SEMVER_PATTERN = new RegExp(packageSchema.definitions.semver.pattern, "u");
 
 function unsupportedSchemaVersion(document: unknown, file: string): string | null {
   if (!isRecord(document) || !Object.hasOwn(document, "schemaVersion")) return null;
@@ -138,6 +162,7 @@ function validators(): Validators {
     descriptor: get(PACKAGE_ID),
     revocations: get(REVOCATIONS_ID),
     conditionalRevocations: get(conditionalSchema.$id),
+    exclusion: ajv.compile(EXCLUSION_SCHEMA),
     snapshot: ajv.compile({
       type: "object", additionalProperties: false,
       required: ["formatVersion", "sourceId", "commit", "fetchedAt", "marketplace", "packages", "revocations", "conditionalRevocations", "diagnostics"],
@@ -180,6 +205,7 @@ function validators(): Validators {
           type: "object", additionalProperties: false, required: ["subject", "message"],
           properties: { subject: { type: "string" }, message: { type: "string" } },
         } },
+        excluded: { type: "array", items: EXCLUSION_SCHEMA },
       },
     }),
   };
@@ -316,6 +342,7 @@ export interface IndexContext {
 export interface ValidatedIndex {
   index: MarketplaceIndex;
   diagnostics: CatalogDiagnostic[];
+  excluded: CatalogExclusion[];
 }
 
 export function validateIndexText(text: string, context: IndexContext): Validation<ValidatedIndex> {
@@ -332,18 +359,51 @@ export function validateIndexText(text: string, context: IndexContext): Validati
 
   const diagnostics: CatalogDiagnostic[] = [];
   const candidates: IndexPackage[] = [];
+  const exclusions = new Map<IndexPackage, CatalogExclusion[]>();
+  const excludedOnly = new Set<IndexPackage>();
   // Broken entries still claim names; paths become claims only after full validation.
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
   let retiredCount = 0;
+  let versionsSkipped = 0;
+  let packagesDropped = 0;
   root.packages.forEach((raw, position) => {
     if (isRecord(raw) && raw.kind === "theme") { retiredCount += 1; return; }
-    const entry = raw as Partial<IndexPackage>;
+    const entry = (isRecord(raw) ? raw : {}) as Partial<IndexPackage>;
     // A name with a credential's shape is named by its position, never by itself.
     const named = typeof entry.kind === "string" && typeof entry.name === "string" && !holdsCredential(entry.name);
     const subject = named ? `${entry.kind}/${entry.name}` : `packages[${position}]`;
     if (typeof entry.kind === "string" && typeof entry.name === "string") claim(byName, `${entry.kind}/${entry.name}`);
+    const omitted: Omit<CatalogExclusion, "package">[] = [];
+    let foreignOnly = false;
+    if (isRecord(raw) && raw.kind === "plugin" && Array.isArray(raw.versions)
+      && raw.versions.length <= indexSchema.definitions.indexPackage.properties.versions.maxItems) {
+      const skipped: unknown[] = [];
+      const versions = raw.versions.filter((version: unknown, index: number) => {
+        // Missing or malformed protocol declarations must still pass the full schema.
+        if (!isRecord(version) || typeof version.hostProtocol !== "string"
+          || !HOST_PROTOCOL_PATTERN.test(version.hostProtocol) || supportsHostProtocol("plugin", version.hostProtocol)) return true;
+        skipped.push(version.version);
+        const label = typeof version.version === "string" && version.version.length <= packageSchema.definitions.semver.maxLength
+          && SEMVER_PATTERN.test(version.version) && !holdsCredential(version.version) ? version.version : `versions[${index}]`;
+        omitted.push({ packageId: subject, versionIndex: index, version: label, hostProtocol: version.hostProtocol, reason: "foreign-host-protocol" });
+        return false;
+      });
+      if (skipped.length > 0) {
+        versionsSkipped += skipped.length;
+        if (versions.length === 0) {
+          packagesDropped += 1;
+          foreignOnly = true;
+          const { versions: _versions, latest: _latest, ...metadata } = raw;
+          raw = metadata;
+        } else {
+          raw = { ...raw, versions };
+          // A latest hint for an excluded version must not invalidate retained versions.
+          if (isRecord(raw) && skipped.includes(raw.latest)) delete raw.latest;
+        }
+      }
+    }
     if (!indexPackage(raw)) {
       diagnostics.push({ subject, message: describeErrors(indexPackage.errors) });
       return;
@@ -363,14 +423,20 @@ export function validateIndexText(text: string, context: IndexContext): Validati
       diagnostics.push({ subject, message: rule });
       return;
     }
-    claim(byPath, (raw as IndexPackage).path);
-    candidates.push(raw as IndexPackage);
+    claim(byPath, listed.path);
+    candidates.push(listed);
+    if (foreignOnly) excludedOnly.add(listed);
+    if (omitted.length > 0) {
+      const { versions: _versions, latest: _latest, ...metadata } = listed;
+      exclusions.set(listed, omitted.map((item) => ({ ...item, package: metadata })));
+    }
   });
 
   if (retiredCount > 0) log.info({ entriesSkipped: retiredCount }, "Retired catalog entries skipped");
+  if (versionsSkipped > 0) log.info({ versionsSkipped, packagesDropped }, "Catalog foreign-host-protocol versions skipped");
 
   // (kind, name) and path must each name one package; an ambiguous pair drops every claimant.
-  const packages = candidates.filter((entry) => {
+  const admitted = candidates.filter((entry) => {
     const subject = `${entry.kind}/${entry.name}`;
     if ((byName.get(subject) ?? 0) > 1) {
       diagnostics.push({ subject, message: "the index lists this package more than once" });
@@ -382,7 +448,9 @@ export function validateIndexText(text: string, context: IndexContext): Validati
     }
     return true;
   });
-  return { ok: true, value: { index: { ...root, packages }, diagnostics } };
+  const packages = admitted.filter((entry) => !excludedOnly.has(entry));
+  const excluded = admitted.flatMap((entry) => exclusions.get(entry) ?? []);
+  return { ok: true, value: { index: { ...root, packages }, diagnostics, excluded } };
 }
 
 export interface DescriptorContext {
@@ -479,6 +547,13 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
 /** A same-pin sync may reuse only a complete, current and readable cache. */
 /** Apply current identifier admission on every cached read, including offline; keep stored files unchanged. */
 export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot {
+  const exclusionValidator = validators().exclusion;
+  const excluded = snapshot.excluded === undefined ? undefined : (Array.isArray(snapshot.excluded) ? snapshot.excluded : []).filter((item) => exclusionValidator(item)
+    && item.packageId === `${item.package.kind}/${item.package.name}`
+    && !supportsHostProtocol(item.package.kind, item.hostProtocol)
+    && !credentialIn(item.package.name, [item.version], [])
+    && !indexPackageRules(item.package));
+  if (excluded) snapshot = { ...snapshot, excluded };
   const diagnostics: CatalogDiagnostic[] = [];
   const currentPackages = omitRetiredThemes(snapshot.packages) as SourceSnapshot["packages"];
   const packages = currentPackages.filter((entry, position) => {
