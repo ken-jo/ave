@@ -1,6 +1,5 @@
 /** Child HostApi stubs own marshalling and local handles; imports must remain free of host state. */
 import { canEmitEvent } from "../capabilities.js";
-import { getDeclaredEmittedEvents } from "../runtime/manifest-validation.js";
 import { resolvePluginStoragePath } from "../plugin-storage-containment.js";
 import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
 import type {
@@ -15,7 +14,6 @@ import type {
   DetachReason,
   FloatingPanelHandle,
   AudioCaptureRequest,
-  WorkProposalResult,
   AlertResult,
 } from "../public-contract.js";
 import type { HostApiCaller, PluginChildContext } from "./plugin-child-runtime.js";
@@ -28,7 +26,6 @@ import {
   asWireWorkerEvent,
   decodeConfigChange,
   decodeHostEvent,
-  decodePluginLifecycle,
   decodeWireBinary,
   decodeWireHttpResponse,
   encodeWireBytes,
@@ -153,18 +150,8 @@ export function createServiceChildMembers(
     hasRoutineBySource: async (...args) =>
       call("hasRoutineBySource", positional(args[0])) as Promise<boolean>,
 
-    // Promise-returning proposeWork receives the host refusal at await; do not duplicate grant checks.
-    proposeWork: async (...args) =>
-      call("proposeWork", positional(args[0])) as Promise<WorkProposalResult>,
-
-    withdrawWorkProposal: async (...args) =>
-      call("withdrawWorkProposal", positional(args[0], args[1])) as Promise<boolean>,
-
     raiseAlert: async (...args) =>
       call("raiseAlert", positional(args[0])) as Promise<AlertResult>,
-
-    withdrawAlert: async (...args) =>
-      call("withdrawAlert", positional(args[0], args[1])) as Promise<boolean>,
 
     probePrivateHost: async (...args) =>
       call("probePrivateHost", positional(args[0], args[1])) as Promise<boolean>,
@@ -175,20 +162,13 @@ export function createServiceChildMembers(
     /** Recheck emit policy locally only for synchronous-throw timing; the host still decides access and audit. */
     emitEvent: (...args) => {
       const eventType = args[0] as string;
-      const declared = getDeclaredEmittedEvents(deps.manifest);
-      if (!canEmitEvent(eventType, declared)) {
+      if (!canEmitEvent(eventType, pluginId)) {
         throw new Error(
-          `Plugin '${pluginId}' is not allowed to emit undeclared event '${String(eventType)}'`,
+          `Plugin '${pluginId}' may emit only its own UI event '${String(eventType)}'`,
         );
       }
       call("emitEvent", positional(eventType, args[1])).catch((error: unknown) => {
         reportDetached("emitEvent", error);
-      });
-    },
-
-    logEvent: (...args) => {
-      call("logEvent", positional(args[0], args[1], args[2])).catch((error: unknown) => {
-        reportDetached("logEvent", error);
       });
     },
 
@@ -330,7 +310,7 @@ export function createServiceChildMembers(
       const reply = await call("attachFloatingPanel", [request]);
       const handle = requireHandle(reply, "attachFloatingPanel") as unknown as WireFloatingPanelHandle;
       const listeners: ((reason: DetachReason) => void)[] = [];
-      let height = handle.height;
+      const height = handle.height;
       // Retain the actual detach reason for subscribers arriving after closure.
       let detachedAs: DetachReason | null = null;
       const dispose = deps.adoptSubscription("attachFloatingPanel", handle.handleId, (payload) => {
@@ -344,10 +324,6 @@ export function createServiceChildMembers(
       const panel: FloatingPanelHandle = {
         panelId: handle.panelId,
         get height() {
-          return height;
-        },
-        resize: async (next: number) => {
-          height = Number(await call("resizeFloatingPanel", [handle.panelId, next]));
           return height;
         },
         detach: async () => {
@@ -364,8 +340,6 @@ export function createServiceChildMembers(
       };
       return panel;
     },
-    resizeFloatingPanel: async (...args) =>
-      call("resizeFloatingPanel", [String(args[0]), Number(args[1])]),
     spawnWorker: async (...args) => {
       const spec = args[0] as PluginWorkerSpec;
       let disposeAdopted: (() => void) | undefined;
@@ -538,8 +512,6 @@ export interface ConfigSubscriptionChildDeps {
   /** Update the shared config snapshot only after host confirmation and before set resolves. */
   readonly config: Record<string, unknown>;
   readonly report: (message: string, meta?: unknown) => void;
-  /** Shutdown handlers are awaited requests, not event deliveries. */
-  readonly shutdownHandlers: Map<string, () => void | Promise<void>>;
 }
 
 /** Throw invalid member arguments locally; a boundary failure must not masquerade as an unset value. */
@@ -653,45 +625,5 @@ export function createConfigSubscriptionChildMembers(
       };
     },
 
-    onPluginsChanged: (...args) => {
-      const handler = requireFunctionArgument(
-        pluginId,
-        "onPluginsChanged",
-        "handler",
-        args[0],
-      );
-      const subscription = subscribe(
-        deps,
-        "onPluginsChanged",
-        (subscriptionId) => [subscriptionId],
-        (payload) => {
-          handler(decodePluginLifecycle(payload).event);
-        },
-      );
-      return () => {
-        subscription.dispose();
-      };
-    },
-
-    // The host owns shutdown termination; retain a ledger entry so its handler can be awaited once.
-    onShutdown: (...args) => {
-      const handler = requireFunctionArgument(pluginId, "onShutdown", "handler", args[0]);
-      const subscription: ChildSubscriptionHandle = subscribe(
-        deps,
-        "onShutdown",
-        (subscriptionId) => [subscriptionId],
-        () => undefined,
-      );
-      deps.shutdownHandlers.set(subscription.subscriptionId, async () => {
-        try {
-          await handler();
-        } finally {
-          // Release shutdown registration after either success or failure.
-          deps.shutdownHandlers.delete(subscription.subscriptionId);
-          subscription.dispose();
-        }
-      });
-      return undefined;
-    },
   };
 }

@@ -3,7 +3,6 @@ import type {
   AudioCaptureEnd,
   AudioCaptureFrame,
   PluginHostApi,
-  PluginLifecycleEvent,
   SpawnedPluginWorker,
   PluginWorkerControl,
   PluginWorkerExitInfo,
@@ -28,11 +27,6 @@ const INITIAL_CONFIG: ReadonlyArray<readonly [string, unknown]> = [
 
 /** Keep scripted payloads stable because golden transcripts include them. */
 const FIRED_EVENT_DATA = { fired: "by the golden host" } as const;
-const FIRED_PLUGINS_CHANGE: PluginLifecycleEvent = {
-  type: "installed",
-  pluginId: "golden-neighbour",
-  source: "marketplace",
-};
 
 type Listener<T> = (value: T) => void;
 
@@ -54,20 +48,15 @@ export interface ValidationHost {
   readonly roots: ValidationHostRoots;
   /** Deliver scripted registrations once in registration order for deterministic transcripts. */
   fireAll(): void;
-  /** Await each shutdown handler through the real instance request. */
-  runShutdown(): Promise<void>;
-  readonly logged: Array<readonly [string, string, unknown]>;
   readonly emitted: Array<readonly [string, unknown]>;
 }
 
 /** Override only the intended member so failure cases keep every other scripted answer identical. */
 export function createValidationHost(overrides: ValidationHostOverrides = {}): ValidationHost {
-  const logged: Array<readonly [string, string, unknown]> = [];
   const emitted: Array<readonly [string, unknown]> = [];
   const config = new Map<string, unknown>(INITIAL_CONFIG);
   const configListeners: Array<{ key: string; listener: Listener<unknown> }> = [];
   const firing: Array<() => void> = [];
-  const shutdownHandlers: Array<() => void | Promise<void>> = [];
 
   const register = <T>(listeners: Set<Listener<T>>, listener: Listener<T>, fire: () => void) => {
     listeners.add(listener);
@@ -119,7 +108,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
   };
 
   const eventListeners = new Set<Listener<unknown>>();
-  const pluginsChangedListeners = new Set<Listener<PluginLifecycleEvent>>();
 
   const api = {
     storage: {
@@ -156,12 +144,12 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       },
     },
     emitEvent: (type: string, data?: unknown) => void emitted.push([type, data]),
-    onEvent: (_type: string, handler: Listener<unknown>) =>
-      register(eventListeners, handler, () => handler(FIRED_EVENT_DATA)),
-    // Validation installs only one plugin; recordings needing neighbours must override that snapshot.
-    getInstalledPluginIds: () => [],
-    onPluginsChanged: (handler: Listener<PluginLifecycleEvent>) =>
-      register(pluginsChangedListeners, handler, () => handler(FIRED_PLUGINS_CHANGE)),
+    onEvent: (type: string, handler: Listener<unknown>) => {
+      if (type !== "host.theme.changed") {
+        throw new Error("Validation plugins may subscribe only to host.theme.changed");
+      }
+      return register(eventListeners, handler, () => handler(FIRED_EVENT_DATA));
+    },
     getSecret: async () => "the-stored-secret",
     resolveApiKey: async () => ({
       ok: true as const,
@@ -175,9 +163,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
     callLlm: async () => "the host answered",
     hostFetch: async () =>
       new Response("pong", { status: 200, headers: { "content-type": "text/plain" } }),
-    logEvent: (level: string, message: string, data?: unknown) =>
-      void logged.push([level, message, data]),
-    onShutdown: (handler: () => void | Promise<void>) => void shutdownHandlers.push(handler),
     spawnWorker: async (spec: { workerId: string; control: PluginWorkerControl }) => scriptedWorker(spec),
     openAuthWindow: async (options: { returnFinalUrl?: boolean }) => {
       const cookies = [{ name: "session", value: "cookie-value", domain: "login.example.com" }];
@@ -224,37 +209,27 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       return {
         panelId: "panel-1",
         height: Math.min(request.height ?? 180, 300),
-        resize: async (height: number) => Math.min(height, 300),
         detach: async () => undefined,
         onDetached: (listener: Listener<string>) => void detached.push(listener),
       };
     },
-    resizeFloatingPanel: async (_panelId: string, height: number) => Math.min(height, 300),
     openAuthPartitionViewer: async () => undefined,
     clearAuthPartition: async () => undefined,
     getAuthPartitionCookies: async (opts: { urls: string[] }) =>
       opts.urls.map((url) => ({ url, cookies: [{ name: "session", value: "cookie-value" }] })),
     openExternalUrl: async () => undefined,
     probePrivateHost: async () => true,
-    getAppPreference: (key: string) => (key === "webView.preferredFlow" ? "system" : undefined),
     triggerConversation: async (spec: { source: string }) => ({
       accepted: true,
       source: spec.source,
       eventId: "event-1",
     }),
     hasRoutineBySource: async () => false,
-    proposeWork: async () => ({ status: "cap_reached" as const }),
-    withdrawWorkProposal: async () => true,
     raiseAlert: async () => ({
       status: "raised" as const,
       alertId: "golden-alert-id",
       delivered: { card: true, osNotification: false, toast: false },
     }),
-    withdrawAlert: async () => true,
-    agentApproval: {
-      request: async () => "allow-once" as const,
-      respond: async () => undefined,
-    },
   } as unknown as PluginHostApi;
 
   for (const [path, replacement] of Object.entries(overrides)) {
@@ -271,13 +246,9 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
   return {
     api,
     roots: VALIDATION_HOST_ROOTS,
-    logged,
     emitted,
     fireAll: () => {
       for (const fire of firing.splice(0)) fire();
-    },
-    runShutdown: async () => {
-      for (const handler of shutdownHandlers.splice(0)) await handler();
     },
   };
 }

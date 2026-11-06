@@ -35,7 +35,7 @@ The design record for this area is [docs/design/tiled-chat-groups.md](./docs/des
 
 Installed extensions live under `~/.ave/plugins/<id>/plugin.json`, and `~/.ave/plugins/registry.json` controls the active extension set. The app no longer relies on an in-tree `plugins/installed/...` layout. More generally, the `~/.ave/` root holds only cross-cutting resources — `settings.json`, `audit.log`, `secrets/` — and everything a single domain owns lives under `~/.ave/<feature>/`, so one domain can be backed up or cleared as one directory. Skill approvals are read from `~/.ave/skills/approvals.json` and starred messages from `~/.ave/sessions/starred.json`; a file left in the root by an older build is moved into its namespace on first load.
 
-Extensions expose a host entry, methods such as `index_scan` or `meeting_start`, optional UI modules, declared capabilities, emitted events, subscriptions, and notification events. The main app does not import extension implementations directly; `PluginRuntime` reads manifests, dynamically loads extension host entries, manages lifecycle, and bridges IPC calls into extension methods.
+Extensions expose a host entry, methods such as `index_scan` or `meeting_start`, optional UI modules and declared capabilities. The main app does not import extension implementations directly; `PluginRuntime` reads manifests, dynamically loads extension host entries, manages lifecycle, and bridges IPC calls into extension methods.
 
 An extension's own startup failure is degraded, not fatal: the instance stays constructed and every other extension keeps dispatching, and each call to the failed extension reports its real reason. Only a failure of the host's own generation fence closes dispatch for the session.
 
@@ -64,7 +64,7 @@ Extensions with the `host:overlay` capability may call `hostApi.triggerConversat
 
 ### Event Bus And Notifications
 
-Proactive features communicate through the asynchronous `emitEvent` / `onEvent` event bus. Extensions declare `emittedEvents`, `subscriptions`, and `notificationEvents` in `plugin.json`; manifest validation checks capability and cross-field consistency during boot.
+An extension pushes updates to its own UI with `emitEvent`, using its own event namespace. The host delivers those updates only to that extension’s panels. `onEvent` accepts only `host.theme.changed`; extensions cannot subscribe to each other’s events. Manifest validation checks the remaining capability and cross-field constraints during boot.
 
 Extensions can request OS notifications declaratively. The host reads the manifest and registers notifications without hard-coding extension-specific behavior.
 

@@ -25,10 +25,10 @@ const noop = (..._args: unknown[]): unknown => undefined;
 
 describe("instrumentEffectsByPath — static effect + selfRecorded skip", () => {
   it("records a static READ for a read-classified method", async () => {
-    const effects = await record({ getInstalledPluginIds: noop }, (w) => {
-      w.getInstalledPluginIds();
+    const effects = await record({ getSecret: noop }, (w) => {
+      w.getSecret();
     });
-    expect(effects).toEqual([{ kind: "getInstalledPluginIds", effect: "read", target: undefined },
+    expect(effects).toEqual([{ kind: "getSecret", effect: "read", target: undefined },
     ]);
   });
 
@@ -181,21 +181,21 @@ describe("instrumentEffectsByPath — target extractors (valid + degenerate)", (
 describe("instrumentEffectsByPath — recursion, idempotence, passthrough", () => {
   it("records nested namespace methods under their dotted PATH", async () => {
     const effects = await record(
-      { agentApproval: { request: noop, respond: noop } },
+      { config: { get: noop, set: noop } },
       (w) => {
-        w.agentApproval.request({ scope: "agent_task_delegate" });
-        w.agentApproval.respond("req-1", "allow-once");
+        w.config.get("theme");
+        w.config.set("theme", "dark");
       },
     );
     expect(effects).toEqual([
-      { kind: "agentApprovalRequest", effect: "write", target: "agent_task_delegate",
+      { kind: "config.get", effect: "read", target: "theme",
       },
-      { kind: "agentApprovalRespond", effect: "write", target: undefined },
+      { kind: "config.set", effect: "write", target: "theme" },
     ]);
   });
 
   it("is idempotent — re-wrapping an instrumented object returns it unchanged", () => {
-    const once = instrumentEffectsByPath({ getInstalledPluginIds: noop });
+    const once = instrumentEffectsByPath({ getSecret: noop });
     expect(instrumentEffectsByPath(once)).toBe(once);
   });
 
@@ -211,12 +211,12 @@ describe("instrumentEffectsByPath — recursion, idempotence, passthrough", () =
       n: 5,
       data: array,
       instance,
-      getInstalledPluginIds: noop,
+      getSecret: noop,
     });
     expect(wrapped.n).toBe(5);
     expect(wrapped.data).toBe(array); // same reference, not recursed/copied deeply
     expect(wrapped.instance).toBe(instance); // class instance is NOT treated as a namespace
-    expect(typeof wrapped.getInstalledPluginIds).toBe("function");
+    expect(typeof wrapped.getSecret).toBe("function");
   });
 });
 
@@ -256,13 +256,13 @@ describe("instrumentEffectsByPath — fail-closed default + purity", () => {
   });
 
   it("is a no-op outside any ledger scope (never throws, records nothing)", () => {
-    const wrapped = instrumentEffectsByPath({ getInstalledPluginIds: noop });
-    expect(() => wrapped.getInstalledPluginIds()).not.toThrow();
+    const wrapped = instrumentEffectsByPath({ getSecret: noop });
+    expect(() => wrapped.getSecret()).not.toThrow();
   });
 
   it("recording never breaks the host — a throwing ledger.record is swallowed", async () => {
     const wrapped = instrumentEffectsByPath({
-      getInstalledPluginIds: () => "ok",
+      getSecret: () => "ok",
     });
     const explodingLedger: EffectLedger = {
       correlationId: "boom",
@@ -275,7 +275,7 @@ describe("instrumentEffectsByPath — fail-closed default + purity", () => {
     };
     let ret: unknown;
     await runWithEffectLedger(explodingLedger, async () => {
-      ret = wrapped.getInstalledPluginIds();
+      ret = wrapped.getSecret();
     });
     expect(ret).toBe("ok"); // method still ran + returned despite the recording failure
   });
@@ -309,17 +309,6 @@ describe("instrumentEffectsByPath — a hostile arg getter cannot suppress the e
     ]);
   });
 
-  it("agentApproval.request: a throwing input.scope getter still records the write effect", async () => {
-    const effects = await record({ agentApproval: { request: noop } }, (w) => {
-      (w.agentApproval.request as (i: unknown) => unknown)(
-        throwingField("scope"),
-      );
-    });
-    expect(effects).toEqual([
-      { kind: "agentApprovalRequest", effect: "write", target: undefined },
-    ]);
-  });
-
   it("the suppression-resistant record flips hasMutatingEffect to true", async () => {
     const wrapped = instrumentEffectsByPath({ triggerConversation: noop });
     const ledger = createEffectLedger("cid-hostile");
@@ -341,16 +330,16 @@ describe("instrumentEffectsByPath — non-plain namespace is left UNINSTRUMENTED
     }
     const instance = new CustomProtoNamespace();
     const effects = await record(
-      { ns: instance, getInstalledPluginIds: noop } as Record<string, unknown>,
+      { ns: instance, getSecret: noop } as Record<string, unknown>,
       (w) => {
         // verbatim-copied namespace → the method is NOT wrapped → records nothing
         (w.ns as CustomProtoNamespace).doMutation();
-        (w.getInstalledPluginIds as () => unknown)();
+        (w.getSecret as () => unknown)();
       },
     );
     // Only the instrumented top-level method recorded; the non-plain namespace's method left no effect — exactly why the completeness test rejects such a namespace so it can never ship.
     expect(effects).toEqual([
-      { kind: "getInstalledPluginIds", effect: "read", target: undefined },
+      { kind: "getSecret", effect: "read", target: undefined },
     ]);
   });
 });

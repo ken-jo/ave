@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 33,
+    "id": 28,
     "jsonrpc": "2.0",
     "method": "ave/host/authRedirect/wait",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 33,
+    "id": 28,
     "jsonrpc": "2.0",
     "result": {
       "code": "the-auth-code",

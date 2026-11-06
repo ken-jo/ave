@@ -377,7 +377,7 @@ describe("gateMutatingEffect — direct unit behaviour", () => {
     await runWithEffectGateContext({ headless: false, toolName: "t" }, async () => {
       await gateMutatingEffect({
         pluginId: "p1",
-        methodPath: "getInstalledPluginIds",
+        methodPath: "getSecret",
         effect: "read",
         target: "https://x",
         approvalGate: gate,
@@ -500,14 +500,13 @@ describe("GATED_EFFECT_PATHS — SOT-derived async-only membership", () => {
       "callLlm",
       "spawnWorker",
       "triggerConversation",
-      "agentApproval.request",
       // openExternalUrl is now GATED (egress/exfil-class) — moved out of the exclusions; it is async so the await-based wrapper can gate it.
       "openExternalUrl",
     ]) {
       expect(GATED_EFFECT_PATHS.has(p)).toBe(true);
     }
-    // Network effects self-gate inline; approval completion cannot wait on its own answer.
-    for (const p of ["hostFetch", "agentApproval.respond"]) {
+    // Network effects self-gate inline.
+    for (const p of ["hostFetch"]) {
       expect(GATED_EFFECT_PATHS.has(p)).toBe(false);
     }
   });
@@ -566,9 +565,9 @@ describe("MAJOR-1 — the gated set is SOT-DERIVED + FAIL-CLOSED (not hand-curat
       expect(reason, `exclusion ${path} must document a reason`).toBeTruthy();
       expect(reason.length).toBeGreaterThan(10);
     }
-    // Self-gated network effects and approval completion have distinct enforcement boundaries.
+    // Network effects authorize inline at their own boundary.
     expect([...ENFORCEMENT_EXCLUSIONS.keys()].sort()).toEqual(
-      ["agentApproval.respond", "hostFetch"].sort(),
+      ["hostFetch"].sort(),
     );
     // openExternalUrl is NO LONGER an exclusion — it is effect-gated.
     expect(ENFORCEMENT_EXCLUSIONS.has("openExternalUrl")).toBe(false);
@@ -823,7 +822,7 @@ describe("composed stack — enforceMutatingEffects(instrumentEffectsByPath(raw)
         return "resp";
       },
       // a READ — never gated, always recorded
-      getInstalledPluginIds: function (this: { marker: string }): string[] {
+      getSecret: function (this: { marker: string }): string[] {
         log.push(`ids:${this.marker}`);
         return [];
       },
@@ -910,13 +909,13 @@ describe("composed stack — enforceMutatingEffects(instrumentEffectsByPath(raw)
     const ledger = createEffectLedger("cid-read");
     await runWithEffectLedger(ledger, () =>
       runWithEffectGateContext({ headless: false, toolName: "t" }, async () => {
-        api.getInstalledPluginIds();
+        api.getSecret();
       }),
     );
     expect(requests).toHaveLength(0); // reads never prompt
     expect(log).toEqual(["ids:ROOT"]);
     expect(ledger.summary().effects.map((e) => e.kind)).toEqual([
-      "getInstalledPluginIds",
+      "getSecret",
     ]);
   });
 });

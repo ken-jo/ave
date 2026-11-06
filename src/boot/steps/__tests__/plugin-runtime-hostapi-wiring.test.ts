@@ -132,8 +132,9 @@ const OFFICIAL_ORIGIN = {
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { emitEvent as emitHostEvent } from "../../types.js";
+import { subscribeOwnPluginUiEvents } from "../../../plugins/ui-events.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
-import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -156,9 +157,6 @@ type ConfigHostApi = {
   };
   emitEvent: (type: string, data?: unknown) => void;
   onEvent: (type: string, handler: (data: unknown) => void) => () => void;
-  onPluginsChanged: (
-    handler: (event: { type: "installed" | "uninstalled"; pluginId: string; source?: string }) => void,
-  ) => () => void;
   getSecret: (key: string) => string | undefined | null;
   storage: {
     readText: (rel: string) => Promise<string>;
@@ -202,7 +200,6 @@ type CreateHostApi = (
     };
     capabilities?: string[];
     networkAccess?: { allowedDomains: string[] };
-    emittedEvents?: string[];
     hostSecrets?: { read?: string[] };
   },
   pluginDataDir: string,
@@ -214,7 +211,6 @@ type CreateHostApi = (
   },
   installPluginId: string | null,
   candidateRegistryEntry?: PluginRegistryTrust,
-  candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => ConfigHostApi;
 
 /** The logger passed to boot is the sink for runtime audit records. */
@@ -264,7 +260,6 @@ async function initAndGetFactory(
     approvalGate: approvalGate as never,
     ...(options.permissionManager ? { permissionManager: options.permissionManager } : {}),
     routinesStore: { list: () => [] } as never,
-    getWorkBoardStore: () => undefined,
     getAlertsService: () => undefined,
   });
   const createHostApi = (
@@ -669,16 +664,10 @@ describe("HostApi.config.set round-trip", () => {
 });
 
 describe("HostApi emitEvent/onEvent round-trip", () => {
-  it("authorizes candidate subscriptions against the candidate-scoped access grant", async () => {
+  it("binds host theme subscriptions to the candidate incarnation", async () => {
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
     );
-    const candidateGrant = {
-      plugins: [{
-        pluginId: "sampleassistant",
-        events: ["sampleassistant.snapshot.requested"],
-      }],
-    };
     const api = createHostApi(
       "samplemail",
       { id: "samplemail", config: {}, capabilities: [] },
@@ -686,15 +675,13 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       activeIncarnation(),
       "samplemail",
       { installSource: "admin", manifestSha256: "candidate-sha" },
-      candidateGrant,
     );
 
-    api.onEvent("sampleassistant.snapshot.requested", vi.fn());
+    api.onEvent("host.theme.changed", vi.fn());
 
     expect(runtimeTestState.runtime.assertPluginEventAccess).toHaveBeenCalledWith(
       "samplemail",
-      "sampleassistant.snapshot.requested",
-      candidateGrant,
+      "host.theme.changed",
     );
   });
 
@@ -1061,7 +1048,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(await call(unread, projectionSha256)).toMatchObject({ ok: false, reason: "not-whitelisted" });
   });
 
-  it("delivers an emitted event to a same-plugin subscriber with the pluginId injected, and unsubscribe stops delivery", async () => {
+  it("delivers an emitted event only to the emitting plugin UI and unsubscribe stops delivery", async () => {
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
     );
@@ -1074,11 +1061,11 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     );
 
     const handler = vi.fn();
-    const unsubscribe = api.onEvent("plugin-a.updated", handler);
+    const unsubscribe = subscribeOwnPluginUiEvents("plugin-a", handler);
 
     api.emitEvent("plugin-a.updated", { value: 7 });
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(handler).toHaveBeenCalledWith({ value: 7, pluginId: "plugin-a" });
+    expect(handler).toHaveBeenCalledWith("plugin-a.updated", { value: 7 });
 
     unsubscribe();
     api.emitEvent("plugin-a.updated", { value: 8 });
@@ -1097,26 +1084,20 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       "plugin-a",
     );
     const eventHandler = vi.fn();
-    const pluginsChanged = vi.fn();
-    api.onEvent("plugin-a.updated", eventHandler);
-    api.onPluginsChanged(pluginsChanged);
+    const unsubscribe = api.onEvent("host.theme.changed", eventHandler);
 
-    api.emitEvent("plugin-a.updated", { value: 1 });
+    emitHostEvent("host.theme.changed", { theme: "dark" });
     expect(eventHandler).toHaveBeenCalledTimes(1);
 
     // The incarnation is still active; only the runtime's shutdown has begun.
     runtimeTestState.runtime.isShuttingDown.mockReturnValue(true);
     try {
-      api.emitEvent("plugin-a.updated", { value: 2 });
-      emitHostEvent("plugin.installed", { pluginId: "plugin-b", source: "marketplace" });
-      emitHostEvent("plugin.uninstalled", { pluginId: "plugin-b" });
+      emitHostEvent("host.theme.changed", { theme: "light" });
     } finally {
       runtimeTestState.runtime.isShuttingDown.mockReturnValue(false);
     }
     expect(eventHandler).toHaveBeenCalledTimes(1);
-    expect(pluginsChanged).not.toHaveBeenCalled();
-    emitHostEvent("plugin.installed", { pluginId: "plugin-b", source: "marketplace" });
-    expect(pluginsChanged).toHaveBeenCalledWith({ type: "installed", pluginId: "plugin-b", source: "marketplace" });
+    unsubscribe();
   });
 
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
@@ -1468,8 +1449,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       handleNotification: (notification) => host.handleNotification(notification),
     });
     host = new HostApiDispatcher({
-      log: vi.fn(), pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
-      shutdownChild: (id) => child.runShutdownHandler(id),
+      pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
       notifications: { deliver: (notification) => { child.deliver(notification); } },
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
@@ -1481,7 +1461,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       context: {
         pluginId: "plugin-a", pluginRoot: "/plugins/a", hostRoot: "/app",
         pluginDataDir: "/plugins/a/data", userHome: "/Users/example",
-        aveHome: "/Users/example/.ave", installedPluginIds: [],
+        aveHome: "/Users/example/.ave",
       },
       channel,
       loadFactory: async () => () => ({ handlers: {} }),
@@ -1498,50 +1478,18 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     await key.release();
   });
 
-  it("audits a capability-denied emit from the production HostApi emit closure", async () => {
-    // Emit authorization comes from emittedEvents; capabilities must not unlock it.
-    const bootAuditLogger = { log: vi.fn() };
-    const createHostApi = await initAndGetFactory(
-      makeSettingsService(new Map()),
-      bootAuditLogger,
-    );
+  it("rejects events outside the caller's UI namespace", async () => {
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const api = createHostApi(
       "plugin-a",
-      {
-        id: "plugin-a",
-        config: {},
-        capabilities: ["mail-source"],
-        emittedEvents: ["plugin-a.updated"],
-      },
+      { id: "plugin-a", config: {}, capabilities: ["mail-source"] },
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-emit-denied-"))),
       activeIncarnation(),
       "plugin-a",
     );
-
-    expect(() => api.emitEvent("email.new", { subject: "hi" })).toThrow(
-      /not allowed to emit undeclared event 'email\.new'/,
-    );
-
-    const denials = bootAuditLogger.log.mock.calls
-      .map(([entry]) => entry as { sessionId: string; type: string; input: string })
-      .filter((entry) =>
-        String(entry?.input ?? "").includes("plugin_emit_capability_denied"),
-      );
-    expect(denials).toHaveLength(1);
-    expect(denials[0].sessionId).toBe("plugin");
-    expect(denials[0].type).toBe("error");
-    expect(denials[0].input).toBe(
-      "[plugin:plugin-a] plugin_emit_capability_denied eventType=email.new"
-      + " required=mail-source declaredEmittedEvents=plugin-a.updated",
-    );
-
-    api.emitEvent("plugin-a.updated", { value: 1 });
-    expect(
-      bootAuditLogger.log.mock.calls.filter(([entry]) =>
-        String((entry as { input?: string })?.input ?? "")
-          .includes("plugin_emit_capability_denied"),
-      ),
-    ).toHaveLength(1);
+    expect(() => api.emitEvent("email.new", { subject: "hi" })).toThrow(/may emit only its own UI events/);
+    expect(() => api.emitEvent("plugin-b.updated", {})).toThrow(/may emit only its own UI events/);
+    expect(() => api.emitEvent("plugin-a.updated", { value: 1 })).not.toThrow();
   });
 
   it("revokes every callable HostApi surface when its incarnation is deactivated", async () => {
@@ -1551,7 +1499,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     let active = true;
     const api = createHostApi(
       "plugin-a",
-      { id: "plugin-a", config: {}, emittedEvents: ["plugin-a.updated"] },
+      { id: "plugin-a", config: {} },
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-revoked-hostapi-"))),
       {
         registerDisposer: vi.fn(),

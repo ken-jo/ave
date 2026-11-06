@@ -79,8 +79,6 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
-import { FRAME_BYTES_MAX } from "../host-api-wire.js";
-import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import {
   buildGitInstallReceipt,
   listFilesRecursive,
@@ -1475,7 +1473,6 @@ export const createPlugin = async (context) => ({
       ownData: readFileSync(${JSON.stringify(join(fx.pluginDataDir, "own-data.txt"))}, "utf-8"),
       secretRead: (() => { try { return readFileSync(${JSON.stringify(fx.secretFile)}, "utf-8"); } catch (error) { return "DENIED:" + (error.code ?? error.name); } })(),
       fromHost: await context.hostApi.callLlm("ping"),
-      installed: context.hostApi.getInstalledPluginIds(),
     }),
   },
 });
@@ -1505,8 +1502,8 @@ export const createPlugin = async (context) => ({
       });
       const hostApi = {
         callLlm: async () => "the host answered",
-        getInstalledPluginIds: () => ["sampleassistant"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: { get: () => undefined, set: async () => undefined, onChange: () => () => undefined },
       } as unknown as PluginHostApi;
       const instance = await factory({
@@ -1518,7 +1515,7 @@ export const createPlugin = async (context) => ({
         userHome: homedir(),
         aveHome: aveHome(),
         config: {},
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
       try {
@@ -1526,7 +1523,6 @@ export const createPlugin = async (context) => ({
         // The plugin's own structured value, out of a different process.
         expect(result.ownData).toBe("the plugin's own bytes");
         expect(result.fromHost).toBe("the host answered");
-        expect(result.installed).toEqual(["sampleassistant"]);
         // …and the same process could not read the host's secrets while doing it.
         expect(String(result.secretRead)).toMatch(/^DENIED:/);
       } finally {
@@ -1572,7 +1568,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       userHome: homedir(),
       aveHome: aveHome(),
       config: {},
-      log: () => undefined,
+
       hostApi,
     };
   }
@@ -1885,8 +1881,8 @@ export const createPlugin = async (context) => {
             headers: { "x-ave": "from-the-host" },
           }),
         spawnWorker,
-        getInstalledPluginIds: () => ["sampleassistant"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: (key: string) => configValues.get(key),
           set: async () => undefined,
@@ -1934,7 +1930,7 @@ export const createPlugin = async (context) => {
         userHome: homedir(),
         aveHome: aveHome(),
         config: { watched: "before", workspace: fx.userRoot },
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2201,10 +2197,10 @@ export const createPlugin = async (context) => {
           new Response(new Uint8Array([0x00, 0x80, 0xff, 0x41]), { status: 200 }),
         callLlm: async () => "three action items",
         emitEvent: () => undefined,
-        logEvent: () => undefined,
+
         onEvent: () => () => undefined,
-        getInstalledPluginIds: () => ["meeting"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: (key: string) => configValues.get(key),
           set: async () => undefined,
@@ -2266,7 +2262,7 @@ export const createPlugin = async (context) => {
         userHome: homedir(),
         aveHome: aveHome(),
         config: Object.fromEntries(configValues),
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2734,10 +2730,10 @@ export default async function createPlugin(context) {
           return null;
         },
         emitEvent: () => undefined,
-        logEvent: () => undefined,
+
         onEvent: () => () => undefined,
-        getInstalledPluginIds: () => ["local-indexer"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: () => undefined,
           set: async () => undefined,
@@ -2772,7 +2768,7 @@ export default async function createPlugin(context) {
         userHome: homedir(),
         aveHome: aveHome(),
         config: {},
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2818,7 +2814,7 @@ function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeCont
     userHome: homedir(),
     aveHome: aveHome(),
     config: {},
-    log: () => undefined,
+
     hostApi: createValidationHost().api,
   };
 }
@@ -3423,14 +3419,16 @@ describe("the python smoke, confined by the production factory", () => {
   }
 
   /** The child's own `ru_maxrss` from its stop log, in bytes: darwin reports bytes, linux KiB. */
-  function childRuMaxrssBytes(stdout: Buffer): number {
-    const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
-    const stopLog = decoder.push(stdout).find(
-      (frame) => frame.method === "notifications/ave/log"
-        && typeof (frame.params as { meta?: { ruMaxrss?: unknown } }).meta?.ruMaxrss === "number",
+  function childRuMaxrssBytes(records: readonly (readonly unknown[])[]): number {
+    const stopLog = records.find(([line, fields]) =>
+      typeof line === "string" && line.includes("[python-smoke] python-smoke stopping ")
+        && (fields as { pluginId?: string } | undefined)?.pluginId === PYTHON_SMOKE_ID,
     );
-    const value = (stopLog!.params as { meta: { ruMaxrss: number } }).meta.ruMaxrss;
-    return process.platform === "darwin" ? value : value * 1024;
+    expect(stopLog, "the child reports its own memory on attributed stderr").toBeDefined();
+    const metadata = / stopping (\{.*\})$/.exec(String(stopLog![0]));
+    const value: unknown = JSON.parse(metadata![1]!).ruMaxrss;
+    expect(value).toEqual(expect.any(Number));
+    return process.platform === "darwin" ? value as number : (value as number) * 1024;
   }
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
@@ -3438,22 +3436,25 @@ describe("the python smoke, confined by the production factory", () => {
     async () => {
       if (!(await sandboxCasesRun())) return;
       const { fx, plugin, manifest } = await installPinnedPythonSmoke();
-      const run = await runObserved(fx, plugin, manifest);
-      expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
-      expect(run.child.pid).toEqual(expect.any(Number));
-      await driveLifecycle(run);
-      const tree = await run.tree;
-      const stdout = Buffer.concat(run.stdout);
-      expect(rawStdoutViolations(stdout)).toEqual([]);
-      reportSmoke("confined measurement", {
-        platform: process.platform,
-        fixture: PYTHON_SMOKE_ID,
-        spawnToConstructMs: run.spawnToConstructMs,
-        treePeakRssBytes: tree.peakRssBytes,
-        treeSamples: tree.samples,
-        childRuMaxrssBytes: childRuMaxrssBytes(stdout),
-      });
-      expect(tree.samples).toBeGreaterThan(0);
+      const diagnostics = vi.spyOn(console, "log");
+      try {
+        const run = await runObserved(fx, plugin, manifest);
+        expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
+        expect(run.child.pid).toEqual(expect.any(Number));
+        await driveLifecycle(run);
+        const tree = await run.tree;
+        const stdout = Buffer.concat(run.stdout);
+        expect(rawStdoutViolations(stdout)).toEqual([]);
+        reportSmoke("confined measurement", {
+          platform: process.platform,
+          fixture: PYTHON_SMOKE_ID,
+          spawnToConstructMs: run.spawnToConstructMs,
+          treePeakRssBytes: tree.peakRssBytes,
+          treeSamples: tree.samples,
+          childRuMaxrssBytes: childRuMaxrssBytes(diagnostics.mock.calls),
+        });
+        expect(tree.samples).toBeGreaterThan(0);
+      } finally { diagnostics.mockRestore(); }
     },
     600_000,
   );

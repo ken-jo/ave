@@ -163,7 +163,7 @@ async function measureHolderMcp(ctx) {
     const unanswered = (await rpc.reply(pendingId, ctx.pollMs * 4)) === undefined;
     // Cancellation is disposal of the whole container with input still open; the SDK wait rejection is not death evidence.
     first.processHandle.dispose(); first.disposed = true;
-    const until = Date.now() + ctx.budgets.pluginShutdownHandlerMs;
+    const until = Date.now() + ctx.budgets.pluginRetirementDrainMs;
     while (Date.now() < until && handles.some((handle) => ctx.native.wait(handle, 0) === STILL_ACTIVE)) await ctx.pause(ctx.pollMs);
     const processDead = handles.every((handle) => ctx.native.wait(handle, 0) === 0);
     cancel = { pendingUnanswered: unanswered, processDead, waitAfterDispose: await ctx.bounded(first.completion, ctx.ioBudget) };

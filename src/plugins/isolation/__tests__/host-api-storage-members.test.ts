@@ -102,17 +102,11 @@ function harness(
   options: { readonly bind?: boolean } = {},
 ): Harness {
   const requests: HostApiRequest[] = [];
-  const hostLogs: { message: string; meta?: unknown }[] = [];
   const host = new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
-    shutdownChild: async (subscriptionId) => {
-      throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
-    },
     table:
       options.bind === false
         ? HOSTAPI_DISPATCH_TABLE
@@ -543,17 +537,11 @@ describe("malformed arguments are refused, never coerced", () => {
 describe("the boundary refuses a member the plugin is no longer entitled to", () => {
   it("stops a storage call from a retired incarnation", async () => {
     const hostApi = createNoopHostApi(PLUGIN_ID, dataDir, mockedElectron.safeStorage);
-    const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Capture host diagnostics so silently discarded failures cannot pass.
-      log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => false,
       notifications: silentSink,
       reportUnknownField: () => {},
-      shutdownChild: async (subscriptionId) => {
-        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
-      },
       table: { ...HOSTAPI_DISPATCH_TABLE, ...createStorageHostApiPaths(hostApi) },
     });
     writeFileSync(join(storageDir, "live.txt"), "live");

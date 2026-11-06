@@ -156,8 +156,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
   it("runs an ACCEPTED PROPOSAL through the same plan approval, and one approval never carries to the next run", async () => {
     const { store, cleanup } = tempBoard();
     try {
-      const posted = await store.upsertProposal(
-        { pluginId: "indexer", pluginLabel: "Indexer", grantedKinds: ["stale-index"] },
+      const posted = await store.fileBriefingProposals([
         {
           kind: "stale-index",
           key: "folder:reports",
@@ -166,9 +165,9 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
           state: "Last scanned 12 days ago.",
           taskBrief: "Re-run the folder scan and report what changed.",
         },
-      );
-      if (posted.status !== "ok") throw new Error("setup failed");
-      const accepted = await store.acceptProposal(posted.proposal.id);
+      ]);
+      if (!posted.filed[0]) throw new Error("setup failed");
+      const accepted = await store.acceptProposal(posted.filed[0]);
       if (accepted.status !== "accepted") throw new Error("setup failed");
 
       const { runner, calls } = fakeRunner();
@@ -180,7 +179,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
 
       const first = await runThroughDecision(engine, store, accepted.itemId, "approve");
       expect(first.status).toBe("completed");
-      // Plugin-supplied plan text must not gain mutating tools before approval.
+      // Machine-authored plan text must not gain mutating tools before approval.
       expect(calls[0].profileMode).toBe("plan");
       expect(calls[0].grantedToolNames).toContain("read_file");
 

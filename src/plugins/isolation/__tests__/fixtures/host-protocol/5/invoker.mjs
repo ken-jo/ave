@@ -15,23 +15,10 @@ const CALLS = {
   "config.onChange": (api) => api.config.onChange("region", () => undefined),
   getSecret: (api) => api.getSecret("service.token"),
   hasRoutineBySource: (api) => api.hasRoutineBySource("golden:daily"),
-  proposeWork: (api) =>
-    api.proposeWork({
-      kind: "follow-up",
-      key: "mail-1",
-      title: "Reply to the report",
-      summary: "The report asks for a decision by Friday.",
-      state: "open",
-      taskBrief: "Draft a reply that states the decision.",
-    }),
-  withdrawWorkProposal: (api) => api.withdrawWorkProposal("follow-up", "mail-1"),
   probePrivateHost: (api) => api.probePrivateHost("intranet.example.com", { timeoutMs: 1_500 }),
   resolveApiKey: (api) => api.resolveApiKey({ purpose: "llm", vendor: "openai" }),
-  emitEvent: (api) => api.emitEvent("golden.ready", { ok: true }),
-  onEvent: (api) => api.onEvent("golden.ping", () => undefined),
-  onPluginsChanged: (api) => api.onPluginsChanged(() => undefined),
-  onShutdown: (api) => api.onShutdown(async () => undefined),
-  logEvent: (api) => api.logEvent("info", "golden: an event", { step: 1 }),
+  emitEvent: (api) => api.emitEvent("golden-invoker.ready", { ok: true }),
+  onEvent: (api) => api.onEvent("host.theme.changed", () => undefined),
   callLlm: (api) => api.callLlm("say hello", { maxTokens: 16 }),
   hostFetch: (api) =>
     api.hostFetch("https://api.example.com/ping", {
@@ -64,14 +51,10 @@ const CALLS = {
   listAudioInputDevices: (api) => api.listAudioInputDevices(),
   startAudioCapture: (api) =>
     api.startAudioCapture({ sampleRate: 16_000, frameMs: 200, microphone: true, systemAudio: false }),
-  resizeFloatingPanel: (api) => api.resizeFloatingPanel("panel-1", 200),
   attachFloatingPanel: (api) => api.attachFloatingPanel({ extensionId: "golden-card", height: 240 }),
   getAuthPartitionCookies: (api) =>
     api.getAuthPartitionCookies({ partitionSub: "golden-auth", urls: ["https://portal.example.com/"] }),
   triggerConversation: (api) => api.triggerConversation({ prompt: "hello", source: "golden:trigger" }),
-  "agentApproval.request": (api) =>
-    api.agentApproval.request({ toolName: "golden_tool", args: {}, reason: "needs approval", scope: "once" }),
-  "agentApproval.respond": (api) => api.agentApproval.respond("request-1", "allow-once", "nonce-1", "hmac-1"),
   raiseAlert: (api) =>
     api.raiseAlert({
       kind: "mail-reply",
@@ -79,7 +62,6 @@ const CALLS = {
       slots: { subject: "Quarterly report" },
       priority: "high",
     }),
-  withdrawAlert: (api) => api.withdrawAlert("mail-reply", "mail-1"),
 };
 
 /** Project live handles to their data members for JSON observations. */
@@ -125,7 +107,7 @@ export const createPlugin = async (context) => {
         }
       },
       write_log: async () => {
-        context.log("golden: a log line", { step: 2 });
+        process.stderr.write("golden: a log line\n");
         return {};
       },
       dispose_all: async () => {

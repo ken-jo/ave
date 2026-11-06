@@ -1,8 +1,8 @@
 /** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
-import { classifySubscription } from "../capabilities.js";
-import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents, recordManifestDocument } from "./manifest-validation.js";
+import { canEmitEvent } from "../capabilities.js";
+import { parsePluginJson, buildManifestValidator, recordManifestDocument } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -213,7 +213,6 @@ export interface PluginRuntimeOptions {
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<PluginRegistryTrust>,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
@@ -234,7 +233,7 @@ export interface PluginRuntimeOptions {
   preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
 }
 
-/** Cross-plugin calls and subscriptions share one permission and audit policy. */
+/** Plugin event boundaries share one permission and audit policy. */
 
 type AuditLog = (
   level: "info" | "warn" | "error",
@@ -242,65 +241,32 @@ type AuditLog = (
   data?: unknown,
 ) => void;
 
-/** Foreign event subscriptions require an explicit grant; self-owned and unowned events are allowed. */
+/** Only theme notifications remain available to a plugin process. */
 export function assertEventSubscribeAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  targetPluginId: string | undefined;
-  getAccessGrant: () => PluginAccessSpec | undefined;
   auditLog?: AuditLog;
 }): void {
-  const { callerPluginId, eventType, targetPluginId } = opts;
-  if (classifySubscription(eventType) === "private") {
-    opts.auditLog?.("error", "plugin_private_event_access_denied", {
-      callerPluginId,
-      eventType,
-    });
-    throw new Error(
-      `Plugin '${callerPluginId}' is not allowed to subscribe to private event '${eventType}'`,
-    );
-  }
-  if (!targetPluginId || targetPluginId === callerPluginId) return;
-  const rule = opts
-    .getAccessGrant()
-    ?.plugins.find((entry) => entry.pluginId === targetPluginId);
-  if (rule?.events?.includes(eventType)) return;
+  if (opts.eventType === "host.theme.changed") return;
   opts.auditLog?.("error", "plugin_event_access_denied", {
-    callerPluginId,
-    targetPluginId,
-    eventType,
+    callerPluginId: opts.callerPluginId,
+    eventType: opts.eventType,
   });
-  throw new Error(
-    `Plugin '${callerPluginId}' is not allowed to subscribe to event '${eventType}' from plugin '${targetPluginId}'`,
-  );
+  throw new Error(`Plugin '${opts.callerPluginId}' may subscribe only to host.theme.changed`);
 }
 
-/** Plugins may emit only their own events or events without a resolvable owner. */
+/** Event names must identify their own UI owner. */
 export function assertEventEmitAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  ownerPluginId: string | undefined;
   auditLog?: AuditLog;
 }): void {
-  const { callerPluginId, eventType, ownerPluginId } = opts;
-  if (classifySubscription(eventType) === "private") {
-    opts.auditLog?.("error", "plugin_private_event_emit_denied", {
-      callerPluginId,
-      eventType,
-    });
-    throw new Error(
-      `Plugin '${callerPluginId}' is not allowed to emit private event '${eventType}'`,
-    );
-  }
-  if (!ownerPluginId || ownerPluginId === callerPluginId) return;
+  if (canEmitEvent(opts.eventType, opts.callerPluginId)) return;
   opts.auditLog?.("error", "plugin_event_emit_denied", {
-    callerPluginId,
-    ownerPluginId,
-    eventType,
+    callerPluginId: opts.callerPluginId,
+    eventType: opts.eventType,
   });
-  throw new Error(
-    `Plugin '${callerPluginId}' is not allowed to emit event '${eventType}' owned by plugin '${ownerPluginId}'`,
-  );
+  throw new Error(`Plugin '${opts.callerPluginId}' may emit only its own UI events`);
 }
 
 /** Renderer calls require explicit app visibility in the tool declaration. */
@@ -1377,7 +1343,6 @@ abstract class PluginRuntimeState {
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
@@ -1488,7 +1453,6 @@ abstract class PluginRuntimeState {
   protected readonly knownInstallClaims = new Map<string, string | null>();
   private readonly pendingInstallIdentityOwners = new Map<string, symbol>();
   protected readonly knownToolOwners = new Map<string, string>();
-  protected readonly knownEventOwners = new Map<string, string>();
   protected readonly failedPluginIds = new Set<string>();
   protected readonly failedPluginStubs = new Map<string, { name: string; description: string }>();
   /** Classify load failures by canonical id, or registry hint when no manifest can be read. */
@@ -1837,7 +1801,6 @@ abstract class PluginRuntimeState {
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): {
     hostApi: PluginHostApi;
     disposers: Array<() => void>;
@@ -1908,7 +1871,6 @@ abstract class PluginRuntimeState {
         incarnation,
         installPluginId,
         candidateRegistryEntry,
-        candidateApprovedPluginAccess,
       );
       const hostApi = hostEffects ? hostEffects.wrapHostApi(rawHostApi) : rawHostApi;
       // Partial test HostApi objects may omit required storage.
@@ -2011,13 +1973,7 @@ abstract class PluginRuntimeState {
     for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
       if (ownerId === pluginId) this.knownToolOwners.delete(toolName);
     }
-    for (const [eventType, ownerId] of [...this.knownEventOwners.entries()]) {
-      if (ownerId === pluginId) this.knownEventOwners.delete(eventType);
-    }
     this.rememberToolOwners(pluginId, manifest);
-    for (const eventType of getDeclaredEmittedEvents(manifest)) {
-      this.knownEventOwners.set(eventType, pluginId);
-    }
   }
 
   protected rememberPluginInstallAlias(pluginId: string, alias: string | undefined): void {
@@ -2433,7 +2389,6 @@ abstract class PluginRuntimeState {
     this.knownInstallAliases.clear();
     this.knownInstallClaims.clear();
     this.knownToolOwners.clear();
-    this.knownEventOwners.clear();
     this.plugins.clear();
     for (const pluginId of this.pluginUiRevisions.keys()) {
       this.onPluginUiRevisionChange?.(pluginId);
@@ -2879,23 +2834,6 @@ abstract class PluginRuntimeState {
       displayName: manifest.name ?? manifest.id,
     });
     return true;
-  }
-
-  protected inferEventOwner(eventType: string): string | undefined {
-    const exactOwner = this.knownEventOwners.get(eventType);
-    if (exactOwner) return exactOwner;
-    const candidateIds = new Set<string>([
-      ...this.plugins.keys(),
-      ...this.knownPluginManifests.keys(),
-    ]);
-    let bestMatch: string | undefined;
-    for (const pluginId of candidateIds) {
-      if (!eventType.startsWith(`${pluginId}.`)) continue;
-      if (!bestMatch || pluginId.length > bestMatch.length) {
-        bestMatch = pluginId;
-      }
-    }
-    return bestMatch;
   }
 
   protected async materializeImmutableRuntimeRoot(
@@ -3664,9 +3602,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.knownPluginAccessGrants.delete(canonicalPluginId);
     for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
       if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
-    }
-    for (const [eventType, ownerId] of [...this.knownEventOwners.entries()]) {
-      if (ownerId === canonicalPluginId) this.knownEventOwners.delete(eventType);
     }
     this.failedPluginIds.delete(canonicalPluginId);
     this.failedPluginStubs.delete(canonicalPluginId);
@@ -4695,7 +4630,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         hostEffects,
         installId,
         candidateRegistryEntry,
-        input.approvedPluginAccess ?? null,
       );
     } catch (error) {
       await releasePreparedConstruction(hostEffects);
@@ -5065,9 +4999,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       this.knownPluginManifests.set(pluginId, outcome.manifest);
       this.knownPluginAccessGrants.set(pluginId, outcome.approvedPluginAccess);
       this.rememberToolOwners(pluginId, outcome.manifest);
-      for (const eventType of getDeclaredEmittedEvents(outcome.manifest)) {
-        this.knownEventOwners.set(eventType, pluginId);
-      }
     }
     for (const outcome of preflight) {
       await this.admitPreflightedPlugin(outcome, enabledManifestSnapshots);
@@ -5675,7 +5606,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       track(candidate.pluginId, candidate.releaseForShutdown?.() ?? candidate.settled);
     }
 
-    const graceMs = TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs;
+    const graceMs = TOOL_TIMEOUT_POLICY.pluginRetirementDrainMs;
     if (!await this.waitForGenerationRetirements(graceMs, signal) && !signal.aborted) {
       log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls and stopping their generations`);
     }
@@ -6492,13 +6423,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.methodMap.get(method)?.pluginId ?? this.knownToolOwners.get(method);
   }
 
-  assertPluginEventAccess(callerPluginId: string, eventType: string, candidateApprovedPluginAccess?: PluginAccessSpec | null): void {
+  assertPluginEventAccess(callerPluginId: string, eventType: string): void {
     assertEventSubscribeAccess({
       callerPluginId,
       eventType,
-      targetPluginId: this.inferEventOwner(eventType),
-      getAccessGrant: () => candidateApprovedPluginAccess === undefined
-        ? this.getPluginAccessGrant(callerPluginId) : candidateApprovedPluginAccess ?? undefined,
       auditLog: this.auditLog,
     });
   }
@@ -6507,7 +6435,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     assertEventEmitAccess({
       callerPluginId,
       eventType,
-      ownerPluginId: this.inferEventOwner(eventType),
       auditLog: this.auditLog,
     });
   }
@@ -7038,10 +6965,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
 
   getApprovedPluginAccess(pluginId: string): PluginAccessSpec | undefined {
     return this.plugins.get(pluginId)?.approvedPluginAccess ?? this.knownPluginAccessGrants.get(pluginId);
-  }
-
-  private getPluginAccessGrant(pluginId: string): PluginAccessSpec | undefined {
-    return this.getApprovedPluginAccess(pluginId);
   }
 
   listPluginCards(toolRegistry?: { getModelVisibleTools(): Array<{ name: string }> }): PluginCard[] {

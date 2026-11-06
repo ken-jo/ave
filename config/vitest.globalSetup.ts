@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
 import { claimRunDir, ensureRunTmpRoot, ensureTestTmpRoot, RUN_OWNER_FILE, runTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
@@ -76,9 +76,14 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     return () => releaseRunDirs(holder);
   }
 
-  const testTmp = join(homedir(), ".ave", "test-tmp");
-  // Reject links before sweeping so cleanup cannot enter another tree.
-  ensureTestTmpRoot(testTmp, (path) => mkdirSync(path, { recursive: true }));
+  const configuredRoot = process.env.AVE_TEST_TMP_ROOT;
+  if (configuredRoot !== undefined && !isAbsolute(configuredRoot)) {
+    throw new Error("AVE_TEST_TMP_ROOT must be absolute");
+  }
+  const testTmp = configuredRoot ?? join(homedir(), ".ave", "test-tmp");
+  // Explicit scratch roots retain directory, ownership and link checks without changing the account home.
+  if (configuredRoot !== undefined) ensureRunTmpRoot(testTmp);
+  else ensureTestTmpRoot(testTmp, (path) => mkdirSync(path, { recursive: true }));
   // Claim the run temp root first; rejected roots must leave no unowned run directories.
   // Teardown reports leaks here, and the sweep removes only directories from dead runs.
   const tmpRoot = runTmpRoot();

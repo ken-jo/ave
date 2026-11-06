@@ -171,7 +171,6 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "telemetry",
   "pluginTelemetry",
   "autoUpdaterStop",
-  "runPluginShutdownHandlers",
   "shutdown",
   "startRoutinesScheduler",
   "startWorkBoardDueSoon",

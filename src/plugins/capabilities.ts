@@ -1,5 +1,5 @@
 // Only known capabilities grant host behavior; unknown format-valid declarations remain harmless.
-// Event namespace policy separately governs subscriptions and emission.
+// UI event ownership is enforced independently of capability declarations.
 
 /** The schema accepts free-form declarations; this list defines only runtime-enforced IDs and their type union. */
 const KNOWN_CAPABILITY_IDS = [
@@ -19,15 +19,6 @@ export const CAPABILITY_EXTERNAL_AUTH_CONSUMER: CapabilityId = "external-auth-co
 export const CAPABILITY_HOST_OVERLAY: CapabilityId = "host:overlay";
 export const CAPABILITY_RAW_API_KEY: CapabilityId = "secrets:raw-api-key";
 
-// Presence marks a gated namespace; labels serve audit output, not author-declared capabilities.
-// Authorization comes from emittedEvents; plugin-owned namespaces are checked separately.
-const EVENT_NAMESPACE_CAPABILITY: ReadonlyMap<string, string> = new Map([
-  ["email", "mail-source"],
-  ["calendar", "calendar-source"],
-  ["meeting", "meeting-recorder"],
-  ["index", "knowledge-index"],
-]);
-
 /** Only the host may emit these lifecycle and user-state events; declarations cannot authorize spoofing them. */
 export const HOST_ONLY_EMIT_NAMESPACES: ReadonlySet<string> = new Set([
   "plugin",
@@ -37,12 +28,7 @@ export const HOST_ONLY_EMIT_NAMESPACES: ReadonlySet<string> = new Set([
 ]);
 
 /** Unknown subscription namespaces warn unless private; plugin-owned names stay outside the host allowlist. */
-export const PUBLIC_EVENT_NAMESPACES: ReadonlySet<string> = new Set([
-  "meeting",
-  "calendar",
-  "email",
-  "index",
-]);
+export const PUBLIC_EVENT_NAMESPACES: ReadonlySet<string> = new Set();
 
 /** Exact host event exceptions must not make the whole host.* namespace subscribable or emittable. */
 const PUBLIC_HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -63,24 +49,12 @@ export function categorizeEvent(eventType: string): string {
   return PUBLIC_EVENT_NAMESPACES.has(prefix) ? prefix : "other";
 }
 
-/** Return an internal audit label for gated emission, never an author-declarable capability. */
-export function requiredCapabilityForEmit(eventType: string): string | undefined {
-  const prefix = eventType.split(".")[0] ?? "";
-  return EVENT_NAMESPACE_CAPABILITY.get(prefix);
-}
-
-// Host-reserved namespaces always deny; gated namespaces require an emittedEvents declaration.
-// Other emissions still pass plugin-identity and owner checks.
-export function canEmitEvent(
-  eventType: string,
-  emittedEvents: readonly string[],
-): boolean {
-  const prefix = eventType.split(".")[0] ?? "";
-  if (HOST_ONLY_EMIT_NAMESPACES.has(prefix)) return false;
-  if (classifySubscription(eventType) === "private") return false;
-  if (!requiredCapabilityForEmit(eventType)) return true;
-  // A declared event authorizes its gated namespace.
-  return emittedEvents.some((e) => (e.split(".")[0] ?? "") === prefix);
+/** UI event names are owned by the emitting plugin, without manifest grants. */
+export function canEmitEvent(eventType: string, pluginId: string): boolean {
+  return eventType.startsWith(`${pluginId}.`)
+    && eventType.length > pluginId.length + 1
+    && !HOST_ONLY_EMIT_NAMESPACES.has(pluginId)
+    && classifySubscription(eventType) !== "private";
 }
 
 /** Private subscriptions reject, public ones pass, and neutral ones pass with a drift warning. */

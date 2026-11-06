@@ -130,7 +130,6 @@ async function configuredShutdown() {
 
 function makeServices() {
   return {
-    runPluginShutdownHandlers: vi.fn(async () => { calls.push("pluginShutdownHandlers"); }),
     shutdown: vi.fn(async () => { calls.push("servicesShutdown"); }),
     pluginRuntime: {
       beginShutdown: vi.fn(() => { calls.push("closePluginAdmission"); }),
@@ -281,7 +280,6 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     vi.resetModules();
     const shutdown = await configuredShutdown();
     shutdown.registerBootPluginShutdown({
-      runShutdownHandlers: async () => { calls.push("partialPluginShutdownHandlers"); },
       closeAdmission: () => { calls.push("partialPluginAdmissionClosed"); },
       stopRuntime: async () => { calls.push("partialPluginRuntimeStop"); },
     });
@@ -289,7 +287,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     const host = createBootHostFixture({ close: async () => { calls.push("closeHost"); } });
     expect(await shutdown.runIncompleteBootShutdown(host)).toBe("completed");
     expect(calls).toEqual([
-      "partialWatcher", "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopDocumentEngines", "stopSubscriptionRuntimes",
+      "partialWatcher", "partialPluginAdmissionClosed", "partialPluginRuntimeStop", "stopDocumentEngines", "stopSubscriptionRuntimes",
       "forceKillTerminals", "drainManagedChildren", "releaseOsSandbox", "closeHost", "closeFileLogSink",
     ]);
     expect(sealManagedChildProcessAdmission).toHaveBeenCalledWith("host bootstrap interrupted or failed");
@@ -303,15 +301,14 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     const shutdown = await configuredShutdown();
     const signals: AbortSignal[] = [];
     shutdown.registerBootPluginShutdown({
-      runShutdownHandlers: async () => { calls.push("partialPluginShutdownHandlers"); },
       closeAdmission: () => { calls.push("partialPluginAdmissionClosed"); },
       stopRuntime: async (signal: AbortSignal) => { signals.push(signal); calls.push("partialPluginRuntimeStop"); },
     });
     shutdown.registerBootMcpDisconnect(async () => { calls.push("partialMcpDisconnect"); });
     expect(await shutdown.runIncompleteBootShutdown()).toBe("completed");
     // Admission closes first, so no post-commit MCP publication opens once MCP is gone.
-    expect(calls.slice(0, 4)).toEqual([
-      "partialPluginShutdownHandlers", "partialPluginAdmissionClosed", "partialMcpDisconnect", "partialPluginRuntimeStop",
+    expect(calls.slice(0, 3)).toEqual([
+      "partialPluginAdmissionClosed", "partialMcpDisconnect", "partialPluginRuntimeStop",
     ]);
     // The runtime still stops within the cleanup deadline.
     expect(signals).toHaveLength(1);
@@ -338,7 +335,6 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     vi.resetModules();
     const shutdown = await configuredShutdown();
     shutdown.registerBootPluginShutdown({
-      runShutdownHandlers: async () => undefined,
       closeAdmission: () => undefined,
       stopRuntime: async () => { throw new Error("plugin stop failed"); },
     });
@@ -468,7 +464,6 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     expect(calls.indexOf("stopTailnetObserver")).toBeLessThan(calls.indexOf("servicesShutdown"));
     expect(calls.indexOf("stopTelegramBridge")).toBeLessThan(calls.indexOf("servicesShutdown"));
     expect(calls.indexOf("stopRemoteReceiver")).toBeLessThan(calls.indexOf("servicesShutdown"));
-    expect(calls.indexOf("pluginShutdownHandlers")).toBeLessThan(calls.indexOf("shutdownRoutines"));
     expect(calls.indexOf("shutdownRoutines")).toBeLessThan(calls.indexOf("stopSubscriptionRuntimes"));
     expect(calls.indexOf("stopSubscriptionRuntimes")).toBeLessThan(calls.indexOf("servicesShutdown"));
     expect(calls.indexOf("servicesShutdown")).toBeLessThan(calls.indexOf("disposeBrokerShells"));
@@ -489,7 +484,6 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     await runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
     // Plugin shutdown handlers and shutdown routines may still call plugins.
     expect(calls.indexOf("shutdownRoutines")).toBeLessThan(calls.indexOf("closePluginAdmission"));
-    expect(calls.indexOf("pluginShutdownHandlers")).toBeLessThan(calls.indexOf("closePluginAdmission"));
     expect(calls.indexOf("closePluginAdmission")).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("closePluginAdmission")).toBeLessThan(calls.indexOf("servicesShutdown"));
     expect(calls.indexOf("servicesShutdown")).toBeLessThan(calls.indexOf("stopPluginRuntime"));
@@ -539,36 +533,7 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     );
   });
 
-  it("stops subscription runtimes and preserves a plugin failure when its fallback stop also fails", async () => {
-    const services = makeServices();
-    services.runPluginShutdownHandlers.mockImplementationOnce(async () => {
-      calls.push("pluginShutdownHandlers-throw");
-      throw new Error("plugin root failure");
-    });
-    stopSubscriptionRuntimes.mockImplementationOnce(async () => {
-      calls.push("stopSubscriptionRuntimes-throw");
-      throw new Error("subscription fallback stop failure");
-    });
-    getServices.mockReturnValue(services);
-    vi.resetModules();
-    const { runAppShutdownCleanup } = await configuredShutdown();
 
-    await expect(runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false }))
-      .resolves.toBe("failed");
-
-    expect(calls.indexOf("pluginShutdownHandlers-throw"))
-      .toBeLessThan(calls.indexOf("stopSubscriptionRuntimes-throw"));
-    expect(calls).toContain("forceKillManagedChildren");
-    expect(services.shutdown).not.toHaveBeenCalled();
-    expect(runShutdownRoutines).not.toHaveBeenCalled();
-    expect(logWarn).toHaveBeenCalledWith("shutdown: subscription runtime fallback stop failed");
-    expect(logError).toHaveBeenCalledWith(
-      { killedChildCount: 1 },
-      "%s: shutdown cleanup failed: %s",
-      "before-quit",
-      "plugin root failure",
-    );
-  });
 
   it("stops subscription runtimes after a routine failure and then uses the managed-child backstop", async () => {
     const services = makeServices();
@@ -583,8 +548,6 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     await expect(runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false }))
       .resolves.toBe("failed");
 
-    expect(calls.indexOf("pluginShutdownHandlers"))
-      .toBeLessThan(calls.indexOf("shutdownRoutines-throw"));
     expect(calls.indexOf("shutdownRoutines-throw"))
       .toBeLessThan(calls.indexOf("stopSubscriptionRuntimes"));
     expect(calls.indexOf("stopSubscriptionRuntimes"))

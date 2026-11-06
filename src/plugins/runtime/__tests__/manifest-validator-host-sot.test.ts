@@ -441,7 +441,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         plugins: [
           {
             pluginId: "samplemail",
-            events: ["samplemail.snapshot.ready"],
             tools: ["samplemail_email_list"],
           },
         ],
@@ -457,6 +456,22 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         }),
       ]),
     );
+  });
+
+  it.each([
+    { field: "events", access: { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] } },
+    { field: "agentApprovalScopes", access: { plugins: [{ pluginId: "samplemail" }], agentApprovalScopes: ["email.send"] } },
+    { field: "unknownTargetField", access: { plugins: [{ pluginId: "samplemail", unknownTargetField: true }] } },
+    { field: "unknownAccessField", access: { plugins: [{ pluginId: "samplemail" }], unknownAccessField: true } },
+  ])("rejects extra plugin access field $field", async ({ field, access }) => {
+    const validator = await buildManifestValidator();
+    expect(validator(agentPluginsDocument({
+      id: "invalid-access", name: "Invalid Access", version: "1.0.0", description: "Access validation fixture.",
+      entry: "dist/index.js", tools: [], pluginAccess: access,
+    }))).toBe(false);
+    expect(validator.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ keyword: "additionalProperties", params: { additionalProperty: field } }),
+    ]));
   });
 
   it("accepts networkAccess.allowPrivateNetworks", async () => {
@@ -946,7 +961,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       loginTool: "ff_login",
       logoutTool: "ff_logout",
     },
-    emittedEvents: ["full-featured-plugin.auth.changed"],
     networkAccess: {
       allowedDomains: ["api.example.com"],
       reasoning: "Host-mediated egress for document sync.",

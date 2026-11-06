@@ -24,6 +24,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",
+  "event-target-forbidden": "formatIpcError.eventTargetForbidden",
   "process-entry-unconfined": "formatIpcError.processEntryUnconfined",
   "process-entry-requires-pinned-artifact": "formatIpcError.processEntryRequiresPinnedArtifact",
   // "unauthorized-frame" lives below in the frame-trust gate section with a

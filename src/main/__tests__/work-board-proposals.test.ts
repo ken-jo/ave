@@ -21,12 +21,6 @@ function tempStore(now: () => number = () => FIXED_NOW) {
   };
 }
 
-const INDEXER = {
-  pluginId: "indexer",
-  pluginLabel: "Indexer",
-  grantedKinds: ["stale-index", "embed-failed"] as const,
-};
-
 function input(overrides: Partial<WorkProposalInput> = {}): WorkProposalInput {
   return {
     kind: "stale-index",
@@ -41,18 +35,26 @@ function input(overrides: Partial<WorkProposalInput> = {}): WorkProposalInput {
   };
 }
 
+async function fileProposal(store: WorkBoardStore, value: WorkProposalInput) {
+  const result = await store.fileBriefingProposals([value]);
+  const listed = await store.listProposals();
+  if (listed.status !== "ok") throw new Error("proposal setup failed");
+  const id = result.filed[0] ?? result.refreshed[0];
+  const proposal = listed.proposals.find((entry) => entry.id === id);
+  if (!proposal) throw new Error("proposal setup failed");
+  return proposal;
+}
+
 describe("WorkBoardStore — proposal lifecycle", () => {
   it("posts a proposal, lists it live, and refreshes it in place on the same key", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const posted = await store.upsertProposal(INDEXER, input());
-      expect(posted.status).toBe("ok");
-      if (posted.status !== "ok") return;
+      const posted = await fileProposal(store, input());
       // Identity and label are the HOST's: the payload named neither.
-      expect(posted.proposal.pluginId).toBe("indexer");
-      expect(posted.proposal.pluginLabel).toBe("Indexer");
-      expect(posted.proposal.id.startsWith("indexer:stale-index:")).toBe(true);
-      expect(posted.proposal.id).not.toContain("folder:reports");
+      expect(posted.pluginId).toBe("ave.briefing");
+      expect(posted.pluginLabel).toBe("Briefing");
+      expect(posted.id.startsWith("ave.briefing:stale-index:")).toBe(true);
+      expect(posted.id).not.toContain("folder:reports");
 
       const listed = await store.listProposals();
       expect(listed.status).toBe("ok");
@@ -60,11 +62,11 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       expect(listed.proposals).toHaveLength(1);
       expect(listed.proposals[0].title).toBe("Re-index the reports folder");
 
-      const refreshed = await store.upsertProposal(
-        INDEXER,
+      const refreshed = await fileProposal(
+        store,
         input({ summary: "26 files changed since the last scan." }),
       );
-      expect(refreshed.status).toBe("ok");
+      expect(refreshed.id).toBe(posted.id);
       const after = await store.listProposals();
       expect(after.status === "ok" && after.proposals).toHaveLength(1);
       expect(after.status === "ok" && after.proposals[0].summary).toBe(
@@ -72,7 +74,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
       );
       // A refresh keeps the original createdAt — it is the same card.
       expect(after.status === "ok" && after.proposals[0].createdAt).toBe(
-        posted.proposal.createdAt,
+        posted.createdAt,
       );
     } finally {
       await cleanup();
@@ -82,7 +84,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
   it("survives a restart", async () => {
     const { store, path, cleanup } = tempStore();
     try {
-      await store.upsertProposal(INDEXER, input());
+      await fileProposal(store, input());
       const reopened = new WorkBoardStore(path, () => FIXED_NOW);
       const listed = await reopened.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(1);
@@ -99,7 +101,7 @@ describe("WorkBoardStore — proposal lifecycle", () => {
     let now = FIXED_NOW;
     const { store, cleanup } = tempStore(() => now);
     try {
-      await store.upsertProposal(INDEXER, input({ ttlMs: PROPOSAL_TTL_MIN_MS }));
+      await fileProposal(store, input({ ttlMs: PROPOSAL_TTL_MIN_MS }));
       expect((await store.listProposals()).status).toBe("ok");
       now = FIXED_NOW + PROPOSAL_TTL_MIN_MS + 1;
       const listed = await store.listProposals();
@@ -112,15 +114,15 @@ describe("WorkBoardStore — proposal lifecycle", () => {
   it("clamps a TTL outside the host's window instead of honouring it", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const short = await store.upsertProposal(INDEXER, input({ ttlMs: 1 }));
-      expect(short.status === "ok" && Date.parse(short.proposal.expiresAt)).toBe(
+      const short = await fileProposal(store, input({ ttlMs: 1 }));
+      expect(Date.parse(short.expiresAt)).toBe(
         FIXED_NOW + PROPOSAL_TTL_MIN_MS,
       );
-      const long = await store.upsertProposal(
-        INDEXER,
+      const long = await fileProposal(
+        store,
         input({ key: "folder:archive", kind: "embed-failed", ttlMs: 10 * PROPOSAL_TTL_MAX_MS }),
       );
-      expect(long.status === "ok" && Date.parse(long.proposal.expiresAt)).toBe(
+      expect(Date.parse(long.expiresAt)).toBe(
         FIXED_NOW + PROPOSAL_TTL_MAX_MS,
       );
     } finally {
@@ -129,100 +131,14 @@ describe("WorkBoardStore — proposal lifecycle", () => {
   });
 });
 
-describe("WorkBoardStore — proposal refusals", () => {
-  it("rejects a kind the plugin never declared", async () => {
+describe("WorkBoardStore — briefing proposal validation", () => {
+  it("drops malformed briefing entries without storing them", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const result = await store.upsertProposal(INDEXER, input({ kind: "reply-needed" }));
-      expect(result).toEqual({ status: "kind_not_granted", kind: "reply-needed" });
-      const listed = await store.listProposals();
-      expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("rejects a kind that is granted to a DIFFERENT plugin", async () => {
-    const { store, cleanup } = tempStore();
-    try {
-      const mail = { pluginId: "mail", pluginLabel: "Mail", grantedKinds: ["reply-needed"] };
-      // `stale-index` is a real kind — it just is not this caller's.
-      const result = await store.upsertProposal(mail, input({ kind: "stale-index" }));
-      expect(result).toEqual({ status: "kind_not_granted", kind: "stale-index" });
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("refuses a SECOND open proposal in a kind that already has one", async () => {
-    const { store, cleanup } = tempStore();
-    try {
-      expect((await store.upsertProposal(INDEXER, input())).status).toBe("ok");
-      const second = await store.upsertProposal(INDEXER, input({ key: "folder:invoices" }));
-      expect(second).toEqual({ status: "slot_busy", kind: "stale-index" });
-      // The other declared kind is a separate slot and stays open.
-      const otherKind = await store.upsertProposal(
-        INDEXER,
-        input({ kind: "embed-failed", key: "doc:42" }),
-      );
-      expect(otherKind.status).toBe("ok");
-      const listed = await store.listProposals();
-      expect(listed.status === "ok" && listed.proposals).toHaveLength(2);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("frees the slot once the plugin withdraws, and not before", async () => {
-    const { store, cleanup } = tempStore();
-    try {
-      await store.upsertProposal(INDEXER, input());
-      expect((await store.upsertProposal(INDEXER, input({ key: "folder:invoices" }))).status)
-        .toBe("slot_busy");
-      expect(await store.withdrawProposal("indexer", "stale-index", "folder:reports")).toBe(true);
-      expect((await store.upsertProposal(INDEXER, input({ key: "folder:invoices" }))).status)
-        .toBe("ok");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("refuses a withdrawal from a plugin that does not own the proposal", async () => {
-    const { store, cleanup } = tempStore();
-    try {
-      await store.upsertProposal(INDEXER, input());
-      // Same kind, same key, different caller — the id it resolves to is derived from ITS OWN plugin id, so the victim's row is not addressable.
-      expect(await store.withdrawProposal("mail", "stale-index", "folder:reports")).toBe(false);
-      const listed = await store.listProposals();
-      expect(listed.status === "ok" && listed.proposals).toHaveLength(1);
-      // The owner can still withdraw it.
-      expect(await store.withdrawProposal("indexer", "stale-index", "folder:reports")).toBe(true);
-      // And a second withdrawal is a no-op, not an error.
-      expect(await store.withdrawProposal("indexer", "stale-index", "folder:reports")).toBe(false);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("rejects a malformed payload by field name rather than defaulting it", async () => {
-    const { store, cleanup } = tempStore();
-    try {
-      const cases: Array<[Partial<WorkProposalInput>, string]> = [
-        [{ title: "   " }, "title"],
-        [{ summary: "" }, "summary"],
-        [{ state: "" }, "state"],
-        [{ taskBrief: "" }, "taskBrief"],
-        [{ kind: "Stale-Index" }, "kind"],
-        [{ key: "" }, "key"],
-        [{ dueAt: "not-a-date" }, "dueAt"],
-        [{ evidence: [{ label: "only a label" } as never] }, "evidence"],
-        [{ blockers: [{ reason: "" } as never] }, "blockers"],
-        [{ priority: "urgent" as never }, "priority"],
-      ];
-      for (const [override, field] of cases) {
-        const result = await store.upsertProposal(INDEXER, input(override));
-        expect(result).toEqual({ status: "invalid", field });
-      }
+      const result = await store.fileBriefingProposals([
+        input({ title: "   " }), input({ key: "" }), input({ dueAt: "not-a-date" }),
+      ]);
+      expect(result).toEqual({ filed: [], refreshed: [] });
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
@@ -233,15 +149,14 @@ describe("WorkBoardStore — proposal refusals", () => {
   it("keeps a dismissed card closed through a re-post", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const posted = await store.upsertProposal(INDEXER, input());
-      if (posted.status !== "ok") throw new Error("expected the post to succeed");
-      expect((await store.dismissProposal(posted.proposal.id)).status).toBe("dismissed");
+      const posted = await fileProposal(store, input());
+      expect((await store.dismissProposal(posted.id)).status).toBe("dismissed");
       expect((await store.listProposals()).status === "ok").toBe(true);
       expect((await store.listProposals() as { proposals: unknown[] }).proposals).toHaveLength(0);
 
       // Re-posting the SAME key refreshes the record but must not put the card the user closed back in front of them.
-      expect((await store.upsertProposal(INDEXER, input({ summary: "still stale" }))).status)
-        .toBe("ok");
+      expect(await store.fileBriefingProposals([input({ summary: "still stale" })]))
+        .toEqual({ filed: [], refreshed: [posted.id] });
       const listed = await store.listProposals();
       expect(listed.status === "ok" && listed.proposals).toHaveLength(0);
     } finally {
@@ -254,10 +169,9 @@ describe("WorkBoardStore — accepting a proposal", () => {
   it("promotes it through the ordinary create path and closes the card", async () => {
     const { store, cleanup } = tempStore();
     try {
-      const posted = await store.upsertProposal(INDEXER, input({ priority: "high" }));
-      if (posted.status !== "ok") throw new Error("expected the post to succeed");
+      const posted = await fileProposal(store, input({ priority: "high" }));
 
-      const accepted = await store.acceptProposal(posted.proposal.id, {
+      const accepted = await store.acceptProposal(posted.id, {
         projectRoot: "/tmp/project",
         projectName: "project",
       });

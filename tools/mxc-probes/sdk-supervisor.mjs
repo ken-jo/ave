@@ -175,7 +175,7 @@ async function lifetime() {
     if (handles.some((handle) => native.wait(handle, 0) !== 258)) throw new Error("Child exited before dispose");
     // Keep stdin open. Observe kernel process handles, not the disposed wait rejection, for death.
     child.processHandle.dispose(); child.disposed = true;
-    const until = Date.now() + budgets.pluginShutdownHandlerMs;
+    const until = Date.now() + budgets.pluginRetirementDrainMs;
     while (Date.now() < until && handles.some((handle) => native.wait(handle, 0) === 258)) await pause(pollMs);
     const signals = handles.map((handle) => native.wait(handle, 0));
     const result = { filesystemPolicy: child.filesystemPolicy, ...ready, processDead: signals[0] === 0, grandchildDead: signals[1] === 0,

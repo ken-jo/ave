@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 20,
+    "id": 18,
     "jsonrpc": "2.0",
     "method": "ave/host/emitEvent",
     "params": {
@@ -10,11 +10,11 @@
       "data": {
         "ok": true
       },
-      "eventType": "golden.ready"
+      "eventType": "golden-invoker.ready"
     }
   },
   "response": {
-    "id": 20,
+    "id": 18,
     "jsonrpc": "2.0",
     "result": null
   }

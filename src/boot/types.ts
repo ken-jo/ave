@@ -213,8 +213,6 @@ export interface AppServices {
   pluginTelemetry?: PluginTelemetryClient;
   /** Release-prep; auto-updater stop handle. Retained so shutdown can clear the 4h interval deterministically instead of relying on unref(). */
   autoUpdaterStop?: () => void;
-  /** Runs HostApi onShutdown handlers exactly once; shared by normal quit and updater install prep. */
-  runPluginShutdownHandlers?: () => Promise<void>;
   /** Central app shutdown hook for timers, background services, and transports. */
   shutdown?: () => Promise<void>;
   /** L1: deferred RoutinesScheduler.start() handle. main.ts calls this AFTER registerIpcHandlers() so a past-due

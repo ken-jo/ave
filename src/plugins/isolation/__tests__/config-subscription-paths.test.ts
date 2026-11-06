@@ -1,7 +1,7 @@
 /** Check both subscription ledgers for every termination path; working callbacks alone cannot reveal leaks. */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
-import type { PluginHostApi, PluginLifecycleEvent } from "../../types.js";
+import type { PluginHostApi } from "../../types.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
@@ -29,12 +29,13 @@ import {
 import {
   decodeConfigChange,
   decodeHostEvent,
-  decodePluginLifecycle,
   encodeConfigChange,
   SECRET_REDACTED_SENTINEL,
 } from "../host-api-wire.js";
 import type { PluginManifest } from "../../types.js";
 import { settleMacrotask as flush } from "../../../__tests__/test-helpers.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const PLUGIN_ID = "com.example.subscriber";
 
@@ -51,8 +52,6 @@ const MANIFEST: PluginManifest = {
 function fakeHostApi() {
   const configListeners = new Map<string, Set<(value: unknown) => void>>();
   const eventListeners = new Map<string, Set<(data: unknown) => void>>();
-  const lifecycleListeners = new Set<(event: PluginLifecycleEvent) => void>();
-  const shutdownHandlers: Array<() => void | Promise<void>> = [];
   const written: Array<[string, unknown]> = [];
   let setRejection: Error | undefined;
 
@@ -76,15 +75,6 @@ function fakeHostApi() {
         add(configListeners, key, callback as (value: unknown) => void),
     } as PluginHostApi["config"],
     onEvent: (eventType, handler) => add(eventListeners, eventType, handler),
-    onPluginsChanged: (handler) => {
-      lifecycleListeners.add(handler);
-      return () => {
-        lifecycleListeners.delete(handler);
-      };
-    },
-    onShutdown: (handler) => {
-      shutdownHandlers.push(handler);
-    },
   };
 
   return {
@@ -95,18 +85,11 @@ function fakeHostApi() {
     },
     configListenerCount: (key: string) => configListeners.get(key)?.size ?? 0,
     eventListenerCount: (type: string) => eventListeners.get(type)?.size ?? 0,
-    lifecycleListenerCount: () => lifecycleListeners.size,
     emitConfigChange(key: string, value: unknown) {
       for (const listener of configListeners.get(key) ?? []) listener(value);
     },
     emitEvent(type: string, data: unknown) {
       for (const listener of eventListeners.get(type) ?? []) listener(data);
-    },
-    emitLifecycle(event: PluginLifecycleEvent) {
-      for (const listener of lifecycleListeners) listener(event);
-    },
-    async runShutdown() {
-      await Promise.all(shutdownHandlers.map((handler) => handler()));
     },
   };
 }
@@ -134,7 +117,6 @@ async function harness(
   options: {
     config?: Record<string, unknown>;
     isActive?: () => boolean;
-    appPreferences?: { keys: readonly string[]; values: Record<string, unknown> };
   } = {},
 ): Promise<Harness> {
   const api = fakeHostApi();
@@ -151,15 +133,11 @@ async function harness(
     { requests, notifications },
   );
 
-  const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => { child.deliver(notification); } },
     reportUnknownField: () => {},
-    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
       ...createConfigSubscriptionHostApiPaths(api.hostApi),
@@ -179,9 +157,7 @@ async function harness(
       pluginDataDir: "/plugins/subscriber/data",
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
-      installedPluginIds: [],
       config: options.config ?? { theme: "dark" },
-      ...(options.appPreferences ? { appPreferences: options.appPreferences } : {}),
     },
     channel,
     loadFactory,
@@ -298,16 +274,6 @@ const DISPOSABLE = [
     expected: [{ taskId: "t1" }],
     hostListenerCount: (api: ReturnType<typeof fakeHostApi>) =>
       api.eventListenerCount("task.created"),
-  },
-  {
-    path: "onPluginsChanged" as const,
-    subscribe: (hostApi: PluginHostApi, sink: unknown[]) =>
-      hostApi.onPluginsChanged((event) => sink.push(event)),
-    wireArgs: (subscriptionId: string) => [subscriptionId],
-    fire: (api: ReturnType<typeof fakeHostApi>) =>
-      api.emitLifecycle({ type: "installed", pluginId: "com.other", source: "marketplace" }),
-    expected: [{ type: "installed", pluginId: "com.other", source: "marketplace" }],
-    hostListenerCount: (api: ReturnType<typeof fakeHostApi>) => api.lifecycleListenerCount(),
   },
 ];
 
@@ -439,124 +405,11 @@ describe.each(DISPOSABLE)(
   },
 );
 
-describe("onShutdown is the subscription the HOST ends", () => {
-  it("declares a handler registration, no result, and a host-terminated lifetime", () => {
-    const contract = HOSTAPI_PATH_CONTRACTS.onShutdown;
-    expect(contract.arguments).toBe("handler-registration");
-    expect(contract.result).toBe("void");
-    expect(contract.lifetime).toBe("host-terminated");
-    expect(contract.errors).toEqual([]);
-  });
-
-  it("returns nothing to the plugin, because the plugin cannot end it", async () => {
-    const { hostApi } = await harness();
-    expect(hostApi.onShutdown(() => {})).toBeUndefined();
-    await flush();
-  });
-
-  it("replies with nothing on the wire, matching its void result", async () => {
-    const { call, child } = await harness();
-    const subscription = child.openSubscription("onShutdown", () => {});
-    await expect(call("onShutdown", [subscription.subscriptionId])).resolves
-      .toBeUndefined();
-  });
-
-  it("runs the plugin's handler and makes the host WAIT for it to finish", async () => {
-    const { hostApi, api, host, child } = await harness();
-    const order: string[] = [];
-    let release!: () => void;
-    const handlerFinished = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    hostApi.onShutdown(async () => {
-      order.push("plugin-started");
-      await handlerFinished;
-      order.push("plugin-finished");
-    });
-    await flush();
-    expect(host.openSubscriptionCount).toBe(1);
-
-    let hostReturned = false;
-    const shutdown = api.runShutdown().then(() => {
-      hostReturned = true;
-      order.push("host-returned");
-    });
-    await flush();
-    expect(order).toEqual(["plugin-started"]);
-    expect(hostReturned).toBe(false);
-
-    release();
-    await shutdown;
-    expect(order).toEqual(["plugin-started", "plugin-finished", "host-returned"]);
-    expect(host.openSubscriptionCount).toBe(0);
-    expect(child.openSubscriptionCount).toBe(0);
-  });
-
-  it("hands the host the plugin's failure when the handler throws, instead of hanging forever", async () => {
-    const { hostApi, api, host, child } = await harness();
-    hostApi.onShutdown(() => Promise.reject(new Error("teardown failed")));
-    await flush();
-    // Shutdown handler failures must cross as errors for the host shutdown log.
-    await expect(api.runShutdown()).rejects.toThrow("teardown failed");
-    await flush();
-    expect(host.openSubscriptionCount).toBe(0);
-    expect(child.openSubscriptionCount).toBe(0);
-  });
-
-  it("runs the handler once, however often the host fires shutdown", async () => {
-    const { hostApi, api } = await harness();
-    let runs = 0;
-    hostApi.onShutdown(() => {
-      runs += 1;
-    });
-    await flush();
-    await api.runShutdown();
-    await flush();
-    await expect(api.runShutdown()).resolves.toBeUndefined();
-    expect(runs).toBe(1);
-  });
-
-  it("refuses a shutdown that names no open registration, instead of answering it done", async () => {
-    const { child } = await harness();
-    // Host shutdown cannot report completion before the child handler settles.
-    await expect(child.runShutdownHandler("never-registered")).rejects.toThrow(
-      /no open onShutdown registration 'never-registered'/,
-    );
-  });
-
-  it("stops waiting when the child died before shutdown ran", async () => {
-    const { hostApi, api, host } = await harness();
-    hostApi.onShutdown(() => {});
-    await flush();
-    expect(host.childGone()).toBe(1);
-    // No delivery may target an already-removed registration.
-    await expect(api.runShutdown()).resolves.toBeUndefined();
-  });
-
-  it("releases the CHILD side when the host dies, without writing to a dead pipe", async () => {
-    const { hostApi, child, notifications } = await harness();
-    hostApi.onShutdown(() => {});
-    await flush();
-    const before = notifications.length;
-    expect(child.hostGone()).toBe(1);
-    expect(child.openSubscriptionCount).toBe(0);
-    expect(notifications).toHaveLength(before);
-  });
-
-  it("refuses a malformed registration off the wire", async () => {
-    const { call } = await harness();
-    for (const args of [[], [42]]) {
-      await expect(call("onShutdown", args)).rejects.toMatchObject({
-        code: "argument-marshalling-rejected",
-      });
-    }
-  });
-});
-
 describe("a subscribe the host refuses does not leave the plugin holding a live disposer", () => {
   it("drops the child registration and reports the refusal", async () => {
     // Asynchronous subscribe refusals need diagnostics because the synchronous caller already received its disposer.
-    const { hostApi, child, host, api, notifications } = await harness({
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { hostApi, child, host, api } = await harness({
       isActive: () => false,
     });
     const dispose = hostApi.onEvent("task.created", () => {});
@@ -566,30 +419,20 @@ describe("a subscribe the host refuses does not leave the plugin holding a live 
     expect(child.openSubscriptionCount).toBe(0);
     expect(host.openSubscriptionCount).toBe(0);
     expect(api.eventListenerCount("task.created")).toBe(0);
-    const reported = notifications.filter((n) => n.method === "notifications/ave/log");
-    expect(reported).toHaveLength(1);
-    expect(reported[0]).toMatchObject({
-      method: "notifications/ave/log",
-      params: { message: "hostApi.onEvent: the host refused the subscription" },
-    });
+    expect(stderr.mock.calls.map(([line]) => String(line)).join("")).toContain(
+      "hostApi.onEvent: the host refused the subscription",
+    );
   });
 
-  it("reports every member of the group, not just the one that was tested", async () => {
-    const { hostApi, child, notifications } = await harness({ isActive: () => false });
+  it("reports config subscription refusals on stderr", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const { hostApi, child } = await harness({ isActive: () => false });
     hostApi.config.onChange("theme", () => {});
-    hostApi.onPluginsChanged(() => {});
-    hostApi.onShutdown(() => {});
     await flush();
     expect(child.openSubscriptionCount).toBe(0);
-    expect(
-      notifications
-        .flatMap((n) => (n.method === "notifications/ave/log" ? [n.params.message] : []))
-        .sort(),
-    ).toEqual([
+    expect(stderr.mock.calls.map(([line]) => String(line)).join("")).toContain(
       "hostApi.config.onChange: the host refused the subscription",
-      "hostApi.onPluginsChanged: the host refused the subscription",
-      "hostApi.onShutdown: the host refused the subscription",
-    ]);
+    );
   });
 });
 
@@ -635,10 +478,6 @@ describe("the payload codecs both sides share", () => {
       );
     }
     expect(() => decodeHostEvent(null)).toThrow(/not an object/u);
-    expect(() => decodePluginLifecycle({})).toThrow(/no discriminant/u);
-    expect(() => decodePluginLifecycle({ event: { pluginId: "x" } })).toThrow(
-      /no discriminant/u,
-    );
   });
 
   it("carries an event payload of undefined without inventing one", () => {
@@ -655,8 +494,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
       "config.onChange",
       "config.set",
       "onEvent",
-      "onPluginsChanged",
-      "onShutdown",
     ]);
   });
 
@@ -677,8 +514,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
       "config.set",
       "config.onChange",
       "onEvent",
-      "onPluginsChanged",
-      "onShutdown",
     ] as const) {
       expect(HOSTAPI_DISPATCH_TABLE[path].status, path).toBe("unimplemented");
     }
@@ -693,20 +528,12 @@ describe("the group binds to one incarnation and claims exactly its own members"
         onChange: () => () => {},
       } as PluginHostApi["config"],
       onEvent: () => () => {},
-      onPluginsChanged: () => () => {},
-      onShutdown: (() => () => {}) as unknown as PluginHostApi["onShutdown"],
     } satisfies ConfigSubscriptionHostApi;
-    const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Capture host diagnostics so silently discarded failures cannot pass.
-      log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
-      shutdownChild: async (subscriptionId) => {
-        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
-      },
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
         ...createConfigSubscriptionHostApiPaths(drifted),
@@ -714,7 +541,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
     });
     for (const [path, args] of [
       ["config.set", ["theme", "light"]],
-      ["onShutdown", ["s1"]],
     ] as const) {
       const reply = await host.handle(hostApiRequest(path, args, "c1"));
       expect("error" in reply && reply.error.data.code, path).toBe("result-marshalling-rejected");
@@ -729,17 +555,11 @@ describe("the group binds to one incarnation and claims exactly its own members"
       ...HOSTAPI_DISPATCH_TABLE,
       ...createConfigSubscriptionHostApiPaths(first.hostApi),
     } as Record<HostApiPath, HostApiPathHandler>;
-    const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Capture host diagnostics so silently discarded failures cannot pass.
-      log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => true,
       notifications: { deliver: () => {} },
       reportUnknownField: () => {},
-      shutdownChild: async (subscriptionId) => {
-        throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
-      },
       table,
     });
     const reply = await host.handle(hostApiRequest("config.set", ["theme", "light"], "c1"));
@@ -867,107 +687,5 @@ describe("the secret sentinel has a wire form, and it is the only thing that rea
     expect(seen).toEqual([SECRET_REDACTED_SENTINEL]);
     // Secret updates must not place the sentinel into the cleartext config snapshot.
     expect(readBack).toEqual([undefined]);
-  });
-});
-
-describe("getAppPreference answers from a snapshot the host keeps current", () => {
-  it("reads the snapshot pushed at construction", async () => {
-    const { hostApi } = await harness({
-      appPreferences: {
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
-      },
-    });
-    expect(hostApi.getAppPreference!("webView.preferredFlow")).toBe("in-app");
-  });
-
-  it("moves when the host pushes a new snapshot", async () => {
-    // Preference pushes must keep synchronous child reads current.
-    const { child, hostApi } = await harness({
-      appPreferences: {
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
-      },
-    });
-
-    expect(
-      child.deliver({
-        jsonrpc: "2.0",
-        method: "notifications/ave/preferences/snapshot",
-        params: {
-          keys: ["webView.preferredFlow"],
-          values: { "webView.preferredFlow": "system-browser" },
-        },
-      }),
-    ).toBe("delivered");
-
-    expect(hostApi.getAppPreference!("webView.preferredFlow")).toBe("system-browser");
-  });
-
-  it("clears a preference the host no longer resolves", async () => {
-    // Represent unset preferences with keys absent from values so stale entries can be deleted.
-    const { child, hostApi } = await harness({
-      appPreferences: {
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
-      },
-    });
-
-    child.deliver({
-      jsonrpc: "2.0",
-      method: "notifications/ave/preferences/snapshot",
-      params: {
-        keys: ["webView.preferredFlow"],
-        values: {},
-      },
-    });
-
-    expect(hostApi.getAppPreference!("webView.preferredFlow")).toBeUndefined();
-  });
-
-  it("answers a key off the host allowlist as unset, exactly as the host reader does", async () => {
-    const { hostApi } = await harness({
-      appPreferences: {
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
-      },
-    });
-    expect(hostApi.getAppPreference!("llm.provider")).toBeUndefined();
-    expect((hostApi.getAppPreference as (key: unknown) => unknown)(42)).toBeUndefined();
-  });
-
-  it("answers a key inherited from Object.prototype as unset, not with the prototype member", async () => {
-    // Use own-key lookup so inherited prototype functions cannot masquerade as preferences.
-    const { hostApi } = await harness({
-      appPreferences: {
-        keys: ["webView.preferredFlow"],
-        values: { "webView.preferredFlow": "in-app" },
-      },
-    });
-    for (const inherited of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
-      expect(hostApi.getAppPreference!(inherited)).toBeUndefined();
-    }
-  });
-
-  it("throws rather than answering when the host published no snapshot at all", async () => {
-    // An absent optional preference reader differs from an unset preference; preserve the refusal.
-    const { hostApi } = await harness();
-    expect(() => hostApi.getAppPreference!("webView.preferredFlow")).toThrow(
-      /published no preference snapshot/u,
-    );
-  });
-
-  it("reports a push to a child that was never seeded, instead of dropping it silently", async () => {
-    const { child } = await harness();
-    expect(
-      child.deliver({
-        jsonrpc: "2.0",
-        method: "notifications/ave/preferences/snapshot",
-        params: {
-          keys: ["webView.preferredFlow"],
-          values: { "webView.preferredFlow": "in-app" },
-        },
-      }),
-    ).toBe("unknown-subscription");
   });
 });

@@ -91,6 +91,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "1.2.3",
           description: "fixture",
           entry: "dist/hostPlugin.js",
+          tools: [],
         }),
         null,
         2,
@@ -194,6 +195,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         name: "Test Plugin",
         description: "fixture",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
 
@@ -309,6 +311,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "broken staged candidate",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
     const activatePreparedArtifact = vi.fn(async (prepared: {
@@ -428,6 +431,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "fixture v2",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
     const store = (service as unknown as {
@@ -469,6 +473,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "fixture v2",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
 
@@ -528,6 +533,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "2.0.0",
           description: "fixture v2",
           entry: "dist/hostPlugin.js",
+          tools: [],
         })),
         "utf-8");
 
@@ -554,6 +560,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "2.0.0",
           description: "fixture v2",
           entry: "dist/hostPlugin.js",
+          tools: [],
         })),
         "utf-8");
       const store = (service as unknown as {
@@ -589,6 +596,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "2.0.0",
           description: "fixture v2",
           entry: "dist/hostPlugin.js",
+          tools: [],
         })),
         "utf-8");
       swapFault.afterRenameInto = {
@@ -624,6 +632,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "2.0.0",
           description: "fixture v2",
           entry: "dist/hostPlugin.js",
+          tools: [],
         })),
         "utf-8");
       swapFault.afterRenameInto = {
@@ -659,6 +668,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "2.0.0",
           description: "fixture v2",
           entry: "dist/hostPlugin.js",
+          tools: [],
         })),
         "utf-8");
       swapFault.failRenameInto = installDir;
@@ -688,6 +698,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "fixture v2",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
     const store = (service as unknown as {
@@ -721,6 +732,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "fixture v2",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
     afterEach(() => {
@@ -858,6 +870,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "committed candidate",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
     const publicationCause = new Error("local projection publish failed");
@@ -912,6 +925,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "fixture v2",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })),
       "utf-8");
 
@@ -973,6 +987,7 @@ describe("PluginMarketplaceService.installLocal", () => {
         version: "2.0.0",
         description: "verified retry",
         entry: "dist/hostPlugin.js",
+        tools: [],
       })));
 
     await expect(service.installLocal(sourceDir)).resolves.toEqual({ pluginId: "test-plugin", installed: true });
@@ -987,10 +1002,10 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors manifest.pluginAccess into registry approvedPluginAccess (parity with marketplace install)", async () => {
-    // Sideloaded cross-plugin event subscriptions require an approvedPluginAccess grant.
+    // Sideloaded cross-plugin calls retain the same target allowlist as marketplace installs.
     const accessSpec = {
       plugins: [
-        { pluginId: "samplemail", events: ["email.new", "calendar.event.upcoming"] },
+        { pluginId: "samplemail" },
       ],
     };
     await writeFile(
@@ -1002,6 +1017,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "1.2.3",
           description: "fixture",
           entry: "dist/hostPlugin.js",
+          tools: [],
           pluginAccess: accessSpec,
         }),
         null,
@@ -1019,9 +1035,9 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors approvedPluginAccess on UPDATE (existing entry path) — not just on insert", async () => {
-    // Reinstall must replace approvedPluginAccess so new cross-plugin subscriptions are authorized.
+    // Reinstall replaces the approved target allowlist rather than retaining the old grant.
     const accessSpec = {
-      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail" }],
     };
     await writeFile(
       registryPath,
@@ -1052,6 +1068,7 @@ describe("PluginMarketplaceService.installLocal", () => {
           version: "1.2.3",
           description: "fixture",
           entry: "dist/hostPlugin.js",
+          tools: [],
           pluginAccess: accessSpec,
         }),
         null,
@@ -1068,6 +1085,26 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(entry.installSource).toBe("local-dev");
     expect(entry.bundleRefs).toEqual(["sampleassistant"]);
     expect(entry.pendingUpdate).toBeUndefined();
+  });
+
+  it.each([
+    { operation: "insert", field: "events", access: { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] } },
+    { operation: "update", field: "events", access: { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] } },
+    { operation: "insert", field: "agentApprovalScopes", access: { plugins: [{ pluginId: "samplemail" }], agentApprovalScopes: ["email.send"] } },
+    { operation: "update", field: "agentApprovalScopes", access: { plugins: [{ pluginId: "samplemail" }], agentApprovalScopes: ["email.send"] } },
+  ])("rejects $field before $operation activation and preserves the registry", async ({ operation, field, access }) => {
+    const service = makeService();
+    if (operation === "update") await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+    const registryBefore = await readFile(registryPath, "utf-8");
+    await writeFile(join(sourceDir, "plugin.json"), JSON.stringify(agentPluginsDocument({
+      id: "test-plugin", name: "Test Plugin", version: "1.2.3", description: "fixture",
+      entry: "dist/hostPlugin.js", tools: [], pluginAccess: access,
+    })), "utf-8");
+    const activatePreparedArtifact = vi.fn(preparedActivationOptionsForTest.activatePreparedArtifact);
+    await expect(service.installLocal(sourceDir, { activatePreparedArtifact }))
+      .rejects.toThrow(`unknown property: '${field}'`);
+    expect(activatePreparedArtifact).not.toHaveBeenCalled();
+    expect(await readFile(registryPath, "utf-8")).toBe(registryBefore);
   });
 
   it.each([

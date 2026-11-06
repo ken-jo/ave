@@ -216,15 +216,12 @@ class Plugin:
             "ave/host/storage/write", {"relPath": STATE_KEY, "data": {"encoding": "base64", "data": stored}}
         )
         read = await self.host_request("ave/host/storage/read", {"relPath": STATE_KEY})
-        self.notify_log("python-smoke started", {"read": read})
+        log("python-smoke started " + json.dumps({"read": read}))
         return None
 
     async def stop(self, _params):
-        self.notify_log("python-smoke stopping", {"ruMaxrss": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss})
+        log("python-smoke stopping " + json.dumps({"ruMaxrss": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}))
         return None
-
-    def notify_log(self, message, meta):
-        write_frame({"jsonrpc": "2.0", "method": "notifications/ave/log", "params": {"message": message, "meta": meta}})
 
     # -- the MCP half: everything else, through the stock kernel --------------
 

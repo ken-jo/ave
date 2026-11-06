@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_TIMER_DELAY_MS,
+  nativePluginChildStopBudgetMs,
   resolveShellTimeoutMs,
   TOOL_TIMEOUT_POLICY,
   normalizeShutdownCleanupTimeoutMs,
@@ -14,6 +15,15 @@ import {
 } from "../subagent-policy.js";
 
 describe("TOOL_TIMEOUT_POLICY — single source of truth invariants", () => {
+  it("budgets native child stop from the remaining lifecycle phases", () => {
+    expect("pluginShutdownHandlerMs" in TOOL_TIMEOUT_POLICY).toBe(false);
+    expect(nativePluginChildStopBudgetMs()).toBe(
+      TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs
+        + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
+        + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs,
+    );
+  });
+
   it("reserves executor cleanup headroom for an oversized shell timeout", () => {
     expect(resolveShellTimeoutMs(3_000_000)).toBe(MAX_TIMER_DELAY_MS - TOOL_TIMEOUT_POLICY.shellCeilingGraceMs);
     expect(resolveShellTimeoutMs(120)).toBe(120_000);

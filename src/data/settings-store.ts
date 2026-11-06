@@ -646,7 +646,7 @@ export function migrateAppearanceV1ToV2(
 }
 
 /** §B1; External URL viewer policy. `preferredFlow` decides whether external URLs (OAuth IdP, calendar webLinks, email open/compose URLs, etc.) are surfaced inside a host BrowserWindow ("in-app") or routed to the OS default browser ("system-browser"). SoT for the host. Plugins consume this via
- * `hostApi.getAppPreference(...)` and/or `hostApi.openExternalUrl(...)`; see plan `.omc/plans/2026-05-04-external-url-viewer-policy.md`. Default `"in-app"` keeps plugin-owned auth and link flows inside Ave unless the plugin asks the host to open the system browser. Future enum extension reserved (e.g. `"ask-each-time"`). */
+ * `hostApi.openExternalUrl(...)`; see plan `.omc/plans/2026-05-04-external-url-viewer-policy.md`. Default `"in-app"` keeps plugin-owned auth and link flows inside Ave unless the plugin asks the host to open the system browser. Future enum extension reserved (e.g. `"ask-each-time"`). */
 export type WebViewPreferredFlow = "in-app" | "system-browser";
 
 export interface WebViewSettings {

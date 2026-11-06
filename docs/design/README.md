@@ -21,14 +21,14 @@ contracts. The visual design system for the whole app is
 - [Plugin HostApi as a versioned protocol](./plugin-hostapi-protocol.md): the
   in-process HostApi turned into a published JSON-RPC protocol (`ave/host/*`
   beside MCP) so every code extension runs in its own confined process. The app
-  serves host protocol `"3"`. Read by tests and scripts; source comments cite its
+  serves unreleased host protocol `"5"`. Read by tests and scripts; source comments cite its
   sections.
 - [Multi-source git marketplace](./multi-source-git-marketplace.md): source
   registry and sync, the `marketplace.json` and `ave-package.json` schemas,
   version choice, the artifact ladder, direct install, IPC, error codes, and UI
   states. Implemented; CI and source cite §18.4.1.
 - [Plugin alerts](./plugin-alerts.md): the host delivery contract for extension
-  alerts (`alerts.kinds`, `raiseAlert` / `withdrawAlert`, the host pipeline, and
+  alerts (`alerts.kinds`, `raiseAlert`, the host pipeline, and
   the rollout plan). Proposed.
 - [Model capability catalog](./model-capability-catalog.md): one typed record of
   each model's limits, modalities, reasoning controls, and prices, generated with

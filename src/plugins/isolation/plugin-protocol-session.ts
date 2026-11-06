@@ -4,11 +4,7 @@ import { createLogger } from "../../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { RAW_RESULT_META } from "../../mcp/protocol-constants.js";
 import { errorMessage } from "../../shared/error-message.js";
-// Read the declared preference allowlist directly so security policy has one source.
-import { HOST_PUBLIC_PREFERENCE_KEYS } from "../../boot/steps/plugin-runtime/app-preference.js";
-import { subscribeAppPreferenceChange } from "../config-change-bus.js";
 import type {
-  PluginHostApi,
   PluginManifest,
   PluginRuntimeContext,
   PluginToolHandler,
@@ -36,10 +32,7 @@ import type { BoundHostApiDispatchTable, DispatchableHostApi } from "./bound-hos
 
 const log = createLogger("plugin-protocol-session");
 
-/** Read synchronous host members through snapshots; an absent optional preference reader must stay distinguishable. */
-type SessionHostApi = DispatchableHostApi &
-  Pick<PluginHostApi, "getInstalledPluginIds"> &
-  Pick<PluginHostApi, "getAppPreference">;
+type SessionHostApi = DispatchableHostApi;
 
 export interface PluginProtocolSessionSpec {
   readonly pluginId: string;
@@ -192,14 +185,6 @@ export async function openPluginProtocolSession(
     pluginId,
     // Wire liveness mirrors the authoritative HostApi guard; it does not create a second authority.
     isActive: () => live,
-    // Forward child diagnostics with the same searchable message shape as host plugin logs.
-    log: (message, meta) => {
-      if (meta !== undefined) {
-        log.info({ pluginId, meta }, message);
-        return;
-      }
-      log.info({ pluginId }, message);
-    },
     // Report undeclared params once per method and field to reveal protocol skew.
     reportUnknownField: (report) => {
       try {
@@ -291,15 +276,6 @@ export async function openPluginProtocolSession(
   transport.start();
 
   try {
-    // Push installed-plugin snapshots even if the plugin never subscribes to changes.
-    hostWatchers.push(hostApi.onPluginsChanged(() => {
-      transport.sendToChild({
-        jsonrpc: "2.0",
-        method: HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
-        params: { pluginIds: hostApi.getInstalledPluginIds() },
-      });
-    }));
-
     /** Push config by rereading the authoritative host member rather than reconstructing state from events. */
     const configKeys = resolvableConfigKeys(spec.manifest, context.config);
     hostWatchers.push(hostApi.config.onChange("*", () => {
@@ -315,37 +291,6 @@ export async function openPluginProtocolSession(
         params: { keys: configKeys, values },
       });
     }));
-    /** Read preference snapshots through the actual optional host reader so absence and unset stay distinct. */
-    const readAppPreferences = ():
-      | { keys: readonly string[]; values: Record<string, unknown> }
-      | undefined => {
-      const read = hostApi.getAppPreference;
-      if (typeof read !== "function") return undefined;
-      const values: Record<string, unknown> = {};
-      for (const key of HOST_PUBLIC_PREFERENCE_KEYS) {
-        const value = read.call(hostApi, key);
-        // Omit unset values; JSON cannot carry undefined.
-        if (value !== undefined) values[key] = value;
-      }
-      return { keys: HOST_PUBLIC_PREFERENCE_KEYS, values };
-    };
-
-    /** Use the same current-value push for watchers and postconstruct refresh. */
-    const pushPreferenceSnapshot = (): void => {
-      const snapshot = readAppPreferences();
-      // Do not push to a child whose host has no preference reader.
-      if (!snapshot) return;
-      transport.sendToChild({
-        jsonrpc: "2.0",
-        method: HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
-        params: { keys: snapshot.keys, values: snapshot.values },
-      });
-    };
-
-    /** Preference events only announce changed allowlisted values; reread and repush the snapshot. */
-    hostWatchers.push(subscribeAppPreferenceChange(pushPreferenceSnapshot));
-
-    const constructionPreferences = readAppPreferences();
     const childContext: PluginChildContext = {
       pluginId,
       pluginRoot: context.pluginRoot,
@@ -354,10 +299,7 @@ export async function openPluginProtocolSession(
       // Carry paths from the host-built context rather than rereading a potentially different spawn-time value.
       userHome: context.userHome,
       aveHome: context.aveHome,
-      installedPluginIds: hostApi.getInstalledPluginIds(),
       ...(context.config !== undefined ? { config: context.config } : {}),
-      // Omit the snapshot entirely when no reader exists so unavailable differs from unset.
-      ...(constructionPreferences ? { appPreferences: constructionPreferences } : {}),
     };
     const capabilities = hostProtocolCapabilities(spec.table);
     const constructParams: PluginConstructParams = {
@@ -375,9 +317,6 @@ export async function openPluginProtocolSession(
       TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
     )) as PluginConstructResult;
     requireServedCapabilities(pluginId, construction, capabilities);
-
-    /** Repush after construct to close the window where notifications arrived before the child runtime existed. */
-    pushPreferenceSnapshot();
 
     const channel: PluginProtocolChannel = {
       requestMcp: (method, params, timeoutMs) => transport.requestMcp(method, params, timeoutMs),
@@ -417,8 +356,21 @@ export async function openPluginProtocolSession(
           stopHostWatchers();
           await channel.runStopHook();
         } finally {
-          // Run the stop hook before teardown so its final host writes remain authorized.
-          await teardown(`[out-of-process-plugin] ${pluginId}: stopped`);
+          // EOF gives the child time to release its own resources before signal-based termination.
+          channel.closeInput();
+          let graceTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              channel.exited,
+              new Promise<void>((resolve) => {
+                graceTimer = setTimeout(resolve, TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
+              }),
+            ]);
+          } finally {
+            clearTimeout(graceTimer);
+            // Retire authority only after the cleanup grace has ended.
+            await teardown(`[out-of-process-plugin] ${pluginId}: stopped`);
+          }
         }
       },
     };

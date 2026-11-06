@@ -1,18 +1,18 @@
 {
   "request": {
-    "id": 21,
+    "id": 19,
     "jsonrpc": "2.0",
     "method": "ave/host/onEvent",
     "params": {
       "_meta": {
         "ave/invocation": "<uuid-1>"
       },
-      "eventType": "golden.ping",
+      "eventType": "host.theme.changed",
       "handler": "<uuid-2>"
     }
   },
   "response": {
-    "id": 21,
+    "id": 19,
     "jsonrpc": "2.0",
     "result": {
       "handleId": "<uuid-2>"

@@ -173,17 +173,6 @@ function registerHandlersWithPlugin(webContentsId: number): {
   return { deps, pluginRuntime };
 }
 
-function emitDenialRows(deps: IpcDeps): Array<{
-  sessionId: string;
-  type: string;
-  input: string;
-}> {
-  const log = deps.auditLogger.log as unknown as ReturnType<typeof vi.fn>;
-  return log.mock.calls
-    .map(([entry]) => entry as { sessionId: string; type: string; input: string })
-    .filter((entry) => String(entry?.input ?? "").includes("plugin_emit_capability_denied"));
-}
-
 describe("plugin theme replay cache", () => {
   beforeEach(() => {
     __resetLastThemePayloadForTests();
@@ -777,61 +766,20 @@ describe("plugin theme IPC handlers", () => {
       theme: "dark",
     });
   });
-  it("audits a capability-denied emit through the production plugin emit IPC handler", () => {
-    // The real emit-event handler receives a manifest with no declared emittedEvents.
-    const { deps, pluginRuntime } = registerHandlersWithPlugin(1709);
-    const emitEvent = getRegisteredHandler("ave:plugin:emit-event");
-
-    expect(emitEvent(pluginEvent(1709), "meeting.started", { id: "m1" })).toEqual({
-      ok: false,
-      error: "missing-capability:meeting-recorder",
-    });
-
-    const denials = emitDenialRows(deps);
-    expect(denials).toHaveLength(1);
-    expect(denials[0].sessionId).toBe("ipc-bridge");
-    expect(denials[0].type).toBe("error");
-    expect(denials[0].input).toBe(
-      "[plugin:meeting] plugin_emit_capability_denied eventType=meeting.started"
-      + " required=meeting-recorder declaredEmittedEvents=",
-    );
-    expect(pluginRuntime.assertPluginEventEmitAccess).not.toHaveBeenCalled();
+  it("delivers an owned event to its registered webview without manifest grants", () => {
+    registerHandlersWithPlugin(1710);
+    const emit = getRegisteredHandler("ave:plugin:emit-event");
+    sendSpy.mockClear();
+    expect(emit(pluginEvent(1710), "meeting.started", { id: "m1" })).toEqual({ ok: true });
+    expect(sendSpy).toHaveBeenCalledWith("ave:plugin:event", "meeting.started", { id: "m1" });
   });
 
-  it("does not audit an emit the manifest declares", () => {
-    const { deps, pluginRuntime } = registerHandlersWithPlugin(1710);
-    pluginRuntime.getPluginManifest.mockReturnValue({
-      id: "meeting",
-      emittedEvents: ["meeting.started"],
+  it("rejects a foreign plugin event target", () => {
+    registerHandlersWithPlugin(1709);
+    const emit = getRegisteredHandler("ave:plugin:emit-event");
+    expect(emit(pluginEvent(1709), "calendar.event.added", { id: "m1" })).toEqual({
+      ok: false, error: "event-target-forbidden",
     });
-    const emitEvent = getRegisteredHandler("ave:plugin:emit-event");
-
-    expect(emitEvent(pluginEvent(1710), "meeting.started", { id: "m1" })).toEqual({
-      ok: true,
-    });
-    expect(pluginRuntime.assertPluginEventEmitAccess).toHaveBeenCalledWith(
-      "meeting",
-      "meeting.started",
-    );
-    expect(emitDenialRows(deps)).toEqual([]);
-  });
-
-  it("audits a host-only-namespace emit denial without a capability label", () => {
-    const { deps } = registerHandlersWithPlugin(1711);
-    const emitEvent = getRegisteredHandler("ave:plugin:emit-event");
-
-    expect(emitEvent(pluginEvent(1711), "plugin.installed", { id: "spoof" })).toEqual({
-      ok: false,
-      error: "host-only-namespace:plugin",
-    });
-
-    const denials = emitDenialRows(deps);
-    expect(denials).toHaveLength(1);
-    expect(denials[0].sessionId).toBe("ipc-bridge");
-    expect(denials[0].input).toBe(
-      "[plugin:meeting] plugin_emit_capability_denied eventType=plugin.installed"
-      + " required=undefined declaredEmittedEvents=",
-    );
   });
 
   it("rejects host namespace emits through the production plugin emit IPC handler", () => {
@@ -849,7 +797,7 @@ describe("plugin theme IPC handlers", () => {
           shell: "dark",
           tokens: { "--ave-bg": "#0d0d12" },
         }),
-      ).toEqual({ ok: false, error: "host-only-namespace:host" });
+      ).toEqual({ ok: false, error: "event-target-forbidden" });
     } finally {
       unsubscribe();
     }

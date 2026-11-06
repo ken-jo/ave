@@ -36,15 +36,6 @@ describe("dispatcher token buckets", () => {
     budgets.end();
   });
 
-  it("shares the log budget across context.log and logEvent, and keeps emitEvent separate", () => {
-    const budgets = new HostApiBudgets("sample", () => {}, () => 0);
-    for (let index = 0; index < 499; index += 1) expect(budgets.take("notifications/ave/log")).toBe(0);
-    expect(budgets.take("logEvent")).toBe(0);
-    expect(budgets.take("notifications/ave/log")).toBe(10);
-    expect(budgets.take("emitEvent")).toBe(0);
-    budgets.end();
-  });
-
   it("keeps the configured indexer batch cadence inside both lease request buckets", () => {
     let now = 0;
     const budgets = new HostApiBudgets("sample", () => {}, () => now);

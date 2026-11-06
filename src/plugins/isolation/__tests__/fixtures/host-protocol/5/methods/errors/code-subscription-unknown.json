@@ -7,7 +7,7 @@
       "_meta": {
         "ave/invocation": "<uuid-1>"
       },
-      "eventType": "golden.ping",
+      "eventType": "host.theme.changed",
       "handler": "<uuid-2>"
     }
   },

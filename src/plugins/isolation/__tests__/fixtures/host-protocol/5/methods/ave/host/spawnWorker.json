@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 27,
+    "id": 22,
     "jsonrpc": "2.0",
     "method": "ave/host/spawnWorker",
     "params": {
@@ -18,7 +18,7 @@
     }
   },
   "response": {
-    "id": 27,
+    "id": 22,
     "jsonrpc": "2.0",
     "result": {
       "control": "stdio-control-v1",

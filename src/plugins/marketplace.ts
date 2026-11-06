@@ -63,6 +63,7 @@ import {
 } from "./plugin-removal-transaction.js";
 import type { PluginInstallReceipt } from "./plugin-install-receipt.js";
 import { flattenAgentPluginsManifest } from "./public-contract.js";
+import { buildManifestValidator, parsePluginJson } from "./runtime/manifest-validation.js";
 import {
   assertProcessEntryAdmitted,
   hasProcessEntry,
@@ -633,6 +634,7 @@ export class PluginMarketplaceService {
         assertManifest: async (manifestFile) => {
           const document = JSON.parse(await readFile(manifestFile, "utf-8")) as unknown;
           assertGitInstallManifest(document, expectedPluginOf(plan));
+          await parsePluginJson(manifestFile, await buildManifestValidator());
           if (hasProcessEntry(document)) assertStagedArtifactPinned(staged);
         },
         prepareReceipt: async (pluginRoot, files, verifiedPayload) => {
@@ -1127,6 +1129,11 @@ export class PluginMarketplaceService {
         });
         await rejectSideloadSymlinks(stagingDir);
 
+        const validatedManifest = await parsePluginJson(
+          resolve(stagingDir, "plugin.json"),
+          await buildManifestValidator(),
+        );
+
         // Exclude the same top-level runtime directories the receipt verifier excludes.
         const receiptFiles = await listFilesRecursive(stagingDir, PLUGIN_RUNTIME_DIR_NAMES);
         const localReceiptRaw = await this.prepareInstallReceipt(pluginId, stagingDir, {
@@ -1135,7 +1142,7 @@ export class PluginMarketplaceService {
         });
         const registryManifestPath = posix.join(pluginId, "plugin.json");
         const manifestSha256 = shaOfManifest(manifestDocument);
-        const approvedPluginAccess = manifest.pluginAccess;
+        const approvedPluginAccess = validatedManifest.pluginAccess;
 
         const durableCommit = (): Promise<string> => {
           if (commitAttempt) return commitAttempt;

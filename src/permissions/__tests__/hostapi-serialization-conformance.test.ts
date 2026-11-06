@@ -191,16 +191,7 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "eventType: string, handler: (data) => void — a function",
     returns: "() => void — an unsubscribe disposer, a function",
   },
-  getInstalledPluginIds: {
-    jsonRepresentable: true,
-    args: "()",
-    returns: "string[]",
-  },
-  onPluginsChanged: {
-    jsonRepresentable: false,
-    args: "handler: (event: PluginLifecycleEvent) => void — a function",
-    returns: "() => void — an unsubscribe disposer, a function",
-  },
+
   getSecret: {
     jsonRepresentable: true,
     args: "key: string",
@@ -221,17 +212,7 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "input: string | URL, init?: RequestInit — URL, Headers, AbortSignal, and a ReadableStream body are not JSON values",
     returns: "Promise<Response> — a class instance with a streaming body",
   },
-  logEvent: {
-    jsonRepresentable: true,
-    contractualPayload: true,
-    args: "level: 'info' | 'warn' | 'error', message: string, data?: unknown",
-    returns: "void",
-  },
-  onShutdown: {
-    jsonRepresentable: false,
-    args: "handler: () => void | Promise<void> — a function",
-    returns: "void",
-  },
+
   spawnWorker: {
     jsonRepresentable: false,
     args: "spec: PluginWorkerSpec (plain data)",
@@ -290,14 +271,9 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     jsonRepresentable: false,
     args: "request: AttachFloatingPanelRequest (plain data)",
     returns:
-      "Promise<FloatingPanelHandle> — live slot control: resize / detach / onDetached are functions",
+      "Promise<FloatingPanelHandle> — live slot control: detach / onDetached are functions",
   },
-  // Names an EXISTING slot and answers with a number, so it crosses whole. It exists as its own member precisely because the handle method above cannot: the wire carries calls by path, and `resize` needs an answer back.
-  resizeFloatingPanel: {
-    jsonRepresentable: true,
-    args: "panelId: string, height: number",
-    returns: "Promise<number> — the height actually applied, after clamping",
-  },
+
   // A drive letter in, a UNC string or `null` out. `null` is a real answer — the drive is a local disk — so it must survive the wire distinctly from a rejection, which is what a lookup that could not run produces.
   resolveMappedDriveRoot: {
     jsonRepresentable: true,
@@ -319,12 +295,7 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "host: string, opts?: { timeoutMs?: number }",
     returns: "Promise<boolean>",
   },
-  getAppPreference: {
-    jsonRepresentable: true,
-    contractualPayload: true,
-    args: "key: string",
-    returns: "T | undefined — an allow-listed host preference value",
-  },
+
   triggerConversation: {
     jsonRepresentable: true,
     contractualPayload: true,
@@ -336,40 +307,14 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "source: string",
     returns: "Promise<boolean>",
   },
-  // Text and a key across, a discriminated envelope back. Nothing in either direction is a handle, so nothing has to survive the boundary but JSON.
-  proposeWork: {
-    jsonRepresentable: true,
-    args: "input: WorkProposalInput",
-    returns: "Promise<WorkProposalResult>",
-  },
-  withdrawWorkProposal: {
-    jsonRepresentable: true,
-    args: "kind: string, key: string",
-    returns: "Promise<boolean>",
-  },
+
   // A kind id, a key and typed slot values across; a discriminated envelope back. The host renders the card, so nothing crossing is a handle.
   raiseAlert: {
     jsonRepresentable: true,
     args: "input: AlertInput",
     returns: "Promise<AlertResult>",
   },
-  withdrawAlert: {
-    jsonRepresentable: true,
-    args: "kind: string, key: string",
-    returns: "Promise<boolean>",
-  },
-  // agentApproval.*
-  "agentApproval.request": {
-    jsonRepresentable: true,
-    contractualPayload: true,
-    args: "input: { toolName: string, args: unknown, reason: string, scope: string }",
-    returns: "Promise<ApprovalChoice> — a string union",
-  },
-  "agentApproval.respond": {
-    jsonRepresentable: true,
-    args: "requestId: string, choice: ApprovalChoice, nonce?: string, hmac?: string",
-    returns: "Promise<void>",
-  },
+
 };
 
 // The members that CANNOT cross as JSON and therefore owe the boundary an explicit representation. Pinned literally, not derived, so that flipping a member's verdict in the table above is a deliberate two-place edit reviewed as a contract change — never a silent one. `docs/blueprints/plugin-process-isolation.md` carry the decided representation for each of these.
@@ -378,8 +323,7 @@ const REQUIRES_DECIDED_REPRESENTATION: readonly string[] = [
   "config.onChange",
   "hostFetch",
   "onEvent",
-  "onPluginsChanged",
-  "onShutdown",
+
   "resolveApiKey",
   "spawnWorker",
   "startAudioCapture",
@@ -506,8 +450,7 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
       "ave-hostapi-marshalling-",
     );
     const disposers = [
-      hostApi.onEvent("surface-probe:event", () => {}),
-      hostApi.onPluginsChanged(() => {}),
+      hostApi.onEvent("host.theme.changed", () => {}),
       hostApi.config.onChange("surface-probe-key", () => {}),
     ];
     for (const disposer of disposers) {
@@ -550,24 +493,10 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
       ["storage.exists", await hostApi.storage.exists("surface-probe.json")],
       ["storage.readJson", await hostApi.storage.readJson("surface-probe.json")],
       ["storage.readText", await hostApi.storage.readText("surface-probe.json")],
-      ["getInstalledPluginIds", hostApi.getInstalledPluginIds()],
       ["getSecret", await hostApi.getSecret("surface-probe-secret")],
       ["config.get", hostApi.config.get("surface-probe-key")],
       ["hasRoutineBySource", await hostApi.hasRoutineBySource("surface-probe")],
-      [
-        "proposeWork",
-        await hostApi.proposeWork({
-          kind: "surface-probe",
-          key: "surface-probe",
-          title: "surface probe",
-          summary: "surface probe",
-          state: "surface probe",
-          taskBrief: "surface probe",
-        }),
-      ],
-      ["withdrawWorkProposal", await hostApi.withdrawWorkProposal("surface-probe", "surface-probe")],
       ["raiseAlert", await hostApi.raiseAlert({ kind: "surface-probe", key: "surface-probe" })],
-      ["withdrawAlert", await hostApi.withdrawAlert("surface-probe", "surface-probe")],
     ];
 
     for (const [path, value] of observed) {

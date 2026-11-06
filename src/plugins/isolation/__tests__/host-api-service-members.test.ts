@@ -3,7 +3,7 @@ vi.mock("../../../shared/windows-configuration-handles.js", async original => (a
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PassThrough, Writable } from "node:stream";
 import { registerWorkerOutputFlow, type WorkerOutputFlow } from "../../../permissions/worker-flow.js";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
@@ -48,6 +48,8 @@ import {
   directHostApiChannel,
   pathOfRequest,
 } from "../../../__tests__/support/host-protocol-wire.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 const PLUGIN_ID = "com.example.service";
 const PLUGIN_ROOT = "/plugins/service";
@@ -112,7 +114,7 @@ interface ServiceHarness {
   readonly pushed: HostApiNotification[];
   readonly replies: HostApiReply[];
   /** Assert host-received logs separately from sent notifications; sending alone cannot prove delivery. */
-  readonly hostLogs: { message: string; meta?: unknown }[];
+  readonly diagnostics: string[];
   readonly pluginContext: PluginRuntimeContext;
   readonly killChild: () => number;
 }
@@ -148,14 +150,12 @@ async function createServiceHarness(
   );
 
   const api = hostApi as PluginHostApi;
-  const hostLogs: { message: string; meta?: unknown }[] = [];
+  const diagnostics: string[] = [];
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk) => { diagnostics.push(String(chunk)); return true; });
   host = new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     reportUnknownField: () => {},
-    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     notifications: {
       deliver: (notification) => {
         pushed.push(notification);
@@ -182,7 +182,6 @@ async function createServiceHarness(
       pluginDataDir: PLUGIN_DATA_DIR,
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
-      installedPluginIds: [],
     },
     channel,
     loadFactory: async () => (runtimeContext) => {
@@ -201,7 +200,7 @@ async function createServiceHarness(
     notifications,
     pushed,
     replies,
-    hostLogs,
+    diagnostics,
     pluginContext,
     killChild: () => host.childGone(),
   };
@@ -217,11 +216,10 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 /** Require exactly one failure diagnostic; duplicate and missing reports both mislead operators. */
 function detachedLog(harness: ServiceHarness): { message: string; meta?: unknown } {
-  const logs = harness.notifications.flatMap((notification) =>
-    notification.method === "notifications/ave/log" ? [notification.params] : [],
-  );
-  expect(logs).toHaveLength(1);
-  return logs[0];
+  expect(harness.diagnostics).toHaveLength(1);
+  const line = harness.diagnostics[0].trimEnd();
+  const metaAt = line.indexOf(" {");
+  return metaAt < 0 ? { message: line } : { message: line.slice(0, metaAt), meta: JSON.parse(line.slice(metaAt + 1)) as unknown };
 }
 
 describe("this group implements exactly the members left after the other three", () => {
@@ -888,57 +886,6 @@ describe("resolveApiKey crosses as an opaque lease", () => {
     });
     expect(hostSignal).toBeInstanceOf(AbortSignal);
     expect(harness.host.openSubscriptionCount).toBe(0);
-  });
-});
-
-describe("context.log reaches the host and is not merely sent", () => {
-  it("delivers the plugin's own log line, meta and all, to the host sink", async () => {
-    const harness = await createServiceHarness();
-
-    harness.pluginContext.log("worker exited before becoming healthy", { code: 1 });
-    harness.pluginContext.log("no meta on this one");
-    await settle();
-
-    expect(harness.hostLogs).toEqual([
-      { message: "worker exited before becoming healthy", meta: { code: 1 } },
-      { message: "no meta on this one", meta: undefined },
-    ]);
-  });
-
-  it("is not satisfied by the child having sent the notification", async () => {
-    // Assert received host logs as well as child-sent notifications.
-    const harness = await createServiceHarness();
-
-    harness.pluginContext.log("sent and received are different claims");
-    await settle();
-
-    const sent = harness.notifications.filter((n) => n.method === "notifications/ave/log");
-    expect(sent).toHaveLength(1);
-    expect(harness.hostLogs).toHaveLength(sent.length);
-  });
-
-  it("carries a worker's forwarded stderr all the way to the host", async () => {
-    // Drive worker stderr through context.log to verify every forwarding hop reaches the host.
-    const worker = makeFakeWorker();
-    const harness = await createServiceHarness({
-      spawnWorker: async () => worker as unknown as SpawnedPluginWorker,
-    });
-
-    const handle = outputOnly(await harness.pluginContext.hostApi.spawnWorker!({
-      workerId: "control",
-      control: "output-only-v1",
-      command: "/usr/bin/true",
-      args: [],
-    }));
-    handle.onStderr((chunk) => harness.pluginContext.log(`[stderr] ${chunk.trim()}`));
-    await settle();
-
-    worker.emitStderr("ModuleNotFoundError: No module named 'lancedb'\n");
-    await settle();
-
-    expect(harness.hostLogs.map((line) => line.message)).toContain(
-      "[stderr] ModuleNotFoundError: No module named 'lancedb'",
-    );
   });
 });
 
@@ -1737,11 +1684,11 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
 });
 
 describe("emitEvent keeps its synchronous throw and its host-side authority", () => {
-  it("throws in the child, before any round trip, on an undeclared event", async () => {
+  it("throws in the child, before any round trip, on another namespace", async () => {
     const emit = vi.fn();
     const harness = await createServiceHarness({ emitEvent: emit });
     expect(() => harness.child.hostApi.emitEvent("audit.tampered")).toThrow(
-      /not allowed to emit undeclared event/u,
+      /may emit only its own UI event/u,
     );
     expect(harness.requests).toHaveLength(0);
     expect(emit).not.toHaveBeenCalled();
@@ -1750,19 +1697,19 @@ describe("emitEvent keeps its synchronous throw and its host-side authority", ()
   it("reaches the host — which re-decides and writes the denial audit", async () => {
     const emit = vi.fn();
     const harness = await createServiceHarness({ emitEvent: emit });
-    expect(harness.child.hostApi.emitEvent("demo.ping", { n: 1 })).toBeUndefined();
+    expect(harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`, { n: 1 })).toBeUndefined();
     await settle();
-    expect(emit).toHaveBeenCalledWith("demo.ping", { n: 1 });
+    expect(emit).toHaveBeenCalledWith(`${PLUGIN_ID}.ping`, { n: 1 });
   });
 
-  it("reports a host refusal through the log channel instead of dropping it", async () => {
+  it("reports a host refusal on stderr instead of dropping it", async () => {
     // Fire-and-forget emit refusals need diagnostics without unhandled rejection.
     const harness = await createServiceHarness({
       emitEvent: () => {
         throw new Error("host says no");
       },
     });
-    harness.child.hostApi.emitEvent("demo.ping");
+    harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`);
     await settle();
     expect(detachedLog(harness)).toMatchObject({
       message: "hostApi.emitEvent failed after returning",
@@ -1777,30 +1724,11 @@ describe("a void-declared member that drifts is refused, not absorbed", () => {
     const harness = await createServiceHarness({
       emitEvent: (() => "surprise") as unknown as PluginHostApi["emitEvent"],
     });
-    harness.child.hostApi.emitEvent("demo.ping");
+    harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`);
     await settle();
     expect(detachedLog(harness).meta).toMatchObject({
       error: expect.stringContaining("declares no result but returned one") as string,
     });
-  });
-});
-
-describe("logEvent crosses as plain data", () => {
-  it("forwards the level, message and data", async () => {
-    const logEvent = vi.fn();
-    const harness = await createServiceHarness({ logEvent });
-    expect(harness.child.hostApi.logEvent("warn", "slow", { ms: 900 })).toBeUndefined();
-    await settle();
-    expect(logEvent).toHaveBeenCalledWith("warn", "slow", { ms: 900 });
-  });
-
-  it("refuses a level outside the declared three", async () => {
-    const logEvent = vi.fn();
-    const harness = await createServiceHarness({ logEvent });
-    harness.child.hostApi.logEvent("trace" as "info", "noisy");
-    await settle();
-    expect(logEvent).not.toHaveBeenCalled();
-    expect(detachedLog(harness).message).toBe("hostApi.logEvent failed after returning");
   });
 });
 
@@ -2298,21 +2226,6 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     }
   });
 
-  it("resizes through its own path and returns what the host applied", async () => {
-    const panel = makeFakePanel();
-    const harness = await createServiceHarness({
-      attachFloatingPanel: async () => panel,
-      resizeFloatingPanel: async (_id: string, next: number) => Math.min(next, 300),
-    } as unknown as Partial<PluginHostApi>);
-    const handle = await harness.child.hostApi.attachFloatingPanel({ extensionId: "some-card" });
-
-    // Resize is a separately addressed path because handle methods cannot cross the wire.
-    expect(await handle.resize(900)).toBe(300);
-    expect(handle.height).toBe(300);
-    expect(
-      harness.requests.some((request) => pathOfRequest(request) === "resizeFloatingPanel"),
-    ).toBe(true);
-  });
 
   it("detaches the host-side slot when the child releases its receipt", async () => {
     const panel = makeFakePanel();

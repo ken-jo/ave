@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 34,
+    "id": 29,
     "jsonrpc": "2.0",
     "method": "ave/host/authRedirect/close",
     "params": {
@@ -13,7 +13,7 @@
     }
   },
   "response": {
-    "id": 34,
+    "id": 29,
     "jsonrpc": "2.0",
     "result": null
   }

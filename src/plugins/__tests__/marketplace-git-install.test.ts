@@ -18,6 +18,7 @@ import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
 import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { IncompatibleHostProtocolError } from "../isolation/host-api-wire.js";
+import { AGENT_PLUGINS_SCHEMA_URL } from "../public-contract.js";
 import { pluginConsent, requireConsentEqual, UpdateNeedsReviewError } from "../../marketplace/updates/consent.js";
 import {
   activateAndCommitPreparedPluginForTest,
@@ -59,7 +60,10 @@ function plan(version = "1.0.0", patch: Partial<PluginInstallPlan> = {}): Plugin
 }
 
 function pluginDocument(version: string, auth: PluginAuthority = authority()): Record<string, unknown> {
-  return { name: "alpha", version, description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "Alpha", entry: "dist/index.js", ...auth } } };
+  return agentPluginsDocument({
+    id: "alpha", name: "Alpha", version, description: "alpha",
+    entry: "dist/index.js", tools: [], ...auth,
+  });
 }
 
 /** A bundled command hook and its additional payload files. */
@@ -129,6 +133,19 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     service.installGitPlugin(forPlan, { stage: async () => artifact, activatePreparedArtifact: activate });
 
   const entry = async () => (await readPluginRegistry(registryPath)).plugins.find((item) => item.id === "alpha");
+
+  it.each([
+    { field: "events", access: { plugins: [{ pluginId: "notes", events: ["notes.changed"] }] } },
+    { field: "agentApprovalScopes", access: { plugins: [{ pluginId: "notes" }], agentApprovalScopes: ["notes.write"] } },
+  ])("rejects retired access field $field before activating a Git artifact", async ({ field, access }) => {
+    const before = await readFile(registryPath, "utf-8");
+    const forPlan = plan("1.0.0", { authority: authority({ pluginAccess: access }) });
+    const activate = vi.fn(activateAndCommitPreparedPluginForTest);
+    await expect(install(forPlan, staged(forPlan), activate))
+      .rejects.toThrow(`unknown property: '${field}'`);
+    expect(activate).not.toHaveBeenCalled();
+    expect(await readFile(registryPath, "utf-8")).toBe(before);
+  });
 
   it.each(["receipt", "registry"] as const)("preserves the install error when %s recovery fails", async (phase) => {
     await install(plan());
@@ -242,6 +259,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     function processZip(): Buffer {
       const document = {
         name: "alpha", version: "1.0.0", description: "alpha",
+        $schema: AGENT_PLUGINS_SCHEMA_URL,
         extensions: { "ai.agent-connector.ave": { displayName: "Alpha", process: { command: "./bin/plugin" }, tools: [], ...processAuthority } },
       };
       const zip = new AdmZip();
@@ -532,7 +550,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     await mkdir(join(source, "dist"), { recursive: true });
     await writeFile(
       join(source, "plugin.json"),
-      JSON.stringify(agentPluginsDocument({ id: "alpha", name: "Alpha", version: "2.0.0", description: "local", entry: "dist/index.js" })),
+      JSON.stringify(agentPluginsDocument({ id: "alpha", name: "Alpha", version: "2.0.0", description: "local", entry: "dist/index.js", tools: [] })),
     );
     await writeFile(join(source, "dist", "index.js"), ENTRY_JS);
     await service.installLocal(source, preparedActivationOptionsForTest);

@@ -1254,7 +1254,7 @@ describe("ApprovalGate", () => {
   it("does NOT inject sandboxCapability for toolCategory=meta requests (round-5 critic MAJOR-1)", () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    // Mode-change asks (permission-mode-apply.ts) and agent-action asks (agent-action-requester.ts) both pass toolCategory="meta". The sandbox row is meaningless on config-change cards — verify the injection is suppressed.
+    // Mode-change asks pass toolCategory="meta". The sandbox row is meaningless on config-change cards — verify the injection is suppressed.
     gate.requestAndWait(
       makeRequest({
         id: "req-meta",

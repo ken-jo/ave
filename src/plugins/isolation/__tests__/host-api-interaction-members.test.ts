@@ -4,7 +4,6 @@ import { PassThrough } from "node:stream";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import type { PluginManifest } from "../../types.js";
 import type {
-  ApprovalChoice,
   AuthWindowCookie,
   ConversationTriggerResult,
   ConversationTriggerSpec,
@@ -66,18 +65,7 @@ interface HostImplementations {
   triggerConversation: (
     spec: ConversationTriggerSpec,
   ) => Promise<ConversationTriggerResult>;
-  approvalRequest: (input: {
-    toolName: string;
-    args: unknown;
-    reason: string;
-    scope: string;
-  }) => Promise<ApprovalChoice>;
-  approvalRespond: (
-    requestId: string,
-    choice: ApprovalChoice,
-    nonce?: string,
-    hmac?: string,
-  ) => Promise<void>;
+
 }
 
 function defaultImplementations(): HostImplementations {
@@ -98,8 +86,6 @@ function defaultImplementations(): HostImplementations {
       source: spec.source,
       eventId: "evt-1",
     }),
-    approvalRequest: async () => "allow-once",
-    approvalRespond: async () => {},
   };
 }
 
@@ -129,11 +115,6 @@ async function harness(
     },
     pickFolders: () => impl.pickFolders(),
     triggerConversation: (spec) => impl.triggerConversation(spec),
-    agentApproval: {
-      request: (input) => impl.approvalRequest(input),
-      respond: (requestId, choice, nonce, hmac) =>
-        impl.approvalRespond(requestId, choice, nonce, hmac),
-    },
   };
 
   let host!: HostApiDispatcher;
@@ -143,13 +124,9 @@ async function harness(
     handleNotification: (notification) => host.handleNotification(notification),
   });
 
-  const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     reportUnknownField: () => {},
-    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => { child.deliver(notification); } },
     table:
@@ -170,7 +147,6 @@ async function harness(
       pluginDataDir: "/plugins/interaction/data",
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
-      installedPluginIds: [],
     },
     channel,
     loadFactory,
@@ -237,14 +213,10 @@ const SAMPLE_ARGS: Record<InteractionHostApiPath, readonly unknown[]> = {
       dedupeKey: "meeting-42",
     },
   ],
-  "agentApproval.request": [
-    { toolName: "portal_write", args: { id: 7 }, reason: "sync", scope: "portal" },
-  ],
-  "agentApproval.respond": ["req-1", "allow-once", "nonce-1", "hmac-1"],
 };
 
 describe("the group carries exactly the members whose refusal is an answer", () => {
-  it("names eleven paths, every one a declared hostApi member", () => {
+  it("names its supported paths, every one a declared hostApi member", () => {
     expect([...INTERACTION_HOSTAPI_PATHS]).toEqual([
       "openExternalUrl",
       "openAuthWindow",
@@ -255,8 +227,6 @@ describe("the group carries exactly the members whose refusal is an answer", () 
       "authRedirect.close",
       "pickFolders",
       "triggerConversation",
-      "agentApproval.request",
-      "agentApproval.respond",
     ]);
     for (const path of INTERACTION_HOSTAPI_PATHS) {
       expect(isHostApiPath(path), path).toBe(true);
@@ -308,11 +278,7 @@ describe("the group carries exactly the members whose refusal is an answer", () 
       },
       pickFolders: async () => ({ canceled: true, folders: [] }),
       triggerConversation: async () => ({ accepted: true, source: "overlay:x" }),
-      agentApproval: {
-        request: async () => "allow-once",
-        respond: async () => {},
-      },
-    });
+      });
     expect(Object.keys(handlers).sort()).toEqual([...INTERACTION_HOSTAPI_PATHS].sort());
     for (const path of INTERACTION_HOSTAPI_PATHS) {
       expect(handlers[path].path).toBe(path);
@@ -339,9 +305,7 @@ describe("arguments reach the host exactly as the plugin passed them", () => {
       const seen: unknown[][] = [];
       const record = async (...args: unknown[]) => {
         seen.push(args);
-        return path === "agentApproval.request"
-          ? ("allow-once" as ApprovalChoice)
-          : path === "triggerConversation"
+        return path === "triggerConversation"
             ? { accepted: true, source: "overlay:meeting-detection" }
             : path === "openAuthWindow"
               ? COOKIES
@@ -359,8 +323,6 @@ describe("arguments reach the host exactly as the plugin passed them", () => {
         pickFolders: record as unknown as HostImplementations["pickFolders"],
         triggerConversation:
           record as unknown as HostImplementations["triggerConversation"],
-        approvalRequest: record as unknown as HostImplementations["approvalRequest"],
-        approvalRespond: record as unknown as HostImplementations["approvalRespond"],
       });
       await invoke(hostApi, path, SAMPLE_ARGS[path]);
       expect(seen).toHaveLength(1);
@@ -381,18 +343,6 @@ describe("arguments reach the host exactly as the plugin passed them", () => {
     expect(outcome.kind).toBe("failed");
   });
 
-  it("passes an omitted optional argument as omitted, not as a value", async () => {
-    // Preserve absent approval nonce/hmac fields; never invent issuer fields the plugin did not receive.
-    const approvalRespond = vi.fn(async () => {});
-    const { hostApi } = await harness({ approvalRespond });
-    await invoke(hostApi, "agentApproval.respond", ["req-9", "deny-once"]);
-    expect(approvalRespond).toHaveBeenCalledWith(
-      "req-9",
-      "deny-once",
-      undefined,
-      undefined,
-    );
-  });
 });
 
 describe("results come back in the shape each contract declares", () => {
@@ -456,7 +406,7 @@ describe("every error identity each contract lists survives the wire", () => {
     ),
   );
 
-  it("declares the gate on eight of the ten, and exempts the two reads", () => {
+  it("declares the gate on mutations and exempts reads", () => {
     expect([...gated]).toEqual([
       "openExternalUrl",
       "openAuthWindow",
@@ -465,10 +415,7 @@ describe("every error identity each contract lists survives the wire", () => {
       "authRedirect.open",
       "authRedirect.close",
       "triggerConversation",
-      "agentApproval.request",
     ]);
-    // Approval responses cannot require the same approval they resolve.
-    expect(HOSTAPI_PATH_CONTRACTS["agentApproval.respond"].errors).toEqual([]);
     // Waiting on an existing redirect mutates nothing and has no mutating-effect denial.
     expect(HOSTAPI_PATH_CONTRACTS["authRedirect.wait"].errors).toEqual([]);
   });
@@ -486,111 +433,15 @@ describe("every error identity each contract lists survives the wire", () => {
         authRedirectOpen: denied as unknown as HostImplementations["authRedirectOpen"],
         authRedirectClose: denied as unknown as HostImplementations["authRedirectClose"],
         triggerConversation: denied as unknown as HostImplementations["triggerConversation"],
-        approvalRequest: denied as unknown as HostImplementations["approvalRequest"],
       });
       const outcome = await outcomeOf(invoke(hostApi, path, SAMPLE_ARGS[path]));
       expect(outcome).toEqual({ kind: "failed", code: "effect-boundary-denied" });
     });
   }
 
-  it("keeps a host internal opaque rather than inventing a code for it", async () => {
-    // Issuer and scope violations are opaque host internals, outside the member error contract.
-    const { hostApi } = await harness({
-      approvalRespond: async () => {
-        throw new Error("approval origin mismatch");
-      },
-    });
-    const outcome = await outcomeOf(
-      invoke(hostApi, "agentApproval.respond", SAMPLE_ARGS["agentApproval.respond"]),
-    );
-    expect(outcome).toEqual({ kind: "failed", code: "host-internal" });
-  });
-
-  it("refuses a retired incarnation before the host implementation is reached", async () => {
-    const approvalRequest = vi.fn(async () => "allow-once" as ApprovalChoice);
-    const { hostApi } = await harness({ approvalRequest }, { isActive: () => false });
-    const outcome = await outcomeOf(
-      invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
-    );
-    expect(outcome).toEqual({ kind: "failed", code: "plugin-inactive" });
-    expect(approvalRequest).not.toHaveBeenCalled();
-  });
 });
 
 describe("a refusal and a lost question are never the same observation", () => {
-  const DENIALS: ApprovalChoice[] = ["deny-once", "deny-always"];
-  const ALLOWS: ApprovalChoice[] = ["allow-once", "allow-session", "allow-always"];
-
-  for (const choice of [...DENIALS, ...ALLOWS]) {
-    it(`delivers '${choice}' to the plugin as a value`, async () => {
-      const { hostApi } = await harness({ approvalRequest: async () => choice });
-      const outcome = await outcomeOf(
-        invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
-      );
-      expect(outcome).toEqual({ kind: "answered", value: choice });
-    });
-  }
-
-  it("never turns a failure to deliver the question into a denial", async () => {
-    // A broken approval chain must differ from a user declining the request.
-    const failures: Array<[string, () => Promise<never>]> = [
-      [
-        "the effect gate refused the call",
-        async () => {
-          throw new EffectBoundaryDeniedError(
-            PLUGIN_ID,
-            "agentApproval.request",
-            "portal",
-            "denied",
-          );
-        },
-      ],
-      [
-        "the gate itself threw",
-        async () => {
-          throw new Error("approval gate unavailable");
-        },
-      ],
-    ];
-    for (const [label, thrower] of failures) {
-      const { hostApi } = await harness({
-        approvalRequest: thrower as unknown as HostImplementations["approvalRequest"],
-      });
-      const outcome = await outcomeOf(
-        invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
-      );
-      expect(outcome.kind, label).toBe("failed");
-      expect(outcome, label).not.toHaveProperty("value");
-    }
-  });
-
-  it("keeps the two outcome kinds disjoint across every approval answer", async () => {
-    const kinds = new Set<string>();
-    for (const choice of [...DENIALS, ...ALLOWS]) {
-      const { hostApi } = await harness({ approvalRequest: async () => choice });
-      kinds.add(
-        (
-          await outcomeOf(
-            invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
-          )
-        ).kind,
-      );
-    }
-    const { hostApi } = await harness({
-      approvalRequest: async () => {
-        throw new Error("gate down");
-      },
-    });
-    kinds.add(
-      (
-        await outcomeOf(
-          invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
-        )
-      ).kind,
-    );
-    expect([...kinds].sort()).toEqual(["answered", "failed"]);
-  });
-
   it("delivers an overlay refusal as a result and a broken overlay as an error", async () => {
     const refused: ConversationTriggerResult = {
       accepted: false,
@@ -613,48 +464,5 @@ describe("a refusal and a lost question are never the same observation", () => {
       invoke(broken.hostApi, "triggerConversation", SAMPLE_ARGS.triggerConversation),
     );
     expect(outcome).toEqual({ kind: "failed", code: "host-internal" });
-  });
-});
-
-describe("an approval that blocks on a human", () => {
-  it("waits as long as the person does, and still delivers their answer", async () => {
-    // The boundary adds no timeout while a host approval gate is pending.
-    vi.useFakeTimers();
-    try {
-      let release!: (choice: ApprovalChoice) => void;
-      const pending = new Promise<ApprovalChoice>((resolve) => {
-        release = resolve;
-      });
-      const { hostApi, host } = await harness({ approvalRequest: () => pending });
-
-      const inFlight = invoke(
-        hostApi,
-        "agentApproval.request",
-        SAMPLE_ARGS["agentApproval.request"],
-      );
-      let settled = false;
-      const observed = inFlight.then(
-        (value) => {
-          settled = true;
-          return value;
-        },
-        (error: unknown) => {
-          settled = true;
-          throw error;
-        },
-      );
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
-      expect(settled, "the call must still be waiting on the human").toBe(false);
-
-      release("deny-once");
-      expect(await outcomeOf(observed)).toEqual({
-        kind: "answered",
-        value: "deny-once",
-      });
-      // A modal reply ends the call without opening any subscription lifetime.
-      expect(host.openSubscriptionCount).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

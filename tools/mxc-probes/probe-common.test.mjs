@@ -17,7 +17,7 @@ test("native spawn receives one argument and cannot opt into telemetry", async (
 test("standalone budgets come from the shared policy", async () => {
   const budgets = await loadBudgets();
   assert.ok(budgets.windowsAclHostStartupMs >= budgets.mxcRequestTransportMs);
-  assert.ok(budgets.pluginShutdownHandlerMs > budgets.processGroupPollMs);
+  assert.ok(budgets.pluginRetirementDrainMs > budgets.processGroupPollMs);
 });
 
 test("child environment contains no inherited SDK override, auth token or default home", () => {

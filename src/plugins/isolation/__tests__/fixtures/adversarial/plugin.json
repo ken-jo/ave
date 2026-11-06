@@ -29,8 +29,6 @@
           "escapeDir": { "type": "string", "title": "Escape probe directory" }
         }
       },
-      "eventSubscriptions": [],
-      "emittedEvents": [],
       "tools": [
         {
           "name": "escape_secrets",

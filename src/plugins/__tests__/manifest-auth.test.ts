@@ -192,8 +192,8 @@ describe("manifest validation — auth cross-field", () => {
     );
   });
 
-  it("R3 — does NOT warn when emittedEvents omits ${id}.auth.changed (host auto-derives the bridge)", async () => {
-    // The host derives the literal <manifest.id>.auth.changed event from auth; no explicit declaration is required.
+  it("accepts auth without an event grant declaration", async () => {
+    // Auth tools need no event bus grant.
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await writeManifest({
@@ -212,43 +212,10 @@ describe("manifest validation — auth cross-field", () => {
     }
   });
 
-  it("does not warn when emittedEvents includes the expected ${id}.auth.changed entry", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      await writeManifest({
-        auth: {
-          statusTool: "test_status",
-          loginTool: "test_login",
-        },
-        emittedEvents: ["test-plugin.auth.changed"],
-      });
-      const validator = TEST_VALIDATOR;
-      await parsePluginJson(manifestPath, validator);
-      const warnMessages = warnSpy.mock.calls.map((c) => c.join(" "));
-      expect(warnMessages.some((m) => m.includes("auth.changed"))).toBe(false);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it("R3 — does NOT warn even when emittedEvents declares the WRONG (underscore) form (#131 class eliminated)", async () => {
-    // Auth events use the dashed manifest ID even when tool names use underscores.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      await writeManifest({
-        auth: {
-          statusTool: "test_status",
-          loginTool: "test_login",
-        },
-        emittedEvents: ["test_plugin.auth.changed"],
-      });
-      const validator = TEST_VALIDATOR;
-      await parsePluginJson(manifestPath, validator);
-      const warnMessages = warnSpy.mock.calls.map((c) => c.join(" "));
-      expect(warnMessages.some((m) => m.includes("emittedEvents[] is missing")),
-      ).toBe(false);
-    } finally {
-      warnSpy.mockRestore();
+  it("rejects removed event grant fields", async () => {
+    for (const field of ["emittedEvents", "eventSubscriptions"]) {
+      await writeManifest({ [field]: ["test-plugin.auth.changed"] });
+      await expect(parsePluginJson(manifestPath, TEST_VALIDATOR)).rejects.toThrow(/unknown property/);
     }
   });
 
@@ -291,7 +258,6 @@ describe("manifest validation — auth cross-field", () => {
         pureTool("test_login", ["model", "app"]),
         pureTool("test_signout", ["app"]),
       ],
-      emittedEvents: ["test-plugin.auth.changed"],
       auth: {
         statusTool: "test_status",
         loginTool: "test_login",
@@ -314,7 +280,6 @@ describe("manifest validation — auth cross-field", () => {
           pureTool("test_login", ["app"]),
           pureTool("test_signout", ["app"]),
         ],
-        emittedEvents: ["test-plugin.auth.changed"],
         auth: {
           statusTool: "test_status",
           loginTool: "test_login",

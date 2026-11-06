@@ -51,8 +51,6 @@ function validationRuntimeContext(
     userHome: host.roots.userHome,
     aveHome: host.roots.aveHome,
     config,
-    // Child logs cross notifications; the session does not invoke the context logger.
-    log: () => undefined,
     hostApi: host.api,
   };
 }

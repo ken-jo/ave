@@ -41,9 +41,8 @@ const OS_SANDBOX_RELEASE_FALLBACK_WAIT_MS = 2_000;
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
-// The plugin side of stopping an interrupted bootstrap, in the order the normal shutdown uses: plugin shutdown handlers first, the runtime last.
+// Stop plugin admission before disconnecting transports and ending the runtime.
 export interface BootPluginShutdown {
-  runShutdownHandlers(): Promise<void>;
   // Close plugin admission without stopping anything (before MCP disconnects).
   closeAdmission(): void;
   stopRuntime(signal: AbortSignal): Promise<unknown>;
@@ -157,7 +156,6 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   const result = await runCleanupWithHardTimeout(async (signal) => {
     const failures: unknown[] = [];
     const stages = [
-      () => bootPluginShutdown?.runShutdownHandlers(),
       // Close plugin admission before MCP disconnects, then stop the runtime only after in-flight MCP calls finish.
       () => bootPluginShutdown?.closeAdmission(),
       () => bootMcpDisconnect?.(),
@@ -250,12 +248,10 @@ export async function runAppShutdownCleanup(options: {
       // idempotent on repeated cleanup attempts.
       await stopRemoteA2AReceiverServer();
       if (signal.aborted) return;
-      await svc.runPluginShutdownHandlers?.();
-      if (signal.aborted) return;
       // v2 shutdown routines — fire all active shutdown-trigger routines with a 5s timeout so a hung LLM call cannot block app.quit() indefinitely.
       await runShutdownRoutines(svc);
       if (signal.aborted) return;
-      // Plugin shutdown handlers and shutdown-trigger routines may make normal host LLM calls. Keep the subscription runtime live for both, then stop it
+      // Shutdown-trigger routines may make normal host LLM calls. Keep the subscription runtime live for them, then stop it
       // immediately at the service-shutdown boundary so no later teardown can create a new text session.
       await stopSubscriptionRuntimes();
       subscriptionRuntimesStopped = true;

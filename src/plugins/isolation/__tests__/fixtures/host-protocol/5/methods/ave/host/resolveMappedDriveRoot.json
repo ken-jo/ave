@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 36,
+    "id": 31,
     "jsonrpc": "2.0",
     "method": "ave/host/resolveMappedDriveRoot",
     "params": {
@@ -11,7 +11,7 @@
     }
   },
   "response": {
-    "id": 36,
+    "id": 31,
     "jsonrpc": "2.0",
     "result": "/Volumes/share"
   }

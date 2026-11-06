@@ -314,23 +314,11 @@ export interface DependencySpec {
 
 export interface PluginAccessTarget {
   pluginId: string;
-  events?: string[];
+
 }
 
 export interface PluginAccessSpec {
   plugins: PluginAccessTarget[];
-  /**
-   * §8 P0 security — approval action scopes this plugin is permitted to
-   * issue via `requestAgentApproval()` / `hostApi.agentApproval.respond()`.
-   *
-   * Defaults to empty array (no approval scopes allowed) when omitted.
-   * The host verifies at respond-time that the issuer's declared scopes
-   * include the scope recorded at request-time — violations throw
-   * ApprovalOriginError (no silent fallback).
-   *
-   * Known scopes: "agent_file_share", "agent_task_delegate", "agent_external_api_call"
-   */
-  agentApprovalScopes?: string[];
 }
 
 export interface PluginAuthSpec {
@@ -380,18 +368,6 @@ export interface PluginAuthStatus {
   authenticated: boolean;
   /** Human-readable identity (email, login id) shown next to the green badge. */
   account?: string;
-}
-
-export interface EventSubscriptionHint {
-  category:
-    | "task" | "note" | "session" | "meeting" | "email" | "calendar" | "system";
-  priority: "high" | "medium" | "low";
-  title: string;
-}
-
-export interface EventSubscription {
-  type: string;
-  hint?: EventSubscriptionHint;
 }
 
 /* ============================================================================
@@ -584,7 +560,7 @@ export interface PluginManifestFields {
 
 
 
-  eventSubscriptions?: string[] | EventSubscription[];
+
 
 
 
@@ -592,46 +568,16 @@ export interface PluginManifestFields {
 
 
 
-  emittedEvents?: string[];
 
 
 
-  /**
-   * Recommended-work channel declaration — which KINDS of work proposal this
-   * plugin may post to the host's Work Board via
-   * {@link PluginHostApi.proposeWork}.
-   *
-   * DECLARATION IS AUTHORIZATION, and there is no capability string to add: a
-   * plugin authorizes itself to propose in `stale-index` by DECLARING
-   * `stale-index` here, exactly as it authorizes an `email.*` emit by
-   * declaring an `email.*` entry in `emittedEvents`. Absent or empty ⇒ the
-   * plugin may post nothing; `proposeWork` resolves `kind_not_granted`.
-   *
-   * THE DECLARED LIST IS ALSO THE NAG CEILING. A plugin may hold AT MOST ONE
-   * OPEN PROPOSAL PER DECLARED KIND: three declared kinds means at most three
-   * cards, ever, at once. That is structurally stronger than a rate limit,
-   * which resets — to post a new card in a kind the plugin must first withdraw
-   * the old one or the user must resolve it.
-   *
-   * `kinds[].label` is the USER-FACING name of the slot, so consent reads as
-   * "this plugin may raise these two kinds of suggestion" rather than "this
-   * plugin may post cards".
-   *
-   * A malformed block grants NOTHING rather than granting the entries that
-   * happened to parse — a consent-bearing declaration has no partial form.
-   */
-  workProposals?: {
-    /** Human-readable justification surfaced to the user. */
-    reasoning?: string;
-    /** 1..4 entries. Ids must be unique within the plugin. */
-    kinds: WorkProposalKind[];
-  };
+
   /**
    * Alert declaration — the kinds of alert this plugin may raise, each with
    * declared, localised templates and typed slots, plus the overlay sources
    * it may pass to {@link PluginHostApi.triggerConversation}.
    *
-   * DECLARATION IS AUTHORIZATION, as for {@link PluginManifest.workProposals}:
+   * DECLARATION IS AUTHORIZATION:
    * a kind that is not declared is not granted, and a block that is malformed
    * in any entry grants nothing. A manifest that carries the block at all —
    * even a refused one — may trigger conversations only from the sources
@@ -854,7 +800,7 @@ export interface PluginSandboxDeclaration {
  * §9.2 — declarative settings schema. JSON Schema draft-07 subset
  * (the same dialect a tool's `inputSchema` uses) with one UI/storage hint:
  * `format: "secret"` routes the field through
- * `hostApi.setSecret` / `getSecret` so the cleartext `pluginConfigs`
+ * the encrypted settings writer and `hostApi.getSecret` so the cleartext `pluginConfigs`
  * record never sees the value.
  */
 export interface PluginConfigSchema {
@@ -914,7 +860,7 @@ export interface PluginConfigSchemaProperty {
   pattern?: string;
   /**
    * UI/storage hint:
-   * - `"secret"` → masked input; saved via `hostApi.setSecret(plugin.<id>.<key>)`
+   * - `"secret"` → masked input; saved through the encrypted settings writer
    *   into the host-encrypted `ave-secrets.json`. Never written to
    *   cleartext `settings.pluginConfigs`. Plugins read via `hostApi.getSecret`.
    * - other formats are advisory and rendered as plain inputs today.
@@ -1296,24 +1242,6 @@ export interface PluginStorage {
 }
 
 /**
- * Discriminated event delivered to `PluginHostApi.onPluginsChanged` handlers.
- * `source: "local-dev"` indicates the install came from the dev-mode
- * "Settings → 로컬 폴더에서 설치" path (AVE_DEV=1 only); production
- * consumers should ignore it.
- *
- * The `_future` sentinel variant is NEVER produced at runtime — it exists
- * purely to force exhaustive `switch (event.type)` consumers to add a
- * `default:` branch, so the host can add a new variant (e.g. `"updated"`
- * for version bumps) without silently breaking subscribers. Plugins that
- * narrow with `if (event.type === "installed") ... else if (...)` pick up
- * the same forward-compat for free.
- */
-export type PluginLifecycleEvent =
-  | { type: "installed"; pluginId: string; source: "marketplace" | "local-dev" }
-  | { type: "uninstalled"; pluginId: string }
-  | { type: "_future"; readonly __exhaustive: never };
-
-/**
  * How a delegated worker talks to its plugin. Both modes use only the worker's
  * standard streams; no mode binds or connects a socket or a loopback port.
  *
@@ -1555,17 +1483,17 @@ export interface PluginHostApi {
    * the merged `manifest.config` defaults + saved overrides, scoped strictly
    * to the calling plugin's id (plugin A cannot read plugin B's config).
    * Writes persist via the same `setPluginConfig` IPC bridge used by the
-   * settings UI and trigger a plugin reload so handlers see the new values
-   * on next tool call. `format: "secret"` schema entries are rejected from
-   * `set()` — secrets MUST go through `hostApi.setSecret` so they land in
+   * settings UI and trigger a plugin reload outside lifecycle mutations.
+   * Lifecycle writes update the live config subscription without restarting. `format: "secret"` schema entries are rejected from
+   * `set()` — secrets MUST be saved through the settings UI so they land in
    * the encrypted keychain, never in cleartext `pluginConfigs`.
    */
   config: {
     /** Read a single config key. Returns `undefined` when unset. */
     get<T = unknown>(key: string): T | undefined;
     /**
-     * Persist a config key. Triggers a plugin reload so the new value is
-     * visible to the plugin on next handler invocation.
+     * Persist a config key. Reloads the plugin unless a lifecycle mutation
+     * or an existing restart must finish first.
      */
     set<T = unknown>(key: string, value: T): Promise<void>;
     /**
@@ -1578,39 +1506,13 @@ export interface PluginHostApi {
       callback: (value: T | undefined) => void,
     ): () => void;
   };
+  /** Notify this plugin's own UI; eventType must begin with this plugin's id and a dot. */
   emitEvent(eventType: string, data?: unknown): void;
   /**
-   * Subscribes to a host event. Returns an `unsubscribe()` disposer so callers
-   * (and PluginRuntime.onDisable) can clean up handlers deterministically.
+   * Subscribe to host.theme.changed. Other event types are rejected.
+   * Returns a disposer owned by the current plugin generation.
    */
   onEvent(eventType: string, handler: (data: unknown) => void): () => void;
-  /**
-   * Snapshot of plugin IDs currently loaded into the runtime, in load order.
-   * The calling plugin's own id is excluded. Order is insertion-stable but
-   * MUST NOT be treated as priority — use `.includes(id)` for membership
-   * checks. Pair with `onPluginsChanged` to react to plugin lifecycle (e.g.
-   * overlay-trigger detectors that depend on a specific plugin being installed).
-   */
-  getInstalledPluginIds(): string[];
-  /**
-   * Subscribe to plugin install / uninstall events. Returns an `unsubscribe()`
-   * disposer (also cleared automatically on plugin disable).
-   *
-   * Fires AFTER the host has finished mounting (install) or unmounting
-   * (uninstall) the plugin — `getInstalledPluginIds()` already reflects the
-   * new state when the handler runs. Self-events (this plugin being the
-   * subject) are filtered out.
-   *
-   * P0 only delivers `installed` / `uninstalled`. Future versions may add
-   * `updated` (version bump) — handlers should branch with a `default:` to
-   * stay forward-compatible.
-   *
-   * `source` distinguishes marketplace install from local-dev install
-   * (AVE_DEV=1 + Settings → 로컬 폴더에서 설치). Production consumers
-   * SHOULD ignore `source: "local-dev"` events to avoid letting a local
-   * test plugin trigger downstream cascades against marketplace expectations.
-   */
-  onPluginsChanged(handler: (event: PluginLifecycleEvent) => void): () => void;
   /**
    * Read an allow-listed secret.
    *
@@ -1663,23 +1565,6 @@ export interface PluginHostApi {
    * do not replace this chokepoint with bare plugin fetch.
    */
   hostFetch?(input: string | URL, init?: HostFetchInit): Promise<Response>;
-
-  /**
-   * Structured log event routed through AuditLogger.
-   * Automatically tagged with `plugin:${pluginId}` context (sessionId = "plugin").
-   */
-  logEvent(
-    level: "info" | "warn" | "error",
-    message: string,
-    data?: unknown,
-  ): void;
-
-  /**
-   * Register a handler fired before app shutdown (Electron
-   * `before-quit`). Host enforces a 5s timeout on each handler; slow handlers
-   * are logged but do not block quit.
-   */
-  onShutdown(handler: () => void | Promise<void>): void;
 
   /**
    * Spawn a plugin worker, host-mediated and (when the OS-tool sandbox gate is
@@ -1873,21 +1758,6 @@ export interface PluginHostApi {
    * plugin, and the error code says which.
    */
   attachFloatingPanel(request: AttachFloatingPanelRequest): Promise<FloatingPanelHandle>;
-  /**
-   * Change one of this plugin's dock slots to a new height.
-   *
-   * The same operation {@link FloatingPanelHandle.resize} performs, exposed as
-   * an addressable member because a handle's method cannot cross a process
-   * boundary on its own — the wire carries calls by path, and a handle is a
-   * host-side object the child holds a receipt for. Prefer the handle method;
-   * this is what it delegates to.
-   *
-   * `panelId` is checked against the calling plugin's own slots, so naming
-   * another plugin's panel is a refusal rather than a resize.
-   *
-   * Clamped exactly as the attach was, and resolves to what was applied.
-   */
-  resizeFloatingPanel(panelId: string, height: number): Promise<number>;
 
   /**
    * Open a hardened viewer BrowserWindow that loads `url` inside the
@@ -1914,8 +1784,7 @@ export interface PluginHostApi {
    * Resolves once the window has loaded or been closed; rejects only on a
    * hard load failure (not on user close).
    *
-   * **Required (not `?`-optional)** unlike `hostFetch?` / `spawnWorker?` /
-   * `getAppPreference?`. Plugins vendor this contract at an app release tag
+   * **Required (not `?`-optional)** unlike `hostFetch?` / `spawnWorker?`. Plugins vendor this contract at an app release tag
    * and set `requires.minAppVersion` to a release serving every method they
    * use. This method is required so missing host wiring throws loudly instead
    * of being silently optional-chained. A silent fallback could route the
@@ -2032,23 +1901,6 @@ export interface PluginHostApi {
   ): Promise<boolean>;
 
   /**
-   * §B3 — Read a host-level user preference exposed via the explicit
-   * `HOST_PUBLIC_PREFERENCE_KEYS` allowlist (currently only
-   * `"webView.preferredFlow"`).
-   *
-   * Returns `undefined` for unknown / non-allowlisted keys — never throws —
-   * so plugins can safely probe forward-compat keys. The host emits a single
-   * warn log per (pluginId, key, session) pair when a non-allowlisted key is
-   * requested, to aid auditing without flooding logs.
-   *
-   * This is deliberately read-only and narrow: secrets, plugin configs, and
-   * private host state stay invisible. To expose a new key, edit
-   * `HOST_PUBLIC_PREFERENCE_KEYS` in `boot/steps/plugin-runtime.ts` and the
-   * matching reader in this method's implementation — both must be updated.
-   */
-  getAppPreference?<T = unknown>(key: string): T | undefined;
-
-  /**
    * Overlay trigger — ask the host to stage a plugin-authored suggestion in
    * the overlay. The plugin does not start a conversation turn; only a user's
    * overlay confirmation imports the prompt into the normal chat loop.
@@ -2095,46 +1947,6 @@ export interface PluginHostApi {
   hasRoutineBySource(source: string): Promise<boolean>;
 
   /**
-   * Post or refresh this plugin's recommended-work proposal for ONE declared
-   * kind. The host persists it beside the Work Board and draws it as a card at
-   * the top of that board; the card's start button runs the HOST's own
-   * plan → approve → execute sequence over a work item the host composes.
-   *
-   * AUTHORIZATION is inferred from the plugin's `workProposals.kinds`
-   * declaration in its installed manifest — the same declaration-as-
-   * authorization rule `emittedEvents` uses for gated event namespaces. An
-   * undeclared `kind` resolves `{ status: "kind_not_granted" }`; callers branch
-   * on `status` rather than expecting a throw.
-   *
-   * UPSERT SEMANTICS. `(kind, key)` is the identity. Re-posting the same key
-   * REFRESHES the card in place and re-arms its TTL. A DIFFERENT key while a
-   * card is already open in that kind resolves `{ status: "slot_busy" }` — one
-   * open proposal per declared kind is the ceiling, and it does not reset.
-   *
-   * A card the user dismissed or accepted stays closed through a refresh:
-   * re-posting is not a way to put a closed card back in front of them.
-   *
-   * SAFETY CONTRACT: every string field is user-visible or LLM-visible. See
-   * {@link WorkProposalUntrustedText} for what the caller must guarantee and
-   * what the host can and cannot do about it.
-   */
-  proposeWork(input: WorkProposalInput): Promise<WorkProposalResult>;
-
-  /**
-   * Retract this plugin's own proposal because the condition it described no
-   * longer holds — the mail was answered, the index was rescanned.
-   *
-   * Retraction is why this is a channel and not a notification: it is what lets
-   * the board stay true over time without the host understanding any plugin's
-   * domain. Scoped to the caller by construction — the id the host looks up is
-   * derived from the CALLER's plugin id, so another plugin's proposal is not
-   * addressable rather than merely refused.
-   *
-   * Resolves `false` when no matching open proposal existed. Idempotent.
-   */
-  withdrawWorkProposal(kind: string, key: string): Promise<boolean>;
-
-  /**
    * Raise one alert of a kind declared in this plugin's `alerts` block.
    *
    * The plugin supplies typed slot values, never text: the host renders the
@@ -2149,69 +1961,6 @@ export interface PluginHostApi {
    * rather than expecting a throw.
    */
   raiseAlert(input: AlertInput): Promise<AlertResult>;
-
-  /**
-   * Withdraw this plugin's open alert for `(kind, key)` because its condition
-   * no longer holds. Scoped to the caller; resolves `false` when no such
-   * alert is open.
-   */
-  withdrawAlert(kind: string, key: string): Promise<boolean>;
-
-  /**
-   * §8 Agent Approval System — main-process–side approval management.
-   *
-   * Plugins use this namespace to interact with the host's §8 ApprovalGate
-   * from the main process. This is the correct path for plugin→host approval
-   * responses. The renderer-only preload bridge (`context.bridge.approval`)
-   * is NOT accessible from plugin handlers running in the main process.
-   *
-   * Usage pattern:
-   *   await context.hostApi.agentApproval.respond(approvalId, choice, nonce, hmac)
-   */
-  agentApproval: {
-    /**
-     * Request an approval via the §8 ApprovalGate on behalf of this plugin.
-     *
-     * Records (requestId → issuerPluginId + scope) in the host's
-     * ApprovalIssuerRegistry BEFORE calling the gate, so the respond path
-     * can verify cross-plugin hijack and scope violations.
-     *
-     * The gate generates nonce + HMAC internally (confused-deputy defense).
-     * Plugin MUST NOT compute nonce/HMAC.
-     *
-     * `scope` must be present in the host-approved install grant
-     * (`approvedPluginAccess.agentApprovalScopes`), not merely in the manifest.
-     */
-    request(input: {
-      toolName: string;
-      args: unknown;
-      reason: string;
-      scope: string;
-    }): Promise<ApprovalChoice>;
-    /**
-     * Resolve a pending ApprovalGate entry from the main process.
-     *
-     * Equivalent to `approvalGate.resolve(requestId, { requestId, choice, nonce, hmac })`.
-     * Nonce + hmac MUST be echoed back verbatim as issued by the host with
-     * the original ApprovalRequest — the gate re-verifies them before honoring
-     * the decision. A mismatch forces deny-once (confused-deputy defense).
-     *
-     * §8 P0 security: host verifies (a) requestId was issued by this plugin,
-     * (b) scope is still in the host-approved install grant. Violations throw.
-     *
-     * NOTE: a `list()` method was deliberately NOT exposed. Listing pending
-     * approvals from a plugin would surface gate-issued nonces/HMACs (confused-deputy
-     * material) to plugin code with no current use case.
-     * If a future flow legitimately needs the snapshot, add it then with a
-     * scoped capability — do not pre-expose dead surface.
-     */
-    respond(
-      requestId: string,
-      choice: ApprovalChoice,
-      nonce?: string,
-      hmac?: string,
-    ): Promise<void>;
-  };
 }
 
 /**
@@ -2487,154 +2236,6 @@ export type ConfigInheritDeclaration =
   | { pluginId: string; to: string; from: string }
   | { pluginId: string; to: string; value: unknown };
 
-// ─── Recommended-work proposals ──────────────────────────────────────────────
-//
-// A proposal is a plugin saying "here is something I think you should
-// consider", as a card the host draws at the top of its own Work Board. It is
-// the plugin-facing door to a HOST domain that already exists: the host owns
-// the storage, the card, the start action and the approval gate, and the
-// plugin owns only the judgment that the condition holds.
-//
-// A proposal carries TEXT AND A KEY, and nothing executable. The card's start
-// button drives the host's own plan → approve → execute sequence over an item
-// the host composed, so there is no plugin-supplied action for the host to run
-// and therefore no action-execution surface to bound.
-
-/**
- * One declared proposal slot. The host namespaces it as `<pluginId>:<kind>`,
- * so a plugin cannot name another plugin's kind.
- */
-export interface WorkProposalKind {
-  /** `^[a-z][a-z0-9-]{0,31}$`, unique within the plugin. */
-  id: string;
-  /** What the user sees in the install disclosure and on the card. */
-  label: string;
-}
-
-/** One "here is why I think so" row under a proposal's expandable detail. */
-export interface WorkProposalEvidence {
-  label: string;
-  detail: string;
-}
-
-/** One "here is what stops this" row under a proposal's expandable detail. */
-export interface WorkProposalBlocker {
-  reason: string;
-  /** What would unblock it, when the plugin knows. */
-  resolution?: string;
-}
-
-/**
- * EVERY STRING A PLUGIN AUTHORED, in one place.
- *
- * SAFETY CONTRACT — the caller MUST follow it and the host CANNOT check it.
- * All of this is shown to the user as plain text, and `taskBrief` additionally
- * reaches an LLM as prompt text once the user starts the run. Every field MUST
- * be TEMPLATED text, never raw third-party content (a mail body, a document, an
- * attachment): pass identifiers inside `taskBrief` and let the run fetch the
- * content through tools.
- *
- * The host length-caps every field, renders each as plain text with no markdown
- * link or HTML surface, and wraps `taskBrief` in the plugin staged-origin
- * envelope — but none of that makes injected content safe to author. This is
- * the same limitation {@link ConversationTriggerSpec} documents, moved from
- * each plugin's own convention into the host's structure.
- *
- * Grouped as one interface deliberately: a reader asking "which of these came
- * from a plugin" reads the answer off the type instead of auditing per field.
- */
-export interface WorkProposalUntrustedText {
-  /** One line naming the work. Capped at 120 characters. */
-  title: string;
-  /** One line saying why it is being recommended. Capped at 200. */
-  summary: string;
-  /** The "current state" part of the expandable detail. Capped at 400. */
-  state: string;
-  /** The "evidence" part of the detail. At most 6 rows, each part capped at 200. */
-  evidence: WorkProposalEvidence[];
-  /** Why it cannot proceed, when it cannot. At most 4 rows. Empty when nothing blocks it. */
-  blockers: WorkProposalBlocker[];
-  /** Instruction text seeded into the run. NEVER rendered raw to the user. Capped at 2000. */
-  taskBrief: string;
-}
-
-/**
- * What a plugin hands {@link PluginHostApi.proposeWork}. Text, a key, and
- * scheduling hints. No identity — the host binds `pluginId` from the HostApi
- * caller — and no action.
- */
-export interface WorkProposalInput {
-  /** One of this plugin's own declared, approved {@link WorkProposalKind} ids. */
-  kind: string;
-  /**
-   * Plugin-scoped identity for the CONDITION this proposal describes — the
-   * upsert and withdraw handle. Re-posting the same key refreshes the card;
-   * a different key while that kind already holds an open card is refused.
-   */
-  key: string;
-  title: string;
-  summary: string;
-  state: string;
-  /** Omit for "nothing to show". The host stores an empty list, never a stand-in row. */
-  evidence?: WorkProposalEvidence[];
-  /** Omit when nothing blocks the work. */
-  blockers?: WorkProposalBlocker[];
-  taskBrief: string;
-  /** Carried onto the work item if the user accepts. Defaults to `medium`. */
-  priority?: "high" | "medium" | "low";
-  /** ISO-8601 deadline carried onto the work item if the user accepts. */
-  dueAt?: string;
-  /**
-   * How long the proposal stays open with no further contact from the plugin.
-   * Host-clamped to [1 hour, 14 days]; 7 days when omitted. The TTL is what
-   * sweeps an abandoned card when the plugin that posted it stops running.
-   */
-  ttlMs?: number;
-}
-
-/**
- * The persisted proposal. Everything the plugin did not supply is host-owned:
- * `id` is derived (`<pluginId>:<kind>:<hash(key)>`), `pluginId` comes from the
- * HostApi identity binding rather than the payload, and the timestamps are the
- * host's.
- */
-export interface WorkProposal extends WorkProposalUntrustedText {
-  id: string;
-  kind: string;
-  key: string;
-  /** From the HostApi identity binding — a plugin cannot name another's. */
-  pluginId: string;
-  /** Display name from the installed manifest. */
-  pluginLabel: string;
-  priority: "high" | "medium" | "low";
-  dueAt?: string;
-  createdAt: string;
-  updatedAt: string;
-  /** `updatedAt + clamp(ttlMs)`. A proposal past this is swept on the next read. */
-  expiresAt: string;
-  /** Set when the user closed the card. Sticky per `id` — a re-post keeps it. */
-  dismissedAt?: string;
-  /** Set when the user accepted; links the proposal to the work item it became. */
-  acceptedItemId?: number;
-}
-
-/**
- * Outcome of {@link PluginHostApi.proposeWork}. Callers branch on `status` —
- * a refusal is a value, never a throw, and never a coerced default.
- */
-export type WorkProposalResult =
-  | { status: "ok"; proposal: WorkProposal }
-  /** `kind` is not among this plugin's declared, approved kinds. */
-  | { status: "kind_not_granted"; kind: string }
-  /** A DIFFERENT key is already open in this kind — the nag ceiling. */
-  | { status: "slot_busy"; kind: string }
-  /** Names the field that failed validation. Nothing was stored. */
-  | { status: "invalid"; field: string }
-  /** The host-wide proposal cap is full. */
-  | { status: "cap_reached" }
-  /** This plugin is upserting faster than the host's churn budget allows. */
-  | { status: "rate_limited" };
-
 export interface PluginRuntimeContext {
   pluginId: string;
   pluginRoot: string;
@@ -2703,7 +2304,6 @@ export interface PluginRuntimeContext {
    */
   aveHome: string;
   config?: Record<string, unknown>;
-  log: (message: string, meta?: unknown) => void;
   hostApi: PluginHostApi;
 }
 
@@ -2788,15 +2388,6 @@ export interface FloatingPanelHandle {
   readonly panelId: string;
   /** The slot height the host actually used, after clamping. */
   readonly height: number;
-  /**
-   * Ask for a new height. Clamped identically; resolves to what was applied.
-   *
-   * Asynchronous because for an out-of-process plugin the dock is on the other
-   * side of a wire. Rejects when the slot is already detached rather than
-   * quietly doing nothing — a resize on a dead slot means the caller lost track
-   * of it, and silence would let that keep happening.
-   */
-  resize(height: number): Promise<number>;
   /** Idempotent. */
   detach(): Promise<void>;
   /**

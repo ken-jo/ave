@@ -21,7 +21,6 @@ import {
   PLUGIN_INSTANCE_METHODS,
   type PluginInstanceMethod,
 } from "./plugin-instance-wire.js";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   INVOCATION_META,
   MCP_PROTOCOL_VERSION,
@@ -118,7 +117,7 @@ export function terminationUnverified(pluginId: string, original: unknown, clean
 }
 
 export interface PluginChildTransportOptions
-  extends Omit<HostApiDispatcherOptions, "notifications" | "shutdownChild" | "invocations"> {
+  extends Omit<HostApiDispatcherOptions, "notifications" | "invocations"> {
   readonly link: ChildLink;
 }
 
@@ -155,14 +154,6 @@ export class PluginChildTransport {
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
         whenDrained: (ready) => this.closedReason === undefined && this.stream.whenDrained(ready),
-      },
-      // Apply the shutdown-handler bound with grace so the host reports timeout before child termination.
-      shutdownChild: async (subscriptionId) => {
-        await this.request(
-          PLUGIN_INSTANCE_METHODS.shutdown,
-          { subscriptionId },
-          TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs,
-        );
       },
     });
     this.pluginId = options.pluginId;

@@ -73,7 +73,6 @@ describe("#885 v6 — dual-declared visibility (the #1554 governed-vs-bypass inv
       }),
       ],
       auth: { statusTool: "ms_status", loginTool: "ms_login" },
-      emittedEvents: ["overlap-test.auth.changed"],
     });
     await expect(parsePluginJson(path, validator)).rejects.toThrow(
       /must have visibility exactly \["app"\]/,

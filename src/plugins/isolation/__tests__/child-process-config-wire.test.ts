@@ -1,7 +1,7 @@
 /** Exercise config delivery across a real JSON process boundary; in-memory sharing cannot prove marshalling. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
@@ -17,13 +17,7 @@ import {
   subscribePluginConfigChange,
   _resetPluginConfigChangeBus,
 } from "../../config-change-bus.js";
-import {
-  buildAppPreferenceReader,
-  publishAppPreferenceChange,
-  HOST_PUBLIC_PREFERENCE_KEYS,
-  _resetAppPreferencePublisher,
-} from "../../../boot/steps/plugin-runtime/app-preference.js";
-import type { SettingsService, WebViewPreferredFlow } from "../../../data/settings-store.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 
 const PLUGIN_ID = "sampleassistant";
@@ -37,21 +31,11 @@ interface RecordedChange {
   readonly configGet: string;
 }
 
-interface PreferenceProbe {
-  readonly preferredFlow: string | null;
-  readonly offAllowlist: string | null;
-  /** Use typeof to expose inherited functions that cannot themselves cross JSON. */
-  readonly inheritedKind: string;
-  readonly constructorKind: string;
-}
 
 let temporaryRoot: string | undefined;
 const spawnedChildren = new Set<ChildProcess>();
 
 const CHILD_BUNDLE_CACHE = "plugin-child-config-wire";
-
-/** Hold import long enough to receive a construction-window push, below the construct deadline. */
-const CONSTRUCT_WINDOW_MS = 1_200;
 
 /** Resolve the sentinel with Symbol.for as separately bundled plugins do; delay import to exercise construction-window pushes. */
 function writePluginEntry(root: string, importDelayMs = 0): string {
@@ -78,15 +62,6 @@ export const createPlugin = async (context) => {
   return {
     handlers: {
       probe_changes: async () => changes,
-      probe_preference: async () => ({
-        preferredFlow: api.getAppPreference("webView.preferredFlow") ?? null,
-        offAllowlist: api.getAppPreference("llm.provider") ?? null,
-        // Keys the snapshot object inherits rather than owns. A bare index
-        // answers these with Object.prototype's functions; the host reader
-        // answers undefined, because they are not on the allowlist.
-        inheritedKind: typeof api.getAppPreference("toString"),
-        constructorKind: typeof api.getAppPreference("constructor"),
-      }),
     },
   };
 };
@@ -107,11 +82,6 @@ const MANIFEST = {
     {
       name: "probe_changes",
       description: "every config.onChange delivery this plugin received",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "probe_preference",
-      description: "the host preferences as they read right now",
       inputSchema: { type: "object", properties: {} },
     },
   ],
@@ -178,47 +148,15 @@ function plainSessionFactory(spec: {
   };
 }
 
-function fakeSettingsService(initial: WebViewPreferredFlow): {
-  service: SettingsService;
-  set: (flow: WebViewPreferredFlow) => void;
-} {
-  let flow = initial;
-  return {
-    service: {
-      get: (key: string) => (key === "webView" ? { preferredFlow: flow } : undefined),
-    } as unknown as SettingsService,
-    set: (next) => {
-      flow = next;
-    },
-  };
-}
-
-/** Bind only exercised members to the real config bus and preference reader. */
-function hostApiFor(
-  settingsService: SettingsService,
-  options: {
-    /** Count snapshot reads at the first allowlisted key so adding keys does not change the fault ordinal. */
-    readonly throwOnPreferenceSnapshot?: number;
-  } = {},
-): {
+/** Bind exercised members to the real config bus. */
+function hostApiFor(): {
   hostApi: PluginHostApi;
   subscribedKeys: Set<string>;
   configWatchers: Array<{ key: string; released: boolean }>;
 } {
   const subscribedKeys = new Set<string>();
   const configWatchers: Array<{ key: string; released: boolean }> = [];
-  const readPreference = buildAppPreferenceReader(settingsService, { warn: () => undefined });
-  let snapshotReads = 0;
   const hostApi = {
-    getInstalledPluginIds: () => [PLUGIN_ID],
-    onPluginsChanged: () => () => undefined,
-    getAppPreference: (key: string) => {
-      if (key === HOST_PUBLIC_PREFERENCE_KEYS[0]) snapshotReads += 1;
-      if (options.throwOnPreferenceSnapshot === snapshotReads) {
-        throw new Error("hostApi.getAppPreference belongs to a retired generation");
-      }
-      return readPreference(PLUGIN_ID, key);
-    },
     config: {
       // Secrets are absent from cleartext snapshots; changes carry only the sentinel.
       get: () => undefined,
@@ -255,7 +193,6 @@ async function readChanges(instance: RuntimePlugin): Promise<RecordedChange[]> {
 
 beforeEach(() => {
   _resetPluginConfigChangeBus();
-  _resetAppPreferencePublisher();
   temporaryRoot = mkdtempSync(join(tmpdir(), "child-config-wire-"));
 });
 
@@ -263,7 +200,6 @@ afterEach(() => {
   for (const child of spawnedChildren) child.kill("SIGKILL");
   spawnedChildren.clear();
   _resetPluginConfigChangeBus();
-  _resetAppPreferencePublisher();
   if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
   temporaryRoot = undefined;
   rmSync(childBundleDir(CHILD_BUNDLE_CACHE), { recursive: true, force: true });
@@ -276,8 +212,7 @@ describe("the config values a plugin reads, across a real child process", () => 
       const root = temporaryRoot!;
       const pluginDataDir = join(root, "data");
       mkdirSync(pluginDataDir, { recursive: true });
-      const { service } = fakeSettingsService("in-app");
-      const { hostApi, subscribedKeys } = hostApiFor(service);
+      const { hostApi, subscribedKeys } = hostApiFor();
       const factory = plainSessionFactory({
         manifest: MANIFEST,
         entryPath: writePluginEntry(root),
@@ -293,7 +228,6 @@ describe("the config values a plugin reads, across a real child process", () => 
         aveHome: aveHome(),
         // A secret update must delete stray cleartext copies without storing the sentinel.
         config: { apiKey: "stale-cleartext-copy" },
-        log: () => undefined,
         hostApi,
       } as PluginRuntimeContext);
       try {
@@ -331,141 +265,69 @@ describe("the config values a plugin reads, across a real child process", () => 
     180_000,
   );
 
-  it(
-    "answers getAppPreference from a snapshot the host keeps current",
-    async () => {
-      const root = temporaryRoot!;
-      const pluginDataDir = join(root, "data");
-      mkdirSync(pluginDataDir, { recursive: true });
-      const { service, set } = fakeSettingsService("in-app");
-      const { hostApi } = hostApiFor(service);
-      const factory = plainSessionFactory({
-        manifest: MANIFEST,
-        entryPath: writePluginEntry(root),
-        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-      });
-      const instance = await factory({
-        pluginId: PLUGIN_ID,
-        pluginRoot: root,
-        hostRoot: repositoryRoot(),
-        pluginDataDir,
-        pluginSocketDir: resolvePluginSocketDir(pluginDataDir),
-        userHome: homedir(),
-        aveHome: aveHome(),
-        config: {},
-        log: () => undefined,
-        hostApi,
-      } as PluginRuntimeContext);
-      try {
-        const seeded = (await instance.handlers.probe_preference!()) as PreferenceProbe;
-        expect(seeded.preferredFlow).toBe("in-app");
-        // Non-allowlisted preferences must stay absent from the snapshot.
-        expect(seeded.offAllowlist).toBeNull();
-        // Inherited keys must return undefined just as the host allowlist reader does.
-        expect(seeded.inheritedKind).toBe("undefined");
-        expect(seeded.constructorKind).toBe("undefined");
+  it("lets a real child finish asynchronous stdin EOF cleanup", async () => {
+    const root = temporaryRoot!;
+    const marker = join(root, "eof-cleanup.txt");
+    const entryPath = join(root, "eof-plugin.mjs");
+    writeFileSync(entryPath, `import { writeFileSync } from "node:fs";
+export const createPlugin = async () => {
+  process.stdin.on("end", () => {
+    setTimeout(() => writeFileSync(${JSON.stringify(marker)}, "cleaned"), 25);
+  });
+  return { handlers: {} };
+};
+`);
+    const { hostApi } = hostApiFor();
+    const factory = plainSessionFactory({
+      manifest: { ...MANIFEST, tools: [] }, entryPath,
+      childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+    });
+    const instance = await factory({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    await instance.stop!();
+    expect(readFileSync(marker, "utf8")).toBe("cleaned");
+  }, 180_000);
 
-        // Preference reads must follow host changes for the lifetime of the child.
-        set("system-browser");
-        publishAppPreferenceChange(service);
-        // Notification and next request share an ordered pipe; stale preferences must fail without polling.
-        const afterChange = (await instance.handlers.probe_preference!()) as PreferenceProbe;
-        expect(afterChange.preferredFlow).toBe("system-browser");
+  it("exits after host pipe loss even when the plugin keeps an interval alive", async () => {
+    const root = temporaryRoot!;
+    const entryPath = join(root, "interval-plugin.mjs");
+    writeFileSync(entryPath, `export const createPlugin = async () => {
+  setInterval(() => {}, 100);
+  return { handlers: {} };
+};
+`);
+    const { hostApi } = hostApiFor();
+    const factory = plainSessionFactory({
+      manifest: { ...MANIFEST, tools: [] }, entryPath,
+      childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+    });
+    await factory({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const child = [...spawnedChildren][0]!;
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    // Drop the host's protocol input without the normal stop hook or any signal.
+    child.stdin!.end();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        exited,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("child survived host pipe loss")),
+            TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2 + 1_000);
+        }),
+      ]);
+      expect(result).toEqual({ code: 0, signal: null });
+    } finally {
+      clearTimeout(timer);
+    }
+  }, 180_000);
 
-        // Unchanged readable settings must not announce a preference change.
-        publishAppPreferenceChange(service);
-        const afterNoop = (await instance.handlers.probe_preference!()) as PreferenceProbe;
-        expect(afterNoop.preferredFlow).toBe("system-browser");
-      } finally {
-        await instance.stop?.();
-      }
-    },
-    180_000,
-  );
-
-  it(
-    "answers with a preference that moved while the child was still constructing",
-    async () => {
-      const root = temporaryRoot!;
-      const pluginDataDir = join(root, "data");
-      mkdirSync(pluginDataDir, { recursive: true });
-      const { service, set } = fakeSettingsService("in-app");
-      const { hostApi } = hostApiFor(service);
-      const factory = plainSessionFactory({
-        manifest: MANIFEST,
-        entryPath: writePluginEntry(root, CONSTRUCT_WINDOW_MS),
-        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-      });
-      const constructing = factory({
-        pluginId: PLUGIN_ID,
-        pluginRoot: root,
-        hostRoot: repositoryRoot(),
-        pluginDataDir,
-        pluginSocketDir: resolvePluginSocketDir(pluginDataDir),
-        userHome: homedir(),
-        aveHome: aveHome(),
-        config: {},
-        log: () => undefined,
-        hostApi,
-      } as PluginRuntimeContext);
-
-      // The push arrives before runtime construction and cannot yet be applied.
-      await new Promise((settle) => setTimeout(settle, CONSTRUCT_WINDOW_MS / 4));
-      set("system-browser");
-      publishAppPreferenceChange(service);
-
-      const instance = await constructing;
-      try {
-        // Repush once construct resolves; no later change event will repeat a value that already moved.
-        const probed = (await instance.handlers.probe_preference!()) as PreferenceProbe;
-        expect(probed.preferredFlow).toBe("system-browser");
-      } finally {
-        await instance.stop?.();
-      }
-    },
-    180_000,
-  );
-
-  it(
-    "kills the child and releases the host watchers when a step after construct throws",
-    async () => {
-      const root = temporaryRoot!;
-      const pluginDataDir = join(root, "data");
-      mkdirSync(pluginDataDir, { recursive: true });
-      const { service } = fakeSettingsService("in-app");
-      // Fail the post-construct push, after the child exists.
-      const { hostApi, configWatchers } = hostApiFor(service, { throwOnPreferenceSnapshot: 2 });
-      const factory = plainSessionFactory({
-        manifest: MANIFEST,
-        entryPath: writePluginEntry(root),
-        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-      });
-      const before = new Set(spawnedChildren);
-
-      await expect(
-        factory({
-          pluginId: PLUGIN_ID,
-          pluginRoot: root,
-          hostRoot: repositoryRoot(),
-          pluginDataDir,
-        pluginSocketDir: resolvePluginSocketDir(pluginDataDir),
-        userHome: homedir(),
-        aveHome: aveHome(),
-          config: {},
-          log: () => undefined,
-          hostApi,
-        } as PluginRuntimeContext),
-      ).rejects.toThrow(/retired generation/);
-
-      const spawned = [...spawnedChildren].filter((child) => !before.has(child));
-      expect(spawned).toHaveLength(1);
-      // A post-construct push failure must close the child, transport and every bus subscription.
-      await waitFor(() => spawned[0]!.exitCode !== null || spawned[0]!.signalCode !== null,
-        "the abandoned child to exit");
-      // Release both the host snapshot watcher and the plugin-created subscription.
-      expect(configWatchers.map((watcher) => watcher.key).sort()).toEqual(["*", "apiKey"]);
-      expect(configWatchers.every((watcher) => watcher.released)).toBe(true);
-    },
-    180_000,
-  );
 });
