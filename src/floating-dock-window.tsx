@@ -4,6 +4,8 @@ import { parsePluginAuthStatus, usePluginAuthRevision, type PluginAuthState } fr
 import { createRoot, type Root } from "react-dom/client";
 import { HostAppearanceProvider, type HostAppearance } from "./ui/renderer/theme/HostAppearanceProvider.js";
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
+import { applySchemeColors } from "./ui/renderer/theme/resolve-theme.js";
+import { requireScheme } from "./ui/renderer/theme/schemes/index.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
 import type { DockActivity } from "./main/floating-dock.js";
@@ -39,6 +41,8 @@ element("close").addEventListener("click", () => dock.requestClose());
 dock.onTheme((value) => {
   const { theme, terminalFontFamily } = value;
   appearance = { ...theme, terminalFontFamily };
+  // The cards' stylesheet tokens follow the same snapshot as the dock chrome and HostAppearance: the host renderer's scheme.
+  applySchemeColors(requireScheme(theme.bundleId), document);
   renderPanels();
   const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
   for (const [name, key] of Object.entries(pick)) {

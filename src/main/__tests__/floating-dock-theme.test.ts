@@ -214,6 +214,8 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   async function openWindow(_args: string[]) {
     document.documentElement.removeAttribute("style");
+    document.documentElement.removeAttribute("data-scheme");
+    document.documentElement.removeAttribute("data-shell");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
     vi.resetModules();
     await import("../../floating-dock-preload.js");
@@ -244,6 +246,31 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   });
 
+  it("paints the cards' stylesheet tokens on its root from the same scheme, dark and then light", async () => {
+    const { resolveTheme } = await import("../../ui/renderer/theme/resolve-theme.js");
+    const { requireScheme } = await import("../../ui/renderer/theme/schemes/index.js");
+    await openWindow([]);
+    // What main's dock.theme post delivers to the dock preload (see the surface tests above for the main side).
+    const deliver = (bundleId: string, shell: "light" | "dark") =>
+      rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId, shell, tokens: THEME.tokens }, terminalFontFamily: "Dock Mono" }));
+    const root = document.documentElement;
+    const token = (name: string) => root.style.getPropertyValue(`--${name}`);
+
+    deliver("nord", "dark");
+    const nord = resolveTheme(requireScheme("nord"));
+    expect(root.getAttribute("data-scheme")).toBe("nord");
+    expect(root.getAttribute("data-shell")).toBe("dark");
+    expect(root.style.colorScheme).toBe("dark");
+    for (const name of ["background", "foreground", "muted", "muted-foreground", "border"] as const) expect(token(name)).toBe(nord.tokens[name]);
+    expect(bg()).toBe(THEME.tokens["--ave-bg"]);
+
+    deliver("github-light", "light");
+    const light = resolveTheme(requireScheme("github-light"));
+    expect(root.getAttribute("data-shell")).toBe("light");
+    expect(token("background")).toBe(light.tokens.background);
+    expect(token("background")).not.toBe(nord.tokens.background);
+  });
+
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
@@ -251,6 +278,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     await openWindow(windows[0]!.args);
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("");
+    expect(document.documentElement.hasAttribute("data-scheme")).toBe(false);
     expect(invoke).not.toHaveBeenCalled();
   });
 });

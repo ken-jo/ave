@@ -60,7 +60,7 @@ describe("dock host auth observation", () => {
       payload: { serverId: "fixture", generationId: "generation", resourceUri: "ui://fixture/panel" },
     }));
     expect(lifetime.mounts).toBe(0);
-    const theme = { shell: "dark", tokens: { "--ave-bg": "#123456" } };
+    const theme = { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#123456" } };
     await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Dock Mono, monospace" }));
     expect(invoke).toHaveBeenCalledWith(CHANNELS.plugins.call, "fixture_status", undefined, { userAction: false });
     expect(lifetime.mounts).toBe(1);

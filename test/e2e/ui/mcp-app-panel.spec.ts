@@ -106,18 +106,31 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith('/styles.css'));
       const head = document.querySelector('.slot > .slot-head');
       const cardHeader = document.querySelector('.slot .rounded.border > div');
+      // What `bg-background` resolves to under the scheme the dock root carries.
+      const schemeBackground = () => {
+        const probe = document.createElement('div');
+        probe.style.background = 'hsl(var(--background))';
+        document.body.append(probe);
+        const value = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return value;
+      };
       const style = (node: Element | null) => {
         if (!node) return null;
         const computed = getComputedStyle(node);
         return { display: computed.display, paddingLeft: computed.paddingLeft, paddingTop: computed.paddingTop, borderBottomWidth: computed.borderBottomWidth, backgroundColor: computed.backgroundColor, color: computed.color, appRegion: computed.getPropertyValue('-webkit-app-region') };
       };
-      return { stylesheetRules: sheet?.cssRules.length ?? 0, slotHead: style(head), slotTitle: head?.querySelector('.slot-title')?.textContent ?? null, cardHeader: style(cardHeader), cardHeaderText: [...(cardHeader?.children ?? [])].map((child) => child.textContent) };
+      return { shell: document.documentElement.getAttribute('data-shell'), cardBackground: style(document.querySelector('.slot .rounded.border'))?.backgroundColor ?? null, schemeBackground: schemeBackground(), stylesheetRules: sheet?.cssRules.length ?? 0, slotHead: style(head), slotTitle: head?.querySelector('.slot-title')?.textContent ?? null, cardHeader: style(cardHeader), cardHeaderText: [...(cardHeader?.children ?? [])].map((child) => child.textContent) };
     });
     expect(chrome.stylesheetRules).toBeGreaterThan(0);
     expect(chrome.slotHead).toMatchObject({ display: 'flex', paddingLeft: '10px', appRegion: 'drag' });
     expect(chrome.cardHeader).toMatchObject({ display: 'flex', borderBottomWidth: '1px' });
     expect(Number.parseFloat(chrome.cardHeader!.paddingLeft)).toBeGreaterThan(0);
     expect(chrome.cardHeaderText).toHaveLength(2);
+    // The card's stylesheet tokens follow the dock's scheme, not the light :root fallback.
+    expect(chrome.shell).toBe('dark');
+    expect(chrome.cardBackground).toBe(chrome.schemeBackground);
+    expect(chrome.cardBackground).not.toBe('rgb(255, 255, 255)');
     const contexts = await app.evaluate(async ({ webContents }) => {
       const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
       if (!guest) throw new Error('App guest not found');
@@ -160,6 +173,24 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       expect(context.styles.variables['--color-background-primary']).toBe(tokens['--ave-bg']);
     }
     await dock.screenshot({ path: testInfo.outputPath('dock-nord.png') });
+    await page.evaluate(async () => {
+      await window.aveApi.updateSettings({ appearance: { mode: 'light', lightScheme: 'github-light' } });
+    });
+    await expect.poll(() => dock.evaluate(() => document.documentElement.getAttribute('data-scheme'))).toBe('github-light');
+    const lightCard = await dock.evaluate(() => {
+      const probe = document.createElement('div');
+      probe.style.background = 'hsl(var(--background))';
+      document.body.append(probe);
+      const scheme = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const card = document.querySelector('.slot .rounded.border');
+      return { shell: document.documentElement.getAttribute('data-shell'), card: card ? getComputedStyle(card).backgroundColor : null, scheme };
+    });
+    writeFileSync(testInfo.outputPath('dock-light-card.json'), JSON.stringify(lightCard, null, 2));
+    expect(lightCard.shell).toBe('light');
+    expect(lightCard.card).toBe(lightCard.scheme);
+    expect(lightCard.card).not.toBe(chrome.cardBackground);
+    await dock.screenshot({ path: testInfo.outputPath('dock-light.png') });
   } finally { await app.close(); }
 });
 

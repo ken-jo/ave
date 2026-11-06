@@ -125,15 +125,22 @@ export function resolveAppearanceScheme(appearance: AppearanceSettings, prefersD
   return scheme;
 }
 
-/** The single pre-paint and live-update path for colors and UI fonts. */
-export function applyAppearance(appearance: AppearanceSettings, doc: Document = document, prefersDark = doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false): ResolvedTheme {
-  const theme = resolveTheme(resolveAppearanceScheme(appearance, prefersDark));
+/** Writes one scheme's semantic color tokens onto the document root; every window that hosts app UI paints through this. */
+export function applySchemeColors(scheme: ColorScheme, doc: Document = document): ResolvedTheme {
+  const theme = resolveTheme(scheme);
   const root = doc.documentElement;
   root.setAttribute("data-scheme", theme.id);
   root.setAttribute("data-shell", theme.shell);
   root.style.colorScheme = theme.shell;
   for (const [name, value] of Object.entries(STATIC_DESIGN_TOKENS)) root.style.setProperty(name, value);
   for (const [name, value] of Object.entries({ ...theme.tokens, ...theme.surfaces })) root.style.setProperty(`--${name}`, value);
+  return theme;
+}
+
+/** The single pre-paint and live-update path for colors and UI fonts. */
+export function applyAppearance(appearance: AppearanceSettings, doc: Document = document, prefersDark = doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false): ResolvedTheme {
+  const theme = applySchemeColors(resolveAppearanceScheme(appearance, prefersDark), doc);
+  const root = doc.documentElement;
   const family = appearance.font?.family;
   if (family && family !== "system") root.style.setProperty("--ave-font-family", family);
   else root.style.removeProperty("--ave-font-family");
