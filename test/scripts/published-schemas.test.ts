@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -40,6 +41,8 @@ describe("published contract schemas", () => {
     expect(existsSync(file)).toBe(true);
     expect(JSON.parse(readFileSync(file, "utf8")).$id)
       .toBe(`https://ave.agent-connector.ai/schemas/${path}`);
+    expect(createHash("sha256").update(readFileSync(file)).digest("hex"))
+      .toBe("3e92239b7d7a6ac517040c3cfe6909b1c959edb176af4c3a34f5a2aabea18d7a");
   });
 
   it("rejects a served copy that drifted from its canonical schema", () => {
