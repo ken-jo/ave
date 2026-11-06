@@ -587,34 +587,10 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   descriptions refuse bidirectional overrides and invisible characters. It
   applies as inline custom properties with its shell's shadow stack and
   `color-scheme`.
-- **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
-  and `ko` are visible built-ins without installing packages. A package can
-  overlay a compiled locale or add another locale; an installed language registers its locale
-  with its native and English names, and its messages are layered over
-  English, so a key it does not translate reads in English.
-  - A package translates the interface only. `messages.json` may use
-    English catalog keys outside the model-facing set, which always comes
-    from the compiled catalogs: the `be_*` namespace (system prompt, tool and
-    reviewer text), the shell execution environment the system prompt
-    describes, and a message a surface sends as the user's own
-    (`i18n/model-facing.ts`; a static test fails when a key reaches the
-    model from outside it). Missing keys are listed, not refused. Any
-    other key is refused by the repository check and ignored on a device,
-    where it never applies: a package written for another app version names
-    keys this one removed or has since made model-facing, and refusing them
-    would break every installed language whenever the catalog loses a key.
-  - A translation keeps the English placeholder set, and refuses
-    bidirectional overrides and invisible characters: an approval prompt
-    must ask about what it says.
-  - English (`en`, `en-*`) is never installable. A compiled locale is
-    installable only under its exact tag (`ko`, not `ko-KR`) and only from
-    an official or managed source; it lays its keys over the compiled
-    catalog, so removing it keeps that language selected.
-  - One package per locale: a second is refused at install
-    (`PACKAGE_ID_CONFLICT`).
-  - The main process uses installed locales too (dialogs, menus,
-    notifications), `<html lang>` follows the active locale, and an
-    announcement label falls back to English for a locale it does not carry.
+- **Language** — only compiled `en` and `ko` catalogs can be active. Language
+  packages are no longer installable or listed; legacy ledger entries and
+  payloads remain readable and inert until explicitly uninstalled. Legacy
+  locale activations do not produce migration installs.
 - **Font** — `font.json` is `{ family, license, faces: [{ file, weight,
   style }] }`, with a `LICENSE` file required; a face's format comes from
   its extension and its bytes must match it, and a weight range is
@@ -2038,7 +2014,7 @@ files is a device-management action).
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
   `startsAt`/`endsAt`, up to three navigation-only actions, app-version
   filtered actions) and the dismissed-ids behavior. Action labels fall back to
-  the `en` label when the active locale is an installed language that the
+  the `en` label when the active locale is a compiled language that the
   announcement does not carry. They are fetched after boot and every 6 hours
   while the update-check switch is on; a failed fetch keeps the list last
   read from the base still in force.
@@ -3122,7 +3098,7 @@ catalogs (en.ts and ko.ts); no raw keys.
 | `dependency-resolver.ts` | kept; runs on the descriptor's authority (§6.2) |
 | settings `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | removed by a settings migration |
 | settings `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | kept with the meanings above |
-| settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | converted to ledger entries |
+| settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | provider activations are adopted; legacy language ids remain inert |
 | the fourteen compiled theme bundles outside `moonstone` and `gallery` (`theme/bundles/*.ts`, their `styles.css` blocks, `MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`) | removed; the official theme packages carry the same ids |
 | vendor ids `nousResearch`, `v0` | renamed `nous-research`, `vercel-v0` with a one-time settings and secret migration, because a provider package is named after its vendor id |
 | secret `marketplace.apiKey` and its IPC (`ipc/domains/settings.ts`) | deleted; telemetry no longer reads it |
@@ -3200,10 +3176,8 @@ Where the sections above and the shipped code differ, the code wins:
   snapshot, and records itself in `packages/legacy-migration.json`: `{
   version: 1, completedAt }` when all content adoption succeeds, otherwise
   `{ version: 1 }`, and the next run retries failed content adoption.
-- **Language keys across app versions.** The upgrade run found every
-  installed language breaking on the first boot of a build whose catalog
-  had lost keys (the switch removes 157). A key outside the interface set is
-  now ignored on a device and refused only by the repository check (§5.5).
+- **Language catalogs.** Only compiled catalogs supply translations; installed
+  language payloads are never parsed or applied.
 - **Web documentation.** The site's server-marketplace pages and their
   twelve screenshots are gone; `/docs/marketplace` explains sources, installs
   and updates, and `/docs/marketplace/authors` is the package-author page

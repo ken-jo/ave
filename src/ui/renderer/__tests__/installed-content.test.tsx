@@ -6,7 +6,7 @@ import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
 import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
-import { isLocale, loadLocaleMessages, localeInfo, setLocale, translate } from "../../../i18n/index.js";
+import { isLocale, loadLocaleMessages, localeInfo, normalizeLocale, setLocale, translate } from "../../../i18n/index.js";
 import type { InstalledContentApi, InstalledContentView } from "../../../shared/installed-content.js";
 
 configure({ asyncUtilTimeout: 5000 });
@@ -37,17 +37,18 @@ afterEach(() => {
 });
 
 describe("installed languages", () => {
-  it("registers the locale and loads its catalog through the bridge, English answering the rest", async () => {
+  it("ignores legacy language views without loading their messages", async () => {
     const api = bridge(view({
       languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
     }), { fr: { "appearanceTab.pageTitle": "Apparence" } });
     await ensureInstalledContent({ installedContent: api });
-    expect(isLocale("fr")).toBe(true);
-    expect(localeInfo("fr")).toEqual({ nativeName: "Français", englishName: "French" });
-    await loadLocaleMessages("fr");
-    expect(api.languageMessages).toHaveBeenCalledWith("fr");
-    expect(translate("fr", "appearanceTab.pageTitle")).toBe("Apparence");
-    expect(translate("fr", "appearanceTab.schemeTitle")).toBe(translate("en", "appearanceTab.schemeTitle"));
+    expect(isLocale("fr")).toBe(false);
+    expect(localeInfo("fr")).toBeUndefined();
+    // @ts-expect-error Legacy package metadata cannot supply an internal locale.
+    await expect(loadLocaleMessages("fr")).rejects.toThrow("no catalog for locale fr");
+    expect(api.languageMessages).not.toHaveBeenCalled();
+    expect(translate(normalizeLocale("fr"), "appearanceTab.pageTitle")).toBe(translate("en", "appearanceTab.pageTitle"));
+    expect(translate(normalizeLocale("fr"), "appearanceTab.schemeTitle")).toBe(translate("en", "appearanceTab.schemeTitle"));
   });
 
   it("forgets a locale whose package is gone", async () => {
@@ -71,8 +72,8 @@ describe("marketplace changes", () => {
 
     vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ languages: [french] }) });
     changed();
-    await waitFor(() => expect(isLocale("fr")).toBe(true));
-    expect(api.installed).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(api.installed).toHaveBeenCalledTimes(2));
+    expect(isLocale("fr")).toBe(false);
 
     resetInstalledContentForTests();
     expect(off).toHaveBeenCalledTimes(1);
@@ -117,21 +118,20 @@ describe("installed fonts", () => {
 });
 
 describe("appearance pickers list installed items", () => {
-  it("shows the installed language and font", async () => {
+  it("ignores installed languages while preserving installed fonts", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE } } });
     api.installedContent = bridge(view({
       languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
       fonts: [{ name: "harbor-sans", family: "Harbor Sans", stack: "\"ave-font-harbor-sans\", system-ui", faces: [], sourceId: "acme", version: "1.0.0" }],
     })) as never;
     (window as unknown as { aveApi: unknown }).aveApi = api;
-    const { getByTestId, getByText } = render(
+    const { queryByTestId, getByText } = render(
       <ThemeProvider api={api as never}><AppearanceTab /></ThemeProvider>,
     );
     await act(async () => {
       await ensureInstalledContent(api as never);
     });
-    expect(getByTestId("language-option-fr")).toHaveTextContent("Français");
-    expect(getByTestId("language-option-fr")).toHaveAttribute("data-marketplace-installed", "true");
+    expect(queryByTestId("language-option-fr")).toBeNull();
     expect(getByText("Harbor Sans")).toBeTruthy();
   });
 });

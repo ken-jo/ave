@@ -51,7 +51,7 @@ work in P1–P4 has real data to test against.
 | 0.3 | Index generator + "committed index equals regenerated index" check |
 | 0.4 | Release workflow (design §6.3): on `main`, build each plugin whose source version has no `<name>-v<X.Y.Z>` tag, tag it, upload `{name}-{X.Y.Z}.zip` as a release asset of this repository, and open the pin PR; CI on the pin PR downloads the asset, hashes, unpacks and compares `plugin.json` with the descriptor |
 | 0.5 | Import each official plugin's source into `plugins/<name>/source/` with its history (each first-party plugin; `hello-world`, which has no repository, is rebuilt from the package the current server synthesizes), and `ave-plugin-template` into `templates/plugin/`; each plugin keeps its own lockfile and is built in its own directory; each plugin moved from the `@ave/plugin-sdk` git dependency to the vendored contract and the shared build helper in `tools/` (design §5.6); `requires.minAppVersion` set in `plugin.json` and `installPolicy` removed from it (design §5.3). `ave-plugin-repo` is not an official plugin and `portal` moves to its owner's git; neither is imported |
-| 0.6 | Content conversion scripts, run once: every agent, skill and MCP package in the current seed set (skills in the Agent Skills layout, design §5.2); the non-default theme bundles to `theme.json` under their bundle ids; the Korean catalog to the `korean` language package; the provider seeds, all built-in vendors, to vendor packages; messaging connections (the server has none) |
+| 0.6 | Content conversion scripts, run once: every agent, skill and MCP package in the current seed set (skills in the Agent Skills layout, design §5.2); the non-default theme bundles to `theme.json` under their bundle ids; the Korean catalog is built in and language packages are retired; the provider seeds, all built-in vendors, to vendor packages; messaging connections (the server has none) |
 | 0.7 | Plugin descriptors for every currently published plugin, pinned to the release assets that 0.4 builds from the sources imported in 0.5. For plugins in `HOST_SECRET_GRANTS` (today `meeting` and `local-indexer`), `versions[]` also lists every older version still installed in the field that the app can load (the Agent Plugins manifest line, `minAppVersion` 0.7.0; design §16.3): the exact zip the current server serves for that version is uploaded unchanged as that version's release asset and pinned by its sha256, so migrated installs keep their grant (design §16.3) |
 | 0.8 | `policy/revocations.json` carrying today's active revocations of official packages |
 
@@ -100,7 +100,7 @@ phase 6 removes the old entry.
 |---|---|---|
 | 3.1 | Content package store + `packages/ledger.json` (install, uninstall, origin) with the file rules of design §5.4, SVG excluded, assets served through a host scheme | limits, links, traversal, SVG rejected |
 | 3.2 | Themes: load `theme.json` into the `ThemeBundle` shape; move the WCAG contrast computation that today lives only in `theme/bundles/__tests__/contrast.test.ts` into a runtime validator used by both that test and the installer, and reject failing themes at install; built-in `moonstone` and `gallery` stay compiled in; installed ids are validated strings, not additions to the `BundleId` union | contrast failure rejection; switching to and from an installed theme |
-| 3.3 | Languages: open locale registry; install `messages.json` as a catalog layered over `en`; key-existence check against the `en` key set at install (unknown keys rejected, missing keys fall back to `en` and are listed in the package detail) | missing/unknown key handling; locale switch |
+| 3.3 | Languages: compiled `en` and `ko` only; legacy language packages remain inert and may be uninstalled | unsupported saved locale falls back to English |
 | 3.4 | Fonts (new kind): serve files through a host asset scheme, register `@font-face`, add installed families to the appearance font list; license file required | font load in renderer; uninstall while selected falls back to the default |
 | 3.5 | Providers and messaging connections: move the current asset-package install code onto the ledger | parity with today's install/uninstall behavior |
 
@@ -117,12 +117,10 @@ exposes installed content through two read-only channels; install and
 uninstall IPC come with 6.1, which runs the activation P3 provides.
 
 The P3 security and correctness reviews added the rules now in design §5.5:
-- language packages translate the interface only (no `be_*` keys), keep the
-  English placeholders, and may replace a compiled locale only under its
-  exact tag from an official or managed source;
+- language packages are retired; compiled catalogs supply all translations;
 - installed fonts are declared under a package alias;
 - `ave-content:` admits only the app's own opaque origin;
-- one package per locale or font family;
+- one package per font family;
 - activation never throws after its settings write lands;
 - vendor provider packages unlock a built-in vendor.
 

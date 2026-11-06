@@ -29,7 +29,7 @@ import { policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { createPinnedFetch } from "../../net/pinned-fetch.js";
-import { candidateVersion, planPackage } from "../../resolve/descriptor.js";
+import { candidateVersion, planPackage, type PackagePlan } from "../../resolve/descriptor.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../sources/policy.js";
 import { SourceRegistry } from "../../sources/registry.js";
 import { SourceSyncer } from "../../sources/sync.js";
@@ -48,11 +48,6 @@ const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const ENGLISH = { "app.title": "Ave", "chat.send": "Send" };
 
 const instruction = (name: string) => `---\nname: harbor\ndescription: ${name} instructions.\n---\n${name} instructions.\n`;
-const language = (name: string, locale: string) => ({
-  [`languages/${name}/ave-package.json`]: descriptor("language", name, "1.0.0", { locale, entry: "language.json", messages: "messages.json" }),
-  [`languages/${name}/language.json`]: text({ locale, nativeName: "Français", englishName: "French" }),
-  [`languages/${name}/messages.json`]: text({ "chat.send": "Envoyer" }),
-});
 
 describe("content package store", () => {
   let serverRoot: string;
@@ -350,42 +345,41 @@ describe("content package store", () => {
     expect(installs("skill", "harbor")).toEqual([first.entry.origin.installId]);
   });
 
-  it("keeps a language whose keys the app catalog no longer has, applying only the keys it still has", async () => {
-    const { name } = market([{ kind: "language", name: "french", path: "languages/french" }], {
-      ...language("french", "fr"),
-      "languages/french/messages.json": text({ "chat.send": "Envoyer", "app.title": "Ave", "chat.retired": "Ancien" }),
-    });
-    const syncer = await open(name);
+  it("refuses language staging and forged installs before any writes", async () => {
+    const plan = { kind: "language", name: "french" } as PackagePlan;
+    await expect(stageContentPackage(plan, {} as never, { workRoot: join(root, "work"), english: ENGLISH }))
+      .rejects.toMatchObject({ code: "CONTENT_RULE_VIOLATION", message: "Language packages are no longer supported" });
+    expect(existsSync(join(root, "work"))).toBe(false);
     const store = await openStore();
-    const staged = await stage(syncer, (await rows(syncer))[0]!);
-    expect(staged.content).toMatchObject({ messages: { "chat.send": "Envoyer", "app.title": "Ave" } });
-    expect(await store.install(staged)).toMatchObject({ action: { action: "install" }, entry: { name: "french" } });
-
-    const updated = await ContentStore.open({ root: join(root, "packages"), english: { "chat.send": "Send" }, activation, now: () => new Date(AT) });
-    const { loaded, broken } = await updated.load();
-    expect(broken).toEqual([]);
-    expect(loaded.map((item) => item.content)).toEqual([
-      { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: { "chat.send": "Envoyer" }, missingKeys: [] },
-    ]);
+    await expect(store.install({ plan } as never)).rejects.toMatchObject({ code: "CONTENT_RULE_VIOLATION" });
+    expect(store.list()).toEqual([]);
+    expect(existsSync(join(root, "packages"))).toBe(false);
+    expect(activated).toEqual([]);
   });
-
-  it("refuses a second package for a locale another installed package provides", async () => {
-    const { name } = market(
-      [
-        { kind: "language", name: "french", path: "languages/french" },
-        { kind: "language", name: "francais", path: "languages/francais" },
-      ],
-      { ...language("french", "fr"), ...language("francais", "fr") },
-    );
-    const syncer = await open(name);
-    const found = await rows(syncer);
-    const store = await openStore();
-    await store.install(await stage(syncer, found.find((row) => row.name === "french")!));
-    await expect(store.install(await stage(syncer, found.find((row) => row.name === "francais")!)))
-      .rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT", message: "french already provides the fr language" });
-    expect(store.list().map((entry) => entry.name)).toEqual(["french"]);
+  it("keeps mixed legacy ledger entries and payloads readable and inert until explicit uninstall", async () => {
+    const { syncer, store } = await openHarborMarket();
+    await store.install(await stage(syncer, (await rows(syncer))[0]!));
+    const active = store.list()[0]!;
+    const legacy: LedgerEntry = { ...active, kind: "language", name: "french", origin: { ...active.origin, installId: undefined, payloadDir: undefined, consent: undefined } };
+    const ledgerPath = join(root, "packages", "ledger.json");
+    const ledger = await ContentLedger.open(ledgerPath);
+    await ledger.put(legacy);
+    const bytes = readFileSync(ledgerPath, "utf8");
+    const payload = join(root, "packages", "language", "french", "1.0.0");
+    mkdirSync(payload, { recursive: true });
+    writeFileSync(join(payload, "messages.json"), "unparsed legacy bytes");
+    const reopened = await openStore();
+    expect(reopened.list().map(entry => entry.kind).sort()).toEqual(["language", "skill"]);
+    expect((await reopened.load()).loaded.map(item => item.entry.kind)).toEqual(["skill"]);
+    expect((await reopened.load()).broken).toMatchObject([{ entry: { kind: "language" }, problem: "language packages are not applied by this build" }]);
+    await reopened.sweep();
+    expect(readFileSync(ledgerPath, "utf8")).toBe(bytes);
+    expect(readFileSync(join(payload, "messages.json"), "utf8")).toBe("unparsed legacy bytes");
+    await reopened.uninstall("language", "french", EMPTY_MARKETPLACE_POLICY);
+    expect(reopened.list().map(entry => entry.kind)).toEqual(["skill"]);
+    expect(existsSync(payload)).toBe(false);
+    expect(activated.at(-1)).toMatchObject({ op: "deactivate", content: null });
   });
-
   it("refuses the same name from another source unless the install switches source", async () => {
     const files = harborFiles();
     const packages = [{ kind: "skill", name: "harbor", path: "skills/harbor" }];

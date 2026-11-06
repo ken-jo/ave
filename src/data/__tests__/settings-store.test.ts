@@ -30,7 +30,6 @@ import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { compactionModelRouteKey, selectedCompactionModel } from "../../shared/compaction-model.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
-import { registerInstalledLocales } from "../../i18n/locale.js";
 import {
   LOG_RETENTION_DAYS,
   LOG_RETENTION_MIN_DAYS,
@@ -2809,16 +2808,24 @@ describe("SettingsService system locale detection", () => {
     expect(service.get("appearance").language).toBe("en");
   });
 
-  it("does not seed a third-party system locale even when its package is registered", () => {
-    registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
+  it("falls back for a saved installed-only language and logs only its replacement count once", () => {
+    const savedLanguage = "fr-CA";
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, language: savedLanguage } }), "utf-8");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "fr-FR" });
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       expect(service.get("appearance").language).toBe("en");
+      expect(warn.mock.calls.filter(([message]) => String(message).includes("appearance.language replaced"))).toEqual([
+        ["[settings] appearance.language replaced %d saved locale values", 1],
+      ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(savedLanguage);
+      warn.mockClear();
+      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").language).toBe("en");
+      expect(warn.mock.calls.filter(([message]) => String(message).includes("appearance.language replaced"))).toEqual([]);
     } finally {
-      registerInstalledLocales([]);
+      warn.mockRestore();
     }
   });
-
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),

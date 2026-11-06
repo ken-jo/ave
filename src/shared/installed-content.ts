@@ -25,7 +25,7 @@ interface InstalledFrom {
   version: string;
 }
 
-export interface InstalledLanguageView extends InstalledFrom {
+interface InstalledLanguageView extends InstalledFrom {
   name: string;
   /** BCP 47 tag; what `settings.language` holds while the language is selected. */
   locale: string;

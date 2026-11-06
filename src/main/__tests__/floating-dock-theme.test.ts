@@ -298,7 +298,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     expect(token("background")).not.toBe(nord.tokens.background);
   });
 
-  it("is sent a built-in language when main's is an installed-only pack, and paints in it", async () => {
+  it.each(["en", "ko"] as const)("sends the active compiled locale %s directly to the dock", async (locale) => {
     await openWindow([]);
     // The modules the dock window just loaded: main's side of this test must share their i18n and theme registries.
     const i18n = await import("../../i18n/index.js");
@@ -306,22 +306,20 @@ describe("the dock window paints the host theme main sends (real preload, host t
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const previous = i18n.getLocale();
     try {
-      i18n.registerInstalledLocales([{ locale: "ja", nativeName: "日本語", englishName: "Japanese" }]);
-      i18n.setLocale("ja");
-      expect(i18n.getLocale()).toBe("ja");
+      i18n.setLocale(locale);
+      expect(i18n.getLocale()).toBe(locale);
       replay.recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
       const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
       dock.show(BOUNDS);
       const win = windows.at(-1)!;
       win.fire("ready-to-show");
       const sent = win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).at(-1)?.[1] as { locale: string };
-      expect(sent.locale).toBe("en");
+      expect(sent.locale).toBe(locale);
       // The dock accepted the snapshot: its root carries the scheme it names.
       expect(document.documentElement.getAttribute("data-scheme")).toBe("nord");
       expect(bg()).toBe(await schemeBackground("nord"));
     } finally {
       i18n.setLocale(previous);
-      i18n.registerInstalledLocales([]);
     }
   });
 

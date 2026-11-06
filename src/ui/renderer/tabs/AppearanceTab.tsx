@@ -1,7 +1,5 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Store } from "lucide-react";
-import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
 import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
@@ -9,15 +7,12 @@ import { getApi, isDarwin } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
-  isInstalledLocale,
   localeInfo,
   visibleLocalesFor,
 } from "../../../i18n/index.js";
 import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
-
-type AppearanceMarketplaceFilter = "language";
 
 function handleRadioGroupKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
   const directions = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as const;
@@ -234,35 +229,15 @@ function FontFamilyCustomInput({
  * change to every window). Option labels use each locale's native name so they
  * are recognizable regardless of the current language.
  */
-function LanguageSection({
-  onOpenMarketplace,
-}: {
-  onOpenMarketplace?: (filter: AppearanceMarketplaceFilter) => void;
-}) {
+function LanguageSection() {
   const { locale, setLocale, t } = useTranslation();
   const notifySaved = useNotifySaved();
-  // Re-render when installed languages load; the registry itself is module state.
-  useInstalledContent();
-  const visibleLocales = visibleLocalesFor([locale]);
-  const installedLocaleIdSet = new Set(visibleLocales.filter(isInstalledLocale));
+  const visibleLocales = visibleLocalesFor();
   return (
     <SettingsSection
       data-settings-section="appearance-language"
       title={t("settings.appearance.language.title")}
       description={t("settings.appearance.language.description")}
-      actions={onOpenMarketplace ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1.5 text-xs"
-          data-testid="appearance-tab:marketplace-languages"
-          onClick={() => onOpenMarketplace("language")}
-        >
-          <Store className="size-3.5" aria-hidden={true} />
-          {t("appearanceTab.moreLanguagesInMarketplace")}
-        </Button>
-      ) : null}
     >
       <div role="radiogroup" aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
         {visibleLocales.map((code) => {
@@ -274,7 +249,6 @@ function LanguageSection({
               role="radio"
               aria-checked={selected}
               data-testid={`language-option-${code}`}
-              data-marketplace-installed={installedLocaleIdSet.has(code) ? "true" : "false"}
               onClick={() => {
                 if (!selected) {
                   setLocale(code);
@@ -288,14 +262,6 @@ function LanguageSection({
               }`}
             >
               <span>{localeInfo(code)?.nativeName ?? code}</span>
-              {installedLocaleIdSet.has(code) && (
-                <span
-                  className="ml-2 inline-flex h-5 items-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-secondary-foreground"
-                  data-testid={`appearance-tab:language-marketplace-badge:${code}`}
-                >
-                  {t("appearanceTab.marketplaceInstalledBadge")}
-                </span>
-              )}
             </button>
           );
         })}
@@ -304,7 +270,7 @@ function LanguageSection({
   );
 }
 
-export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filter: AppearanceMarketplaceFilter) => void } = {}) {
+export function AppearanceTab() {
   const { t } = useTranslation();
   const { mode, setMode, darkScheme, lightScheme, setScheme } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
@@ -325,7 +291,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
       />
 
       {/* ── Language ──────────────────────────────────── */}
-      <LanguageSection onOpenMarketplace={onOpenMarketplace} />
+      <LanguageSection />
 
       <SettingsSection
         data-settings-section="appearance-theme"

@@ -6,6 +6,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
 import { CoveredConversationApprovalDock } from "../permissions/ApprovalDock.js";
 import { I18nProvider } from "../../../../i18n/react.js";
+import { normalizeLocale, type Locale } from "../../../../i18n/locale.js";
 import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
@@ -53,7 +54,7 @@ it("names a covered conversation's approval exactly as its untitled sidebar row"
 
 function renderSidebar(
   overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
-  options: { locale?: string; browserTabs?: AveApi["browserTabs"] } = {},
+  options: { locale?: Locale; browserTabs?: AveApi["browserTabs"] } = {},
 ) {
   const onLoadSession = vi.fn();
   const onNewChatForProject = vi.fn();
@@ -172,7 +173,7 @@ function renderSidebar(
     },
   };
 
-  const tree = (locale: string | undefined) => {
+  const tree = (locale: Locale | undefined) => {
     const sidebar = (
       <TooltipProvider>
         <Sidebar {...props} />
@@ -193,7 +194,7 @@ function renderSidebar(
     listRoots,
     pickRoot,
     addedRoot: ADDED_ROOT,
-    switchLocale: (locale: string) => result.rerender(tree(locale)),
+    switchLocale: (locale: Locale) => result.rerender(tree(locale)),
     rerenderSidebar: (updates: Partial<Parameters<typeof Sidebar>[0]>) => {
       Object.assign(props, updates);
       result.rerender(tree(options.locale));
@@ -257,10 +258,10 @@ describe("Sidebar plugin view labels follow the UI language", () => {
       expect(await findByRole("menuitem", { name: /미팅/ })).toBeTruthy();
       expect(queryByRole("menuitem", { name: /Meeting/ })).toBeNull();
 
-      // A language the map does not name falls back to the entry's own text.
-      switchLocale("fr");
-      if (!queryByRole("menuitem", { name: /미팅/ })) fireEvent.click(getByTestId("sidebar-group-plugins"));
-      expect(await findByRole("menuitem", { name: /미팅/ })).toBeTruthy();
+      // A retired saved selection resolves to the default compiled language.
+      switchLocale(normalizeLocale("fr"));
+      if (!queryByRole("menuitem", { name: /Meeting/ })) fireEvent.click(getByTestId("sidebar-group-plugins"));
+      expect(await findByRole("menuitem", { name: /Meeting/ })).toBeTruthy();
     } finally {
       restore();
       cleanup();
@@ -1923,7 +1924,7 @@ describe("Sidebar — every conversation family", () => {
     } finally { view.restore(); }
   });
 
-  it.each(["ko", "en"])("archives an ended binding behind the toggle with an openable provenance row in %s", async (locale) => {
+  it.each(["ko", "en"] as const)("archives an ended binding behind the toggle with an openable provenance row in %s", async (locale) => {
     let update!: (state: SessionTabBindingsState) => void;
     const tabId = "terminal:closed";
     const browserTabs = {

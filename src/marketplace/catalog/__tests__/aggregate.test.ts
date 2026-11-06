@@ -166,6 +166,12 @@ describe("aggregateCatalog", () => {
     diagnostics: [],
   });
 
+  it("skips legacy language entries in a mixed catalog", () => {
+    const packages: CatalogPackage[] = [pkg([version("1.0.0")]), { ...pkg([version("1.0.0")], "french"), kind: "language" }];
+    const rows = aggregateCatalog([{ sourceId: "ave", sourceOrigin: "official", snapshot: snapshot("ave", packages) }], context());
+    expect(rows.map(row => row.kind)).toEqual(["skill"]);
+  });
+
   it("keeps one row per (source, kind, name) and applies each source's own revocations only", () => {
     const rows = aggregateCatalog(
       [

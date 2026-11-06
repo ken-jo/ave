@@ -198,7 +198,7 @@ function installApiWithKoreanPack(packTitle: string) {
 }
 
 describe("I18nSettingsProvider installed language package over a compiled locale", () => {
-  it("shows the package's strings once installed content registers after a Korean first render", async () => {
+  it("keeps compiled strings when legacy content is returned", async () => {
     __resetLazyLocaleMessagesForTest();
     const { api } = installApiWithKoreanPack("언어(패키지)");
 
@@ -206,20 +206,21 @@ describe("I18nSettingsProvider installed language package over a compiled locale
     render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
     expect(screen.getByTestId("language-title")).toHaveTextContent("언어");
 
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어(패키지)"));
+    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
     expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
   });
 
-  it("applies an updated package to the language on screen", async () => {
+  it("ignores updated legacy language messages", async () => {
     __resetLazyLocaleMessagesForTest();
     const { api, updatePack } = installApiWithKoreanPack("언어(패키지)");
     const initialLocale = await resolveBootLocale(api as never);
     render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어(패키지)"));
+    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
 
     updatePack("언어(새 패키지)");
 
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어(새 패키지)"));
+    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
+    expect(api.installedContent.languageMessages).not.toHaveBeenCalled();
     expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
   });
 });

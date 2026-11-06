@@ -20,6 +20,7 @@ import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 import type { GitRunner } from "../../git/run-git.js";
 import { ContentStore } from "../../content/store.js";
+import { ContentLedger } from "../../content/ledger.js";
 import { NetworkGate } from "../../net/network-gate.js";
 import { createPinnedFetch } from "../../net/pinned-fetch.js";
 import type { SourcePreviewResultView } from "../../../shared/git-marketplace.js";
@@ -715,7 +716,38 @@ describe("MarketplaceService", () => {
   });
 
 
-  it("adopts a legacy locale from the official source once its snapshot exists, once, and drops it from the legacy list", async () => {
+  it("preserves inert language receipts and payloads during source revocation", async () => {
+    service.close();
+    const ledgerPath = join(root, "packages", "ledger.json");
+    const ledger = await ContentLedger.open(ledgerPath);
+    await ledger.put({ kind: "language", name: "korean", version: "1.0.0", origin: {
+      sourceId: "acme-tools", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "languages/korean",
+      version: "1.0.0", contentSha256: "b".repeat(64), installedAt: AT.toISOString(),
+    } });
+    const bytes = readFileSync(ledgerPath, "utf8");
+    const payload = join(root, "packages", "language", "korean", "1.0.0");
+    mkdirSync(payload, { recursive: true });
+    writeFileSync(join(payload, "messages.json"), "legacy bytes");
+    await build();
+    const source = market("1.0.0", "acme-tools", { language: true });
+    source.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations: [
+      { kind: "language", name: "korean", versions: "*", reason: "Retired", at: AT.toISOString(), action: "uninstall" },
+    ] }) }, "retire language fixture");
+    await addMarket(source.url);
+    await service.enforceRevocations();
+    expect(readFileSync(ledgerPath, "utf8")).toBe(bytes);
+    expect(readFileSync(join(payload, "messages.json"), "utf8")).toBe("legacy bytes");
+    expect((await service.catalog({})).entries.map(entry => entry.key.kind)).not.toContain("language");
+    expect((await service.catalog({ installedOnly: true })).entries.map(entry => entry.key.kind)).toContain("language");
+  });
+
+  it("refuses language install plans before source resolution", async () => {
+    await expect(service.planInstall({ sourceId: "missing", kind: "language", name: "french" }))
+      .rejects.toMatchObject({ code: "CONTENT_RULE_VIOLATION", message: "Language packages are no longer supported" });
+    expect(store.list()).toEqual([]);
+  });
+
+  it("does not reinstall legacy languages when the official snapshot becomes available", async () => {
     const { url } = market("1.0.0", "ave", { language: true });
     service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
@@ -728,10 +760,10 @@ describe("MarketplaceService", () => {
 
     await service.refresh();
     const first = await service.applyBootInstalls([], applied);
-    expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "language", name: "korean" }], failed: [] }]);
-    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["language:korean@ave"]);
-    expect(adopting).toEqual([true]);
-    expect(released).toEqual([{ locales: ["ko"] }]);
+    expect(contentReports).toEqual([{ adopted: [], failed: [] }]);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual([]);
+    expect(adopting).toEqual([]);
+    expect(released).toEqual([]);
     expect(first.notice).toBeNull();
 
     await service.applyBootInstalls([], applied);

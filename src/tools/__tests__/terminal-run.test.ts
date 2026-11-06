@@ -170,7 +170,7 @@ describe("terminal_run", () => {
     expect(isCanonicalTerminalRunTool({ ...tool })).toBe(false);
   });
 
-  it.each(["en", "ko"])("describes session authority and ordinary upload guardrails in %s", async locale => {
+  it.each(["en", "ko"] as const)("describes session authority and ordinary upload guardrails in %s", async locale => {
     const previous = getLocale();
     try {
       await loadLocaleMessages(locale);
@@ -661,7 +661,7 @@ describe("terminal_run", () => {
       }]);
     });
 
-    it.each(["en", "ko"])("keeps the handler and explains its removal in %s", async (locale) => {
+    it.each(["en", "ko"] as const)("keeps the handler and explains its removal in %s", async (locale) => {
       const previous = getLocale();
       try {
         await loadLocaleMessages(locale);

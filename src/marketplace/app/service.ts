@@ -240,6 +240,8 @@ function boundOf(records: readonly InstalledRecord[]): BoundInstall[] {
 /** Only readable versions can be revoked, and only by their own source. */
 function revokedAmong(records: readonly InstalledRecord[], rules: RevocationFeed["rules"]): RevokedInstall[] {
   return records.flatMap((record) => {
+    // Retired language payloads are inert and remain on disk until explicit removal.
+    if (record.kind === "language") return [];
     if (record.sourceId === null || record.version === null) return [];
     const sourceId = record.sourceId;
     const revocation = findRevocation(record.kind, record.name, record.version, rules.filter((rule) => rule.sourceId === sourceId));
@@ -1448,6 +1450,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async plan(request: InstallPlanRequest, adopt: boolean): Promise<InstallPlanView> {
+    if (request.kind === "language") throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
     const planned = this.source(request.sourceId);
     // Capture first, then derive the row from that same read.
     const folder = planned.transport === "folder" ? await this.captureFolder(planned.id, request.kind, request.name) : null;

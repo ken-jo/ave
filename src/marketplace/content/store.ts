@@ -76,6 +76,7 @@ export interface StageOptions {
 }
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
+  if (plan.kind === "language") throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
   if (!isContentKind(plan.kind) || !isDataContentKind(plan.kind)) {
     throw new Error(`${plan.kind} ${plan.name} is not a content package`);
   }
@@ -151,7 +152,6 @@ export interface BrokenContent {
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
 
 function claimOf(content: ParsedContent): string | null {
-  if (content.kind === "language") return `the ${content.locale} language`;
   if (content.kind === "font") return `the ${content.family} font family`;
   return null;
 }
@@ -232,6 +232,9 @@ export class ContentStore {
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
   ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+    if ((staged.plan as PackagePlan).kind === "language") {
+      throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
+    }
     assertAveHomeAcceptsInstalls();
     return this.mutate(async () => {
       const { plan } = staged;
@@ -312,6 +315,7 @@ export class ContentStore {
         throw error;
       });
       for (const kind of await entries(this.options.root)) {
+        if (kind.name === "language") continue;
         if (!kind.isDirectory() || !(CONTENT_KINDS as readonly string[]).includes(kind.name)) continue;
         for (const name of await entries(join(this.options.root, kind.name))) {
           if (!name.isDirectory()) continue;
@@ -333,7 +337,7 @@ export class ContentStore {
     });
   }
 
-  /** Locale and font-family providers must be unique so removing one cannot clear another selection. */
+  /** Font-family providers must be unique so removing one cannot clear another selection. */
   private async assertClaimFree(staged: StagedContent): Promise<void> {
     const claim = claimOf(staged.content);
     if (!claim) return;

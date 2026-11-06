@@ -1,6 +1,5 @@
-/** Load installed languages and fonts before resolving saved selections. */
+/** Load installed fonts before resolving saved selections. */
 import { useSyncExternalStore } from "react";
-import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import {
   fontAlias,
   isContentAssetUrl,
@@ -47,16 +46,10 @@ function applyFonts(fonts: readonly InstalledFontView[]): void {
   style.textContent = fontFaceCss(fonts);
 }
 
-/** Apply `view` to the locale and font registries and tell subscribers. */
-export function applyInstalledContent(view: InstalledContentView, api: InstalledContentApi): void {
-  registerInstalledLocales(view.languages);
-  setInstalledCatalogLoader(async (locale) => {
-    const result = await api.languageMessages(locale);
-    if (!result.ok) throw new Error(`${locale}: ${result.error}`);
-    return result.messages;
-  });
+/** Apply `view` to the font registry and tell subscribers. */
+export function applyInstalledContent(view: InstalledContentView, _api: InstalledContentApi): void {
   applyFonts(view.fonts);
-  current = view;
+  current = { ...view, languages: [] };
   for (const listener of listeners) listener();
 }
 
@@ -80,7 +73,7 @@ export function ensureInstalledContent(
 }
 
 /** Be told whenever the installed content of this window is (re)applied. Returns the unsubscribe function. */
-export function subscribeInstalledContent(listener: () => void): () => void {
+function subscribeInstalledContent(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
@@ -97,7 +90,5 @@ export function resetInstalledContentForTests(): void {
   offCatalogChanged = null;
   offPromptsUpdated?.();
   offPromptsUpdated = null;
-  registerInstalledLocales([]);
-  setInstalledCatalogLoader(null);
   if (typeof document !== "undefined") document.getElementById(FONT_STYLE_ID)?.remove();
 }

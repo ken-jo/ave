@@ -23,6 +23,7 @@ vi.mock("electron", () => ({
   protocol: { handle: vi.fn() },
 }));
 
+import { normalizeLocale } from "../../i18n/index.js";
 import { SettingsService } from "../../data/settings-store.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
@@ -122,12 +123,12 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([]);
   });
 
-  it("returns a selected language or font to the default when its package is removed", async () => {
+  it("keeps a normalized retired language inert and resets a removed font", async () => {
     const activation = createContentActivation(deps);
-    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "fr", font: { family: installedFontStack("harbor-sans") } } });
+    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: normalizeLocale("fr"), font: { family: installedFontStack("harbor-sans") } } });
 
 
-    await activation.deactivate(entry("language", "french"), { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: {}, missingKeys: [] });
+    await activation.deactivate(entry("language", "french"), null);
     expect(settingsService.get("appearance").language).toBe("en");
 
     await activation.deactivate(entry("font", "harbor-sans"), null);
@@ -137,7 +138,7 @@ describe("createContentActivation", () => {
   it("keeps a compiled language selected when the package that overlaid it is removed", async () => {
     const activation = createContentActivation(deps);
     await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "ko" } });
-    await activation.deactivate(entry("language", "korean"), { kind: "language", locale: "ko", nativeName: "한국어", englishName: "Korean", messages: {}, missingKeys: [] });
+    await activation.deactivate(entry("language", "korean"), null);
     expect(settingsService.get("appearance").language).toBe("ko");
   });
 

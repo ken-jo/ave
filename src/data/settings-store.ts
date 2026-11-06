@@ -1673,6 +1673,9 @@ export class SettingsService {
       llm = normalizedLlm;
 
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
+      if (typeof onDisk?.language === "string" && onDisk.language !== appearance.language) {
+        log.warn("appearance.language replaced %d saved locale values", 1);
+      }
       needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 
       let normalizedFeatures = normalizeFeatureFlags(parsed.features);

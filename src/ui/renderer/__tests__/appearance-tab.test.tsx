@@ -31,8 +31,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderAppearance(initial: AppearanceSettings = DEFAULT_APPEARANCE, onOpenMarketplace?: (filter: "language") => void) {
-  return render(<SavedToastProvider value={() => {}}><ThemeProvider initialAppearance={initial}><AppearanceTab onOpenMarketplace={onOpenMarketplace} /></ThemeProvider></SavedToastProvider>);
+function renderAppearance(initial: AppearanceSettings = DEFAULT_APPEARANCE) {
+  return render(<SavedToastProvider value={() => {}}><ThemeProvider initialAppearance={initial}><AppearanceTab /></ThemeProvider></SavedToastProvider>);
 }
 
 describe("Appearance settings", () => {
@@ -55,34 +55,31 @@ describe("Appearance settings", () => {
     expect(document.documentElement).toHaveAttribute("data-shell", "dark");
   });
 
-  it("lists an installed language with its marketplace badge", () => {
+  it("ignores a legacy installed language in the picker", () => {
     install({ languages: [FRENCH] });
-    const { getByTestId } = renderAppearance();
-    expect(getByTestId("language-option-fr")).toHaveAttribute("data-marketplace-installed", "true");
-    expect(getByTestId("appearance-tab:language-marketplace-badge:fr")).toHaveTextContent("마켓플레이스");
-  });
-
-  it("reflects a language installed while the tab is open", async () => {
-    const { getByTestId, queryByTestId } = renderAppearance();
+    const { queryByTestId } = renderAppearance();
     expect(queryByTestId("language-option-fr")).toBeNull();
+    expect(queryByTestId("appearance-tab:language-marketplace-badge:fr")).toBeNull();
+  });
+  it("keeps compiled locale options after legacy content is reapplied", () => {
+    const { getByTestId, queryByTestId } = renderAppearance();
     act(() => install({ languages: [FRENCH] }));
-    await waitFor(() => expect(getByTestId("language-option-fr")).toBeTruthy());
+    expect(queryByTestId("language-option-fr")).toBeNull();
+    expect(getByTestId("language-option-ko")).toBeTruthy();
   });
-
-  it("opens the language marketplace filter", () => {
-    const onOpenMarketplace = vi.fn();
-    const { getByTestId } = renderAppearance(DEFAULT_APPEARANCE, onOpenMarketplace);
-    fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
-    expect(onOpenMarketplace).toHaveBeenCalledWith("language");
+  it("does not offer a marketplace language entry point", () => {
+    const { queryByTestId, container } = renderAppearance();
+    expect(queryByTestId("appearance-tab:marketplace-languages")).toBeNull();
+    expect(container.querySelectorAll('[data-testid^="language-option-"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid^="appearance-tab:language-marketplace-badge:"]')).toBeNull();
   });
-
   it("offers Korean without an installed language package", () => {
     const originalLocale = getLocale();
     setLocale("en");
     try {
       const { getByTestId } = renderAppearance();
       expect(getByTestId("language-option-ko")).toHaveTextContent("한국어");
-      expect(getByTestId("language-option-ko")).toHaveAttribute("data-marketplace-installed", "false");
+      expect(getByTestId("language-option-ko")).not.toHaveAttribute("data-marketplace-installed");
       fireEvent.click(getByTestId("language-option-ko"));
       expect(getLocale()).toBe("ko");
     } finally {

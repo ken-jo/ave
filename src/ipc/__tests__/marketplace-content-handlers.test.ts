@@ -24,8 +24,7 @@ vi.mock("../gated.js", () => ({
 
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
-import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { getLocale, normalizeLocale, setLocale, translate } from "../../i18n/index.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
@@ -127,8 +126,6 @@ describe("loadInstalledContent", () => {
     root = mkdtempSync(join(tmpdir(), "ave-installed-content-"));
   });
   afterEach(async () => {
-    registerInstalledLocales([]);
-    setInstalledCatalogLoader(null);
     setLocale("en");
     await rm(root, { recursive: true, force: true });
   });
@@ -142,26 +139,18 @@ describe("loadInstalledContent", () => {
     await store.install(staged);
   }
 
-  it("applies what the store holds to this process: locales, their catalogs and the selected language", async () => {
-    const language = { locale: "fr", nativeName: "Français", englishName: "French" };
-    // A real interface key: the loader checks the package against the compiled English catalog.
-    const key = "common.cancel";
-    const messages = { [key]: "Annuler" };
-    await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
+  it("resolves a saved installed-only language to the default without a package", async () => {
     const settingsService = { get: () => ({ language: "fr" }) };
-
     const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
-    expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
-    expect(isInstalledLocale("fr")).toBe(true);
-    expect(await loadLocaleMessages("fr")).toMatchObject(messages);
-    expect(getLocale()).toBe("fr");
-    expect(translate("fr", key)).toBe("Annuler");
+    expect(service.installed().languages).toEqual([]);
+    expect(() => service.languageMessages("fr")).toThrow("no installed language provides fr");
+    expect(getLocale()).toBe("en");
+    expect(translate(normalizeLocale("fr"), "common.cancel")).toBe(translate("en", "common.cancel"));
   });
-
   it("lists nothing and applies nothing for an empty store", async () => {
     const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
     expect(service.installed()).toEqual({ languages: [], fonts: [], routineTemplates: [], broken: [] });
-    expect(isInstalledLocale("fr")).toBe(false);
+    expect(() => service.languageMessages("fr")).toThrow("no installed language provides fr");
   });
 
   it("vouches for its installed agent plugins only when none failed to load", async () => {

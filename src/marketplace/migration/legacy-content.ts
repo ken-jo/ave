@@ -1,19 +1,16 @@
 /** Adopt legacy content through normal install plans while preserving live settings.
  * Skip existing installs and retry failed adoptions at the next boot. */
-import type { OfficialPackageLocale } from "../../i18n/locale.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { MarketplaceError } from "../errors.js";
 import { OFFICIAL_MARKETPLACE } from "../sources/official.js";
 import type { PackageKey } from "../sources/policy.js";
-
-const LEGACY_LANGUAGE_PACKAGES: Readonly<Record<OfficialPackageLocale, string>> = { ko: "korean" };
 
 export interface LegacyActivations {
   locales: readonly string[];
   providers: readonly string[];
 }
 
-export type LegacyContentKind = "language" | "provider";
+export type LegacyContentKind = "provider";
 
 export interface LegacyContentInput {
   activations: LegacyActivations;
@@ -29,19 +26,9 @@ export interface LegacyContentReport {
   failed: Array<{ key: PackageKey; message: string }>;
 }
 
-function languagePackage(locale: string): string | null {
-  return Object.hasOwn(LEGACY_LANGUAGE_PACKAGES, locale) ? LEGACY_LANGUAGE_PACKAGES[locale as OfficialPackageLocale] : null;
-}
-
 export async function migrateLegacyContent(input: LegacyContentInput): Promise<LegacyContentReport> {
   const report: LegacyContentReport = { adopted: [], failed: [] };
-  const provided = { locales: [] as string[] };
-  const items: Array<{ kind: LegacyContentKind; name: string; provide?: () => void }> = [];
-  for (const locale of input.activations.locales) {
-    const name = languagePackage(locale);
-    if (name === null) input.log.warn(`legacy language ${locale} has no official package; left in settings`);
-    else items.push({ kind: "language", name, provide: () => provided.locales.push(locale) });
-  }
+  const items: Array<{ kind: LegacyContentKind; name: string }> = [];
   for (const id of new Set(input.activations.providers)) items.push({ kind: "provider", name: id });
 
   for (const item of items) {
@@ -55,25 +42,13 @@ export async function migrateLegacyContent(input: LegacyContentInput): Promise<L
         await input.adopt(item.kind, item.name);
         report.adopted.push(key);
       }
-      item.provide?.();
     } catch (error) {
       if (error instanceof MarketplaceError && error.code === "PACKAGE_ID_CONFLICT") {
         input.log.warn(`legacy ${item.kind} ${item.name} is provided by another installed package: ${error.message}`);
-        item.provide?.();
         continue;
       }
       input.log.warn(`legacy ${item.kind} ${item.name} not migrated this time: ${errorMessage(error)}`);
       report.failed.push({ key, message: errorMessage(error) });
-    }
-  }
-  if (provided.locales.length > 0) {
-    try {
-      await input.release(provided);
-    } catch (error) {
-      // Installed entries survive a failed list write; retries find them and drop the legacy ids.
-      const message = `dropping it from the legacy list failed: ${errorMessage(error)}`;
-      input.log.warn(`legacy content: ${message}`);
-      for (const locale of provided.locales) report.failed.push({ key: { source: OFFICIAL_MARKETPLACE.id, kind: "language", name: languagePackage(locale)! }, message });
     }
   }
   return report;
