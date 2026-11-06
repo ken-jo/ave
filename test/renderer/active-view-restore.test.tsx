@@ -29,12 +29,12 @@ function sidebarView(pluginId: string, viewId: string) {
     extension: {
       id: viewId,
       slot: "sidebar",
-      kind: "embedded-module",
+      kind: "mcp-app",
       title: "Example",
-      entry: "ui/index.js",
-      exportName: "mount",
+      resourceUri: `ui://${pluginId}/${viewId}`,
     },
-    entryUrl: "file:///c:/plugins/example/dist/ui/index.js",
+    payload: { serverId: pluginId, generationId: "generation", resourceUri: `ui://${pluginId}/${viewId}` },
+    runtimeRevision: 1,
   };
 }
 

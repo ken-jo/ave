@@ -86,11 +86,12 @@ describe("App — view key guard on the activate-view IPC", () => {
         extension: {
           id: "",
           slot: "sidebar",
-          kind: "embedded-module",
+          kind: "mcp-app",
           title: "Broken View",
-          entry: "dist/ui.js",
+          resourceUri: "ui://broken-plugin/main",
         },
-        entryUrl: "file:///broken-plugin/dist/ui.js",
+        payload: { serverId: "broken-plugin", generationId: "generation", resourceUri: "ui://broken-plugin/main" },
+        runtimeRevision: 1,
       }],
     });
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.chatViewRoot)).toBeTruthy());

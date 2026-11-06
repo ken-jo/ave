@@ -666,8 +666,9 @@ describe("a turn parked on an approval, with two tiles", () => {
     within.querySelectorAll('[data-testid="approval-lane-card"]');
   const pluginSidebarView = (pluginId: string, viewId: string) => ({
     pluginId,
-    extension: { id: viewId, slot: "sidebar", kind: "embedded-module", title: "Inbox", entry: "ui/index.js", exportName: "mount" },
-    entryUrl: "file:///plugins/example/dist/ui/index.js",
+    extension: { id: viewId, slot: "sidebar", kind: "mcp-app", title: "Inbox", resourceUri: `ui://${pluginId}/${viewId}` },
+    payload: { serverId: pluginId, generationId: "generation", resourceUri: `ui://${pluginId}/${viewId}` },
+    runtimeRevision: 1,
   });
 
   it("draws the card and the waiting band in the tile holding the session that asked, and nowhere else, until the card is answered", async () => {
