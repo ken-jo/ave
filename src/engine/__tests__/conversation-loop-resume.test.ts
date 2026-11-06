@@ -17,6 +17,7 @@ import {
   makeConversationLoopSettings,
 } from "./conversation-loop-test-helpers.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 
 const RESUME_SESSION_ID = "08001f8f-a6f5-4bb9-820d-df1e8366af93";
 const resumeMemory = (storedMessages: GenericMessage[] | null = null) =>
@@ -50,6 +51,25 @@ function createRememberCommandLoop(captureExplicit: CaptureExplicit) {
 }
 
 describe("ConversationLoop.resetAndResume", () => {
+  it("rebinds standalone step spans to the resumed session using the injected provider", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    try {
+      const loop = new ConversationLoop(resumeDeps({
+        memoryManager: resumeMemory([{ role: "user", content: "private-history" }]),
+        tracer: provider.getTracer("test"),
+      }));
+      loop.tracer.step("REQUEST_ENTRY");
+      const initialId = loop.getSessionId();
+      expect((await loop.resetAndResume(RESUME_SESSION_ID)).ok).toBe(true);
+      loop.tracer.step("POST_TURN");
+      expect(exporter.getFinishedSpans().map(span => span.attributes["ave.session_id"]))
+        .toEqual([initialId, RESUME_SESSION_ID]);
+    } finally {
+      await provider.shutdown();
+    }
+  });
+
   it("refuses a session the host reports as held by another loop", async () => {
     const mem = resumeMemory([{ role: "user", content: "hello" }]);
     const readSession = vi.spyOn(mem, "loadSession");

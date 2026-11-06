@@ -1,9 +1,11 @@
 // Invalid telemetry sink names must fail rather than silently produce no trace.
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { context, trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 
 import {
   buildMainBoundaryBundle,
@@ -13,6 +15,7 @@ import {
 
 import {
   configureTracing,
+  createStepTracer,
   decisionAttributes,
   parseTelemetrySpec,
   TURN_SPAN_NAME,
@@ -27,12 +30,24 @@ function tempDir(): string {
 }
 
 afterEach(() => {
+  context.disable();
+  trace.disable();
+  vi.unstubAllEnvs();
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop()!, { recursive: true, force: true });
   }
 });
 
 describe("parseTelemetrySpec", () => {
+  it.each(["1", "otlp:https://collector.invalid/v1/traces", "file:remote", "true"])(
+    "never interprets AVE_TRACE=%s as remote export authority", (legacy) => {
+      vi.stubEnv("AVE_TRACE", legacy);
+      expect(parseTelemetrySpec(undefined)).toHaveProperty("kind", legacy === "1" ? "file" : "off");
+      expect(parseTelemetrySpec("off")).toEqual({ kind: "off" });
+      expect(parseTelemetrySpec("invalid")).toHaveProperty("error");
+      expect(parseTelemetrySpec("file:local.jsonl")).toEqual({ kind: "file", path: "local.jsonl" });
+    },
+  );
   it.each([
     ["undefined", undefined],
     ["empty", ""],
@@ -69,6 +84,28 @@ describe("parseTelemetrySpec", () => {
   });
 });
 
+describe("step events", () => {
+  it("uses a standalone span without an active span and drops content and unbounded metadata", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    const emitter = createStepTracer("standalone-session", provider.getTracer("test"));
+    emitter.step("LLM_STREAM_ERROR", {
+      round: 2, inputLen: 50, reopenedThink: false, textLen: Infinity,
+      prompt: "private-prompt", toolArgs: { path: "private-file" },
+      providerError: { messagePreview: "private-error" }, request: { content: "private-request" },
+      status: "private-status", model: "private-model", toolNames: ["private-tool"],
+    });
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes).toEqual({ "ave.session_id": "standalone-session" });
+    expect(spans[0].events[0].attributes).toEqual({
+      "ave.step": "LLM_STREAM_ERROR", "ave.step.round": 2, "ave.step.inputLen": 50, "ave.step.reopenedThink": false,
+    });
+    expect(JSON.stringify(spans[0].events)).not.toContain("private-");
+    await provider.shutdown();
+  });
+});
+
 describe("decisionAttributes", () => {
   it("flattens kind, branch, reason and data under one prefix", () => {
     expect(decisionAttributes({
@@ -95,6 +132,29 @@ describe("decisionAttributes", () => {
 });
 
 describe("configureTracing", () => {
+  it("routes the legacy switch through the local exporter and caps step events", async () => {
+    const home = tempDir();
+    vi.stubEnv("AVE_HOME", home);
+    const spec = parseTelemetrySpec(undefined, "1");
+    expect(spec).toMatchObject({ kind: "file", legacyLocal: true });
+    if (!("kind" in spec) || spec.kind !== "file") throw new Error("Expected local sink");
+    const handle = await configureTracing(spec, "local-test");
+    const stepTracer = createStepTracer("legacy-session", handle.tracer);
+    handle.tracer.startActiveSpan(TURN_SPAN_NAME, span => {
+      for (let round = 0; round < 200; round++) stepTracer.step("LLM_STREAM", { round });
+      span.end();
+    });
+    await handle.shutdown();
+    const lines = readFileSync(spec.path, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const written = JSON.parse(lines[0]);
+    expect(written.events).toHaveLength(128);
+    expect(written.events[0]).toMatchObject({ name: "ave.step", attributes: { "ave.step": "LLM_STREAM", "ave.step.round": 72 } });
+    expect(written.events.map((event: { attributes: Record<string, unknown> }) => event.attributes["ave.step.round"]))
+      .toEqual(Array.from({ length: 128 }, (_, index) => index + 72));
+    expect(readdirSync(join(home, "traces"))).toEqual(["spans"]);
+  });
+
   it("registers nothing when tracing is off and hands back a non-recording tracer", async () => {
     const handle = await configureTracing({ kind: "off" }, "0.0.0-test");
 
@@ -115,6 +175,8 @@ describe("configureTracing", () => {
 
   it("exports completed spans without shutting down, then records subsequent work", async () => {
     const path = join(tempDir(), "spans.jsonl");
+    const previous = '{"legacy":"preserved"}\n';
+    writeFileSync(path, previous);
     const handle = await configureTracing({ kind: "file", path }, "9.9.9-test");
     expect(handle.enabled).toBe(true);
 
@@ -125,7 +187,8 @@ describe("configureTracing", () => {
     span.end();
     await handle.forceFlush();
 
-    const lines = readFileSync(path, "utf8").trim().split("\n");
+    expect(readFileSync(path, "utf8").startsWith(previous)).toBe(true);
+    const lines = readFileSync(path, "utf8").trim().split("\n").slice(1);
     expect(lines).toHaveLength(1);
     const written = JSON.parse(lines[0]) as {
       name: string;
@@ -148,7 +211,7 @@ describe("configureTracing", () => {
     ]);
     handle.tracer.startSpan("after-flush").end();
     await handle.shutdown();
-    expect(readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line).name))
+    expect(readFileSync(path, "utf8").trim().split("\n").slice(1).map((line) => JSON.parse(line).name))
       .toEqual([TURN_SPAN_NAME, "after-flush"]);
   });
 });

@@ -1,20 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { beforeEach, afterEach, describe, expect, it } from "vitest";
+import { context } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import {
-  createTracer,
-  type ConversationTracer,
-  type TraceStepName,
-  type TraceEntry,
-} from "../../observability/conversation-trace.js";
+import { TURN_SPAN_NAME } from "../telemetry/tracing.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { subscriptionTransportFailure } from "../../main/subscription-transport-error-diagnostics.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
@@ -27,13 +21,18 @@ class FakeProvider implements LLMProvider {
   }
 }
 
-class RecordingTracer implements ConversationTracer {
-  readonly enabled = true;
-  readonly filePath = undefined;
-  steps: Array<{ name: TraceStepName; meta?: Record<string, unknown> }> = [];
-  step(name: TraceStepName, meta?: Record<string, unknown>): void {
-    this.steps.push({ name, meta });
-  }
+let exporter: InMemorySpanExporter;
+let spanProvider: TracerProvider;
+beforeEach(() => {
+  exporter = new InMemorySpanExporter();
+  spanProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+});
+afterEach(async () => { await spanProvider.shutdown(); context.disable(); });
+
+function steps() {
+  return exporter.getFinishedSpans().flatMap(span => span.events)
+    .filter(event => event.name === "ave.step");
 }
 
 function makeLoop(provider: LLMProvider) {
@@ -55,6 +54,7 @@ function makeLoop(provider: LLMProvider) {
   );
 
   const loop = new ConversationLoop({
+    tracer: spanProvider.getTracer("test"),
     settingsService: {
       get: () => fakeLlmSettings(),
       getSecret: () => "test-key",
@@ -70,179 +70,39 @@ function makeLoop(provider: LLMProvider) {
   return loop;
 }
 
-describe("ConversationTracer — §4.5 canonical steps", () => {
-  it("writes transport exit facts to the error trace without copying user input", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-transport-trace-"));
-    try {
-      const diagnostics = subscriptionTransportFailure({ phase: "process-exit", kind: "process", exitCode: null, signal: "SIGKILL" });
-      const provider = new FakeProvider([[{
-        type: "error", error: "Subscription runtime could not complete. Verify the connected runtime and try again.",
-        classification: "subscription-chat-unavailable", providerError: diagnostics,
-      }]]);
-      const loop = makeLoop(provider);
-      const tracer = createTracer("transport-error", { enabled: true, traceDir: dir });
-      loop.setTracer(tracer);
-      await loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
-      const raw = readFileSync(tracer.filePath!, "utf8");
-      const entries: TraceEntry[] = raw.trim().split("\n").map((line) => JSON.parse(line) as TraceEntry);
-      expect(entries.find((entry) => entry.step === "LLM_STREAM_ERROR")?.meta).toMatchObject({
-        classification: "unknown", providerError: diagnostics,
-      });
-      expect(raw).not.toContain("private-user-input");
-    } finally {
-      await cleanupTmpDir(dir);
-    }
+describe("conversation step spans", () => {
+  it("drops transport diagnostics and user content at the span boundary", async () => {
+    const diagnostics = subscriptionTransportFailure({ phase: "process-exit", kind: "process", exitCode: null, signal: "SIGKILL" });
+    const loop = makeLoop(new FakeProvider([[{
+      type: "error", error: "private-provider-error", classification: "subscription-chat-unavailable", providerError: diagnostics,
+    }]]));
+    await loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
+    expect(steps()).toContainEqual(expect.objectContaining({ attributes: expect.objectContaining({ "ave.step": "LLM_STREAM_ERROR" }) }));
+    const raw = JSON.stringify(steps());
+    expect(raw).not.toContain("private-user-input");
+    expect(raw).not.toContain("private-provider-error");
+    expect(raw).not.toContain("providerError");
+    expect(raw).not.toContain("request");
   });
 
-  it("emits all 10 canonical steps across a tool-use turn", async () => {
-    const provider = new FakeProvider([
+  it("emits all canonical steps inside the same turn span with bounded scalar metadata", async () => {
+    const loop = makeLoop(new FakeProvider([
       [
-        { type: "reasoning_delta", text: "생각 중" },
-        { type: "text_delta", text: "먼저 확인" },
-        { type: "tool_call", id: "t1", name: "list_directory", input: { path: "src" },
-        },
+        { type: "reasoning_delta", text: "private-thought" },
+        { type: "tool_call", id: "t1", name: "list_directory", input: { path: "private-path" } },
         { type: "message_complete", stopReason: "tool_use" },
       ],
-      [
-        { type: "reasoning_delta", text: "결과 해석" },
-        { type: "text_delta", text: "완료" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-
-    const loop = makeLoop(provider);
-    const rec = new RecordingTracer();
-    loop.setTracer(rec);
-
-    await loop.runTurn("디렉토리 보여줘", undefined, undefined, { ...userKeyboardTurn(),
-    });
-
-    const names = new Set(rec.steps.map((s) => s.name));
-    const expected: TraceStepName[] = [
-      "REQUEST_ENTRY",
-      "ROUTE_RESOLVE",
-      "TURN_ORCHESTRATE",
-      "HISTORY_APPEND",
-      "PROMPT_ASSEMBLE",
-      "LLM_STREAM",
-      "REASONING_ACCUMULATE",
-      "TOOL_EXECUTE",
-      "ROUND_COMMIT",
-      "POST_TURN",
-    ];
-    for (const step of expected) {
-      expect(names.has(step), `missing step: ${step}`).toBe(true);
+      [{ type: "text_delta", text: "private-answer" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]));
+    await loop.runTurn("private-prompt", undefined, undefined, { ...userKeyboardTurn() });
+    const spans = exporter.getFinishedSpans();
+    expect(spans.filter(span => span.name === TURN_SPAN_NAME)).toHaveLength(1);
+    expect(spans.some(span => span.name === "ave.step")).toBe(false);
+    const names = steps().map(event => event.attributes?.["ave.step"]);
+    for (const name of ["REQUEST_ENTRY", "ROUTE_RESOLVE", "TURN_ORCHESTRATE", "HISTORY_APPEND", "PROMPT_ASSEMBLE", "LLM_STREAM", "REASONING_ACCUMULATE", "TOOL_EXECUTE", "ROUND_COMMIT", "POST_TURN"]) {
+      expect(names).toContain(name);
     }
-    expect(expected.length).toBe(10);
-    const postTurn = rec.steps.find((s) => s.name === "POST_TURN");
-    expect(postTurn?.meta).toMatchObject({
-      loadedToolSourceCounts: { builtin: 1, plugin: 0, mcp: 0 },
-      deferredCatalogSourceCounts: { plugin: 0, mcp: 0 },
-    });
-  });
-
-  it("records provider request and stream-error diagnostics without prompt text", async () => {
-    const provider = new FakeProvider([
-      [
-        {
-          type: "error",
-          error:
-            "Rate limit reached for gpt-5.4-mini on tokens per min (TPM): Limit 200000, Used 165785, Requested 47118. Please try again in 3.87s.",
-          classification: "rate-limit",
-          providerError: {
-            origin: "provider",
-            providerType: "tokens",
-            providerCode: "rate_limit_exceeded",
-            classification: "rate-limit",
-            messagePreview:
-              "Rate limit reached for gpt-5.4-mini on tokens per min (TPM): Limit 200000, Used 165785, Requested 47118. Please try again in 3.87s.",
-            rateLimit: {
-              kind: "tokens-per-minute",
-              limit: 200000,
-              used: 165785,
-              requested: 47118,
-              retryAfterSeconds: 3.87,
-            },
-          },
-        },
-      ],
-    ]);
-    const loop = makeLoop(provider);
-    const rec = new RecordingTracer();
-    loop.setTracer(rec);
-
-    await loop.runTurn("인덱서 호출", undefined, undefined, {
-      ...userKeyboardTurn(),
-    });
-
-    const streamStep = rec.steps.find((step) => step.name === "LLM_STREAM");
-    expect(streamStep?.meta).toMatchObject({
-      request: {
-        inputOrigin: "user-keyboard",
-        messageRoleCounts: { user: 1, assistant: 0, tool_result: 0 },
-        toolResultCount: 0,
-        projection: {
-          systemPromptTokens: expect.any(Number),
-          messageTokens: expect.any(Number),
-          toolSchemaTokens: expect.any(Number),
-          totalTokens: expect.any(Number),
-        },
-      },
-    });
-    expect(JSON.stringify(streamStep?.meta)).not.toContain("인덱서 호출");
-
-    const errorStep = rec.steps.find(
-      (step) => step.name === "LLM_STREAM_ERROR",
-    );
-    expect(errorStep?.meta).toMatchObject({
-      classification: "rate-limit",
-      providerError: {
-        providerType: "tokens",
-        providerCode: "rate_limit_exceeded",
-        rateLimit: {
-          limit: 200000,
-          used: 165785,
-          requested: 47118,
-          retryAfterSeconds: 3.87,
-        },
-      },
-      request: {
-        toolExposure: {
-          loadedToolCount: 1,
-        },
-      },
-    });
-  });
-
-  it("writes valid JSONL entries to the trace file when enabled", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ave-trace-"));
-    try {
-      const sessionId = "test-session-abc";
-      const tracer = createTracer(sessionId, { enabled: true, traceDir: dir });
-      expect(tracer.enabled).toBe(true);
-      expect(tracer.filePath).toBe(join(dir, `${sessionId}.jsonl`));
-
-      tracer.step("REQUEST_ENTRY", { inputLen: 5 });
-      tracer.step("POST_TURN", { toolCallCount: 0 });
-
-      const raw = readFileSync(tracer.filePath!, "utf-8");
-      const lines = raw.trim().split("\n");
-      expect(lines).toHaveLength(2);
-      const parsed: TraceEntry[] = lines.map((l) => JSON.parse(l) as TraceEntry);
-      expect(parsed[0].step).toBe("REQUEST_ENTRY");
-      expect(parsed[0].sessionId).toBe(sessionId);
-      expect(typeof parsed[0].ts).toBe("string");
-      expect(parsed[0].meta).toEqual({ inputLen: 5 });
-      expect(parsed[1].step).toBe("POST_TURN");
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
-
-  it("is no-op when disabled (production fallback)", () => {
-    const tracer = createTracer("s", { enabled: false });
-    expect(tracer.enabled).toBe(false);
-    expect(tracer.filePath).toBeUndefined();
-    tracer.step("REQUEST_ENTRY");
+    expect(steps()).toContainEqual(expect.objectContaining({ attributes: expect.objectContaining({ "ave.step": "POST_TURN", "ave.step.toolCallCount": 1 }) }));
+    expect(JSON.stringify(steps())).not.toContain("private-");
   });
 });

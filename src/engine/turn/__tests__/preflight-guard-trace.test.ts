@@ -8,7 +8,7 @@ import { getModelPreflightThreshold, estimateMessagesTokens } from "../../auto-c
 import { getPreflightThreshold } from "../../../shared/context-budget.js";
 import { llmModelListCacheKey } from "../../../shared/llm-model-list.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
-import type { ConversationTracer, TraceStepName } from "../../../observability/conversation-trace.js";
+import type { ConversationTracer, TraceStepName } from "../../telemetry/tracing.js";
 import {
   makeConversationLoopDeps as makeDeps,
   makeConversationLoopMemoryManager as makeMemoryManager,
@@ -34,8 +34,6 @@ beforeEach(() => {
 });
 
 class RecordingTracer implements ConversationTracer {
-  readonly enabled = true;
-  readonly filePath = undefined;
   steps: Array<{ name: TraceStepName; meta?: Record<string, unknown> }> = [];
   step(name: TraceStepName, meta?: Record<string, unknown>): void {
     this.steps.push({ name, meta });

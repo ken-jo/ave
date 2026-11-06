@@ -99,8 +99,7 @@ export async function runTurn(
   abortSignal?: AbortSignal,
   options?: RunTurnOptions,
 ): Promise<TurnResult> {
-  const tracer = self.deps.tracer;
-  if (!tracer) return runTurnInSpan(self, input, callbacks, abortSignal, options, null);
+  const tracer = self.deps.tracer ?? otelTrace.getTracer("ave");
   return tracer.startActiveSpan(
     TURN_SPAN_NAME,
     {

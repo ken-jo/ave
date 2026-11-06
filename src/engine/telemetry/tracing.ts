@@ -2,6 +2,9 @@
 // Turn logic sees only the tracer API; this module owns sinks and span vocabulary.
 import { context as otelContext, trace, type Tracer } from "@opentelemetry/api";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
+import { join } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
+import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { appendFileSync } from "node:fs";
 import { createLogger } from "../../lib/logger.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
@@ -16,7 +19,7 @@ export const DECISION_EVENT_NAME = "ave.decision";
 export type TelemetrySpec =
   | { kind: "off" }
   | { kind: "otlp"; url: string }
-  | { kind: "file"; path: string }
+  | { kind: "file"; path: string; legacyLocal?: boolean }
   | { error: string };
 
 export interface TracingHandle {
@@ -26,9 +29,15 @@ export interface TracingHandle {
   shutdown(): Promise<void>;
 }
 
-/** Empty and off disable tracing; reject unknown sink names instead of silently losing evidence. */
-export function parseTelemetrySpec(raw: string | undefined): TelemetrySpec {
+/** Explicit sinks take precedence; the legacy switch can request only a local file. */
+export function parseTelemetrySpec(
+  raw: string | undefined,
+  legacyTrace: string | undefined = process.env.AVE_TRACE,
+): TelemetrySpec {
   const value = raw?.trim() ?? "";
+  if (value.length === 0 && legacyTrace === "1") {
+    return { kind: "file", path: join(aveHome(), "traces", "spans", "trace-spans.jsonl"), legacyLocal: true };
+  }
   if (value.length === 0 || value === "off") return { kind: "off" };
   const separator = value.indexOf(":");
   if (separator <= 0) {
@@ -149,6 +158,9 @@ export async function configureTracing(
   appVersion: string,
 ): Promise<TracingHandle> {
   if ("error" in spec || spec.kind === "off") return offHandle();
+  if (spec.kind === "file" && spec.legacyLocal) {
+    await openFeatureNamespace("traces").childDir("spans");
+  }
 
   const [
     { BatchSpanProcessor, TracerProvider },
@@ -165,6 +177,7 @@ export async function configureTracing(
         url: spec.url,
       });
   const provider = new TracerProvider({
+    spanLimits: { eventCountLimit: 128, attributePerEventCountLimit: 32 },
     resource: resourceFromAttributes({
       "service.name": "ave",
       "service.version": appVersion,
@@ -190,6 +203,72 @@ export async function configureTracing(
     },
     async shutdown() {
       await provider.shutdown();
+    },
+  };
+}
+
+export type TraceStepName =
+  | "REQUEST_ENTRY"         // 1. renderer → main IPC
+  | "ROUTE_RESOLVE"         // 2. Resolve the input route
+  | "TURN_ORCHESTRATE"      // 3. Enter runTurn()
+  | "HISTORY_APPEND"        // 4. Append user message
+  | "PROMPT_ASSEMBLE"       // 5. Assemble system prompt
+  | "LLM_STREAM"            // 6. Start provider.streamTurn
+  | "LLM_STREAM_ERROR"      // 6b. Structure provider.streamTurn error
+  | "TOOL_SCHEMA_REJECTED"  // 6c. provider 400(invalid_function_parameters) -> drop tool and retry round
+  | "REASONING_ACCUMULATE"  // 7. Finish accumulating reasoning_delta for the round
+  | "TOOL_EXECUTE"          // 8. ToolExecutor.executeAll
+  | "ROUND_COMMIT"          // 9. Commit assistant_round
+  | "POST_TURN"             // 10. PostTurnHookChain.run
+  | "GUIDANCE_INJECTED"     // out-of-band — mid-stream "guide" utterance consumed at round boundary
+  | "LENGTH_CONTINUATION"   // Continue a truncated answer.
+  | "REASONING_ONLY_CONTINUATION" // out-of-band — end_turn round with reasoning but no answer and no tool call -> re-prompt for the action the reasoning named
+  | "PREFLIGHT_GUARD"       // out-of-band — runPreflightGuard decision: fired / skipped / not-reached, and why
+  | "COMPACTION_RESULT";    // out-of-band — outcome of an LLM compaction triggered by PREFLIGHT_GUARD: applied / noop / error
+
+export interface ConversationTracer {
+  step(name: TraceStepName, meta?: Record<string, unknown>): void;
+}
+
+// Only known scalar measurements cross the export boundary. Objects, names and error text stay local.
+const STEP_MEASUREMENTS = [
+  "inputLen", "historySize", "promptLen", "activePlugins", "round", "assistantRoundIndex",
+  "toolCount", "len", "continuationsRun", "carryTextLen", "reopenedThink", "thoughtLen",
+  "textLen", "toolCallCount", "nudgesRun", "removedCount", "estimatedAfter", "compactNum",
+  "estimated", "contextTokensIn", "threshold", "contextWindow",
+  "loadedToolCount", "deferredCatalogCount",
+] as const;
+const STEP_LABELS: Readonly<Record<string, readonly string[]>> = {
+  route: ["command", "llm"],
+  role: ["user"],
+  status: ["noop", "applied", "error"],
+  outcome: ["fired", "skipped", "not-reached"],
+  stopReason: ["end_turn", "tool_use", "max_tokens", "length", "stream-error", "aborted", "round-cap"],
+};
+
+/** Emit bounded events through the span provider; never open a second trace writer. */
+export function createStepTracer(sessionId: string, tracer: Tracer = trace.getTracer("ave")): ConversationTracer {
+  return {
+    step(name, meta) {
+      const attributes: Record<string, string | number | boolean> = { "ave.step": name };
+      for (const key of STEP_MEASUREMENTS) {
+        const value = meta?.[key];
+        if ((typeof value === "number" && Number.isFinite(value)) || typeof value === "boolean") {
+          attributes[`ave.step.${key}`] = value;
+        }
+      }
+      for (const [key, labels] of Object.entries(STEP_LABELS)) {
+        const value = meta?.[key];
+        if (typeof value === "string" && labels.includes(value)) attributes[`ave.step.${key}`] = value;
+      }
+      const active = trace.getActiveSpan();
+      if (active) {
+        active.addEvent("ave.step", attributes);
+      } else {
+        const span = tracer.startSpan("ave.step", { attributes: { "ave.session_id": sessionId } });
+        span.addEvent("ave.step", attributes);
+        span.end();
+      }
     },
   };
 }

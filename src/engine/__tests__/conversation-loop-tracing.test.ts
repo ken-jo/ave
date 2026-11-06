@@ -1,5 +1,5 @@
 // Exported traces may contain result sizes, never tool output.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
@@ -14,6 +14,11 @@ import { createDynamicTool } from "../../tools/base.js";
 import { TOOL_SPAN_PREFIX, TURN_SPAN_NAME } from "../telemetry/tracing.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider as ScriptedProvider } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+
+import { context } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+beforeEach(() => { context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable()); });
+afterEach(() => { context.disable(); });
 
 const SECRET_RESULT = "SECRET-TOOL-OUTPUT-THAT-MUST-NOT-BE-EXPORTED";
 
@@ -127,6 +132,7 @@ describe("ConversationLoop — turn tracing", () => {
     const turnSpan = spans.find((span) => span.name === TURN_SPAN_NAME);
     const toolSpan = spans.find((span) => span.name === `${TOOL_SPAN_PREFIX}read_thing`);
     expect(turnSpan).toBeDefined();
+    expect(turnSpan!.events).toContainEqual(expect.objectContaining({ name: "ave.step", attributes: expect.objectContaining({ "ave.step": "REQUEST_ENTRY" }) }));
     expect(toolSpan).toBeDefined();
 
     expect(toolSpan!.parentSpanContext?.spanId).toBe(turnSpan!.spanContext().spanId);
