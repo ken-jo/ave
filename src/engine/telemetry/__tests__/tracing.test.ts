@@ -104,6 +104,21 @@ describe("step events", () => {
     expect(JSON.stringify(spans[0].events)).not.toContain("private-");
     await provider.shutdown();
   });
+  it("keeps closed diagnostic codes and drops free text under the same keys", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    const emitter = createStepTracer("codes-session", provider.getTracer("test"));
+    emitter.step("PREFLIGHT_GUARD", { outcome: "skipped", reason: "recovery-budget-exhausted" });
+    emitter.step("LLM_STREAM_ERROR", { classification: "rate-limit", reason: "Private reason: C:\secret" });
+    emitter.step("COMPACTION_RESULT", { status: "applied", triggerSource: "force-recover" });
+    const events = exporter.getFinishedSpans().map((span) => span.events[0].attributes);
+    expect(events).toEqual([
+      { "ave.step": "PREFLIGHT_GUARD", "ave.step.outcome": "skipped", "ave.step.reason": "recovery-budget-exhausted" },
+      { "ave.step": "LLM_STREAM_ERROR", "ave.step.classification": "rate-limit" },
+      { "ave.step": "COMPACTION_RESULT", "ave.step.status": "applied", "ave.step.triggerSource": "force-recover" },
+    ]);
+    await provider.shutdown();
+  });
 });
 
 describe("decisionAttributes", () => {
@@ -153,6 +168,17 @@ describe("configureTracing", () => {
     expect(written.events.map((event: { attributes: Record<string, unknown> }) => event.attributes["ave.step.round"]))
       .toEqual(Array.from({ length: 128 }, (_, index) => index + 72));
     expect(readdirSync(join(home, "traces"))).toEqual(["spans"]);
+  });
+
+  it("leaves tracing off when the legacy sink cannot be prepared", async () => {
+    const home = join(tempDir(), "not-a-directory");
+    writeFileSync(home, "");
+    vi.stubEnv("AVE_HOME", home);
+    const spec = parseTelemetrySpec(undefined, "1");
+    if (!("kind" in spec) || spec.kind !== "file") throw new Error("Expected local sink");
+    const handle = await configureTracing(spec, "local-test");
+    expect(handle.tracer.startSpan("probe").isRecording()).toBe(false);
+    await handle.shutdown();
   });
 
   it("registers nothing when tracing is off and hands back a non-recording tracer", async () => {

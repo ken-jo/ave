@@ -159,7 +159,13 @@ export async function configureTracing(
 ): Promise<TracingHandle> {
   if ("error" in spec || spec.kind === "off") return offHandle();
   if (spec.kind === "file" && spec.legacyLocal) {
-    await openFeatureNamespace("traces").childDir("spans");
+    // An unusable legacy sink leaves tracing off; a debugging switch must not stop boot.
+    try {
+      await openFeatureNamespace("traces").childDir("spans");
+    } catch (err) {
+      log.warn("tracing: AVE_TRACE sink unavailable, tracing off: %s", (err as Error).message);
+      return offHandle();
+    }
   }
 
   const [
@@ -177,7 +183,7 @@ export async function configureTracing(
         url: spec.url,
       });
   const provider = new TracerProvider({
-    spanLimits: { eventCountLimit: 128, attributePerEventCountLimit: 32 },
+    spanLimits: { attributePerEventCountLimit: 32 },
     resource: resourceFromAttributes({
       "service.name": "ave",
       "service.version": appVersion,
@@ -245,6 +251,9 @@ const STEP_LABELS: Readonly<Record<string, readonly string[]>> = {
   outcome: ["fired", "skipped", "not-reached"],
   stopReason: ["end_turn", "tool_use", "max_tokens", "length", "stream-error", "aborted", "round-cap"],
 };
+// Closed kebab-case codes (guard reasons, compaction triggers, stream error classes); free text never matches.
+const STEP_CODES = ["reason", "triggerSource", "classification"] as const;
+const STEP_CODE = /^[a-z][a-z-]{0,47}$/;
 
 /** Emit bounded events through the span provider; never open a second trace writer. */
 export function createStepTracer(sessionId: string, tracer: Tracer = trace.getTracer("ave")): ConversationTracer {
@@ -260,6 +269,10 @@ export function createStepTracer(sessionId: string, tracer: Tracer = trace.getTr
       for (const [key, labels] of Object.entries(STEP_LABELS)) {
         const value = meta?.[key];
         if (typeof value === "string" && labels.includes(value)) attributes[`ave.step.${key}`] = value;
+      }
+      for (const key of STEP_CODES) {
+        const value = meta?.[key];
+        if (typeof value === "string" && STEP_CODE.test(value)) attributes[`ave.step.${key}`] = value;
       }
       const active = trace.getActiveSpan();
       if (active) {
