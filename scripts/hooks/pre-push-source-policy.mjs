@@ -152,36 +152,15 @@ const FULL_CHECK_GLOBAL_INPUT_PREFIXES = Object.freeze([
 ]);
 
 /**
- * Message catalog data: the seed catalogs (`src/i18n/messages/<locale>.ts`),
- * the per-surface fragments (`generated/<namespace>.ts`) and the generated
- * barrels (`generated/index.ts`, `generated-locales/<locale>.ts`).
- *
- * `vitest related` cannot scope a change here. src/i18n/translate.ts imports
- * the loader src/i18n/messages/index.ts, which imports the English barrel and
- * lazily the locale barrels, so every test that reaches `t()` (about 1100 of
- * the suite) is "related" to every fragment, and no test imports a fragment
- * directly, so the bound below cannot narrow it either. What decides which
- * results a text change can move is which code names the changed keys: a
- * string changes only what `t()` returns for its key. selectMessageCatalogChecks
- * therefore runs the tests of the modules that name a changed key's namespace,
- * the tests that name it or read the catalog themselves, the i18n suites, and
- * the catalog and barrel checks. The loader itself (src/i18n/messages/index.ts)
- * and any other file in that directory stay global inputs: the Vitest setup
- * file executes the loader for every test.
+ * Locale catalogs contain static message data; select tests by changed key
+ * namespace instead of the shared translation import graph. The registry and
+ * unknown files stay global inputs. Structural edits require full checks.
  */
 const MESSAGE_CATALOG_DIRECTORY = "src/i18n/messages/";
-const messageCatalogSeedPath = /^src\/i18n\/messages\/[a-z]{2}(?:-[A-Z]{2})?\.ts$/;
-const messageCatalogFragmentPath = /^src\/i18n\/messages\/generated\/[A-Za-z0-9_]+\.ts$/;
-const messageCatalogBarrelPath = /^src\/i18n\/messages\/(?:generated\/index|generated-locales\/[a-z]{2}(?:-[A-Z]{2})?)\.ts$/;
-
-function isMessageCatalogBarrel(relativePath) {
-  return messageCatalogBarrelPath.test(relativePath);
-}
+const messageCatalogPath = /^src\/i18n\/messages\/[a-z]{2}(?:-[A-Z]{2})?\.ts$/;
 
 export function isMessageCatalogPath(relativePath) {
-  return isMessageCatalogBarrel(relativePath) ||
-    messageCatalogSeedPath.test(relativePath) ||
-    messageCatalogFragmentPath.test(relativePath);
+  return messageCatalogPath.test(relativePath);
 }
 
 const safeCliPath = /^[A-Za-z0-9._+@/-]+$/;
@@ -456,7 +435,7 @@ export function selectFastSourceChecks(changes) {
 }
 
 /** Catalog checks every message catalog change runs (package scripts). */
-export const MESSAGE_CATALOG_CHECK_SCRIPTS = Object.freeze(["check:i18n-catalog", "check:i18n-barrels"]);
+export const MESSAGE_CATALOG_CHECK_SCRIPTS = Object.freeze(["check:i18n-catalog"]);
 const I18N_SUITE_DIRECTORY = "src/i18n/__tests__/";
 const scannedModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const isStaticString = (node) => node !== undefined && (ast.isStringLiteral(node) || ast.isNoSubstitutionTemplateLiteral(node));
@@ -481,16 +460,16 @@ function isEnglishKeyType(node) {
     !node.type.typeArguments;
 }
 
-function isTranslationType(node, seed) {
+function isTranslationType(node) {
   if (!node || !ast.isTypeReferenceNode(node) || !ast.isIdentifier(node.typeName) || node.typeName.text !== "Record") return false;
   const args = node.typeArguments;
   return args?.length === 2 && args[1].kind === ast.SyntaxKind.StringKeyword &&
-    (seed ? ast.isTypeReferenceNode(args[0]) && ast.isIdentifier(args[0].typeName) &&
-      args[0].typeName.text === "SeedMessageKey" && !args[0].typeArguments : isEnglishKeyType(args[0]));
+    ast.isTypeReferenceNode(args[0]) && ast.isIdentifier(args[0].typeName) &&
+    args[0].typeName.text === "MessageCatalogKey" && !args[0].typeArguments;
 }
 
 /**
- * Read key -> locale values from a fully validated seed or fragment module.
+ * Read key -> locale values from a fully validated locale module.
  */
 export function readMessageCatalogEntries(text, relativePath) {
   return readMessageCatalogModule(text, relativePath)?.entries ?? null;
@@ -498,9 +477,8 @@ export function readMessageCatalogEntries(text, relativePath) {
 
 /**
  * readMessageCatalogEntries for many modules at once, keyed by relative path.
- * Each compiler session is a native child process, so reading the catalog's
- * ~190 modules one by one costs ~190 process spawns; this parses them all in
- * one session and validates each module exactly as the single-module reader.
+ * Parse both locales in one compiler session and validate each module exactly
+ * as the single-module reader.
  */
 export function readMessageCatalogEntriesByPath(texts) {
   const readable = new Map([...texts].filter(([, text]) => isReadableCatalogText(text)));
@@ -523,7 +501,7 @@ function parseCatalogSources(texts) {
 
 /**
  * Preserve each locale's property order and the source ranges of its values.
- * Only the shipped declarations, type-only seed scaffolding and static string
+ * Only the shipped declarations, type-only key scaffolding and static string
  * properties are accepted. Unknown syntax or a different binding layout keeps
  * the full tier; declaration order must never stand in for locale identity.
  */
@@ -535,34 +513,31 @@ function readMessageCatalogModule(text, relativePath) {
 
 function readParsedMessageCatalog(source, relativePath) {
   if (!source) return null;
-  const fragment = relativePath === undefined
-    ? source.statements.filter(ast.isVariableStatement).length === 2
-    : messageCatalogFragmentPath.test(relativePath) && !isMessageCatalogBarrel(relativePath);
   const locale = relativePath === undefined
     ? source.statements[0] && ast.isImportDeclaration(source.statements[0]) ? "ko" : "en"
     : posix.basename(relativePath, ".ts");
-  if (!fragment && relativePath !== undefined &&
-      (!messageCatalogSeedPath.test(relativePath) || !["en", "ko"].includes(locale))) return null;
+  if (relativePath !== undefined &&
+      (!messageCatalogPath.test(relativePath) || !["en", "ko"].includes(locale))) return null;
   const statements = [...source.statements];
-  if (!fragment && locale === "ko") {
+  if (locale === "ko") {
     const statement = statements.shift();
     const clause = statement && ast.isImportDeclaration(statement) && statement.importClause;
     const bindings = clause && clause.namedBindings;
     if (!clause?.isTypeOnly || clause.name || !bindings || !ast.isNamedImports(bindings) || bindings.elements.length !== 1 ||
-        bindings.elements[0].name.text !== "SeedMessageKey" || bindings.elements[0].propertyName ||
+        bindings.elements[0].name.text !== "MessageCatalogKey" || bindings.elements[0].propertyName ||
         !ast.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== "./en.js" || statement.attributes) return null;
   }
   const entries = new Map();
   const orderedEntries = [];
   const bodies = [];
-  for (const binding of fragment ? ["en", "ko"] : [locale]) {
+  for (const binding of [locale]) {
     const statement = statements.shift();
     if (!statement || !ast.isVariableStatement(statement) || !isExported(statement) ||
         statement.declarationList.flags !== ast.NodeFlags.Const || statement.declarationList.declarations.length !== 1) return null;
     const declaration = statement.declarationList.declarations[0];
     if (!ast.isIdentifier(declaration.name) || declaration.name.text !== binding || declaration.exclamationToken ||
         (binding === "en" ? declaration.type !== undefined :
-          declaration.type === undefined ? !fragment : !isTranslationType(declaration.type, !fragment))) return null;
+          !isTranslationType(declaration.type))) return null;
     let body = declaration.initializer;
     if (body && ast.isAsExpression(body)) {
       if (!ast.isTypeReferenceNode(body.type) || !ast.isIdentifier(body.type.typeName) ||
@@ -584,12 +559,11 @@ function readParsedMessageCatalog(source, relativePath) {
       orderedEntries.push({ binding, key, value, start: property.initializer.getStart(source), end: property.initializer.end });
     }
   }
-  if (!fragment && locale === "en" && statements.length === 1) {
+  if (locale === "en" && statements.length === 1) {
     const statement = statements.shift();
-    if (!ast.isTypeAliasDeclaration(statement) || !isExported(statement) || statement.name.text !== "SeedMessageKey" ||
+    if (!ast.isTypeAliasDeclaration(statement) || !isExported(statement) || statement.name.text !== "MessageCatalogKey" ||
         statement.typeParameters || !isEnglishKeyType(statement.type)) return null;
   }
-  if (fragment && [...entries.values()].some((values) => !("en" in values) || !("ko" in values))) return null;
   return statements.length === 0 ? { entries, orderedEntries, bodies } : null;
 }
 
@@ -673,9 +647,6 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
   const changedNamespaces = new Set();
   for (const entry of entries) {
     if (!isMessageCatalogPath(entry?.path)) return { reason: `${entry?.path} is not a message catalog file` };
-    if (isMessageCatalogBarrel(entry.path)) {
-      return { reason: `${entry.path} changes catalog assembly without attributable message values; full checks required` };
-    }
     const afterText = readBlob(entry.localSha, entry.path);
     const beforeText = entry.status === "A" ? null : readBlob(entry.baseSha, entry.path);
     const after = readMessageCatalogModule(afterText, entry.path);

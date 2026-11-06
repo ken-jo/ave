@@ -6,7 +6,8 @@ import { PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } f
 import type { AgentObservationEvent, DocumentObservationEvent, PreviewObservedTextDocument } from "../../../../shared/agent-observation.js";
 import { emitObservations } from "../../../../__tests__/support/document-observation-events.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
-import { en, ko } from "../../../../i18n/messages/generated/chatPreviewRail.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 const renderDiagram = vi.hoisted(() => vi.fn(async () => ({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Flow</text></svg>' })));
 vi.mock("mermaid", () => ({ default: { initialize: vi.fn(), render: renderDiagram } }));

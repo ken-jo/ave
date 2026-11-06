@@ -287,7 +287,6 @@ const LAZY_RENDERER_CHUNKS = [
   { name: "hljs-typescript", pattern: /^\/dist\/src\/renderer\/chunks\/hljs-typescript\.[0-9a-f]{8}\.js$/ },
   // Korean is a built-in UI language; a missing catalog chunk silently falls back to English.
   { name: "i18n-ko", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko\.[0-9a-f]{8}\.js$/ },
-  { name: "i18n-ko-seed", pattern: /^\/dist\/src\/renderer\/chunks\/i18n-ko-seed\.[0-9a-f]{8}\.js$/ },
 ];
 const missingLazyChunks = LAZY_RENDERER_CHUNKS.filter(
   (chunk) => !entries.some((entry) => chunk.pattern.test(entry)),

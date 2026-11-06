@@ -1,16 +1,15 @@
 /** Host declarations share the plugin alert pipeline and its opt-in rules. */
 import type { AlertKindDeclaration } from "../plugins/public-contract.js";
-import { en, ko } from "../i18n/messages/generated/alerts.js";
-
-function text(key: keyof typeof en): { en: string; ko: string } {
-  return { en: en[key], ko: ko[key] };
-}
+import { en } from "../i18n/messages/en.js";
 
 export const DUE_SOON_ALERT_KIND = "due-soon";
 export const DUE_SOON_TITLE_MAX_LENGTH = 200;
 
-export const HOST_ALERT_KINDS: readonly AlertKindDeclaration[] = [
-  {
+/** Korean loads only here, when the host registers its kinds, never at module load. */
+export async function hostAlertKinds(): Promise<AlertKindDeclaration[]> {
+  const { ko } = await import("../i18n/messages/ko.js");
+  const text = (key: keyof typeof en) => ({ en: en[key], ko: ko[key] });
+  return [{
     id: DUE_SOON_ALERT_KIND,
     label: text("be_alerts.dueSoonLabel"),
     description: text("be_alerts.dueSoonBody"),
@@ -24,5 +23,5 @@ export const HOST_ALERT_KINDS: readonly AlertKindDeclaration[] = [
     },
     summary: text("be_alerts.dueSoonSummary"),
     prompt: text("be_alerts.dueSoonPrompt"),
-  },
-];
+  }];
+}

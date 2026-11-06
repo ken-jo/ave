@@ -1,39 +1,14 @@
 /**
- * Locale → message-catalog registry.
- *
- * Each locale's catalog is the union of:
- *   - the hand-curated *seed* ({@link ./en}, {@link ./ko}), and
- *   - the *generated* per-surface fragments ({@link ./generated}), produced by
- *     the i18n migration and assembled by `scripts/i18n-build-catalog.mjs`.
- *
- * Generated entries override seed entries on key collision (the surface-
- * specific text wins), though namespacing keeps collisions out of practice.
- * `mergeLocale` below is the only place that order is written.
- *
- * An installed language package supplies its catalog through
- * the loader its process registers ({@link setInstalledCatalogLoader}). For a
- * new locale the English catalog answers every key it does not translate; a
- * package for a compiled locale lays its interface keys over that locale's
- * compiled catalog, which keeps the model-facing keys.
+ * Locale catalog registry: English is eager; Korean loads on demand.
+ * Each built-in locale has one hand-written catalog, grouped by namespace.
+ * Installed language packages overlay compiled interface messages.
  */
 import { en } from "./en.js";
-import { generatedEn } from "./generated/index.js";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, isInstalledLocale, type Locale } from "../locale.js";
 
 /**
- * The one place the seed/generated precedence is written down: generated
- * entries override seed entries on key collision (see the module header).
- */
-function mergeLocale(seed: Messages, generated: Messages): Messages {
-  return { ...seed, ...generated };
-}
-
-const englishFallbackMessages: Messages = mergeLocale(en, generatedEn);
-
-/**
- * Any translation key. The full key space is open (`string`) because surface
- * keys are merged in from generated fragments; lookups fall back to English
- * and then to the key itself, so an unknown key is visible, never blank.
+ * Any translation key. The key space is open (`string`): lookups fall back
+ * to English and then to the key itself, so an unknown key is visible.
  */
 export type MessageKey = string;
 
@@ -57,7 +32,7 @@ const loadedFromInstalled = new Set<Locale>();
  * a language-pack catalog loaded on demand.
  */
 export const messages: MessageRegistry = {
-  en: englishFallbackMessages,
+  en,
 };
 
 type LazyLocale = Exclude<(typeof SUPPORTED_LOCALES)[number], "en">;
@@ -68,11 +43,8 @@ const lazyLocales: readonly LazyLocale[] = SUPPORTED_LOCALES.filter(
 
 const localeLoaders: Record<LazyLocale, () => Promise<Messages>> = {
   async ko() {
-    const [{ ko }, { koMessages }] = await Promise.all([
-      import(/* webpackChunkName: "i18n-ko-seed" */ "./ko.js"),
-      import(/* webpackChunkName: "i18n-ko" */ "./generated-locales/ko.js"),
-    ]);
-    return mergeLocale(ko, koMessages);
+    const { ko } = await import(/* webpackChunkName: "i18n-ko" */ "./ko.js");
+    return ko;
   },
 };
 

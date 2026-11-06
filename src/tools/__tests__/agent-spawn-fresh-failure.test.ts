@@ -1,7 +1,7 @@
 // Failed fresh runs never suspended and cannot resume; guidance must preserve findings without respawning.
 import { describe, expect, it } from "vitest";
 
-import { en } from "../../i18n/messages/generated/be_agentSpawn.js";
+import { en } from "../../i18n/messages/en.js";
 
 describe("failed fresh spawn guidance", () => {
   const failed = en["be_agentSpawn.freshSpawnFailedGuidance"];

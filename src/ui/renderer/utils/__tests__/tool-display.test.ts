@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { getToolCallLabel, getToolDisplayName } from "../tool-display.js";
-import { en, ko } from "../../../../i18n/messages/generated/toolDisplay.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 describe("tool display names", () => {
   it("labels read_tool_result_chunk instead of leaking raw identifier text", () => {
