@@ -831,16 +831,19 @@ describe("a turn parked on an approval, with two tiles", () => {
     }
   });
 
-  it("moves the lane card with focus, and names the plugin that asked", async () => {
+  it.each([
+    { sessionId: "background-plugin-chat", label: "익스텐션 요청 · mail-assistant" },
+    { sessionId: undefined, label: "익스텐션 패널 요청 · mail-assistant" },
+  ])("moves the lane card with focus, and names the plugin that asked ($label)", async ({ sessionId, label }) => {
     const { container, emitApproval } = await renderApp({ hasApiKey: true });
     const [primary, second] = await splitIntoTwoTiles(container);
 
     await act(async () => {
-      emitApproval(request({ id: "req-plugin", sourcePluginId: "mail-assistant" }));
+      emitApproval(request({ id: "req-plugin", sessionId, sourcePluginId: "mail-assistant" }));
     });
     await waitFor(() => expect(laneCard(second!.element)).toHaveLength(1));
     expect(second!.element.querySelector('[data-testid="approval-lane-card"]')!.textContent)
-      .toContain("익스텐션 요청 · mail-assistant");
+      .toContain(label);
     expect(laneCard(container)[0]!.closest('[data-testid="floating-right-lane"]')).not.toBeNull();
 
     await focusTile(primary!);

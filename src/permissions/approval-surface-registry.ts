@@ -24,9 +24,12 @@ export class ApprovalSurfaceRegistry {
   private unattributed: WebContents | null = null;
   private readonly ownerReleaseListeners = new Set<(owner: WebContents) => void>();
 
-  observeOwnerReleased(listener: (owner: WebContents) => void): () => void {
+  observeOwnerReleased(listener: (owner: WebContents) => void): void {
     this.ownerReleaseListeners.add(listener);
-    return () => { this.ownerReleaseListeners.delete(listener); };
+  }
+
+  unobserveOwnerReleased(listener: (owner: WebContents) => void): void {
+    this.ownerReleaseListeners.delete(listener);
   }
 
   register(sessionId: string, owner: WebContents | null): void {
@@ -158,16 +161,17 @@ export type ApprovalSurfaceUpdate =
   | { kind: "bind-terminal-session"; tabId: string; sessionId: string }
   | { kind: "release-terminal"; tabId: string }
   | { kind: "attach-unattributed"; surface: WebContents | null }
-  | { kind: "release-owner"; surface: WebContents };
+  | { kind: "release-owner"; surface: WebContents }
+  | { kind: "observe-owner-release" | "unobserve-owner-release"; listener: (owner: WebContents) => void;
+      registry?: Readonly<Pick<ApprovalSurfaceRegistry, "observeOwnerReleased" | "unobserveOwnerReleased">> };
 
 const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
 
 /** Read-only delivery and terminal-binding lookups; all attachment and lifecycle updates use one host function. */
-export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId" | "observeOwnerReleased">> = Object.freeze({
+export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
   resolve: (sessionId: string | undefined, terminalTabId?: string) =>
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
   terminalSessionId: (tabId: string) => registeredApprovalSurfaces.terminalSessionId(tabId),
-  observeOwnerReleased: (listener: (owner: WebContents) => void) => registeredApprovalSurfaces.observeOwnerReleased(listener),
 });
 
 /**
@@ -201,6 +205,12 @@ export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {
       return registeredApprovalSurfaces.registerUnattributed(update.surface);
     case "release-owner":
       return registeredApprovalSurfaces.releaseOwner(update.surface);
+    case "observe-owner-release":
+      if (update.registry) return update.registry.observeOwnerReleased(update.listener);
+      return registeredApprovalSurfaces.observeOwnerReleased(update.listener);
+    case "unobserve-owner-release":
+      if (update.registry) return update.registry.unobserveOwnerReleased(update.listener);
+      return registeredApprovalSurfaces.unobserveOwnerReleased(update.listener);
     default:
       throw new Error("approval-surface: invalid update operation");
   }

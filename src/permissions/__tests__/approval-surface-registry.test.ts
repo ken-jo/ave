@@ -7,6 +7,27 @@ function surface() {
 }
 
 describe("approval surface registrations", () => {
+  it.each([false, true])("subscribes and detaches owner lifecycle notifications through the common update (scoped=%s)", (scoped) => {
+    const registry = scoped ? new ApprovalSurfaceRegistry() : undefined;
+    const owner = surface();
+    const released: WebContents[] = [];
+    const listener = (surface: WebContents): void => { released.push(surface); };
+    const releaseOwner = () => {
+      if (registry) registry.releaseOwner(owner);
+      else updateApprovalSurface({ kind: "release-owner", surface: owner });
+    };
+    updateApprovalSurface({ kind: "observe-owner-release", listener, registry });
+    try {
+      releaseOwner();
+      expect(released).toEqual([owner]);
+      updateApprovalSurface({ kind: "unobserve-owner-release", listener, registry });
+      releaseOwner();
+      expect(released).toEqual([owner]);
+    } finally {
+      updateApprovalSurface({ kind: "unobserve-owner-release", listener, registry });
+    }
+  });
+
   it("routes a conversation terminal through its live session attachment and revokes the link on release", () => {
     const registry = new ApprovalSurfaceRegistry();
     const first = surface();

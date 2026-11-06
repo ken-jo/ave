@@ -1219,9 +1219,9 @@ describe("unattributed panel approval labels", () => {
     const { getAllByText } = render(<ApprovalLaneCard conversationLabel={label} queue={[makeRequest()]} onDecide={vi.fn()} />);
     expect(getAllByText(label).length).toBeGreaterThan(0);
   });
-  it("keeps background plugin conversations labeled as unopened conversations", () => {
+  it("names session-bound plugin requests without the panel label", () => {
     expect(unattributedRequestLabel({ sourcePluginId: "sample-panel", sessionId: "background-chat" }, t))
-      .toBe(t("approvalAttribution.headlessSession"));
+      .toBe("익스텐션 요청 · sample-panel");
   });
   it("retains host and unopened conversation attribution", () => {
     expect(unattributedRequestLabel({}, t)).toBe(t("approvalAttribution.hostRequest"));

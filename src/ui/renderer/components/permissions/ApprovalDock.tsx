@@ -414,14 +414,16 @@ export function ApprovalLaneCard({
   );
 }
 
-/** Prefer plugin-panel attribution; otherwise distinguish host requests from unopened conversations. */
+/** Name the originating plugin, distinguishing panels from session-bound requests. */
 export function unattributedRequestLabel(
   request: Pick<ApprovalRequest, "sessionId" | "sourcePluginId">,
   t: (key: string, params?: Record<string, string | number>) => string,
 ): string {
-  if (request.sessionId !== undefined) return t("approvalAttribution.headlessSession");
   if (request.sourcePluginId !== undefined) {
-    return t("approvalAttribution.pluginRequest", { plugin: request.sourcePluginId });
+    return request.sessionId === undefined
+      ? t("approvalAttribution.pluginRequest", { plugin: request.sourcePluginId })
+      : t("approvalAttribution.extensionSessionRequest", { extension: request.sourcePluginId });
   }
+  if (request.sessionId !== undefined) return t("approvalAttribution.headlessSession");
   return t("approvalAttribution.hostRequest");
 }
