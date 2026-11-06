@@ -22,7 +22,7 @@ async function expectSettingsBottomClearance(
       '[role="tabpanel"][data-state="active"]',
     );
     const content = activePanel?.lastElementChild as HTMLElement | null;
-    if (!activePanel || !content) return { gap: -1, clearance: Number.POSITIVE_INFINITY, display: '' };
+    if (!activePanel || !content) return { gap: -1, clearance: Number.POSITIVE_INFINITY, rootFont: Number.POSITIVE_INFINITY, display: '' };
 
     return {
       gap: Math.round(
@@ -30,13 +30,16 @@ async function expectSettingsBottomClearance(
       ),
       // The scroller's bottom padding (pb-12, 3rem) is the clearance; rem follows the root type scale, so read it, not a px constant.
       clearance: Number.parseFloat(getComputedStyle(scroller).paddingBottom),
+      rootFont: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       display: getComputedStyle(activePanel).display,
     };
   });
 
+  // The last row clears the bottom by the scroller's own padding, and never by less than 3rem: a shrunken padding class
+  // would pass the relative check alone.
   await expect.poll(async () => {
-    const { gap, clearance } = await measure();
-    return gap - clearance;
+    const { gap, clearance, rootFont } = await measure();
+    return Math.min(gap - clearance, gap - 3 * rootFont);
   }, { timeout: 5_000 }).toBeGreaterThanOrEqual(-1);
   expect((await measure()).display).toBe('flex');
 }

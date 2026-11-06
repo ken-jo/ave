@@ -65,21 +65,27 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
       // The tree has a roving tabindex: arrow keys move between rows and Enter opens the focused one.
       const browserItem = page.getByTestId("sidebar-surface-tree-browser:abc12345-1");
       const terminalItem = page.getByTestId("sidebar-surface-tree-terminal:abc12345-2");
-      // Opening a row moves it to the top (newest use first), so read the order before each step.
-      const arrowFrom = async (from: string, to: string) => {
-        const keys = await page.getByTestId("sidebar-tree").evaluate((tree) =>
-          Array.from(tree.querySelectorAll('[role="treeitem"]')).map((item) => item.getAttribute("data-testid")));
-        return keys.indexOf(`sidebar-surface-tree-${to}`) > keys.indexOf(`sidebar-surface-tree-${from}`) ? "ArrowDown" : "ArrowUp";
-      };
+      // Rows run newest use first. Each pass starts with the browser on top: the seed opens it last, and so does every pass.
+      const rowOrder = () => page.getByTestId("sidebar-tree").evaluate((tree) =>
+        Array.from(tree.querySelectorAll('[role="treeitem"]'))
+          .map((item) => item.getAttribute("data-testid"))
+          .filter((id) => id?.startsWith("sidebar-surface-tree-")));
+      await expect.poll(rowOrder).toEqual([
+        "sidebar-surface-tree-browser:abc12345-1", "sidebar-surface-tree-terminal:abc12345-2",
+      ]);
       await browserItem.focus();
-      await page.keyboard.press(await arrowFrom("browser:abc12345-1", "terminal:abc12345-2"));
+      await page.keyboard.press("ArrowDown");
       await expect(terminalItem).toBeFocused();
       await page.keyboard.press("Enter");
-      const back = await arrowFrom("terminal:abc12345-2", "browser:abc12345-1");
+      // Opening the terminal moves it to the top, so the browser is now the row below it.
+      await expect.poll(rowOrder).toEqual([
+        "sidebar-surface-tree-terminal:abc12345-2", "sidebar-surface-tree-browser:abc12345-1",
+      ]);
       await terminalItem.focus();
-      await page.keyboard.press(back);
+      await page.keyboard.press("ArrowDown");
       await expect(browserItem).toBeFocused();
-      await page.keyboard.press("Enter");
+      // Space opens the focused row as Enter does.
+      await page.keyboard.press("Space");
       await expect(page.getByTestId("chat-side-panel-motion")).toHaveAttribute("data-panel-mode", width === 1100 ? "docked" : "overlay");
       await expect(page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
       await expect(browserRow).toHaveAttribute("aria-current", "page");

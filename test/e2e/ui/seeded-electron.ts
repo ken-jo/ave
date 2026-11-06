@@ -155,9 +155,6 @@ export function buildLlmSettings(
 
   return {
     ...buildE2eBaseSettings(true),
-    // A profile seeded here names its model as a current build would save it. Without the marker, the one-time migration that
-    // clears stored copies of removed built-in defaults (settings-store.ts) treats e.g. openai/gpt-5.4-mini as one and drops it.
-    appliedMigrations: ["built-in-default-models-cleared"],
     llm: {
       provider: vendor,
       vendors,

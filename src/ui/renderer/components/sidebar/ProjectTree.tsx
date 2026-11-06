@@ -1113,6 +1113,10 @@ export function ProjectTree({
           rowActions.openBeside();
         } else rowActions?.open();
         break;
+      // Space opens the row as Enter does, as the rows' buttons did before they became one tree.
+      case " ":
+        rowActions?.open();
+        break;
       case "F2":
         if (!rowActions?.rename) return;
         rowActions.rename();

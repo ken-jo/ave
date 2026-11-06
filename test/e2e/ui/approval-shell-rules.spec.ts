@@ -80,7 +80,7 @@ for (const locale of ["en", "ko"] as const) {
   });
 }
 
-test("Settings loads and revokes a project rule through the real host bridge", async ({ app: seededApp, mainWindow: seededWindow, userDataDir, aveHome, tempHome }, testInfo) => {
+test("Settings loads and revokes a project rule through the real host bridge", async ({ app: seededApp, mainWindow: seededWindow, userDataDir, aveHome, tempHome, t }, testInfo) => {
   const project = join(userDataDir, "rules-project");
   mkdirSync(project, { recursive: true });
   const captured = captureApprovalWorkingDirectory(project);
@@ -107,7 +107,7 @@ test("Settings loads and revokes a project rule through the real host bridge", a
     await expect(inert).toHaveCount(0);
     expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([{ pattern: "Bash(npm test *)", action: "allow" }]);
     await expect(row).toBeVisible();
-    await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(/outside the sandbox|샌드박스 밖 실행/i);
+    await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(t("permissionsTab.shellOutsideSandbox"));
     await expect(row).toContainText(captured.path);
     await row.scrollIntoViewIfNeeded();
     await expect(row).toBeInViewport();
