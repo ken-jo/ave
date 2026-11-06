@@ -4,11 +4,11 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 // Filesystem and child processes are mocked; no Python installation is used.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import type { EventEmitter } from "node:events";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, type as osType } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { configureHostResources } from "../host-resources.js";
@@ -29,6 +29,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
+// Only spawn is faked; the real module stays for the ACL helper, so the code under test also reaches real execFile.
 vi.mock("node:child_process", async original => ({
   ...await original<typeof import("node:child_process")>(),
   spawn: vi.fn(),
@@ -46,7 +47,8 @@ vi.mock("../../shared/ave-home.js", async (importOriginal) => {
 function boundaryCreatedByBoot(): void { runtimeBoundary.createdByBoot = true; }
 
 function configurePackagedHostResources(resourcesPath: string): void {
-  if (process.platform === "win32") {
+  // The real host, not the simulated platform: Windows path facts run the native helper.
+  if (osType() === "Windows_NT") {
     cpSync(path.resolve("resources/windows-path-kind"), path.join(resourcesPath, "windows-path-kind"), { recursive: true });
   }
   configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
@@ -241,6 +243,7 @@ describe("uvProxyEnvFromPacResolutions", () => {
 });
 
 describe("PythonRuntimeBootstrapper", () => {
+  beforeAll(() => protectAveHomeFixture(process.env.AVE_HOME!));
   // Real on-disk plugin roots created by registry-discovery cases.
   const registryTempRoots: string[] = [];
 
@@ -259,7 +262,6 @@ describe("PythonRuntimeBootstrapper", () => {
     );
     configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false });
     // Boot creates the runtime boundary; Windows runtime setup refuses to recreate it.
-    protectAveHomeFixture(process.env.AVE_HOME!);
     await initializeAveHomeFixture(process.env.AVE_HOME!);
     runtimeBoundary.createdByBoot = false;
   });

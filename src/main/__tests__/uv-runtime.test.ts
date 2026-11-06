@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -37,8 +37,8 @@ describe("resolveBundledUvBinaryPath", () => {
 });
 
 describe("materializing the packaged uv binary into the runtime boundary", () => {
+  beforeAll(() => protectAveHomeFixture(aveHome()));
   beforeEach(async () => {
-    protectAveHomeFixture(aveHome());
     await initializeAveHomeFixture(aveHome());
   });
   function packagedResources(): { resourcesPath: string; target: ReturnType<typeof currentUvTarget> } {
