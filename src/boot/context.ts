@@ -203,9 +203,6 @@ export class BootContext {
   declare workBoardReporter: WorkBoardReporter;
 
   // Dispose every main window's plugin event bridge.
-  declare disposePluginEventBridge: () => void;
-  declare addPluginEventBridgeWindow: (win: BrowserWindow | null) => void;
-  declare refreshPluginEventBridges: () => void;
 
   declare mcpGovernance: McpGovernance;
   declare mcpManager: McpManager;
@@ -316,9 +313,6 @@ const BOOT_CONTEXT_FIELDS = [
   "memoryMaintenanceCoordinator",
   "workBoardEngine",
   "workBoardReporter",
-  "disposePluginEventBridge",
-  "addPluginEventBridgeWindow",
-  "refreshPluginEventBridges",
   "mcpGovernance",
   "mcpManager",
   "pluginLoopbackManager",

@@ -19,7 +19,7 @@ const MANIFEST: PluginManifest = {
       name: "files_read",
       description: "Read a file",
       inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ai.agent-connector.ave/pathFields": ["path"] },
     },
     {
       name: "files_write",
@@ -29,7 +29,7 @@ const MANIFEST: PluginManifest = {
         properties: { path: { type: "string" }, body: { type: "string" } },
         required: ["path"],
       },
-      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ai.agent-connector.ave/pathFields": ["path"] },
     },
     {
       name: "files_exec",
@@ -42,6 +42,12 @@ const MANIFEST: PluginManifest = {
 
 describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
   const invoke = vi.fn(async (name: string) => ({ text: `ran ${name}` }));
+
+  it.each(["ave/pathFields", "ave/operationPolicy"])("rejects removed metadata key %s", (key) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      name: "files_read", inputSchema: { type: "object" }, _meta: { [key]: [] },
+    }, invoke)).toThrow(/removed metadata key/);
+  });
 
   it("sources pathFields from _meta and applies the default tool version (removed self-claim fields are gone from the contract)", () => {
     const tools = manifestToolsToMcpTools(MANIFEST).map((t) => mcpToolToPluginTool(PLUGIN_ID, t, invoke));
@@ -79,12 +85,12 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
       ...manifestToolsToMcpTools(MANIFEST)[0],
       _meta: {
         ...manifestToolsToMcpTools(MANIFEST)[0]._meta,
-        "ave/operationPolicy": policy,
+        "ai.agent-connector.ave/operationPolicy": policy,
       },
     };
     const tool = mcpToolToPluginTool(PLUGIN_ID, projected, invoke, policy);
     expect(tool.operationPolicy).toEqual(policy);
-    expect(projected._meta["ave/operationPolicy"]).toEqual(policy);
+    expect(projected._meta["ai.agent-connector.ave/operationPolicy"]).toEqual(policy);
   });
 
   it("surfaces a thrown invoke as an isError result (not a throw)", async () => {
@@ -132,8 +138,8 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     // Ignore wire category claims so a claimed read category cannot lower the host baseline.
     const wireMetas: Array<Record<string, unknown>> = [
       { ui: { visibility: ["model"] } },
-      { "ave/category": "read" },
-      { "ave/category": 42 },
+      { "ai.agent-connector.ave/category": "read" },
+      { "ai.agent-connector.ave/category": 42 },
     ];
     for (const _meta of wireMetas) {
       const tool = mcpToolToPluginTool(
@@ -161,7 +167,7 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     expect(unknown.pathFields).toBeUndefined();
   });
 
-  it("reads pathFields from the ave/pathFields wire key (and ignores a stray unknown-vendor key)", () => {
+  it("reads pathFields from the ai.agent-connector.ave/pathFields wire key (and ignores a stray unknown-vendor key)", () => {
     const tool = mcpToolToPluginTool(
       PLUGIN_ID,
       {
@@ -169,7 +175,7 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
         inputSchema: { type: "object", properties: {} },
         _meta: {
           ui: { visibility: ["model"] },
-          "ave/pathFields": ["new"],
+          "ai.agent-connector.ave/pathFields": ["new"],
           [`${UNKNOWN_META_PREFIX}pathFields`]: ["other"],
         },
       },

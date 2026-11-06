@@ -20,6 +20,7 @@ import {
   normalizeLocalUserContentParts,
 } from "../../main/subscription-attachment-input.js";
 import type { ChatUtteranceMode } from "../../shared/chat-utterance.js";
+import { formatAppMessageEnvelope, isAppMessageOrigin } from "../../shared/mcp-app-message-source.js";
 import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../shared/staged-origins.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
@@ -1047,7 +1048,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (isInterruptSend(payload)) {
       // Validate keyboard authority and payload before interrupting the running turn.
       const admitted = parseChatSendPayload(payload);
-      if (admitted.ok && admitted.payload.inputOrigin === "user-keyboard") {
+      if (admitted.ok && admitted.payload.userActivation === true
+        && (admitted.payload.inputOrigin === "user-keyboard" || admitted.payload.inputOrigin === "app-emitted")) {
         await interruptActiveTurn(group);
         interrupted = true;
       }
@@ -1081,11 +1083,16 @@ export function registerChatHandlers(deps: IpcDeps): void {
     } catch {
       return { ok: false, error: "file-reference-invalid" };
     }
-    // Guide text needs the same PII redaction as keyboard sends.
-    const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
+    const appIntent = intent && typeof intent === "object" && "inputOrigin" in intent && intent.inputOrigin === "app-emitted";
+    const appSource = appIntent && "appSource" in intent ? intent.appSource : undefined;
+    if (appIntent && (typeof appSource !== "string" || !isAppMessageOrigin(appSource))) return { ok: false, error: "invalid-content" };
+    // App guidance is enveloped at the host boundary and can never claim keyboard authority.
+    const outgoing = typeof appSource === "string" ? formatAppMessageEnvelope(input, appSource) : input;
+    const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), outgoing);
     // Only a guide carrying the composer gesture's consumed keyboard intent is the user's own words; anything else (a queue flush, a
     // replayed or forged call) is queued as another principal's, which ends host terminal typing for the rest of the turn.
-    const queueResult = hasUserKeyboardIntent(intent) ? group.loop.queueUserGuidance(effective) : group.loop.queueGuidance(effective);
+    const queueResult = !appIntent && !parseStagedEnvelope(effective) && hasUserKeyboardIntent(intent)
+      ? group.loop.queueUserGuidance(effective) : group.loop.queueGuidance(effective);
     if (queueResult === "queued") {
       // Audit guide acceptance as a mutation, recording metadata without user text.
       const mode: ChatUtteranceMode = "guide";
@@ -1093,7 +1100,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         timestamp: new Date().toISOString(),
         sessionId: group.loop.getSessionId(),
         type: "info",
-        input: `chat:utterance:${mode}:queued:len=${effective.length}`,
+        input: `chat:utterance:${mode}:queued:origin=${appIntent ? "app-emitted" : "guidance"}:len=${effective.length}`,
       });
       return { ok: true };
     }

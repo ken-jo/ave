@@ -226,14 +226,15 @@ function renderSidebar(
 describe("Sidebar plugin view labels follow the UI language", () => {
   const meeting = {
     pluginId: "meeting",
+    payload: { serverId: "meeting", generationId: "meeting-test", resourceUri: "ui://meeting/control" },
+    runtimeRevision: 1,
     extension: {
       id: "meeting-control",
       slot: "sidebar" as const,
-      kind: "embedded-module" as const,
+      kind: "mcp-app" as const,
       displayName: "미팅",
       title: "회의 기록",
-      entry: "dist/ui.js",
-      exportName: "PluginUi",
+      resourceUri: "ui://meeting/control",
       locales: { en: { displayName: "Meeting" }, ko: { displayName: "미팅" } },
     },
   };

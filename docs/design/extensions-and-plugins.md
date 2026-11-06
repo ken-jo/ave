@@ -3,8 +3,7 @@
 Plugin names such as `mail`, `portal` and `assistant` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
-**Released contract.** App 0.14.0 serves host protocol `"3"` on the `ave/*`
-wire. The development build serves `"5"`, defined by `HOST_PROTOCOL_VERSION` in
+**Released contract.** App 0.14.0 serves host protocol `"3"`. The development build serves `"5"`, defined by `HOST_PROTOCOL_VERSION` in
 `src/plugins/isolation/host-api-wire.ts`.
 An extension for app 0.14.0 or later declares
 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
@@ -47,7 +46,7 @@ The owner's direction splits today's single "plugin" concept in two:
 |---|---|---|
 | What it is | Today's code plugin: `meeting`, `mail`, `local-indexer`, `assistant`, `hello-world`, the `templates/plugin` scaffold, `portal`, `git` | A standard Agent Plugins 1.0.0 bundle: skills, MCP servers, prompts, agent profiles, routine templates and (one slice later) hooks, with no Ave runtime code |
 | Structural marker | `extensions["ai.agent-connector.ave"].entry` (required today, `schemas/plugin-manifest.schema.json:122-125`, `:135-138`), or the `process` entry the amendment adds (amendment §2.1) | no `entry` and no `process` under `extensions["ai.agent-connector.ave"]` |
-| Runs | its own confined process speaking `ave/host/*` and MCP (protocol design §2, §3) | nothing of its own. Its MCP servers run as MCP servers do today; its hooks run as bundled hooks do; its other components are content the host reads |
+| Runs | its own confined process speaking `ai.agent-connector.ave/host/*` and MCP (protocol design §2, §3) | nothing of its own. Its MCP servers run as MCP servers do today; its hooks run as bundled hooks do; its other components are content the host reads |
 | Lifecycle gates | Lease and Admission (amendment §9.1) | the content install path and the per-component consent of §3 |
 | Who writes it | a developer against the vendored contract (marketplace design §5.6) | a developer against the public Agent Plugins format, **or** an ordinary user inside the app with no code (§4) |
 | Marketplace kind literal | `plugin` (unchanged identifier, §6.2) | `agent-plugin` (new, §5.1) |
@@ -74,7 +73,7 @@ internal manifest with `flattenAgentPluginsManifest`
 (`src/plugins/public-contract.ts:105-129`), whose `name` lands on `id`.
 
 An extension is what the protocol design, the amendment and the alerts design govern:
-one process per package, `ave/host/*` as its only reach into the host, `hostFetch` as
+one process per package, `ai.agent-connector.ave/host/*` as its only reach into the host, `hostFetch` as
 its only network egress (`src/main/host-fetch-guard.ts:1-24`,
 `src/boot/steps/plugin-runtime/host-api-factory.ts:990`, `:1083`), manifest
 `capabilities`, `networkAccess`, `hostSecrets`, `pluginAccess`, `alerts`, `sandbox`
@@ -471,14 +470,14 @@ value that the secret store holds for the package.
 
 ### 3.1 What a plugin can never do
 
-A plugin has no HostApi connection: no `ave/host/*` method, no `hostFetch`, no
+A plugin has no HostApi connection: no `ai.agent-connector.ave/host/*` method, no `hostFetch`, no
 `callLlm`, no `getSecret`, no `resolveApiKey`, no worker, no window, no UI slot, no
 alert kind, no work proposal, no `pluginAccess`, no `networkAccess`, no `hostSecrets`, no
 `sandbox` grant. None of those fields exists in the plugin branch of the schema (§2.1),
 so nothing in a plugin can ask for them, and there is no code plugin process in which
 they could be exercised. Lease and Admission therefore do not apply to a plugin,
 because there is nothing to lease and nothing to admit; a plugin cannot obtain a lease
-by any path, and a plugin's MCP server is not a `ave/host/*` peer (§3.2). This page
+by any path, and a plugin's MCP server is not a `ai.agent-connector.ave/host/*` peer (§3.2). This page
 adds no member, channel or capability to the HostApi and no consumer of it.
 
 Two component classes in a plugin run code, and both are named as such everywhere the
@@ -1328,7 +1327,7 @@ Vocabulary only, in the surfaces that speak to users and readers:
 | Install receipts (`installSource`, schema v3/v4, `artifactSha256`, `manifestSha256`) | unchanged | Persisted values that the grant chain and the Doctor read (marketplace design §2.3, §10.3); AGENTS.md treats shipped audit and persisted keys as migration decisions, not renames |
 | Descriptor and index kind literal `plugin` | unchanged | Every snapshot, ledger row, policy `requiredInstalls[].kind`, deep link and index carries it; renaming it is the older-app trap of §5.2 |
 | i18n **keys** (`sidebar.pluginsLabel`, `gitMarketplace.kind.plugin`, …) | unchanged | Keys are identifiers the catalog gates and the used-keys test match on (`src/i18n/__tests__/used-keys-exist.test.ts:35-62`); only values change |
-| Code identifiers, module paths, types (`src/plugins/`, `PluginManifest`, `PluginHostApi`, `PluginContributionTrustStore`, `ave/host/*`, `hostProtocol`) | unchanged | AGENTS.md: do not rename unrelated code during another task; the protocol schema `$id`s and the vendored contract hash pin these names |
+| Code identifiers, module paths, types (`src/plugins/`, `PluginManifest`, `PluginHostApi`, `PluginContributionTrustStore`, `ai.agent-connector.ave/host/*`, `hostProtocol`) | unchanged | AGENTS.md: do not rename unrelated code during another task; the protocol schema `$id`s and the vendored contract hash pin these names |
 | Audit `type` keys, event namespaces (`plugin.*`, `host.*`) | unchanged | Persisted and subscribed values (`src/plugins/capabilities.ts:117-120`) |
 | `OUT_OF_PROCESS_PLUGIN_IDS`, `PLUGIN_ENVELOPE_GRANTS` | unchanged | Being removed by the amendment's own steps (amendment §9.3, §9.6 slice C row); renaming a table scheduled for deletion is churn |
 

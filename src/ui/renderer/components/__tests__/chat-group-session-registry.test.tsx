@@ -65,6 +65,7 @@ const handleFor = (streaming: boolean, entries: readonly ChatEntry[] = NO_ENTRIE
   currentSessionProject: NO_PROJECT,
   loadSession: async () => false,
   prefillComposer: () => {},
+  stageAppMessage: () => {},
   appendSystemEntry: () => {},
   startNewChat: async () => false,
 });

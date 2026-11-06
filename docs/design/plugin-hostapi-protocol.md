@@ -6,7 +6,7 @@ record are generic stand-ins for plugins that are no longer part of this project
 The code packages described here are called extensions in user-facing copy.
 
 **Released contract.** Released hosts serve protocol `"3"`, introduced by
-0.14.0 on the `ave/*` wire. Published plugins continue to declare
+0.14.0. Published plugins for that released host declare
 `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
 
 **Unreleased contract.** This development build serves protocol `"5"` only
@@ -49,7 +49,7 @@ Status: design, decided; the wire step ([§9.4](../history/plugin-hostapi-protoc
 ([§9.1](../history/plugin-hostapi-protocol-migration.md#91-steps), §4.1, [§9.5](../history/plugin-hostapi-protocol-migration.md#95-the-lease-release-target-alerts-integration-and-publication-sequence-decisions-8-and-19)) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
 of independent review, and shipped as v0.12.0; the Publication step has its
 implementation plan in [§9.7](../history/plugin-hostapi-protocol-migration.md#97-the-publication-step-implementation-plan) (2026-09-28, decisions 27-47) and targets 0.13.0; Admission
-([§9.8](../history/plugin-hostapi-protocol-migration.md#98-the-admission-step-implementation-plan), decisions 48-62) and the move to protocol `3` on the `ave/*` wire target 0.14.0. It follows
+([§9.8](../history/plugin-hostapi-protocol-migration.md#98-the-admission-step-implementation-plan), decisions 48-62) and the move to protocol `3` target 0.14.0. It follows
 the retirement of the `ave-plugin-sdk` repository: a plugin repository now vendors the
 contract (`public-contract.ts` and the manifest schema) from ave at a release tag and
 holds the copy to a recorded sha256 (`docs/design/multi-source-git-marketplace.md` §5.6;
@@ -94,7 +94,7 @@ The process boundary exists. It is not the open question.
   `ELECTRON_RUN_AS_NODE=1`, piped stdio, ASRT wrap when the host's own sandbox is on,
   and `deny-only` grant mode on Windows (`out-of-process-plugin.ts:954-986`).
 - The child speaks two contracts on one framed stdio stream: host→child is JSON-RPC
-  (MCP `tools/call` plus five `ave/instance/*` lifecycle methods,
+  (MCP `tools/call` plus five `ai.agent-connector.ave/instance/*` lifecycle methods,
   `plugin-instance-wire.ts:38-45`), child→host is a **non-JSON-RPC** envelope keyed by
   `callId`/`kind` (`host-api-wire.ts:55-83`, `child-stream-multiplex.ts:13-18`).
 - Every one of the 48 hostApi paths has a four-axis wire contract (arguments, result,
@@ -141,9 +141,9 @@ has the process. This track makes the contract match it.
 | # | Reason | Ave gains it? | How |
 |---|---|---|---|
 | 1 | Executable parts are separate processes; a compile-time type cannot guarantee the other side anyway | **Yes** | Already true for 5/5 first-party plugins (§0). The remaining plugins move by default (§9). |
-| 2 | Contract is language neutral | **Yes** | The reverse channel becomes JSON-RPC 2.0 (`ave/host/*`) with a host-published JSON Schema (§3, §6): an Ave peer channel beside MCP, so a non-JS plugin needs a JSON-RPC library or the generated client next to its MCP server library (§3.1). A plugin may ship its own executable instead of a JS entry (§2.1). |
-| 3 | Same plugin loads in several hosts | **Partial, deliberately** | The manifest is already an Agent Plugins 1.0.0 document with `extensions["ai.agent-connector.ave"]` (`schemas/plugin-manifest.schema.json:5`, `public-contract.ts:36-37`). Skills, hooks and `mcpServers` contributions are portable. The `ave/host/*` surface is Ave-only by design: audio capture, floating dock, auth partitions and work proposals have no portable equivalent, and pretending otherwise would produce a lowest-common-denominator API. |
-| 4 | Host and plugins release independently through version and capability negotiation, plus report-and-ignore for unknown fields | **Yes** | `ave/instance/construct` carries the host protocol version and the capability list, and the MCP half negotiates per request (`2026-07-28`); unknown optional fields are reported and ignored; unknown methods fail loudly (§3.2, §3.3). |
+| 2 | Contract is language neutral | **Yes** | The reverse channel becomes JSON-RPC 2.0 (`ai.agent-connector.ave/host/*`) with a host-published JSON Schema (§3, §6): an Ave peer channel beside MCP, so a non-JS plugin needs a JSON-RPC library or the generated client next to its MCP server library (§3.1). A plugin may ship its own executable instead of a JS entry (§2.1). |
+| 3 | Same plugin loads in several hosts | **Partial, deliberately** | The manifest is already an Agent Plugins 1.0.0 document with `extensions["ai.agent-connector.ave"]` (`schemas/plugin-manifest.schema.json:5`, `public-contract.ts:36-37`). Skills, hooks and `mcpServers` contributions are portable. The `ai.agent-connector.ave/host/*` surface is Ave-only by design: audio capture, floating dock, auth partitions and work proposals have no portable equivalent, and pretending otherwise would produce a lowest-common-denominator API. |
+| 4 | Host and plugins release independently through version and capability negotiation, plus report-and-ignore for unknown fields | **Yes** | `ai.agent-connector.ave/instance/construct` carries the host protocol version and the capability list, and the MCP half negotiates per request (`2026-07-28`); unknown optional fields are reported and ignored; unknown methods fail loudly (§3.2, §3.3). |
 | 5 | Host isolates and sandboxes at the boundary | **Yes on macOS/Linux; filesystem+network against the host only on Windows** | ASRT (`architecture.md:1013-1020`). The Windows process-confinement gap is decided in decision 3 (§13): admission does not depend on it, and a `process` entry is refused on Windows (§2.2, §7.3). On Windows plugins are not isolated from each other: every confined process shares one sandbox account (decision 64). |
 | 6 | Run-time errors are covered by `$schema` editor validation, a validate CLI and clear failure at load | **Yes** | Manifest schema already exists; the protocol schema and a host-built validate CLI are added (§6, §10). |
 
@@ -314,7 +314,7 @@ current inputs or refuses.**
   that same path, before the removal is acknowledged to the caller: the plugin runtime
   retires every incarnation whose resolved `userChosenDirectory` grants include a path
   the removed root covered and no remaining root covers (overlapping roots therefore
-  keep the grant), through the existing stop path (`ave/instance/stop` → pipe close →
+  keep the grant), through the existing stop path (`ai.agent-connector.ave/instance/stop` → pipe close →
   SIGTERM/SIGKILL, delegated workers killed with the process group), and marks the
   plugin `sandbox-grant-outside-ceiling` in plugin status. A spawn in progress
   re-resolves at exec, so it sees the reduced set. A restart is refused with the same
@@ -486,15 +486,15 @@ is this generation", enforced by the host closing the pipe when the generation r
 
 Consequences that must hold:
 
-- `emitEvent` delivers only to the bound plugin’s own UI. Another plugin’s
-  events cannot be emitted or subscribed to through HostApi.
+- Views receive state through their own app-visible tools, including bounded
+  cursor polling. There is no HostApi event route into a view or another plugin.
 
 ### 2.5 Lifecycle
 
 ```
-spawn ──► ave/instance/construct ──► ave/instance/start ──► [generation published]
-  ──► ave/instance/onPublished ──► operate (tools/call, resources/read, ave/host/*)
-  ──► ave/instance/stop (bounded) ──► pipe close ──► SIGTERM ──► SIGKILL
+spawn ──► ai.agent-connector.ave/instance/construct ──► ai.agent-connector.ave/instance/start ──► [generation published]
+  ──► ai.agent-connector.ave/instance/onPublished ──► operate (tools/call, resources/read, ai.agent-connector.ave/host/*)
+  ──► ai.agent-connector.ave/instance/stop (bounded) ──► pipe close ──► SIGTERM ──► SIGKILL
 ```
 
 - There is no `initialize`. The host speaks the stateless MCP `2026-07-28` revision
@@ -510,7 +510,7 @@ spawn ──► ave/instance/construct ──► ave/instance/start ──► [g
   `start`, `onPublished`, `stop` and `readUiResource` (`out-of-process-plugin.ts:1362-1458`).
   A `process`-entry plugin must still serve `server/discover`, because the revision
   requires it and the validate CLI calls it (§10.2).
-- `ave/instance/construct` carries what `PluginConstructParams` carries today: the
+- `ai.agent-connector.ave/instance/construct` carries what `PluginConstructParams` carries today: the
   verified manifest (never re-read from disk in the child, `plugin-instance-wire.ts:59-63`),
   the context, `declaredToolNames`, and now the **host protocol version and served
   capability list** (§3.2). The reply names the implemented tools, whether the instance
@@ -539,12 +539,17 @@ spawn ──► ave/instance/construct ──► ave/instance/start ──► [g
 
 ## 3. Protocol
 
-### 3.1 Shape: one JSON-RPC 2.0 session, MCP for the plugin-served half, `ave/host/*` for the host-served half
+### 3.1 Shape: one JSON-RPC 2.0 session, MCP for the plugin-served half, `ai.agent-connector.ave/host/*` for the host-served half
 
 Decision: keep MCP unchanged for everything the plugin *serves* (`tools/list`,
 `tools/call`, `resources/read` for `ui://`), and make everything the plugin *calls on
-the host* a JSON-RPC method under `ave/host/`, on the same stream, as a separate Ave
-peer channel. Notifications go both ways with the same `notifications/` convention.
+the host* a JSON-RPC method under `ai.agent-connector.ave/host/`, on the same stream, as a separate Ave
+vendor extension, declared under MCP's official
+`capabilities.extensions["ai.agent-connector.ave/host"]` mechanism. Notifications
+for retained host services use the same `notifications/` convention. Standard UI
+behavior uses MCP Apps rather than this extension. The host also advertises
+`capabilities.extensions["io.modelcontextprotocol/ui"]` with the supported
+`text/html;profile=mcp-app` MIME type.
 
 Why this and not the alternatives:
 
@@ -552,18 +557,18 @@ Why this and not the alternatives:
   answers them — "Servers MUST NOT initiate JSON-RPC requests, and clients do not send
   JSON-RPC responses"; sampling, elicitation and roots travel as `InputRequiredResult`
   answers that the client retries ([MCP patterns](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns)).
-  `ave/host/*` is therefore **not MCP**: it is an Ave-owned JSON-RPC 2.0 peer channel
-  that shares the stream and the framing with the MCP half and lives outside MCP's
-  message patterns, as `ave/instance/*` already does. JSON-RPC `id`s and the `ave/`
+  `ai.agent-connector.ave/host/*` is therefore **not MCP**: it is an Ave-owned JSON-RPC 2.0 peer channel
+  that shares the stream and framing with the MCP half, is negotiated as a vendor
+  extension, and defines its own message patterns, as `ai.agent-connector.ave/instance/*` already does. JSON-RPC `id`s and the `ai.agent-connector.ave/`
   prefix keep the two halves apart, and one decoder per direction serves both. A non-JS
   author pairs a stock MCP server library (tools, `ui://` resources) with a JSON-RPC
-  library or the client generated from the schema (§6.2) for `ave/host/*` and
-  `ave/instance/*`, multiplexed onto the same stdin and stdout the way the reference
+  library or the client generated from the schema (§6.2) for `ai.agent-connector.ave/host/*` and
+  `ai.agent-connector.ave/instance/*`, multiplexed onto the same stdin and stdout the way the reference
   runtime does it; no MCP library will speak that half for them.
 - The current reverse channel is a bespoke shape distinguished by field presence
   (`child-stream-multiplex.ts:52-64`). It was chosen so the two contracts could not
   collide; JSON-RPC `id` + a namespaced `method` gives the same guarantee. JSON-RPC
-  treats a method name as opaque; the `ave/` prefix is what keeps these methods apart
+  treats a method name as opaque; the `ai.agent-connector.ave/` prefix is what keeps these methods apart
   from every name MCP defines, the way a reverse-domain prefix keeps a `_meta` key apart
   from MCP's own.
 - Mapping hostApi onto standard client features (sampling for `callLlm`, elicitation
@@ -572,9 +577,9 @@ Why this and not the alternatives:
   `mcp-alignment-design.md:1-12` already recorded that the full wire migration is not
   the direction. Rejected in §12.4.
 
-Method naming: `ave/host/<path with "." replaced by "/">`. So `storage.read` is
-`ave/host/storage/read`, and `config.set` is `ave/host/config/set`.
-The lifecycle methods keep `ave/instance/*` (`plugin-instance-wire.ts:38-45`):
+Method naming: `ai.agent-connector.ave/host/<path with "." replaced by "/">`. So `storage.read` is
+`ai.agent-connector.ave/host/storage/read`, and `config.set` is `ai.agent-connector.ave/host/config/set`.
+The lifecycle methods keep `ai.agent-connector.ave/instance/*` (`plugin-instance-wire.ts:38-45`):
 `construct`, `start`, `onPublished` and `stop` remain; `readUiResource` folds into
 MCP `resources/read` (§5). Shutdown uses stdin EOF rather than a protocol method.
 Tool names keep `^[a-zA-Z_][a-zA-Z0-9_]*$` (AGENTS.md); protocol method names are
@@ -601,7 +606,7 @@ Two versions travel, because two contracts change for different reasons
    (`requires.hostProtocol`, §6.4), so an installer or a marketplace sync can decide
    compatibility without spawning anything. A host serves a *set* of protocol versions,
    not one. Before it spawns, the host checks the declared version against that set; at
-   `ave/instance/construct` it tells the plugin which version this connection speaks and
+   `ai.agent-connector.ave/instance/construct` it tells the plugin which version this connection speaks and
    what that version serves:
 
 ```jsonc
@@ -609,7 +614,7 @@ Two versions travel, because two contracts change for different reasons
 "hostProtocol": {
   "version": "1",                                  // the manifest's requires.hostProtocol; integer-as-string
   "capabilities": ["storage/read", "storage/write", "callLlm", "hostFetch",
-                   "startAudioCapture", "attachFloatingPanel", ...]   // every ave/host method served at that version
+                   "startAudioCapture", "attachFloatingPanel", ...]   // every ai.agent-connector.ave/host method served at that version
 }
 // plugin → host (construct result, additions)
 "pluginProtocol": {
@@ -679,8 +684,8 @@ Rules:
 - `_meta` on any params/result is reserved for MCP and host use; a plugin's own
   metadata goes under a reverse-domain key, matching MCP `_meta` conventions.
 - **Invocation token (decision 63).** Every `tools/call` the host sends carries
-  `_meta["ave/invocation"]`, an opaque token that is fresh per call. A child carries
-  the same token in `params._meta["ave/invocation"]` of each `ave/host/*` request it
+  `_meta["ai.agent-connector.ave/invocation"]`, an opaque token that is fresh per call. A child carries
+  the same token in `params._meta["ai.agent-connector.ave/invocation"]` of each `ai.agent-connector.ave/host/*` request it
   makes for that call. The host runs the request in the invocation's own context: its
   effect gate (foreground approval, headless deny), its effect ledger and its origin,
   exactly as an in-process handler's hostApi call inherits them.
@@ -733,7 +738,7 @@ Rules:
     handler. A child written in another language that omits it gets no invocation for
     its hostApi calls.
     Existing children may omit this optional metadata, and their own metadata keys
-    remain ignored. A child using `ave/invocation` must echo the host's opaque value
+    remain ignored. A child using `ai.agent-connector.ave/invocation` must echo the host's opaque value
     unchanged; substituting its own correlation id or re-encoding the value is refused.
 
 Additive changes (new optional field, new method, new capability) do not bump the host
@@ -792,7 +797,7 @@ missing or unknown mode is refused before anything is created:
 
 A frame is one line of UTF-8 JSON-RPC 2.0, at most 16 MiB
 (`WORKER_CONTROL_FRAME_BYTES_MAX`) before its newline. The host's first frame is
-the request `$/ave/hello` with id `0` and params
+the request `$/ai.agent-connector.ave/hello` with id `0` and params
 `{ protocol: "ave-worker-stdio-control", versions: ["1"], frameBytesMax }`. The
 worker's first frame must answer it with
 `{ protocol: "ave-worker-stdio-control", version: "1" }`. `spawnWorker` resolves
@@ -802,9 +807,9 @@ its exit is awaited, and the call rejects with `worker-control-failed`.
 
 After the hello, either side may send requests and notifications. Method names
 match `^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`; names under `$/` are the host's.
-`$/ave/cancel { id }` withdraws a request in either direction; the receiver still
+`$/ai.agent-connector.ave/cancel { id }` withdraws a request in either direction; the receiver still
 answers it, and a cancelled request counts toward the limit until that answer
-arrives. `$/ave/shutdown` precedes an orderly stop, after which the host closes
+arrives. `$/ai.agent-connector.ave/shutdown` precedes an orderly stop, after which the host closes
 stdin; a worker must exit on stdin EOF in either case. If the shutdown frame cannot
 be queued because the worker stopped reading, the host goes straight to EOF and
 termination.
@@ -849,7 +854,7 @@ channel, and the plugin performs the call with `hostFetch` under its own
 declarations; the worker holds no keys and opens no listener.
 
 Control traffic between the plugin process and the host crosses the plugin
-session as the child notification `notifications/ave/subscription/send`
+session as the child notification `notifications/ai.agent-connector.ave/subscription/send`
 (`{ subscriptionId, payload }`), scoped to the worker's handle. The host answers
 with the worker's subscription events: `result`, `error`, `request`,
 `notification`, `cancel`, and `exit` with its reason. A malformed send still settles
@@ -857,7 +862,7 @@ what it names: a request or notification gets an `error` event for its id, and a
 response settles the worker request it answers with an error. A send whose id cannot
 be read revokes the handle, and the child settles every call on it. A send that races
 the handle's close is dropped. These frames are not new
-`ave/host/*` methods and pass no effect gate of their own: the effect boundary
+`ai.agent-connector.ave/host/*` methods and pass no effect gate of their own: the effect boundary
 decided `spawnWorker` once, and the handle carries no authority beyond the worker it
 names.
 
@@ -876,11 +881,11 @@ two-sided lifetime; this is the shipped `SubscriptionLedger` mechanism
 
 | Direction | Message | Purpose |
 |---|---|---|
-| plugin→host request | `ave/host/onEvent`, `config/onChange`, `startAudioCapture`, `spawnWorker`, `attachFloatingPanel`, `resolveApiKey` | returns `{ subscriptionId }` (or a handle carrying one) |
-| host→plugin notification | `notifications/ave/subscription` `{ subscriptionId, payload }` | one event, one frame, one worker chunk, one config change |
-| host→plugin notification | `notifications/ave/subscription/closed` `{ subscriptionId, reason: "revoked" }` | host ended it (plugin retired, dock slot detached, capture surface lost) |
-| plugin→host notification | `notifications/ave/subscription/release` `{ subscriptionId }` | plugin called its disposer |
-| host→plugin notification | `notifications/ave/config/snapshot` | child-local cleartext config snapshot |
+| plugin→host request | `ai.agent-connector.ave/host/config/onChange`, `startAudioCapture`, `spawnWorker`, `attachFloatingPanel`, `resolveApiKey` | returns `{ subscriptionId }` (or a handle carrying one) |
+| host→plugin notification | `notifications/ai.agent-connector.ave/subscription` `{ subscriptionId, payload }` | one event, one frame, one worker chunk, one config change |
+| host→plugin notification | `notifications/ai.agent-connector.ave/subscription/closed` `{ subscriptionId, reason: "revoked" }` | host ended it (plugin retired, dock slot detached, capture surface lost) |
+| plugin→host notification | `notifications/ai.agent-connector.ave/subscription/release` `{ subscriptionId }` | plugin called its disposer |
+| host→plugin notification | `notifications/ai.agent-connector.ave/config/snapshot` | child-local cleartext config snapshot |
 | either direction | `notifications/cancelled` | replaces `kind: "abort"` (`host-api-wire.ts:131-135`; §3.5) |
 
 These rows cover the host notification contract. A frame the router does not
@@ -888,7 +893,7 @@ recognise is dropped ([§9.4](../history/plugin-hostapi-protocol-migration.md#94
 is what each side does locally when the pipe closes (`host-api-wire.ts:85-92`).
 
 Audio: `startAudioCapture` returns `{ subscriptionId, captureId, opened }`; each frame is
-a `notifications/ave/subscription` with `{ kind: "frame", seq, pcm: <base64 int16 LE
+a `notifications/ai.agent-connector.ave/subscription` with `{ kind: "frame", seq, pcm: <base64 int16 LE
 mono>, peak }` and the end is `{ kind: "end", reason, detail? }`
 (`host-api-wire.ts:1669-1684`, `public-contract.ts:2347-2364`). `seq` is gap-free; a gap
 means lost audio and the plugin can say so (`:2349-2351`). No backpressure signal is
@@ -896,7 +901,7 @@ added: the host emits at the cadence it was asked for, and stdio buffering is bo
 the OS pipe. Rationale and numbers in §8.
 
 Config: `config.get` stays child-local against a host-pushed snapshot, with the snapshot
-delivered as `notifications/ave/config/snapshot` at construct and re-pushed before the
+delivered as `notifications/ai.agent-connector.ave/config/snapshot` at construct and re-pushed before the
 `config.set` reply, so a plugin that sets-then-gets sees its own write (blueprint §3.1,
 row `config.get`).
 
@@ -924,11 +929,11 @@ and the same shape reused by the Ave peer channel plugin→host, where MCP defin
 pattern (§3.1) — replaces the bespoke `signalChannelId` and abort-channel notification
 (`host-api-wire.ts:125-135`, `:1607-1618`). The two directions have different targets:
 host→plugin names an in-flight `tools/call`; plugin→host names an in-flight
-`ave/host/*` request, and the host aborts the `AbortController` it holds for
+`ai.agent-connector.ave/host/*` request, and the host aborts the `AbortController` it holds for
 `hostFetch`, `callLlm` and `resolveApiKey`. The host→plugin direction is reserved: a
 `PluginToolHandler` (`public-contract.ts:2213`) takes no `AbortSignal` today, so the
 child drops that notification until the handler contract gains a signal, and the host
-does not send it. A cancelled `ave/host/*` request still gets a reply — an error with
+does not send it. A cancelled `ai.agent-connector.ave/host/*` request still gets a reply — an error with
 `data.code` `host-internal` and `data.name` `AbortError` — although MCP says a receiver
 SHOULD NOT respond to a cancelled request: the child's typed client holds a pending
 entry per request id, and the reply is what releases it. A non-JS runtime must expect
@@ -1009,14 +1014,14 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `config.get` (:1247) | local | snapshot | none | snapshot push ordering (§3.4) |
 | `config.set` (:1252) | req | plain-json → void | triggers plugin reload (restart of the child) | unchanged |
 | `config.onChange` (:1258) | sub | handler-registration → handle, child-disposable | secret keys arrive redacted (`SECRET_REDACTED_SENTINEL`, `host-api-wire.ts:1141`) | notification stream |
-| `emitEvent` | notif | plain-json → void | bound plugin’s own UI only; another namespace is refused | no cross-plugin delivery |
-| `onEvent` | sub | handler-registration | host theme updates only | notification stream |
+| View state updates | MCP `tools/call` | app-only bounded long poll with cursor | same tool permission and approval boundary | no plugin-to-view push |
+| View theme updates | MCP Apps host context | standard theme and `styles.variables` | host-owned theme tokens | no private theme subscription |
 | `getSecret` (:1339 at `f1a8d191e`) | req | plain-json → plain-json | four-tier `runSecretGate` (`src/plugins/secret-access/secret-gate.ts:190-215`); host-key entitlement and provenance (`grants.ts:33-44`, `:87-111`); **value crosses**, by design: an allow-listed secret is granted to this plugin | audit unchanged. Under Lease the shared gate gains an operation axis: `getSecret` is `export`, refused for the host-provider key class for every plugin before the read; the entitlement rows stay for the resolver's `lease` operation (§4.1.6); own-namespace reads stay. See §4.1 |
 | `resolveApiKey` (:1350 at `f1a8d191e`) | sub | encoded → `WireApiKeyLease` handle (`host-api-wire.ts:2003-2015`), child-disposable | gate + permission revoke signal (`host-api-factory.ts:794-827`); lease registry and epoch fencing (§4.1.2) | **raw key stops crossing** on the default `exposure: "lease"`; `bearer()` removed from the contract; `key` crosses only for `exposure: "raw"` under `secrets:raw-api-key` (§4.1.1) |
 | `callLlm` (:1349) | req | encoded → plain-json | host provider, host rate window, `effect-boundary-denied` | cancellation via `notifications/cancelled` |
 | `hostFetch` (:1402 at `f1a8d191e`) | req | encoded → encoded | Tier A egress gate, allow-list, SSRF (`host-fetch-guard.ts:9-20`); partition cookies attached host-side (`host-api-factory.ts:1056-1085`); per-hop recheck (`host-fetch-guard.ts:438-485`) | bodies buffered and capped at 16 MiB; gains `init.auth = { lease }` (§4.1.1) with host-owned credential injection, audience and redirect rules (§4.1.3-4.1.4); `FormData` bodies serialised by the reference runtime (§8) |
-| `raiseAlert` (:1886 at `f1a8d191e`) | req | plain-json → plain-json | manifest `alerts.kinds`; alert service rate limit returns `status: "rate_limited"` as a *result* (`src/alerts/service.ts:338-339`, `:357-358`), distinct from the transport `rate-limited` error (§3.6) | unchanged; golden fixture `fixtures/host-protocol/1/methods/ave/host/raiseAlert.json` |
-| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, control, pid }` cross; control traffic is the child notification `notifications/ave/subscription/send` (§3.3.2); the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
+| `raiseAlert` (:1886 at `f1a8d191e`) | req | plain-json → plain-json | manifest `alerts.kinds`; alert service rate limit returns `status: "rate_limited"` as a *result* (`src/alerts/service.ts:338-339`, `:357-358`), distinct from the transport `rate-limited` error (§3.6) | unchanged; golden fixture `fixtures/host-protocol/1/methods/ai.agent-connector.ave/host/raiseAlert.json` |
+| `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, control, pid }` cross; control traffic is the child notification `notifications/ai.agent-connector.ave/subscription/send` (§3.3.2); the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
 | `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | host-issued state required before callback delivery (§3.3.1) |
 | `pickFolders` (:1510) | UI | plain-json | OS dialog, user consent is the dialog | unchanged; the chosen paths do not widen the envelope unless declared (§2.2) |
@@ -1168,7 +1173,7 @@ hostFetch?(input: string | URL, init?: HostFetchInit): Promise<Response>;
 ```
 
 Wire (`host-api-wire.ts`, replacing `WireApiKeyLease` `:2003-2015`; the generated schema
-under `$defs.methods["ave/host/resolveApiKey"].result`):
+under `$defs.methods["ai.agent-connector.ave/host/resolveApiKey"].result`):
 
 ```jsonc
 // success, lease — no key anywhere in the frame
@@ -1184,8 +1189,8 @@ Rules:
 - **One identifier.** The JS `leaseId`, the wire `handleId` and the subscription id in
   the host's `SubscriptionLedger` are the same string: `lease_` plus 128 bits of
   host randomness, minted per successful resolve. There is no second mapping table.
-  Release is the existing `notifications/ave/subscription/release { subscriptionId }`;
-  host-side closure is `notifications/ave/subscription/closed { subscriptionId,
+  Release is the existing `notifications/ai.agent-connector.ave/subscription/release { subscriptionId }`;
+  host-side closure is `notifications/ai.agent-connector.ave/subscription/closed { subscriptionId,
   reason }` (§3.4); a raw result is registered the same way (prefix `raw_`) so its
   release is auditable, and a `raw_` id in `init.auth.lease` is `lease-unavailable`.
   In-process (while that arm exists, [§9.3](../history/plugin-hostapi-protocol-migration.md#93-removal-condition-for-the-in-process-path)) the same registry issues the same ids; the
@@ -1344,7 +1349,7 @@ resolve request ──► issuing ──► active ──► released   (plugin:
   during and after an issuance — issuance during it is `stale-authorization`, the
   earlier lease is closed, and no use sends the withheld key.
 - **Revocation events**, each ending every registration it matches with
-  `notifications/ave/subscription/closed { reason: "revoked" }` and an audit line: a
+  `notifications/ai.agent-connector.ave/subscription/closed { reason: "revoked" }` and an audit line: a
   `permissionEpoch` change for the plugin; a `secretGeneration` change of the resolved
   key (write, rotation, removal, withholding); a `providerConfigRevision` change (active
   vendor, per-vendor endpoint, preset); an update, disable or uninstall of the plugin.
@@ -1616,20 +1621,30 @@ and assert both arms produce identical decisions for the same inputs.
 
 | Surface | Declared | Code runs in | Reaches the plugin process by | Source |
 |---|---|---|---|---|
-| `ui://` card (MCP App) | `uiResources[]` (`public-contract.ts:463`) | renderer, sandboxed iframe with CSP from `_meta.ui.csp` ([MCP Apps spec](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)); served over `mcp-app-protocol.ts` | host asks the plugin process for the HTML via MCP `resources/read` (today `ave/instance/readUiResource`, `plugin-instance-wire.ts:44, 98-105`); the card's `tools/call` goes host→ToolExecutor→plugin, never iframe→plugin | `plugin-ui-resource-provider.ts`, `mcp-app-protocol.ts:5` |
-| Embedded module (sidebar) | `ui[]` kind `embedded-module`, slot `sidebar` (schema `:201`) | renderer, `plugin-ui-shell.html` in a per-plugin partition served by `ave-plugin://asset` (`plugin-asset-protocol.ts:85`, `html-preview-partition.ts:161-165`) | `bridge.callTool` / `bridge.onEvent` through preload IPC → main → tool registry → `tools/call` | `src/preload/internal-api-surface.ts` |
-| Floating panel | `ui[]` slot `floating` + `attachFloatingPanel` | renderer card inside the host-owned dock window (`floating-dock.ts:11-30`) | `ave/host/attachFloatingPanel` opens a subscription; `detached` arrives as a notification | `floating-dock-surface.ts:17` |
+| MCP App in chat | `uiResources[]` and tool `_meta.ui.resourceUri` | sandboxed renderer view with manifest-owned CSP | standard MCP `resources/read` and permission-gated `tools/call` | `plugin-ui-resource-provider.ts`, `mcp-app-protocol.ts` |
+| MCP App sidebar | `ui[]` kind `mcp-app`, slot `sidebar`, declared `resourceUri` | same sandboxed MCP Apps view | the host reads HTML without a synthetic tool call; view calls its server's app-visible tools | `McpAppView.tsx` |
+| MCP App floating panel | `ui[]` kind `mcp-app`, slot `floating` + `attachFloatingPanel` | same view inside the host-owned dock | `ai.agent-connector.ave/host/attachFloatingPanel` owns dock attachment; view communication stays standard MCP Apps | `floating-dock-surface.ts` |
 | Auth window | none; `openAuthWindow` at call time | main process BrowserWindow (`auth-window-service.ts:10-12`) | request/reply; cookies retained in `persist:plugin-auth:<id>` | `auth-window-service.ts:115` |
 | Auth partition viewer | `auth.partitionDomains` | main process hardened BrowserWindow (`auth-partition-viewer-service.ts:1-23`) | request/reply | `:86` |
 
 Decision: **plugin UI code never runs in the plugin process.** The plugin process serves
 bytes (`resources/read`) and answers tool calls; the renderer runs the UI in a sandbox the
 host owns. That is the split MCP Apps standardises, and it is why the UI half needs no
-new protocol: `ui://` is MCP, the bridge is host IPC, and the dock/auth surfaces are
+new UI protocol: `ui://` and the view bridge use MCP Apps, and the dock/auth surfaces are
 host-side actions with a JSON reply. `readUiResource` is folded into MCP
 `resources/read`, which the child's MCP server already serves (`plugin-mcp-server.ts:137`),
 with `mimeType: "text/html;profile=mcp-app"`, so a non-JS plugin serves its card with a
 stock MCP server library ([§9.4](../history/plugin-hostapi-protocol-migration.md#94-the-wire-step-implementation-plan) item 5).
+
+The retired `embedded-module` and `embedded-page` declarations fail manifest
+validation; no compatibility bridge remains. Data changes use app-only bounded
+long polling with a cursor. Auth changes remount the host-owned view. Theme and
+locale updates use standard host context, including styles from the existing
+host tokens. Clipboard access supports `permissions.clipboardWrite` only; clipboard read
+remains blocked. A sidebar or floating `ui/message` stages a composer draft in
+the current conversation, or a new conversation when none is open. An in-chat
+card remains bound to its own conversation. See the
+[authoring guide](../guides/mcp-app-authoring.md) for examples.
 
 ---
 
@@ -1642,10 +1657,10 @@ same sources the dispatcher compiles against:
 
 ```
 schemas/plugin-host-protocol/5/protocol.schema.json
-  $defs.methods["ave/host/storage/read"].params / .result / .errors
-  $defs.methods["ave/host/startAudioCapture"].events    (subscription payloads)
-  $defs.methods["ave/instance/construct"] ...
-  $defs.notifications["notifications/ave/subscription"] ...
+  $defs.methods["ai.agent-connector.ave/host/storage/read"].params / .result / .errors
+  $defs.methods["ai.agent-connector.ave/host/startAudioCapture"].events    (subscription payloads)
+  $defs.methods["ai.agent-connector.ave/instance/construct"] ...
+  $defs.notifications["notifications/ai.agent-connector.ave/subscription"] ...
   $defs.errorCodes            (the closed set, host-api-wire.ts:312-333)
   $defs.capabilities          (every served method name)
 ```
@@ -1664,7 +1679,7 @@ on members whose contract list omits them. The member's own codes are named in t
 entry's `description`. Narrowing the enum per member would first need the dispatcher to
 narrow what it returns.
 A member that registers a handler or returns a handle also carries `.events`: the
-payload schema of the `notifications/ave/subscription` frames delivered for it (worker
+payload schema of the `notifications/ai.agent-connector.ave/subscription` frames delivered for it (worker
 output, audio frames, floating-panel events, config changes, host events, plugin
 lifecycle), generated from the same types the host encodes. Without it a plugin in
 another language has no machine-readable shape for what its subscriptions deliver, and
@@ -1694,7 +1709,7 @@ Historical publication plans later in this document are superseded by this decis
 |---|---|---|---|
 | TypeScript types (`PluginHostApi` and friends) | none: the file itself | `public-contract.ts` | the vendored copy in the plugin repository's `contract/` (marketplace design §5.6), unchanged |
 | JS reference runtime (`plugin-child-main.js`) | host build | `src/plugins/isolation/*` | **inside the app**; a JS plugin never vendors it. The host runs it for every `entry` plugin (`out-of-process-plugin.ts:200-204`) |
-| Other languages | plugin author or community, from the schema | protocol schema | not Ave-maintained. The conformance suite (§10) is the guarantee, not a maintained SDK. An author pairs a stock MCP server library (tools, `ui://`) with a JSON-RPC library for `ave/host/*` and `ave/instance/*`, which no MCP library speaks (§3.1). This is how MCP handles its own SDKs: at the protocol level, generated from `schema.ts` |
+| Other languages | plugin author or community, from the schema | protocol schema | not Ave-maintained. The conformance suite (§10) is the guarantee, not a maintained SDK. An author pairs a stock MCP server library (tools, `ui://`) with a JSON-RPC library for `ai.agent-connector.ave/host/*` and `ai.agent-connector.ave/instance/*`, which no MCP library speaks (§3.1). This is how MCP handles its own SDKs: at the protocol level, generated from `schema.ts` |
 
 ### 6.3 How this builds on the vendored contract
 
@@ -1855,7 +1870,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 - **Effect ledger**: `hostObservable` is recorded `true` for `source:"plugin"` tools
   (`invocation-execution.ts:1047`). Out of process it remains true and becomes
   *structurally* true: a plugin cannot reach a host effect except through a
-  `ave/host/*` request that the dispatcher records
+  `ai.agent-connector.ave/host/*` request that the dispatcher records
   (`host-api-factory.ts:539-540` composition, `host-api-dispatcher.ts:6-10`). The
   completeness test that guards the wrapper today (`hostapi-effect-completeness.test.ts`)
   becomes a schema/dispatcher parity test (§6.1).
@@ -1876,7 +1891,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
   and was admitted;
   the tier is derived from install provenance, never from the transport.
 - **Host-derived identity**: `pluginId` is bound to the connection (§2.4);
-  `_meta["ave/workerId"]` and self-declared categories on the wire are ignored
+  `_meta["ai.agent-connector.ave/workerId"]` and self-declared categories on the wire are ignored
   (`plugin-tool-from-mcp.ts:12-17, 29-33`).
 - **Egress**: every network request goes through `hostFetch`'s layered gate
   (`host-fetch-guard.ts:9-20`) and the manifest `networkAccess.allowedDomains`
@@ -1888,7 +1903,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 
 | Risk | Control |
 |---|---|
-| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; the numbers are §7.4. `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:709`, `:810-815` at `f1a8d191e`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, [§9.4](../history/plugin-hostapi-protocol-migration.md#94-the-wire-step-implementation-plan) item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; stderr diagnostics have their independent line and rate bounds (§3.4). |
+| RPC surface abuse: a plugin hammers `ai.agent-connector.ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; the numbers are §7.4. `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:709`, `:810-815` at `f1a8d191e`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, [§9.4](../history/plugin-hostapi-protocol-migration.md#94-the-wire-step-implementation-plan) item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; stderr diagnostics have their independent line and rate bounds (§3.4). |
 | Resource exhaustion: a plugin process consumes memory/CPU | Linux: per-plugin cgroup limits are not wired to the spawn path. macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
@@ -1916,11 +1931,10 @@ budget below is exhausted, before the handler runs.
 | requests, default per method | 50/s sustained, burst 200 | (plugin id, method) | `rate-limited`, `retryAfterMs` = time to next token |
 | `hostFetch` | 20/s, burst 60 | (plugin id, method) | same |
 | `resolveApiKey` | 10/s, burst 30 | (plugin id, method) | same |
-| `emitEvent` (notification) | 50/s, burst 200 | plugin id | dropped, counted; one audit line per 60 s |
 | child stderr | 100 lines/s, burst 500 | plugin id | excess lines dropped with one summary; child stays alive |
 | in-flight requests | 64 | plugin incarnation | `rate-limited`, `retryAfterMs` 100 |
 | open subscriptions, total | 256 | plugin incarnation | `rate-limited` on the opening request |
-| per kind | `onEvent` 64, `config.onChange` 16, `spawnWorker` 8, `startAudioCapture` 2, `attachFloatingPanel` 1, leases 32 (§4.1.2, its own `lease-limit` result) | plugin incarnation | same |
+| per kind | `config.onChange` 16, `spawnWorker` 8, `startAudioCapture` 2, `attachFloatingPanel` 1, leases 32 (§4.1.2, its own `lease-limit` result) | plugin incarnation | same |
 
 Rules: buckets are keyed by plugin id and survive handle churn, so opening and
 releasing handles cannot reset a quota; a restart is a host action and starts a new
@@ -1928,8 +1942,8 @@ incarnation with fresh buckets. The registration cap counts leases and raw
 registrations together and is owned by the one host-level lease registry (§4.1.2),
 which both loader arms share, so the in-process arm is inside *this* cap even though it
 is outside the dispatcher's request buckets. Exempt from every budget, so that cleanup
-works under saturation: `notifications/ave/subscription/release`,
-`notifications/cancelled`, replies to `ave/instance/stop`, and a lease `release()`. Memory: each in-flight entry and
+works under saturation: `notifications/ai.agent-connector.ave/subscription/release`,
+`notifications/cancelled`, replies to `ai.agent-connector.ave/instance/stop`, and a lease `release()`. Memory: each in-flight entry and
 each subscription entry is one map entry; the caps above bound both maps, and both
 are dropped whole at incarnation end. Diagnostics: denial and rate-limit audits are
 coalesced per `(plugin id, method, code)` with a first event and a 60 s summary
@@ -2038,8 +2052,7 @@ its evidence.
   Plugins start in parallel, and the loopback projection is unchanged, so the user-visible
   cost is the slowest plugin, not the sum.
 - **Per-call latency.** One JSON round trip per hostApi call. Members on hot paths
-  (`config.get`, `storage.resolve`) are child-local already; `emitEvent` is a
-  notification and never waits. Diagnostics go to stderr.
+  (`config.get`, `storage.resolve`) are child-local already. Diagnostics go to stderr.
 
 ---
 
@@ -2072,8 +2085,8 @@ The completed migration plan is archived in [migration history](../history/plugi
    `require("electron")`, monkey-patch a host internal, name another plugin's id, replay a
    lease id on another connection — each denied.
 5. **Cross-language smoke**: a minimal Python plugin using a stock MCP server library for
-   tools and a JSON-RPC library (or the generated client) for `ave/host/*` and
-   `ave/instance/*` on the same stream passes 1-3.
+   tools and a JSON-RPC library (or the generated client) for `ai.agent-connector.ave/host/*` and
+   `ai.agent-connector.ave/instance/*` on the same stream passes 1-3.
 
 ### 10.2 Test support
 
@@ -2088,7 +2101,7 @@ The app enforces manifest and protocol admission during installation and loading
 | Host | Where plugin code runs | How the contract is shared | Compatibility declaration | Isolation | Language support |
 |---|---|---|---|---|---|
 | **Ave today** | five first-party plugins in a confined child process; others in the main process (`out-of-process-plugins.ts:856-858`, `plugin-loader.ts:77-81`) | `public-contract.ts` and the manifest schema vendored by each plugin repository at an app tag with hash checks (`contract/sources.json`, marketplace design §5.6) | `requires.minAppVersion` (`schemas/plugin-manifest.schema.json:689`) | ASRT for isolated plugins (`out-of-process-plugin.ts:954-986`); none in-process | JavaScript only |
-| **Ave target** | every plugin in its own confined process | host-published JSON Schema for `ave/host/*` + MCP; TS types generated; reference JS runtime host-shipped | `requires.minAppVersion` + `requires.hostProtocol`; capability list at `construct` | ASRT on macOS/Linux; fs+network on Windows | any language (stdio JSON-RPC); JS via reference runtime |
+| **Ave target** | every plugin in its own confined process | host-published JSON Schema for `ai.agent-connector.ave/host/*` + MCP; TS types generated; reference JS runtime host-shipped | `requires.minAppVersion` + `requires.hostProtocol`; capability list at `construct` | ASRT on macOS/Linux; fs+network on Windows | any language (stdio JSON-RPC); JS via reference runtime |
 | **Claude Code** | outside the host: MCP servers (stdio/HTTP), hook commands with JSON on stdin, LSP servers; skills/commands/agents are files ([plugins reference](https://code.claude.com/docs/en/plugins-reference), [hooks](https://code.claude.com/docs/en/hooks)) | manifest (`plugin.json`, `name` the only required field) + hook/MCP JSON conventions; no host SDK | none beyond the manifest; `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}` | process boundary; no host-imposed sandbox for hook commands | any (subprocess) |
 | **Codex** | outside the host: portable `plugin.json` + `mcp.json` + `skills/`; hooks as scripts; `.codex-plugin/plugin.json` compatibility overlay ([Codex plugins](https://developers.openai.com/codex/plugins/build)) | Agent Plugins schemas; OpenAI-specific settings under `extensions.com.openai` | Agent Plugins `$schema` version; per-plugin MCP approval policy in user config | process boundary; MCP servers and hooks are separate processes; hooks not trusted by install alone | any (subprocess) |
 | **OpenClaw** | **in-process** with the Gateway for native plugins: "not sandboxed ... a malicious native plugin is equivalent to arbitrary code execution" ([architecture](https://docs.openclaw.ai/plugins/architecture)); compatible bundles (Agent Plugins/Codex/Claude/Cursor) are metadata packs ([bundles](https://docs.openclaw.ai/plugins/bundles)) | typed SDK `openclaw/plugin-sdk/*` subpaths, all APIs "experimental" ([sdk overview](https://docs.openclaw.ai/plugins/sdk-overview)); `openclaw.plugin.json` manifest with mandatory `configSchema` ([manifest](https://docs.openclaw.ai/plugins/manifest)) | `package.json` `openclaw.compat.pluginApi` / `minGatewayVersion` and `peerDependencies.openclaw` ([building plugins](https://docs.openclaw.ai/plugins/building-plugins)); named compatibility adapters with a ≤3-month or version-bounded removal ([compatibility](https://docs.openclaw.ai/plugins/compatibility)) | none for native plugins; allow-lists by plugin id only ("does not verify source provenance") | JS/TS (managed instances compile TS) |
@@ -2224,7 +2237,7 @@ What Ave should not adopt, and why:
 | 41 | **Plugin resource cost is measured on the child, not on the test runner.** The confined-child harness samples the spawned wrapper's process tree with `ps` every 50 ms from spawn to exit (RSS in KiB on both platforms) and records peak RSS and spawn-to-construct time for the Python smoke and the `meeting` fixture; the Python child also reports its own `ru_maxrss` as `params.meta.ruMaxrss` of its last log notification, normalised per platform, and the golden canonicalises exactly that field to `"<measured>"` after recording its raw value, and replaces the temporary plugin and data roots (as allocated and after `realpath`) and the validation context's `hostRoot`, `userHome` and `aveHome` with named placeholders, guarded by a throw if `os.tmpdir()` or the checkout root survives; the repeat-run byte-equality check records twice with independently allocated roots and compares both to the committed golden. The numbers are reported, not gated, and the UNVERIFIED item stays open until a run produces them. | `process.resourceUsage()` reports the calling Node process and its peak persists across tests (Node documentation, <https://nodejs.org/api/process.html#processresourceusage>, checked 2026-09-28); a gate sized before any measurement exists would be a guess (decision 7). An RSS value in a golden would fail it on unchanged wire behaviour (cross-language re-review 4); a rule keyed to one field keeps every other number exact. A `mkdtemp` root differs on every run and is outside `goldenPath`'s fixture root, so without its own rule the golden holds a path no other run can produce, and a repeat run that reused one root would not notice (cross-language re-review round 3, finding 2). |
 | 42 | **Retired sources are outside validation by absence, not by a skip list.** The official repository's validation targets are the tracked sources that remain after the candidate wave (`feat/lease-candidates`, `e53fb40a8`), whose commit `0835fd2` deletes `plugins/assistant/source` and keeps its entries in both catalog files and its revocation entries. E2′ item 1 waits for that wave; the CLI then runs unconditionally for every discovered directory. | The revoked plugin is outside the replacement set ([§9.5](../history/plugin-hostapi-protocol-migration.md#95-the-lease-release-target-alerts-integration-and-publication-sequence-decisions-8-and-19)) and its source cannot pass protocol-2 validation; a lifecycle flag or skip list would be a way to switch validation off, while deleting the source leaves nothing to skip and keeps the catalog and revocation records that clients still need. |
 | 43 | **The protocol-session layer's authority is an input, and its controls are split by consequence.** `openPluginProtocolSession` requires a `BoundHostApiDispatchTable` — branded, produced only by `createBoundHostApiDispatchTable`, which moves to `bound-host-api-table.ts` — and never derives or defaults an envelope. Production binds it to **the same envelope value** the spawn received; the validation host binds it to `validationConfinement`, the plugin's base envelope with no declared grant applied and no read of the user's approvals. The session returns a non-destructive `channel` (`requestMcp`, `probe`, `runStopHook`, `closeInput`, `exited`) and one destructive `teardown`; `instance.stop` is `runStopHook` then `teardown`, unchanged in production. `teardown` is the only destructive call: a child that exits by itself is observed (`onGone` → the transport's `peerGone`), and the session releases its watchers, pending calls and dispatcher state and runs `onClosed` once **without** `terminate`; a deadline or a fatal framing error still reaches `close` and terminates. `onGone` is terminal-only — an exit, or an `error` from a spawn that produced no process — and an `error` on a live child (a failed signal delivery) goes to the required `ChildLink.onFault`; the transport starts at most one termination sequence (`link.terminate`, flagged before the call because a refused `kill()` emits its `error` synchronously), a fault with no sequence active starts it through `close`, and a fault during it is only recorded — the link's own SIGKILL after the grace period is the retry, and a refused SIGKILL leaves `exited` unsettled with no further signal; `channel.exited` settles only on an observed exit. Both openers take an optional `signal` honoured from their first line, so a caller can cancel while construct is pending; an abort is `teardown`, and a construct success that races it is torn down, not returned. The production factory's only test seam is `observeChild` (`pid`, `onStdout`, `endInput`, `exited`), called after the wrap; it cannot supply, replace or re-spawn the child, see the envelope or table, write a frame or terminate. All of this is frozen in S1, and S1 migrates the 28 `connect` consumer sites. | `createServiceHostApiPaths` makes the envelope required because an omitted one "would silently mean 'unbounded'" (`host-api-dispatcher.ts:1352-1360`); a session that derived its own could check delegated workers against something other than the jail (`out-of-process-plugin.ts:157-165`), and a validator that read `~/.ave/config/settings.json` would validate against one user's approvals (both re-reviews' P0). The factory's `stop` always terminates (fact 14), so a stdin-close test built on it measures the termination, not the rule (host re-review #18, cross-language re-review 2); and while `onGone` is wired to `close` (`plugin-child-transport.ts:154-156`), a natural exit also calls `terminate`, which the third round found the second round's text still allowed (host re-review #25, cross-language re-review round 3, new 1). Both process adapters forward every `error` to `onGone` today (`out-of-process-plugin.ts:973-982`, `child-process-config-wire.test.ts:218-222`), while Node emits `error` for a signal it could not deliver to a running process (<https://nodejs.org/api/child_process.html#event-error>, checked 2026-10-01) and `managed-child-processes.ts:109-113` already keeps such a child; treating that as an exit would release a live child and let `closedReason` swallow its termination (host re-review #28). The opener returns the session only after construct (`out-of-process-plugin.ts:1436-1446`, `:1544`), so a caller's deadline that fires during construct had nothing to cancel with (host re-review #29). Re-terminating on every fault recursed: `terminateChildProcess` sends SIGTERM before arming its timer (`terminate-child-process.ts:16-30`), so `terminate → kill → error → fault → terminate` nests without bound (cross-language re-review round 5, reproduced with Node's own `kill`). Rejected: re-terminating on a fault after `close` (that recursion); a separate `cancelConstruct()` handle (a second cancellation path beside `teardown`); making `signal` required (production's factory timeout already disposes a late instance). The confined suite needs the real child's bytes, PID and stdin (fact 15); a seam that could substitute the child is the bypass decision 30 removed, one that only observes after the wrap is not. Rejected: a pre-bound table passed as a plain `Record` (a hand-built or unbound record would type-check); an envelope input to the session (it would bind the table itself, a second binding site); an `unconfined` flag (decision 30). |
-| 44 | **One producer of MCP request metadata on the plugin-child channel.** `PluginChildTransport.requestMcp` stamps `_meta` with `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and `io.modelcontextprotocol/clientCapabilities: {}` on `server/discover`, `tools/list`, `tools/call` and `resources/read`, and refuses a caller `_meta`; `request` takes `ave/instance/*` only and `ave/*` frames carry no MCP `_meta`. `clientInfo` is omitted. Decision 63 adds a third key, `ave/invocation`, on `tools/call` only. The reference runtime's tolerance of a missing version is unchanged; the Python fixture rejects a request missing either required key with `-32602`, and the validate CLI checks the host-side frames. Landed in S1 with the goldens regenerated. | MCP `2026-07-28` makes both keys required on every request and a request without them malformed (fact 16); the factory sent neither on `tools/call` or `resources/read`, and a tolerant runtime hid it. `{}` is truthful: the host serves no server-to-client MCP request on these pipes (`plugin-child-transport.ts:242-247`). `clientInfo` is a SHOULD, display-only and self-reported; an app version in every MCP frame would move every golden at each release. Rejected: making the reference runtime strict in 0.13.0 (it also serves the in-process loopback, whose internal caller it tolerates by design, `plugin-mcp-server.ts:233-237`, and a behaviour change for every installed plugin is not Publication's); stamping in the session instead of the transport (two call sites, and the validator's requests would need a third). |
+| 44 | **One producer of MCP request metadata on the plugin-child channel.** `PluginChildTransport.requestMcp` stamps `_meta` with `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and `io.modelcontextprotocol/clientCapabilities: {}` on `server/discover`, `tools/list`, `tools/call` and `resources/read`, and refuses a caller `_meta`; `request` takes `ai.agent-connector.ave/instance/*` only and `ai.agent-connector.ave/*` frames carry no MCP `_meta`. `clientInfo` is omitted. Decision 63 adds a third key, `ai.agent-connector.ave/invocation`, on `tools/call` only. The reference runtime's tolerance of a missing version is unchanged; the Python fixture rejects a request missing either required key with `-32602`, and the validate CLI checks the host-side frames. Landed in S1 with the goldens regenerated. | MCP `2026-07-28` makes both keys required on every request and a request without them malformed (fact 16); the factory sent neither on `tools/call` or `resources/read`, and a tolerant runtime hid it. `{}` is truthful: the host serves no server-to-client MCP request on these pipes (`plugin-child-transport.ts:242-247`). `clientInfo` is a SHOULD, display-only and self-reported; an app version in every MCP frame would move every golden at each release. Rejected: making the reference runtime strict in 0.13.0 (it also serves the in-process loopback, whose internal caller it tolerates by design, `plugin-mcp-server.ts:233-237`, and a behaviour change for every installed plugin is not Publication's); stamping in the session instead of the transport (two call sites, and the validator's requests would need a third). |
 | 45 | **Vendored bundles use the official repository's post-wave recipe, and the host logger is silent in them by intent.** `ave-plugin-validate.js` and `ave-plugin-child-main.js` are `tools/vendor/` `build` entries with `logger: "stub-app-logger"`, built by `bundle-app-marketplace.mjs` via `buildAtRef`; the portal and repository plugins adopt the same recipe byte-for-byte; ave's bundle test runs that recipe from a fixture copy that names its commit. Source mode (`npm run plugin:validate`) applies the same substitution through `scripts/lib/stub-app-logger-hook.mjs`, a resolve hook loaded in the CLI and its child, and each mode's test parses every stdout line as a report row. | At the wave `vendor.mjs` refuses any other logger recipe (`:92`), so the pre-wave plain `bun build` the second round named could not be vendored (cross-language re-review 7). The app logger writes to stdout outside a headless run (`logger.ts:70-99`) and the CLI's stdout is its report; the child’s diagnostics use stderr. Reproduced 2026-10-01: the recipe builds `plugin-child-main.ts` at `c73f59580` with no `pino` and no embedded path (fact 17). In source mode neither `LOG_LEVEL` nor rebinding `process.stdout.write` is enough: the logger's test-mode path calls `console.log` whenever `VITEST` or `NODE_ENV=test` is set (`logger.ts:37-38`, `:223-259`) and its pretty stream defaults to stdout (`:93-99`), so only replacing the module covers both (host re-review #27, cross-language re-review round 3, new 3). Rejected: a source-mode-only flag in the logger (a second silencing mechanism that the bundles would not exercise). superseded 2026-11-06 (#447) |
 | 46 | **The Python smoke provisions one interpreter in one tree.** Every uv call runs with `UV_PYTHON_INSTALL_DIR`, `UV_PYTHON_BIN_DIR`, `UV_PYTHON_INSTALL_BIN=0` and `UV_CACHE_DIR` under `node_modules/.cache/ave-python-smoke`, discovery is `--managed-python`, every job that runs the smoke ensures uv with `scripts/fetch-uv.mjs` before it, and CI supplies the interpreter through `AVE_SMOKE_PYTHON` from `actions/setup-python`, except the self-hosted macOS job, which takes the uv path so nothing installs outside its workspace. The launcher is tested by running `bin/plugin` under `env -i` and checking the imported `mcp` comes from `<root>/vendor`. | `--install-dir` alone does not tell a later `find` where to look, default discovery falls through to `PATH`, and from uv 0.8.0 an install links an executable into the user's `PATH` (fact 17; cross-language re-review 6). The confinement jobs had no uv step and a cache hit skips the postinstall (re-review 5). A preflight that sets `PYTHONPATH` itself cannot fail when the launcher forgets to (re-review 9). |
 | 47 | **Every call the validate CLI awaits is bounded, by `runProtocolChecks`, from `TOOL_TIMEOUT_POLICY`, and cancelled through one `AbortSignal`.** Construct `pluginFactoryMs`, the runtime's activation bound (the session's 20 s `pluginImportMs + pluginFactoryMs` stays as the transport's cleanup deadline, not a validation bound); `start` the manifest's `startupTimeoutMs` clamped to `pluginStartupMaxMs`, else `pluginStartupDefaultMs`; `onPublished` the same value as validator-only policy, since the runtime does not bound it; `server/discover`, `tools/list` and the unknown-method probe `mcpRequestDefaultMs`; each `tools/call` `globalCeilingMs`; the stop hook `pluginStartupDefaultMs`; `closeInput` → `exited` 5 s; `--fast` caps each of these at 1 s. A CLI-owned `finally` always runs — also when an opener rejects and no session exists — through the run's `AbortController` and the CLI's link, which records the exit, faults and signals from spawn; it starts the link's one termination sequence (`VALIDATION_KILL_GRACE_MS` 3 s, production's) unless the child already exited and waits `VALIDATION_TEARDOWN_WAIT_MS` 5 s for the exit; `protocol.teardown` is always reported, never `not exercised` and never capped by `--fast`. Expiry fails that row with `timed out after <n> ms` and aborts the run's controller, which the session (given it as `signal` before construct) turns into `teardown`; every later row is `not exercised` and the exit code is 1. | The CLI drives the session directly, so the runtime's owners (`runStartWithTimeout`, `src/plugins/runtime/index.ts:1242-1256`; the executor ceiling, `src/tools/executor-ceiling.ts:56-76`) never run, and the transport sets no timer for a call without a deadline (`plugin-child-transport.ts:159-165`, `child-stream-multiplex.ts:287-290`): a child that answers construct and then goes silent would hang the CLI and CI (host re-review #26). Reusing the production values keeps a plugin that passes validation inside the bounds the app will apply: activation bounds the whole child construct, import included, by `runPluginFactoryWithTimeout` at `pluginFactoryMs` (`runtime/index.ts:1215-1227`, `:4007`, `:4912`, `:5528`, `:6282`, `:5151-5154`), so the round-3 bound of import plus factory would have passed a plugin the app refuses (host re-review #30). `onPublished` is awaited unbounded (`runtime/index.ts:3437`); its bound is labelled the validator's own policy rather than parity. Rejected: a single CLI-wide timeout (it would report no row and could not tell a slow `start` from a hung tool); bounds inside the session (the runtime owns production bounds, and a second owner there would race it). superseded 2026-11-06 (#447) |
@@ -2244,7 +2257,7 @@ What Ave should not adopt, and why:
 | 60 | **P7 order.** Public release → fourteen-day notice ([§9.3](../history/plugin-hostapi-protocol-migration.md#93-removal-condition-for-the-in-process-path)'s rule, applied to the server) → `.github` `marketplace-publish.yml` deleted → plugin repositories' GitHub publish workflows deleted → the web author page rewritten for format 2 → server stopped with volumes kept → Cloudflare route removed → repositories archived one release cycle later with the catalog exported to `project-history/`. Steps 3 and 5 are code and can merge now; step 4 is plugin-repository code that waits for the owner's go-ahead (decision 49); 1 waits for Actions; 2, 6–8 are the owner's. | Users must have the replacement source before the old one answers nothing; the catalog export is the only record of what the server served. |
 | 61 | **0.14.0 carries no protocol boundary.** Admission changes no protocol schema; the `2/v0.14.0` candidate differs from `v0.13.0`'s copy by `$id` only; [§9.3](../history/plugin-hostapi-protocol-migration.md#93-removal-condition-for-the-in-process-path)'s notice rule does not apply to the release, only to the server (decision 60), because no protocol version is retired. | The arm change is inside the host's promise (§2.1); the notice rule is keyed to a retired protocol version, and none is. What 0.14.0 does refuse anew — a manifest without a served `hostProtocol` on the prepared-activation and restart paths (fact 12, decision 52) — is the rule 0.12.0 announced for every path, now applied by the child factory's check, and R1's release note names it. |
 | 62 | **Migration of old-server installs of plugins outside the official index (designer, 2026-10-08).** Such a package can be **required** through policy (`requiredInstalls` from its source): a package that is not installed is installed by the boot step, and an existing install is switched through the idle apply queue after boot, never by an immediate boot install. `defaultInstalls` is not the migration path, because it skips an existing package bound to no source. An unmanaged install migrates by an explicit user-driven source switch. | Uses only the mechanisms of decision 57. |
-| 63 | **An out-of-process tool's hostApi call runs in its host invocation.** The transport mints `_meta["ave/invocation"]` for each `tools/call` and keeps an `AsyncLocalStorage.snapshot()` of the caller's context. It keeps the snapshot for the life of the connection: settled calls are kept too, up to `SETTLED_INVOCATIONS_MAX` (1024, oldest dropped first). Live calls are never evicted; excess calls are refused before capture at `LIVE_INVOCATIONS_MAX` (64), so the tables retain at most 1088 snapshots. Close and observed exit release both tables before fallible termination or subscription teardown (`plugin-child-transport.ts`). The child runtime binds the token for the handler's async chain, including work the handler leaves running, and stamps it on each hostApi request (`plugin-child-runtime.ts`). The dispatcher runs a request in the snapshot its token names, refuses a token the connection does not hold, and runs a tokenless request in a context captured at module load, where no store is entered (`runOutsideInvocation`, `host-api-dispatcher.ts`). The transport also routes every frame off the pipe through that context. Residual: a child can still omit the token and run a gated write ungated. The host does not refuse it, but logs the first qualifying write per gated path per connection while a `tools/call` is in flight; repeated writes emit no more warnings. The module-load guard rejects both effect-gate and invocation-origin frames, including app-only tools without a gate frame; boot must still evaluate it outside unrelated stores. Additive within protocol `2` (§3.3). Pinned by `invocation-context.test.ts`, over a link that delivers in its spawn context, and by `plugin-child-transport.test.ts`. | After Admission A1 every entry plugin runs as a child. A child's hostApi request reached the host in the context of the pipe, not the invocation, so `gateMutatingEffect` read "no invocation" and passed every gated write unasked. A plugin tool's `raiseAlert`, or any other host-classified write, skipped both the foreground approval and the headless deny (blueprint `plugin-process-isolation.md` §7 Q5 expected it to survive the boundary). The pipe's context is the one the child was SPAWNED in, not a neutral one. A child restarted from inside a tool call (`config.set` → `restartPlugin`) would run every tokenless request of its generation in that finished invocation: a headless deny, a foreground allow-once grant and session attribution, and a growing effect ledger. Rejected: dropping a call's context when it settles (a handler's timer then ran fail-open, while in-process the same code is denied headless); gating every child write that has no context (it would also gate lifecycle work an in-process plugin does freely); refusing a tokenless gated write while a call is in flight (honest background work runs beside tool calls, and the host cannot tell the two apart); exiting individual stores instead of using one root context (the pipe also carries the install-lock, registry and lifecycle stores, and a list of stores to exit goes stale). |
+| 63 | **An out-of-process tool's hostApi call runs in its host invocation.** The transport mints `_meta["ai.agent-connector.ave/invocation"]` for each `tools/call` and keeps an `AsyncLocalStorage.snapshot()` of the caller's context. It keeps the snapshot for the life of the connection: settled calls are kept too, up to `SETTLED_INVOCATIONS_MAX` (1024, oldest dropped first). Live calls are never evicted; excess calls are refused before capture at `LIVE_INVOCATIONS_MAX` (64), so the tables retain at most 1088 snapshots. Close and observed exit release both tables before fallible termination or subscription teardown (`plugin-child-transport.ts`). The child runtime binds the token for the handler's async chain, including work the handler leaves running, and stamps it on each hostApi request (`plugin-child-runtime.ts`). The dispatcher runs a request in the snapshot its token names, refuses a token the connection does not hold, and runs a tokenless request in a context captured at module load, where no store is entered (`runOutsideInvocation`, `host-api-dispatcher.ts`). The transport also routes every frame off the pipe through that context. Residual: a child can still omit the token and run a gated write ungated. The host does not refuse it, but logs the first qualifying write per gated path per connection while a `tools/call` is in flight; repeated writes emit no more warnings. The module-load guard rejects both effect-gate and invocation-origin frames, including app-only tools without a gate frame; boot must still evaluate it outside unrelated stores. Additive within protocol `2` (§3.3). Pinned by `invocation-context.test.ts`, over a link that delivers in its spawn context, and by `plugin-child-transport.test.ts`. | After Admission A1 every entry plugin runs as a child. A child's hostApi request reached the host in the context of the pipe, not the invocation, so `gateMutatingEffect` read "no invocation" and passed every gated write unasked. A plugin tool's `raiseAlert`, or any other host-classified write, skipped both the foreground approval and the headless deny (blueprint `plugin-process-isolation.md` §7 Q5 expected it to survive the boundary). The pipe's context is the one the child was SPAWNED in, not a neutral one. A child restarted from inside a tool call (`config.set` → `restartPlugin`) would run every tokenless request of its generation in that finished invocation: a headless deny, a foreground allow-once grant and session attribution, and a growing effect ledger. Rejected: dropping a call's context when it settles (a handler's timer then ran fail-open, while in-process the same code is denied headless); gating every child write that has no context (it would also gate lifecycle work an in-process plugin does freely); refusing a tokenless gated write while a call is in flight (honest background work runs beside tool calls, and the host cannot tell the two apart); exiting individual stores instead of using one root context (the pipe also carries the install-lock, registry and lifecycle stores, and a list of stores to exit goes stale). |
 | 64 | **Windows: plugins are not isolated from each other (owner, 2026-10-10).** On Windows every plugin, third-party ones included, runs in the one shared `srt-sandbox` identity: sandboxed from the host as configured, not from each other. The app adds no install gate, warning or confirmation, serialization of plugin processes, or marketplace-source restriction on Windows; the sandbox capability report says "against the host" there (`permissions.ts` `sandboxCapability`, `sandbox-capability-info.ts`), and every inter-plugin claim in this design and the blueprint is scoped to macOS and Linux. The same holds for the host's own READ grants there: a bundled hook or MCP stdio server whose program lives in `<AVE_HOME>/runtime` holds READ on that directory for its lifetime (`wrap-bundled-command.ts` `hostRuntimeReads`), and while held every confined process reads it too — acceptable because the runtime is the host's shipped interpreter and holds nothing private. It is an accepted risk, pending an ASRT per-plugin (per-execution) identity, and is re-decided when one exists ([§9.8](../history/plugin-hostapi-protocol-migration.md#98-the-admission-step-implementation-plan) A2, *As implemented*). | ASRT 0.0.80 runs every sandboxed process as one account, without restricting SIDs; its allows are session-level grants and its per-execution denies holder-refcounted ACEs, both on that account's SID, so a deny between plugins takes each plugin's own directories from it as well, and a grant to one is visible to all while held. Upstream `@anthropic-ai/sandbox-runtime` releases through 0.0.80 (checked 2026-10-19) add no per-execution identity. Rejected by the owner: an install gate, warning or confirmation for third-party plugins on Windows, serializing plugin processes, and restricting Windows to some marketplace sources — third-party plugins run on Windows. Rejected on the facts: a deny-based partition, which removes each plugin's own access (above). |
 | 65 | **The HostApi `storage` surface operates in a host-only directory (owner, 2026-10-10).** Every `storage.*` member — and the webview bridge's `ui-storage/` through `getPluginStorage` — resolves `<pluginsRoot>/<id>/storage`, a sibling of `data/` and `sockets/` owned by `plugin-storage-layout.ts` (`PLUGIN_HOST_STORAGE_DIR_NAME`, `resolvePluginHostStorageDir`). It is in no confined process's write envelope on any platform: `derivePluginChildEnvelope` refuses a write grant that is the directory, inside it or an ancestor of it (`writeGrantsReachingHostStorage`), and the Windows ACL holder grant is checked against the same rule. It is runtime state like `data/` (`PLUGIN_RUNTIME_DIR_NAMES`: excluded from the receipt, never copied as payload, refused in an upload) and is carried with `data/` by `carryPluginStateDirs` through promotion and recovery; uninstall and tombstones remove the whole plugin root, so they cover it with no new path. `storage.rm({ recursive: true })` is a plain recursive `rm` there. Existing state is migrated once at boot, before `initPluginRuntime` and before any confined process may run (`migratePluginHostStorage`): `data/` is **copied** — only what can be a storage key: regular files at key depth 2 or less (`name`, `dir/name`: `auth/token-….json`, `ui-storage/<key>.json`, top-level JSON) of 8 MiB or less (owner, 2026-10-10), judged by `lstat`, never through a link (`O_NOFOLLOW_ANY` on macOS, `O_NOFOLLOW` plus a `/proc/self/fd` identity check on Linux); deeper entries, larger files, links, special files, hard-linked files and unreadable entries are skipped and counted in the boot audit — into a staging directory renamed to `storage/` in one step, and `data/` is left untouched. A root that has `storage/` is done; a plugin load refuses to invent an empty `storage/` beside a non-empty `data/`. | A storage op checks containment and then issues a path-based syscall; while the directory was the child's own `data/`, the child could rename a parent aside and plant a link in that window, and all eleven ops at depth 2 followed it (read, write, list, create or delete outside the root). No platform offers a path-based "no link in any component" for every op — macOS has it for `open` only, Windows for none — so the only per-platform-complete fix is a directory the child cannot write. Copy rather than move because a file written through `storage` cannot be told from one the child wrote, and the plugin's own code addresses both by the same relative names: the copy rebuilds the storage view as it was, and the child's own reads of `data/` keep working. Not hard links, which would cost no space: the `storage/` name would share a file object the child still writes through its `data/` name, and on Windows the child could turn that file into a symlink reparse point and re-point the host's path. The depth and size caps keep what a plugin keeps for itself in `data/` — `meeting`'s session transcripts, staged uploads and WAV segments, an index workspace — out of `storage/`, where a copy would outlive the plugin deleting its own and show up in `storage.list`; what remains is a one-time copy of small top-level and depth-2 files. Residuals, each accepted: a storage value an older version wrote deeper than depth 2 or larger than 8 MiB is not migrated; a value an older version writes to `data/` after the migration (a downgrade, then an upgrade) is not migrated again, because a root with `storage/` is done; and a confined child of a crashed previous run that outlives it could swap a parent between the migration's `readdir` and its descent — a directory listing taken there names outside entries, but every file is opened with no link in its path and checked against its `lstat`, so nothing outside is copied. A directory is made in `storage/` only when a file is copied into it, so a skipped tree leaves no empty key namespace behind. A load refused for a root whose migration failed names the failure and the path. On Windows the migration has no no-follow primitive and relies, like every boot sweep of a child-writable tree, on running before any confined process of this app. |
 | 66 | **A Windows ACL grant names an envelope root, never a path below one.** `srt-win acl grant` canonicalises its input and stamps the `(OI)(CI)` ACE on what the path resolves to — measured on ASRT 0.0.76 on a provisioned host: a write grant on `data\link`, a junction, landed `(OI)(CI)(M)` on the junction's target. Every component below an envelope root is the plugin's own process's to re-point, between any check and the grant. So a delegated worker's `allowReadPaths`/`allowWritePaths` are granted as the outermost envelope root containing each (`decodeWorkerSpec`, `outermostContainingRoots`), after the containment check that refuses a path outside the envelope; the plugin child's own grant likewise names only its outermost roots. On Windows both containment questions are asked on the canonical form admission asks on (`isGrantPathWithin`: `canonicalizePathForMatch`, which expands 8.3 short names and follows links, then `caseFoldForMatch`), so `…\DATA\work` or an `IKCHA~1` spelling of a path below a root is that root, and a path a link re-points outside every root is refused. A `userChosenDirectory` value inside `data/` is folded into `data/` itself at derivation (`resolveUserChosenDirectory`): it adds no reach, and no root is left below `data/` to be granted on its own. | An lstat walk of the components cannot close it: the plugin's process can plant the junction after the walk. What the outermost root rests on depends on the root. `data/` and `sockets/` are directories the host created under `plugins/<id>/`, whose parent no confined process can write, so they cannot be re-pointed. A chosen directory or a `hostDirectory` root is not host-made: it rests on the user's approval and on no confined process holding write on its parent — and where one plugin's chosen directory contains another plugin's, the outer plugin's child does hold it, because every confined process runs as the one sandbox account; that is decision 64's shared-account residual, which this decision neither adds to nor closes. Granting the root widens nothing on Windows for the same reason: the worker reaches only what the plugin's own process already does. Hard links are a residual of the inheriting grant itself. A hard link's file has one security descriptor, so a link `data\h.txt` naming a file outside gains inherited Modify when `data\` is granted (measured). Creating such a link needs `FILE_WRITE_ATTRIBUTES` on the target — measured on Windows build 26200 with a non-administrator token (Administrators deny-only, able to write `data\`, owner of the target): `mklink /H` was refused with `(R)` on the target and succeeded with `(R,WA)`; `srt-sandbox` is in Users and sandbox-runtime-users only, and the token's High integrity does not enter a DACL check. So a confined child cannot turn a file it can only read into a writable one; what remains is a file outside the envelope the sandbox account can already write attributes of (another plugin's live write root, decision 64), which gains inherited Modify when this plugin's root is next granted, and a link an administrator or the user placed in `data\`. A spawn-time refusal of files with link count above one is not made: it is a walk of every write root on every spawn, it cannot tell a package installer's hard-linked install from an escape without matching file ids across trees it does not walk, it races a live child of another plugin over a shared chosen directory, and what it would stop the child creating, the child already cannot create. The storage migration copies no file with a link count other than one (decision 65). macOS and Linux keep the path, under ASRT's own normalisation. |

@@ -37,26 +37,21 @@ describe("HostApiGenerationScope", () => {
     expect(flakyCalls).toBe(2);
   });
 
-  it("queues reversible signals, rejects writes, and opens only after exact publish", async () => {
+  it("rejects preparing writes and admits them only after exact publish", async () => {
     const active = { current: "g1" };
     const scope = new HostApiGenerationScope("sampleportal");
-    const emitEvent = vi.fn();
     const set = vi.fn(async () => undefined);
-    const api = scope.wrapHostApi({
-      emitEvent,
-      config: { get: vi.fn(), set, onChange: vi.fn() },
-    } as never);
-
-    api.emitEvent("sampleportal.ready", { ok: true });
-    expect(emitEvent).not.toHaveBeenCalled();
+    const onChange = vi.fn(() => () => {});
+    const api = scope.wrapHostApi({ config: { get: vi.fn(), set, onChange } } as never);
+    const changed = vi.fn();
+    api.config.onChange("mode", changed);
+    expect(onChange).toHaveBeenCalledOnce();
     expect(() => api.config.set("mode", "remote")).toThrow(/replacement generation is preparing/);
     expect(set).not.toHaveBeenCalled();
-
     scope.bindGeneration(generationAccess(active), "g1");
     scope.publish();
-    expect(emitEvent).not.toHaveBeenCalled();
-    expect(scope.postPublish()).toEqual([]);
-    expect(emitEvent).toHaveBeenCalledWith("sampleportal.ready", { ok: true });
+    await api.config.set("mode", "remote");
+    expect(set).toHaveBeenCalledWith("mode", "remote");
   });
 
   it("admits callbacks only for the exact active generation and disposes exact resources", async () => {

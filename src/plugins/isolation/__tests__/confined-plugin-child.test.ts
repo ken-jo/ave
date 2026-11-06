@@ -1552,7 +1552,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       };
       if (from === "host" && frame.method === "tools/call") calls.set(frame.id, frame.params!.name!);
       else if (from === "child" && calls.has(frame.id) && frame.result) {
-        results[calls.get(frame.id)!] = frame.result._meta?.["ave/rawResult"];
+        results[calls.get(frame.id)!] = frame.result._meta?.["ai.agent-connector.ave/rawResult"];
       }
     }
     return results;
@@ -2196,9 +2196,7 @@ export const createPlugin = async (context) => {
         hostFetch: async () =>
           new Response(new Uint8Array([0x00, 0x80, 0xff, 0x41]), { status: 200 }),
         callLlm: async () => "three action items",
-        emitEvent: () => undefined,
 
-        onEvent: () => () => undefined,
 
 
         config: {
@@ -2729,9 +2727,7 @@ export default async function createPlugin(context) {
           askedFor.push(drive);
           return null;
         },
-        emitEvent: () => undefined,
 
-        onEvent: () => () => undefined,
 
 
         config: {

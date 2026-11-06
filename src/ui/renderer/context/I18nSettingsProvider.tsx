@@ -107,7 +107,7 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
       void applyLocale(next);
       if (api) {
         void api
-          .updateSettings({ appearance: { schemaVersion: 2, language: next } })
+          .updateSettings({ appearance: { schemaVersion: 3, language: next } })
           .catch(() => { /* ignore — local state already reflects the choice */ });
       }
     },

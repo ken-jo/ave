@@ -1,0 +1,19 @@
+{
+  "request": {
+    "id": 12,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/config/set",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "key": "region",
+      "value": "south"
+    }
+  },
+  "response": {
+    "id": 12,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

@@ -8,11 +8,13 @@ async function probe(feature: string, run: () => Promise<unknown>): Promise<void
   try {
     await run();
     console.log(`E2E_PROBE ${CASE} ${feature}:ok`);
+    document.body.appendChild(document.createElement("p")).textContent = `${feature}: allowed`;
   } catch (err: unknown) {
     const e = err as { name?: string; message?: string };
     // Preserve error names to distinguish permission denial from missing devices or positioning.
     const reason = `${e?.name ?? "Error"}|${(e?.message ?? String(err)).replace(/\s+/g, " ").slice(0, 160)}`;
     console.log(`E2E_PROBE ${CASE} ${feature}:fail:${reason}`);
+    document.body.appendChild(document.createElement("p")).textContent = `${feature}: ${reason}`;
   }
 }
 
@@ -32,6 +34,11 @@ async function main(): Promise<void> {
       throw unfocused;
     }
     await navigator.clipboard.writeText("ave-mcp-app-probe");
+  });
+
+  await probe("clipboardRead", async () => {
+    if (!navigator.clipboard?.readText) throw new Error("no navigator.clipboard.readText");
+    await navigator.clipboard.readText();
   });
 
   await probe("camera", async () => {
@@ -71,4 +78,11 @@ async function main(): Promise<void> {
   console.log(`E2E_PROBE ${CASE} DONE`);
 }
 
-void main();
+const runButton = document.createElement("button");
+runButton.textContent = "Run permission probes";
+runButton.addEventListener("click", () => {
+  runButton.remove();
+  void main();
+}, { once: true });
+document.body.appendChild(runButton);
+console.log(`E2E_PROBE ${CASE} READY`);

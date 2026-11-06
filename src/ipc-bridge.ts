@@ -12,15 +12,13 @@ export {
   validateSender,
   UNAUTHORIZED_FRAME,
   auditUnauthorized,
-  validatePluginFrame,
 } from "./ipc/gated.js";
 
 export {
   registerIpcHandlers,
   registerWindowEventListeners,
-  unregisterPluginWebview,
 } from "./ipc/index.js";
 
 // Preserve the public compatibility facade while keeping main-process callers
 // on the extracted leaf cache instead of the IPC domain implementation.
-export { getLastThemePayload } from "./shared/plugin-theme-cache.js";
+export { getLastThemePayload } from "./shared/host-theme-replay.js";

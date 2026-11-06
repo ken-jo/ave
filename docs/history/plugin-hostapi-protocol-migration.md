@@ -10,7 +10,7 @@ Moved from the design doc on 2026-11-06.
 | Step | Scope | Proof | Contract change for plugins |
 |---|---|---|---|
 | Isolated five (done) | five first-party plugins out of process on the internal wire | `OUT_OF_PROCESS_PLUGIN_IDS`, `out-of-process-plugin.test.ts`, `confined-plugin-child.test.ts` | none |
-| Wire (§9.4) | reverse channel becomes JSON-RPC `ave/host/*`; `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
+| Wire (§9.4) | reverse channel becomes JSON-RPC `ai.agent-connector.ave/host/*`; `construct` negotiation; newline framing; identity fields off the wire; schema generator + parity gate | golden-fixture conformance suite passes against the JS reference runtime for all five plugins | **none** — the reference runtime is host-shipped |
 | Lease (protocol `2`, app release X = 0.12.0; decisions 8-26) | credential lease: `bearer()` removed, `ResolveApiKeyResult` union, `HostFetchInit.auth` forwarded to the one factory path, host lease registry with linearised issuance and epoch fencing, audience and scheme binding by normalized source, credential-header clearing per hop including `api-key`, cookie composition, the four closed error codes, raw exposure under `secrets:raw-api-key` with receipt-bound consent, the operation rule that refuses host-provider-key export through `getSecret` and the removal of the official plugins' fallbacks (§4.1); catalog format 2 (§6.4); `sandbox` manifest block through schema, runtime, marketplace authority, descriptor/index, review, receipts and the re-vendored checker, replacing `PLUGIN_ENVELOPE_GRANTS` with the global exclusions preserved (§2.2, §6.3); protocol-aware catalog selection and the pre-activation refusal of undeclared or unserved protocols on both arms (§3.2, §6.4); dispatcher budgets (§7.4); `FormData` serialisation in the reference runtime and the 15 MiB effective STT body (§8); schema regeneration at the final version and the web mirror (§6.1); the protocol schema joins the vendored set (§6.3) | host: the gates of §9.6 per slice, then once at publication; plugins: `meeting` both STT paths in host-key and plugin-key modes through the real child encoder with abort, release and revoke; `local-indexer` startup, warm-up, scan, query outside a scan, caption, key switch and restart through the real broker with the worker holding tokens only and a synthetic marker proving no shared key leaves main on argv, env or any normal frame, lease counts returning to baseline; lease-failure paths of both plugins proven not to reach `getSecret`, a raw resolve or a socket; old `meeting`/`local-indexer` bundles refused before activation on X; the packaged upgrade matrix of §6.4 including downgrade and offline; `mail`, `portal`, plugin-key STT/indexer and the FFmpeg download unchanged; measured budgets (§7.4) | **announced boundary, not a runtime flag-day**: every code plugin republishes with `requires.hostProtocol: "2"` and `minAppVersion` X; `resolveApiKey` callers (`meeting`, `local-indexer`) migrate to the lease; `local-indexer` manifest carries its four `sandbox` declarations; publication order in §9.5 |
 | Publication (app release 0.13.0; §9.7, decisions 27-47) | TS protocol client vendored with the contract (§6.2, §6.3); validate CLI; `process` entry runtime under a process-confining sandbox, its pinned-artifact admission, and its place in the descriptor and index (no new field: `platforms` and the pinned rungs, §9.7 P4) | validate CLI passes for every tracked official source (`plugins/*/source` after the candidate wave retires `assistant`'s, §9.7 E2′), `templates/extension` (the former `templates/plugin`), the portal and repository plugins with the app not running; a non-JS smoke plugin (Python: a stock MCP server library plus a JSON-RPC library for the Ave peer channel) passes conformance | none for existing plugins; the schema vendoring, `hostProtocol` in the descriptor/index and the official plugins' declarations moved into Lease (§6.4) |
 | Admission (app release 0.14.0; §9.8, decisions 48-62) | out-of-process by default for every install and every source (decision 3): the routing function has no input, the census `OUT_OF_PROCESS_PLUGIN_IDS` / `isOutOfProcessPlugin` is deleted and the in-process import call leaves main (§9.8 A1); the arm and the confinement (`PluginConfinementReport`: the spawn's wrap outcome, or `not-spawned`) on the Doctor's plugin report; `git`, `hello-world`, `templates/extension`, `portal` onto the path; adversarial fixture (§9.8 A2); plugins outside the official index distributed through another marketplace source, never the official index (decision 48); the official-URL switch when the repository is public (O1); the old server's retirement sequence (P7) | fixture attempts the four escapes (blueprint §9 Stage 9) under the real wrap and is denied on each, with control cases, after being built against the validate CLI; the routing matrix routes every `entry` manifest to `child` for every source kind, rung, install source and platform, and admits or refuses a `process` manifest explicitly; a refused prepared activation reports as a `PACKAGE_INCOMPATIBLE` (`host_protocol`) update failure and a refused restart through the config-save reply and the card's `lastAttemptRefusal`, both with the boot/add audit event and the running generation untouched; `allPluginsAreOutOfProcess`, fed by the registry's `arm`, is true, and a test routes every manifest of the official index to `child`; `git` 0.3.0: no `fetch` call site outside its bound `hostFetch`, its `networkAccess` in the manifest, its cache under a `sandbox.write` `userChosenDirectory` grant and the `~` refusal tested (planned; not started; awaiting owner go-ahead, decision 49) | `git` **prerequisites (decision 22)**: its direct `fetch` for GitLab/GitHub with cookie and token headers (`ave-plugin-repo` at `d71fb95`, `src/hostPlugin.ts:797-806`) and for plugin LLM calls (`:920-932`) move to `hostFetch` with `networkAccess` declarations; its optional external `dataDirectory`, expanded from `~` today (`:824-834`) and written under (`:1140`), becomes a `sandbox.write` `userChosenDirectory` grant on `configKey: "dataDirectory"` that requires a normalised absolute path and refuses `~`. These are not Lease work; the earlier "all mediated" claim is withdrawn (§9.2 item 7). No other plugin changes: a protocol-2 `entry` plugin gets the same `PluginHostApi` in its own process |
@@ -161,7 +161,7 @@ migrated.
    answering a version it does not speak. So no commit is without a version check, and
    the constant has a user in the PR that exports it (the knip baseline warns on unused
    exports, `knip.jsonc:13`). The method name is
-   `ave/host/<path with "." as "/">`, produced and parsed by two total functions over
+   `ai.agent-connector.ave/host/<path with "." as "/">`, produced and parsed by two total functions over
    `HostApiPath`. Params are a JSON object: each `HOSTAPI_PATH_CONTRACTS` entry
    (`:590-1005`) gains a fifth axis, `params`, the argument names in order; the child stub
    maps a positional call to that object and the dispatcher maps it back before the
@@ -172,7 +172,7 @@ migrated.
    `plugin-mismatch` and `generation-mismatch` leave the set and `wire-version-mismatch`
    is renamed `protocol-version-mismatch`. The eight `kind`-keyed notification shapes
    (`:98-215`) get the names of §3.4: the three subscription messages,
-   `notifications/ave/log`, the three snapshot notifications and `notifications/cancelled`.
+   `notifications/ai.agent-connector.ave/log`, the three snapshot notifications and `notifications/cancelled`.
 3. **Identity off the wire.** `pluginId` and `generationId` leave every message.
    `HostApiDispatcher.resolve` (`host-api-dispatcher.ts:2008-2020`) drops the two
    comparisons: the dispatcher is already constructed per child with the plugin id it
@@ -183,12 +183,12 @@ migrated.
    `out-of-process-plugin.ts:1224-1226`, `:1261-1263` and `:1311-1313`.
 4. **Routing.** `classifyMultiplexedMessage` (`child-stream-multiplex.ts:46-65`)
    discriminates on JSON-RPC fields only: a request whose `method` starts with
-   `ave/instance/` is an instance request, `ave/host/` a host request, `notifications/`
+   `ai.agent-connector.ave/instance/` is an instance request, `ai.agent-connector.ave/host/` a host request, `notifications/`
    a notification, any other `method` an MCP request; `id` with `result` or `error` is a
    response, matched against the pending table of the direction it arrived on.
    `notifications/cancelled` is routed by direction (§3.5). Anything else is dropped, as
    today: the host drops every server-direction frame (`plugin-child-transport.ts:193-199`)
-   and the child answers an `ave/host/*` request with `-32601` (today it refuses the
+   and the child answers an `ai.agent-connector.ave/host/*` request with `-32601` (today it refuses the
    `host-api-request` shape, `plugin-child-main.ts:270-278`).
 5. **Negotiation.** There is no `initialize`: the MCP half stays on the stateless
    `2026-07-28` revision the host already speaks — per-request
@@ -206,7 +206,7 @@ migrated.
    advertise them and the four child-local paths (`storage.resolve`, `config.get`,
    `getInstalledPluginIds`, `getAppPreference`; `:269`, `:281`, `:285`, `:289`) are never
    methods. In the same
-   change `onShutdown` delivery becomes the `ave/instance/shutdown` request (§3.4) and
+   change `onShutdown` delivery becomes the `ai.agent-connector.ave/instance/shutdown` request (§3.4) and
    `readUiResource` folds into MCP `resources/read`, which the child's server already
    serves (`plugin-mcp-server.ts:137`); `PLUGIN_INSTANCE_METHODS` stays at five.
 6. **Manifest.** `requires.hostProtocol` (`^[1-9][0-9]*$`) is added to
@@ -231,7 +231,7 @@ migrated.
 7. **Schema generator and parity gate.**
    `scripts/generate-plugin-host-protocol-schema.ts` (run with `node --import tsx`, the
    pattern `check:i18n-catalog` uses) reads `HOSTAPI_PATH_CONTRACTS`, the
-   `ave/instance/*` method table and the notification shapes, and chooses the type
+   `ai.agent-connector.ave/instance/*` method table and the notification shapes, and chooses the type
    source per axis: a `plain-json` argument or result is described from the member's
    type in `public-contract.ts`; an `encoded` or `handle` axis is described from the
    `Wire*` type that is its wire form in `host-api-wire.ts` (`WireBytes` `:482`,
@@ -290,7 +290,7 @@ migrated.
   and the spawn count stays zero, while the same manifest without the field loads; a
   dispatcher whose bound table leaves `hostFetch` unimplemented sends construct params
   whose `capabilities` omit `hostFetch`, and a plugin whose `requires` names it is
-  refused at construct; `ave/instance/shutdown` is awaited before `stop`, and a handler
+  refused at construct; `ai.agent-connector.ave/instance/shutdown` is awaited before `stop`, and a handler
   that overruns the bound gets the child killed (`plugin-child-transport.ts:141-146`).
   Each of these fails if its behaviour is removed.
 - Real process: `confined-plugin-child.test.ts` runs the `meeting` fixture through a real
@@ -328,7 +328,7 @@ changes, so no page lags a merged change.
 1. `feat(plugins): the plugin channel is newline-delimited` — item 1 and its tests, with
    the framing sentences in `docs/architecture/mcp-alignment-design.md:250-259`, blueprint
    §5.2 and the `src/mcp/experimental/*` headers.
-2. `feat(plugins): the reverse channel is JSON-RPC ave/host/*` — items 2 (with the
+2. `feat(plugins): the reverse channel is JSON-RPC ai.agent-connector.ave/host/*` — items 2 (with the
    version half of the `construct` negotiation), 3 and 4, the
    updated suites, the forged-identity test and the golden harness with the per-method
    goldens and the five plugin fixtures; blueprint §2.2 describes the new reverse
@@ -485,10 +485,10 @@ the checker as it is now and cite `9c56ec148`; the M1 subsection and decision 39
      in the host, `manifestToDiscoverResult` at `src/mcp/plugin-server-projection.ts:162-184`
      advertises `capabilities.tools` and `supportedVersions`, and `tools/list` at
      `src/mcp/plugin-mcp-server.ts:115-122` lists the tools).
-   - Consequence for the design: no stock library speaks `ave/host/*` or
-     `ave/instance/*`, and every stock stdio driver owns the process's stdin and stdout.
+   - Consequence for the design: no stock library speaks `ai.agent-connector.ave/host/*` or
+     `ai.agent-connector.ave/instance/*`, and every stock stdio driver owns the process's stdin and stdout.
      So the Python smoke (P5) owns the stream itself — one newline-delimited JSON-RPC loop
-     that routes `ave/*` to its own handlers and hands each MCP request to the library's
+     that routes `ai.agent-connector.ave/*` to its own handlers and hands each MCP request to the library's
      in-memory server kernel one message at a time — and the host adds no shim of any
      kind: the host speaks exactly what §2.5 and §3 already say, and the reference runtime
      is unchanged.
@@ -961,7 +961,7 @@ no export beyond it.
   `$defs.methods`, `$defs.notifications` and `$defs.errorCodes`, a
   `HostClientTransport { request(method, params): Promise<unknown>; notify(method, params): void }`
   interface the author implements over their own stream, and `createHostClient(transport)`
-  with one typed method per `ave/host/*` entry (named by the method's path segments,
+  with one typed method per `ai.agent-connector.ave/host/*` entry (named by the method's path segments,
   `storage/read` → `storage.read`) plus `isHostNotification(frame)`. The file imports
   nothing and embeds **no app version** (decision 28): its header names the protocol
   version and the generator; a plugin repository pins it by sha256 from the tag like the
@@ -1026,7 +1026,7 @@ no export beyond it.
 
 - `src/plugins/isolation/__tests__/host-protocol-client-parity.test.ts` (new):
   regenerating produces the committed bytes on this platform (a byte in the committed
-  file); `createHostClient` exposes exactly one method per `$defs.methods` `ave/host/*`
+  file); `createHostClient` exposes exactly one method per `$defs.methods` `ai.agent-connector.ave/host/*`
   entry and nothing else, read from the schema, not from a list in the test (delete an
   entry from the stub emitter); for every golden `methods/<method>.json`
   (`fixtures/host-protocol/2/methods/`, walked with `goldenFiles`,
@@ -1173,7 +1173,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     closeInput(): void; exited: Promise<string> }` — **non-destructive** controls:
     `requestMcp` is the transport's (below), for `server/discover`, `tools/list`,
     `tools/call` and `resources/read`; `probe` sends one request verbatim for the
-    unknown-method check; `runStopHook` sends `ave/instance/stop` when the construction
+    unknown-method check; `runStopHook` sends `ai.agent-connector.ave/instance/stop` when the construction
     declared it and does not close, flip `live` or terminate; `closeInput` is
     `link.output.end()` and nothing else; `exited` settles with the reason the link's
     `onGone` reports, **and on nothing else**: a fault, a deadline, an abort or a
@@ -1259,7 +1259,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
     `onGone`; `error` with a pid → `onFault`. In-memory links have no process to fault
     and implement `onFault` as a registration that never fires.
 
-  `ave/instance/*` and `ave/host/*` frames carry no MCP `_meta`: they are Ave methods
+  `ai.agent-connector.ave/instance/*` and `ai.agent-connector.ave/host/*` frames carry no MCP `_meta`: they are Ave methods
   (§3), and the metadata rule is MCP's. The factory's `tools/call` and `resources/read`
   (`out-of-process-plugin.ts:1472-1480`, `:1542`, now in the session) go through
   `requestMcp`; construct, start, `onPublished`, stop and shutdown through `request`.
@@ -1403,8 +1403,8 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   `"2026-07-28"` and `{}`, beside the invocation token decision 63 added (remove the
   producer → fails); `request("tools/call", …)`
   throws (drop the method check → fails); `requestMcp` with a caller `_meta` throws;
-  `probe` refuses `ave/instance/construct` and `tools/list`, and
-  `probe("ave/host/nope")` resolves with the child's `-32601`. **Natural exit versus
+  `probe` refuses `ai.agent-connector.ave/instance/construct` and `tools/list`, and
+  `probe("ai.agent-connector.ave/host/nope")` resolves with the child's `-32601`. **Natural exit versus
   termination**, over a paired link whose `terminate` is recorded: firing the link's
   `onGone` rejects a pending request with the exit reason, calls `childGone` once and
   records **zero** terminations, and a following `close` records zero as well (make
@@ -1425,7 +1425,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   `terminate` → depth > 1 or a second timer, fails). The same with the sequence started
   by `teardown` instead of a fault: the same counts.
 - `src/plugins/isolation/__tests__/plugin-protocol-session.test.ts` (new), over a paired
-  link whose `terminate` is recorded: `runStopHook()` sends `ave/instance/stop` and no
+  link whose `terminate` is recorded: `runStopHook()` sends `ai.agent-connector.ave/instance/stop` and no
   terminate follows (make it call `transport.close` → fails); **the natural-exit path**:
   `closeInput()` ends the child's input, the child end then closes and the link reports
   it gone, `exited` settles, `onClosed` has run once, the host watchers are gone, and
@@ -1514,11 +1514,11 @@ test-only spec member add no channel, export, bridge method, setting or package 
      from the factory's `launch` union as the factory derives it (the resolved command for
      a `process` launch, decision 33); `ValidationSessionInput.entryPath` stays as S1
      froze it. Every step goes through the S1 session:
-     `openValidationSession` performs `ave/instance/construct` first
+     `openValidationSession` performs `ai.agent-connector.ave/instance/construct` first
      (`out-of-process-plugin.ts:1436-1446`) → `instance.start()` →
      `instance.onPublished()` → `channel.requestMcp("server/discover")` →
      `channel.requestMcp("tools/list")` → `tools/call` through `instance.handlers` (the
-     production path, which uses `requestMcp`) → `channel.probe(<unknown ave/host/*
+     production path, which uses `requestMcp`) → `channel.probe(<unknown ai.agent-connector.ave/host/*
      method>)` → `channel.runStopHook()` → `channel.closeInput()` → `channel.exited`
      raced against the deadline → `teardown`; **no MCP request precedes construct**, for
      either entry kind, because the host never sends one (§10.2 amended). **Every
@@ -1675,7 +1675,7 @@ this is required, not tolerated — the app logger writes to stdout outside a he
 (`logger.ts:70-99`), and stdout is the CLI's JSON-lines report; the CLI's own output is
 the report on stdout and the summary on stderr, never the host logger. For the
 child-main bundle it drops only host-module diagnostics; the plugin's own `context.log`
-still crosses as `notifications/ave/log`, and the production child (built by esbuild,
+still crosses as `notifications/ai.agent-connector.ave/log`, and the production child (built by esbuild,
 `scripts/build-main-esbuild.mjs:47`) keeps the real logger. **Source mode uses the same
 substitution**, not a variant: `npm run plugin:validate` loads
 `scripts/lib/stub-app-logger-hook.mjs` in the CLI and in its child (above), so all three
@@ -1707,7 +1707,7 @@ app logger, and one test per mode parses every stdout line as a report row.
   through `StdioFrameDecoder` still yield every frame (remove the raw check);
   `content-length-header` frames one reply with a `Content-Length:` header → fails the
   same row (same revert); **`withholds-start-reply`** answers construct and then never
-  answers `ave/instance/start` → under `--fast`, `lifecycle.start` fails `timed out
+  answers `ai.agent-connector.ave/instance/start` → under `--fast`, `lifecycle.start` fails `timed out
   after 1000 ms` within 5 s of the run, the recording link sees exactly one terminate,
   every later row except `protocol.teardown` is `not exercised`, `protocol.teardown`
   passes and the exit code is 1 (remove the bound → the case hangs until the test's own
@@ -1775,7 +1775,7 @@ app logger, and one test per mode parses every stdout line as a report row.
   (drop the `--child-exec-arg` pair → `ERR_MODULE_NOT_FOUND` for
   `src/plugins/runtime/plugin-loader.js`); and **stdout carries only the report**: the
   same command on a fixture whose plugin logs through `context.log` at construct, start
-  and in its tool — so the host side logs each `notifications/ave/log` it receives
+  and in its tool — so the host side logs each `notifications/ai.agent-connector.ave/log` it receives
   (`out-of-process-plugin.ts:1218-1223`) — run once with the test runner's environment
   (`VITEST` set, the logger's test-mode path) and once with `VITEST` and `NODE_ENV`
   removed (its pretty-stream path), parses **every** stdout line as JSON with exactly
@@ -2253,17 +2253,17 @@ marketplace DTO tests (`src/shared/git-marketplace.ts`) unchanged because no DTO
   `bin/python-path` (written by the harness into its temporary copy of the fixture, never
   committed) with `-s` (no user site directory) on `plugin.py` and its arguments;
   `plugin.py`, ~170 lines: a newline-delimited JSON-RPC loop over stdin that routes
-  `ave/instance/*` to its own handlers (construct checks `hostProtocol.version == "2"`,
+  `ai.agent-connector.ave/instance/*` to its own handlers (construct checks `hostProtocol.version == "2"`,
   records the capabilities, answers `implementedToolNames: ["echo"]`,
   `servesUiResources: false`, `lifecycleHooks: ["start", "stop"]`, `pluginProtocol: {
-  requires: ["ave/host/storage/read", "ave/host/storage/write"] }` — the full method
+  requires: ["ai.agent-connector.ave/host/storage/read", "ai.agent-connector.ave/host/storage/write"] }` — the full method
   names the host advertises, `hostApiMethodOf` at `host-api-wire.ts:221-222`,
   `hostProtocolCapabilities` at `host-api-dispatcher.ts:210-216`, checked by exact
   membership in `requireServedCapabilities`, `out-of-process-plugin.ts:1118-1121`; start
   writes then reads one storage key through those two methods and emits one
-  `notifications/ave/log`; stop answers with a last log notification whose
+  `notifications/ai.agent-connector.ave/log`; stop answers with a last log notification whose
   `params.meta.ruMaxrss` carries `resource.getrusage(RUSAGE_SELF).ru_maxrss`, and the loop
-  exits when stdin ends), settles `ave/host/*` replies against its own pending table, and
+  exits when stdin ends), settles `ai.agent-connector.ave/host/*` replies against its own pending table, and
   for every other request — `server/discover`, `tools/list`, `tools/call`,
   `resources/read` — **first checks the MCP per-request metadata itself**: a request whose
   `params._meta` lacks `io.modelcontextprotocol/protocolVersion` or
@@ -2315,7 +2315,7 @@ marketplace DTO tests (`src/shared/git-marketplace.ts`) unchanged because no DTO
   plainly by the test and attached to `openValidationSession` (S1; **not** the
   production factory, which would demand a live sandbox and pinned provenance and is
   right to). Frames are compared after the same canonicalisation plus **one named
-  rule**: in a child `notifications/ave/log` frame, `params.meta.ruMaxrss` is replaced
+  rule**: in a child `notifications/ai.agent-connector.ave/log` frame, `params.meta.ruMaxrss` is replaced
   by `"<measured>"` after its raw value has been copied into the measurement record —
   RSS varies by run and platform, and a golden that held it would fail on unchanged wire
   behaviour. The rule is keyed to that one path, so any other number still compares
@@ -2528,7 +2528,7 @@ Gates on the published release, not inputs to creating the tag:
   will exercise from the marketplace side (a tree-rung process entry, a Windows install,
   a hand-placed directory).
 - The validate CLI (P2), which is the harness the adversarial fixture is written against
-  first — its four escapes are `ave/host/*` and filesystem attempts the validation host
+  first — its four escapes are `ai.agent-connector.ave/host/*` and filesystem attempts the validation host
   records — before it runs under the real wrap.
 - The `git` prerequisites of decision 22 are unchanged by this step and stay Admission's.
 
@@ -2785,7 +2785,7 @@ old arm). One fixture attempts all four, on two harnesses with different claims:
 | 1. `~/.ave/secrets/` | (a) `fs.readdir`/`readFile` of `<AVE_HOME>/secrets` and of another plugin's data directory; (b) `getSecret("plugin.<other>.key")`, with `getSecret("plugin.<self>.key")` as the positive control; (c) a declared `sandbox.write` `userChosenDirectory` grant on `configKey: "escapeDir"` whose config value the test sets to `<AVE_HOME>/secrets` | (a) fails with the substrate's filesystem error (`EPERM`/`EACCES` on macOS, `ENOENT` under bubblewrap, asserted per platform) and returns no bytes; on Windows the secrets sentinel is refused against the host, but another plugin's data is not a gated claim (decision 64) — the control reads the same sentinel file from the test process; (b) **there is no wire error for a denial**: the production `getSecret` audits `hostSecret_denied reason=<tier reason> key=<prefix>`, increments the counter and returns `null` (`src/boot/steps/plugin-runtime/host-api-factory.ts:984-987`), and the dispatcher passes that result through unchanged (`src/plugins/isolation/host-api-dispatcher.ts:746-749`) — so the assertions are: the call resolves to `null`, the sentinel's bytes appear nowhere in the child's result or stdout, the denial audit line is recorded under the identity bound at spawn (the fixture's id, not `<other>`), and the own-namespace control returns the stored value (tier 1 of `runSecretGate`, `src/plugins/secret-access/secret-gate.ts:191-194`); the real-wrap run uses the production secret gate and network guard, never the validation host's doubles; (c) the spawn is refused with `PluginSandboxGrantError` naming `escapeDir` (`out-of-process-plugin.ts:437-447`) and no child exists | (a) reported by the fixture's tool result, `outcome: "unconfined"`, never asserted (decision 30); (b) the validation host answers `"the-stored-secret"` for any key (`validation-host.ts:192`), so nothing is asserted beyond the transcript recording the foreign key — the probe is live; (c) `sandbox.grants` row `not exercised` (P2) |
 | 2. Direct egress | `net.connect` and global `fetch` to a loopback listener the test owns, and `hostFetch` to a host outside the manifest's `allowedDomains` | the listener records no connection (macOS network deny, bubblewrap `--unshare-net`, srt-win network confinement) and the fixture reports the connect error; `hostFetch` is refused by the allow-list before any socket, by the guard's existing code — the control connects from the test process | the raw probes are reported, not asserted; the `hostFetch` call is recorded with its URL |
 | 3. Electron | `createRequire(import.meta.url)("electron")`, `import("electron")`, `process.versions.electron`, and a planted `vendored-electron/index.js` loaded through its explicit path — never a package under the fixture's `node_modules`, where the bare specifier would resolve it and contradict the `MODULE_NOT_FOUND` claim (`confined-plugin-child.test.ts:418` keeps the same separation) — each form separately (blueprint `:949`), followed by actual uses: `new BrowserWindow()`, `session.defaultSession`, `ipcMain.handle` | the child is `process.execPath` — the Electron binary — under `ELECTRON_RUN_AS_NODE=1` (`out-of-process-plugin.ts:678-690`), staged under a temporary plugin root outside the checkout (as `confined-plugin-child.test.ts:304-308` stages its fixtures, so no `node_modules/electron` is reachable by walking up), so the claim is **no usable main-process API**, never an absent version or a failed import: `process.versions.electron` is a string (the trap a version check falls into), `require("electron")` is `MODULE_NOT_FOUND`, the planted entry exports a path string with `BrowserWindow` `undefined`, `import("electron")` resolves to an inert namespace whose `BrowserWindow`, `session`, `ipcMain` and `app` are `undefined`, and each use throws — the shapes `confined-plugin-child.test.ts:1487-1515` already measures, reused. **The positive control is a separate full Electron main process**, never the test process: the test process itself runs under `ELECTRON_RUN_AS_NODE=1` (`scripts/run-vitest-under-electron.mjs:154`, as `scripts/assert-electron-node-vitest.mjs:10` requires), where `require("electron")` is the package's path string and `BrowserWindow` is `undefined` — exactly the child's view. The control spawns the same binary with `ELECTRON_RUN_AS_NODE` **removed** from its environment running `control-electron-main.cjs`, which prints `typeof BrowserWindow`, `typeof session.defaultSession` and `typeof ipcMain` after `app.whenReady()` and exits: `"function"`, `"object"`, `"object"` (measured on macOS, 2026-10-08, Electron 44.3.0; the same script under `ELECTRON_RUN_AS_NODE=1` fails at `require("electron")` with `MODULE_NOT_FOUND` — a result for the development executable only; the packaged gate has its own control, A2 Gates). Per platform in CI: macOS and Windows start the helper directly; Linux runs it under `xvfb-run -a`, with `xvfb` added to the apt line of `linux-confinement-tests` (`ci.yml:447`), because Electron needs a display driver and Xvfb is its documented answer for a headless CI host (Electron, "Testing on Headless CI Systems", checked 2026-10-08). A helper that does not start is a failed control and fails the file under `AVE_REQUIRE_SANDBOX_CASES=1`; off CI, on a host with no display and no `xvfb-run`, the file reports the control `not-run` and this row `not exercised` rather than passing it, and no stub stands in for the helper | the validator inherits its executable (`validate-plugin.ts:696-706`) and the fixture's location: under the app's runner from a temporary copy the four results are the wrap's; run from a checkout, the bare `require("electron")` resolves the app's own `node_modules/electron` (the path string); under plain Node `import("electron")` rejects with `ERR_MODULE_NOT_FOUND` — so the CLI row asserts "no usable API in any form" by shape, with the resolution outcome recorded per executable and location rather than asserted |
-| 4. A host internal | patch `globalThis.fetch` and `process.stdout.write`, then write to fd 1 directly (bypassing the diverted `process.stdout`, `plugin-child-main.ts:72-84`): one non-JSON line, and one JSON-RPC `ave/host/getSecret` frame for a foreign key carrying extra `pluginId` and `_meta` identity fields | the non-JSON line is dropped by the production decoder and the session continues (decision 40; the next `tools/call` succeeds); the forged frame is dispatched under the identity bound at spawn (§2.4, §7.2 "host-derived identity"), its unknown optional field is ignored and logged (§3.3), and the call answers `null` with the denial audited under the fixture's own id exactly as (1b); the host's own `fetch` and the bound dispatch table are the same objects before and after (identity equality) — the control imports the fixture's `patch()` helper into the test process and observes `globalThis.fetch` replaced | the CLI's stdout tee fails the run on the non-JSON line (decision 40), which is the assertion; the forged frame reaches the validation session as the plugin's own request |
+| 4. A host internal | patch `globalThis.fetch` and `process.stdout.write`, then write to fd 1 directly (bypassing the diverted `process.stdout`, `plugin-child-main.ts:72-84`): one non-JSON line, and one JSON-RPC `ai.agent-connector.ave/host/getSecret` frame for a foreign key carrying extra `pluginId` and `_meta` identity fields | the non-JSON line is dropped by the production decoder and the session continues (decision 40; the next `tools/call` succeeds); the forged frame is dispatched under the identity bound at spawn (§2.4, §7.2 "host-derived identity"), its unknown optional field is ignored and logged (§3.3), and the call answers `null` with the denial audited under the fixture's own id exactly as (1b); the host's own `fetch` and the bound dispatch table are the same objects before and after (identity equality) — the control imports the fixture's `patch()` helper into the test process and observes `globalThis.fetch` replaced | the CLI's stdout tee fails the run on the non-JSON line (decision 40), which is the assertion; the forged frame reaches the validation session as the plugin's own request |
 
 The fixture's tools throw only when an escape **succeeds where the harness claims it
 cannot** — under the wrap — and otherwise return `{ attempt, outcome }`; the

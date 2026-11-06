@@ -75,7 +75,7 @@ async function opened(io = pipes()): Promise<{ io: Pipes; control: WorkerStdioCo
     helloMs: 5_000,
     onEnd: (reason, detail) => io.ends.push({ reason, detail }),
   });
-  await io.nextSent((frame) => frame.method === "$/ave/hello");
+  await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/hello");
   io.reply(HELLO_ANSWER);
   return { io, control: await opening };
 }
@@ -98,7 +98,7 @@ async function openedStalled(): Promise<{ io: Pipes; stdin: Writable; control: W
     helloMs: 5_000,
     onEnd: (reason, detail) => io.ends.push({ reason, detail }),
   });
-  await io.nextSent((frame) => frame.method === "$/ave/hello");
+  await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/hello");
   reading = false;
   io.reply(HELLO_ANSWER);
   return { io, stdin, control: await opening };
@@ -117,7 +117,7 @@ describe("worker stdio control v1 — hello", () => {
     expect(io.sent[0]).toEqual({
       jsonrpc: "2.0",
       id: 0,
-      method: "$/ave/hello",
+      method: "$/ai.agent-connector.ave/hello",
       params: { protocol: "ave-worker-stdio-control", versions: ["1"], frameBytesMax: WORKER_CONTROL_FRAME_BYTES_MAX },
     });
     expect(io.ends).toEqual([]);
@@ -152,7 +152,7 @@ describe("worker stdio control v1 — hello", () => {
     vi.useFakeTimers();
     const io = pipes();
     const opening = openWorkerStdioControl({ stdin: io.stdin, stdout: io.stdout, helloMs: 250, onEnd: (reason, detail) => io.ends.push({ reason, detail }) });
-    const settled = expect(opening).rejects.toThrow(/no answer to \$\/ave\/hello within 250ms/);
+    const settled = expect(opening).rejects.toThrow(/no answer to \$\/ai\.agent-connector\.ave\/hello within 250ms/);
     await vi.advanceTimersByTimeAsync(251);
     await settled;
     expect(io.ends[0]?.reason).toBe("control-violation");
@@ -182,14 +182,14 @@ describe("worker stdio control v1 — host to worker", () => {
     expect(await io.nextSent((frame) => frame.method === "reindex")).toEqual({ jsonrpc: "2.0", method: "reindex", params: { scope: "all" } });
   });
 
-  it("cancels on abort, sends $/ave/cancel, and ignores the late answer without a violation", async () => {
+  it("cancels on abort, sends $/ai.agent-connector.ave/cancel, and ignores the late answer without a violation", async () => {
     const { io, control } = await opened();
     const abort = new AbortController();
     const pending = control.request("search", { q: "x" }, { signal: abort.signal });
     const request = await io.nextSent((frame) => frame.method === "search");
     abort.abort();
     await expect(pending).rejects.toMatchObject({ code: "worker-request-cancelled" });
-    expect(await io.nextSent((frame) => frame.method === "$/ave/cancel")).toEqual({ jsonrpc: "2.0", method: "$/ave/cancel", params: { id: request.id } });
+    expect(await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/cancel")).toEqual({ jsonrpc: "2.0", method: "$/ai.agent-connector.ave/cancel", params: { id: request.id } });
     io.reply({ id: request.id, result: "too late" });
     await settle();
     expect(io.ends).toEqual([]);
@@ -233,7 +233,7 @@ describe("worker stdio control v1 — host to worker", () => {
 
   it.each([
     ["a method outside the name grammar", "has.dot"],
-    ["a reserved host method", "$/ave/hello"],
+    ["a reserved host method", "$/ai.agent-connector.ave/hello"],
   ])("refuses %s", async (_name, method) => {
     const { control } = await opened();
     expect(() => control.request(method)).toThrow(TypeError);
@@ -262,7 +262,7 @@ describe("worker stdio control v1 — worker to host", () => {
     expect(() => control.onRequest(async () => null)).toThrow(/already registered/);
   });
 
-  it("aborts the handler's signal on $/ave/cancel and answers request-cancelled", async () => {
+  it("aborts the handler's signal on $/ai.agent-connector.ave/cancel and answers request-cancelled", async () => {
     const { io, control } = await opened();
     let seen: AbortSignal | undefined;
     control.onRequest((_method, _params, signal) => new Promise((_resolve, reject) => {
@@ -271,7 +271,7 @@ describe("worker stdio control v1 — worker to host", () => {
     }));
     io.reply({ id: 7, method: "slow" });
     await settle();
-    io.reply({ method: "$/ave/cancel", params: { id: 7 } });
+    io.reply({ method: "$/ai.agent-connector.ave/cancel", params: { id: 7 } });
     expect(await io.nextSent((frame) => frame.id === 7)).toMatchObject({ id: 7, error: { code: -32800 } });
     expect(seen?.aborted).toBe(true);
     expect(io.ends).toEqual([]);
@@ -364,14 +364,14 @@ describe("worker stdio control v1 — worker to host", () => {
 });
 
 describe("worker stdio control v1 — teardown", () => {
-  it("close sends $/ave/shutdown, ends stdin and settles every pending call without replay", async () => {
+  it("close sends $/ai.agent-connector.ave/shutdown, ends stdin and settles every pending call without replay", async () => {
     const { io, control } = await opened();
     const ended = new Promise<void>((resolve) => io.stdin.once("end", () => resolve()));
     const pending = control.request("work");
     await io.nextSent((frame) => frame.method === "work");
     control.close();
     await expect(pending).rejects.toMatchObject({ code: "worker-incarnation-ended" });
-    expect(await io.nextSent((frame) => frame.method === "$/ave/shutdown")).toEqual({ jsonrpc: "2.0", method: "$/ave/shutdown" });
+    expect(await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/shutdown")).toEqual({ jsonrpc: "2.0", method: "$/ai.agent-connector.ave/shutdown" });
     await ended;
     await expect(control.notify("work")).rejects.toMatchObject({ code: "worker-incarnation-ended" });
     expect(io.ends).toEqual([]);
@@ -384,7 +384,7 @@ describe("worker stdio control v1 — teardown", () => {
     const second = control.request("work", { blob }).catch((error: unknown) => error);
     await settle();
     const queued = stdin.writableLength;
-    expect(queued + `${JSON.stringify({ jsonrpc: "2.0", method: "$/ave/shutdown" })}\n`.length).toBeGreaterThan(QUEUE_BYTES_MAX);
+    expect(queued + `${JSON.stringify({ jsonrpc: "2.0", method: "$/ai.agent-connector.ave/shutdown" })}\n`.length).toBeGreaterThan(QUEUE_BYTES_MAX);
     control.close();
     expect(stdin.writableLength).toBe(queued);
     expect(stdin.writableEnded).toBe(true);
@@ -442,11 +442,11 @@ describe("worker stdio control v1 — published schema", () => {
     await io.nextSent((frame) => frame.id === "w");
     abort.abort();
     await cancelled;
-    await io.nextSent((frame) => frame.method === "$/ave/cancel");
+    await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/cancel");
     control.close();
-    await io.nextSent((frame) => frame.method === "$/ave/shutdown");
+    await io.nextSent((frame) => frame.method === "$/ai.agent-connector.ave/shutdown");
     expect(new Set(io.sent.map((frame) => String(frame.method ?? "response")))).toEqual(
-      new Set(["$/ave/hello", "work", "ping", "response", "$/ave/cancel", "$/ave/shutdown"]),
+      new Set(["$/ai.agent-connector.ave/hello", "work", "ping", "response", "$/ai.agent-connector.ave/cancel", "$/ai.agent-connector.ave/shutdown"]),
     );
     for (const frame of io.sent) expect(validate(frame), JSON.stringify(frame)).toBe(true);
   });
@@ -457,14 +457,14 @@ describe("worker stdio control v1 — published schema", () => {
     ["a worker notification", { jsonrpc: "2.0", method: "progress", params: { done: 1 } }],
     ["a result", { jsonrpc: "2.0", id: 3, result: null }],
     ["an error", { jsonrpc: "2.0", id: 3, error: { code: -32000, message: "no", data: { retry: true } } }],
-    ["a worker cancel", { jsonrpc: "2.0", method: "$/ave/cancel", params: { id: 3 } }],
+    ["a worker cancel", { jsonrpc: "2.0", method: "$/ai.agent-connector.ave/cancel", params: { id: 3 } }],
   ])("accepts %s", (_name, frame) => {
     expect(validate(frame)).toBe(true);
   });
 
   it.each([
     ["a dotted method", { jsonrpc: "2.0", id: 1, method: "has.dot" }],
-    ["a host-reserved method from a worker", { jsonrpc: "2.0", id: 1, method: "$/ave/other" }],
+    ["a host-reserved method from a worker", { jsonrpc: "2.0", id: 1, method: "$/ai.agent-connector.ave/other" }],
     ["a response with both result and error", { jsonrpc: "2.0", id: 1, result: 1, error: { code: 1, message: "x" } }],
     ["an unknown field", { jsonrpc: "2.0", method: "progress", extra: true }],
     ["a negative id", { jsonrpc: "2.0", id: -1, method: "work" }],

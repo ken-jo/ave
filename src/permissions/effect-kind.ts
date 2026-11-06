@@ -8,7 +8,6 @@ export type ChokepointKind =
   | "config.get"
   | "config.set"
   | "getSecret"
-  | "emitEvent"
   | "callTool"
   | "callTool-child"
   | "hostFetch"
@@ -42,7 +41,6 @@ export type ChokepointKind =
   | "openAuthPartitionViewer" // silent-SSO load refreshes/persists partition cookies
   // READS — pure reads / self-subscriptions / host telemetry (non-mutating):
   | "config.onChange" // self-subscription to observe a config key (auto-cleaned)
-  | "onEvent" // self-subscription to a host event (auto-cleaned)
   | "hasRoutineBySource" // prefix-scoped boolean probe of the routines SOT
   | "raiseAlert" // puts a host-rendered alert card or notification in front of the user
   | "probePrivateHost" // DNS presence probe (UX hint; no persistence, no egress body)
@@ -62,7 +60,6 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   "config.set": "write",
   getSecret: "read",
   // An emitted event updates only the caller's own UI and persists nothing.
-  emitEvent: "read",
   // Re-entering the executor opens a FRESH inner ledger; the inner tool's own mutations are counted there. The outer ledger records only a nested READ marker to avoid double-counting the same mutation.
   callTool: "read",
   // Propagation marker: an inner callTool whose inner ledger was MUTATING.
@@ -95,7 +92,6 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   openAuthPartitionViewer: "write",
   // Structural-completeness vocabulary — reads (pure reads / self-subscriptions / host telemetry). A subscription registers the plugin to observe and is auto-disposed on plugin disable, so it does not flip a tool to mutating.
   "config.onChange": "read",
-  onEvent: "read",
   hasRoutineBySource: "read",
   probePrivateHost: "read",
   resolveApiKey: "read",
@@ -230,8 +226,6 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   },
   resolveApiKey: { kind: "resolveApiKey", targetFromArgs: objectStringField("purpose"),
   },
-  emitEvent: { kind: "emitEvent", targetFromArgs: firstStringArg },
-  onEvent: { kind: "onEvent", targetFromArgs: firstStringArg },
   // top-level writes (egress / persist / session) callLlm carries the prompt BODY to an external provider; target stays undefined (the provider is not in args and the prompt is never a target).
   callLlm: { kind: "callLlm", async: true },
   // hostFetch is the ONLY verb-derived chokepoint: its read/write class comes from the HTTP method, a plugin-controlled arg VALUE. `selfRecorded` keeps the generic recorder from re-reading that value (which would diverge from the wire); the hostFetch host closure snapshots the verb ONCE and records the effect + target + pins the wire from that single read (plugin-runtime.ts). It is async but `selfRecorded`, so enforcement gates it INLINE in that same closure (an enforcement exclusion for the generic wrapper).

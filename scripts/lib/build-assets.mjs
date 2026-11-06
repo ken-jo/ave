@@ -8,27 +8,9 @@ export const BUILD_ASSETS = Object.freeze([
     category: "app-shell",
   },
   {
-    src: "src/plugin-ui-shell.html",
-    out: "dist/src/plugin-ui-shell.html",
-    label: "plugin-ui-shell.html",
-    category: "plugin-shell",
-  },
-  {
-    src: "src/plugin-ui-shell.js",
-    out: "dist/src/plugin-ui-shell.js",
-    label: "plugin-ui-shell.js",
-    category: "plugin-shell",
-  },
-  {
     src: "src/floating-dock-window.html",
     out: "dist/src/floating-dock-window.html",
     label: "floating-dock-window.html",
-    category: "floating-dock",
-  },
-  {
-    src: "src/floating-dock-window.js",
-    out: "dist/src/floating-dock-window.js",
-    label: "floating-dock-window.js",
     category: "floating-dock",
   },
   {

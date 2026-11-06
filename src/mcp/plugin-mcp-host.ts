@@ -28,10 +28,17 @@ import {
   RAW_RESULT_META,
 } from "./protocol-constants.js";
 
+import { HOST_PROTOCOL_VERSION } from "../plugins/isolation/host-api-wire.js";
 import { getAveAppVersion } from "../shared/app-version.js";
 
 const CLIENT_INFO = { name: "ave", version: getAveAppVersion() } as const;
-const CLIENT_CAPABILITIES = { elicitation: { form: {}, url: {} }, extensions: {} } as const;
+const CLIENT_CAPABILITIES = {
+  elicitation: { form: {}, url: {} },
+  extensions: {
+    "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+    "ai.agent-connector.ave/host": { version: HOST_PROTOCOL_VERSION },
+  },
+} as const;
 
 interface RcToolCallResult {
   resultType?: string;
@@ -81,7 +88,7 @@ export class PluginMcpHost {
       new LoopbackTransport(server),
       Object.fromEntries(
         manifest.tools.flatMap((tool) => {
-          const policy = tool._meta?.["ave/operationPolicy"];
+          const policy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
           return policy ? [[tool.name, policy] as const] : [];
         }),
       ),
@@ -120,7 +127,7 @@ export class PluginMcpHost {
       const tools: Tool[] = [];
       for (const tool of list.tools ?? []) {
         const signedPolicy = this.signedOperationPolicies[tool.name];
-        const wirePolicy = tool._meta?.["ave/operationPolicy"];
+        const wirePolicy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
         if (
           canonicalStringify(wirePolicy ?? null) !==
           canonicalStringify(signedPolicy ?? null)
@@ -203,6 +210,10 @@ export class PluginMcpHost {
       : undefined;
     // Box raw results to preserve present-but-undefined values; read only the owned metadata key.
     const meta = result._meta;
+    const removedKey = Object.keys(meta ?? {}).find((key) => key.startsWith("ave/"));
+    if (removedKey !== undefined) {
+      throw new Error(`plugin '${this.pluginId}' returned removed metadata key '${removedKey}'`);
+    }
     let rawResult: { value: unknown } | undefined;
     if (meta && Object.prototype.hasOwnProperty.call(meta, RAW_RESULT_META)) {
       rawResult = { value: meta[RAW_RESULT_META] };

@@ -6,13 +6,6 @@
     "sandbox": false,
     "runsIn": "main, link and auth windows (their shells need Node built-ins in the preload)"
   },
-  "pluginPreload": {
-    "entry": "src/plugin-preload.ts",
-    "file": "plugin-preload.cjs",
-    "build": "webpack",
-    "sandbox": true,
-    "runsIn": "plugin <webview> guests (session frame preload; the attach guard enforces the sandbox)"
-  },
   "mcpAppPreload": {
     "entry": "src/mcp-app-preload.ts",
     "file": "mcp-app-preload.cjs",

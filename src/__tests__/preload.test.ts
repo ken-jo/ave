@@ -1,3 +1,6 @@
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
+import { LINK_WINDOW_SHELL_ARGUMENT } from "../shared/preload-bundles.js";
+import { runInNewContext } from "node:vm";
 /** Preload asset URLs must not depend on a splash-phase data: location. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
@@ -7,6 +10,7 @@ import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
+const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE }));
 const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
@@ -24,6 +28,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
+    sendSync: mockSendSync,
     invoke: mockInvoke,
     send: mockSend,
     on: mockOn,
@@ -64,6 +69,7 @@ describe("preload — plugin webview asset URLs", () => {
   beforeEach(() => {
     exposed.clear();
     mockInvoke.mockReset();
+    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE });
     mockSend.mockReset();
     mockOn.mockReset();
     mockRemoveListener.mockReset();
@@ -76,15 +82,63 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
+  it("reads fresh main-owned appearance synchronously on every preload start", async () => {
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    expect(readInitialAppearance()).toEqual(DEFAULT_APPEARANCE);
+    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" } });
+    expect(readInitialAppearance().darkScheme).toBe("nord");
+    expect(mockSendSync).toHaveBeenLastCalledWith(CHANNELS.settings.initialAppearance);
+  });
+
+  it("fails clearly when main refuses an appearance read", async () => {
+    mockSendSync.mockReturnValue({ ok: false, error: "unauthorized-frame" } as never);
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    expect(() => readInitialAppearance()).toThrow("Initial appearance unavailable");
+  });
+
+  it("starts the link shell preload without appearance and keeps its window controls", async () => {
+    const originalArgv = process.argv;
+    process.argv = [...originalArgv, LINK_WINDOW_SHELL_ARGUMENT];
+    mockSendSync.mockImplementation(() => { throw new Error("Link shells must not request appearance"); });
+    try {
+      await loadAveApi();
+      expect(mockSendSync).not.toHaveBeenCalled();
+      expect(exposed.get("__aveInitialAppearance")).toBeNull();
+      expect(exposed.get("avePlatform")).toBeDefined();
+      const windowApi = exposed.get("aveWindow") as { close: () => Promise<void> };
+      const { buildTitlebarButtonScript } = await import("../main/window-titlebar-shell.js");
+      for (const platform of ["win32", "linux"] as const) {
+        const clicks = new Map<string, () => unknown>();
+        const document = { getElementById: (id: string) => ({
+          addEventListener: (event: string, handler: () => unknown) => { if (event === "click") clicks.set(id, handler); },
+        }) };
+        runInNewContext(buildTitlebarButtonScript({ platform, title: "Link shell" }), { document, window: { aveWindow: windowApi } });
+        expect(clicks.has("close")).toBe(true);
+        await clicks.get("close")!();
+      }
+      expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.window.close);
+      expect(mockInvoke).toHaveBeenCalledTimes(2);
+    } finally { process.argv = originalArgv; }
+  });
+
+  it("still requires appearance before exposing the app renderer bridges", async () => {
+    mockSendSync.mockReturnValue({ ok: false, error: "unauthorized-frame" } as never);
+    await expect(loadAveApi()).rejects.toThrow("Initial appearance unavailable");
+    expect(exposed.size).toBe(0);
+    expect(mockSendSync).toHaveBeenCalledWith(CHANNELS.settings.initialAppearance);
+  });
+
   it("limits the window surface to isolated previews and publishes the approved worlds", async () => {
     const api = await loadAveApi();
+    expect(mockSendSync).toHaveBeenCalledExactlyOnceWith(CHANNELS.settings.initialAppearance);
+    expect(exposed.get("__aveInitialAppearance")).toEqual(DEFAULT_APPEARANCE);
     const windowApi = api.window as Record<string, unknown>;
     expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
     expect(Object.keys(CHANNELS.window)).toEqual([
       "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
     ]);
     expect([...exposed.keys()].sort()).toEqual([
-      "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
+      "__aveDevMode", "__aveInitialAppearance", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
     ]);
     expect(windowApi.openHtmlPreview).toBeTypeOf("function");
   });
@@ -190,14 +244,6 @@ describe("preload — plugin webview asset URLs", () => {
     }
   });
 
-  it("exposes pluginPreloadUrl as a file:// string under dist/src/", async () => {
-    const api = await loadAveApi();
-    const url = api["pluginPreloadUrl"];
-
-    expect(typeof url).toBe("string");
-    expect(url as string).toMatch(/^file:\/\//);
-    expect(url as string).toMatch(/\/(dist\/)?src\/plugin-preload\.cjs$/i);
-  });
 
   it("bridges the private Studio domain through its declared channels", async () => {
     mockInvoke.mockResolvedValue({ ok: true, value: [] });
@@ -422,14 +468,6 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.getTurnReview, "expected-session", chatGroupId);
   });
 
-  it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
-    const api = await loadAveApi();
-    const url = api["pluginShellUrl"];
-
-    expect(typeof url).toBe("string");
-    expect(url as string).toMatch(/^file:\/\//);
-    expect(url as string).toMatch(/\/plugin-ui-shell\.html$/i);
-  });
 
   it("bridges render_html previews through the exact window IPC channel", async () => {
     mockInvoke.mockResolvedValueOnce({ ok: true, windowId: 9 });
@@ -447,14 +485,6 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith("ave:window:open-html-preview", payload);
   });
 
-  it("plugin asset URLs are static strings, not functions", async () => {
-    const api = await loadAveApi();
-
-    expect(typeof api["pluginPreloadUrl"]).toBe("string");
-    expect(typeof api["pluginShellUrl"]).toBe("string");
-    expect(typeof api["pluginPreloadUrl"]).not.toBe("function");
-    expect(typeof api["pluginShellUrl"]).not.toBe("function");
-  });
 
   it("exposes chat user-intent capture through preload", async () => {
     const api = await loadAveApi();
@@ -674,6 +704,20 @@ describe("preload — plugin webview asset URLs", () => {
       input: "second",
       userActivation: false,
     }), "main");
+  });
+
+  it("consumes an explicit app interrupt gesture without changing its provenance", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatSend = api["chatSend"] as (input: string, attachments: undefined, origin: string, intent?: unknown, persona?: undefined, options?: { interrupt: boolean }) => Promise<unknown>;
+    mockUserActivation.isActive = true;
+    const token = capture();
+    await chatSend("app text", undefined, "app-emitted", token, undefined, { interrupt: true });
+    expect(mockInvoke.mock.calls.at(-1)![1]).toMatchObject({ inputOrigin: "app-emitted", interrupt: true, userActivation: true });
+    await chatSend("replayed", undefined, "app-emitted", token, undefined, { interrupt: true });
+    expect(mockInvoke.mock.calls.at(-1)![1]).toMatchObject({ inputOrigin: "app-emitted", userActivation: false });
+    await chatSend("ordinary app send", undefined, "app-emitted", capture());
+    expect(mockInvoke.mock.calls.at(-1)![1]).not.toHaveProperty("userActivation");
   });
 
   it("never lets lingering activation rescue a missing, replayed, forged or expired chat send intent", async () => {

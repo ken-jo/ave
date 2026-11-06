@@ -285,7 +285,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     const ctx = makeContext({
       manifestTools: [{
         name: "auth_login",
-        _meta: { "ave/operationPolicy": { discriminant: "operation" } },
+        _meta: { "ai.agent-connector.ave/operationPolicy": { discriminant: "operation" } },
       }],
     });
     const invoke = await setupInvoker(ctx);
@@ -317,7 +317,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     const ctx = makeContext({
       manifestTools: [{
         name: "auth_login",
-        _meta: { "ave/operationPolicy": { discriminant: "operation" } },
+        _meta: { "ai.agent-connector.ave/operationPolicy": { discriminant: "operation" } },
       }],
     });
     mocks.beginPluginAuthInvocation.mockReturnValue({

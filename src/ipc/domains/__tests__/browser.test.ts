@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
-import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
+import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
@@ -53,7 +53,7 @@ afterEach(() => {
 describe("browser IPC", () => {
   it("refuses a non-host frame on every invoke", () => {
     for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState]) {
-      expect(invoke(channel, pluginShellFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
+      expect(invoke(channel, isolatedAppFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
   });
 
@@ -88,7 +88,7 @@ describe("browser IPC", () => {
   });
 
   it("takes a renderer's refusal only from the host frame, for a request id it names", () => {
-    expect(invoke(CHANNELS.browser.refuseTabOp, pluginShellFrameEvent(), { requestId: "browser-op-1" })).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.refuseTabOp, isolatedAppFrameEvent(), { requestId: "browser-op-1" })).toEqual({ ok: false });
     expect(invoke(CHANNELS.browser.refuseTabOp, fromWindow(), { requestId: "" })).toEqual({ ok: false });
     expect(invoke(CHANNELS.browser.refuseTabOp, fromWindow(), {})).toEqual({ ok: false });
     expect(invoke(CHANNELS.browser.refuseTabOp, hostFrameEvent(), { requestId: "browser-op-1" })).toEqual({ ok: false });

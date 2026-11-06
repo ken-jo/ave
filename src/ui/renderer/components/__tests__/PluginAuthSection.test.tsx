@@ -18,7 +18,6 @@ function pluginAuthSectionApi(overrides?: Partial<AveApi>): AveApi {
   const callPluginMethod = vi.fn(async () => ({ authenticated: true }));
   Object.assign(api, {
     callPluginMethod,
-    onPluginEvent: vi.fn(() => () => undefined),
     ...overrides,
   });
   return api as unknown as AveApi;
@@ -157,7 +156,6 @@ describe("PluginAuthSection", () => {
       callPluginMethod: vi.fn(async () => {
         throw new Error("Method 'samplemail_auth' is not declared as a UI action for plugin 'samplemail'");
       }),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     // Silence the console.error the component emits for triage logging.
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);

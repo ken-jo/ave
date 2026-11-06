@@ -1,0 +1,19 @@
+{
+  "request": {
+    "id": 2,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/storage/readText",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "encoding": "utf-8",
+      "relPath": "notes/today.txt"
+    }
+  },
+  "response": {
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": "the stored text"
+  }
+}

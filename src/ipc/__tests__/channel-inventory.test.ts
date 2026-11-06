@@ -159,12 +159,10 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "skillStore",
   "agentProfileStore",
   "personaPromptStore",
-  "refreshPluginEventBridge",
   "pluginPaths",
   "clearAuthPartitionService",
   "listPluginAuthPartitionsService",
   "forgetPluginAuthPartitionsService",
-  "registerPluginEventBridge",
   "telemetry",
   "pluginTelemetry",
   "autoUpdaterStop",
@@ -202,6 +200,13 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     expect(channels.filter((channel) => channel === CHANNELS.sidechat.getSubAgentTranscript))
       .toEqual([CHANNELS.sidechat.getSubAgentTranscript]);
   });
+  it("keeps the synchronous appearance read private to startup preloads", () => {
+    expect(CHANNELS.settings.initialAppearance).toBe("ave:settings:initial-appearance");
+    expect(PUBLIC_CHANNELS).not.toContain(CHANNELS.settings.initialAppearance);
+    expect(isPublicChannel(CHANNELS.settings.initialAppearance)).toBe(false);
+    expect(CHANNEL_GESTURE[CHANNELS.settings.initialAppearance]).toBeUndefined();
+  });
+
   it("keeps subscription status invalidation internal and outbound-only", () => {
     const event = CHANNELS.settings.subscriptionRuntimeStatusUpdated;
     expect(event).toBe("ave:settings:subscription:status-updated");
@@ -474,17 +479,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:plugin-studio:import",
         "ave:plugin-studio:installed:export",
         "ave:plugin-studio:parts:list",
-        "ave:plugin:call-tool",
-        "ave:plugin:config:get",
-        "ave:plugin:config:set",
-        "ave:plugin:emit-event",
-        "ave:plugin:ensure-partition",
-        "ave:plugin:get-entry-url",
-        "ave:plugin:get-theme",
-        "ave:plugin:register-webview",
-        "ave:plugin:request-operation-grant",
-        "ave:plugin:storage:get",
-        "ave:plugin:storage:set",
         "ave:plugins:call",
         "ave:plugins:cards",
         "ave:plugins:config:get",

@@ -4,6 +4,7 @@ import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
+import { appearanceApiSurface } from "./appearance-api-surface.js";
 import { consumeUserKeyboardIntent } from "./gesture-intent.js";
 import type { UserKeyboardIntentSnapshot } from "../shared/chat-origin.js";
 import type { SideChatOperationFailure } from "../shared/side-chat-operation.js";
@@ -17,7 +18,6 @@ import {
   OVERLAY_V1,
   PERMISSIONS,
   ROUTINES,
-  SETTINGS,
   WORK_BOARD,
   WORK_APPROVALS,
   type PluginInstallResultPayload,
@@ -39,7 +39,6 @@ import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildInstalledContentApiSurface } from "./installed-content-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
 import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
-import { classifySubscription } from "../plugins/capabilities.js";
 import type {
   PermissionReviewSuggestionPayload,
   UserApprovalHitPayload,
@@ -165,8 +164,7 @@ async function invokeRemoteA2AAction(
 export function buildInternalApiSurface() {
   return {
   relaunchApp: () => ipcRenderer.invoke(CHANNELS.app.relaunch, { intent: ipcUserKeyboardIntent() }) as Promise<AppRelaunchResult>,
-  getSettings: async () => ipcRenderer.invoke(CHANNELS.settings.get),
-  updateSettings: async (partial: unknown) => ipcRenderer.invoke(CHANNELS.settings.update, partial),
+  ...appearanceApiSurface,
   // Parsed here rather than in the renderer: an unrecognized path is drift in this build's own registry, not something to render.
   envForcedSettings: async () =>
     parseEnvForcedSettingsPaths(await ipcRenderer.invoke(CHANNELS.settings.envForcedSettings)) ?? [],
@@ -193,11 +191,6 @@ export function buildInternalApiSurface() {
   installedContent: buildInstalledContentApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
   documentEngine: buildDocumentEngineApiSurface(),
-  onSettingsUpdated: (handler: Parameters<AveApi["onSettingsUpdated"]>[0]) => {
-    const listener = (_event: unknown, settings: Parameters<typeof handler>[0]) => handler(settings);
-    ipcRenderer.on(SETTINGS.updated, listener);
-    return () => ipcRenderer.removeListener(SETTINGS.updated, listener);
-  },
   onSubscriptionRuntimeStatusUpdated: (
     handler: (event: SubscriptionRuntimeStatusUpdatedEvent) => void,
   ) => {
@@ -315,7 +308,7 @@ export function buildInternalApiSurface() {
       ipcRenderer.on(CHANNELS.sidechat.stream, listener);
       return () => ipcRenderer.removeListener(CHANNELS.sidechat.stream, listener);
     },
-    onFallback: (handler: (payload: { from: string; to: string }) => void) => {
+    onFallback: (handler: (payload: { from: string; to: string; streamId?: number }) => void) => {
       const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
       ipcRenderer.on(CHANNELS.sidechat.fallback, listener);
       return () => ipcRenderer.removeListener(CHANNELS.sidechat.fallback, listener);
@@ -411,12 +404,6 @@ export function buildInternalApiSurface() {
   applyClaudeDesktopMcpImport: async (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) =>
     ipcRenderer.invoke(CHANNELS.mcp.importClaudeDesktopApply, payload),
 
-  notifyPluginTheme: (payload: {
-    bundleId: string;
-    shell: "light" | "dark";
-    tokens: Record<string, string>;
-  }) =>
-    ipcRenderer.invoke(CHANNELS.host.pluginThemeNotify, payload),
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
@@ -479,13 +466,6 @@ export function buildInternalApiSurface() {
   listAgentProfiles: async () => ipcRenderer.invoke(CHANNELS.agents.list),
   listSkills: async () => ipcRenderer.invoke(CHANNELS.skills.list),
   listPluginUiExtensions: async () => ipcRenderer.invoke(CHANNELS.plugins.uiList),
-  // #237; host renderer pre-binds (webContents.id → pluginId, entryUrl) before each plugin webview navigates. Main rejects unknown pluginId and any non-host frame.
-  registerPluginWebview: async (payload: { webContentsId: number; pluginId: string; entryUrl: string }) =>
-    ipcRenderer.invoke(CHANNELS.pluginBridge.registerWebview, payload) as Promise<{ ok: boolean; error?: string }>,
-  // Awaited before the panel renders its <webview>; see the channel comment.
-  ensurePluginPartition: async (pluginId: string) =>
-    ipcRenderer.invoke(CHANNELS.pluginBridge.ensurePartition, { pluginId }) as Promise<{ ok: boolean; error?: string }>,
-
   // #1176; toggle a plugin active/inactive. Returns the IPC result frame ({ ok, pluginId, enabled } | { ok:false, error, message }).
   setPluginEnabled: async (pluginId: string, enabled: boolean) =>
     ipcRenderer.invoke(CHANNELS.plugins.setEnabled, pluginId, enabled),
@@ -647,23 +627,6 @@ export function buildInternalApiSurface() {
       arch: string;
       userDataPath: string;
     }>,
-
-  onPluginEvent: (
-    eventType: string,
-    handler: (data: unknown) => void,
-  ): (() => void) => {
-    // Reject private subscriptions at preload using classifySubscription, the shared event authority.
-    // Do not reconstruct namespace rules here; exact host event types and sensitive state must follow the same classifier.
-    if (classifySubscription(eventType) === "private") {
-      // Return a no-op unsubscribe; the subscription is silently rejected.
-      return () => undefined;
-    }
-    const listener = (_event: unknown, type: string, data: unknown) => {
-      if (type === eventType) handler(data);
-    };
-    ipcRenderer.on(CHANNELS.pluginBridge.event, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.pluginBridge.event, listener);
-  },
 
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,

@@ -6,6 +6,7 @@ import type { ElectronApplication } from 'playwright';
 import { test as base, expect } from './fixtures.js';
 import { captureCommandMenus, capturedCommandMenus, menuRowIds } from './command-menu.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
+import { admitFixturePlugins } from './admit-fixture-plugins.js';
 import {
   createFixtureRepo,
   removeFixtureRepo,
@@ -16,7 +17,7 @@ import {
 import { jsonText } from '../../../src/marketplace/__tests__/fixtures/package-files.js';
 import { deriveAgentPluginComponents } from '../../../src/marketplace/content/agent-plugin-components.js';
 import { agentPluginsDocument } from '../../../src/plugins/__tests__/test-helpers.js';
-import { moonstoneBundle } from '../../../src/ui/renderer/theme/bundles/moonstone.js';
+import { HOST_PROTOCOL_VERSION } from '../../../src/plugins/isolation/host-api-wire.js';
 import type {
   CatalogView,
   GitMarketplaceResult,
@@ -36,19 +37,10 @@ import { scrubDiagnosticSecrets } from '../../../src/shared/dlp.js';
  * The fixture server runs locally with an isolated governance policy; its shell-script transport excludes Windows. */
 
 const SOURCE_ID = 'harbor-tools';
-/** The first release that knows the served host protocol. */
 const MIN_APP_VERSION = '0.11.0';
-const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: '2' } };
+const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: HOST_PROTOCOL_VERSION } };
 const READ_GRANT = { kind: 'hostDirectory' as const, segments: ['certs'], why: 'Read certificate bundles' };
 const WRITE_GRANT = { kind: 'userChosenDirectory' as const, configKey: 'workspace', why: 'Store project data' };
-const SURFACES = {
-  'surface-sunken': '228 30% 97%',
-  surface: '0 0% 100%',
-  'surface-raised': '0 0% 100%',
-  'surface-overlay': '0 0% 100%',
-  'border-subtle': '228 24% 94%',
-  'border-strong': '228 18% 84%',
-};
 
 /** The packages the marketplace lists, one of each kind, as `[kind, name, path]`. */
 const PACKAGES: ReadonlyArray<readonly [PackageKind, string, string]> = [
@@ -57,7 +49,6 @@ const PACKAGES: ReadonlyArray<readonly [PackageKind, string, string]> = [
   ['mcp', 'harbor-notes', 'mcp/harbor-notes'],
   ['skill', 'harbor-review', 'skills/harbor-review'],
   ['agent', 'harbor-guide', 'agents/harbor-guide'],
-  ['theme', 'harbor', 'themes/harbor'],
   ['font', 'harbor-sans', 'fonts/harbor-sans'],
   ['language', 'harbor-french', 'languages/harbor-french'],
   ['provider', 'harbor-llm', 'providers/harbor-llm'],
@@ -120,12 +111,16 @@ function governancePolicy(aveHome: string): McpGovernancePolicy {
 }
 
 /** The shared fixtures, with the governance policy written before the app starts. */
-const test = base.extend({
+const test = base.extend<{ admitted: { app: ElectronApplication; mainWindow: Page } }>({
   userDataDir: async ({ userDataDir, aveHome }, use) => {
     // The fixture's AVE_HOME (see fixtures.ts).
     mkdirSync(join(aveHome, 'governance'), { recursive: true });
     writeFileSync(join(aveHome, 'governance', 'mcp-policy.json'), `${JSON.stringify(governancePolicy(aveHome), null, 2)}\n`);
     await use(userDataDir);
+  },
+  admitted: async ({ app, mainWindow, aveHome, userDataDir, tempHome, launchEnv, devFlag }, use) => {
+    const admitted = await admitFixturePlugins({ app, mainWindow, aveHome, userDataDir, tempHome }, launchEnv, devFlag);
+    try { await use(admitted); } finally { await admitted.app.close(); }
   },
 });
 
@@ -134,7 +129,7 @@ type Entry = { path: string; mode: string; content: string };
 /** A package's `ave-package.json`. */
 const descriptorText = (kind: PackageKind, name: string, version: string, payload: Record<string, unknown>) =>
   jsonText({ schemaVersion: 2, kind, name, version, minAppVersion: MIN_APP_VERSION,
-    ...(kind === 'plugin' ? { hostProtocol: '2' } : {}), payload });
+    ...(kind === 'plugin' ? { hostProtocol: HOST_PROTOCOL_VERSION } : {}), payload });
 
 /** The whole repository tree at `version`: every package publishes that version. */
 function marketplaceTree(version: string): Entry[] {
@@ -227,16 +222,6 @@ function marketplaceTree(version: string): Entry[] {
     file('agents/harbor-guide/ave-package.json', descriptorText('agent', 'harbor-guide', version, { entry: 'AGENTS.md' })),
     file('agents/harbor-guide/AGENTS.md', `---\nname: harbor-guide\ndescription: Guides harbor work (${version}).\n---\nAnswer briefly.\n`),
 
-    file('themes/harbor/ave-package.json', descriptorText('theme', 'harbor', version, { entry: 'theme.json' })),
-    file('themes/harbor/theme.json', jsonText({
-      name: 'Harbor',
-      description: `Harbor light (${version}).`,
-      shell: 'light',
-      highContrast: false,
-      tokens: moonstoneBundle.tokens,
-      surfaces: SURFACES,
-    })),
-
     file('fonts/harbor-sans/ave-package.json', descriptorText('font', 'harbor-sans', version, { entry: 'font.json' })),
     file('fonts/harbor-sans/font.json', jsonText({ family: 'Harbor Sans', license: 'LICENSE', faces: [{ file: 'files/HarborSans.woff2', weight: '100 900' }] })),
     file('fonts/harbor-sans/LICENSE', 'SIL Open Font License 1.1\n'),
@@ -321,7 +306,7 @@ test.describe('git marketplace lifecycle', () => {
     if (served) rmSync(served, { recursive: true, force: true });
   });
 
-  test('adds a local marketplace, installs and updates one package of each kind, and removes the source', async ({ app, mainWindow, t }) => {
+  test('adds a local marketplace, installs and updates one package of each kind, and removes the source', async ({ admitted: { app, mainWindow }, t }) => {
     const keys = PACKAGES.map(([kind, name]) => ({ sourceId: SOURCE_ID, kind, name }));
     const installed = async () =>
       (await call<CatalogView>(mainWindow, { method: 'listCatalog', args: [{ installedOnly: true }] })).entries
@@ -381,14 +366,12 @@ test.describe('git marketplace lifecycle', () => {
       }
     }
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'installed', version: '1.0.0' })}`).sort());
-    await expect(settings.getByTestId(`git-marketplace:card:${SOURCE_ID}:theme:harbor`).getByTestId('git-marketplace:card:state')).toBeVisible();
 
     // The app took each one in.
     const content = await installedContent(mainWindow);
     expect(content.ok).toBe(true);
     if (!content.ok) return;
     expect(content.content.broken).toEqual([]);
-    expect(content.content.themes.map((theme) => theme.id)).toContain('harbor');
     expect(content.content.languages.map((language) => language.locale)).toContain('fr');
     expect(content.content.fonts.map((font) => font.family)).toContain('Harbor Sans');
     expect(content.content.routineTemplates).toEqual(expect.arrayContaining([
@@ -447,7 +430,6 @@ test.describe('git marketplace lifecycle', () => {
     }
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'installed', version: '1.1.0' })}`).sort());
     const updated = await installedContent(mainWindow);
-    expect(updated.ok && updated.content.themes.find((theme) => theme.id === 'harbor')?.description).toBe('Harbor light (1.1.0).');
     expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-kit')?.version).toBe('1.1.0');
     expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-panel')?.version).toBe('1.1.0');
 
@@ -492,7 +474,7 @@ test.describe('git marketplace target confirmations (design §18.5)', () => {
     if (served) rmSync(served, { recursive: true, force: true });
   });
 
-  test('asks before adding an http marketplace on this computer, then shows its badge', async ({ app, mainWindow, t }) => {
+  test('asks before adding an http marketplace on this computer, then shows its badge', async ({ admitted: { app, mainWindow }, t }) => {
     const settings = await openInlineSettings(app, mainWindow, 'marketplace');
     await settings.getByTestId('git-marketplace:add-menu').click();
     await settings.getByRole('menuitem', { name: t('gitMarketplace.addMarketplace') }).click();
@@ -561,7 +543,7 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     if (parent) rmSync(parent, { recursive: true, force: true });
   });
 
-  test('adds a folder marketplace with Choose folder…, installs a skill, and offers the edited skill as an update after Refresh', async ({ app, mainWindow, t }) => {
+  test('adds a folder marketplace with Choose folder…, installs a skill, and offers the edited skill as an update after Refresh', async ({ admitted: { app, mainWindow }, t }) => {
     // Main's folder dialog answers this folder; Show in Finder records what it was asked to show.
     await app.evaluate(({ dialog, shell }, chosen) => {
       (globalThis as { __revealed?: string[] }).__revealed = [];
@@ -618,7 +600,7 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     await closeInlineSettings(app, settings);
   });
 
-  test('previews the folder Choose folder… chose when its name looks like a token, never the folder its masked name names (§18.9)', async ({ app, mainWindow, t }) => {
+  test('previews the folder Choose folder… chose when its name looks like a token, never the folder its masked name names (§18.9)', async ({ admitted: { app, mainWindow }, t }) => {
     // Assembled here so no whole token sits in the source.
     const token = `glp${'at-'}${'abcd1234'.repeat(3)}`;
     const chosen = join(parent, token);

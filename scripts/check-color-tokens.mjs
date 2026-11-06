@@ -16,7 +16,12 @@ const PATTERNS = [
 // Keep this migration allow-list shrink-only.
 // Contract examples and fixed brand gradients are theme-independent exceptions.
 const GRANDFATHERED_FILES = new Set([
-  "src/ui/renderer/theme/plugin-token-map.ts",
+]);
+
+// Palette data and color derivation are the sources behind semantic tokens.
+const COLOR_SOURCE_FILES = new Set([
+  "src/ui/renderer/theme/schemes/catalog.ts",
+  "src/ui/renderer/theme/resolve-theme.ts",
 ]);
 
 const violations = [];
@@ -32,7 +37,7 @@ function scan(dir) {
   });
   for (const p of files) {
     const rel = toPosix(relative(process.cwd(), p));
-    if (GRANDFATHERED_FILES.has(rel)) continue;
+    if (GRANDFATHERED_FILES.has(rel) || COLOR_SOURCE_FILES.has(rel)) continue;
     const content = readFileSync(p, "utf8");
     const lines = content.split("\n");
     lines.forEach((line, i) => {
@@ -57,7 +62,7 @@ if (violations.length > 0) {
   console.error(
     "[color-token-check] FAIL — raw color literals found.\n" +
       "Use theme tokens, e.g. hsl(var(--primary)) / var(--gradient-brand). " +
-      "See the per-bundle tokens in src/styles.css.\n",
+      "See the scheme derivation in src/ui/renderer/theme/resolve-theme.ts.\n",
   );
   for (const v of violations) console.error(`  ${v}`);
   process.exit(1);

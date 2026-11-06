@@ -1,0 +1,33 @@
+{
+  "request": {
+    "id": 33,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/getAuthPartitionCookies",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "opts": {
+        "partitionSub": "golden-auth",
+        "urls": [
+          "https://portal.example.com/"
+        ]
+      }
+    }
+  },
+  "response": {
+    "id": 33,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "cookies": [
+          {
+            "name": "session",
+            "value": "cookie-value"
+          }
+        ],
+        "url": "https://portal.example.com/"
+      }
+    ]
+  }
+}

@@ -19,7 +19,7 @@ contracts. The visual design system for the whole app is
   boundary rule, per-component trust and consent, and the marketplace kinds.
   Active; vocabulary and marketplace kinds implemented.
 - [Plugin HostApi as a versioned protocol](./plugin-hostapi-protocol.md): the
-  in-process HostApi turned into a published JSON-RPC protocol (`ave/host/*`
+  in-process HostApi turned into a published JSON-RPC protocol (`ai.agent-connector.ave/host/*`
   beside MCP) so every code extension runs in its own confined process. The app
   serves unreleased host protocol `"5"`. Read by tests and scripts; source comments cite its
   sections.

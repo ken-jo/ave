@@ -64,7 +64,6 @@ async function setup(
     settingsService: { get: vi.fn(() => ({})) },
     auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
-    refreshPluginEventBridge: vi.fn(),
     conversationLoop: { getSessionId: vi.fn(() => "session-live"), queueGuidance: vi.fn() },
     notificationService: { fire: vi.fn() },
     getMainWindow: vi.fn(() => ({

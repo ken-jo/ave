@@ -1,6 +1,22 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "appearanceTab.fontSaveFailed": "The font setting could not be loaded or saved.",
+  "appearanceTab.schemeTitle": "Color scheme",
+  "appearanceTab.schemeDescription": "One scheme sets the interface and terminal colors. System mode keeps a selection for each appearance.",
+  "appearanceTab.mode": "Appearance mode",
+  "appearanceTab.mode.system": "System",
+  "appearanceTab.mode.dark": "Dark",
+  "appearanceTab.mode.light": "Light",
+  "appearanceTab.scheme.dark": "Dark scheme",
+  "appearanceTab.scheme.light": "Light scheme",
+  "appearanceTab.terminalTitle": "Terminal font",
+  "appearanceTab.terminalFamily": "Font family",
+  "appearanceTab.terminalSize": "Size (px)",
+  "appearanceTab.terminalLineHeight": "Line height",
+  "settingsContent.search": "Search settings",
+  "settingsContent.searchEmpty": "No matching settings",
+  "settingsContent.searchCount": "{count} settings found",
   "sidebarPreview.localFile": "Local file",
   "sidebarPreview.running": "Agent responding",
   "ptyTerminal.hostChipApproval": "Host · conversation permissions",

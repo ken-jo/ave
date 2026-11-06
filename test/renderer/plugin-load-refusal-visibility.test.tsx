@@ -49,7 +49,8 @@ describe("installed plugins boot refuses to run", () => {
         description: `${id} fixture`,
         entry: "entry.mjs",
         tools: [],
-        ui: [{ id: `${id}-panel`, slot: "sidebar", kind: "info-card", title: `Panel ${id}` }],
+        ui: [{ id: `${id}-panel`, slot: "sidebar", kind: "mcp-app", resourceUri: `ui://${id}/panel`, title: `Panel ${id}` }],
+        uiResources: [{ uri: `ui://${id}/panel` }],
       })),
       "utf-8");
     const { receipt } = await buildInstallReceipt(pluginDir, {

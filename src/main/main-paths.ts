@@ -61,7 +61,6 @@ const runtimePaths = resolveRuntimePathsFromModuleUrl(import.meta.url);
 
 const distSrcDir = runtimePaths.distSrcDir;
 export const mainDir = runtimePaths.mainDir;
-export const distRoot = runtimePaths.distRoot;
 export const projectRoot = runtimePaths.projectRoot;
 
 // Resolve a host-owned asset emitted alongside `preload.cjs` in `dist/src`.

@@ -54,8 +54,8 @@ export class FloatingDockError extends Error {
 export interface ResolvedFloatingSurface {
   readonly pluginId: string;
   readonly extensionId: string;
-  // `file://` URL of the plugin's declared entry module, revision-stamped.
-  readonly entryUrl: string;
+  readonly payload: import("../mcp/types.js").McpUiPayload;
+  readonly authStatusTool?: string;
   // Shown in the host-drawn slot header. The host's text, from the manifest.
   readonly title: string;
 }

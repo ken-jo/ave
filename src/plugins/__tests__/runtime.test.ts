@@ -909,7 +909,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       pluginsRoot: installedDir,
       createHostApi: (_pluginId, manifest) => {
         seen.push(manifest);
-        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+        return { getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
       },
     });
     await runtime.startAll();
@@ -948,7 +948,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       pluginsRoot: installedDir,
       createHostApi: (_pluginId, manifest) => {
         seen.push(manifest);
-        return { emitEvent: () => {}, onEvent: () => () => {}, getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
+        return { getSecret: () => null, logEvent: () => {}, onShutdown: () => {} } as never;
       },
     });
     await runtime.startAll();
@@ -1008,8 +1008,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
         pluginsRoot: installedDir,
         createHostApi: (_pluginId, _manifest) => {
           const hostApi = {
-            emitEvent: () => {},
-            onEvent: () => () => {},
             saveMemory: async () => {},
             getSecret: () => null,
             callLlm: async () => {
@@ -1074,8 +1072,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
         deploymentGuard: guard,
         pluginsRoot: installedDir,
         createHostApi: (_pluginId, _manifest) => ({
-          emitEvent: () => {},
-          onEvent: () => () => {},
           saveMemory: async () => {},
           getSecret: () => null,
           callLlm: async () => {
@@ -1094,32 +1090,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       expect(promise).toBeInstanceOf(Promise);
       await expect(promise).resolves.toEqual({ echoed: { msg: "world" } });
     });
-  });
-
-  it("allows only host theme subscriptions", () => {
-    const runtime = makeRuntime();
-    expect(() => runtime.assertPluginEventAccess("first", "host.theme.changed")).not.toThrow();
-    expect(() => runtime.assertPluginEventAccess("first", "second.panel.updated")).toThrow(/only to host.theme.changed/);
-  });
-
-  it("blocks plugins from emitting events owned by another plugin", async () => {
-    const calendarManifestPath = await writeFakePlugin("calendar");
-    const emailManifestPath = await writeFakePlugin("email");
-
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "calendar", manifestPath: calendarManifestPath, enabled: true },
-      { id: "email", manifestPath: emailManifestPath, enabled: true },
-    ]);
-
-    const runtime = makeRuntime();
-    await runtime.load();
-
-    expect(() =>
-      runtime.assertPluginEventEmitAccess("email", "email.analyzed"),
-    ).not.toThrow();
-    expect(() =>
-      runtime.assertPluginEventEmitAccess("calendar", "email.analyzed"),
-    ).toThrow(/only its own UI events/i);
   });
 
   it("does not let a disabled provider satisfy an enabled consumer's capabilities", async () => {
@@ -1450,7 +1420,7 @@ export default async function createPlugin({ hostApi }) {
   return {
     handlers: { "${methodName}": async () => "never" },
     start: async () => {
-      hostApi.onEvent("test.event", () => {});
+      hostApi.config.onChange("mode", () => {});
       throw new Error("simulated start failure");
     },
     stop: async () => { await writeFile(${JSON.stringify(stoppedPath)}, "stopped", "utf-8"); },
@@ -1525,17 +1495,22 @@ export default async function createPlugin({ hostApi }) {
       pluginsRoot: installedDir,
       onDisable: (pluginId) => disabled.push(pluginId),
       createHostApi: (pluginId, _manifest, _pluginDataDir, incarnation) => ({
-        emitEvent: () => {},
         // The incarnation and subscription ledger share one disposer; its effect must run only once.
-        onEvent: () => {
-          let done = false;
-          const dispose = () => {
-            if (done) return;
-            done = true;
-            disposed.push(pluginId);
-          };
-          incarnation.registerDisposer(dispose);
-          return dispose;
+        config: {
+          get: () => undefined,
+          set: async () => {},
+          onChange: (key: string) => {
+            // Track the plugin subscription separately from the host snapshot subscription.
+            if (key !== "mode") return () => {};
+            let done = false;
+            const dispose = () => {
+              if (done) return;
+              done = true;
+              disposed.push(pluginId);
+            };
+            incarnation.registerDisposer(dispose);
+            return dispose;
+          },
         },
         getInstalledPluginIds: () => [],
         onPluginsChanged: () => () => {},
@@ -1561,7 +1536,7 @@ export default async function createPlugin({ hostApi }) {
       `export default async function createPlugin({ hostApi }) {
   return {
     handlers: { "${methodName}": async () => "ok" },
-    start: async () => { hostApi.onEvent("test.event", () => {}); },
+    start: async () => { hostApi.config.onChange("mode", () => {}); },
     stop: async () => {},
   };
 }\n`,
@@ -1720,8 +1695,6 @@ export default async function createPlugin() {
           return null;
         };
         const hostApi = {
-          emitEvent: () => {},
-          onEvent: () => () => {},
           getInstalledPluginIds: () => [],
           onPluginsChanged: () => () => {},
           getSecret,

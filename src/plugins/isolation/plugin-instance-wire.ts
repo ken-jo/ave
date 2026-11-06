@@ -24,16 +24,16 @@ import type { HostProtocolVersion } from "./host-api-wire.js";
 /**
  * The JSON-RPC methods the child answers besides MCP's own.
  *
- * Namespaced under `ave/` so a method can never collide with an MCP method
+ * Namespaced under `ai.agent-connector.ave/` so a method can never collide with an MCP method
  * name: the child routes on this prefix, and everything without it goes to the
  * `PluginMcpServer` untouched.
  */
 export const PLUGIN_INSTANCE_METHODS = {
   /** Build the hostApi stub, load the factory, create the instance. Once. */
-  construct: "ave/instance/construct",
-  start: "ave/instance/start",
-  onPublished: "ave/instance/onPublished",
-  stop: "ave/instance/stop",
+  construct: "ai.agent-connector.ave/instance/construct",
+  start: "ai.agent-connector.ave/instance/start",
+  onPublished: "ai.agent-connector.ave/instance/onPublished",
+  stop: "ai.agent-connector.ave/instance/stop",
 } as const;
 
 /** A child instance method. */
@@ -42,7 +42,7 @@ export type PluginInstanceMethod =
 
 /** Whether `method` is served by the child's instance handler rather than MCP. */
 export function isPluginInstanceMethod(method: string): method is PluginInstanceMethod {
-  return method.startsWith("ave/instance/");
+  return method.startsWith("ai.agent-connector.ave/instance/");
 }
 
 /**
@@ -65,7 +65,7 @@ export interface PluginConstructParams {
   readonly hostProtocol: {
     readonly version: HostProtocolVersion;
     /**
-     * Every `ave/host/*` method this host serves on this connection (§3.2),
+     * Every `ai.agent-connector.ave/host/*` method this host serves on this connection (§3.2),
      * derived from the dispatcher's BOUND table, so a member this host build
      * lacks is not advertised. Method names, not feature flags, so the list
      * cannot drift from what is actually served.
@@ -101,7 +101,7 @@ export interface PluginConstructResult {
   /** Which of `start` / `onPublished` / `stop` the instance implements. */
   readonly lifecycleHooks: readonly PluginLifecycleHookName[];
   /**
-   * The `ave/host/*` methods the plugin will not run without (§3.2). The host
+   * The `ai.agent-connector.ave/host/*` methods the plugin will not run without (§3.2). The host
    * refuses the load with `incompatible-host-protocol` when one is missing
    * from the `capabilities` it sent, rather than letting the plugin start and
    * fail on its first call.

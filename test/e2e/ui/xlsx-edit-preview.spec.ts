@@ -6,13 +6,12 @@ import { createHash, randomBytes } from "node:crypto";
 import JSZip from "jszip";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
-import { pluginPartitionName } from "../../../src/shared/plugin-partition.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
 test("edited workbook shows a recalculation badge through the real viewer", async () => {
@@ -86,9 +85,11 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
     const preview = await ctx.page.evaluate((path) => window.ave.preview.readDocument(path, 0, "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"), workbookPath);
     if (!preview.ok) throw new Error(`Expected a host preview, got ${preview.error}`);
     expect(preview.observation?.targetId).toMatch(/^[a-f0-9-]{36}$/);
-    const htmlUrl = pathToFileURL(join(process.cwd(), "dist/src/plugin-ui-shell.html")).href;
-    const scriptUrl = pathToFileURL(join(process.cwd(), "dist/src/plugin-ui-shell.js")).href;
-    const partition = pluginPartitionName(basename(directory));
+    const htmlUrl = pathToFileURL(join(directory, "plugin-ui-shell.html")).href;
+    writeFileSync(join(directory, "plugin-ui-shell.html"), "<!doctype html><p>Untrusted frame</p>");
+    const scriptUrl = pathToFileURL(join(directory, "plugin-ui-shell.js")).href;
+    writeFileSync(join(directory, "plugin-ui-shell.js"), "/* untrusted frame */");
+    const partition = `xlsx-frame-${Date.now()}`;
     const proof = await ctx.app.evaluate(async ({ BrowserWindow, session }, input) => {
       const pluginSession = session.fromPartition(input.partition);
       const preloadId = pluginSession.registerPreloadScript({ type: "frame", filePath: input.preloadPath });

@@ -108,7 +108,7 @@ function downloadedQuitHandler(updater: UpdaterLike) {
 }
 
 const HOST_RENDERER_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/index.html";
-const PLUGIN_SHELL_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/plugin-ui-shell.html";
+const PLUGIN_SHELL_URL = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
 
 describe("auto-updater", () => {
   afterEach(() => { setAppRelaunchRequested(false); });
@@ -536,7 +536,7 @@ describe("auto-updater", () => {
     expect(u.installs).toBe(0);
     expect(audit.entries).toHaveLength(1);
     expect(audit.entries[0]?.input).toContain("ave:update:install-now");
-    expect(audit.entries[0]?.input).toContain("plugin-ui-shell.html");
+    expect(audit.entries[0]?.input).toContain("ave-mcp-app://");
   });
 
   it("download IPC rejects missing sender frames before mutating updater state", async () => {

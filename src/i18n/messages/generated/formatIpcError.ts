@@ -254,7 +254,7 @@ export const en = {
   "formatIpcError.errorSuffix": " has occurred.",
 
   // Installed content packages (themes, languages, fonts)
-  "formatIpcError.installedContentUnavailable": "Installed themes, languages and fonts could not be loaded.",
+  "formatIpcError.installedContentUnavailable": "Installed languages and fonts could not be loaded.",
   "formatIpcError.languageNotInstalled": "That language is not installed.",
   "formatIpcError.providerPresetRefreshFailed": "The provider change was saved but could not be applied yet. Restart the app to apply it.",
   "formatIpcError.workApprovalsSourceUnavailable": "Items that need your review could not be loaded.",
@@ -515,7 +515,7 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.errorSuffix": "가 발생했습니다.",
 
   // 설치한 콘텐츠 패키지(테마, 언어, 글꼴)
-  "formatIpcError.installedContentUnavailable": "설치한 테마, 언어, 글꼴을 불러오지 못했습니다.",
+  "formatIpcError.installedContentUnavailable": "설치한 언어와 글꼴을 불러오지 못했습니다.",
   "formatIpcError.languageNotInstalled": "설치되지 않은 언어입니다.",
   "formatIpcError.providerPresetRefreshFailed": "프로바이더 변경은 저장했지만 아직 적용하지 못했습니다. 앱을 다시 시작하면 적용됩니다.",
 };

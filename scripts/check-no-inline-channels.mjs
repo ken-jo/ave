@@ -37,12 +37,11 @@ const TARGETS = [
   ...tsModulesIn("src/sdk"),
   ...tsModulesIn("src/cli"),
   // This sandboxed preload lives outside the scanned preload directory.
-  "src/plugin-preload.ts",
+  "src/mcp-app-preload.ts",
   // This sandboxed preload also lives outside the scanned preload directory.
   "src/floating-dock-preload.ts",
   "src/boot/bootstrap-status.ts",
   "src/boot/plugins.ts",
-  "src/boot/steps/ipc-bridge.ts",
   "src/boot/steps/post-boot.ts",
 ];
 

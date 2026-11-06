@@ -11,7 +11,7 @@ import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
 import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
-import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
+import type { PluginUiExtensionView } from "../../shared/plugin-ui-view.js";
 import type { PluginInstallResultPayload } from "../../contract/app-contract.js";
 import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
@@ -435,12 +435,7 @@ export type NotificationClickPayload = {
 
 export type AveApi = {
   relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
-  /**
-   * Deterministic file:// URL of the bundled `plugin-preload.js`. Computed in
-   * the host preload from `__dirname` (= `dist/src/`) so the plugin <webview>
-   * can be mounted with a stable preload regardless of `window.location.href`.
-   */
-  pluginPreloadUrl: string;
+
   permission: AvePermissionApi;
   approval: AveApprovalApi;
   policy: AvePolicyApi;
@@ -463,15 +458,10 @@ export type AveApi = {
   /** Git marketplace: sources, catalog, install plans and execution (design §13). */
   gitMarketplace: GitMarketplaceApi;
   pluginStudio: PluginStudioApi;
-  /** Installed content packages: themes, languages and fonts, and installed language catalogs. */
+  /** Installed content packages: languages and fonts, and installed language catalogs. */
   installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
-  /**
-   * Deterministic file:// URL of the bundled `plugin-ui-shell.html`. Same
-   * stability guarantee as `pluginPreloadUrl` — read directly from the host
-   * renderer instead of resolving against `window.location.href`.
-   */
-  pluginShellUrl: string;
+
   notifyPluginTheme: (payload: {
     bundleId: string;
     shell: "light" | "dark";
@@ -588,7 +578,7 @@ export type AveApi = {
       | { ok: false; error: string }
     >;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
-    onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
+    onFallback: (handler: (payload: { from: string; to: string; streamId?: number }) => void) => () => void;
   };
   /**
    * Tutorial-C — SpotlightTour state + broadcast bridge. The host persists
@@ -698,7 +688,7 @@ export type AveApi = {
     options?: { interrupt?: boolean },
   ) => Promise<unknown>;
   /** `userIntent` is the composer gesture's one-shot keyboard intent; without a valid one main queues the text as another principal's. */
-  chatGuide: (input: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot) => Promise<unknown>;
+  chatGuide: (input: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot, appSource?: string) => Promise<unknown>;
   chatNew: (opts?: { projectRoot?: string; projectName?: string }) => Promise<
     { ok: true } | { ok: false; error: string }
   >;
@@ -723,7 +713,7 @@ export type AveApi = {
    * the primary group refuses it.
    */
   chatGroupRelease: () => Promise<{ ok: boolean; released?: boolean; error?: string }>;
-  onChatFallback: (h: (payload: { from: string; to: string }) => void) => () => void;
+  onChatFallback: (h: (payload: { from: string; to: string; streamId?: number }) => void) => () => void;
   chatGetHistory: () => Promise<{ restoredSubAgents?: RestoredSubAgentPayload[]; sessionId: string; sessionTitle?: string; sessionKind: "main" | "routine"; routineId?: string; routineTitle?: string; projectRoot?: string; projectName?: string; projectIsDefault?: boolean; messages: SerializedHistoryMessage[] }>;
   chatMainActiveState: () => Promise<{ mainActiveSessionId: string | null; mainActiveMode: "resume" | "fresh"; updatedAt: string } | null>;
   chatSessionHistory: (sessionId: string) => Promise<{
@@ -872,7 +862,6 @@ export type AveApi = {
   listAgentProfiles: () => Promise<{ agents: AssistantAgentSummary[] }>;
   listSkills: () => Promise<{ skills: AssistantSkillSummary[] }>;
   listPluginUiExtensions: () => Promise<PluginUiExtension[]>;
-
   callPluginMethod: (
     m: string,
     p?: unknown,
@@ -884,17 +873,6 @@ export type AveApi = {
     skillLocalId: string,
     hookProbeToolName: string,
   ) => Promise<unknown>;
-  /**
-   * Subscribe to plugin-emitted events forwarded by the host event bridge
-   * (`boot/steps/ipc-bridge.ts` → `ave:plugin:event`). Event types identify the emitting plugin's own UI namespace. The preload layer rejects
-   * subscriptions whose namespace prefix appears in `PLUGIN_PRIVATE_NAMESPACES`
-   * by returning a no-op unsubscribe without wiring the IPC listener — so
-   * renderer code can never observe sensitive host state (memory contents,
-   * secrets, audit trails, DLP decisions) through this API. Returns an
-   * unsubscribe function. Used by `usePluginAuthStatuses` for
-   * `<pluginId>.auth.changed`.
-   */
-  onPluginEvent?: (eventType: string, handler: (data: unknown) => void) => (() => void);
   listPluginCards: () => Promise<PluginCardSummary[]>;
   listPluginContributionTrust: (pluginId?: string) => Promise<
     | { ok: true; rows: PluginContributionTrustRow[] }
@@ -1244,8 +1222,6 @@ export type AveApi = {
     arch: string;
     userDataPath: string;
   }>;
-  registerPluginWebview: (payload: { webContentsId: number; pluginId: string; entryUrl: string }) => Promise<{ ok: boolean; error?: string }>;
-  ensurePluginPartition: (pluginId: string) => Promise<{ ok: boolean; error?: string }>;
   onViewActivate: (h: (k: string, settingsTab?: string) => void) => () => void;
 
   getUsageRange: (opts: { dateFrom: string; dateTo: string }) => Promise<UsageSummaryShape>;

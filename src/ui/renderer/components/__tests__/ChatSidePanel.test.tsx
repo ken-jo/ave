@@ -1,3 +1,4 @@
+import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -89,14 +90,14 @@ const layerApi = api();
 
 function withPanelProviders(ui: ReactElement) {
   return (
-    <TooltipProvider>
+    <ThemeWrapper><TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         {ui}
         {/* The window's browser guests live in this layer (portaled to body),
             not inside the panel — as in the app. */}
         <WebSurfaceLayer api={layerApi} />
       </ApprovalSurfaceProvider>
-    </TooltipProvider>
+    </TooltipProvider></ThemeWrapper>
   );
 }
 
@@ -700,7 +701,7 @@ describe("ChatSidePanel", () => {
     // Main returns a bundle: the sandbox-proxy URL to navigate to + the app HTML
     // (which now travels over the bridge, not in the document URL).
     const readUiResource = vi.fn(async () => ({
-      proxyUrl: "ave-mcp-app://7365727665722d61/proxy.html?t=tok",
+      proxyUrl: "ave-mcp-app://s-7365727665722d61/proxy.html?t=tok",
       html: "<main>MCP preview card</main>",
     }));
     vi.stubGlobal("ave", {
@@ -758,7 +759,7 @@ describe("ChatSidePanel", () => {
     // is NO LONGER percent-encoded into the URL — it now travels over the bridge as
     // `ui/notifications/sandbox-resource-ready`, so it neither hits the ~2MB
     // data:-URL cap nor lands in an opaque-origin document.
-    expect(webview.getAttribute("src")).toBe("ave-mcp-app://7365727665722d61/proxy.html?t=tok");
+    expect(webview.getAttribute("src")).toBe("ave-mcp-app://s-7365727665722d61/proxy.html?t=tok");
     expect(webview.getAttribute("src")).not.toContain("MCP%20preview%20card");
   });
 

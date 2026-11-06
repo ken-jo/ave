@@ -1,8 +1,11 @@
+import { isAppMessageOrigin } from "../../../shared/mcp-app-message-source.js";
 import { t } from "../../../i18n/runtime.js";
 
 export interface MessageQueueItem {
   id: string;
   text: string;
+  /** Remains bound to this item through editing, reservation and delivery. */
+  appSource?: string;
   selected: boolean;
   createdAt: number;
 
@@ -45,6 +48,28 @@ export function formatQueueInject(items: readonly MessageQueueItem[]): string {
   );
 }
 
+/** Mixed batches retain app provenance for the whole delivery; text is enveloped by the host send boundary. */
+export function queueAppSource(items: readonly Pick<MessageQueueItem, "appSource">[]): string | undefined {
+  const sources = new Set(items.flatMap((item) => item.appSource === undefined ? [] : [item.appSource]));
+  if (sources.size > 1) throw new Error("Queue delivery contains different app sources");
+  return sources.values().next().value;
+}
+
+/** Preserve queue order and stop a batch before a different app's text. User text keeps the group's app provenance. */
+export function groupQueueItems<T extends Pick<MessageQueueItem, "appSource">>(items: readonly T[]): T[][] {
+  const groups: T[][] = [];
+  let source: string | undefined;
+  for (const item of items) {
+    if (groups.length === 0 || (source !== undefined && item.appSource !== undefined && source !== item.appSource)) {
+      groups.push([]);
+      source = undefined;
+    }
+    groups[groups.length - 1].push(item);
+    source ??= item.appSource;
+  }
+  return groups;
+}
+
 export class MessageQueueStore {
   /** 큐 capacity caps — economic DoS 방어. add() 가 throw 함. */
   static readonly MAX_ITEMS = 50;
@@ -64,7 +89,10 @@ export class MessageQueueStore {
     this.notify();
   }
 
-  add(text: string): MessageQueueItem {
+  add(text: string, appSource?: string): MessageQueueItem {
+    if (appSource !== undefined && !isAppMessageOrigin(appSource)) {
+      throw new Error("MessageQueueStore.add: invalid app source");
+    }
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       throw new Error("MessageQueueStore.add: empty text rejected");
@@ -85,6 +113,7 @@ export class MessageQueueStore {
     const item: MessageQueueItem = {
       id: makeId(),
       text: trimmed,
+      ...(appSource === undefined ? {} : { appSource }),
       selected: false,
       createdAt: now,
       expiresAt: now + MessageQueueStore.DEFAULT_TTL_MS,
@@ -114,8 +143,8 @@ export class MessageQueueStore {
   }
 
   /** Reserve the exact current batch before any asynchronous guide request starts. */
-  reservePending(): { id: string; items: readonly MessageQueueItem[] } | null {
-    const pending = this.getPending();
+  reservePending(itemIds?: ReadonlySet<string>): { id: string; items: readonly MessageQueueItem[] } | null {
+    const pending = groupQueueItems(this.getPending().filter((item) => itemIds === undefined || itemIds.has(item.id)))[0] ?? [];
     if (pending.length === 0) return null;
     const id = makeId();
     const ids = new Set(pending.map((item) => item.id));
@@ -235,10 +264,11 @@ export class MessageQueueStore {
   }
 
   /** Take pending rows in delivery order, regardless of selection; reserved and accepted rows stay visible. */
-  takeAll(): MessageQueueItem[] {
-    const taken = [...this.getPending()];
+  takeAll(itemIds?: ReadonlySet<string>): MessageQueueItem[] {
+    const taken = this.getPending().filter((item) => itemIds === undefined || itemIds.has(item.id));
     if (taken.length === 0) return [];
-    this.items = this.items.filter((item) => !isQueueItemPending(item));
+    const takenIds = new Set(taken.map((item) => item.id));
+    this.items = this.items.filter((item) => !takenIds.has(item.id));
     this.notify();
     return taken;
   }

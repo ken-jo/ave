@@ -1,15 +1,13 @@
-// The host fixes dock window geometry and privileges; plugins contribute cards through the existing sandboxed UI shell.
+// The host fixes dock window geometry and privileges; app panels run in per-server sandboxes.
+import type { SettingsService } from "../data/settings-store.js";
 import { BrowserWindow, ipcMain, screen } from "electron";
 import { runtimeAssetPath } from "./main-paths.js";
-import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
-import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
-import { dockAssetArgs } from "../shared/floating-dock-args.js";
-import { pathToFileURL } from "node:url";
-import { preloadBundlePath, preloadPreferences } from "./preload-bundles.js";
-import { configurePluginWebviewAttach } from "./plugin-webview-attach.js";
+import { getLastThemePayload } from "../shared/host-theme-replay.js";
+import { preloadPreferences } from "./preload-bundles.js";
+import { configureMcpAppWebviewAttach } from "./webview-attach.js";
 import type {
   DockActivity,
   DockBounds,
@@ -24,15 +22,13 @@ const log = createLogger("floating-dock");
 // The real window. Created lazily and destroyed on `hide()` rather than merely hidden: a dock with nothing in it has no state worth keeping alive, and a
 // destroyed window cannot be left floating by a bug in the visibility bookkeeping.
 export interface ElectronFloatingDockSurfaceDeps {
-  // Subscribe to the host theme broadcast (`host.theme.changed`, the payload plugin webviews receive). The dock's own chrome reads the theme once when its
-  // window loads; every later theme reaches it through this.
+  // Host chrome receives the current validated theme and later changes through this internal feed.
   onThemeChanged(listener: (theme: unknown) => void): () => void;
   // The theme current now — the host renderer's last validated one — or null before the first.
   currentTheme(): unknown;
 }
 
-// The host's theme feed, the one plugin webviews get: the validated `host.theme.changed` broadcast and the replay cache behind it. Main pushes both to
-// the dock, so the dock asks nothing through the plugin-only `getTheme`, whose guard rightly refuses a non-plugin frame.
+// Main supplies validated themes to dock chrome; app frames receive standard host context from that chrome.
 export const hostDockThemeSource: ElectronFloatingDockSurfaceDeps = {
   onThemeChanged: (listener) => onEvent("host.theme.changed", listener),
   currentTheme: getLastThemePayload,
@@ -46,10 +42,17 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #ready = false;
   readonly #currentTheme: () => unknown;
 
-  constructor(deps: ElectronFloatingDockSurfaceDeps) {
+  constructor(deps: ElectronFloatingDockSurfaceDeps, private readonly settings: Pick<SettingsService, "get" | "onChanged">) {
     this.#currentTheme = deps.currentTheme;
     // The surface lives as long as the app, so this subscription is never undone. No window: nothing to repaint, and the next one is sent the current theme on opening.
-    deps.onThemeChanged((theme) => this.#post(CHANNELS.dock.theme, theme));
+    deps.onThemeChanged((theme) => this.#sendAppearance(theme));
+    let terminalFontFamily = settings.get("appearance").terminalFont.family;
+    settings.onChanged("appearance", () => {
+      const next = settings.get("appearance").terminalFont.family;
+      if (next === terminalFontFamily) return;
+      terminalFontFamily = next;
+      this.#sendAppearance(this.#currentTheme());
+    });
     // Register IPC once per surface instance and validate this dock’s sender so reopen cannot stack handlers or permit cross-window control.
     ipcMain.on(CHANNELS.dock.requestClose, (event) => {
       if (!this.ownsSender(event.sender.id)) return;
@@ -95,11 +98,6 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       webPreferences: {
         // Use the shared sandboxed CommonJS preload: it needs require and hosts plugin guests.
         ...preloadPreferences("floatingDockPreload"),
-        // The sandboxed preload cannot resolve files itself (no `node:path`).
-        additionalArguments: dockAssetArgs({
-          pluginShellUrl: pathToFileURL(runtimeAssetPath("plugin-ui-shell.html")).toString(),
-          pluginPreloadUrl: pathToFileURL(preloadBundlePath("pluginPreload")).toString(),
-        }),
         contextIsolation: true,
         nodeIntegration: false,
         webSecurity: true,
@@ -112,15 +110,16 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     // The dock hosts only plugin cards. Each attaches under the same main-side guard as the main window's plugin frames (sandbox, isolation, no Node, no
     // nested webviews), whatever the element asked for; anything else is refused.
     win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-      const enforced = configurePluginWebviewAttach({
+      const result = configureMcpAppWebviewAttach({
+        event,
         webPreferences: webPreferences as Record<string, unknown>,
         params: params as unknown as Record<string, string>,
       });
-      if (enforced !== "enforced") event.preventDefault();
+      if (result === "ignored") event.preventDefault();
     });
     // The theme current now goes first, queued with anything later until the window is ready, so the chrome paints in it from the first frame it shows.
     const opening = this.#currentTheme();
-    if (opening !== null) this.#post(CHANNELS.dock.theme, opening);
+    this.#sendAppearance(opening);
 
     // Above full-screen applications where the platform supports it. The "floating" level is ignored elsewhere and `alwaysOnTop` still applies.
     try {
@@ -173,14 +172,12 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   }
 
   mountSlot(panelId: string, surface: ResolvedFloatingSurface, height: number): void {
+    this.#sendAppearance(this.#currentTheme());
     this.#post(CHANNELS.dock.mount, {
       panelId,
       pluginId: surface.pluginId,
-      // The shell resolves the real module through `getEntryUrl` after `registerWebview`; this is the URL the renderer registers WITH, and main re-validates
-      // it against the install root before minting anything.
-      entryUrl: surface.entryUrl,
-      // Compute the hashed plugin partition in main; renderer reconstruction could open a different session without the asset scheme.
-      partition: pluginPartitionName(surface.pluginId),
+      payload: surface.payload,
+      authStatusTool: surface.authStatusTool,
       title: surface.title,
       height,
     });
@@ -206,6 +203,11 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   ownsSender(webContentsId: number): boolean {
     const win = this.#window;
     return !!win && !win.isDestroyed() && win.webContents.id === webContentsId;
+  }
+
+  #sendAppearance(theme: unknown): void {
+    if (theme === null) return;
+    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: this.settings.get("appearance").terminalFont.family });
   }
 
   #post(channel: string, payload: unknown): void {

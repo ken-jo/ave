@@ -50,7 +50,7 @@ export interface FireOptions {
   sticky?: boolean;
 }
 
-// IPC channel — main process → renderer; payload sent via window.aveApi. NEVER expose on window.avePlugin (plugin webview isolation contract).
+// Host notification delivery belongs only to trusted window chrome.
 export const IPC_NOTIFICATION_TOAST = "ave:notification:toast";
 // IPC channel — renderer → main; fired when the user clicks an in-app toast (via the renderer's status-bar bridge) or when an OS notification's click
 // handler triggers focus.

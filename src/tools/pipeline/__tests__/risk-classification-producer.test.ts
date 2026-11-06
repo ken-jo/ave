@@ -33,7 +33,7 @@ function productionPluginTool() {
       description: "fixture plugin tool",
       inputSchema: { type: "object", properties: { path: { type: "string" } } },
       _meta: {
-        "ave/pathFields": ["path"],
+        "ai.agent-connector.ave/pathFields": ["path"],
         ui: { visibility: ["model"] },
       },
     },

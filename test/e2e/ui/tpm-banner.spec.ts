@@ -116,13 +116,14 @@ test.describe("Composer usage warnings", () => {
     }
   });
 
-  test("TPM warning renders in both compiled themes", async ({}, testInfo) => {
+  test("TPM warning renders in both appearance modes", async ({}, testInfo) => {
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-5.4-nano" });
     try {
-      for (const theme of ["gallery", "moonstone"]) {
-        await ctx.page.evaluate((theme) => {
-          document.documentElement.setAttribute("data-theme-bundle", theme);
+      for (const theme of ["light", "dark"] as const) {
+        await ctx.page.evaluate(async (mode) => {
+          await window.aveApi.updateSettings({ appearance: { mode } });
         }, theme);
+        await expect(ctx.page.locator("html")).toHaveAttribute("data-shell", theme);
         await nextPaint(ctx.page);
         await expectTpmWarning(ctx.page, 80);
         await ctx.page.screenshot({ path: testInfo.outputPath(`tpm-banner-${theme}.png`) });

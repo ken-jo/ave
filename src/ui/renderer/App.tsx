@@ -15,7 +15,7 @@ import { StatusBar } from "./components/StatusBar.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
-import { PluginUiHostView } from "../../plugin-ui-host.js";
+import { McpAppPanelContent } from "./components/McpAppPanelContent.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
 import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
@@ -1010,6 +1010,7 @@ export function App() {
     api, t, locale, registry: chatGroupSessions,
     onNavigateToSettings: navigateToSettingsPath,
     onSuggestionStaged: refreshSessionsOnSuggestion,
+    getFocusedChatGroupId: () => chatGroupsRef.current.focusedId,
   });
 
   const viewHistory = useViewHistory(location, navigateToLocation, restoresApplied);
@@ -1130,8 +1131,13 @@ export function App() {
     notice: (message: string) => { statusPushToast({ severity: "warning", message, ttlMs: 10_000 }); },
   }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion, statusPushToast]);
 
-  // Share one plugin-auth poll and event subscription across window surfaces.
-  const { statuses: pluginAuthStatuses, refresh: refreshPluginAuthStatus } = usePluginAuthStatuses(api, pluginCards);
+  // Initial status supports sidebar badges; only mounted plugin views keep observing changes.
+  const mountedAuthPluginIds = useMemo(() => chatGroups.groups.flatMap((group) => {
+    const view = chatGroups.contentById[group.id]?.view;
+    const parsed = view ? parseInlineViewKey(view) : null;
+    return parsed?.kind === "plugin" ? [parsed.pluginId] : [];
+  }), [chatGroups.groups, chatGroups.contentById]);
+  const { statuses: pluginAuthStatuses, refresh: refreshPluginAuthStatus } = usePluginAuthStatuses(api, pluginCards, mountedAuthPluginIds);
 
   const { rolePresets, activePreset, activePresetId, setActivePresetId } = useRolePresets(api);
   const {
@@ -2273,8 +2279,10 @@ export function App() {
         closeLabel={routedCloseLabel(pluginTitle)}
         {...asTile}
       >
-        <PluginUiHostView
+        <McpAppPanelContent
+          key={`${pluginPane.view?.pluginId}:${pluginPane.view?.runtimeRevision}`}
           view={pluginPane.view ?? null}
+          authStatus={pluginAuthStatuses.get(pluginPane.view?.pluginId ?? "")}
           preparing={pluginPane.preparing}
           authError={pluginPane.authError ?? null}
         />

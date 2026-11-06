@@ -2,10 +2,10 @@
   "request": {
     "id": 1,
     "jsonrpc": "2.0",
-    "method": "ave/host/storage/writeEncrypted",
+    "method": "ai.agent-connector.ave/host/storage/writeEncrypted",
     "params": {
       "_meta": {
-        "ave/invocation": "<uuid-1>"
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
       },
       "plaintext": "the token cache",
       "relPath": "tokens/cache.bin"

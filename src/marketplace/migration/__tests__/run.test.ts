@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceSnapshot } from "../../sources/snapshot.js";
 import type { LegacyContentKind, LegacyContentReport } from "../legacy-content.js";
 import { runLegacyMigration } from "../run.js";
-const ADOPTED: LegacyContentReport = { adopted: [{ source: "ave", kind: "theme", name: "aurora" }], failed: [] };
-const snapshot = { packages: [{ kind: "theme", name: "aurora" }, { kind: "skill", name: "review" }] } as SourceSnapshot;
+const ADOPTED: LegacyContentReport = { adopted: [{ source: "ave", kind: "language", name: "aurora" }], failed: [] };
+const snapshot = { packages: [{ kind: "language", name: "aurora" }, { kind: "skill", name: "review" }] } as SourceSnapshot;
 describe("runLegacyMigration", () => {
   let dir: string;
   let markerPath: string;
@@ -24,13 +24,13 @@ describe("runLegacyMigration", () => {
   it("lists content by kind and name", async () => {
     let listed: ((kind: LegacyContentKind, name: string) => boolean) | undefined;
     await runLegacyMigration({ markerPath, officialSnapshot: snapshot, content: async lookup => { listed = lookup; return ADOPTED; }, now });
-    expect(listed!("theme", "aurora")).toBe(true);
+    expect(listed!("language", "aurora")).toBe(true);
     expect(listed!("provider", "aurora")).toBe(false);
-    expect(listed!("theme", "review")).toBe(false);
+    expect(listed!("language", "review")).toBe(false);
   });
   it("retries failed content adoption including a previously incomplete marker", async () => {
     writeFileSync(markerPath, JSON.stringify({ version: 1, reportedUnmanaged: ["old-plugin"] }));
-    const content = vi.fn().mockResolvedValueOnce({ adopted: [], failed: [{ key: { source: "ave", kind: "theme", name: "aurora" }, message: "offline" }] }).mockResolvedValue(ADOPTED);
+    const content = vi.fn().mockResolvedValueOnce({ adopted: [], failed: [{ key: { source: "ave", kind: "language", name: "aurora" }, message: "offline" }] }).mockResolvedValue(ADOPTED);
     const run = () => runLegacyMigration({ markerPath, officialSnapshot: snapshot, content, now });
     await run(); await run(); expect(await run()).toBeNull();
     expect(content).toHaveBeenCalledTimes(2);

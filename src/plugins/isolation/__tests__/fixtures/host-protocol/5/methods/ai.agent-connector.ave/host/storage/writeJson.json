@@ -1,0 +1,22 @@
+{
+  "request": {
+    "id": 7,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/storage/writeJson",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "indent": 2,
+      "relPath": "state.json",
+      "value": {
+        "cursor": 3
+      }
+    }
+  },
+  "response": {
+    "id": 7,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

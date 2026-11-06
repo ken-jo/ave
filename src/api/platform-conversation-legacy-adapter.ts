@@ -146,7 +146,7 @@ function projectPlatformConversationEventToLegacyChatFrame(
     case "model.status":
       return streamFrame(streamChannel, withStreamId({ type: "llm_status", ...event.ownerDetail.status }));
     case "model.fallback":
-      return streamFrame(fallbackChannel, { from: event.from, to: event.to });
+      return streamFrame(fallbackChannel, withStreamId({ from: event.from, to: event.to }));
     case "guidance.applied":
       return streamFrame(streamChannel, withStreamId({
         type: "guidance_injected",

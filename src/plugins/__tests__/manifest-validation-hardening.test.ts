@@ -221,7 +221,7 @@ describe("runtime manifest validation hardening", () => {
     expect(runtime.listPluginIds()).not.toContain("p-ui");
     expect(
       cap.errors.some((e) =>
-        /ui\[0\].*kind="embedded-module" missing required field\(s\): exportName/.test(
+        /ui\[0\].kind.*removed UI kind "embedded-module"/.test(
           e,
         ),
       ),

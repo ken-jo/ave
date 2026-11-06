@@ -24,9 +24,9 @@ describe("marketplace package sections", () => {
 
   it("keeps the artifact-free kinds as settings-backed asset sections", () => {
     expect(MARKETPLACE_ASSET_PACKAGE_TYPES)
-      .toEqual(["provider", "theme", "language-pack", "messaging-connection"]);
+      .toEqual(["provider", "language-pack", "messaging-connection"]);
     expect(isMarketplaceAssetPackageType("provider")).toBe(true);
-    expect(isMarketplaceAssetPackageType("theme")).toBe(true);
+    expect(isMarketplaceAssetPackageType("theme")).toBe(false);
     expect(isMarketplaceAssetPackageType("language-pack")).toBe(true);
     expect(isMarketplaceAssetPackageType("messaging-connection")).toBe(true);
     expect(isMarketplaceAssetPackageType("plugin")).toBe(false);
@@ -52,10 +52,6 @@ describe("marketplace package sections", () => {
     expect(marketplaceTrustLabelKeysForPackage("provider")).toEqual([
       "marketplaceTab.trustProviderCredentials",
       "marketplaceTab.trustProviderNetwork",
-    ]);
-    expect(marketplaceTrustLabelKeysForPackage("theme")).toEqual([
-      "marketplaceTab.trustNoCode",
-      "marketplaceTab.trustThemeTokens",
     ]);
     expect(marketplaceTrustLabelKeysForPackage("language-pack")).toEqual([
       "marketplaceTab.trustNoCode",

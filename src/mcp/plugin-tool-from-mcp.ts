@@ -14,7 +14,7 @@ import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("plugin-tool-from-mcp");
 
-const AVE_META_PREFIX = "ave/";
+const AVE_META_PREFIX = "ai.agent-connector.ave/";
 
 /** Wire metadata is opaque and untrusted; extract authority defensively. */
 export interface DiscoveredMcpTool {
@@ -63,6 +63,12 @@ export function mcpToolToPluginTool(
   generationId?: string,
 ): Tool {
   const meta = tool._meta ?? {};
+  const removedKey = Object.keys(meta).find((key) => key.startsWith("ave/"));
+  if (removedKey !== undefined) {
+    throw new Error(
+      `plugin tool '${tool.name}' uses removed metadata key '${removedKey}'; use '${AVE_META_PREFIX}'`,
+    );
+  }
   // Ignore wire category; effective risk is derived by the host for each invocation.
   const category = "write";
 

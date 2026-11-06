@@ -1,0 +1,44 @@
+{
+  "request": {
+    "id": 19,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/hostFetch",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "init": {
+        "body": {
+          "data": "ping",
+          "encoding": "utf8"
+        },
+        "headers": [
+          [
+            "content-type",
+            "text/plain"
+          ]
+        ],
+        "method": "POST"
+      },
+      "input": "https://api.example.com/ping"
+    }
+  },
+  "response": {
+    "id": 19,
+    "jsonrpc": "2.0",
+    "result": {
+      "body": {
+        "data": "cG9uZw==",
+        "encoding": "base64"
+      },
+      "headers": [
+        [
+          "content-type",
+          "text/plain"
+        ]
+      ],
+      "status": 200,
+      "statusText": ""
+    }
+  }
+}

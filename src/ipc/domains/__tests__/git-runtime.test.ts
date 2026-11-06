@@ -57,7 +57,7 @@ describe("git runtime IPC boundary", () => {
 
   it("refuses plugin frames", async () => {
     const readStatus = await setup();
-    await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.gitRuntime.status, "file:///app/plugin-ui-shell.html"))
+    await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.gitRuntime.status, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
       .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     expect(readStatus).not.toHaveBeenCalled();
   });

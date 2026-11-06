@@ -34,6 +34,9 @@ import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-dis
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { useContextBudget } from "../hooks/use-context-budget.js";
 import { ComposerContextNotice } from "./ComposerContextNotice.js";
+import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
+import { StatusBar } from "./StatusBar.js";
+import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 
 /**
  * A sidebar row asking one tile to show a stored side chat.
@@ -204,6 +207,11 @@ function SideChatSession({
     const current = claimRef.current!;
     onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
   }, [approvals.claims, hasCurrentClaim]);
+  const { persistent, visibleToast, pendingCount, upsertToast, removeToast } = useStatusNotices();
+  const handleToastDismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
+  const announceProviderFallback = useCallback((message: string) => {
+    upsertToast("provider-fallback", { severity: "warning", message, ttlMs: DEFAULT_TOAST_TTL_MS });
+  }, [upsertToast]);
   // Called BEFORE `useMessageQueue` below, so the transcript's stream listener
   // is registered first and judges each frame first. That ordering is no longer
   // load-bearing — the shared verdict is a pure read and the queue's drain is
@@ -221,7 +229,8 @@ function SideChatSession({
     clear,
     abort,
     isCurrentTurnEvent,
-  } = useSideChat(api, { onSessionBound: handleSessionBound, paneTabId: boundSurface?.tabId });
+  } = useSideChat(api, { onSessionBound: handleSessionBound, paneTabId: boundSurface?.tabId, onProviderFallback: announceProviderFallback });
+  useEffect(() => { removeToast("provider-fallback"); }, [sessionId, removeToast]);
   // A pane chat is its pane's conversation: it opens on what the pane already said, read without moving the side loop, and
   // "New" ends it for the pane instead of switching the loop under another view's turn.
   const paneTabId = boundSurface?.tabId;
@@ -575,6 +584,11 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
+        {visibleToast !== null || persistent.length > 0 ? (
+          <div className="mb-1.5 min-w-0">
+            <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
+          </div>
+        ) : null}
         <ComposerFrame>
           <Composer
             ref={composerRef}

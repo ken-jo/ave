@@ -69,6 +69,7 @@ import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catal
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 import { mainWindowForContents, getPrimaryMainWindow } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
 
 let subscriptionRuntimeStatusRevision = 0;
@@ -587,8 +588,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   };
 
-  // read-only; no sender guard needed
-  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService));
+  ipcMain.handle(CHANNELS.settings.get, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
+    return rendererSettingsSnapshot(settingsService);
+  });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
@@ -608,8 +611,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
     }
-    // The server marketplace's theme and language lists are read and emptied only by the first-boot migration
-    // (design §16.3); themes and languages are installed as packages now, so a patch naming either is refused whole.
+    // Legacy language activations are main-owned until package migration releases them.
     const marketplacePatch = (partial as Record<string, unknown> | null | undefined)?.marketplace;
     if (
       marketplacePatch
@@ -617,6 +619,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && ["installedThemeBundleIds", "installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
     ) {
       return { ok: false, error: "legacy-marketplace-lists-main-owned" };
+    }
+    const appearancePatch = (partial as Record<string, unknown> | null | undefined)?.appearance as Record<string, unknown> | undefined;
+    const terminalFontPatch = appearancePatch?.terminalFont as Record<string, unknown> | undefined;
+    if (terminalFontPatch && typeof terminalFontPatch === "object" && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
+      throw new Error("Invalid terminal font family");
     }
     const permissionsPatch = (partial as Record<string, unknown> | null | undefined)?.permissions;
     if (permissionsPatch !== undefined && (!permissionsPatch || typeof permissionsPatch !== "object" || Array.isArray(permissionsPatch) || Object.keys(permissionsPatch).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes((permissionsPatch as Record<string, unknown>).ownerAwayAutoSkipMinutes))) {

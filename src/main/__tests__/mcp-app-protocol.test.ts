@@ -135,6 +135,15 @@ describe("mcp-app-protocol — isMcpAppPermissionGranted (the Electron permissio
     expect(isMcpAppPermissionGranted(url, "media", ["video"])).toBe(false);
   });
 
+  it("binds write-only clipboard access to the live resource declaration", () => {
+    const url = createMcpAppProxySession("srv-clipboard", undefined, { clipboardWrite: {} });
+    expect(isMcpAppPermissionGranted(url, "clipboard-sanitized-write")).toBe(true);
+    expect(isMcpAppPermissionGranted(url, "clipboard-read")).toBe(false);
+    expect(isMcpAppPermissionGranted(url, "deprecated-sync-clipboard-read")).toBe(false);
+    disposeMcpAppProxySession(new URL(url).searchParams.get("t")!);
+    expect(isMcpAppPermissionGranted(url, "clipboard-sanitized-write")).toBe(false);
+  });
+
   it("a card that declared nothing is denied everything (a session with no declaration grants nothing)", () => {
     const url = createMcpAppProxySession("srv-none", undefined, undefined);
     expect(isMcpAppPermissionGranted(url, "geolocation")).toBe(false);

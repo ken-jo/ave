@@ -14,6 +14,7 @@ import {
 import { resolveAppIconPath } from "./app-icon.js";
 import { escapeHtml } from "../shared/escape-html.js";
 import { preloadPreferences } from "./preload-bundles.js";
+import { LINK_WINDOW_SHELL_ARGUMENT } from "../shared/preload-bundles.js";
 import { applyBrowserSessionIdentity } from "./browser-user-agent.js";
 
 // JSON escaping does not protect script tags; escape angle brackets so embedded text cannot close the script element.
@@ -146,6 +147,7 @@ export async function openLinkWindow(
       webSecurity: true,
       // The host preload's sandbox always; the preload itself only when it was built.
       ...shellPreload,
+      additionalArguments: [LINK_WINDOW_SHELL_ARGUMENT],
       ...(preloadExists ? {} : { preload: undefined }),
     },
   });

@@ -2,10 +2,10 @@
   "request": {
     "id": 1,
     "jsonrpc": "2.0",
-    "method": "ave/host/callLlm",
+    "method": "ai.agent-connector.ave/host/callLlm",
     "params": {
       "_meta": {
-        "ave/invocation": "<uuid-1>"
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
       },
       "options": {
         "maxTokens": 16

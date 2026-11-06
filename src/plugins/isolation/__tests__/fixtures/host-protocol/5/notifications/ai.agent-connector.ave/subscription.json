@@ -1,0 +1,15 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ai.agent-connector.ave/subscription",
+    "params": {
+      "payload": {
+        "id": 0,
+        "kind": "result",
+        "result": null
+      },
+      "subscriptionId": "<uuid-1>"
+    }
+  },
+  "from": "host"
+}

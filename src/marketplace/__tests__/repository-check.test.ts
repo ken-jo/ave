@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { moonstoneBundle } from "../../ui/renderer/theme/bundles/moonstone.js";
 import { checkMarketplaceRepository, type RepositoryTree } from "../repository-check.js";
 
 const COMMIT = "a".repeat(40);
@@ -8,14 +7,6 @@ const AT = "2026-09-24T00:00:00Z";
 
 const authority = () => ({ capabilities: [], requires: { minAppVersion: "0.12.0" } });
 const artifact = () => ({ release: { repo: "acme/market", tag: "alpha-v1.0.0", asset: "alpha-1.0.0.zip", sha256: SHA } });
-const SURFACES = {
-  "surface-sunken": "228 30% 97%",
-  surface: "0 0% 100%",
-  "surface-raised": "0 0% 100%",
-  "surface-overlay": "0 0% 100%",
-  "border-subtle": "228 24% 94%",
-  "border-strong": "228 18% 84%",
-};
 
 function descriptor(kind: string, name: string, payload: Record<string, unknown>, patch: Record<string, unknown> = {}) {
   return { schemaVersion: 2, kind, name, version: "1.0.0", minAppVersion: "0.12.0", payload, ...patch };
@@ -35,7 +26,7 @@ function validFiles(): Map<string, unknown> {
         displayName: "Ave Official",
         packages: [
           { kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "1.0.0", versions: [version({ authority: authority(), artifact: artifact() })] },
-          { kind: "theme", name: "harbor", path: "themes/harbor", latest: "1.0.0", versions: [version()] },
+          { kind: "skill", name: "harbor", path: "skills/harbor", latest: "1.0.0", versions: [version()] },
           { kind: "mcp", name: "search", path: "mcp/search", latest: "1.0.0", versions: [version()] },
           { kind: "skill", name: "review", path: "skills/review", latest: "1.0.0", versions: [version()] },
         ],
@@ -43,10 +34,10 @@ function validFiles(): Map<string, unknown> {
     ],
     ["plugins/alpha/ave-package.json", descriptor("plugin", "alpha", { authority: authority(), artifact: artifact() })],
     ["plugins/alpha/source/package.json", { name: "@acme/alpha" }],
-    ["themes/harbor/ave-package.json", descriptor("theme", "harbor", { entry: "theme.json" })],
+    ["skills/harbor/ave-package.json", descriptor("skill", "harbor", { entry: "SKILL.md" })],
     [
-      "themes/harbor/theme.json",
-      { name: "Harbor", description: "Blue light.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES },
+      "skills/harbor/SKILL.md",
+      "---\nname: harbor\ndescription: Harbor instructions.\n---\nRead the change.\n",
     ],
     ["mcp/search/ave-package.json", descriptor("mcp", "search", { serverJson: "server.json" })],
     [
@@ -139,8 +130,8 @@ describe("checkMarketplaceRepository", () => {
 
   it("reports a descriptor the index copy disagrees with", () => {
     const files = validFiles();
-    files.set("themes/harbor/ave-package.json", descriptor("theme", "harbor", { entry: "theme.json" }, { minAppVersion: "0.13.0" }));
-    expect(check(files)).toEqual([{ subject: "theme/harbor", message: expect.stringContaining("differs from themes/harbor/ave-package.json in minAppVersion") }]);
+    files.set("skills/harbor/ave-package.json", descriptor("skill", "harbor", { entry: "SKILL.md" }, { minAppVersion: "0.13.0" }));
+    expect(check(files)).toEqual([{ subject: "skill/harbor", message: expect.stringContaining("differs from skills/harbor/ave-package.json in minAppVersion") }]);
   });
 
   it("reports a plugin whose index authority or pins differ from its descriptor", () => {
@@ -202,19 +193,19 @@ describe("checkMarketplaceRepository", () => {
 
   it("holds content packages to the install rules", () => {
     const svg = validFiles();
-    svg.set("themes/harbor/preview.svg", "<svg/>");
-    expect(check(svg)).toEqual([{ subject: "theme/harbor", message: expect.stringContaining("SVG is not allowed") }]);
+    svg.set("skills/harbor/preview.svg", "<svg/>");
+    expect(check(svg)).toEqual([{ subject: "skill/harbor", message: expect.stringContaining("SVG is not allowed") }]);
     const bad = validFiles();
-    bad.set("themes/harbor/theme.json", { name: "Harbor", description: "Blue light.", shell: "light", css: "body{}" });
-    expect(check(bad)).toEqual([{ subject: "theme/harbor", message: expect.stringContaining("theme.json") }]);
+    bad.set("skills/harbor/SKILL.md", "---\nname: harbor\ndescription: \n---\n");
+    expect(check(bad)).toEqual([{ subject: "skill/harbor", message: expect.stringContaining("SKILL.md") }]);
   });
 
   it("reports a listed content file it cannot read instead of checking it as empty", () => {
     const files = validFiles();
-    files.set("themes/harbor/preview.png", "png");
+    files.set("skills/harbor/preview.png", "png");
     const listed = tree(files);
-    const unreadable: RepositoryTree = { list: listed.list, read: (path) => (path === "themes/harbor/preview.png" ? null : listed.read(path)) };
-    expect(checkMarketplaceRepository(unreadable, OFFICIAL)).toEqual([{ subject: "theme/harbor", message: "preview.png is listed but cannot be read" }]);
+    const unreadable: RepositoryTree = { list: listed.list, read: (path) => (path === "skills/harbor/preview.png" ? null : listed.read(path)) };
+    expect(checkMarketplaceRepository(unreadable, OFFICIAL)).toEqual([{ subject: "skill/harbor", message: "preview.png is listed but cannot be read" }]);
   });
 
   it("holds MCP packages to the launcher grammar and their files", () => {

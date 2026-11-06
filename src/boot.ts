@@ -643,11 +643,6 @@ export async function bootstrap(
     // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
     // setupAlerts() runs below this call, before plugins start.
     getAlertsService: () => ctx.alertsService,
-    onPluginUiRevisionChange: (pluginId) => {
-      host.desktop?.revokePluginWebviews(pluginId, (appSessionId) =>
-        ctx.revokePluginOperationSession?.(appSessionId),
-      );
-    },
     deferStart: true,
     // Lazily reads ctx: setupMarketplace() installs the closure AFTER this
     // call, but startPluginsOnce only fires at startPlugins() further below.
@@ -684,11 +679,6 @@ export async function bootstrap(
   // cache (boot/steps/plugin-runtime.ts, "so a re-install does not inherit the
   // previous Tier-3 bypass or manifest SHA decision"). The subscriber is
   // registered by initPluginRuntime above, so it is live for the use below.
-  //
-  // `refreshPluginEventBridge` is deliberately NOT in this set: it re-registers
-  // the plugin event bridge against a renderer window, and the use below runs
-  // before conversation wiring has one. The renderer-driven (IPC) and
-  // deep-link wirings pass it because they run with a live window; boot does not.
   const pluginStateCleanupDeps = {
     pluginRuntime,
     settingsService,

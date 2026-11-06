@@ -57,7 +57,7 @@ describe("check-sandboxed-preloads", () => {
     const result = runGateScript(SCRIPT, root);
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[sandboxed-preloads] OK (5 preloads)");
+    expect(result.stdout).toContain("[sandboxed-preloads] OK (4 preloads)");
   });
 
   it("refuses node:path in the dock's preload, naming the window that would lose its bridge", () => {
@@ -68,12 +68,12 @@ describe("check-sandboxed-preloads", () => {
   });
 
   it.each([
-    ["plugin-preload.cjs", 'require("fs");\n', 'plugin-preload.cjs: require("fs") — not available'],
+    ["mcp-app-preload.cjs", 'require("fs");\n', 'mcp-app-preload.cjs: require("fs") — not available'],
     ["floating-dock-preload.cjs", 'require("events");\n', 'floating-dock-preload.cjs: require("events") — not available'],
     ["mcp-app-preload.cjs", 'require("node:timers");\n', 'mcp-app-preload.cjs: require("node:timers") — not available'],
-    ["plugin-preload.cjs", 'require("url");\n', 'plugin-preload.cjs: require("url") — not available'],
+    ["mcp-app-preload.cjs", 'require("url");\n', 'mcp-app-preload.cjs: require("url") — not available'],
     ["mcp-app-preload.cjs", 'require("./12.mcp.cjs");\n', 'mcp-app-preload.cjs: require("./12.mcp.cjs") — not available'],
-    ["plugin-preload.cjs", 'var chunk = require("./" + __webpack_require__.u(id));\n', 'plugin-preload.cjs: require("./" + __webpack_require__.u(id) — a sandboxed preload cannot load files or chunks'],
+    ["mcp-app-preload.cjs", 'var chunk = require("./" + __webpack_require__.u(id));\n', 'mcp-app-preload.cjs: require("./" + __webpack_require__.u(id) — a sandboxed preload cannot load files or chunks'],
   ])("refuses %s requiring a module or file a sandboxed preload cannot load", (name, source, named) => {
     const result = runGateScript(SCRIPT, createRoot({ dist: { [name]: source } }));
     expect(result.status).toBe(1);
@@ -81,7 +81,7 @@ describe("check-sandboxed-preloads", () => {
   });
 
   it.each([
-    ["plugin-preload.cjs", "const bytes = Buffer.from(text);\n", "Buffer"],
+    ["mcp-app-preload.cjs", "const bytes = Buffer.from(text);\n", "Buffer"],
     ["mcp-app-preload.cjs", "setImmediate(flush);\n", "setImmediate"],
     ["floating-dock-preload.cjs", "var t = ready ? clearImmediate : clearTimeout;\n", "clearImmediate"],
   ])("refuses %s naming %s, a global Electron 45 took from sandboxed preloads", (name, source, global) => {
@@ -119,10 +119,10 @@ describe("check-sandboxed-preloads", () => {
   });
 
   it("refuses a webpack config that drifted from its row, and a row with no config or copy behind it", () => {
-    const drifted = runGateScript(SCRIPT, createRoot({ webpackTail: 'Object.assign(module.exports.find((config) => config.name === "pluginPreload"), { entry: { pluginPreload: "src/other.ts" }, output: { filename: "plugin.cjs" } });' }));
+    const drifted = runGateScript(SCRIPT, createRoot({ webpackTail: 'Object.assign(module.exports.find((config) => config.name === "mcpAppPreload"), { entry: { mcpAppPreload: "src/other.ts" }, output: { filename: "plugin.cjs" } });' }));
     expect(drifted.status).toBe(1);
-    expect(drifted.stderr).toContain("webpack config pluginPreload: it outputs plugin.cjs, the table says plugin-preload.cjs");
-    expect(drifted.stderr).toContain("webpack config pluginPreload: its entry is not src/plugin-preload.ts");
+    expect(drifted.stderr).toContain("webpack config mcpAppPreload: it outputs plugin.cjs, the table says mcp-app-preload.cjs");
+    expect(drifted.stderr).toContain("webpack config mcpAppPreload: its entry is not src/mcp-app-preload.ts");
 
     const missing = runGateScript(SCRIPT, createRoot({ webpackTail: 'module.exports = module.exports.filter((config) => config.name !== "mcpAppPreload");' }));
     expect(missing.status).toBe(1);

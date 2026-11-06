@@ -1,7 +1,7 @@
 import "../../../../../test/renderer/setup.ts";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
-import { usePluginAuthStatuses } from "../use-plugin-auth-status.js";
+import { usePluginAuthStatuses, usePluginAuthRevision, type PluginAuthState } from "../use-plugin-auth-status.js";
 import type { AveApi, PluginCardSummary } from "../../types.js";
 
 function makePlugin(id: string, withAuth: boolean, overrides: Partial<PluginCardSummary> = {}): PluginCardSummary {
@@ -33,7 +33,6 @@ describe("usePluginAuthStatuses", () => {
   it("returns empty map when no plugin declares auth", async () => {
     const api = {
       callPluginMethod: vi.fn(),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("a", false), makePlugin("b", false)]),
@@ -45,7 +44,6 @@ describe("usePluginAuthStatuses", () => {
   it("invokes statusTool on mount and surfaces authed state", async () => {
     const api = {
       callPluginMethod: vi.fn(async () => ({ authenticated: true, account: "u@x" })),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
@@ -61,7 +59,6 @@ describe("usePluginAuthStatuses", () => {
   it("treats { authenticated: false } as unauthed", async () => {
     const api = {
       callPluginMethod: vi.fn(async () => ({ authenticated: false })),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
@@ -74,7 +71,6 @@ describe("usePluginAuthStatuses", () => {
   it("keeps auth checks for inactive plugins that still have a loaded runtime", async () => {
     const api = {
       callPluginMethod: vi.fn(async () => ({ authenticated: false })),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
 
     const { result } = renderHook(() =>
@@ -96,7 +92,6 @@ describe("usePluginAuthStatuses", () => {
   it("skips auth checks for non-callable failed/preparing runtimes", async () => {
     const api = {
       callPluginMethod: vi.fn(),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
 
     const { result } = renderHook(() =>
@@ -110,10 +105,28 @@ describe("usePluginAuthStatuses", () => {
     expect(api.callPluginMethod).not.toHaveBeenCalled();
   });
 
+  it("polls auth through the status tool at a bounded cadence", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const callPluginMethod = vi.fn()
+      .mockResolvedValueOnce({ authenticated: false })
+      .mockResolvedValueOnce({ authenticated: true, account: "signed-in" });
+    const api = { callPluginMethod } as unknown as AveApi;
+    const { result, unmount } = renderHook(() => usePluginAuthStatuses(api, [makePlugin("samplemail", true)], ["samplemail"]));
+    try {
+      await act(async () => {});
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(result.current.statuses.get("samplemail")).toEqual({ kind: "authed", account: "signed-in" });
+      expect(callPluginMethod).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("manual refresh does not invoke statusTool for a non-callable runtime", async () => {
     const api = {
       callPluginMethod: vi.fn(),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
 
     const { result } = renderHook(() =>
@@ -133,7 +146,6 @@ describe("usePluginAuthStatuses", () => {
       callPluginMethod: vi.fn(async () => {
         throw new Error("boom");
       }),
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
@@ -150,7 +162,6 @@ describe("usePluginAuthStatuses", () => {
       .mockRejectedValueOnce("raw string");     // manual refresh
     const api = {
       callPluginMethod,
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
@@ -174,33 +185,15 @@ describe("usePluginAuthStatuses", () => {
     });
   });
 
-  it("subscribes to <pluginId>.auth.changed and re-invokes statusTool on emit", async () => {
-    let onAuthChanged: ((data: unknown) => void) | undefined;
-    const callPluginMethod = vi
-      .fn()
-      .mockResolvedValueOnce({ authenticated: false }) // initial
+  it("refreshes auth status on host focus without a plugin event channel", async () => {
+    const callPluginMethod = vi.fn()
+      .mockResolvedValueOnce({ authenticated: false })
       .mockResolvedValueOnce({ authenticated: true, account: "post-login@x" });
-    const api = {
-      callPluginMethod,
-      onPluginEvent: vi.fn((eventType: string, handler: (d: unknown) => void) => {
-        if (eventType === "samplemail.auth.changed") onAuthChanged = handler;
-        return () => undefined;
-      }),
-    } as unknown as AveApi;
-
-    const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
-    );
-    await waitFor(() => {
-      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
-    });
-
-    expect(onAuthChanged).toBeDefined();
-    act(() => onAuthChanged?.(undefined));
-
-    await waitFor(() => {
-      expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
-    });
+    const api = { callPluginMethod } as unknown as AveApi;
+    const { result } = renderHook(() => usePluginAuthStatuses(api, [makePlugin("samplemail", true)], ["samplemail"]));
+    await waitFor(() => expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed"));
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(result.current.statuses.get("samplemail")?.kind).toBe("authed"));
     expect(callPluginMethod).toHaveBeenCalledTimes(2);
   });
 
@@ -211,7 +204,6 @@ describe("usePluginAuthStatuses", () => {
       .mockResolvedValueOnce({ authenticated: true });
     const api = {
       callPluginMethod,
-      onPluginEvent: vi.fn(() => () => undefined),
     } as unknown as AveApi;
     const { result } = renderHook(() =>
       usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
@@ -223,5 +215,48 @@ describe("usePluginAuthStatuses", () => {
     await waitFor(() => {
       expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
     });
+  });
+});
+
+
+describe("mounted auth observation", () => {
+  it("does not keep polling auth plugins with no mounted view, and stops after a view closes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const callPluginMethod = vi.fn(async () => ({ authenticated: true }));
+    const api = { callPluginMethod } as unknown as AveApi;
+    const plugins = [makePlugin("mounted", true), makePlugin("closed", true)];
+    const { rerender, unmount } = renderHook(({ mounted }) => usePluginAuthStatuses(api, plugins, mounted),
+      { initialProps: { mounted: [] as string[] } });
+    try {
+      await act(async () => {});
+      expect(callPluginMethod).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(callPluginMethod).toHaveBeenCalledTimes(2);
+      rerender({ mounted: ["mounted"] });
+      await act(async () => {});
+      expect(callPluginMethod).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(callPluginMethod).toHaveBeenCalledTimes(4);
+      rerender({ mounted: [] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(callPluginMethod).toHaveBeenCalledTimes(4);
+    } finally { unmount(); vi.useRealTimers(); }
+  });
+
+  it("remounts only after a known authenticated/account identity changes", () => {
+    const { result, rerender } = renderHook(({ status }) => usePluginAuthRevision(status),
+      { initialProps: { status: { kind: "loading" } as PluginAuthState } });
+    expect(result.current).toBe(0);
+    rerender({ status: { kind: "authed", account: "account-a" } });
+    expect(result.current).toBe(0);
+    rerender({ status: { kind: "error", message: "first error" } });
+    rerender({ status: { kind: "error", message: "different error" } });
+    expect(result.current).toBe(0);
+    rerender({ status: { kind: "authed", account: "account-a" } });
+    expect(result.current).toBe(0);
+    rerender({ status: { kind: "authed", account: "account-b" } });
+    expect(result.current).toBe(1);
+    rerender({ status: { kind: "unauthed" } });
+    expect(result.current).toBe(2);
   });
 });

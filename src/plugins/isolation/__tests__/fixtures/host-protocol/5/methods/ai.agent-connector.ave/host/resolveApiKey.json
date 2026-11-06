@@ -1,0 +1,27 @@
+{
+  "request": {
+    "id": 17,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/resolveApiKey",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "opts": {
+        "purpose": "llm",
+        "vendor": "openai"
+      }
+    }
+  },
+  "response": {
+    "id": 17,
+    "jsonrpc": "2.0",
+    "result": {
+      "baseUrl": "https://api.example.com/v1",
+      "exposure": "lease",
+      "handleId": "lease_golden",
+      "ok": true,
+      "vendor": "openai"
+    }
+  }
+}

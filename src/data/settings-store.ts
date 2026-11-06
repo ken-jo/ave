@@ -42,7 +42,8 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import { resolveRouteModelRetirement } from "../shared/context-budget.js";
-import { isThemeId } from "../shared/theme-bundles.js";
+import { isAppearanceMode, isDarkSchemeId, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, type AppearanceSettings } from "../shared/appearance-settings.js";
+export type { AppearanceSettings } from "../shared/appearance-settings.js";
 import {
   FONT_SIZE_SCALE_VALUES,
   type FontSizeScale,
@@ -87,7 +88,6 @@ import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
-  appearanceMigration,
   marketplaceProviderPresetSecretInvalidationIds,
   mergeLlmPatch,
   normalizeA2ARemote,
@@ -545,23 +545,6 @@ export interface AppSettings {
 
 export interface PluginSettings {}
 
-/** Appearance schema 2 selects one complete token bundle; followSystem uses its paired theme.
- * Load migrates legacy axes once; new callers use AppearanceSettings. */
-
-/** @internal; legacy v1 axis types, used only in migration. */
-export type ThemePreference = "system" | "light" | "dark" | "high-contrast";
-/** @internal; legacy v1 axis types, used only in migration. */
-export type ChatThemePreference = "default" | "lg" | "purple" | "orange" | "blue";
-/** @internal; legacy v1 axis types, used only in migration. */
-export type CodeThemePreference = "auto" | "light" | "dark";
-
-/** @internal; legacy v1 shape, used only in migrateAppearanceV1ToV2. */
-export interface AppearanceSettingsV1 {
-  theme: ThemePreference;
-  chatTheme: ChatThemePreference;
-  codeTheme: CodeThemePreference;
-}
-
 /** User-configurable font preferences. `family`; `"system"` keeps the built-in HOST_FONT_STACK (default). Any other value MUST match `isValidFontFamilyOverride`; rejected values fall back to `"system"` at normalize time so a corrupt settings.json cannot break first paint. `sizeScale`; multiplicative on `1rem`. Discrete preset values keep the UI legible at every step (a
  * free slider would let users pick `0.4` and lock themselves out of the settings dialog). The values + validators live in `src/shared/appearance-font.ts` (a zero-import pure module) so the renderer preload can enforce the same contract on the frame-0 theme prime without pulling this store's `electron`/`node:fs` deps. Re-exported here so existing import sites stay unchanged. */
 export {
@@ -570,26 +553,6 @@ export {
   type AppearanceFontSettings,
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
-
-/** v2 appearance settings; single bundle, optional followSystem + font overrides. */
-export interface AppearanceSettings {
-  schemaVersion: 2;
-  bundleId: string;
-  followSystem?: boolean;
-  font?: AppearanceFontSettings;
-  /**
-   * UI language. Drives the i18n layer (see {@link ../i18n}). Defaults to
-   * {@link DEFAULT_LOCALE} (English) for the global build; persisted here so
-   * the choice survives restarts and is read by both main and renderer.
-   */
-  language?: Locale;
-}
-
-export function migrateAppearanceV1ToV2(
-  legacy: AppearanceSettingsV1,
-): AppearanceSettings {
-  return appearanceMigration.migrateV1ToV2(legacy);
-}
 
 /** §B1; External URL viewer policy. `preferredFlow` decides whether external URLs (OAuth IdP, calendar webLinks, email open/compose URLs, etc.) are surfaced inside a host BrowserWindow ("in-app") or routed to the OS default browser ("system-browser"). SoT for the host. Plugins consume this via
  * `hostApi.openExternalUrl(...)`; see plan `.omc/plans/2026-05-04-external-url-viewer-policy.md`. Default `"in-app"` keeps plugin-owned auth and link flows inside Ave unless the plugin asks the host to open the system browser. Future enum extension reserved (e.g. `"ask-each-time"`). */
@@ -743,10 +706,7 @@ export interface MarketplaceSettings {
   installedProviderIds: MarketplaceEligibleLLMVendor[];
   /** User-installed OpenAI-compatible provider presets from Marketplace. */
   installedProviderPresets: MarketplaceInstalledProviderPreset[];
-  /** Themes the server marketplace turned on. Legacy: read and emptied only by the first-boot migration (design
-   * §16.3), which installs the theme package of each id; the renderer lists installed theme packages instead. */
-  installedThemeBundleIds: string[];
-  /** Language packs the server marketplace turned on. Legacy, like `installedThemeBundleIds`: the migration installs the language package for each locale. */
+  /** Language packs the server marketplace turned on. Legacy: the migration installs the language package for each locale. */
   installedLanguagePacks: Locale[];
   /** Messaging connections the owner installed, as the catalog declared them. Declarations only; the
    * credentials each one names are held by the connection itself in the encrypted secret store, never here. */
@@ -901,7 +861,7 @@ export class SettingsService {
     const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion, options.systemLocale);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
-    // Migration write-back (appearance v2, one-time markers): persist so the next load is clean.
+    // Migration write-back (appearance schema, one-time markers): persist so the next load is clean.
     if (needsWriteBack) {
       void this.commit().catch(() => { /* best-effort — next load re-migrates */ });
     }
@@ -956,8 +916,9 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs" | "upstreamProxy"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance"
     >> & {
+      appearance?: Partial<Omit<AppearanceSettings, "terminalFont">> & { terminalFont?: Partial<AppearanceSettings["terminalFont"]> };
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
       chat?: Partial<ChatSettings>;
@@ -973,6 +934,10 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    const terminalFontPatch = partial.appearance?.terminalFont;
+    if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
+      throw new Error("Invalid terminal font family");
+    }
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1103,57 +1068,28 @@ export class SettingsService {
       });
     }
     if (partial.appearance) {
-      // Validate every appearance field at the write boundary and exclude it from the outer spread; malformed IPC must never persist until reload.
-      // Deep-merge font fields so partial updates and null payloads cannot overwrite valid nested settings.
-      const {
-        font: fontPatch,
-        bundleId: bundleIdPatch,
-        schemaVersion: schemaVersionPatch,
-        followSystem: followSystemPatch,
-        ...appearanceRest
-      } = partial.appearance as unknown as {
-        font?: AppearanceFontSettings | null;
-        bundleId?: unknown;
-        schemaVersion?: unknown;
-        followSystem?: unknown;
-        [k: string]: unknown;
-      };
-      const nextAppearance: AppearanceSettings = {
-        ...this.settings.appearance,
-        ...(appearanceRest as Partial<AppearanceSettings>),
-      };
-      // schemaVersion is host-owned, not user data: this store only ever persists the v2 shape, so the stored
-      // value is pinned to 2 regardless of what the caller claims. Migration from v1 happens on load, from disk.
-      if (schemaVersionPatch !== undefined && schemaVersionPatch !== 2) {
-        log.warn(
-          `appearance.schemaVersion patch ignored (received ${JSON.stringify(schemaVersionPatch)}), keeping 2`,
-        );
-      }
-      nextAppearance.schemaVersion = 2;
-      // Same value set as the load path; `isThemeId` in shared/theme-bundles is the single source of truth for both.
-      acceptField(nextAppearance, "bundleId", bundleIdPatch, isThemeId, "appearance", PATCHED_FIELD);
-      acceptField(nextAppearance, "followSystem", followSystemPatch, isBooleanValue, "appearance", PATCHED_FIELD);
-      // Validate the language patch at the trust boundary (mirrors the font validation below): a malformed renderer/IPC payload becomes
-      // English. A well-formed tag no package provides yet is kept, because the content ledger is read after settings (see normalizeLocaleSetting).
-      if ("language" in appearanceRest) {
-        nextAppearance.language = normalizeLocaleSetting((appearanceRest as { language?: unknown }).language);
-      }
-      // Accept `font: undefined`, missing field, or `font: null`; all three mean "no font subfield patch in
-      // this call". Guard against `null` so a defensive caller (or a malformed test fixture) cannot crash
-
-      if (fontPatch !== undefined && fontPatch !== null && typeof fontPatch === "object") {
+      const patch = partial.appearance as unknown as Record<string, unknown>;
+      const nextAppearance: AppearanceSettings = { ...this.settings.appearance, schemaVersion: 3 };
+      acceptField(nextAppearance, "mode", patch.mode, isAppearanceMode, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
+      if ("language" in patch) nextAppearance.language = normalizeLocaleSetting(patch.language);
+      const fontPatch = patch.font;
+      if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {
+        const font = fontPatch as Record<string, unknown>;
         const mergedFont: AppearanceFontSettings = { ...this.settings.appearance.font };
-        if (typeof fontPatch.family === "string") {
-          if (fontPatch.family === "system" || isValidFontFamilyOverride(fontPatch.family)) {
-            mergedFont.family = fontPatch.family;
-          }
-          // else: drop silently; the cross-window broadcast still carries the validated post-merge value so listeners stay consistent.
-        }
-        if (typeof fontPatch.sizeScale === "number"
-          && (FONT_SIZE_SCALE_VALUES as readonly number[]).includes(fontPatch.sizeScale)) {
-          mergedFont.sizeScale = fontPatch.sizeScale as FontSizeScale;
-        }
-        nextAppearance.font = Object.keys(mergedFont).length > 0 ? mergedFont : undefined;
+        if (isValidFontFamilyOverride(font.family)) mergedFont.family = font.family;
+        if (typeof font.sizeScale === "number" && (FONT_SIZE_SCALE_VALUES as readonly number[]).includes(font.sizeScale)) mergedFont.sizeScale = font.sizeScale as FontSizeScale;
+        nextAppearance.font = mergedFont;
+      }
+      const terminalFontPatch = patch.terminalFont;
+      if (terminalFontPatch && typeof terminalFontPatch === "object" && !Array.isArray(terminalFontPatch)) {
+        const font = terminalFontPatch as Record<string, unknown>;
+        const mergedFont = { ...this.settings.appearance.terminalFont };
+        acceptField(mergedFont, "family", font.family, isValidFontFamilyOverride, "appearance.terminalFont", PATCHED_FIELD);
+        acceptField(mergedFont, "size", font.size, isTerminalFontSize, "appearance.terminalFont", PATCHED_FIELD);
+        acceptField(mergedFont, "lineHeight", font.lineHeight, isTerminalLineHeight, "appearance.terminalFont", PATCHED_FIELD);
+        nextAppearance.terminalFont = mergedFont;
       }
       this.settings.appearance = nextAppearance;
     }
@@ -1310,8 +1246,9 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    if (partial.permissions) {
-      for (const listener of this.changeListeners.get("permissions") ?? []) {
+    for (const key of ["permissions", "appearance"] as const) {
+      if (!partial[key]) continue;
+      for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
     }
@@ -1722,10 +1659,8 @@ export class SettingsService {
       };
 
       const onDisk = parsed.appearance as Record<string, unknown> | null | undefined;
-      // Detect v1 (legacy tri-axis) to trigger write-back after constructor.
-      const needsV2WriteBack = !!onDisk && typeof onDisk === "object" &&
-        onDisk.schemaVersion !== 2 &&
-        (typeof onDisk.theme === "string" || typeof onDisk.chatTheme === "string" || typeof onDisk.codeTheme === "string");
+      // Persist normalized appearance so retired or invalid fields are repaired once.
+      let needsAppearanceWriteBack = !!onDisk && typeof onDisk === "object" && onDisk.schemaVersion !== 3;
 
       const marketplace = normalizeMarketplace(marketplaceParsed);
       const normalizedLlm = mergeLlmPatch(
@@ -1735,7 +1670,8 @@ export class SettingsService {
       );
       llm = normalizedLlm;
 
-      const appearance = normalizeAppearance(parsed.appearance);
+      const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
+      needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 
       let normalizedFeatures = normalizeFeatureFlags(parsed.features);
 
@@ -1787,7 +1723,7 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
-      return { settings: result, writeBack: needsV2WriteBack || migrationWriteBack };
+      return { settings: result, writeBack: needsAppearanceWriteBack || migrationWriteBack };
     } catch (error) {
       if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);

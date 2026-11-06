@@ -14,18 +14,11 @@ type ScopeState =
 
 const PREPARED_SUBSCRIPTIONS = new Set([
   "config.onChange",
-  "onEvent",
 ]);
-const QUEUED_SIGNALS = new Set(["emitEvent"]);
-const PREPARED_SIGNAL_LIMIT = 64;
 
 interface GenerationBinding {
   access: PluginRuntimeGenerationAccess;
   generationId: string;
-}
-
-interface QueuedSignal {
-  invoke(): void;
 }
 
 function preparationError(pluginId: string, path: string): Error {
@@ -40,7 +33,6 @@ export class HostApiGenerationScope {
   private state: ScopeState = "preparing";
   private binding: GenerationBinding | undefined;
   private readonly disposers = new Set<() => void>();
-  private readonly queuedSignals: QueuedSignal[] = [];
   private readonly publishActions: Array<() => void> = [];
   private readonly supersedeActions: Array<() => void> = [];
 
@@ -126,19 +118,6 @@ export class HostApiGenerationScope {
       return;
     }
     if (this.state === "superseded") action();
-  }
-
-  postPublish(): readonly Error[] {
-    if (this.state !== "published") return [];
-    const errors: Error[] = [];
-    for (const signal of this.queuedSignals.splice(0)) {
-      try {
-        signal.invoke();
-      } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-    return errors;
   }
 
   registerDisposer(dispose: () => void): void {
@@ -227,7 +206,6 @@ export class HostApiGenerationScope {
     }
     if (this.state === "discarded" || this.state === "retired") return;
     this.state = "discarded";
-    this.queuedSignals.length = 0;
     this.publishActions.length = 0;
     this.supersedeActions.length = 0;
     this.disposeAll();
@@ -237,7 +215,6 @@ export class HostApiGenerationScope {
   retire(): readonly Error[] {
     if (this.state !== "retired") {
       this.state = "retired";
-      this.queuedSignals.length = 0;
       this.publishActions.length = 0;
       this.supersedeActions.length = 0;
     }
@@ -270,20 +247,6 @@ export class HostApiGenerationScope {
     if (this.state !== "preparing") return method.apply(receiver, args);
 
     if (PREPARED_SUBSCRIPTIONS.has(path)) return method.apply(receiver, args);
-    if (QUEUED_SIGNALS.has(path)) {
-      if (this.queuedSignals.length >= PREPARED_SIGNAL_LIMIT) {
-        throw new Error(
-          `[plugin:${this.pluginId}] prepared HostApi signal limit exceeded`,
-        );
-      }
-      const clonedArgs = structuredClone(args);
-      this.queuedSignals.push({
-        invoke: () => {
-          method.apply(receiver, clonedArgs);
-        },
-      });
-      return undefined;
-    }
 
     const effect = pathEffectClass(path);
     // Refuse every path absent from the effect table; UI callTool is not a HostApi member.

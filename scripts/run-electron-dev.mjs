@@ -177,8 +177,6 @@ const mainOutput = resolve(repoRoot, "dist/src/main/main.js");
 const [indexHtmlAsset] = resolveBuildAssets(repoRoot, "app-shell");
 const htmlSrc = indexHtmlAsset.src;
 const htmlOut = indexHtmlAsset.out;
-// Ship the external bootstrap with the page; the shell policy rejects inline module scripts.
-const pluginShellAssets = resolveBuildAssets(repoRoot, "plugin-shell");
 // Dev and shipped builds share the runtime-asset registry.
 const runtimeScriptAssets = resolveBuildAssets(repoRoot, "runtime-script");
 
@@ -427,20 +425,6 @@ function copyHtml() {
   }
 }
 
-function copyPluginShellAsset(asset) {
-  try {
-    mkdirSync(dirname(asset.out), { recursive: true });
-    copyFileSync(asset.src, asset.out);
-    log("plugin-shell", `copied ${asset.label}`);
-  } catch (err) {
-    log("plugin-shell", `copy failed (${asset.label}): ${err.message}`);
-  }
-}
-
-function copyAllPluginShellAssets() {
-  for (const asset of pluginShellAssets) copyPluginShellAsset(asset);
-}
-
 function copyRuntimeScriptAsset(asset) {
   try {
     mkdirSync(dirname(asset.out), { recursive: true });
@@ -574,7 +558,8 @@ function makeWatcherList() {
   return [
     { tag: "main",           label: "Main process (esbuild)",  output: resolve(repoRoot, "dist/src/main/main.js") },
     { tag: "preload",        label: "Preload (esbuild)",       output: resolve(repoRoot, "dist/src/preload.cjs") },
-    { tag: "plugin-preload", label: "Plugin preload (esbuild)",output: resolve(repoRoot, "dist/src/plugin-preload.cjs") },
+    { tag: "mcp-app-preload", label: "App preload (esbuild)", output: resolve(repoRoot, "dist/src/mcp-app-preload.cjs") },
+    { tag: "dock", label: "Floating dock (esbuild)", output: resolve(repoRoot, "dist/src/floating-dock-window.js") },
     { tag: "renderer",       label: "Renderer (esbuild)",      output: resolve(repoRoot, "dist/src/renderer.js") },
     { tag: "styles",         label: "Styles (Tailwind)",       readyPromise: watcherReady.get("styles")?.promise },
   ];
@@ -641,14 +626,6 @@ async function main() {
   copyHtml();
   fsWatchDisposers.push(startResilientWatch("html", htmlSrc, () => copyHtml()));
 
-  // Watch the shell page and external bootstrap together.
-  copyAllPluginShellAssets();
-  for (const asset of pluginShellAssets) {
-    fsWatchDisposers.push(
-      startResilientWatch("plugin-shell", asset.src, () => copyPluginShellAsset(asset)),
-    );
-  }
-
   copyAllRuntimeScriptAssets();
   for (const asset of runtimeScriptAssets) {
     fsWatchDisposers.push(
@@ -670,14 +647,22 @@ async function main() {
     "--watch=forever",
   ]);
 
-  // Match the literal .cjs preload target used by the webview.
-  spawnWatcher("plugin-preload", resolveLocalBin("esbuild"), [
-    "src/plugin-preload.ts",
+  spawnWatcher("mcp-app-preload", resolveLocalBin("esbuild"), [
+    "src/mcp-app-preload.ts",
     "--bundle",
     "--platform=node",
     "--format=cjs",
     "--external:electron",
-    "--outfile=dist/src/plugin-preload.cjs",
+    "--outfile=dist/src/mcp-app-preload.cjs",
+    "--watch=forever",
+  ]);
+
+  spawnWatcher("dock", resolveLocalBin("esbuild"), [
+    "src/floating-dock-window.tsx",
+    "--bundle",
+    "--platform=browser",
+    "--format=esm",
+    "--outfile=dist/src/floating-dock-window.js",
     "--watch=forever",
   ]);
 

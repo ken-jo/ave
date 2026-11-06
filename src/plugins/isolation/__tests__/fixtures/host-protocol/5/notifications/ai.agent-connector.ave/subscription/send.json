@@ -1,0 +1,18 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ai.agent-connector.ave/subscription/send",
+    "params": {
+      "payload": {
+        "id": 0,
+        "kind": "notification",
+        "method": "golden_ping",
+        "params": {
+          "step": 1
+        }
+      },
+      "subscriptionId": "<uuid-1>"
+    }
+  },
+  "from": "child"
+}

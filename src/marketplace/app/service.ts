@@ -193,7 +193,7 @@ interface InstalledBaseline {
 }
 
 /** These kinds expose their full consent fingerprint in the catalog, so review needs no staging. */
-const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "theme", "font", "language"]);
+const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "font", "language"]);
 
 export interface UpdateCandidate extends PackageUpdateOffer {
   facts: UpdateFacts;
@@ -306,7 +306,7 @@ export interface MarketplaceServiceOptions {
 }
 
 /** Gated kinds remain installed but unloaded on disable; config-based kinds must be removed. */
-const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "theme", "font", "language"]);
+const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "font", "language"]);
 
 const PREVIEW_ID_PREFIX = "preview-";
 

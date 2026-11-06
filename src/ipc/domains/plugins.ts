@@ -1,15 +1,11 @@
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
-import { dialog, ipcMain, webContents } from "electron";
+import { dialog, ipcMain } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
-import { canEmitEvent } from "../../plugins/capabilities.js";
-import { emitPluginUiEvent, subscribePluginUiEvents } from "../../plugins/ui-events.js";
 import { PluginDeploymentDeniedError } from "../../plugins/deployment-guard.js";
 import { stripSecretFields } from "../../plugins/config-schema.js";
 import { shouldBlockPluginSecretRead, validateApiKeyLikeSecretValue } from "../../plugins/secret-shape.js";
@@ -22,14 +18,13 @@ import {
   type NotificationContextRef,
   type NotificationKind,
 } from "../../main/notification-service.js";
-import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized, validatePluginFrame } from "../gated.js";
+import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWindow } from "../safe-send.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
-import { logPluginLifecycle, PluginPhase } from "../../plugins/lifecycle-log.js";
-import { redactFsPath, redactAuditPayload } from "../../audit/dlp-filter.js";
+import { redactFsPath } from "../../audit/dlp-filter.js";
 import {
   cloneThemePayload,
   getLastThemePayload,
@@ -37,15 +32,9 @@ import {
   resetLastThemePayloadForTests,
   validateThemePayload,
   type SafeThemePayload,
-} from "../../shared/plugin-theme-cache.js";
-import {
-  installPluginAssetProtocolHandler,
-  pluginAssetUrlFromRealPath,
-} from "../../main/plugin-asset-protocol.js";
-import { pluginPartitionName } from "../../shared/plugin-partition.js";
+} from "../../shared/host-theme-replay.js";
 import {
   installMcpAppPartitionPolicy,
-  installPluginPartitionPolicy,
 } from "../../main/html-preview-partition.js";
 import { createMcpAppProxySession, disposeMcpAppProxySession } from "../../main/mcp-app-protocol.js";
 import { resolveMcpUiBackend } from "../../mcp/mcp-ui-backend-resolver.js";
@@ -115,7 +104,6 @@ import {
   PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
   PROCESS_ENTRY_UNCONFINED_CODE,
 } from "../../plugins/process-entry.js";
-import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
   handlePluginBundleE2eSnapshot,
   handlePluginCards,
@@ -198,95 +186,13 @@ function validateSecretConfigValue(
   }
   return null;
 }
-interface PluginWebviewBinding {
-  pluginId: string;
-  /** Exact runtime generation that minted this renderer authority. */
-  generationId: string;
-  entryUrl: string;
-  assetEntryUrl: string;
-  /** Host-minted authority scope; never accepted from the renderer/plugin. */
-  appSessionId: string;
-  runtimeRevision: number;
-}
-const pluginWebviewRegistry = new Map<number, PluginWebviewBinding>();
-
-subscribePluginUiEvents(({ pluginId, type, data }) => {
-  for (const [wcId, binding] of pluginWebviewRegistry) {
-    if (binding.pluginId !== pluginId) continue;
-    try {
-      const wc = webContents.fromId(wcId);
-      if (wc && !wc.isDestroyed()) wc.send(CHANNELS.pluginBridge.event, type, data);
-    } catch { /* A closing webview cannot interrupt other recipients. */ }
-  }
-});
-
-// Publish one host theme event alongside direct webview delivery.
+// Publish validated theme state for host-owned chrome only. App views receive standard host context.
 export function publishHostThemeChanged(safe: SafeThemePayload): void {
   emitHostEvent("host.theme.changed", cloneThemePayload(safe));
 }
 
-// Replay cached tokens on registration so a new webview paints the active theme immediately.
-export function replayThemeToWebview(webContentsId: number): SafeThemePayload | null {
-  const theme = getLastThemePayload();
-  if (!theme) return null;
-  try {
-    const wc = webContents.fromId(webContentsId);
-    if (wc && !wc.isDestroyed()) {
-      wc.send(CHANNELS.pluginBridge.event, "host.theme.changed", theme);
-      return theme;
-    }
-  } catch {
-  }
-  return null;
-}
-
 export function __resetLastThemePayloadForTests(): void {
   resetLastThemePayloadForTests();
-}
-
-// Queue entry-URL reads until registration: first attach runs preload, and shell startup can outrun host registration.
-// Return not-registered when the bounded wait expires.
-const PENDING_ENTRY_URL_DEADLINE_MS = 5_000;
-type PendingEntryUrlResolver = (
-  reply: { ok: true; entryUrl: string } | { ok: false; error: "not-registered" },
-) => void;
-const pendingEntryUrlResolvers = new Map<number, Set<PendingEntryUrlResolver>>();
-
-function flushPendingEntryUrl(webContentsId: number, binding: PluginWebviewBinding): void {
-  const resolvers = pendingEntryUrlResolvers.get(webContentsId);
-  if (!resolvers) return;
-  pendingEntryUrlResolvers.delete(webContentsId);
-  for (const resolve of resolvers) resolve({ ok: true, entryUrl: binding.assetEntryUrl });
-}
-
-function clearPendingEntryUrl(webContentsId: number): void {
-  const resolvers = pendingEntryUrlResolvers.get(webContentsId);
-  if (!resolvers) return;
-  pendingEntryUrlResolvers.delete(webContentsId);
-  for (const resolve of resolvers) resolve({ ok: false, error: "not-registered" });
-}
-
-export function unregisterPluginWebview(
-  webContentsId: number,
-  revokeSession: (appSessionId: string) => void,
-): void {
-  const binding = pluginWebviewRegistry.get(webContentsId);
-  if (binding) revokeSession(binding.appSessionId);
-  pluginWebviewRegistry.delete(webContentsId);
-  clearPendingEntryUrl(webContentsId);
-}
-
-/** Revoke every renderer authority minted by a superseded plugin generation. */
-export function revokePluginWebviewsForPlugin(
-  pluginId: string,
-  revokeSession: (appSessionId: string) => void,
-): void {
-  for (const [webContentsId, binding] of pluginWebviewRegistry) {
-    if (binding.pluginId !== pluginId) continue;
-    revokeSession(binding.appSessionId);
-    pluginWebviewRegistry.delete(webContentsId);
-    clearPendingEntryUrl(webContentsId);
-  }
 }
 
 // Share install-state preparation and cleanup between IPC and marketplace lifecycles.
@@ -301,7 +207,6 @@ export function pluginLifecycleServices(deps: IpcDeps) {
     pluginRuntime,
     pluginMarketplace,
     settingsService,
-    refreshPluginEventBridge,
     pluginPaths,
     clearAuthPartitionService,
     listPluginAuthPartitionsService,
@@ -333,7 +238,6 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       ...cleanupServices,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginEventBridge,
       emitHostEvent,
       log,
     });
@@ -348,7 +252,6 @@ export function pluginLifecycleServices(deps: IpcDeps) {
       retirement,
       drainPluginInstallLockOperationsService:
         drainPluginInstallLockOperations,
-      refreshPluginEventBridge,
       emitHostEvent,
       // Its MCP sign-ins go the moment the registry stops naming it, whatever is reinstalled under the same id later.
       onRegistryRemovalCommitted: (removed) => void deps.mcpManager.reconcileBundledCredentials("plugin", { removed }),
@@ -363,7 +266,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     pluginMarketplace,
     settingsService,
     auditLogger,
-    refreshPluginEventBridge,
     getMainWindow,
   } = deps;
   const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
@@ -458,7 +360,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           throw new Error(`atomic local install committed without active runtime: ${result.pluginId}`);
         }
         emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "local-dev" });
-        refreshPluginEventBridge?.();
         broadcastPluginLifecycleEvent(CHANNELS.plugins.installResult, {
           slug: result.pluginId,
           success: true,
@@ -1028,7 +929,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     // Deliver only to a loop still holding the card's session; otherwise use notification delivery.
     const cardSession = typeof cardSessionId === "string" ? cardSessionId : "";
     const cardLoop = cardSession ? deps.findLoopBySessionId(cardSession) : undefined;
-    if (!cardLoop) {
+    if (cardSession && !cardLoop) {
       auditMcpApp("info", `[mcp-app:${serverId}] ui/message session mismatch → notification fallback`);
       // No app-authored title on this path — the source tag IS the title.
       return notify("", intent.text);
@@ -1037,7 +938,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     const envelope = formatAppMessageEnvelope(intent.text, source);
 
     // queueGuidance is the atomic active-turn check.
-    const queued = cardLoop.queueGuidance(envelope);
+    const queued = cardLoop ? cardLoop.queueGuidance(envelope) : "no-active-turn";
     if (queued === "queued") {
       auditMcpApp("info", `[mcp-app:${serverId}] ui/message → guidance queued (active turn)`);
       return { ok: true, disposition: "queued" } satisfies McpUiMessageOutcome;
@@ -1053,7 +954,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       id: `app:${serverId}:${eventId}`,
       source: { kind: "app" as const, serverId, eventId },
       // Address the staged card to its originating conversation so only its owning tile may confirm it.
-      originSessionId: cardSession,
+      ...(cardSession ? { originSessionId: cardSession } : { composerDraft: true }),
       title: serverId,
       summary: deriveOverlaySummaryForDisplay({ prompt: intent.text }),
       running: false,
@@ -1484,479 +1385,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Audit every rejected webview binding without changing its sentinel response.
-  const safeStringify = (value: unknown): string => {
-    try {
-      const s = JSON.stringify(value);
-      return typeof s === "string" && s.length > 1024 ? s.slice(0, 1024) + "...<truncated>" : s ?? "<unserializable>";
-    } catch {
-      return "<unserializable>";
-    }
-  };
-  const logRegisterReject = (reason: string, payload: unknown) => {
-    try {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "ipc-guard",
-        type: "warn",
-        input: safeStringify({
-          channel: CHANNELS.pluginBridge.registerWebview,
-          reason,
-          payload: redactAuditPayload(payload),
-        }),
-      });
-    } catch {
-      // Never let audit logging break the IPC sentinel return.
-    }
-  };
-  // Install preload, request gates, and asset schemes before creating the guest; first-load scheme tables cannot be repaired by retry.
-  ipcMain.handle(CHANNELS.pluginBridge.ensurePartition, (e, payload: { pluginId?: string }) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.ensurePartition, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const pluginId = payload?.pluginId;
-    if (typeof pluginId !== "string" || !pluginRuntime.getPluginManifest(pluginId)) {
-      return { ok: false, error: "unknown-plugin-id" };
-    }
-    installPluginPartitionPolicy(pluginPartitionName(pluginId), {
-      pluginRoot: pluginRuntime.getPluginRoot(pluginId) || undefined,
-    });
-    return { ok: true };
-  });
-  ipcMain.handle(CHANNELS.pluginBridge.registerWebview, (e, payload: { webContentsId: number; pluginId: string; entryUrl: string }) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.registerWebview, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const { webContentsId, pluginId, entryUrl } = payload ?? {};
-    logPluginLifecycle("debug", { pluginId: pluginId ?? "<unknown>", phase: PluginPhase.WEBVIEW_REGISTER, webContentsId, entryUrl: typeof entryUrl === "string" ? redactFsPath(entryUrl) : entryUrl }, "webview register requested");
-    if (typeof webContentsId !== "number" || !Number.isFinite(webContentsId)) {
-      logRegisterReject("invalid-webcontents-id", payload);
-      logPluginLifecycle("warn", { pluginId: pluginId ?? "<unknown>", phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "invalid-webcontents-id" }, "webview register rejected");
-      return { ok: false, error: "invalid-webcontents-id" };
-    }
-    if (typeof pluginId !== "string" || !pluginRuntime.getPluginManifest(pluginId)) {
-      logRegisterReject("unknown-plugin-id", { webContentsId, pluginId });
-      logPluginLifecycle("warn", { pluginId: pluginId ?? "<unknown>", phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "unknown-plugin-id" }, "webview register rejected");
-      return { ok: false, error: "unknown-plugin-id" };
-    }
-    if (typeof entryUrl !== "string" || !entryUrl.startsWith("file://") || entryUrl.length <= "file://".length) {
-      logRegisterReject("invalid-entry-url", { webContentsId, pluginId, entryUrl });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "invalid-entry-url" }, "webview register rejected");
-      return { ok: false, error: "invalid-entry-url" };
-    }
-    const rawInstallRoot = pluginRuntime.getPluginRoot(pluginId);
-    if (!rawInstallRoot) {
-      logRegisterReject("plugin-not-loaded", { webContentsId, pluginId });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "plugin-not-loaded" }, "webview register rejected");
-      return { ok: false, error: "plugin-not-loaded" };
-    }
-    let entryFsPath: string;
-    try {
-      entryFsPath = fileURLToPath(entryUrl);
-    } catch {
-      logRegisterReject("invalid-entry-url", { webContentsId, pluginId, entryUrl });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "invalid-entry-url" }, "webview register rejected");
-      return { ok: false, error: "invalid-entry-url" };
-    }
-    let resolvedRoot: string;
-    let resolvedEntry: string;
-    try {
-      resolvedRoot = realpathSync(rawInstallRoot);
-      resolvedEntry = realpathSync(entryFsPath);
-    } catch (err) {
-      // Treat missing install directories separately from actual boundary violations.
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        // Purge missing runtime tracking asynchronously so registration returns promptly.
-        void pluginRuntime.removePlugin(pluginId).catch((purgeErr) => {
-          logPluginLifecycle(
-            "warn",
-            { pluginId, phase: PluginPhase.WEBVIEW_REJECT, reason: "auto-purge-failed", error: (purgeErr as Error).message },
-            "register-webview auto-purge after ENOENT failed",
-          );
-        });
-        logRegisterReject("plugin-not-loaded", { webContentsId, pluginId, reason: "install-dir-missing" });
-        logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "plugin-not-loaded" }, "webview register rejected (install dir missing)");
-        return { ok: false, error: "plugin-not-loaded" };
-      }
-      logRegisterReject("entry-url-outside-install-root", { webContentsId, pluginId, entryFsPath, rawInstallRoot });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "entry-url-outside-install-root" }, "webview register rejected");
-      return { ok: false, error: "entry-url-outside-install-root" };
-    }
-    if (!isPathWithin(resolvedRoot, resolvedEntry)) {
-      logRegisterReject("entry-url-outside-install-root", { webContentsId, pluginId, resolvedEntry, resolvedRoot });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "entry-url-outside-install-root" }, "webview register rejected");
-      return { ok: false, error: "entry-url-outside-install-root" };
-    }
-    const assetEntryUrl = pluginAssetUrlFromRealPath(resolvedRoot, resolvedEntry);
-    // Preserve the generation query so reloaded entries receive a fresh module cache key.
-    const entrySearch = new URL(entryUrl).search;
-    const versionedAssetEntryUrl = entrySearch ? `${assetEntryUrl}${entrySearch}` : assetEntryUrl;
-    const runtimeRevision = Number(new URL(entryUrl).searchParams.get("aveRuntimeRevision"));
-    if (!Number.isSafeInteger(runtimeRevision) || !pluginRuntime.isPluginUiRevisionCurrent(pluginId, runtimeRevision)) {
-      logRegisterReject("stale-runtime-revision", { webContentsId, pluginId, runtimeRevision });
-      return { ok: false, error: "stale-runtime-revision" };
-    }
-    const generationAccess = pluginRuntime.getGenerationAccess();
-    const activeGeneration = generationAccess?.getActive(pluginId);
-    if (!activeGeneration) {
-      logRegisterReject("plugin-not-loaded", { webContentsId, pluginId, reason: "active-generation-missing" });
-      return { ok: false, error: "plugin-not-loaded" };
-    }
-    let targetWebview: Electron.WebContents | null = null;
-    try {
-      targetWebview = webContents.fromId(webContentsId) ?? null;
-    } catch {
-      targetWebview = null;
-    }
-    if (
-      !targetWebview
-      || targetWebview.isDestroyed()
-      || targetWebview.getType() !== "webview"
-    ) {
-      logRegisterReject("webview-not-live", { webContentsId, pluginId });
-      logPluginLifecycle("warn", { pluginId, phase: PluginPhase.WEBVIEW_REJECT, webContentsId, reason: "webview-not-live" }, "webview register rejected");
-      return { ok: false, error: "webview-not-live" };
-    }
-    // Serve assets from the exact generation root used to build the entry URL before guest imports.
-    // Root refresh failures are non-fatal and must not misreport a live webview as dead.
-    try {
-      installPluginAssetProtocolHandler(
-        pluginPartitionName(pluginId),
-        targetWebview.session,
-        resolvedRoot,
-      );
-    } catch (err) {
-      logPluginLifecycle(
-        "warn",
-        { pluginId, phase: PluginPhase.WEBVIEW_ATTACH, webContentsId, reason: scrubShortError(errorMessage(err)) },
-        "plugin asset root re-bind failed",
-      );
-    }
-    const binding = {
-      pluginId,
-      generationId: activeGeneration.generationId,
-      entryUrl,
-      assetEntryUrl: versionedAssetEntryUrl,
-      appSessionId: `plugin-ui:${webContentsId}:${randomUUID()}`,
-      runtimeRevision,
-    };
-    const previousBinding = pluginWebviewRegistry.get(webContentsId);
-    if (previousBinding) {
-      deps.revokePluginOperationSession(previousBinding.appSessionId);
-    }
-    pluginWebviewRegistry.set(webContentsId, binding);
-    flushPendingEntryUrl(webContentsId, binding);
-    logPluginLifecycle("debug", { pluginId, phase: PluginPhase.WEBVIEW_ATTACH, webContentsId }, "webview attached");
-    const replayedTheme = replayThemeToWebview(webContentsId);
-    if (replayedTheme) {
-      publishHostThemeChanged(replayedTheme);
-      logPluginLifecycle("debug", { pluginId, phase: PluginPhase.WEBVIEW_ATTACH, webContentsId }, "theme replay sent");
-    }
-    return { ok: true };
-  });
-
-  function resolvePluginFromSender(e: import("electron").IpcMainInvokeEvent): PluginWebviewBinding | null {
-    if (!validatePluginFrame(e)) return null;
-    const senderId = e.sender?.id;
-    if (typeof senderId !== "number") return null;
-    const binding = pluginWebviewRegistry.get(senderId);
-    if (!binding) return null;
-    const activeGeneration = pluginRuntime.getGenerationAccess()?.getActive(binding.pluginId);
-    if (
-      activeGeneration?.generationId === binding.generationId
-      && pluginRuntime.isPluginUiRevisionCurrent(binding.pluginId, binding.runtimeRevision)
-    ) {
-      return binding;
-    }
-    pluginWebviewRegistry.delete(senderId);
-    deps.revokePluginOperationSession(binding.appSessionId);
-    return null;
-  }
-
-  ipcMain.handle(CHANNELS.pluginBridge.getEntryUrl, (e) => {
-    const binding = resolvePluginFromSender(e);
-    if (binding) return { ok: true as const, entryUrl: binding.assetEntryUrl };
-
-    if (!validatePluginFrame(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.getEntryUrl, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const senderId = e.sender?.id;
-    if (typeof senderId !== "number") {
-      return { ok: false as const, error: "not-registered" };
-    }
-    // Wait for host registration when the shell requests its entry URL during first attach or reattach.
-    return new Promise<{ ok: true; entryUrl: string } | { ok: false; error: "not-registered" }>(
-      (resolve) => {
-        let settled = false;
-        const wrapped: PendingEntryUrlResolver = (reply) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(reply);
-        };
-        const set = pendingEntryUrlResolvers.get(senderId) ?? new Set();
-        set.add(wrapped);
-        pendingEntryUrlResolvers.set(senderId, set);
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          const current = pendingEntryUrlResolvers.get(senderId);
-          if (current) {
-            current.delete(wrapped);
-            if (current.size === 0) pendingEntryUrlResolvers.delete(senderId);
-          }
-          try {
-            auditLogger.log({
-              timestamp: new Date().toISOString(),
-              sessionId: "ipc-guard",
-              type: "warn",
-              input: safeStringify({
-                channel: CHANNELS.pluginBridge.getEntryUrl,
-                reason: "not-registered",
-                frameUrl: redactFsPath(e?.senderFrame?.url ?? ""),
-                senderId,
-                deadlineMs: PENDING_ENTRY_URL_DEADLINE_MS,
-              }),
-            });
-          } catch { /* audit must never break the sentinel return */ }
-          resolve({ ok: false, error: "not-registered" });
-        }, PENDING_ENTRY_URL_DEADLINE_MS);
-      },
-    );
-  });
-
-  // Apply theme tokens before importing the entry module to avoid a fallback-theme first paint.
-  ipcMain.handle(CHANNELS.pluginBridge.getTheme, (e) => {
-    if (!validatePluginFrame(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.getTheme, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    return { ok: true as const, theme: getLastThemePayload() };
-  });
-
-  ipcMain.handle(CHANNELS.pluginBridge.callTool, async (
-    e,
-    method: string,
-    payload?: unknown,
-    options?: { userAction?: boolean; operationGrantToken?: string },
-  ) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.callTool, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof method !== "string" || !method.trim()) {
-      return { ok: false, error: "invalid-method" };
-    }
-    const ownerPluginId = pluginRuntime.resolveToolOwner(method);
-    if (!ownerPluginId) {
-      return { ok: false, error: `Plugin method not found: ${method}` };
-    }
-    if (ownerPluginId !== binding.pluginId) {
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: "plugin-frame",
-        type: "error",
-        input: `[plugin:${binding.pluginId}] cross-plugin call denied: method='${method}' owner='${ownerPluginId}'`,
-      });
-      return { ok: false, error: "cross-plugin-call-denied" };
-    }
-    try {
-      const result = await pluginRuntime.callFromUi(method, payload, {
-        userAction: options?.userAction === true,
-        appSessionId: binding.appSessionId,
-        ...(typeof options?.operationGrantToken === "string"
-          ? { operationGrantToken: options.operationGrantToken }
-          : {}),
-        expectedGenerationId: binding.generationId,
-      });
-      return { ok: true, result };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle(CHANNELS.pluginBridge.requestOperationGrant, async (
-    e,
-    method: unknown,
-    payload: unknown,
-  ) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.requestOperationGrant, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof method !== "string" || !method.trim()) {
-      return { ok: false as const, error: "invalid-method" };
-    }
-    const ownerPluginId = pluginRuntime.resolveToolOwner(method);
-    if (ownerPluginId !== binding.pluginId) {
-      return { ok: false as const, error: "cross-plugin-call-denied" };
-    }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      return { ok: false as const, error: "invalid-operation-input" };
-    }
-    try {
-      const result = await deps.requestPluginOperationGrant({
-        pluginId: binding.pluginId,
-        toolName: method,
-        input: payload as Record<string, unknown>,
-        appSessionId: binding.appSessionId,
-        expectedGenerationId: binding.generationId,
-      });
-      return { ok: true as const, result };
-    } catch (error) {
-      return { ok: false as const, error: errMessage(error) };
-    }
-  });
-
-  // Bind config access to the sender's own plugin and strip secrets before plaintext persistence.
-  ipcMain.handle(CHANNELS.pluginBridge.configGet, (e, key: string) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.configGet, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof key !== "string" || !key.trim()) {
-      return { ok: false as const, error: "invalid-key" };
-    }
-    try {
-      const config = settingsService.getPluginConfig(binding.pluginId) ?? {};
-      return { ok: true as const, value: config[key] };
-    } catch (err) {
-      return { ok: false as const, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle(CHANNELS.pluginBridge.configSet, async (e, key: string, value: unknown) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.configSet, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof key !== "string" || !key.trim()) {
-      return { ok: false as const, error: "invalid-key" };
-    }
-    try {
-      return await withPluginInstallLock(binding.pluginId, async () => {
-        const currentBinding = resolvePluginFromSender(e);
-        const manifest = pluginRuntime.getPluginManifest(binding.pluginId);
-        if (
-          currentBinding !== binding
-          || !manifest
-          || !pluginRuntime.isPluginUiRevisionCurrent(binding.pluginId, binding.runtimeRevision)
-        ) {
-          throw new Error(`Plugin webview is no longer active: ${binding.pluginId}`);
-        }
-        const schema = manifest.configSchema;
-        const current = settingsService.getPluginConfig(binding.pluginId) ?? {};
-        const next = { ...current, [key]: value };
-        // Use the shared secret-stripping path so UI writes cannot bypass encrypted storage.
-        const stripped = stripSecretFields(schema, asPlainRecord(next));
-        const savedConfig = await settingsService.setPluginConfig(binding.pluginId, stripped);
-        pluginRuntime.setConfigOverride(binding.pluginId, savedConfig);
-        emitPluginConfigChange(binding.pluginId, key, savedConfig?.[key]);
-        // Do not restart from a webview config call; it would tear down the caller mid-request.
-        return { ok: true as const };
-      });
-    } catch (err) {
-      return { ok: false as const, error: (err as Error).message };
-    }
-  });
-
-  // Storage keys map to private plugin files without exposing filesystem layout; sanitize before path construction.
-  function sanitizeStorageKey(key: unknown): string | null {
-    if (typeof key !== "string") return null;
-    const trimmed = key.trim();
-    if (!trimmed || trimmed.length > 128) return null;
-    // Reject traversal, separators, and controls before joining storage keys to the plugin data path.
-    if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) return null;
-    if (trimmed === "." || trimmed === "..") return null;
-    return trimmed;
-  }
-  ipcMain.handle(CHANNELS.pluginBridge.storageGet, async (e, key: string) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.storageGet, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const safeKey = sanitizeStorageKey(key);
-    if (!safeKey) return { ok: false as const, error: "invalid-key" };
-    const access = pluginRuntime.getGenerationAccess();
-    if (!access) return { ok: false as const, error: "unknown-plugin-id" };
-    let lease;
-    try {
-      lease = await access.acquireExact(binding.pluginId, binding.generationId);
-      return await access.runWithLease(lease, async () => {
-        const storage = pluginRuntime.getPluginStorage(binding.pluginId);
-        if (!storage) return { ok: false as const, error: "unknown-plugin-id" };
-        const value = await storage.readJson<unknown>(`ui-storage/${safeKey}.json`);
-        return { ok: true as const, value: value ?? undefined };
-      });
-    } catch (err) {
-      return { ok: false as const, error: (err as Error).message };
-    } finally {
-      lease?.release();
-    }
-  });
-  ipcMain.handle(CHANNELS.pluginBridge.storageSet, async (e, key: string, value: unknown) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.storageSet, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const safeKey = sanitizeStorageKey(key);
-    if (!safeKey) return { ok: false as const, error: "invalid-key" };
-    const access = pluginRuntime.getGenerationAccess();
-    if (!access) return { ok: false as const, error: "unknown-plugin-id" };
-    let lease;
-    try {
-      lease = await access.acquireExact(binding.pluginId, binding.generationId);
-      return await access.runWithLease(lease, async () => {
-        const storage = pluginRuntime.getPluginStorage(binding.pluginId);
-        if (!storage) return { ok: false as const, error: "unknown-plugin-id" };
-        await storage.writeJson(`ui-storage/${safeKey}.json`, value);
-        return { ok: true as const };
-      });
-    } catch (err) {
-      return { ok: false as const, error: (err as Error).message };
-    } finally {
-      lease?.release();
-    }
-  });
-
-  ipcMain.handle(CHANNELS.pluginBridge.emitEvent, (e, type: string, data?: unknown) => {
-    const binding = resolvePluginFromSender(e);
-    if (!binding) {
-      auditUnauthorized(auditLogger, CHANNELS.pluginBridge.emitEvent, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof type !== "string" || !type.trim()) {
-      return { ok: false, error: "invalid-event-type" };
-    }
-    const manifest = pluginRuntime.getPluginManifest(binding.pluginId);
-    if (!manifest) {
-      return { ok: false, error: "unknown-plugin-id" };
-    }
-    if (!canEmitEvent(type, binding.pluginId)) {
-      return { ok: false, error: "event-target-forbidden" };
-    }
-    try {
-      pluginRuntime.assertPluginEventEmitAccess(binding.pluginId, type);
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-    try {
-      emitPluginUiEvent(binding.pluginId, type, data);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
   // Fan out theme updates to registered webviews and publish the same host event.
   ipcMain.handle(CHANNELS.host.pluginThemeNotify, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
@@ -1967,14 +1395,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!validated.ok) return validated;
     const { safe } = validated;
     publishHostThemeChanged(safe);
-    for (const [wcId] of pluginWebviewRegistry) {
-      try {
-        const wc = webContents.fromId(wcId);
-        if (wc && !wc.isDestroyed()) {
-          wc.send(CHANNELS.pluginBridge.event, "host.theme.changed", cloneThemePayload(safe));
-        }
-      } catch { /* webview destroyed between registry read and send */ }
-    }
     return { ok: true };
   });
 

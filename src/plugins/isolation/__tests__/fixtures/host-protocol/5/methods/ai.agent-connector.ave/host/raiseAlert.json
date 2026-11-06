@@ -1,0 +1,33 @@
+{
+  "request": {
+    "id": 35,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/raiseAlert",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "input": {
+        "key": "mail-1",
+        "kind": "mail-reply",
+        "priority": "high",
+        "slots": {
+          "subject": "Quarterly report"
+        }
+      }
+    }
+  },
+  "response": {
+    "id": 35,
+    "jsonrpc": "2.0",
+    "result": {
+      "alertId": "golden-alert-id",
+      "delivered": {
+        "card": true,
+        "osNotification": false,
+        "toast": false
+      },
+      "status": "raised"
+    }
+  }
+}

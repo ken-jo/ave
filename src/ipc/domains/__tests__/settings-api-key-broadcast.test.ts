@@ -1410,6 +1410,21 @@ describe("the server marketplace's theme and language lists", () => {
 });
 
 describe("the renderer settings snapshot", () => {
+  it.each(["file:///app/index.html", "file:///app/link-window.html", "http://localhost:3000", "http://127.0.0.1:3000"])("accepts a legitimate host settings reader at %s", async (url) => {
+    const deps = makeDeps([makeWindow()]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await handlers.get("ave:settings:get")!({ senderFrame: { url } })).toHaveProperty("llm");
+  });
+
+  it.each([undefined, "ave-mcp-app://server/proxy.html", "https://untrusted.test"])("refuses a non-host settings reader at %s", async (url) => {
+    const deps = makeDeps([makeWindow()]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await handlers.get("ave:settings:get")!(url ? { senderFrame: { url } } : {})).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(deps.settingsService.getAll).not.toHaveBeenCalled();
+  });
+
   it("leaves out the upstream proxy, which crosses only through its own permissions channels", async () => {
     const deps = makeDeps([makeWindow()]);
     deps.settingsService.getAll.mockReturnValue({
@@ -1422,5 +1437,18 @@ describe("the renderer settings snapshot", () => {
     const snapshot = await invoke("ave:settings:get") as Record<string, unknown>;
 
     expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
+  });
+});
+
+describe("terminal font settings validation", () => {
+  it.each(["bad;value", "", 42, null])("rejects an invalid family without saving or broadcasting", async (family) => {
+    const window = makeWindow();
+    const deps = makeDeps([window]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    await expect(invoke("ave:settings:update", { appearance: { terminalFont: { family } } }))
+      .rejects.toThrow("Invalid terminal font family");
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(window.webContents.send).not.toHaveBeenCalled();
   });
 });

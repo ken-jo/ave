@@ -9,7 +9,7 @@ const APPROVAL_ID = "22222222-2222-4222-8222-222222222222";
 const CODE_ID = "33333333-3333-4333-8333-333333333333";
 const BOT_TOKEN = "123456789:SENTINEL-bot-token-for-the-ipc-test";
 const PAIRING_CODE = "ave-tg-v1." + "a".repeat(43);
-const PLUGIN_FRAME = { senderFrame: { url: "file:///app/plugin-ui-shell.html" } };
+const PLUGIN_FRAME = { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } };
 
 vi.mock("electron", () => ({
   ipcMain: {

@@ -35,7 +35,7 @@
       "properties": {
         "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
         "id": { "const": 0 },
-        "method": { "const": "$/ave/hello" },
+        "method": { "const": "$/ai.agent-connector.ave/hello" },
         "params": {
           "type": "object",
           "additionalProperties": false,
@@ -74,7 +74,7 @@
       "required": ["jsonrpc", "method", "params"],
       "properties": {
         "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
-        "method": { "const": "$/ave/cancel" },
+        "method": { "const": "$/ai.agent-connector.ave/cancel" },
         "params": {
           "type": "object",
           "additionalProperties": false,
@@ -90,7 +90,7 @@
       "required": ["jsonrpc", "method"],
       "properties": {
         "jsonrpc": { "$ref": "#/$defs/jsonrpc" },
-        "method": { "const": "$/ave/shutdown" }
+        "method": { "const": "$/ai.agent-connector.ave/shutdown" }
       }
     },
     "request": {

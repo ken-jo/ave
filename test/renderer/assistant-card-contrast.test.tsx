@@ -5,7 +5,8 @@ import { relativeLuminance } from "./helpers.js";
 import { render } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { AssistantCard } from "../../src/ui/renderer/components/AssistantCard.js";
-import { BUNDLE_IDS, findBundle } from "../../src/ui/renderer/theme/bundles/index.js";
+import { SCHEMES } from "../../src/ui/renderer/theme/schemes/index.js";
+import { resolveTheme } from "../../src/ui/renderer/theme/resolve-theme.js";
 import { assistantEntry } from "../../src/__tests__/test-helpers.js";
 
 describe("AssistantCard — markdown wrapper classes (light-theme regression guard)", () => {
@@ -55,47 +56,12 @@ function contrastRatio(fgHsl: string, bgHsl: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Keep fixture colors aligned with shipped CSS primitives; importing styles would alter test cascade.
-const SHELL_TOKENS: Record<string, { fg: string; bg: string }> = {
-  dark: {
-    fg: "210 40% 98%",      // --p-slate-50
-    bg: "222.2 84% 4.9%",    // --p-slate-950
-  },
-  light: {
-    fg: "222 47% 11%",       // --p-slate-900
-    bg: "0 0% 100%",         // --p-slate-0
-  },
-  "high-contrast": {
-    fg: "0 0% 100%",
-    bg: "0 0% 0%",
-  },
-};
-
-describe("Theme tokens — body text contrast must clear WCAG AA on every shell", () => {
-  for (const [shell, { fg, bg }] of Object.entries(SHELL_TOKENS)) {
-    it(`data-theme=\"${shell}\" has --foreground / --background contrast >= 4.5:1`, () => {
-      const ratio = contrastRatio(fg, bg);
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
-    });
-  }
-});
-
-describe("Theme bundles — chat and code text contrast must clear WCAG AA", () => {
-  for (const bundleId of BUNDLE_IDS) {
-    it(`${bundleId} foreground/background contrast >= 4.5:1`, () => {
-      const bundle = findBundle(bundleId);
-      expect(bundle).toBeDefined();
-      if (!bundle) return;
-      const ratio = contrastRatio(bundle.tokens.foreground, bundle.tokens.background);
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
-    });
-
-    it(`${bundleId} code foreground/background contrast >= 4.5:1`, () => {
-      const bundle = findBundle(bundleId);
-      expect(bundle).toBeDefined();
-      if (!bundle) return;
-      const ratio = contrastRatio(bundle.tokens["code-fg"], bundle.tokens["code-bg"]);
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
+describe("Scheme tokens — chat and code text clear WCAG AA", () => {
+  for (const scheme of SCHEMES) {
+    it(`${scheme.id} body and code text contrast >= 4.5:1`, () => {
+      const { tokens } = resolveTheme(scheme);
+      expect(contrastRatio(tokens.foreground, tokens.background)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(tokens["code-fg"], tokens["code-bg"])).toBeGreaterThanOrEqual(4.5);
     });
   }
 });
@@ -180,11 +146,6 @@ describe("ave-prose CSS coverage — markdown tables stay readable", () => {
         const raw = layer.match(/\bbody\s*\{[^{}]*?font-family:\s*([^;}]+)/);
         return raw ? raw[1]! : null;
       },
-    },
-    {
-      label: "plugin-ui-shell.html body",
-      path: "src/plugin-ui-shell.html",
-      extract: (text) => text.match(/body\s*\{[^{}]*?font-family:\s*([^;}]+)/)?.[1] ?? null,
     },
     {
       label: "bootstrap-splash.ts splash inline",

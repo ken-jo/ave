@@ -3,7 +3,7 @@ import {
   untrustedEvent,
   hostFrameEvent,
   invokeRegisteredHandlerWithEvent,
-  pluginShellFrameEvent,
+  isolatedAppFrameEvent,
 } from "../../__tests__/test-helpers.js";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -143,7 +143,7 @@ describe("ave:usage:daily-summary", () => {
   });
 
   it("rejects plugin shell frames even though they are local file URLs", async () => {
-    const result = await invoke("ave:usage:daily-summary", pluginShellFrameEvent(), { date: "2026-07-04" });
+    const result = await invoke("ave:usage:daily-summary", isolatedAppFrameEvent(), { date: "2026-07-04" });
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(mockGenerateText).not.toHaveBeenCalled();
   });

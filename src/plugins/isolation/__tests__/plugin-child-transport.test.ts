@@ -103,7 +103,7 @@ describe("the transport is the one producer of MCP request metadata", () => {
     });
     transport.start();
     transport.close("revoked");
-    rig.childToHost.write(frameMessage({ jsonrpc: "2.0", id: "late", method: "ave/host/callLlm",
+    rig.childToHost.write(frameMessage({ jsonrpc: "2.0", id: "late", method: "ai.agent-connector.ave/host/callLlm",
       params: { prompt: "late effect" } }));
     await settle();
     expect(rig.sent).toEqual([expect.objectContaining({ id: "late", error: expect.objectContaining({
@@ -123,7 +123,7 @@ describe("the transport is the one producer of MCP request metadata", () => {
     expect(sent[0]).toMatchObject({ method: "tools/call" });
     const params = sent[0]!.params as Record<string, unknown>;
     // tools/call carries a fresh invocation token in addition to required protocol metadata.
-    const { "ave/invocation": invocation, ...s1 } = params._meta as Record<string, unknown>;
+    const { "ai.agent-connector.ave/invocation": invocation, ...s1 } = params._meta as Record<string, unknown>;
     expect(invocation).toMatch(/^[0-9a-f-]{36}$/u);
     expect(s1).toEqual({
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -137,9 +137,9 @@ describe("the transport is the one producer of MCP request metadata", () => {
   it("refuses an MCP method through request", async () => {
     const { link, sent } = recordedLink();
     const transport = transportOver(link);
-    // @ts-expect-error -- `request` takes ave/instance methods only.
+    // @ts-expect-error -- `request` takes ai.agent-connector.ave/instance methods only.
     await expect(transport.request("tools/call", { name: "speak" })).rejects.toThrow(
-      /'tools\/call' is not an ave\/instance method/,
+      /'tools\/call' is not an ai\.agent-connector\.ave\/instance method/,
     );
     await settle();
     expect(sent).toEqual([]);
@@ -168,9 +168,9 @@ describe("the transport is the one producer of MCP request metadata", () => {
       onGone: () => undefined,
       onFault: () => undefined,
     });
-    await expect(transport.probe("ave/instance/construct")).rejects.toThrow(/probe refuses/);
+    await expect(transport.probe("ai.agent-connector.ave/instance/construct")).rejects.toThrow(/probe refuses/);
     await expect(transport.probe("tools/list")).rejects.toThrow(/probe refuses/);
-    const reply = await transport.probe("ave/host/nope");
+    const reply = await transport.probe("ai.agent-connector.ave/host/nope");
     expect(reply).toEqual({ error: expect.objectContaining({ code: RPC_METHOD_NOT_FOUND }) });
     transport.close("case over");
   });
@@ -181,7 +181,7 @@ describe("an observed exit is not a requested termination", () => {
     const childGone = vi.spyOn(HostApiDispatcher.prototype, "childGone");
     const { link, terminated, fireGone } = recordedLink();
     const transport = transportOver(link);
-    const pending = transport.request("ave/instance/start", {});
+    const pending = transport.request("ai.agent-connector.ave/instance/start", {});
     fireGone("child exited code=0 signal=null");
     await expect(pending).rejects.toThrow("child exited code=0 signal=null");
     await expect(transport.exited).resolves.toBe("child exited code=0 signal=null");
@@ -195,15 +195,15 @@ describe("an observed exit is not a requested termination", () => {
   it("terminates a child whose request outlived its deadline, exactly once", async () => {
     const { link, terminated } = recordedLink();
     const transport = transportOver(link);
-    await expect(transport.request("ave/instance/start", {}, 20)).rejects.toThrow(/exceeded 20ms/);
+    await expect(transport.request("ai.agent-connector.ave/instance/start", {}, 20)).rejects.toThrow(/exceeded 20ms/);
     expect(terminated).toHaveLength(1);
-    expect(terminated[0]).toMatch(/'ave\/instance\/start' timed out after 20ms/);
+    expect(terminated[0]).toMatch(/'ai\.agent-connector\.ave\/instance\/start' timed out after 20ms/);
   });
 
   it("terminates a child that broke the framing, exactly once", async () => {
     const { link, childToHost, terminated } = recordedLink();
     const transport = transportOver(link);
-    const pending = transport.request("ave/instance/start", {});
+    const pending = transport.request("ai.agent-connector.ave/instance/start", {});
     childToHost.write(Buffer.alloc(FRAME_BYTES_MAX + 1, 0x78));
     await expect(pending).rejects.toThrow(/exceeded .* bytes/);
     expect(terminated).toHaveLength(1);
@@ -214,7 +214,7 @@ describe("a live child's fault", () => {
   it("starts the termination and fails what was pending", async () => {
     const { link, terminated, fireFault } = recordedLink();
     const transport = transportOver(link);
-    const pending = transport.request("ave/instance/start", {});
+    const pending = transport.request("ai.agent-connector.ave/instance/start", {});
     const exited = observe(transport.exited);
     fireFault("kill EPERM");
     await expect(pending).rejects.toThrow("kill EPERM");
@@ -288,7 +288,7 @@ describe("a refused signal does not recurse", () => {
         link.onFault(handler);
       },
     });
-    const pending = transport.request("ave/instance/start", {});
+    const pending = transport.request("ai.agent-connector.ave/instance/start", {});
     const rejected = expect(pending).rejects.toThrow();
     const exited = observe(transport.exited);
     await settle();
@@ -348,7 +348,7 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
           seen.push(marker.getStore());
           return { status: "raised", alertId: "alert" } as never;
         }),
-        onEvent: defineHostApiPath("onEvent", async (_call, scope) => {
+        "config.onChange": defineHostApiPath("config.onChange", async (_call, scope) => {
           scope.adopt("events", () => options.teardown?.());
           return { handleId: "events" };
         }),
@@ -546,7 +546,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     if (ending === "peer-gone") rig.fireGone("child crashed");
     else if (ending === "fault") rig.fireFault("pipe failed");
     else if (ending === "timeout") {
-      await expect(rig.transport.request("ave/instance/start", {}, 20)).rejects.toThrow(/exceeded 20ms/);
+      await expect(rig.transport.request("ai.agent-connector.ave/instance/start", {}, 20)).rejects.toThrow(/exceeded 20ms/);
     } else rig.transport.close("retired for restart");
     expect(invocationCounts(rig.transport)).toEqual({ live: 0, settled: 0 });
     await rejected;
@@ -559,7 +559,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     const rejected = expect(calls.replies[1]).rejects.toThrow();
     rig.deliver({ jsonrpc: "2.0", id: calls.frames[0]!.id as string, result: { content: [] } });
     await calls.replies[0];
-    rig.deliver({ jsonrpc: "2.0", id: "subscribe", method: hostApiMethodOf("onEvent"), params: { eventType: "probe.event", handler: "events" } });
+    rig.deliver({ jsonrpc: "2.0", id: "subscribe", method: hostApiMethodOf("config.onChange"), params: { key: "probe", callback: "events" } });
     await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === "subscribe")).toBe(true));
     expect(rig.sent.find((frame) => frame.id === "subscribe")).toMatchObject({ result: { handleId: "events" } });
     try {

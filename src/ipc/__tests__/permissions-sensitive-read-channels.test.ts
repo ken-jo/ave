@@ -1,5 +1,5 @@
 /** Read-only approval, audit, and hook-trust channels are reconnaissance-sensitive.
- * Invoke real handlers with plugin-shell senders to ensure host-only validation rejects them. */
+ * Invoke real handlers with isolated app-resource senders to ensure host-only validation rejects them. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { foreignFrameEvent } from "../../__tests__/test-helpers.js";
@@ -18,7 +18,7 @@ vi.mock("electron", () => ({
 const { registerPermissionsHandlers } = await import("../domains/permissions.js");
 const { PERMISSIONS } = await import("../../shared/ipc-channels.js");
 
-const PLUGIN_SHELL = "file:///dist/src/plugin-ui-shell.html";
+const PLUGIN_SHELL = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
 const HOST_RENDERER = "file:///dist/src/index.html";
 
 /** Read-only, and each discloses something a plugin can act on. `args` are the minimum a handler
@@ -59,7 +59,7 @@ beforeEach(() => {
 
 describe("sensitive read-only permission channels", () => {
   it.each(SENSITIVE_READ_CHANNELS)(
-    "%s refuses a plugin shell frame",
+    "%s refuses an isolated app-resource frame",
     async (_name, channel, args) => {
       const handler = handleMap.get(channel);
       expect(handler, `${channel} was never registered`).toBeDefined();

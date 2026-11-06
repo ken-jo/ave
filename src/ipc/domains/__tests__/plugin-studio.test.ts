@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import AdmZip from "adm-zip";
 import { dialog } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
-import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
+import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-helpers.js";
 import { ContentStore, type ContentActivation } from "../../../marketplace/content/store.js";
 import { PluginStudioStore } from "../../../studio/store.js";
 import { previewStudioConnector } from "../../../studio/connector.js";
@@ -129,7 +129,7 @@ describe("plugin Studio IPC", () => {
 
   it("registers every declared channel and refuses a plugin shell", async () => {
     expect([...handlers.keys()].sort()).toEqual(Object.values(CHANNELS.pluginStudio).sort());
-    const result = await invoke(CHANNELS.pluginStudio.listDrafts, pluginShellFrameEvent());
+    const result = await invoke(CHANNELS.pluginStudio.listDrafts, isolatedAppFrameEvent());
     expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
   });
 
@@ -160,7 +160,7 @@ describe("plugin Studio IPC", () => {
     const draft = await invoke(CHANNELS.pluginStudio.writeDraft, hostFrameEvent(), { name: "team-kit", version: "1.0.0",
       description: "A team plugin", references: [{ kind: "connector", name: "sample" }] });
     expect(draft).toMatchObject({ ok: true });
-    expect(await invoke(CHANNELS.pluginStudio.connectorCopyPreview, pluginShellFrameEvent(), "sample"))
+    expect(await invoke(CHANNELS.pluginStudio.connectorCopyPreview, isolatedAppFrameEvent(), "sample"))
       .toEqual({ ok: false, error: "unauthorized-frame" });
     const response = await invoke(CHANNELS.pluginStudio.connectorCopyPreview, hostFrameEvent(), "sample") as { ok: boolean; value: Awaited<ReturnType<typeof previewStudioConnector>> };
     expect(response.ok).toBe(true);

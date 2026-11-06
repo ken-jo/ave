@@ -1,6 +1,5 @@
 /** Serve installed assets through launch-token URLs, never filesystem paths; contracts stay process-neutral. */
 import { HOST_FONT_STACK } from "./host-font-stack.js";
-import type { ThemeSurfaces, ThemeTokens } from "./theme-tokens.js";
 import type { AgentPluginRoutineTemplate } from "./agent-plugin-routine-template.js";
 import { isRecord } from "./is-record.js";
 
@@ -10,11 +9,11 @@ export const CONTENT_ASSET_SCHEME = "ave-content";
 export const CONTENT_ASSET_TOKEN = /^t[0-9a-f]{32}$/u;
 
 /** `ave-content://<token>/<kind>/<name>/<package-relative path>` for a file of an installed package. */
-export function contentAssetUrl(token: string, kind: "theme" | "font", name: string, path: string): string {
+export function contentAssetUrl(token: string, kind: "font", name: string, path: string): string {
   return `${CONTENT_ASSET_SCHEME}://${token}/${kind}/${name}/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-export function isContentAssetUrl(url: string, kind: "theme" | "font"): boolean {
+export function isContentAssetUrl(url: string, kind: "font"): boolean {
   const prefix = `${CONTENT_ASSET_SCHEME}://`;
   if (!url.startsWith(prefix)) return false;
   const [token, urlKind] = url.slice(prefix.length).split("/");
@@ -24,20 +23,6 @@ export function isContentAssetUrl(url: string, kind: "theme" | "font"): boolean 
 interface InstalledFrom {
   sourceId: string;
   version: string;
-}
-
-export interface InstalledThemeView extends InstalledFrom {
-  /** The package name; what `appearance.bundleId` holds while the theme is selected. */
-  id: string;
-  name: string;
-  description: string;
-  shell: "light" | "dark";
-  highContrast: boolean;
-  tokens: ThemeTokens;
-  surfaces: ThemeSurfaces;
-  previewUrl?: string;
-  /** The theme of the other shell `followSystem` switches to with this one. */
-  pair?: string;
 }
 
 export interface InstalledLanguageView extends InstalledFrom {
@@ -77,7 +62,6 @@ export interface BrokenContentView {
 }
 
 export interface InstalledContentView {
-  themes: InstalledThemeView[];
   languages: InstalledLanguageView[];
   fonts: InstalledFontView[];
   routineTemplates: AgentPluginRoutineTemplate[];
@@ -114,7 +98,7 @@ export function parseInstalledContentResult(value: unknown): InstalledContentRes
   if (value.ok === false) return typeof value.error === "string" ? { ok: false, error: value.error } : null;
   const content = value.content;
   if (value.ok !== true || !isRecord(content)) return null;
-  const lists = ["themes", "languages", "fonts", "routineTemplates", "broken"] as const;
+  const lists = ["languages", "fonts", "routineTemplates", "broken"] as const;
   if (!lists.every((key) => Array.isArray(content[key]))) return null;
   return { ok: true, content: content as unknown as InstalledContentView };
 }

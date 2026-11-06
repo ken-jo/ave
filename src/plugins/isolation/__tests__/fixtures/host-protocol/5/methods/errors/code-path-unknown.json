@@ -2,7 +2,7 @@
   "request": {
     "id": "hand-built",
     "jsonrpc": "2.0",
-    "method": "ave/host/noSuchMember",
+    "method": "ai.agent-connector.ave/host/noSuchMember",
     "params": {}
   },
   "response": {
@@ -12,7 +12,7 @@
         "code": "path-unknown",
         "name": "HostApiBoundaryError"
       },
-      "message": "[host-api-dispatcher] 'ave/host/noSuchMember' is not a hostApi method"
+      "message": "[host-api-dispatcher] 'ai.agent-connector.ave/host/noSuchMember' is not a hostApi method"
     },
     "id": "hand-built",
     "jsonrpc": "2.0"

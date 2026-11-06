@@ -17,6 +17,8 @@ import {
 
 // Release aliases and uploads derive from package.json build.publish.
 
+// Release script fixtures run under the suite launcher's plain interpreter.
+const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const root = process.cwd();
 const SCRIPT = resolve(root, "scripts/upload-release-r2.mjs");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
@@ -77,7 +79,7 @@ function staging(overrides: Record<string, string | null> = {}): string {
 function run(args: string[], env: NodeJS.ProcessEnv = {}) {
   const base: NodeJS.ProcessEnv = { ...process.env };
   for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) delete base[name];
-  return spawnSync(process.execPath, [SCRIPT, ...args], { cwd: root, encoding: "utf8", env: { ...base, ...env } });
+  return spawnSync(nodeCommand, [SCRIPT, ...args], { cwd: root, encoding: "utf8", env: { ...base, ...env } });
 }
 
 type Operation = {

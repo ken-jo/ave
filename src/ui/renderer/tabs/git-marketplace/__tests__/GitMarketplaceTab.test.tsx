@@ -168,12 +168,12 @@ describe("GitMarketplaceTab browse", () => {
   });
 
   it("opens on the kind another settings tab asked for", async () => {
-    const fake = fakeMarketplace({ sources: [team], entries: [entry("team", "skill", "proofread"), entry("team", "theme", "dusk")] });
+    const fake = fakeMarketplace({ sources: [team], entries: [entry("team", "skill", "proofread"), entry("team", "font", "dusk")] });
     const { api } = makeMockAveApi();
     Object.assign(api, { gitMarketplace: fake.market, gitRuntime: fake.gitRuntime });
-    render(<GitMarketplaceTab api={api as unknown as AveApi} initialKind="theme" onOpenMcpSettings={vi.fn()} />);
+    render(<GitMarketplaceTab api={api as unknown as AveApi} initialKind="font" onOpenMcpSettings={vi.fn()} />);
 
-    expect(await screen.findByTestId("git-marketplace:card:team:theme:dusk")).toBeInTheDocument();
+    expect(await screen.findByTestId("git-marketplace:card:team:font:dusk")).toBeInTheDocument();
     expect(screen.queryByTestId("git-marketplace:card:team:skill:proofread")).toBeNull();
   });
 });
@@ -185,7 +185,7 @@ describe("GitMarketplaceTab search answers", () => {
     await screen.findByTestId("git-marketplace:card:team:skill:proofread");
 
     const answers = new Map<string, (value: unknown) => void>();
-    const catalogOf = (name: string) => ({ ok: true, value: { entries: [entry("team", "skill", name)], counts: { plugin: 0, mcp: 0, skill: 1, agent: 0, theme: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 }, sourceCount: 1, syncedAt: null } });
+    const catalogOf = (name: string) => ({ ok: true, value: { entries: [entry("team", "skill", name)], counts: { plugin: 0, mcp: 0, skill: 1, agent: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 }, sourceCount: 1, syncedAt: null } });
     fake.market.listCatalog.mockImplementation((query: { query?: string }) => new Promise((resolve) => answers.set(query.query ?? "", resolve)));
     fireEvent.change(screen.getByTestId("git-marketplace:search"), { target: { value: "pro" } });
     fireEvent.change(screen.getByTestId("git-marketplace:search"), { target: { value: "proof" } });
@@ -757,7 +757,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
   const notice = {
     forYou: [
       { sourceId: "ave-official", kind: "mcp" as const, name: "weather" },
-      { sourceId: "ave-official", kind: "theme" as const, name: "tokyo-night" },
+      { sourceId: "ave-official", kind: "font" as const, name: "tokyo-night" },
     ],
     required: [{ sourceId: "corp", kind: "plugin" as const, name: "vpn" }],
     unmanaged: [],
@@ -780,7 +780,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:mcp:weather"));
     await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "ave-official", kind: "mcp", name: "weather", removeData: false }));
     await waitFor(() => expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:mcp:weather")).toBeNull());
-    expect(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:theme:tokyo-night")).toBeInTheDocument();
+    expect(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:font:tokyo-night")).toBeInTheDocument();
 
     fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:dismiss"));
     await waitFor(() => expect(screen.queryByTestId("git-marketplace:boot-notice")).toBeNull());
@@ -789,7 +789,7 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
 
   it("names what the first-boot migration unlocked and which grants it did not keep, and stays until the last default is removed", async () => {
     const migrated = {
-      forYou: [{ sourceId: "ave", kind: "theme" as const, name: "nord" }],
+      forYou: [{ sourceId: "ave", kind: "font" as const, name: "nord" }],
       required: [],
       unmanaged: ["sampleportal"],
       lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai", "llm.apiKey.claude"] }],
@@ -810,8 +810,8 @@ describe("GitMarketplaceTab boot-install notice (design §15.1)", () => {
     expect(revoked).toHaveTextContent("corp이(가) vpn 2.0.0을(를) 철회했지만 조직이 요구하는 패키지라 설치된 채로 둡니다: bad build");
 
     // The unlocked and lost-grant lines are still news after the default is removed.
-    fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:theme:nord"));
-    await waitFor(() => expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:theme:nord")).toBeNull());
+    fireEvent.click(within(banner).getByTestId("git-marketplace:boot-notice:uninstall:font:nord"));
+    await waitFor(() => expect(within(banner).queryByTestId("git-marketplace:boot-notice:uninstall:font:nord")).toBeNull());
     expect(screen.getByTestId("git-marketplace:boot-notice")).toBeInTheDocument();
   });
 

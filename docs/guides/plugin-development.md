@@ -61,7 +61,7 @@ its actual minimum app version independently of protocol negotiation.
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
 `appAllowed` shapes are rejected. App/model visibility belongs on each Tool at
 `_meta.ui.visibility`; operation restrictions belong on the same Tool at
-`_meta["ave/operationPolicy"]`.
+`_meta["ai.agent-connector.ave/operationPolicy"]`.
 
 Manifest-governed operations do not dispatch PreToolUse, PostToolUse,
 PostToolUseFailure, or PermissionDenied extension hooks. Their external state
@@ -91,7 +91,7 @@ A manifest with both, or with neither, is rejected.
 
 A `process` extension is a program in any language. It reads and writes the
 JSON-RPC channel that `schemas/plugin-host-protocol/5/protocol.schema.json`
-describes on its own stdin and stdout, starting with `ave/instance/construct`,
+describes on its own stdin and stdout, starting with `ai.agent-connector.ave/instance/construct`,
 whose `entryPath` is the resolved absolute path of `command`. Its rules:
 
 - `command` is a path inside the package, written `./…` or `${PLUGIN_ROOT}/…`,
@@ -152,13 +152,13 @@ as:
 - calling host methods;
 - requesting tool execution;
 - subscribing to allowed events;
-- rendering UI in declared slots.
+- attaching declared MCP Apps views to host surfaces.
 
 The caller extension identity is bound by the host factory. Extensions must not pass
 or spoof another extension id.
 
 A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
-handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
+handed. Underneath, each member is a JSON-RPC `ai.agent-connector.ave/host/*` request on the
 extension's own stdio, and `schemas/plugin-host-protocol/5/protocol.schema.json`
 (protocol `5`, the current build contract) describes every method, notification
 and error code of that channel. The file is generated from the host's own sources
@@ -238,7 +238,7 @@ stderr; there is no socket, port or `udsArgName`. Declare one `control` mode:
 - `"output-only-v1"` for a command whose stdout is text you read with `onStdout`.
 - `"stdio-control-v1"` for a long-lived worker you send requests to. Its stdout
   carries only newline-delimited JSON-RPC 2.0 frames, so it must log to stderr.
-  Answer the host's `$/ave/hello` first, exit on stdin EOF or `$/ave/shutdown`,
+  Answer the host's `$/ai.agent-connector.ave/hello` first, exit on stdin EOF or `$/ai.agent-connector.ave/shutdown`,
   and stay within the 16 MiB frame limit and 64 outstanding requests per direction.
   The frame schema is `schemas/worker-stdio-control/1/worker-control.schema.json`
   (`docs/design/plugin-hostapi-protocol.md` §3.3.2).
@@ -274,12 +274,18 @@ directory: your plugin process cannot write it, and a worker that kept its state
 
 ## UI Extensions
 
-Extension UI loads in a host-owned shell. The host resolves the extension entry URL,
-pre-paints theme tokens, and calls the extension mount function. An extension UI should
-render within the provided root and use the bridge for host interaction.
+Extension UI is a served MCP Apps HTML resource. Declare a `ui://` resource,
+serve it through `readUiResource`, and use the standard View SDK for tool calls,
+messages, sizing, links and host context. See
+[Authoring an MCP App](./mcp-app-authoring.md) for the resource and security
+contract, app-only long polling, clipboard permissions and staged messages.
 
-If the entry cannot load, the shell shows English fallback errors. A blank extension
-surface is considered a regression.
+The retired `embedded-module` and `embedded-page` kinds are rejected with an
+explicit manifest error. There is no module mount function or `avePlugin`
+view bridge and no compatibility path for previously released plugin UIs.
+Republish the plugin against the new protocol-5 contract before loading it.
+Protocol 5 changes in place while unreleased; do not infer an app release from
+the protocol number.
 
 ### Panel Width
 
@@ -290,11 +296,10 @@ inside its own container — live in [`DESIGN.md`](../DESIGN.md) under
 *Extension surfaces* and *Responsive behavior*. That document is the source of
 truth; this guide does not restate the numbers.
 
-This is the host-mounted **sidebar panel** surface (`ui[]` in the manifest). It is
-not the only one: an extension can also ship an **MCP App** — an interactive `ui://`
-card the host renders next to a tool result, built on the standard
-`@modelcontextprotocol/ext-apps` library rather than an Ave bridge. See
-[Authoring an MCP App](./mcp-app-authoring.md).
+Sidebar and floating placements use the same MCP Apps view contract as in-chat
+cards. Placement is host-owned; it does not grant a second privileged bridge.
+Read theme variables from MCP Apps host context rather than subscribing to a
+private theme event.
 
 ## Tool Extensions
 
@@ -305,7 +310,7 @@ provide:
 - description;
 - input schema;
 - `_meta.ui.visibility` when the SEP-1865 dual-surface default is not intended;
-- `_meta["ave/pathFields"]` where file access is possible;
+- `_meta["ai.agent-connector.ave/pathFields"]` where file access is possible;
 - execution handler;
 - required capabilities.
 
@@ -374,7 +379,8 @@ Before publishing or merging an extension change:
 - verify install, update and remove from a local git marketplace;
 - verify permission prompts for write, shell, network, and out-of-directory
   reads;
-- verify extension UI error fallback and theme token application.
+- verify MCP Apps resource rendering, host-context styles and auth remounts;
+- verify sidebar messages stage a draft and clipboard read is refused.
 
 ## Language Policy
 

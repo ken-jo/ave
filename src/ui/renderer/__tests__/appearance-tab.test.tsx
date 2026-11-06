@@ -1,233 +1,126 @@
-/** Show followSystem only when the selected theme declares an installed opposite-shell pair. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { act, configure, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
+import { SavedToastProvider } from "../context/SavedToastContext.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
-import { BUNDLES, DEFAULT_BUNDLE_ID } from "../theme/index.js";
-import { moonstoneBundle } from "../theme/bundles/moonstone.js";
+import { SCHEMES } from "../theme/index.js";
+import { DEFAULT_APPEARANCE, type AppearanceSettings } from "../../../shared/appearance-settings.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
-import type { InstalledContentView, InstalledThemeView } from "../../../shared/installed-content.js";
+import type { InstalledContentView } from "../../../shared/installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
-// ThemeProvider resolves the selected theme after the installed content loads.
-// In isolation these tests pass well under the 1000ms default, but a saturated
-// full-suite run can starve the worker long enough to exceed it. Give async
-// assertions headroom so timing, not correctness, stops deciding the result.
-configure({ asyncUtilTimeout: 5000 });
-
-const FROM = { sourceId: "ave", version: "1.0.0" };
-
-function theme(id: string, name: string, shell: "light" | "dark", highContrast = false, pair?: string): InstalledThemeView {
-  return { ...FROM, id, name, description: `${name} theme.`, shell, highContrast, tokens: moonstoneBundle.tokens, surfaces: {}, ...(pair ? { pair } : {}) } as unknown as InstalledThemeView;
-}
-
-/** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
-const THEMES = [
-  theme("tokyo-night", "Tokyo Night", "dark"),
-  theme("violet-light", "Violet Light", "light", false, "violet-dark"),
-  theme("violet-dark", "Violet Dark", "dark", false, "violet-light"),
-  theme("high-contrast", "High Contrast", "dark", true),
-];
-// Not Korean: an installed `ko` package would replace the compiled catalog this suite renders in.
-const FRENCH = { ...FROM, name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
+const FRENCH = { sourceId: "ave", version: "1.0.0", name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
 function install(content: Partial<InstalledContentView>) {
-  const view = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [], ...content } as InstalledContentView;
+  const view = { languages: [], fonts: [], routineTemplates: [], broken: [], ...content } as InstalledContentView;
   applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
 }
 
+beforeEach(() => {
+  const { api } = makeMockAveApi();
+  (window as unknown as { aveApi: unknown }).aveApi = api;
+});
+
 afterEach(() => {
   resetInstalledContentForTests();
-  document.documentElement.removeAttribute("data-theme-bundle");
+  document.documentElement.removeAttribute("data-scheme");
   document.documentElement.removeAttribute("data-shell");
-  Array.from(document.documentElement.classList)
-    .filter((c) => c.startsWith("ave-bundle-"))
-    .forEach((c) => document.documentElement.classList.remove(c));
   delete (window as unknown as Record<string, unknown>).aveApi;
   vi.unstubAllGlobals();
 });
 
-function renderWithBundle(initialBundleId: string = DEFAULT_BUNDLE_ID, onOpenMarketplace?: (filter: "theme" | "language") => void) {
-  return render(
-    <ThemeProvider initialBundleId={initialBundleId}>
-      <AppearanceTab onOpenMarketplace={onOpenMarketplace} />
-    </ThemeProvider>,
-  );
+function renderAppearance(initial: AppearanceSettings = DEFAULT_APPEARANCE, onOpenMarketplace?: (filter: "language") => void) {
+  return render(<SavedToastProvider value={() => {}}><ThemeProvider initialAppearance={initial}><AppearanceTab onOpenMarketplace={onOpenMarketplace} /></ThemeProvider></SavedToastProvider>);
 }
 
-describe("AppearanceTab — bundle card grid", () => {
-  it("renders exactly one card per compiled bundle when no theme is installed", () => {
-    const { getAllByRole } = renderWithBundle();
-    const cards = getAllByRole("radio").filter((el) =>
-      el.getAttribute("aria-label")?.startsWith("테마:"),
-    );
-    expect(cards).toHaveLength(BUNDLES.length);
-  });
-
-  it("renders a card for each compiled bundle", () => {
-    const { getByRole, queryByRole } = renderWithBundle();
-    for (const bundle of BUNDLES) {
-      expect(getByRole("radio", { name: `테마: ${bundle.name}` })).toBeTruthy();
+describe("Appearance settings", () => {
+  it("shows all curated schemes in system mode and selects one per appearance", () => {
+    const { container } = renderAppearance();
+    expect(container.querySelectorAll("[data-scheme-id]")).toHaveLength(SCHEMES.length);
+    for (const id of [DEFAULT_APPEARANCE.darkScheme, DEFAULT_APPEARANCE.lightScheme]) {
+      expect(container.querySelector(`[data-scheme-id="${id}"]`)).toHaveAttribute("aria-checked", "true");
     }
-    expect(queryByRole("radio", { name: /테마: Forest/ })).toBeNull();
   });
 
-  it("the default bundle card has aria-checked=true", () => {
-    const { getByRole } = renderWithBundle();
-    const card = getByRole("radio", { name: /테마: Moonstone/ });
-    expect(card.getAttribute("aria-checked")).toBe("true");
+  it("limits the picker to the chosen mode and applies a scheme immediately", async () => {
+    const { container, getByTestId } = renderAppearance();
+    fireEvent.click(getByTestId("appearance-mode-dark"));
+    expect(container.querySelectorAll("[data-scheme-id]")).toHaveLength(6);
+    const card = container.querySelector('[data-scheme-id="nord"]')!;
+    fireEvent.click(card);
+    await waitFor(() => expect(card).toHaveAttribute("aria-checked", "true"));
+    expect(document.documentElement).toHaveAttribute("data-scheme", "nord");
+    expect(document.documentElement).toHaveAttribute("data-shell", "dark");
   });
 
-  it("other cards have aria-checked=false initially", () => {
-    const { getByRole } = renderWithBundle();
-    const gallery = getByRole("radio", { name: /테마: Gallery/ });
-    expect(gallery.getAttribute("aria-checked")).toBe("false");
-  });
-
-  it("clicking a bundle card writes data-theme-bundle to <html>", async () => {
-    const { getByRole } = renderWithBundle();
-    fireEvent.click(getByRole("radio", { name: /테마: Gallery/ }));
-    await waitFor(() => {
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("gallery");
-    });
-  });
-
-  it("lists installed theme packages with their marketplace badge, and the selected one checked", async () => {
-    install({ themes: THEMES });
-    const { getByRole, getByTestId } = renderWithBundle("violet-dark");
-    await waitFor(() => {
-      expect(getByRole("radio", { name: /테마: Violet Dark/ }).getAttribute("aria-checked")).toBe("true");
-    });
-    expect(getByRole("radio", { name: /테마: Tokyo Night/ }).getAttribute("aria-checked")).toBe("false");
-    expect(getByTestId("appearance-tab:theme-marketplace-badge:tokyo-night")).toHaveTextContent("마켓플레이스");
-  });
-
-  it("lists an installed language package with its marketplace badge", () => {
+  it("lists an installed language with its marketplace badge", () => {
     install({ languages: [FRENCH] });
-    const { getByTestId } = renderWithBundle();
+    const { getByTestId } = renderAppearance();
     expect(getByTestId("language-option-fr")).toHaveAttribute("data-marketplace-installed", "true");
     expect(getByTestId("appearance-tab:language-marketplace-badge:fr")).toHaveTextContent("마켓플레이스");
   });
 
-  it("reflects theme and language packages installed while the tab is open", async () => {
-    const { getByRole, getByTestId, queryByRole, queryByTestId } = renderWithBundle();
-    expect(queryByRole("radio", { name: /테마: Tokyo Night/ })).toBeNull();
+  it("reflects a language installed while the tab is open", async () => {
+    const { getByTestId, queryByTestId } = renderAppearance();
     expect(queryByTestId("language-option-fr")).toBeNull();
-
-    act(() => {
-      install({ themes: THEMES, languages: [FRENCH] });
-    });
-
-    await waitFor(() => {
-      expect(getByRole("radio", { name: /테마: Tokyo Night/ })).toBeTruthy();
-      expect(getByTestId("language-option-fr")).toBeTruthy();
-    });
+    act(() => install({ languages: [FRENCH] }));
+    await waitFor(() => expect(getByTestId("language-option-fr")).toBeTruthy());
   });
 
-  it("opens Marketplace filters from theme and language CTAs", () => {
+  it("opens the language marketplace filter", () => {
     const onOpenMarketplace = vi.fn();
-    const { getByTestId } = renderWithBundle(DEFAULT_BUNDLE_ID, onOpenMarketplace);
-
+    const { getByTestId } = renderAppearance(DEFAULT_APPEARANCE, onOpenMarketplace);
     fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
-    expect(onOpenMarketplace).toHaveBeenLastCalledWith("language");
-
-    fireEvent.click(getByTestId("appearance-tab:marketplace-themes"));
-    expect(onOpenMarketplace).toHaveBeenLastCalledWith("theme");
+    expect(onOpenMarketplace).toHaveBeenCalledWith("language");
   });
 
-  it("lists Korean without installed packages or a marketplace recommendation", async () => {
-    const originalLanguage = navigator.language;
-    Object.defineProperty(navigator, "language", {
-      configurable: true,
-      value: "ko-KR",
-    });
+  it("offers Korean without an installed language package", () => {
     const originalLocale = getLocale();
     setLocale("en");
-    const onOpenMarketplace = vi.fn();
     try {
-      const { api } = makeMockAveApi();
-      (window as unknown as { aveApi: unknown }).aveApi = api;
-
-      const { getByTestId, queryByTestId } = renderWithBundle(DEFAULT_BUNDLE_ID, onOpenMarketplace);
-      await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-
+      const { getByTestId } = renderAppearance();
       expect(getByTestId("language-option-ko")).toHaveTextContent("한국어");
       expect(getByTestId("language-option-ko")).toHaveAttribute("data-marketplace-installed", "false");
-      expect(queryByTestId("appearance-tab:language-recommendation")).toBeNull();
       fireEvent.click(getByTestId("language-option-ko"));
       expect(getLocale()).toBe("ko");
-      fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
-      expect(onOpenMarketplace).toHaveBeenCalledWith("language");
     } finally {
       setLocale(originalLocale);
-      Object.defineProperty(navigator, "language", {
-        configurable: true,
-        value: originalLanguage,
-      });
     }
-  });
-
-  it("clicking back to a compiled theme writes data-theme-bundle=gallery", async () => {
-    install({ themes: THEMES });
-    const { getByRole } = renderWithBundle("violet-dark");
-    fireEvent.click(getByRole("radio", { name: /테마: Gallery/ }));
-    await waitFor(() => {
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("gallery");
-    });
-  });
-
-  it("checks an installed high-contrast theme when it is selected", async () => {
-    install({ themes: THEMES });
-    const { getByRole } = renderWithBundle("high-contrast");
-    await waitFor(() => {
-      expect(getByRole("radio", { name: /테마: High Contrast/ }).getAttribute("aria-checked")).toBe("true");
-    });
-  });
-
-  it("selected card updates aria-checked after click", async () => {
-    install({ themes: THEMES });
-    const { getByRole } = renderWithBundle("tokyo-night");
-    const gallery = getByRole("radio", { name: /테마: Gallery/ });
-    fireEvent.click(gallery);
-    await waitFor(() => {
-      expect(gallery.getAttribute("aria-checked")).toBe("true");
-    });
-    expect(getByRole("radio", { name: /테마: Tokyo Night/ }).getAttribute("aria-checked")).toBe("false");
   });
 });
 
-describe("AppearanceTab — followSystem toggle (a theme with a pair)", () => {
-  beforeEach(() => {
-    install({ themes: THEMES });
-  });
 
-  it("followSystem toggle is hidden when the active theme has no pair", () => {
-    const { queryByTestId } = renderWithBundle("tokyo-night");
-    expect(queryByTestId("follow-system-toggle")).toBeNull();
-  });
-
-  it("followSystem toggle is shown when violet-light is active", async () => {
-    const { getByTestId } = renderWithBundle("violet-light");
-    await waitFor(() => {
-      expect(getByTestId("follow-system-toggle")).toBeTruthy();
-    });
-  });
-
-  it("followSystem toggle is shown when violet-dark is active", async () => {
-    const { getByTestId } = renderWithBundle("violet-dark");
-    // Already on violet-dark — toggle should be visible
-    await waitFor(() => {
-      expect(getByTestId("follow-system-toggle")).toBeTruthy();
-    });
-  });
-
-  it("high-contrast card has no followSystem toggle", async () => {
-    const { queryByTestId } = renderWithBundle("high-contrast");
-    await waitFor(() => {
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("high-contrast");
-    });
-    expect(queryByTestId("follow-system-toggle")).toBeNull();
-  });
+it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
+  const { getByRole, getByTestId, container } = renderAppearance();
+  const mode = getByRole("radiogroup", { name: "화면 모드" });
+  expect(within(mode).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
+  const system = getByTestId("appearance-mode-system");
+  system.focus();
+  fireEvent.keyDown(system, { key: "ArrowRight" });
+  expect(getByTestId("appearance-mode-dark")).toHaveFocus();
+  expect(getByTestId("appearance-mode-dark")).toHaveAttribute("aria-checked", "true");
+  expect(getByTestId("appearance-mode-dark")).toHaveAttribute("tabindex", "0");
+  const scheme = container.querySelector('[data-scheme-id="github-dark"]') as HTMLButtonElement;
+  scheme.focus();
+  fireEvent.keyDown(scheme, { key: "End" });
+  const last = container.querySelector('[data-scheme-id="solarized-dark"]');
+  expect(last).toHaveFocus();
+  expect(last).toHaveAttribute("aria-checked", "true");
+  fireEvent.keyDown(last!, { key: "ArrowRight" });
+  expect(scheme).toHaveFocus();
+  const families = getByTestId("font-family-presets");
+  await waitFor(() => expect(within(families).getAllByRole("radio").some((radio) => radio.getAttribute("aria-checked") === "true")).toBe(true));
+  const first = within(families).getAllByRole("radio")[0]!;
+  first.focus();
+  fireEvent.keyDown(first, { key: "ArrowDown" });
+  expect(within(families).getAllByRole("radio")[1]).toHaveFocus();
+  expect(within(families).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
+  const sizes = getByTestId("font-size-scale");
+  const activeSize = within(sizes).getAllByRole("radio").find((radio) => radio.tabIndex === 0)!;
+  activeSize.focus();
+  fireEvent.keyDown(activeSize, { key: "Home" });
+  expect(within(sizes).getAllByRole("radio")[0]).toHaveFocus();
+  expect(within(sizes).getAllByRole("radio")[0]).toHaveAttribute("aria-checked", "true");
 });

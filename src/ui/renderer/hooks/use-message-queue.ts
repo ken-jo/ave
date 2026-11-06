@@ -4,8 +4,11 @@ import { useTranslation } from "../../../i18n/react.js";
 import {
   MessageQueueStore,
   formatQueueInject,
+  groupQueueItems,
+  queueAppSource,
   type MessageQueueItem,
 } from "../state/message-queue-store.js";
+import type { ComposerSendOptions } from "./use-send-message.js";
 import type { Attachment } from "../types/attachments.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
@@ -23,7 +26,7 @@ import { augmentFileReferenceMarkers } from "../utils/compose.js";
 interface MessageQueueGuide {
   /** `intent` is present only for a guide the user just typed (⌘K); a queue flush at a round boundary has none, so main treats it as
    * another principal's text, as a queued send is `queue-auto` rather than the keyboard. */
-  inject: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
+  inject: (text: string, intent?: UserKeyboardIntentSnapshot, appSource?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   onError: (message: string) => void;
 }
 
@@ -56,6 +59,10 @@ export interface UseMessageQueueParams {
   composerRef: RefObject<ComposerHandle | null>;
   currentSessionId: string;
   question: string;
+  /** Source belongs to the current composer text; queue rows capture it before the composer clears. */
+  appSource?: string;
+  /** Immutable composer snapshot; delivery cannot clear a replacement with identical text and source. */
+  draftIdentity?: object;
   attachments: Attachment[];
   streaming: boolean;
   setQuestion: React.Dispatch<React.SetStateAction<string>>;
@@ -63,7 +70,7 @@ export interface UseMessageQueueParams {
   onAsk: (
     q: string,
     intent?: UserKeyboardIntentSnapshot,
-    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+    opts?: ComposerSendOptions,
   ) => void | Promise<void>;
   guide?: MessageQueueGuide;
   onAbort: () => void | Promise<void>;
@@ -91,6 +98,8 @@ export function useMessageQueue({
   composerRef,
   currentSessionId,
   question,
+  appSource,
+  draftIdentity,
   attachments,
   streaming,
   setQuestion,
@@ -104,8 +113,13 @@ export function useMessageQueue({
   const { t } = useTranslation();
 
   const messageQueueStore = useMemo(() => new MessageQueueStore(), []);
+  const appSourceRef = useRef(appSource);
+  appSourceRef.current = appSource;
+  const draftIdentityRef = useRef(draftIdentity);
+  draftIdentityRef.current = draftIdentity;
 
   const queueAutoInflightRef = useRef(false);
+  const queueDeliveryEpochRef = useRef(0);
   /** A guide hand-off is awaiting its result — do not send the same items again. */
   const guideFlushInflightRef = useRef<{ id: string; text: string; disposition?: "dropped" | "delivered" } | null>(null);
   /** The engine refused this turn's hand-off — stop retrying until the turn ends. */
@@ -152,6 +166,8 @@ export function useMessageQueue({
   );
   useEffect(() => {
     messageQueueStore.clear();
+    queueDeliveryEpochRef.current += 1;
+    queueAutoInflightRef.current = false;
     // The guide-flush refs are turn-scoped, and `done` is what normally clears
     // them. Switching sessions mid-turn means that `done` never arrives for
     // this hook, so a refusal from the old session would keep suppressing
@@ -160,31 +176,61 @@ export function useMessageQueue({
     startQueueTurn();
   }, [currentSessionId, messageQueueStore, startQueueTurn]);
 
-  const drainPendingQueue = useCallback(({ deferSend = true }: { deferSend?: boolean } = {}) => {
-    if (queueAutoInflightRef.current) return;
-    const taken = messageQueueStore.takeAll();
-    if (taken.length === 0) return;
+  const drainPendingQueue = useCallback(function drainPendingQueue({ deferSend = true, itemIds, intent, composerItemId }: {
+    deferSend?: boolean;
+    itemIds?: ReadonlySet<string>;
+    intent?: UserKeyboardIntentSnapshot;
+    composerItemId?: string;
+  } = {}) {
+    if (!intent && (queueAutoInflightRef.current || guideFlushInflightRef.current)) return;
+    const takeGroup = () => {
+      const pending = messageQueueStore.getPending().filter((item) => itemIds === undefined || itemIds.has(item.id));
+      const group = groupQueueItems(pending)[0];
+      return group ? messageQueueStore.takeAll(new Set(group.map((item) => item.id))) : [];
+    };
+    const firstGroup = takeGroup();
+    if (firstGroup.length === 0) return;
+    const deliveryEpoch = ++queueDeliveryEpochRef.current;
     queueAutoInflightRef.current = true;
-    const formatted = formatQueueInject(taken);
     const send = async () => {
       try {
-        startQueueTurn();
-        await onAsk(formatted, undefined, { injectHint: "queue", inputOrigin: "queue-auto" });
+        let group = firstGroup;
+        let first = true;
+        while (group.length > 0 && queueDeliveryEpochRef.current === deliveryEpoch) {
+          startQueueTurn();
+          const appSource = queueAppSource(group);
+          const composerItem = group.find((item) => item.id === composerItemId);
+          const queued = group.filter((item) => item !== composerItem);
+          const text = [formatQueueInject(queued), ...(composerItem ? [composerItem.text] : [])].filter(Boolean).join("\n");
+          const interrupt = first && intent !== undefined;
+          const delivery = onAsk(text, interrupt ? intent : undefined, {
+            ...(interrupt ? { injectHint: "interrupt" as const } : { injectHint: "queue" as const, inputOrigin: "queue-auto" as const }),
+            ...(appSource === undefined ? {} : { appSource }),
+          });
+          if (delivery) await delivery;
+          first = false;
+          if (queueDeliveryEpochRef.current !== deliveryEpoch) return;
+          group = takeGroup();
+        }
       } finally {
-        queueAutoInflightRef.current = false;
+        if (queueDeliveryEpochRef.current === deliveryEpoch) {
+          queueAutoInflightRef.current = false;
+          if (intent && completedTurnEpochRef.current === turnEpochRef.current) drainPendingQueue();
+        }
       }
     };
-    // Let every subscriber judge done before the next turn starts; rows and the reentrancy guard are claimed synchronously.
+    // Claim only this source group; later groups stay queued until their own send starts.
     if (deferSend) queueMicrotask(() => { void send(); });
     else void send();
   }, [messageQueueStore, onAsk, startQueueTurn]);
 
   /** Keep rows until guide acceptance; serialize flushes and stop retrying refusals until turn end, when queued text can
    * drain as a fresh turn. */
-  const flushQueueViaGuide = useCallback(() => {
-    if (!guide) return;
+  const flushQueueViaGuide = useCallback(function flushQueueViaGuide(itemIds?: ReadonlySet<string>) {
+    if (!guide || queueAutoInflightRef.current) return;
     if (guideFlushInflightRef.current || guideFlushBlockedRef.current) return;
-    const reservation = messageQueueStore.reservePending();
+    const batchIds = itemIds ?? new Set(messageQueueStore.getPending().map((item) => item.id));
+    const reservation = messageQueueStore.reservePending(batchIds);
     if (!reservation) return;
     const count = reservation.items.length;
     const formatted = formatQueueInject(reservation.items);
@@ -205,7 +251,8 @@ export function useMessageQueue({
         console.warn(`[message-queue] guide flush refused (${reason}), items kept:`, formatted.slice(0, 80));
       };
       try {
-        const result = await guide.inject(formatted);
+        const source = queueAppSource(reservation.items);
+        const result = source === undefined ? await guide.inject(formatted) : await guide.inject(formatted, undefined, source);
         if (guideFlushInflightRef.current !== handoff) return;
         if (handoff.disposition === "delivered" || result?.ok === true) {
           if (handoff.disposition === "dropped") return;
@@ -221,13 +268,15 @@ export function useMessageQueue({
         messageQueueStore.settleReservation(reservation.id);
         if (guideFlushInflightRef.current === handoff) {
           guideFlushInflightRef.current = null;
-          if (!accepted && completedTurnEpochRef.current === turnEpoch) {
+          if (completedTurnEpochRef.current === turnEpoch) {
             // A done frame may have arrived while these rows were reserved. Retry its drain only if no newer turn owns the surface.
             queueMicrotask(() => {
               if (turnEpochRef.current === turnEpoch && completedTurnEpochRef.current === turnEpoch) {
-                drainPendingQueue({ deferSend: false });
+                drainPendingQueue({ deferSend: false, ...(accepted ? { itemIds: batchIds } : {}) });
               }
             });
+          } else if (accepted && turnEpochRef.current === turnEpoch && completedTurnEpochRef.current !== turnEpoch) {
+            queueMicrotask(() => flushQueueViaGuide(batchIds));
           }
         }
       }
@@ -294,23 +343,19 @@ export function useMessageQueue({
   // Do not drain on transient streaming=false; use real brake points or explicit user injection. An empty queue leaves
   // Escape as abort only.
   const flushQueueAsUserMessage = useCallback(() => {
-    const taken = messageQueueStore.takeAll();
-    if (taken.length === 0) {
+    if (messageQueueStore.getPending().length === 0) {
       void onAbort();
       return;
     }
-    const formatted = formatQueueInject(taken);
-    // ESC / esc 취소 = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
-    startQueueTurn();
-    void onAsk(formatted, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
-  }, [messageQueueStore, onAbort, onAsk, startQueueTurn]);
+    drainPendingQueue({ deferSend: false, intent: captureComposerKeyboardIntent() });
+  }, [messageQueueStore, onAbort, drainPendingQueue]);
 
   // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
   const handleComposerSend = useCallback(
     (intent: UserKeyboardIntentSnapshot) => {
       const text = question;
       if (text.trim().length === 0 && attachments.length === 0) return;
-      if (interceptSubmit?.(text)) {
+      if (appSource === undefined && interceptSubmit?.(text)) {
         setQuestion("");
         return;
       }
@@ -318,7 +363,7 @@ export function useMessageQueue({
         // Busy: 큐에 추가. cap 초과 throw catch 해서 textarea 보존.
         if (text.trim().length > 0) {
           try {
-            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments));
+            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments), appSource);
           } catch (err) {
             console.warn("[message-queue] add rejected:", errorMessage(err));
             return;
@@ -331,40 +376,54 @@ export function useMessageQueue({
       } else {
         // Idle: 직행 전송
         startQueueTurn();
-        void onAsk(text, intent);
+        if (appSource === undefined) void onAsk(text, intent);
+        else void onAsk(text, undefined, { appSource });
       }
     },
     [
-      question, attachments, streaming, messageQueueStore, onAsk,
+      question, appSource, attachments, streaming, messageQueueStore, onAsk,
       setQuestion, setAttachments, interceptSubmit, startQueueTurn,
     ],
   );
 
   const handleImmediateInject = useCallback(() => {
     const text = question.trim();
-    if (interceptSubmit?.(text)) {
+    if (appSource === undefined && !messageQueueStore.getPending().some((item) => item.selected && item.appSource !== undefined) && interceptSubmit?.(text)) {
       setQuestion("");
       return;
     }
-    const taken = messageQueueStore.takeSelected();
-    const parts: string[] = [];
-    if (taken.length > 0) parts.push(formatQueueInject(taken));
-    if (text.length > 0) parts.push(text);
-    if (parts.length === 0) return;
-    const combined = parts.join("\n");
+    const selected = messageQueueStore.getPending().filter((item) => item.selected);
+    if (selected.length === 0 && text.length === 0) return;
+    const candidates = [...selected, ...(text.length > 0 ? [{ appSource }] : [])];
+    if (groupQueueItems(candidates).length === 1) {
+      const source = queueAppSource(candidates);
+      const taken = messageQueueStore.takeAll(new Set(selected.map((item) => item.id)));
+      const combined = [formatQueueInject(taken), text].filter(Boolean).join("\n");
+      queueDeliveryEpochRef.current += 1;
+      queueAutoInflightRef.current = false;
+      setQuestion("");
+      startQueueTurn();
+      void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt",
+        ...(source === undefined ? {} : { appSource: source }) });
+      return;
+    }
+    let composerItem: MessageQueueItem | undefined;
+    if (text.length > 0) {
+      try {
+        composerItem = messageQueueStore.add(text, appSource);
+      } catch (err) {
+        console.warn("[message-queue] add rejected:", errorMessage(err));
+        return;
+      }
+    }
+    const itemIds = new Set([...selected.map((item) => item.id), ...(composerItem ? [composerItem.id] : [])]);
     setQuestion("");
-    // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
-    startQueueTurn();
-    void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
-  }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
+    drainPendingQueue({ deferSend: false, itemIds, intent: captureComposerKeyboardIntent(), composerItemId: composerItem?.id });
+  }, [question, appSource, messageQueueStore, setQuestion, interceptSubmit, drainPendingQueue, startQueueTurn, onAsk]);
 
   const handleMessageQueueSendNow = useCallback((item: MessageQueueItem) => {
-    const taken = messageQueueStore.takeOne(item.id);
-    if (!taken) return;
-    const text = formatQueueInject([taken]);
-    startQueueTurn();
-    void onAsk(text, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
-  }, [messageQueueStore, onAsk, startQueueTurn]);
+    drainPendingQueue({ deferSend: false, itemIds: new Set([item.id]), intent: captureComposerKeyboardIntent() });
+  }, [drainPendingQueue]);
 
   // ESC 우선순위
   //   1. 모달 (Radix Dialog [data-state="open"]) → 모달이 가로챔 (defensive)
@@ -423,9 +482,12 @@ export function useMessageQueue({
       // Capture the gesture's one-shot intent now, inside the key handler, before any await.
       const intent = captureComposerKeyboardIntent();
       void (async () => {
-        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments), intent);
+        const formatted = augmentFileReferenceMarkers(text, attachments);
+        const result = appSource === undefined ? await guide.inject(formatted, intent) : await guide.inject(formatted, undefined, appSource);
         if (result?.ok === true) {
-          setQuestion("");
+          if (draftIdentityRef.current === draftIdentity && appSourceRef.current === appSource) {
+            setQuestion((current) => current === question ? "" : current);
+          }
         } else if (result?.ok === false) {
           const message =
             result.error === "queue-full" ? t("chatView.guideErrorQueueFull") :
@@ -438,7 +500,7 @@ export function useMessageQueue({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [question, attachments, guide, setQuestion, t]);
+  }, [question, appSource, draftIdentity, attachments, guide, setQuestion, t]);
 
   return {
     messageQueueStore,

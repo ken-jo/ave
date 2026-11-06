@@ -1,20 +1,60 @@
-import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { validateThemePayload } from "../domains/plugins.js";
-import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
-import { bundleToPluginTokens } from "../../ui/renderer/theme/plugin-token-map.js";
-import { BUNDLES } from "../../ui/renderer/theme/bundles/index.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { publishHostThemeChanged, registerPluginsHandlers, validateThemePayload } from "../domains/plugins.js";
+import { onEvent } from "../../boot/types.js";
+import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
+import { CHANNELS } from "../../contract/app-contract.js";
+import { schemeToHostTokens, resolveTheme, SCHEMES } from "../../ui/renderer/theme/index.js";
 
-const INSTALLED_THEMES = ["tokyo-night", "midnight", "forest", "violet-light", "violet-dark", "high-contrast"];
+const { handlers } = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => unknown>() }));
+vi.mock("electron", () => ({
+  app: { isPackaged: false, getPath: vi.fn(() => "") },
+  dialog: { showOpenDialog: vi.fn() },
+  ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler) },
+}));
 
-beforeEach(() => {
-  setInstalledThemeIds(INSTALLED_THEMES);
+afterEach(() => { resetLastThemePayloadForTests(); handlers.clear(); });
+
+describe("host theme publication", () => {
+  it("broadcasts a frozen copy that cannot corrupt the replay cache", () => {
+    const payload = { bundleId: "nord", shell: "dark" as const, tokens: { "--ave-bg": "#123456" } };
+    recordValidatedTheme(payload);
+    const seen: unknown[] = [];
+    const unsubscribe = onEvent("host.theme.changed", (value) => {
+      expect(value).not.toBe(payload);
+      expect(Object.isFrozen(value)).toBe(true);
+      const theme = value as typeof payload;
+      expect(theme.tokens).not.toBe(payload.tokens);
+      expect(Object.isFrozen(theme.tokens)).toBe(true);
+      expect(Reflect.set(theme.tokens, "--ave-bg", "#fff")).toBe(false);
+      seen.push(value);
+    });
+    try { publishHostThemeChanged(payload); } finally { unsubscribe(); }
+    expect(seen).toEqual([payload]);
+    expect(getLastThemePayload()).toEqual(payload);
+    expect(payload.tokens["--ave-bg"]).toBe("#123456");
+  });
+
+  it("publishes the validated theme through the registered host IPC handler", () => {
+    registerPluginsHandlers({
+      pluginRuntime: { getWildcardConfigOverride: () => undefined },
+      pluginMarketplace: {}, settingsService: { get: () => ({}) },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+    } as never);
+    const handler = handlers.get(CHANNELS.host.pluginThemeNotify);
+    expect(handler).toBeTypeOf("function");
+    const payload = { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#123456" } };
+    const seen: unknown[] = [];
+    const unsubscribe = onEvent("host.theme.changed", (value) => seen.push(value));
+    try {
+      expect(handler!({ senderFrame: { url: "file:///app/index.html" } }, payload)).toEqual({ ok: true });
+    } finally { unsubscribe(); }
+    expect(seen).toEqual([payload]);
+    expect(getLastThemePayload()).toEqual(payload);
+    expect(Object.isFrozen(seen[0])).toBe(true);
+  });
 });
 
-afterEach(() => {
-  setInstalledThemeIds([]);
-});
-
-const V2_PAYLOAD = {
+const VALID_PAYLOAD = {
   bundleId: "tokyo-night",
   shell: "dark",
   tokens: { "--ave-bg": "#0d0d12" },
@@ -27,16 +67,16 @@ describe("validateThemePayload", () => {
   });
 
   it("accepts light shell", () => {
-    const result = validateThemePayload({ bundleId: "violet-light", shell: "light", tokens: { "--ave-bg": "#fff" } });
+    const result = validateThemePayload({ bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#fff" } });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.safe.bundleId).toBe("violet-light");
+      expect(result.safe.bundleId).toBe("github-light");
       expect(result.safe.shell).toBe("light");
     }
   });
 
-  it("accepts high-contrast bundle", () => {
-    const result = validateThemePayload({ bundleId: "high-contrast", shell: "dark", tokens: { "--ave-bg": "#000" } });
+  it("accepts another curated dark scheme", () => {
+    const result = validateThemePayload({ bundleId: "catppuccin-mocha", shell: "dark", tokens: { "--ave-bg": "#000" } });
     expect(result.ok).toBe(true);
   });
 
@@ -64,6 +104,10 @@ describe("validateThemePayload", () => {
     expect(result).toEqual({ ok: false, error: "invalid-shell" });
   });
 
+  it("rejects a shell that does not match the scheme", () => {
+    expect(validateThemePayload({ bundleId: "github-dark", shell: "light", tokens: {} })).toEqual({ ok: false, error: "invalid-shell" });
+  });
+
   it("rejects missing shell", () => {
     const result = validateThemePayload({ bundleId: "tokyo-night" });
     expect(result).toEqual({ ok: false, error: "invalid-shell" });
@@ -71,13 +115,13 @@ describe("validateThemePayload", () => {
 
   it("accepts payload and strips unknown injected fields", () => {
     const result = validateThemePayload({
-      bundleId: "midnight", shell: "dark",
+      bundleId: "nord", shell: "dark",
       tokens: { "--ave-bg": "#000" },
       evil: "injected", __proto__: { polluted: true },
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.safe.bundleId).toBe("midnight");
+      expect(result.safe.bundleId).toBe("nord");
       expect(result.safe.shell).toBe("dark");
       expect(result.safe.tokens).toEqual({ "--ave-bg": "#000" });
       expect((result.safe as Record<string, unknown>).evil).toBeUndefined();
@@ -86,7 +130,7 @@ describe("validateThemePayload", () => {
 
   it("passes through valid --ave-* tokens", () => {
     const result = validateThemePayload({
-      bundleId: "violet-dark", shell: "dark",
+      bundleId: "github-dark", shell: "dark",
       tokens: { "--ave-bg": "hsl(0, 0%, 15%)", "--ave-primary": "#734dff" },
     });
     expect(result.ok).toBe(true);
@@ -182,7 +226,7 @@ describe("validateThemePayload", () => {
 
   it("accepts hsl with decimal values and hex colors", () => {
     const result = validateThemePayload({
-      bundleId: "violet-dark", shell: "dark",
+      bundleId: "github-dark", shell: "dark",
       tokens: { "--ave-radius": "0.6rem", "--ave-radius-sm": "0.25rem", "--ave-primary": "#734dff" },
     });
     expect(result.ok).toBe(true);
@@ -191,22 +235,21 @@ describe("validateThemePayload", () => {
     }
   });
 
-  it("accepts the compiled bundles and every installed theme, and nothing else", () => {
-    for (const bundleId of ["moonstone", "gallery"]) {
+  it("accepts curated scheme identities and rejects unknown names", () => {
+    for (const bundleId of ["github-light", "gruvbox-light"]) {
       expect(validateThemePayload({ bundleId, shell: "light", tokens: { "--ave-bg": "#fff" } }).ok, bundleId).toBe(true);
     }
-    setInstalledThemeIds([]);
-    expect(validateThemePayload({ bundleId: "tokyo-night", shell: "dark", tokens: { "--ave-bg": "#000" } }).ok).toBe(false);
+    expect(validateThemePayload({ bundleId: "package-theme", shell: "dark", tokens: { "--ave-bg": "#000" } }).ok).toBe(false);
   });
 
-  it("accepts all 6 installed theme ids", () => {
+  it("accepts curated dark and light identities", () => {
     const cases: Array<[string, "light" | "dark"]> = [
       ["tokyo-night", "dark"],
-      ["midnight", "dark"],
-      ["forest", "light"],
-      ["violet-light", "light"],
-      ["violet-dark", "dark"],
-      ["high-contrast", "dark"],
+      ["nord", "dark"],
+      ["one-light", "light"],
+      ["github-light", "light"],
+      ["github-dark", "dark"],
+      ["catppuccin-mocha", "dark"],
     ];
     for (const [bundleId, shell] of cases) {
       const result = validateThemePayload({ bundleId, shell, tokens: { "--ave-bg": "#000" } });
@@ -217,8 +260,8 @@ describe("validateThemePayload", () => {
 
   // Token validation must accept producer value shapes or derived colors silently fall back.
   it("keeps every token every compiled bundle produces", () => {
-    for (const bundle of BUNDLES) {
-      const tokens = bundleToPluginTokens(bundle);
+    for (const bundle of SCHEMES) {
+      const tokens = schemeToHostTokens(resolveTheme(bundle));
       const result = validateThemePayload({ bundleId: bundle.id, shell: bundle.shell, tokens });
       expect(result.ok, `bundleId=${bundle.id}`).toBe(true);
       if (!result.ok) continue;
@@ -229,7 +272,7 @@ describe("validateThemePayload", () => {
 
   it("accepts a color-mix token but not one carrying a second declaration", () => {
     const result = validateThemePayload({
-      bundleId: "violet-light",
+      bundleId: "github-light",
       shell: "light",
       tokens: {
         "--ave-primary-bg-subtle": "color-mix(in srgb, hsl(217.2, 91.2%, 59.8%) 14%, hsl(0, 0%, 100%))",
@@ -249,8 +292,8 @@ describe("validateThemePayload", () => {
     }
   });
 
-  it("v2 payload (V2_PAYLOAD const) round-trips correctly", () => {
-    const result = validateThemePayload(V2_PAYLOAD);
+  it("v2 payload (VALID_PAYLOAD const) round-trips correctly", () => {
+    const result = validateThemePayload(VALID_PAYLOAD);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.safe.bundleId).toBe("tokyo-night");

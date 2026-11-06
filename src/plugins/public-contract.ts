@@ -416,9 +416,9 @@ export interface Tool {
   icons?: Array<{ src: string; mimeType?: string; sizes?: string }>;
   /**
    * Surface visibility + Ave restriction metadata. Recognized keys: the
-   * standard `ui` visibility block, `ave/pathFields`, and the signed
-   * `ave/operationPolicy`. Any other key — including the removed legacy reverse-DNS
-   * spelling of `ave/pathFields` — is rejected by the manifest schema (fail-closed). @optional
+   * standard `ui` visibility block, `ai.agent-connector.ave/pathFields`, and the signed
+   * `ai.agent-connector.ave/operationPolicy`. Any other key, including the removed
+   * `ave/*` spelling, is rejected by the manifest schema (fail-closed). @optional
    */
   _meta?: {
     /** SEP-1865 surface visibility. @optional */
@@ -429,9 +429,9 @@ export interface Tool {
      * fields. Untrusted routing hint: a lying declaration only ADDS host checks,
      * never bypasses one. @optional
      */
-    "ave/pathFields"?: string[];
+    "ai.agent-connector.ave/pathFields"?: string[];
     /** Operation-level risk/read constraints; restrictions only, never authority expansion. @optional */
-    "ave/operationPolicy"?: PluginToolOperationPolicy;
+    "ai.agent-connector.ave/operationPolicy"?: PluginToolOperationPolicy;
   };
 }
 
@@ -484,8 +484,7 @@ export interface PluginManifestFields {
   ui?: PluginUiExtension[];
   /**
    * MCP App `ui://` resources this plugin serves — the plugin→host serving
-   * contract for interactive HTML cards (distinct from `ui[]`, which declares
-   * host-mounted React sidebar panels). Each entry declares a
+   * contract for interactive HTML cards and the resources placed in host panels by `ui[]`. Each entry declares a
    * `ui://<pluginId>/<path>` uri plus that resource's OWN `_meta.ui` security
    * POLICY (its csp). The CONTENT is served by the plugin itself
    * ({@link RuntimePlugin.readUiResource}) — "declared policy, served content".
@@ -894,12 +893,8 @@ export interface PluginUiExtension {
    * eligible to be attached.
    */
   slot: "sidebar" | "floating";
-  /**
-   * Panel surface kind. The `"action"` kind (an icon that dispatched a declared
-   * tool with no panel) was removed in #885 v6 along with its `tool` field —
-   * app-invokable behavior is now expressed by a tool's `_meta.ui.visibility`.
-   */
-  kind: "embedded-module" | "embedded-page" | "info-card";
+  /** Host placement renders a declared resource through the standard app bridge. */
+  kind: "mcp-app";
   /** Short label for menus and the sidebar. Falls back to `title`. */
   displayName?: string;
   title: string;
@@ -915,10 +910,8 @@ export interface PluginUiExtension {
    * @optional
    */
   locales?: Record<string, PluginUiExtensionLocalizedText>;
-  defaults?: Record<string, unknown>;
-  entry?: string;
-  exportName?: string;
-  page?: string;
+  /** Declared resource rendered through the standard app bridge. */
+  resourceUri: string;
 }
 
 /**
@@ -1248,7 +1241,7 @@ export interface PluginStorage {
  * - `"stdio-control-v1"`: worker stdio control v1. stdin and stdout carry only
  *   newline-delimited JSON-RPC 2.0 frames (one object per line, at most
  *   {@link WORKER_CONTROL_FRAME_BYTES_MAX} bytes); the worker writes logs and
- *   diagnostics to stderr. The host opens the channel with a `$/ave/hello`
+ *   diagnostics to stderr. The host opens the channel with a `$/ai.agent-connector.ave/hello`
  *   request before `spawnWorker` resolves. Anything else on stdout ends the
  *   worker. The schema is `schemas/worker-stdio-control/1/worker-control.schema.json`.
  * - `"output-only-v1"`: a command with no control channel. stdout and stderr are
@@ -1350,7 +1343,7 @@ export interface OutputOnlyPluginWorker extends SpawnedPluginWorkerBase {
 
 /** Options for one control request to a worker. */
 export interface WorkerControlRequestOptions {
-  /** Abort sends `$/ave/cancel` to the worker and rejects with `worker-request-cancelled`. */
+  /** Abort sends `$/ai.agent-connector.ave/cancel` to the worker and rejects with `worker-request-cancelled`. */
   readonly signal?: AbortSignal;
 }
 
@@ -1506,13 +1499,6 @@ export interface PluginHostApi {
       callback: (value: T | undefined) => void,
     ): () => void;
   };
-  /** Notify this plugin's own UI; eventType must begin with this plugin's id and a dot. */
-  emitEvent(eventType: string, data?: unknown): void;
-  /**
-   * Subscribe to host.theme.changed. Other event types are rejected.
-   * Returns a disposer owned by the current plugin generation.
-   */
-  onEvent(eventType: string, handler: (data: unknown) => void): () => void;
   /**
    * Read an allow-listed secret.
    *
@@ -1575,7 +1561,7 @@ export interface PluginHostApi {
    * `pluginId` is bound by the host from THIS hostApi instance — a plugin
    * cannot spawn a worker under another plugin's namespace. A
    * `"stdio-control-v1"` spawn resolves only after the worker answered the
-   * host's `$/ave/hello`; a worker that does not is stopped and the call
+   * host's `$/ai.agent-connector.ave/hello`; a worker that does not is stopped and the call
    * rejects with `worker-control-failed`. A host whose extension backend cannot
    * run the declared mode refuses before creating the process with
    * `worker-transport-unsupported`.
@@ -1747,10 +1733,8 @@ export interface PluginHostApi {
    * `startAudioCapture` is one: detach has to reach the ONE plugin whose card
    * went away, and the host's event bus broadcasts to all of them.
    *
-   * The card inside is served by the same shell and the same `ave:plugin:*`
-   * bridge a sidebar card gets, so it already has `callTool`, `emitEvent`,
-   * config, storage and theme. A card that needs to talk to its plugin calls
-   * the plugin's own tools.
+   * The panel uses the same standard app bridge as sidebar resources. It calls
+   * app-visible server tools for data and receives theme through host context.
    *
    * Refused, never silently downgraded, when the surface is not declared
    * `floating`, when its kind cannot render, or when the dock has no room

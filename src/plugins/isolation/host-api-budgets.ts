@@ -5,7 +5,6 @@ const AUDIT_WINDOW_MS = 60_000;
 export const DISPATCH_IN_FLIGHT_MAX = 64;
 export const DISPATCH_SUBSCRIPTIONS_MAX = 256;
 export const DISPATCH_SUBSCRIPTION_KIND_MAX: Partial<Record<HostApiPath, number>> = {
-  onEvent: 64,
   "config.onChange": 16,
   spawnWorker: 8,
   startAudioCapture: 2,
@@ -13,13 +12,12 @@ export const DISPATCH_SUBSCRIPTION_KIND_MAX: Partial<Record<HostApiPath, number>
   resolveApiKey: 32,
 };
 
-type BucketName = "default" | "hostFetch" | "resolveApiKey" | "emitEvent";
+type BucketName = "default" | "hostFetch" | "resolveApiKey";
 
 const BUCKETS: Record<BucketName, { readonly perSecond: number; readonly burst: number }> = {
   default: { perSecond: 50, burst: 200 },
   hostFetch: { perSecond: 20, burst: 60 },
   resolveApiKey: { perSecond: 10, burst: 30 },
-  emitEvent: { perSecond: 50, burst: 200 },
 };
 
 export interface HostApiBudgetAudit {
@@ -56,7 +54,6 @@ export class HostApiBudgets {
   take(method: HostApiPath): number {
     const name: BucketName = method === "hostFetch" || method === "resolveApiKey"
       ? method
-      : method === "emitEvent" ? "emitEvent"
       : "default";
     const key = method;
     const limit = BUCKETS[name];

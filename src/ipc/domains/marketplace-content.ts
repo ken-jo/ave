@@ -14,15 +14,13 @@ import { ContentStore, type ContentActivation } from "../../marketplace/content/
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
-import { legacySelectedThemes, type LegacyActivations } from "../../marketplace/migration/legacy-content.js";
+import { type LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
 import { applyBootLocale } from "../../boot/services.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
-import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { errorMessage } from "../../shared/error-message.js";
 import type { ComponentConsent, HookComponentConsent, McpComponentConsent } from "../../shared/git-marketplace.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
@@ -39,16 +37,15 @@ function contentPackagesRoot(home: string = aveHome()): string {
   return join(home, "packages");
 }
 
-// Migrate existing package activations without retaining obsolete compiled theme or locale registrations.
+// Migrate existing package activations without retaining obsolete locale registrations.
 export function legacyContentSettings(deps: IpcDeps): {
   activations: LegacyActivations;
-  release(provided: { themes: readonly string[]; locales: readonly string[] }): Promise<void>;
+  release(provided: { locales: readonly string[] }): Promise<void>;
 } {
   const settings = deps.settingsService;
   const marketplace = settings.get("marketplace");
   return {
     activations: {
-      themes: [...marketplace.installedThemeBundleIds, ...legacySelectedThemes(settings.get("appearance"))],
       locales: [...marketplace.installedLanguagePacks],
       providers: [...marketplace.installedProviderIds, ...marketplace.installedProviderPresets.map((preset) => preset.providerId)],
     },
@@ -56,7 +53,6 @@ export function legacyContentSettings(deps: IpcDeps): {
       const current = settings.get("marketplace");
       await settings.patch({
         marketplace: {
-          installedThemeBundleIds: current.installedThemeBundleIds.filter((id) => !provided.themes.includes(id)),
           installedLanguagePacks: current.installedLanguagePacks.filter((locale) => !provided.locales.includes(locale)),
         },
       });
@@ -153,8 +149,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       }
       if (entry.kind === "messaging-connection") {
         await settings.patch({ marketplace: { installedMessagingConnections: connectionsWithout(entry.name) } });
-      } else if (entry.kind === "theme" && appearance.bundleId === entry.name) {
-        await settings.patch({ appearance: { ...appearance, bundleId: DEFAULT_BUNDLE_ID } });
       } else if (
         content?.kind === "language" &&
         appearance.language === content.locale &&
@@ -203,7 +197,6 @@ async function applyInMain(deps: IpcDeps, service: InstalledContentService, view
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
   registerInstalledLocales(view.languages);
   setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
-  setInstalledThemeIds(view.themes.map((theme) => theme.id));
   const instructions = service.installedInstructions();
   deps.skillStore?.setInstalledPackages(instructions.filter((item) => item.kind === "skill"));
   deps.agentProfileStore?.setInstalledPackages(instructions.filter((item) => item.kind === "agent"));

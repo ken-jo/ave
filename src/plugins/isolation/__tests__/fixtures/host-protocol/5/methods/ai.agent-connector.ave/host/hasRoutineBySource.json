@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 15,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/hasRoutineBySource",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "source": "golden:daily"
+    }
+  },
+  "response": {
+    "id": 15,
+    "jsonrpc": "2.0",
+    "result": false
+  }
+}

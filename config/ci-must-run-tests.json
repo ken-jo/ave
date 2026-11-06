@@ -47,7 +47,6 @@
     ],
     "naming": [
       "src/plugins/__tests__/tool-name-policy.test.ts",
-      "src/boot/__tests__/event-namespace-policy.test.ts",
       "src/main/storage/__tests__/feature-namespace.test.ts"
     ],
     "out-of-process": [
