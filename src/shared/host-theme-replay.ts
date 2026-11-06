@@ -1,16 +1,12 @@
-import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "./appearance-settings.js";
+import { isDarkSchemeId, isLightSchemeId } from "./appearance-settings.js";
 import { AVE_TOKEN_NAMES } from "./plugin-ui-tokens.js";
 
 export type SafeThemePayload = {
   bundleId: string;
   shell: "light" | "dark";
-  colorScheme?: "light" | "dark";
-  reducedMotion?: boolean;
   tokens?: Record<string, string>;
 };
 
-const ALLOWED_SCHEME_IDS = new Set<string>([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
-const ALLOWED_SHELLS = new Set(["light", "dark"]);
 const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
 // Accept only token shapes emitted by the scheme token projection; rejected values leave the plugin fallback in place.
 // Allow colors, one non-nested color mix, lengths, weights, and durations; reject URLs and trailing function calls.
@@ -38,8 +34,6 @@ export function cloneThemePayload(payload: SafeThemePayload): SafeThemePayload {
     bundleId: payload.bundleId,
     shell: payload.shell,
   };
-  if (payload.colorScheme) clone.colorScheme = payload.colorScheme;
-  if (typeof payload.reducedMotion === "boolean") clone.reducedMotion = payload.reducedMotion;
   if (payload.tokens) clone.tokens = Object.freeze({ ...payload.tokens }) as Record<string, string>;
   return Object.freeze(clone);
 }
@@ -53,21 +47,16 @@ export function validateThemePayload(payload: unknown):
   | { ok: false; error: string } {
   if (!payload || typeof payload !== "object") return { ok: false, error: "invalid-payload" };
   const candidate = payload as Record<string, unknown>;
-  if (typeof candidate.bundleId !== "string" || !ALLOWED_SCHEME_IDS.has(candidate.bundleId)) {
-    return { ok: false, error: "invalid-bundle-id" };
-  }
-  if (typeof candidate.shell !== "string" || !ALLOWED_SHELLS.has(candidate.shell)) {
+  const { bundleId, shell } = candidate;
+  if (!isDarkSchemeId(bundleId) && !isLightSchemeId(bundleId)) return { ok: false, error: "invalid-bundle-id" };
+  // The scheme's own mode is the only shell it may be announced with.
+  if ((shell !== "dark" && shell !== "light") || (shell === "dark") !== isDarkSchemeId(bundleId)) {
     return { ok: false, error: "invalid-shell" };
   }
-  const shellSchemeIds: readonly string[] = candidate.shell === "dark" ? DARK_SCHEME_IDS : LIGHT_SCHEME_IDS;
-  if (!shellSchemeIds.includes(candidate.bundleId)) return { ok: false, error: "invalid-shell" };
   if (!candidate.tokens || typeof candidate.tokens !== "object" || Array.isArray(candidate.tokens)) {
     return { ok: false, error: "missing-tokens" };
   }
-  const safe: SafeThemePayload = {
-    bundleId: candidate.bundleId,
-    shell: candidate.shell as "light" | "dark",
-  };
+  const safe: SafeThemePayload = { bundleId, shell };
   const safeTokens: Record<string, string> = {};
   for (const [key, value] of Object.entries(candidate.tokens as Record<string, unknown>)) {
     if (PLUGIN_TOKEN_NAMES.has(key) && typeof value === "string" && SAFE_TOKEN_VALUE.test(value)) {
@@ -76,10 +65,6 @@ export function validateThemePayload(payload: unknown):
   }
   safe.tokens = safeTokens;
   // Fonts are host-owned and do not belong in the replay payload.
-  if (candidate.colorScheme === "light" || candidate.colorScheme === "dark") {
-    safe.colorScheme = candidate.colorScheme;
-  }
-  if (typeof candidate.reducedMotion === "boolean") safe.reducedMotion = candidate.reducedMotion;
   return { ok: true, safe };
 }
 

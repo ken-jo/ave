@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Require theme tokens for renderer colors; only existing allow-listed literals are exempt.
+// Require theme tokens for renderer colors and named opacity tokens for their alpha; only existing allow-listed
+// literals are exempt.
 import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { walkSourceFiles } from "./lib/source-walk.mjs";
@@ -24,7 +25,28 @@ const COLOR_SOURCE_FILES = new Set([
   "src/ui/renderer/theme/resolve-theme.ts",
 ]);
 
-const violations = [];
+// Include directional border utilities in alpha checks.
+const ALPHA_PREFIX =
+  "(?:bg|text|border|border-[trbl]|ring|ring-offset|fill|stroke|shadow|" +
+  "outline|divide|placeholder|decoration|accent|caret|from|to|via)";
+
+// Named colors exclude layout fractions such as w-1/3.
+const ALPHA_COLOR =
+  "(?:background|foreground|card|card-foreground|popover|popover-foreground|" +
+  "primary|primary-foreground|secondary|secondary-foreground|muted|" +
+  "muted-foreground|accent|accent-foreground|destructive|" +
+  "destructive-foreground|warning|warning-foreground|success|" +
+  "success-foreground|info|info-foreground|emphasis|" +
+  "border|input|ring|ui-line|action-view|action-branch|action-compact|" +
+  "message-user|message-user-foreground|current|white|black)";
+
+const RAW_ALPHA = new RegExp(`\\b${ALPHA_PREFIX}-${ALPHA_COLOR}\\/([0-9]+)\\b`, "g");
+
+// Add a semantic opacity token before extending the exception list.
+const GRANDFATHERED_ALPHAS = new Set(["25", "35"]);
+
+const colorViolations = [];
+const alphaViolations = [];
 
 function toPosix(p) {
   return sep === "/" ? p : p.split(sep).join("/");
@@ -37,15 +59,16 @@ function scan(dir) {
   });
   for (const p of files) {
     const rel = toPosix(relative(process.cwd(), p));
-    if (GRANDFATHERED_FILES.has(rel) || COLOR_SOURCE_FILES.has(rel)) continue;
-    const content = readFileSync(p, "utf8");
-    const lines = content.split("\n");
+    const checkColors = !GRANDFATHERED_FILES.has(rel) && !COLOR_SOURCE_FILES.has(rel);
+    const lines = readFileSync(p, "utf8").split("\n");
     lines.forEach((line, i) => {
-      for (const [label, re] of PATTERNS) {
-        re.lastIndex = 0;
-        for (const m of line.matchAll(re)) {
-          violations.push(`${rel}:${i + 1}  [${label}] ${m[0]}`);
+      if (checkColors) {
+        for (const [label, re] of PATTERNS) {
+          for (const m of line.matchAll(re)) colorViolations.push(`${rel}:${i + 1}  [${label}] ${m[0]}`);
         }
+      }
+      for (const m of line.matchAll(RAW_ALPHA)) {
+        if (!GRANDFATHERED_ALPHAS.has(m[1])) alphaViolations.push(`${rel}:${i + 1}  [raw-alpha] ${m[0]}`);
       }
     });
   }
@@ -58,13 +81,21 @@ try {
   process.exit(0);
 }
 
-if (violations.length > 0) {
+if (colorViolations.length > 0) {
   console.error(
     "[color-token-check] FAIL — raw color literals found.\n" +
       "Use theme tokens, e.g. hsl(var(--primary)) / var(--gradient-brand). " +
       "See the scheme derivation in src/ui/renderer/theme/resolve-theme.ts.\n",
   );
-  for (const v of violations) console.error(`  ${v}`);
-  process.exit(1);
+  for (const v of colorViolations) console.error(`  ${v}`);
 }
+if (alphaViolations.length > 0) {
+  console.error(
+    "[color-token-check] FAIL — raw numeric alpha modifiers found.\n" +
+      "Use named opacity tokens, e.g. bg-warning/(--opacity-soft). " +
+      "See the --opacity-* scale in src/styles.css.\n",
+  );
+  for (const v of alphaViolations) console.error(`  ${v}`);
+}
+if (colorViolations.length > 0 || alphaViolations.length > 0) process.exit(1);
 console.log("[color-token-check] OK");

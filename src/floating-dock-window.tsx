@@ -43,15 +43,10 @@ dock.onTheme((value) => {
   // Resolved before any state changes: an unknown scheme id is a contract violation and must leave the dock as it was, not half-repainted.
   const scheme = requireScheme(theme.bundleId);
   appearance = { ...theme, terminalFontFamily };
-  // The cards' stylesheet tokens and rem scale follow the same snapshot as the dock chrome and HostAppearance.
+  // The dock chrome, the cards' stylesheet tokens and the rem scale all follow this one snapshot, as does HostAppearance.
   applySchemeColors(scheme, document);
   applyUiFont(font, document);
   renderPanels();
-  const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
-  for (const [name, key] of Object.entries(pick)) {
-    const token = theme.tokens[key] ?? (key === "--ave-bg-elevated" ? theme.tokens["--ave-bg"] : undefined);
-    if (token) document.documentElement.style.setProperty(name, token);
-  }
 });
 dock.onMount((value) => {
   const slot = value as { panelId: string; title: string; payload: McpUiPayload; authStatusTool?: string; height: number };

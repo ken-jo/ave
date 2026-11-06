@@ -217,6 +217,28 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
     expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("seeds and updates the sans family from the user's UI font", async () => {
+    const appearance = { ...DEFAULT_APPEARANCE, mode: "light" as const, font: { family: "Example Sans" } };
+    const { api } = makeMockAveApi({ settings: { appearance } });
+    render(<ThemeProvider api={api as never} initialAppearance={appearance}><McpAppView payload={payload("ui-font")} /></ThemeProvider>);
+    await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
+    const initialContext = createMcpAppBridgeMock.mock.calls[0]![3] as { styles: { variables: Record<string, string> } };
+    expect(initialContext.styles.variables["--font-sans"]).toBe("Example Sans");
+    const appBridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge as { setHostContext: ReturnType<typeof vi.fn> };
+    await act(async () => { await api.updateSettings({ appearance: { font: { family: "Alternate Sans" } } }); });
+    await waitFor(() => expect(appBridge.setHostContext).toHaveBeenLastCalledWith(expect.objectContaining({
+      styles: expect.objectContaining({ variables: expect.objectContaining({ "--font-sans": "Alternate Sans" }) }),
+    })));
+    // Back to the system font: the guest gets the host stack, not the last override.
+    await act(async () => { await api.updateSettings({ appearance: { font: { family: "system" } } }); });
+    await waitFor(() => {
+      const sans = (appBridge.setHostContext.mock.lastCall![0] as { styles: { variables: Record<string, string> } }).styles.variables["--font-sans"];
+      expect(sans).toBeTruthy();
+      expect(sans).not.toContain("Alternate Sans");
+    });
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("seeds createMcpAppBridge with a populated, leak-free hostContext, then pushes updates via bridge.setHostContext on a theme change", async () => {
     const { container, getByTestId } = render(<McpAppView payload={payload("github")} />, {
       wrapper: ({ children }) => (
