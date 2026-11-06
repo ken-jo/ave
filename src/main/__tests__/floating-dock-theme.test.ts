@@ -64,7 +64,13 @@ vi.mock("electron", () => {
 vi.mock("../main-paths.js", () => ({ runtimeAssetPath: (name: string) => `/assets/${name}` }));
 
 const settingsHome = useTempDirs("dock-settings-");
-const settings = { get: () => ({ terminalFont: { family: "Dock Mono" } }), onChanged: () => () => {} } as unknown as Pick<SettingsService, "get" | "onChanged">;
+const settings = {
+  get: (key: string) => {
+    if (key !== "appearance") throw new Error(`Unexpected settings key: ${key}`);
+    return { terminalFont: { family: "Dock Mono" } };
+  },
+  onChanged: () => () => {},
+} as unknown as Pick<SettingsService, "get" | "onChanged">;
 
 const THEME = { bundleId: "harbor", shell: "dark", tokens: { "--ave-fg": "hsl(0, 0%, 100%)", "--ave-bg": "hsl(210, 40%, 12%)", "--ave-border": "hsl(210, 20%, 30%)", "--ave-accent": "hsl(200, 80%, 50%)" } };
 
@@ -146,6 +152,31 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
       theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
     }]);
+  });
+
+  it("opens with the current terminal font after it changes before the dock window exists", async () => {
+    const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
+    const service = new SettingsService({ userDataPath: settingsHome(), encryption: {
+      isAsyncEncryptionAvailable: async () => false, getSelectedStorageBackend: () => "gnome_libsecret",
+      encryptStringAsync: vi.fn(), decryptStringAsync: vi.fn(),
+    } });
+    recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, service);
+    await service.patch({ appearance: { terminalFont: { family: "Before Opening Mono" } } });
+    expect(windows).toHaveLength(0);
+
+    dock.show(BOUNDS);
+    dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
+    const win = windows[0]!;
+    expect(win.send).not.toHaveBeenCalled();
+    win.fire("ready-to-show");
+
+    const snapshots = win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme);
+    expect(snapshots[0]).toEqual([CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Before Opening Mono",
+    }]);
+    expect(snapshots.every(([, appearance]) => appearance.terminalFontFamily === "Before Opening Mono")).toBe(true);
+    expect(win.send.mock.calls[0]).toEqual(snapshots[0]);
   });
 
   it("sends no opening theme before the host has published one", async () => {
