@@ -258,14 +258,14 @@ describe("FolderView", () => {
     fireEvent.click(row(`${ROOT}/src/payments`));
     await waitFor(() => expect(row(`${ROOT}/src/payments/README.md`)).toBeDefined());
     fireEvent.click(row(`${ROOT}/src/payments/README.md`));
-    const rendered = await screen.findByTestId("markdown-rendered");
+    const rendered = await screen.findByTestId("folder-markdown-rendered");
     expect(rendered.querySelector("h1")?.textContent).toBe("Title");
-    fireEvent.click(screen.getByTestId("markdown-mode-source"));
-    expect(screen.queryByTestId("markdown-rendered")).toBeNull();
+    fireEvent.click(screen.getByTestId("folder-markdown-source"));
+    expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull();
     expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Title");
 
-    fireEvent.click(screen.getByTestId("markdown-mode-view"));
-    expect(screen.getByTestId("markdown-rendered").querySelector("h1")?.textContent).toBe("Title");
+    fireEvent.click(screen.getByTestId("folder-markdown-view"));
+    expect(screen.getByTestId("folder-markdown-rendered").querySelector("h1")?.textContent).toBe("Title");
 
     fireEvent.click(row(`${ROOT}/src/payments/flow.png`));
     const image = await screen.findByTestId("folder-image-viewer");

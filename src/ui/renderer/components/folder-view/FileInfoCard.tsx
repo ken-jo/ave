@@ -10,6 +10,8 @@ import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
 import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
 import { FileInfoCard as PassiveFileInfoCard, type FileInfoReason } from "../../preview/FileInfoCard.js";
 
+export type { FileInfoReason };
+
 export function formatFolderTimestamp(ms: number, locale: string | undefined): string | null {
   if (!Number.isFinite(ms) || ms <= 0) return null;
   return new Date(ms).toLocaleString(locale, { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });

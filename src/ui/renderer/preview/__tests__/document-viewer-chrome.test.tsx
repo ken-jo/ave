@@ -184,8 +184,6 @@ describe("shared document viewer chrome", () => {
     expect(await screen.findByRole("heading", { name: "Report" })).toBeTruthy();
     expect(screen.queryByTestId("document-text-lines")).toBeNull();
     expect(screen.queryByTestId("document-preview-live-strip")).toBeNull();
-    // A bound document always shows its rendered baseline: no source toggle beside it.
-    expect(screen.queryByTestId("markdown-mode-source")).toBeNull();
     expect(acknowledge).toHaveBeenCalledWith({ action: "rendered", targetId: TARGET, sessionId: SESSION, seq: 0 });
     await emitObservations(handlers, { ...lineEvent(1, 2, "Original paragraph", "Updated paragraph"), target: { id: TARGET, path } });
     expect(screen.queryByTestId("chat-side-panel-markdown")).toBeNull();

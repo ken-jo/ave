@@ -3,17 +3,16 @@
 import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, ChevronLeft, Copy, ExternalLink, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
+import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { formatBytes } from "../../../../lib/turn-summary-format.js";
 import { useCopyFlash } from "../../hooks/use-copy-flash.js";
-import { resolveFilePreviewRoute, resolvePreviewRenderer } from "../../preview/preview-renderers.js";
-import { FilePreviewContent, MarkdownPreviewToggle } from "../../preview/file-preview-content.js";
+import { CodePreview, PreviewContent, resolveFilePreviewRoute, resolvePreviewRenderer } from "../../preview/preview-renderers.js";
 import { TableDocumentPreview } from "../../preview/table-document-preview.js";
 import { PageDocumentPreview } from "../../preview/PageDocumentPreview.js";
 import { previewFormatLabel } from "../../preview/preview-document-chrome.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
-import type { FileInfoReason } from "../../preview/FileInfoCard.js";
-import { FileInfoCard, formatFolderTimestamp } from "./FileInfoCard.js";
+import { FileInfoCard, formatFolderTimestamp, type FileInfoReason } from "./FileInfoCard.js";
 import { folderEntryIcon } from "./FolderColumn.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
@@ -165,7 +164,17 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   const isMarkdown = state.phase === "text" && resolvePreviewRenderer({ text: "", path: entry.path }).kind === "markdown";
   const actions = (
     <>
-      {isMarkdown ? <MarkdownPreviewToggle source={markdownSource} onSourceChange={setMarkdownSource} /> : null}
+      {isMarkdown ? (
+        <div role="group" aria-label={t("folderView.markdownMode")} className="flex rounded-md border p-0.5">
+          {([false, true] as const).map((source) => (
+            <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
+              onClick={() => setMarkdownSource(source)}
+              className={cn("rounded px-2 py-0.5 text-[11px]", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
+              {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {state.phase === "text" ? (
         <Button type="button" size="icon-xs" variant="ghost" aria-label={t(copied ? "folderView.copied" : "folderView.copyContent")}
           title={t(copied ? "folderView.copied" : "folderView.copyContent")} onClick={() => copy(state.content)} data-testid="folder-copy-content">
@@ -197,7 +206,14 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     <ImageViewer src={state.dataUrl} alt={entry.name} />
   ) : (
     <div className="min-h-0 flex-1 overflow-auto [&_.markdown-body]:max-h-none [&_.markdown-body]:border-0 [&_pre]:max-h-none">
-      <FilePreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} source={markdownSource} prose />
+      {isMarkdown && markdownSource
+        ? <CodePreview descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />
+        : isMarkdown
+          // The reading typography chat answers use, so headings, lists and tables look like a document.
+          ? <div className="prose prose-sm ave-prose max-w-none px-4 py-3" data-testid="folder-markdown-rendered">
+            <PreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />
+          </div>
+          : <PreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} />}
     </div>
   );
   return shell(<>
