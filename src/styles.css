@@ -143,6 +143,10 @@
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+
+  /* Every `transition-*` utility without its own duration runs on the one
+   * fast motion step (120ms), so hover, focus and surface swaps share a pace. */
+  --default-transition-duration: var(--motion-fast);
 }
 
 /* ─── Action color tokens ─────────────────────────────────────────────────
@@ -630,17 +634,29 @@
     /* Surface/elevation — inspired by Linear/Raycast/Vercel references:
      * hierarchy should read through hairlines and tiny stacked shadows, not
      * heavy floating cards. These tokens are intentionally theme-relative. */
-    --surface-hairline: inset 0 0 0 1px hsl(var(--border));
+    /* A card's edge is a hairline of ink, not a mid-grey line: ~7% near-black
+     * on a light ground, ~9% white on a dark one (redefined per shell below),
+     * so it reads the same weight over any scheme's surface and over glass. */
+    --hairline: rgb(9 9 11 / 0.07);
+    --surface-hairline: inset 0 0 0 1px var(--hairline);
     --surface-hairline-strong: inset 0 0 0 1px hsl(var(--ui-line) / 0.42);
+    /* A resting card: a tight contact shadow plus a soft one pulled in by its
+     * negative spread, so the lift shows under the card and not around it. */
+    --elevation-pane:
+      0 8px 18px -12px hsl(var(--overlay) / 0.14),
+      0 1px 2px hsl(var(--overlay) / 0.08);
     --elevation-raised:
-      0 1px 1px hsl(var(--overlay) / 0.10),
-      0 6px 18px hsl(var(--overlay) / 0.12),
+      var(--elevation-pane),
       var(--surface-hairline);
     --elevation-floating:
       0 1px 1px hsl(var(--overlay) / 0.12),
       0 12px 34px hsl(var(--overlay) / 0.20),
       var(--surface-hairline-strong);
   }
+  :root[data-shell="dark"] {
+    --hairline: rgb(255 255 255 / 0.09);
+  }
+
 
   /* A neutral light surface before the synchronous saved appearance read. */
   :root {
