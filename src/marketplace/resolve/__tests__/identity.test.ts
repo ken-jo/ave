@@ -52,7 +52,7 @@ describe("classifyInstall", () => {
   });
 
   it("keeps kinds apart: the caller passes the install of the same kind", () => {
-    expect(() => classifyInstall(plan(), installed({ kind: "theme" }))).toThrow("is not skill notes");
+    expect(() => classifyInstall(plan(), installed({ kind: "font" }))).toThrow("is not skill notes");
   });
 });
 

@@ -12,3 +12,6 @@ export interface PreloadBundle {
 }
 
 export const PRELOAD_BUNDLES: Readonly<Record<PreloadBundleId, PreloadBundle>> = bundles as Record<PreloadBundleId, PreloadBundle>;
+
+/** Link shells use their own titlebar tokens and need the window bridge without app appearance. */
+export const LINK_WINDOW_SHELL_ARGUMENT = "--ave-link-window-shell";

@@ -9,7 +9,7 @@
  *   semantic tokens (`hsl(var(--background))`, etc.) so utilities like
  *   `bg-background`, `text-muted-foreground`, `bg-success/15`, and
  *   `rounded-md` keep their existing class names but resolve to the
- *   per-bundle CSS-variable values defined below. */
+ *   scheme-derived CSS variables. */
 @import "tailwindcss";
 
 /* xterm.js base stylesheet (#1444 workspace terminal). The renderer has no
@@ -98,17 +98,16 @@
    * tracks, scroll-area thumbs, and intentional separators. Distinct from
    * --border (subtle card outline) and --muted (subtle hover bg) which
    * intentionally sit ~1-2:1 against background per shadcn convention.
-   * Every theme bundle declares this with ≥3:1 contrast against
+   * The scheme resolver derives this against
    * --background and --input-bar-bg so controls remain visible regardless of skin.
    */
   --color-ui-line: hsl(var(--ui-line));
 
   /* ─── Depth: surface ladder ────────────────────────────────────────────
-   * Per-bundle surface elevation ladder. Each rung is a distinct lightness so
+   * Scheme-derived surface elevation ladder. Each rung is a distinct lightness so
    * layered chrome separates by tone alone (no border required). Bound here so
    * `bg-surface`, `bg-surface-sunken`, `bg-surface-raised`, `bg-surface-overlay`
-   * resolve to the active bundle's ladder. Source triples live in every
-   * `:root[data-theme-bundle]` block below (and the pre-hydration `:root`).
+   * resolve to the active scheme's ladder from theme/resolve-theme.ts.
    */
   --color-surface-sunken: hsl(var(--surface-sunken));
   --color-surface: hsl(var(--surface));
@@ -121,10 +120,8 @@
   --color-border-strong: hsl(var(--border-strong));
 
   /* ─── Depth: elevation shadows (e1..e4) ────────────────────────────────
-   * The anti-flat core. Each bundle supplies its own umbra/penumbra stack
-   * (light shells: soft layered greys; dark shells: deeper drop + an inset
-   * top-edge highlight so raised surfaces catch light). Consumed as
-   * `shadow-e1` … `shadow-e4`. Source values live per-bundle below.
+   * The fixed shadow ladder uses the active overlay color. Consumed as
+   * `shadow-e1` … `shadow-e4`.
    */
   --shadow-e1: var(--shadow-e1);
   --shadow-e2: var(--shadow-e2);
@@ -488,31 +485,7 @@
   }
 }
 
-/*
- * ─────────────────────────────────────────────────────────────────────────────
- *  Ave theme system v2 — bundle-based semantic design tokens
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *  Single-axis model: each data-theme-bundle block defines ALL tokens
- *  (Tier B shell + chat surface + Tier C code + action) in one place.
- *  No combinatorial overlays — one selector, one outcome.
- *
- *  Built-in bundles are registered in src/shared/theme-bundles.ts, with
- *  moonstone (`DEFAULT_BUNDLE_ID`) as the default light shell. CSS block order keeps the
- *  pre-hydration default near the end for easy comparison with its fallback.
- *
- *  Token tiers:
- *    A. PRIMITIVE tokens (--p-*) — raw HSL triples, single source of truth
- *    B. SEMANTIC tokens  (--background, --foreground, --primary, …)
- *                                  — meaning-based references; consumed by
- *                                    components via Tailwind utilities
- *    C. CODE-SURFACE tokens (--code-bg, --code-fg, --code-border)
- *                                  — code-block specific overlay; remaps
- *                                    independently of the global theme
- *
- *  See `docs/development/theme-system.md` for the complete pattern.
- */
-
+/* Scheme colors are derived in theme/resolve-theme.ts; see docs/development/theme-system.md. */
 @layer base {
   /* ── Tier A: primitive palette ─────────────────────────────────────── */
   /*  HSL triples (no hsl() wrapper) so Tailwind's `hsl(var(--token) / <alpha>)`
@@ -576,21 +549,7 @@
     --p-code-dark-fg:     210 40% 96%;
     --p-code-dark-border: 217 33% 22%;
 
-    /* Shape — does not vary by theme */
-    --radius: 0.6rem;
-
-    /* Motion — product-wide interaction timing. Reference systems converge on
-     * short, purposeful micro-motion; these variables keep durations/easing
-     * consistent without creating another component API. */
-    --type-size-12: 0.75rem;
-    --type-size-14: 0.875rem;
-    --type-size-16: 1rem;
-    --type-leading-16: 1rem;
-    --type-leading-18: 1.125rem;
-    --type-leading-20: 1.25rem;
-    --type-leading-24: 1.5rem;
-    --type-tracking-normal: 0em;
-    --type-tracking-wide: 0.015em;
+    /* Static shape, typography and motion values are applied from theme/design-tokens.ts. */
     --message-user-border: var(--message-user-fg);
     --message-user-muted: var(--message-user-fg);
     --message-user-action: var(--message-user-fg);
@@ -601,23 +560,15 @@
     --input-bar-focus: var(--ring);
     --input-bar-subtle: var(--muted);
     --input-bar-action: var(--foreground);
-    --motion-fast: 120ms;
-    --motion-normal: 180ms;
     --motion-base: var(--motion-normal);
-    --motion-slow: 240ms;
-    --motion-layout: 300ms;
-    --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-    --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-    --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   /* ── Tier B-derived: composite tokens ─────────────────────────────────
-   *  Diff-hunk and brand-gradient tokens are *derived* from the per-bundle
+   *  Diff-hunk and brand-gradient tokens are *derived* from the scheme
    *  semantic tokens (--success / --destructive / --p-* primitives). Because
    *  CSS custom properties resolve lazily at use-time, a single definition
-   *  here picks up whichever bundle's --success / --destructive is active —
-   *  so diff hunks and brand gradients adapt to every bundle (dark, light,
-   *  high-contrast) without re-declaring per bundle.
+   *  here picks up the active --success / --destructive values, so diff hunks
+   *  adapt to each scheme without another token block.
    *
    *  Each value is a fully-formed CSS color/gradient (hsl() wrapper included)
    *  so call sites reference `var(--diff-add)` / `var(--gradient-brand)`
@@ -665,7 +616,7 @@
       hsl(var(--p-orange-500) / 0.07)
     );
 
-    /* Attachment stacked-card ramp — keyed to the per-bundle categorical
+    /* Attachment stacked-card ramp — keyed to the scheme categorical
      * --chart-* palette so each successive card is visually distinct and the
      * whole stack re-tints with the active bundle. Each is a top-left→bottom-
      * right wash from the chart hue's light edge to its full strength, giving
@@ -691,224 +642,75 @@
       var(--surface-hairline-strong);
   }
 
-  /* ── Bundle token blocks ──────────────────────────────────────────────
-   *  Each bundle defines ALL semantic tokens (Tier B + Tier C + action)
-   *  in a single :root[data-theme-bundle="<id>"] block. Self-contained:
-   *  no var(--p-*) chain dependencies — Tier A primitives above remain
-   *  as the authoritative reference but bundles do not rely on them.
-   *
-   *  color-scheme drives native form/scrollbar tinting per bundle.
-   * ─────────────────────────────────────────────────────────────────── */
-
-  /* ── 1. gallery ── light + quiet near-black ink, hairline frames ─────── */
-  :root[data-theme-bundle="gallery"] {
-    --ui-line:                  0 0% 40%;
-    --background:               0 0% 98%;     /* #fafafa canvas */
-    --foreground:               0 0% 11%;     /* oklch(.205) ≈ #1c1c1c ink */
-    --card:                     0 0% 100%;    /* #fff */
-    --card-foreground:          0 0% 11%;
-    --popover:                  0 0% 100%;
-    --popover-foreground:       0 0% 11%;
-    --primary:                  0 0% 11%;      /* near-black ink primary */
-    --primary-foreground:       0 0% 98%;
-    --secondary:                0 0% 96%;
-    --secondary-foreground:     0 0% 11%;
-    --muted:                    0 0% 96%;
-    --muted-foreground:         0 0% 43%;      /* #6d6d6d — clears WCAG AA 4.5 on muted */
-    --accent:                   0 0% 94%;
-    --accent-foreground:        0 0% 11%;
-    --destructive:              358 75% 49%;
-    --destructive-foreground:   0 0% 100%;
-    --warning:                  35 92% 40%;
-    --warning-foreground:       0 0% 100%;
-    --success:                  152 56% 34%;
-    --success-foreground:       0 0% 100%;
-    --info:                     212 90% 44%;
-    --info-foreground:          0 0% 100%;
-    --emphasis:                 40 96% 46%;
-    --emphasis-foreground:      0 0% 11%;
-    --border:                   0 0% 90%;      /* #e5e5e5 hairline */
-    --input:                    0 0% 90%;
-    --ring:                     0 0% 11%;
-    --message-user-bg:          0 0% 94%;
-    --message-user-fg:          0 0% 11%;
-    --input-bar-bg:             0 0% 100%;
-    --overlay:                  0 0% 4%;
-    --hover-overlay:            0 0% 11%;
-    --focus-ring:               0 0% 11%;
-    --link-fg:                  212 90% 44%;
-    --selection-bg:             0 0% 88%;
-    --selection-fg:             0 0% 11%;
-    --scrollbar-thumb:          0 0% 80%;
-    --scrollbar-track:          0 0% 96%;
-    --kbd-bg:                   0 0% 96%;
-    --kbd-border:               0 0% 88%;
-    --code-bg:                  0 0% 97%;
-    --code-fg:                  0 0% 11%;
-    --code-border:              0 0% 90%;
-    --chart-1:                  212 90% 44%;
-    --chart-2:                  152 56% 34%;
-    --chart-3:                  262 60% 55%;
-    --chart-4:                  25 90% 48%;
-    --chart-5:                  330 65% 50%;
-    --action-view:              262 60% 55%;
-    --action-branch:            25 90% 48%;
-    --action-compact:           212 90% 44%;
-    --surface-sunken:           0 0% 96%;
-    --surface:                  0 0% 100%;
-    --surface-raised:           0 0% 100%;
-    --surface-overlay:          0 0% 100%;
-    --border-subtle:            0 0% 93%;
-    --border-strong:            0 0% 82%;
-    --shadow-e1:                0 1px 2px hsl(var(--overlay) / 0.06), 0 1px 1px hsl(var(--overlay) / 0.04);
-    --shadow-e2:                0 2px 4px hsl(var(--overlay) / 0.06), 0 4px 12px hsl(var(--overlay) / 0.06);
-    --shadow-e3:                0 8px 24px hsl(var(--overlay) / 0.1), 0 2px 6px hsl(var(--overlay) / 0.06);
-    --shadow-e4:                0 16px 48px hsl(var(--overlay) / 0.14), 0 4px 12px hsl(var(--overlay) / 0.08);
-    color-scheme: light;
-  }
-
-  /* ── 2. moonstone ── light + soft periwinkle sheen (default) ─────────── */
-  :root[data-theme-bundle="moonstone"] {
-    --ui-line:                  228 12% 40%;
-    --background:               0 0% 100%;     /* pure white canvas */
-    --foreground:               225 12% 8%;    /* #121317 ink */
-    --card:                     0 0% 100%;
-    --card-foreground:          225 12% 8%;
-    --popover:                  0 0% 100%;
-    --popover-foreground:       225 12% 8%;
-    --primary:                  225 12% 12%;   /* graphite ink primary */
-    --primary-foreground:       0 0% 100%;
-    --secondary:                228 30% 96%;   /* periwinkle wash */
-    --secondary-foreground:     225 12% 12%;
-    --muted:                    228 26% 96%;
-    --muted-foreground:         227 6% 29%;    /* #45474d */
-    --accent:                   225 33% 91%;   /* #dfe3ef selection tint */
-    --accent-foreground:        225 12% 12%;
-    --destructive:              358 70% 52%;
-    --destructive-foreground:   0 0% 100%;
-    --warning:                  35 88% 44%;
-    --warning-foreground:       0 0% 100%;
-    --success:                  152 52% 36%;
-    --success-foreground:       0 0% 100%;
-    --info:                     224 52% 58%;
-    --info-foreground:          0 0% 100%;
-    --emphasis:                 40 92% 48%;
-    --emphasis-foreground:      225 12% 8%;
-    --border:                   228 16% 90%;   /* rgba(33,34,38,.08)-ish hairline */
-    --input:                    228 16% 90%;
-    --ring:                     224 40% 66%;   /* periwinkle focus */
-    --message-user-bg:          225 33% 93%;   /* soft periwinkle bubble */
-    --message-user-fg:          225 14% 14%;
-    --input-bar-bg:             0 0% 100%;
-    --overlay:                  228 20% 8%;
-    --hover-overlay:            225 12% 12%;
-    --focus-ring:               224 44% 62%;
-    --link-fg:                  224 56% 52%;
-    --selection-bg:             225 33% 91%;   /* #dfe3ef */
-    --selection-fg:             225 14% 14%;
-    --scrollbar-thumb:          228 18% 80%;
-    --scrollbar-track:          228 26% 96%;
-    --kbd-bg:                   228 26% 96%;
-    --kbd-border:               228 16% 88%;
-    --code-bg:                  228 30% 97%;
-    --code-fg:                  225 12% 12%;
-    --code-border:              228 16% 90%;
-    --chart-1:                  224 52% 62%;   /* periwinkle */
-    --chart-2:                  152 52% 40%;
-    --chart-3:                  268 46% 62%;
-    --chart-4:                  28 82% 54%;
-    --chart-5:                  330 58% 58%;
-    --action-view:              268 46% 58%;
-    --action-branch:            28 82% 52%;
-    --action-compact:           224 52% 58%;
-    --surface-sunken:           228 30% 97%;
-    --surface:                  0 0% 100%;
-    --surface-raised:           0 0% 100%;
-    --surface-overlay:          0 0% 100%;
-    --border-subtle:            228 24% 94%;
-    --border-strong:            228 18% 84%;
-    /* Premium layered shadows — periwinkle-cool umbra, softly diffused. */
-    --shadow-e1:                0 1px 2px hsl(var(--overlay) / 0.05), 0 1px 3px hsl(var(--overlay) / 0.05);
-    --shadow-e2:                0 2px 6px hsl(var(--overlay) / 0.06), 0 6px 16px hsl(var(--overlay) / 0.07);
-    --shadow-e3:                0 10px 30px hsl(var(--overlay) / 0.1), 0 3px 8px hsl(var(--overlay) / 0.06);
-    --shadow-e4:                0 20px 56px hsl(var(--overlay) / 0.14), 0 6px 16px hsl(var(--overlay) / 0.08);
-    /* Pill-leaning radius for the moonstone look. */
-    --radius:                   0.75rem;
-    color-scheme: light;
-  }
-
-  /* ── Default (no bundle set) → moonstone tokens for pre-hydration ──────
-   * Mirrors :root[data-theme-bundle="moonstone"] above so cold-boot frame-0
-   * paints the default bundle before ThemeProvider writes data-theme-bundle. */
+  /* A neutral light surface before the synchronous saved appearance read. */
   :root {
-    --ui-line:                  228 12% 40%;
-    --background:               0 0% 100%;
-    --foreground:               225 12% 8%;
-    --card:                     0 0% 100%;
-    --card-foreground:          225 12% 8%;
-    --popover:                  0 0% 100%;
-    --popover-foreground:       225 12% 8%;
-    --primary:                  225 12% 12%;
-    --primary-foreground:       0 0% 100%;
-    --secondary:                228 30% 96%;
-    --secondary-foreground:     225 12% 12%;
-    --muted:                    228 26% 96%;
-    --muted-foreground:         227 6% 29%;
-    --accent:                   225 33% 91%;
-    --accent-foreground:        225 12% 12%;
-    --destructive:              358 70% 52%;
-    --destructive-foreground:   0 0% 100%;
-    --warning:                  35 88% 44%;
-    --warning-foreground:       0 0% 100%;
-    --success:                  152 52% 36%;
-    --success-foreground:       0 0% 100%;
-    --info:                     224 52% 58%;
-    --info-foreground:          0 0% 100%;
-    --emphasis:                 40 92% 48%;
-    --emphasis-foreground:      225 12% 8%;
-    --border:                   228 16% 90%;
-    --input:                    228 16% 90%;
-    --ring:                     224 40% 66%;
-    --message-user-bg:          225 33% 93%;
-    --message-user-fg:          225 14% 14%;
-    --input-bar-bg:             0 0% 100%;
-    --overlay:                  228 20% 8%;
-    --hover-overlay:            225 12% 12%;
-    --focus-ring:               224 44% 62%;
-    --link-fg:                  224 56% 52%;
-    --selection-bg:             225 33% 91%;
-    --selection-fg:             225 14% 14%;
-    --scrollbar-thumb:          228 18% 80%;
-    --scrollbar-track:          228 26% 96%;
-    --kbd-bg:                   228 26% 96%;
-    --kbd-border:               228 16% 88%;
-    --code-bg:                  228 30% 97%;
-    --code-fg:                  225 12% 12%;
-    --code-border:              228 16% 90%;
-    --chart-1:                  224 52% 62%;
-    --chart-2:                  152 52% 40%;
-    --chart-3:                  268 46% 62%;
-    --chart-4:                  28 82% 54%;
-    --chart-5:                  330 58% 58%;
-    --action-view:              268 46% 58%;
-    --action-branch:            28 82% 52%;
-    --action-compact:           224 52% 58%;
-    --surface-sunken:           228 30% 97%;
-    --surface:                  0 0% 100%;
-    --surface-raised:           0 0% 100%;
-    --surface-overlay:          0 0% 100%;
-    --border-subtle:            228 24% 94%;
-    --border-strong:            228 18% 84%;
-    --shadow-e1:                0 1px 2px hsl(var(--overlay) / 0.05), 0 1px 3px hsl(var(--overlay) / 0.05);
-    --shadow-e2:                0 2px 6px hsl(var(--overlay) / 0.06), 0 6px 16px hsl(var(--overlay) / 0.07);
-    --shadow-e3:                0 10px 30px hsl(var(--overlay) / 0.1), 0 3px 8px hsl(var(--overlay) / 0.06);
-    --shadow-e4:                0 20px 56px hsl(var(--overlay) / 0.14), 0 6px 16px hsl(var(--overlay) / 0.08);
-    --radius:                   0.75rem;
+    --background: 0.0000 0.0000% 100.0000%;
+    --foreground: 210.0000 28.5714% 5.4902%;
+    --card: 0.0000 0.0000% 97.6471%;
+    --card-foreground: 210.0000 28.5714% 5.4902%;
+    --popover: 240.0000 3.7037% 94.7059%;
+    --popover-foreground: 210.0000 28.5714% 5.4902%;
+    --primary: 210.0000 28.5714% 5.4902%;
+    --primary-foreground: 0.0000 0.0000% 100.0000%;
+    --secondary: 240.0000 2.7027% 92.7451%;
+    --secondary-foreground: 210.0000 28.5714% 5.4902%;
+    --muted: 180.0000 3.0303% 93.5294%;
+    --muted-foreground: 210.0000 4.8077% 40.7843%;
+    --accent: 240.0000 2.0408% 90.3922%;
+    --accent-foreground: 210.0000 28.5714% 5.4902%;
+    --destructive: 355.8382 71.7842% 47.2549%;
+    --destructive-foreground: 0.0000 0.0000% 100.0000%;
+    --warning: 35.0649 100.0000% 15.0980%;
+    --warning-foreground: 0.0000 0.0000% 100.0000%;
+    --success: 137.5610 70.6897% 22.7451%;
+    --success-foreground: 0.0000 0.0000% 100.0000%;
+    --info: 212.4402 92.0705% 44.5098%;
+    --info-foreground: 0.0000 0.0000% 100.0000%;
+    --emphasis: 35.0649 100.0000% 15.0980%;
+    --emphasis-foreground: 0.0000 0.0000% 100.0000%;
+    --border: 210.0000 2.2727% 82.7451%;
+    --input: 210.0000 2.2727% 82.7451%;
+    --ring: 210.0000 28.5714% 5.4902%;
+    --ui-line: 210.0000 2.4390% 51.7647%;
+    --message-user-bg: 240.0000 2.0408% 90.3922%;
+    --message-user-fg: 210.0000 28.5714% 5.4902%;
+    --input-bar-bg: 0.0000 0.0000% 97.6471%;
+    --overlay: 0.0000 0.0000% 0.0000%;
+    --hover-overlay: 210.0000 28.5714% 5.4902%;
+    --focus-ring: 210.0000 28.5714% 5.4902%;
+    --link-fg: 210.0000 28.5714% 5.4902%;
+    --selection-bg: 216.0000 2.2831% 57.0588%;
+    --selection-fg: 210.0000 28.5714% 5.4902%;
+    --scrollbar-thumb: 210.0000 2.5974% 69.8039%;
+    --scrollbar-track: 0.0000 0.0000% 100.0000%;
+    --kbd-bg: 180.0000 3.0303% 93.5294%;
+    --kbd-border: 210.0000 2.2727% 82.7451%;
+    --code-bg: 0.0000 0.0000% 97.6471%;
+    --code-fg: 210.0000 28.5714% 5.4902%;
+    --code-border: 210.0000 2.2727% 82.7451%;
+    --chart-1: 212.4402 92.0705% 44.5098%;
+    --chart-2: 137.5610 70.6897% 22.7451%;
+    --chart-3: 260.9790 69.0821% 59.4118%;
+    --chart-4: 35.0649 100.0000% 15.0980%;
+    --chart-5: 355.8382 71.7842% 47.2549%;
+    --action-view: 260.9790 69.0821% 59.4118%;
+    --action-branch: 35.0649 100.0000% 15.0980%;
+    --action-compact: 212.4402 92.0705% 44.5098%;
+    --surface-sunken: 0.0000 0.0000% 98.4314%;
+    --surface: 0.0000 0.0000% 97.6471%;
+    --surface-raised: 0.0000 0.0000% 95.6863%;
+    --surface-overlay: 240.0000 3.7037% 94.7059%;
+    --border-subtle: 240.0000 2.0408% 90.3922%;
+    --border-strong: 210.0000 2.5974% 69.8039%;
+    --shadow-e1: var(--shadow-sm-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e2: var(--shadow-md-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e3: var(--shadow-lg-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e4: var(--shadow-xl-offsets) hsl(var(--overlay) / 0.16);
     color-scheme: light;
   }
 
   /*
-   * Bundle transition: smooth background/foreground swap on bundle switch.
+   * Smooth background/foreground changes after a scheme switch.
    * Respects prefers-reduced-motion — no flicker on first paint or OS toggle.
    */
   :root {
@@ -919,14 +721,14 @@
   @media (prefers-reduced-motion: reduce) {
     :root {
       transition: none;
-      --motion-fast: 1ms;
-      --motion-normal: 1ms;
-      --motion-base: 1ms;
-      --motion-slow: 1ms;
-      --motion-layout: 1ms;
-      --motion-ease-out: linear;
-      --motion-ease-standard: linear;
-      --motion-ease-in-out: linear;
+      --motion-fast: 1ms !important;
+      --motion-normal: 1ms !important;
+      --motion-base: 1ms !important;
+      --motion-slow: 1ms !important;
+      --motion-layout: 1ms !important;
+      --motion-ease-out: linear !important;
+      --motion-ease-standard: linear !important;
+      --motion-ease-in-out: linear !important;
     }
   }
 
@@ -1106,217 +908,6 @@
   :where(:focus-visible) {
     outline: 2px solid hsl(var(--focus-ring));
     outline-offset: 2px;
-  }
-}
-
-/* ─── Theme picker — visual swatch cards ──────────────────────────────────
-   Used by AppearanceTab. Each card is a miniature mock-UI tinted by the
-   theme it represents. Selection is a 2px ring drawn 2px outside the card
-   edge ("engraved frame" feel). Reduced-motion users get only an opacity
-   fade on the ring; no scale or transform animation.
-─────────────────────────────────────────────────────────────────────────── */
-
-@layer components {
-  .ave-theme-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.5rem;
-    cursor: pointer;
-    border-radius: 0.625rem;
-    transition:
-      box-shadow var(--motion-base) var(--motion-ease-standard),
-      transform var(--motion-base) var(--motion-ease-standard);
-  }
-
-  .ave-theme-card:focus-visible {
-    outline: none;
-    box-shadow:
-      0 0 0 2px hsl(var(--background)),
-      0 0 0 4px hsl(var(--ring));
-  }
-
-  .ave-theme-card-mock {
-    aspect-ratio: 16 / 11;
-    width: 100%;
-    border-radius: 0.5rem;
-    border: 1px solid hsl(var(--border));
-    overflow: hidden;
-    box-shadow:
-      0 1px 2px -1px rgb(0 0 0 / 0.16),
-      0 2px 4px -2px rgb(0 0 0 / 0.12);
-    transition:
-      box-shadow var(--motion-base) var(--motion-ease-standard),
-      border-color var(--motion-base) var(--motion-ease-standard);
-  }
-
-  .ave-theme-card[data-selected="true"] .ave-theme-card-mock {
-    border-color: hsl(var(--primary));
-    box-shadow:
-      0 0 0 2px hsl(var(--background)),
-      0 0 0 4px hsl(var(--primary) / 0.85),
-      0 4px 12px -4px hsl(var(--primary) / 0.35);
-  }
-
-  .ave-theme-card[data-selected="false"]:hover .ave-theme-card-mock {
-    border-color: hsl(var(--muted-foreground) / 0.5);
-  }
-
-  /* The mock's interior — a tiny chat shell or code split, drawn from
-   * neutral primitives so the SAME mock can be re-tinted by overriding
-   * `--mock-accent` per card. */
-  .ave-theme-card-mock-inner {
-    width: 100%;
-    height: 100%;
-    /* `--mock-bg`/`--mock-text` are optional per-card overrides so a
-       theme with its own surface palette (e.g. warm-grey) shows
-       its real surface, not a generic slate-50. Falls back to slate
-       defaults when not set. */
-    background: var(--mock-bg, hsl(var(--p-slate-50)));
-    color: var(--mock-text, hsl(var(--p-slate-900)));
-    padding: 0.4rem 0.45rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.28rem;
-  }
-
-  /* Dark-shell variant of the mock — used inside code-theme dark card */
-  .ave-theme-card-mock-inner.is-dark {
-    background: var(--mock-bg, hsl(var(--p-slate-950)));
-    color: var(--mock-text, hsl(var(--p-slate-50)));
-  }
-
-  .ave-theme-card-mock-bar {
-    height: 0.45rem;
-    border-radius: 0.2rem;
-    background: var(--mock-accent, hsl(var(--p-slate-300)));
-    width: 100%;
-    flex: 0 0 auto;
-  }
-
-  .ave-theme-card-mock-row {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
-  .ave-theme-card-mock-bubble {
-    height: 0.55rem;
-    border-radius: 0.45rem;
-    /* Default (other-side) bubble. Per-card override via `--mock-bubble-other`
-       lets a theme paint the assistant bubble with its own muted color
-       (e.g. a warm-grey-7) instead of generic slate-200. */
-    background: var(--mock-bubble-other, hsl(var(--p-slate-200)));
-    flex: 1 1 auto;
-  }
-
-  .ave-theme-card-mock-bubble.is-self {
-    /* `--mock-bubble-self` lets a theme paint the user bubble with its own
-       message-user surface (distinct from the accent pill); falls back to
-       `--mock-accent` when a card only supplies a single accent. */
-    background: var(--mock-bubble-self, var(--mock-accent, hsl(var(--p-blue-500))));
-    flex: 0 0 60%;
-    margin-left: auto;
-  }
-
-  .ave-theme-card-mock-bubble.is-self-narrow {
-    flex: 0 0 42%;
-  }
-
-  .ave-theme-card-mock-dot {
-    width: 0.55rem;
-    height: 0.55rem;
-    border-radius: 999px;
-    background: var(--mock-accent, hsl(var(--p-slate-300)));
-    flex: 0 0 auto;
-  }
-
-  /* Code-theme split card */
-  .ave-theme-card-mock-split {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    width: 100%;
-    height: 100%;
-  }
-  .ave-theme-card-mock-split-pane {
-    padding: 0.35rem 0.4rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    justify-content: center;
-  }
-  .ave-theme-card-mock-split-pane.is-light {
-    background: hsl(var(--p-code-light-bg));
-    color: hsl(var(--p-code-light-fg));
-  }
-  .ave-theme-card-mock-split-pane.is-dark {
-    background: hsl(var(--p-code-dark-bg));
-    color: hsl(var(--p-code-dark-fg));
-  }
-  .ave-theme-card-mock-codeline {
-    height: 0.32rem;
-    border-radius: 0.16rem;
-    background: currentColor;
-    opacity: 0.4;
-  }
-  .ave-theme-card-mock-codeline.is-short { width: 50%; }
-  .ave-theme-card-mock-codeline.is-mid   { width: 75%; }
-  .ave-theme-card-mock-codeline.is-long  { width: 90%; }
-
-  .ave-theme-card-mock-glyph {
-    align-self: center;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    opacity: 0.78;
-  }
-
-  .ave-theme-card-label {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-    font-size: 0.78rem;
-    font-weight: 500;
-    color: hsl(var(--muted-foreground));
-    transition: color var(--motion-base) var(--motion-ease-standard);
-  }
-  .ave-theme-card[data-selected="true"] .ave-theme-card-label {
-    color: hsl(var(--foreground));
-    font-weight: 600;
-  }
-
-  .ave-theme-card-checkmark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 0.95rem;
-    height: 0.95rem;
-    border-radius: 999px;
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
-    font-size: 0.6rem;
-    line-height: 1;
-    opacity: 0;
-    transform: scale(0.8);
-    transition:
-      opacity var(--motion-base) var(--motion-ease-standard),
-      transform var(--motion-base) var(--motion-ease-standard);
-  }
-  .ave-theme-card[data-selected="true"] .ave-theme-card-checkmark {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ave-theme-card,
-  .ave-theme-card-mock,
-  .ave-theme-card-checkmark,
-  .ave-theme-card-label {
-    transition: none;
   }
 }
 

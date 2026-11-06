@@ -4,7 +4,6 @@ export const MARKETPLACE_PACKAGE_TYPES = [
   "agent",
   "skill",
   "provider",
-  "theme",
   "language-pack",
   "messaging-connection",
 ] as const;

@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 } from "../../../src/shared/llm-vendor-defaults.js";
-import { DEFAULT_BUNDLE_ID } from "../../../src/shared/theme-bundles.js";
+import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "../../..");
@@ -91,11 +91,9 @@ export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | 
     features: {
       onboardingCompleted,
     },
-    // Pin the UI locale for e2e. Defaults to Korean: after #1200 the production default is English (DEFAULT_LOCALE), but the specs assert the Korean catalog (mirroring src/i18n/testing/vitest-ambient-intl.ts, which pins the renderer unit suite to ko for the same reason).
-    // The English boot path is covered by the english-default-smoke spec, which passes locale:"en". schemaVersion:2 is REQUIRED; settings-store normalizeAppearance only reads `language` inside the v2 branch, so without it the seed is silently ignored and the UI stays en.
+    // Pin the UI locale while retaining the shared appearance defaults.
     appearance: {
-      schemaVersion: 2,
-      bundleId: DEFAULT_BUNDLE_ID,
+      ...DEFAULT_APPEARANCE,
       language: locale,
     },
   };

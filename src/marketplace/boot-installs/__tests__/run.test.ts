@@ -298,7 +298,7 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
   it("offers the default installs to the user, lists what the policy required, and what the migration unlocked", () => {
     const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
     const notice = bootInstallNoticeFrom(
-      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")] },
+      { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "font")] },
       policy,
       { unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
       [],
@@ -306,7 +306,7 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
     expect(notice).toEqual({
       forYou: [
         { sourceId: "ave", kind: "plugin", name: "meeting" },
-        { sourceId: "ave", kind: "theme", name: "tokyo-night" },
+        { sourceId: "ave", kind: "font", name: "tokyo-night" },
       ],
       required: [{ sourceId: "corp", kind: "plugin", name: "vpn" }],
       unmanaged: ["sampleportal"],

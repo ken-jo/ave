@@ -152,6 +152,7 @@ describe("platform conversation legacy adapter", () => {
     });
     sink({ kind: "user.message", origin: "user-keyboard", ownerDetail: { text: "hello", messageId: "row-1" } });
     sink({ kind: "assistant.text.delta", text: "answer" });
+    sink({ kind: "model.fallback", from: "primary/model-a", to: "secondary/model-b" });
 
     expect(send).toHaveBeenNthCalledWith(1, CHANNELS.sidechat.stream, {
       streamId: 9, type: "user_message", sessionId: "side-session",
@@ -160,6 +161,9 @@ describe("platform conversation legacy adapter", () => {
     });
     expect(send).toHaveBeenNthCalledWith(2, CHANNELS.sidechat.stream, {
       streamId: 9, type: "text_delta", text: "answer",
+    });
+    expect(send).toHaveBeenNthCalledWith(3, CHANNELS.sidechat.fallback, {
+      streamId: 9, from: "primary/model-a", to: "secondary/model-b",
     });
   });
 

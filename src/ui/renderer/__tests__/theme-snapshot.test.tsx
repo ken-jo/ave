@@ -1,4 +1,4 @@
-/** Theme changes swap tokens; component markup must remain identical across bundles. */
+/** Theme changes swap tokens; component markup must remain identical across modes. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { render, waitFor } from "@testing-library/react";
@@ -6,66 +6,67 @@ import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card.js";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
+import { DEFAULT_APPEARANCE, type AppearanceMode } from "../../../shared/appearance-settings.js";
 
-async function renderInBundle(bundleId: string, node: JSX.Element) {
-  document.documentElement.removeAttribute("data-theme-bundle");
+async function renderInMode(mode: Exclude<AppearanceMode, "system">, node: JSX.Element) {
+  document.documentElement.removeAttribute("data-scheme");
   document.documentElement.removeAttribute("data-shell");
-  const result = render(<ThemeProvider initialBundleId={bundleId}>{node}</ThemeProvider>);
+  const result = render(<ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, mode }}>{node}</ThemeProvider>);
   await waitFor(() => {
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(bundleId);
+    expect(document.documentElement.getAttribute("data-scheme")).toBe(mode === "dark" ? DEFAULT_APPEARANCE.darkScheme : DEFAULT_APPEARANCE.lightScheme);
   });
   return {
     html: result.container.innerHTML,
-    rootBundle: document.documentElement.getAttribute("data-theme-bundle"),
+    rootScheme: document.documentElement.getAttribute("data-scheme"),
     cleanup: () => result.unmount(),
   };
 }
 
-describe("Theme snapshots — semantic-token components are bundle-invariant", () => {
-  it("Button (primary) renders identical markup in gallery vs moonstone", async () => {
-    const first = await renderInBundle("gallery", <Button>Click</Button>);
-    expect(first.rootBundle).toBe("gallery");
+describe("Theme snapshots — semantic-token components are mode-invariant", () => {
+  it("Button (primary) renders identical markup in light and dark modes", async () => {
+    const first = await renderInMode("light", <Button>Click</Button>);
+    expect(first.rootScheme).toBe(DEFAULT_APPEARANCE.lightScheme);
     first.cleanup();
-    const second = await renderInBundle("moonstone", <Button>Click</Button>);
-    expect(second.rootBundle).toBe("moonstone");
+    const second = await renderInMode("dark", <Button>Click</Button>);
+    expect(second.rootScheme).toBe(DEFAULT_APPEARANCE.darkScheme);
     expect(second.html).toBe(first.html);
     second.cleanup();
   });
 
-  it("Button variants still emit bundle-agnostic class strings", async () => {
+  it("Button variants still emit mode-agnostic class strings", async () => {
     for (const variant of ["default", "destructive", "outline", "secondary", "ghost"] as const) {
-      const first = await renderInBundle("gallery", <Button variant={variant}>x</Button>);
+      const first = await renderInMode("light", <Button variant={variant}>x</Button>);
       first.cleanup();
-      const second = await renderInBundle("moonstone", <Button variant={variant}>x</Button>);
-      expect(second.html, `variant=${variant} differs between bundles`).toBe(first.html);
+      const second = await renderInMode("dark", <Button variant={variant}>x</Button>);
+      expect(second.html, `variant=${variant} differs between modes`).toBe(first.html);
       second.cleanup();
     }
   });
 
-  it("Input is bundle-invariant", async () => {
-    const first = await renderInBundle("gallery", <Input placeholder="search" />);
+  it("Input is mode-invariant", async () => {
+    const first = await renderInMode("light", <Input placeholder="search" />);
     first.cleanup();
-    const second = await renderInBundle("moonstone", <Input placeholder="search" />);
+    const second = await renderInMode("dark", <Input placeholder="search" />);
     expect(second.html).toBe(first.html);
     second.cleanup();
   });
 
-  it("Card composition is bundle-invariant", async () => {
+  it("Card composition is mode-invariant", async () => {
     const tree = (
       <Card>
         <CardHeader><CardTitle>Title</CardTitle></CardHeader>
         <CardContent>Body</CardContent>
       </Card>
     );
-    const first = await renderInBundle("gallery", tree);
+    const first = await renderInMode("light", tree);
     first.cleanup();
-    const second = await renderInBundle("moonstone", tree);
+    const second = await renderInMode("dark", tree);
     expect(second.html).toBe(first.html);
     second.cleanup();
   });
 
   it("Button does NOT include any theme-literal Tailwind palette utilities", async () => {
-    const { html, cleanup } = await renderInBundle("gallery", <Button>x</Button>);
+    const { html, cleanup } = await renderInMode("light", <Button>x</Button>);
     expect(html).not.toMatch(/\bbg-slate-\d+\b/);
     expect(html).not.toMatch(/\bbg-zinc-\d+\b/);
     expect(html).not.toMatch(/\bbg-gray-\d+\b/);
@@ -92,7 +93,7 @@ describe("Renderer source has no hardcoded color escapes", async () => {
 
   /** Files where palette literals are intentional (theme definitions, brand SVG). */
   const ALLOW = [
-    "theme/bundles/",
+    "theme/schemes/",
     "__tests__/",
     "components/AveLogo.tsx",   /* brand gradient — not theme-bound */
     "test/",
@@ -120,7 +121,7 @@ describe("Renderer source has no hardcoded color escapes", async () => {
   const FORBIDDEN_BLACK_WHITE = /\b(?:bg|text|border|ring|fill|hover:bg|hover:text|hover:border)-(?:black|white)(?:\/\d+)?\b/;
   const FORBIDDEN_HEX_LITERAL = /["'`]#[0-9a-fA-F]{3,8}["'`]/;
 
-  it("no Tailwind palette utilities outside bundle TS / tests", async () => {
+  it("no Tailwind palette utilities outside scheme TS / tests", async () => {
     const files = await walk(RENDERER_ROOT);
     const violations: string[] = [];
     for (const file of files) {

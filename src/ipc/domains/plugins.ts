@@ -38,7 +38,7 @@ import {
   resetLastThemePayloadForTests,
   validateThemePayload,
   type SafeThemePayload,
-} from "../../shared/plugin-theme-cache.js";
+} from "../../shared/host-theme-replay.js";
 import {
   installPluginAssetProtocolHandler,
   pluginAssetUrlFromRealPath,

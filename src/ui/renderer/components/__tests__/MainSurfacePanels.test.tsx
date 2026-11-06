@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /** Terminal and web panes in the main area: the store that owns their records and the pane body each kind draws. */
 import "../../../../../test/renderer/setup.js";
-import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as renderUnwrapped, renderHook, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { t } from "../../../../i18n/index.js";
@@ -28,6 +29,12 @@ import { browserControlFixture } from "../../../../__tests__/support/browser-con
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import { BrowserTabRegistry, type BrowserGuest } from "../../../../main/browser/browser-tab-registry.js";
+import { ThemeProvider } from "../../theme/ThemeProvider.js";
+import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
+
+const render = (ui: ReactElement) => renderUnwrapped(ui, {
+  wrapper: ({ children }) => <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}>{children}</ThemeProvider>,
+});
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {

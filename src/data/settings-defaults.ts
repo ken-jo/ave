@@ -13,7 +13,7 @@ import {
   DEFAULT_LLM_VENDOR,
   freshVendorBlocks,
 } from "../shared/llm-vendor-defaults.js";
-import { DEFAULT_BUNDLE_ID } from "../shared/theme-bundles.js";
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
 import { DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
@@ -67,7 +67,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // No catalog URL or API key: packages come from git marketplaces (src/marketplace/), whose sources live in ~/.ave/marketplaces/.
     installedProviderIds: [],
     installedProviderPresets: [],
-    installedThemeBundleIds: [],
     installedLanguagePacks: [],
     installedMessagingConnections: [],
     // Both default ON, which is what the pre-setting env-only resolvers did when their variables were unset; i.e. on every packaged install.
@@ -103,11 +102,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // re-exports as LOG_RETENTION_DAYS; one literal, no drift between the boot-time prune window and this default.
     logRetentionDays: LOG_RETENTION_DAYS,
   },
-  appearance: {
-    schemaVersion: 2,
-    bundleId: DEFAULT_BUNDLE_ID,
-    language: DEFAULT_LOCALE,
-  },
+  appearance: { ...DEFAULT_APPEARANCE, language: DEFAULT_LOCALE },
   documents: { openMode: "direct" },
   workBoard: { toolApprovalSurface: "chat" },
   webView: {

@@ -424,6 +424,10 @@ if (!existsSync(uvLicense)) fail(`uv license notice missing: ${uvLicense}`);
 // The bundled model catalog is models.dev data (MIT); its notice ships beside it.
 const modelCatalogLicense = resolve(resourcesDir, "licenses", "models.dev", "LICENSE-MIT");
 if (!existsSync(modelCatalogLicense)) fail(`models.dev license notice missing: ${modelCatalogLicense}`);
+for (const name of ["NOTICE", "LICENSE-APACHE", "LICENSE-MIT"]) {
+  const path = resolve(resourcesDir, "licenses", "appearance", name);
+  if (!existsSync(path)) fail(`appearance license notice missing: ${path}`);
+}
 // The packaged rg binary: ripgrep (MIT option), its statically linked PCRE2,
 // and the @vscode/ripgrep wrapper each need their notice beside it.
 for (const notice of RIPGREP_LICENSE_NOTICES) {

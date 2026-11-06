@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import { contentFileProblem } from "../rules.js";
 import type { SourceOrigin } from "../../sources/registry.js";
 import { parseContent, translatableKeys, type ContentFile, type DataContentKind } from "../kinds.js";
@@ -26,27 +25,6 @@ function parse(
   return parseContent(kind, files, { name, payload, english: ENGLISH, sourceOrigin, unknownMessageKeys });
 }
 
-function png(width: number, height: number): Buffer {
-  const bytes = Buffer.alloc(33);
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
-  bytes.writeUInt32BE(13, 8);
-  bytes.write("IHDR", 12, "latin1");
-  bytes.writeUInt32BE(width, 16);
-  bytes.writeUInt32BE(height, 20);
-  return bytes;
-}
-
-function jpeg(width: number, height: number): Buffer {
-  const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0]);
-  bytes.writeUInt16BE(height, 13);
-  bytes.writeUInt16BE(width, 15);
-  return bytes;
-}
-
-const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
-const themeFile = (patch: Record<string, unknown> = {}) =>
-  json("theme.json", { name: "Harbor", description: "Blue light.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES, ...patch });
-
 const WOFF2 = Buffer.concat([Buffer.from("wOF2"), Buffer.alloc(60)]);
 const fontFile = (patch: Record<string, unknown> = {}) =>
   json("font.json", { family: "Harbor Sans", license: "LICENSE", faces: [{ file: "files/HarborSans.woff2", weight: "100 900" }], ...patch });
@@ -69,9 +47,6 @@ describe("content file rules (design §5.4)", () => {
   });
 
   it("allows each kind's layout and nothing else", () => {
-    expect(contentFileProblem("theme", "theme.json")).toBeNull();
-    expect(contentFileProblem("theme", "preview.webp")).toBeNull();
-    expect(contentFileProblem("theme", "img/preview.png")).toMatch(/theme\.json and a preview image only/u);
     expect(contentFileProblem("font", "files/a.woff2")).toBeNull();
     expect(contentFileProblem("font", "LICENSE")).toBeNull();
     expect(contentFileProblem("font", "files/nested/a.woff2")).toMatch(/only/u);
@@ -94,59 +69,7 @@ describe("content file rules (design §5.4)", () => {
   });
 
   it("refuses SVG in every kind, whatever the layout says", () => {
-    expect(contentFileProblem("theme", "preview.svg")).toBe("SVG is not allowed: preview.svg");
     expect(contentFileProblem("skill", "assets/logo.SVG")).toBe("SVG is not allowed: assets/logo.SVG");
-  });
-});
-
-describe("theme packages", () => {
-  it("parses a theme that passes the contrast rules", () => {
-    const content = parse("theme", [themeFile({ preview: "preview.png" }), { path: "preview.png", data: png(640, 400) }], "harbor");
-    expect(content).toMatchObject({ kind: "theme", name: "Harbor", shell: "light", preview: "preview.png" });
-    expect(parse("theme", [themeFile({ preview: "preview.jpg" }), { path: "preview.jpg", data: jpeg(640, 400) }], "harbor")).toMatchObject({ preview: "preview.jpg" });
-  });
-
-  it("refuses a preview that is not an image of its extension's format, or larger than 2048 pixels a side", () => {
-    expect(() => parse("theme", [themeFile({ preview: "preview.png" }), { path: "preview.png", data: Buffer.from("<html>") }], "harbor"))
-      .toThrow("preview.png: is not an image of the format its extension names");
-    expect(() => parse("theme", [themeFile({ preview: "preview.webp" }), { path: "preview.webp", data: png(10, 10) }], "harbor"))
-      .toThrow(/is not an image of the format its extension names/u);
-    expect(() => parse("theme", [themeFile({ preview: "preview.png" }), { path: "preview.png", data: png(4096, 10) }], "harbor"))
-      .toThrow("preview.png: must be at most 2048×2048 pixels");
-  });
-
-  it("refuses names and descriptions with bidirectional overrides or invisible characters", () => {
-    expect(() => parse("theme", [themeFile({ name: "Harbor\u202e" })], "harbor")).toThrow(/name must be a single-line string/u);
-    expect(() => parse("theme", [themeFile({ description: "Blue\u200b light." })], "harbor")).toThrow(/description must be a single-line string/u);
-  });
-
-  it("refuses two files whose paths differ only in case", () => {
-    expect(() => parse("theme", [themeFile({ preview: "preview.png" }), { path: "preview.png", data: png(1, 1) }, { path: "Preview.png", data: png(1, 1) }], "harbor"))
-      .toThrow("Preview.png: differs from preview.png only in case");
-  });
-
-  it("refuses a theme that fails contrast and names the rule", () => {
-    const tokens = { ...moonstoneBundle.tokens, "message-user-fg": moonstoneBundle.tokens["message-user-bg"] };
-    expect(() => parse("theme", [themeFile({ tokens })])).toThrow(/message-user-bg ↔ message-user-fg contrast 1\.00 is under 4\.5/u);
-  });
-
-  it("refuses unknown fields, token values that are not triples, and the built-in ids", () => {
-    expect(() => parse("theme", [themeFile({ css: "body{}" })])).toThrow("theme.json: unknown field css");
-    expect(() => parse("theme", [themeFile({ surfaces: { ...SURFACES, surface: "white" } })])).toThrow(/surface surface is not an "H S% L%" triple/u);
-    expect(() => parse("theme", [themeFile({ surfaces: undefined })])).toThrow(/surfaces must be an object/u);
-    expect(() => parse("theme", [themeFile({ tokens: { ...moonstoneBundle.tokens, primary: "url(x)" } })])).toThrow(/primary is not an "H S% L%" triple/u);
-    expect(() => parse("theme", [themeFile()], "moonstone")).toThrow("moonstone is a built-in theme");
-    expect(parse("theme", [themeFile()], "nord")).toMatchObject({ kind: "theme" });
-    expect(() => parse("theme", [themeFile({ preview: "missing.png" })])).toThrow(/preview must name an image file/u);
-  });
-
-  it("keeps the pair a theme names for followSystem, and refuses one that names no other theme", () => {
-    expect(parse("theme", [themeFile({ pair: "harbor-light" })], "harbor")).toMatchObject({ kind: "theme", pair: "harbor-light" });
-    expect(parse("theme", [themeFile({ pair: "moonstone" })], "harbor")).toMatchObject({ pair: "moonstone" });
-    expect(parse("theme", [themeFile()], "harbor")).not.toHaveProperty("pair");
-    for (const pair of ["harbor", "Not A Theme", 7]) {
-      expect(() => parse("theme", [themeFile({ pair })], "harbor")).toThrow("theme.json: pair must name another theme");
-    }
   });
 });
 

@@ -7,7 +7,6 @@ import {
   type InstalledContentView,
   type InstalledFontView,
   type InstalledLanguageView,
-  type InstalledThemeView,
 } from "../../shared/installed-content.js";
 import type { ContentKind } from "./rules.js";
 import type { ParsedContent } from "./kinds.js";
@@ -15,7 +14,6 @@ import type { ContentStore, LoadedContent } from "./store.js";
 import { parseAgentPluginRoutineTemplates } from "./agent-plugin-components.js";
 import type { AgentPluginRoutineTemplate } from "../../shared/agent-plugin-routine-template.js";
 
-const IMAGE_TYPES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" };
 const FONT_TYPES: Readonly<Record<string, string>> = { woff2: "font/woff2", woff: "font/woff", truetype: "font/ttf", opentype: "font/otf" };
 
 export interface ServedContentFile {
@@ -41,7 +39,7 @@ export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
 }
 
 export class InstalledContentService {
-  private view: InstalledContentView = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
+  private view: InstalledContentView = { languages: [], fonts: [], routineTemplates: [], broken: [] };
   private catalogs = new Map<string, Record<string, string>>();
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
@@ -57,7 +55,6 @@ export class InstalledContentService {
 
   async reload(): Promise<InstalledContentView> {
     const { loaded, broken } = await this.store.load();
-    const themes: InstalledThemeView[] = [];
     const languages: InstalledLanguageView[] = [];
     const fonts: InstalledFontView[] = [];
     const routineTemplates: AgentPluginRoutineTemplate[] = [];
@@ -80,28 +77,7 @@ export class InstalledContentService {
         refuse(item, revocation);
         continue;
       }
-      if (content.kind === "theme") {
-        let previewUrl: string | undefined;
-        if (content.preview) {
-          const type = IMAGE_TYPES[content.preview.slice(content.preview.lastIndexOf(".")).toLowerCase()];
-          if (type) {
-            served.set(`theme/${entry.name}/${content.preview}`, { path: join(dir, ...content.preview.split("/")), contentType: type });
-            previewUrl = contentAssetUrl(this.assetToken, "theme", entry.name, content.preview);
-          }
-        }
-        themes.push({
-          id: entry.name,
-          name: content.name,
-          description: content.description,
-          shell: content.shell,
-          highContrast: content.highContrast,
-          tokens: content.tokens,
-          surfaces: content.surfaces,
-          ...(previewUrl ? { previewUrl } : {}),
-          ...(content.pair ? { pair: content.pair } : {}),
-          ...from(item),
-        });
-      } else if (content.kind === "language") {
+      if (content.kind === "language") {
         const holder = languages.find((language) => language.locale === content.locale);
         if (holder) {
           refuse(item, `${holder.name} already provides ${content.locale}`);
@@ -150,7 +126,7 @@ export class InstalledContentService {
         }
       }
     }
-    this.view = { themes, languages, fonts, routineTemplates, broken: brokenViews };
+    this.view = { languages, fonts, routineTemplates, broken: brokenViews };
     this.catalogs = catalogs;
     this.served = served;
     this.instructions = instructions;
@@ -181,7 +157,7 @@ export class InstalledContentService {
     return { ...catalog };
   }
 
-  /** Serves only applied theme previews and listed font faces; all other asset paths return null. */
+  /** Serves only listed font faces; all other asset paths return null. */
   servedFile(kind: string, name: string, path: string): ServedContentFile | null {
     return this.served.get(`${kind}/${name}/${path}`) ?? null;
   }

@@ -2441,6 +2441,22 @@ describe("installer smoke and packaging discipline", () => {
       });
     }
   });
+
+  it("ships the palette and color-derivation license notices as resources", () => {
+    const packageJson = JSON.parse(readRepoFile("package.json"));
+    expect(packageJson.build.extraResources).toContainEqual({
+      from: "resources/licenses/appearance",
+      to: "licenses/appearance",
+    });
+    const notice = readRepoFile("resources/licenses/appearance/NOTICE");
+    expect(notice).toContain("Dure");
+    expect(notice).toContain("bundledThemes.ts at 4d4fbfd");
+    expect(notice).toContain("Apache License, Version 2.0");
+    expect(notice).toContain("iTerm2-Color-Schemes");
+    expect(notice).toContain("MIT License");
+    expect(readRepoFile("resources/licenses/appearance/LICENSE-APACHE")).toContain("Apache License");
+    expect(readRepoFile("resources/licenses/appearance/LICENSE-MIT")).toContain("Permission is hereby granted");
+  });
 });
 
 it("builds the native path classifier before the Windows permission boundaries", () => {

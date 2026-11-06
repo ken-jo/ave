@@ -1,5 +1,5 @@
-import { app, BrowserWindow, screen, shell } from "electron";
-import { existsSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, screen, shell, type IpcMainEvent } from "electron";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createLogger } from "../lib/logger.js";
@@ -9,18 +9,16 @@ import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
-import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
-import {
-  INITIAL_THEME_ARG_PREFIX,
-  INITIAL_THEME_ARG_MAX_BYTES,
-  type InitialThemePrime,
-} from "../shared/initial-theme.js";
+import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
+import { CHANNELS } from "../contract/app-contract.js";
+import { normalizeAppearance } from "../shared/appearance-settings.js";
+import { settingsFilePath } from "../data/settings-store.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import { computeInitialMainWindowBounds } from "./main-window-bounds.js";
 import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-geometry.js";
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
-import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
+import { BOOTSTRAP_SPLASH_URL, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
 import { killTerminalsOwnedBy } from "./terminal/pty-manager.js";
 import { preloadPreferences } from "./preload-bundles.js";
@@ -57,30 +55,38 @@ function initialMainWindowBounds(): { x: number; y: number; width: number; heigh
   return computeInitialMainWindowBounds(workArea);
 }
 
-// Prime frame-zero theme through preload arguments; missing or oversized payloads defer to asynchronous hydration.
-export function initialThemeArgs(): string[] {
-  const payload = getLastThemePayload();
-  if (!payload) return [];
-  // Prime only initial paint fields; read validated user font overrides from live settings, not cached plugin theme.
-  // Omit default font values and leave renderer-only fields to normal hydration.
-  const font = getServices()?.settingsService.getAll().appearance?.font;
-  const fontSizeScale = typeof font?.sizeScale === "number" ? font.sizeScale : undefined;
-  const fontFamily = font?.family && font.family !== "system" ? font.family : undefined;
-  const prime: InitialThemePrime = {
-    bundleId: payload.bundleId,
-    shell: payload.shell,
-    ...(payload.tokens ? { tokens: payload.tokens } : {}),
-    ...(fontSizeScale !== undefined ? { fontSizeScale } : {}),
-    ...(fontFamily !== undefined ? { fontFamily } : {}),
-  };
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(prime);
-  } catch {
-    return [];
+/** Read the same validated appearance before services exist so preload can paint the saved scheme. */
+function readCurrentAppearance() {
+  const live = getServices();
+  if (live) return live.settingsService.getAll().appearance;
+  let stored: unknown;
+  const path = settingsFilePath(app.getPath("userData"));
+  if (existsSync(path)) {
+    try { stored = (JSON.parse(readFileSync(path, "utf8")) as { appearance?: unknown }).appearance; }
+    catch (error) { log.warn({ err: error }, "Could not read initial appearance"); }
   }
-  if (serialized.length > INITIAL_THEME_ARG_MAX_BYTES) return [];
-  return [`${INITIAL_THEME_ARG_PREFIX}${serialized}`];
+  return normalizeAppearance(stored);
+}
+
+let initialAppearanceRegistered = false;
+function registerInitialAppearance(): void {
+  if (initialAppearanceRegistered) return;
+  ipcMain.on(CHANNELS.settings.initialAppearance, (event: IpcMainEvent) => {
+    const frame = event.senderFrame;
+    const owned = getMainWindows().some((win) => !win.isDestroyed() && win.webContents === event.sender);
+    let result: InitialAppearanceResult;
+    if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
+      result = { ok: false, error: "unauthorized-frame" };
+    } else {
+      try { result = { ok: true, appearance: readCurrentAppearance() }; }
+      catch (error) {
+        log.warn({ err: error }, "Could not read current appearance");
+        result = { ok: false, error: "appearance-unavailable" };
+      }
+    }
+    event.returnValue = result;
+  });
+  initialAppearanceRegistered = true;
 }
 
 // Open one main app window. Several may be open at once; the first live one owns the primary conversation (see `app-state.ts`). Returns the window, or
@@ -90,6 +96,7 @@ export function createWindow(
 ): BrowserWindow | null {
   // One-shot runs have no desktop surface and must not allocate a renderer.
   if (options.headless) return null;
+  registerInitialAppearance();
   const showBootstrapSplash = options.showBootstrapSplash ?? true;
   const hostPreload = preloadPreferences("preload");
   if (!existsSync(hostPreload.preload)) {
@@ -113,8 +120,6 @@ export function createWindow(
       // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
       // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      // Apply the cached theme before the renderer mounts.
-      additionalArguments: initialThemeArgs(),
     },
   });
   registerMainWindow(win, nextMainWindowRole());
@@ -242,7 +247,7 @@ export function createWindow(
     // §M-race: bootstrap 동안 splash만 표시. 실 index.html 로드는 main()이 IPC 핸들러 등록 후 수행.
     markBootstrapSplashShown();
     void win
-      .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(BOOTSTRAP_SPLASH)}`)
+      .loadURL(BOOTSTRAP_SPLASH_URL)
       .then(() => showMainWindow(win))
       .catch((err) => log.error({ err }, "splash load failed"));
   }

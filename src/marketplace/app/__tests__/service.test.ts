@@ -26,7 +26,6 @@ import type { SourcePreviewResultView } from "../../../shared/git-marketplace.js
 import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
 import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
-import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import type { MarketplaceError } from "../../errors.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
 import { EMPTY_MARKETPLACE_POLICY, FilePolicySource, type PolicyLoad, type PolicySource } from "../../sources/policy.js";
@@ -66,7 +65,6 @@ function previewIdOf(view: SourcePreviewResultView): string {
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
 const ORIGINAL_PLATFORM = process.platform;
-const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
 
@@ -109,7 +107,7 @@ describe("MarketplaceService", () => {
   let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
   let legacyReport: LegacyPluginReport;
   let legacyActivations: LegacyActivations;
-  let released: Array<{ themes: string[]; locales: string[] }>;
+  let released: Array<{ locales: string[] }>;
   let contentReports: LegacyContentReport[];
   let adopting: boolean[];
   let feeds: RevocationFeed[];
@@ -157,7 +155,7 @@ describe("MarketplaceService", () => {
     afterSourceSynced = null;
     legacyRuns = [];
     legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
-    legacyActivations = { themes: [], locales: [], providers: [] };
+    legacyActivations = { locales: [], providers: [] };
     released = [];
     contentReports = [];
     adopting = [];
@@ -360,7 +358,7 @@ describe("MarketplaceService", () => {
     await cleanupTmpDir(root);
   });
 
-  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { theme?: boolean } = {}) {
+  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { font?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
     const files = (version: string) => ({
@@ -371,20 +369,22 @@ describe("MarketplaceService", () => {
         packages: [
           { kind: "skill", name: "review", path: "skills/review" },
           { kind: "mcp", name: "notes", path: "mcp/notes" },
-          ...(options.theme ? [{ kind: "theme", name: "harbor", path: "themes/harbor" }] : []),
+          ...(options.font ? [{ kind: "font", name: "harbor", path: "fonts/harbor" }] : []),
         ],
       }),
-      ...(options.theme
+      ...(options.font
         ? {
-            "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
-            "themes/harbor/theme.json": text({ name: "Harbor", description: "Harbor theme.", shell: "light", highContrast: false, tokens: moonstoneBundle.tokens, surfaces: SURFACES }),
+            "fonts/harbor/ave-package.json": descriptor("font", "harbor", "1.0.0", { entry: "font.json" }),
+            "fonts/harbor/font.json": text({ family: "Harbor Sans", license: "LICENSE", faces: [{ file: "files/HarborSans.woff2", weight: "400" }] }),
+            "fonts/harbor/LICENSE": "Font license",
+            "fonts/harbor/files/HarborSans.woff2": Buffer.concat([Buffer.from("wOF2"), Buffer.alloc(60)]),
           }
         : {}),
       "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
       "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
       "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
     });
-    const key = JSON.stringify([skillVersion, indexName, options.theme ?? false]);
+    const key = JSON.stringify([skillVersion, indexName, options.font ?? false]);
     let seed = marketSeeds.get(key);
     if (!seed) {
       seed = copyFixtureRepo(serverRoot, `seed-${counter}`, emptyRepo, { publishByCopy: true });
@@ -738,25 +738,6 @@ describe("MarketplaceService", () => {
     expect(second.notice).toBeNull();
   });
 
-  it("adopts a legacy theme from the official source during the migration, and drops it from the legacy list", async () => {
-    const { url } = market("1.0.0", "ave", { theme: true });
-    service.close();
-    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
-    await service.refresh();
-    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
-    legacyActivations = { themes: ["harbor", "retired"], locales: [], providers: [] };
-
-    const first = await service.applyBootInstalls([], applied);
-
-    expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "theme", name: "harbor" }], failed: [] }]);
-    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["theme:harbor@ave"]);
-    expect(adopting).toEqual([true]);
-    expect(released).toEqual([{ themes: ["harbor"], locales: [] }]);
-    expect(first.notice).toBeNull();
-
-    await service.applyBootInstalls([], applied);
-    expect(contentReports).toHaveLength(1);
-  });
 
   it("runs the migration again on the next boot while an entry could not be read", async () => {
     const { url } = market("1.0.0", "ave");
@@ -1085,7 +1066,7 @@ describe("MarketplaceService", () => {
   });
 
   it("lists each required install it cannot meet, with why, and a same-named install from another source (§10.2)", async () => {
-    const acme = market("1.0.0", "acme-tools", { theme: true });
+    const acme = market("1.0.0", "acme-tools", { font: true });
     const beta = market("1.0.0", "beta-tools");
     beta.repo.commit(
       { "skills/review/ave-package.json": text({ schemaVersion: 2, kind: "skill", name: "review", version: "1.0.0", minAppVersion: "9.0.0", payload: { entry: "SKILL.md" } }) },
@@ -1104,7 +1085,7 @@ describe("MarketplaceService", () => {
       additional,
       requiredInstalls: [
         { kind: "mcp", name: "notes", source: "nowhere" },
-        { kind: "theme", name: "harbor", source: "corp" },
+        { kind: "font", name: "harbor", source: "corp" },
         { kind: "plugin", name: "absent", source: "acme-tools" },
         { kind: "skill", name: "review", source: "beta-tools" },
       ],
@@ -1112,7 +1093,7 @@ describe("MarketplaceService", () => {
     const unmet = (await service.autoUpdateContext()).unmetRequired;
     expect(unmet).toEqual([
       { key: { sourceId: "nowhere", kind: "mcp", name: "notes" }, sourceLabel: "nowhere", reason: "source-missing", minAppVersion: null, installedFrom: { sourceId: "acme-tools", label: "Acme Tools", removal: "sheet" } },
-      { key: { sourceId: "corp", kind: "theme", name: "harbor" }, sourceLabel: "corp", reason: "source-unreachable", minAppVersion: null, installedFrom: null },
+      { key: { sourceId: "corp", kind: "font", name: "harbor" }, sourceLabel: "corp", reason: "source-unreachable", minAppVersion: null, installedFrom: null },
       { key: { sourceId: "acme-tools", kind: "plugin", name: "absent" }, sourceLabel: "Acme Tools", reason: "not-in-catalog", minAppVersion: null, installedFrom: null },
       { key: { sourceId: "beta-tools", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: null },
     ]);
@@ -1129,13 +1110,13 @@ describe("MarketplaceService", () => {
       additional,
       requiredInstalls: [
         { kind: "mcp", name: "notes", source: "acme-tools" },
-        { kind: "theme", name: "harbor", source: "acme-tools" },
+        { kind: "font", name: "harbor", source: "acme-tools" },
       ],
     });
     await build(met);
     expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
     const installed = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
-    expect(installed.report).toMatchObject({ installed: [{ kind: "theme", name: "harbor", source: "acme-tools" }], skipped: [], failed: [] });
+    expect(installed.report).toMatchObject({ installed: [{ kind: "font", name: "harbor", source: "acme-tools" }], skipped: [], failed: [] });
   });
 
   it("lists a requirement on a hidden source as unmet, and the boot pass skips it for the same reason (§10.2, §7.3)", async () => {
@@ -1371,7 +1352,7 @@ describe("MarketplaceService", () => {
   });
 
   it("feeds the gates again after an uninstall, and logs a failed feed after a finished install", async () => {
-    const acme = market("1.0.0", "acme-tools", { theme: true });
+    const acme = market("1.0.0", "acme-tools", { font: true });
     await addMarket(acme.url);
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
     createRevocations(acme, [{ kind: "skill", name: "review", versions: "*", reason: "prompt injection", at: "2026-09-24T00:00:00Z", action: "disable" }]);
@@ -1385,11 +1366,11 @@ describe("MarketplaceService", () => {
     duringContentInstall = async () => {
       feedFails = true;
     };
-    await expect(service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "theme", name: "harbor" })).planId)).resolves.toMatchObject({
-      key: { sourceId: "acme-tools", kind: "theme", name: "harbor" },
+    await expect(service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "font", name: "harbor" })).planId)).resolves.toMatchObject({
+      key: { sourceId: "acme-tools", kind: "font", name: "harbor" },
     });
     expect(store.list().map((entry) => entry.name)).toEqual(["harbor"]);
-    expect(warnings).toEqual([expect.stringContaining("revocation feed after theme harbor install failed")]);
+    expect(warnings).toEqual([expect.stringContaining("revocation feed after font harbor install failed")]);
   });
 
   it("removes what a sync revokes at once, and queues its notice once", async () => {

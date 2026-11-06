@@ -3,6 +3,22 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "appearanceTab.fontSaveFailed": "글꼴 설정을 불러오거나 저장하지 못했습니다.",
+  "appearanceTab.schemeTitle": "색상 스킴",
+  "appearanceTab.schemeDescription": "하나의 스킴이 화면과 터미널 색상을 함께 설정합니다. 시스템 모드는 라이트와 다크 선택을 각각 저장합니다.",
+  "appearanceTab.mode": "화면 모드",
+  "appearanceTab.mode.system": "시스템",
+  "appearanceTab.mode.dark": "다크",
+  "appearanceTab.mode.light": "라이트",
+  "appearanceTab.scheme.dark": "다크 스킴",
+  "appearanceTab.scheme.light": "라이트 스킴",
+  "appearanceTab.terminalTitle": "터미널 글꼴",
+  "appearanceTab.terminalFamily": "글꼴 패밀리",
+  "appearanceTab.terminalSize": "크기 (px)",
+  "appearanceTab.terminalLineHeight": "줄 높이",
+  "settingsContent.search": "설정 검색",
+  "settingsContent.searchEmpty": "일치하는 설정이 없습니다",
+  "settingsContent.searchCount": "설정 {count}개 검색됨",
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",

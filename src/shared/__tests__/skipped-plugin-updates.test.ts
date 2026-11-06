@@ -119,13 +119,13 @@ describe("packageUpdateSkipKey", () => {
 });
 
 describe("isSkippedPackageUpdate", () => {
-  const skipped = readSkippedPluginUpdates({ meeting: "0.5.24", "theme:dusk": "2.0.0" });
+  const skipped = readSkippedPluginUpdates({ meeting: "0.5.24", "font:dusk": "2.0.0" });
   const update = (kind: string, name: string, to: string) => ({ key: { kind, name }, to });
 
   it("skips only an exact version match", () => {
     expect(isSkippedPackageUpdate(update("plugin", "meeting", "0.5.24"), skipped)).toBe(true);
     expect(isSkippedPackageUpdate(update("plugin", "meeting", "0.5.25"), skipped)).toBe(false);
-    expect(isSkippedPackageUpdate(update("theme", "dusk", "2.0.0"), skipped)).toBe(true);
+    expect(isSkippedPackageUpdate(update("font", "dusk", "2.0.0"), skipped)).toBe(true);
   });
 
   it("applies the same trimming the writer applied", () => {

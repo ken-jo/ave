@@ -5,7 +5,7 @@ import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
-import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
+import { getLastThemePayload } from "../shared/host-theme-replay.js";
 import { dockAssetArgs } from "../shared/floating-dock-args.js";
 import { pathToFileURL } from "node:url";
 import { preloadBundlePath, preloadPreferences } from "./preload-bundles.js";

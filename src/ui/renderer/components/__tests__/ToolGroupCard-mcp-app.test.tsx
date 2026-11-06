@@ -1,3 +1,4 @@
+import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 /** MCP app payloads must mount their view in both single-tool and grouped-tool cards. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
@@ -54,6 +55,7 @@ function renderCard(group: Extract<ChatEntry, { kind: "tool_group" }>) {
     <TooltipProvider>
       <ToolGroupCard group={group} />
     </TooltipProvider>,
+    { wrapper: ThemeWrapper },
   );
 }
 

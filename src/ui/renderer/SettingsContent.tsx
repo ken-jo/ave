@@ -46,6 +46,7 @@ import { useDebouncedSave } from "./hooks/use-debounced-save.js";
 import { normalizeSettingsTab, SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
 import type { PackageKind } from "../../shared/git-marketplace.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
+import { searchSettings } from "./settings-search.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 
 type SettingsNavItem = { value: SettingsTab; icon: LucideIcon; labelKey: string };
@@ -175,6 +176,9 @@ export function SettingsContent({
 }) {
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchSection, setSearchSection] = useState<string | null>(null);
+  const searchResults = searchSettings(searchQuery, t);
   const [tab, setTab] = useState(() => normalizeSettingsTab(initialTab));
   const [pluginSettingsTarget, setPluginSettingsTarget] = useState<string | null>(null);
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
@@ -243,8 +247,12 @@ export function SettingsContent({
 
   // Deep-link arrival. Ordered after the tab reset above so the anchor it looks for belongs to the tab the link named: Radix
   // mounts only the active pane, so a lookup run before that commit would find nothing.
-  const noteSectionApplied = useCallback(() => onSectionApplied?.(), [onSectionApplied]);
-  useSettingsSectionArrival(sectionTarget, noteSectionApplied);
+  const activeSectionTarget = searchSection ?? sectionTarget;
+  const noteSectionApplied = useCallback(() => {
+    if (searchSection !== null) setSearchSection(null);
+    else onSectionApplied?.();
+  }, [searchSection, onSectionApplied]);
+  useSettingsSectionArrival(activeSectionTarget, noteSectionApplied);
 
   useEffect(() => {
     let alive = true;
@@ -360,6 +368,28 @@ export function SettingsContent({
           isNarrow && mobileDepth === "detail" && "hidden",
         )}
       >
+      <div className="border-b border-border p-2">
+        <input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+          aria-label={t("settingsContent.search")} placeholder={t("settingsContent.search")}
+          className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs" />
+        <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {searchQuery.trim() ? t("settingsContent.searchCount", { count: searchResults.length }) : ""}
+        </span>
+        {searchQuery.trim() && <ul aria-label={t("settingsContent.search")} className="mt-2 max-h-64 overflow-y-auto">
+          {searchResults.length === 0 && <li className="p-2 text-xs text-muted-foreground">{t("settingsContent.searchEmpty")}</li>}
+          {searchResults.map((result) => <li key={result.section}><button type="button"
+            className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent"
+            onClick={() => {
+              selectTab(result.tab);
+              setMobileDepth("detail");
+              setSearchSection(result.section);
+              setSearchQuery("");
+            }}>
+            <span className="block text-muted-foreground">{t(SETTINGS_TAB_LABEL_KEYS[result.tab])}</span>
+            {t(result.title)}
+          </button></li>)}
+        </ul>}
+      </div>
       {/* No heading above this list. The pane's header carries "Settings" —
           the same 36px band every other pane gets — so a second title here
           would name the place twice, once large and once small. The list's own
@@ -612,7 +642,7 @@ export function SettingsContent({
           {/* The only tab that needs the raw target: its sections live inside
               collapsed rows, so it has to open the right one before arrival
               goes looking for the anchor. */}
-          <TabsContent value="remote-surfaces" className={tabContentCls}><RemoteSurfacesTab api={api} sectionTarget={sectionTarget} /></TabsContent>
+          <TabsContent value="remote-surfaces" className={tabContentCls}><RemoteSurfacesTab api={api} sectionTarget={activeSectionTarget} /></TabsContent>
           <TabsContent value="roles" className={tabContentCls}><RolesTab api={api} /></TabsContent>
           <TabsContent value="usage" className={tabContentCls}>
             <UsageDashboard

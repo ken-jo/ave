@@ -15,13 +15,12 @@ import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
 import { surfaceMountLocation } from "../../preview/surface-mounts.js";
-import { ThemeProvider } from "../../theme/ThemeProvider.js";
-import { setInstalledThemeBundles } from "../../theme/bundles/index.js";
-import { applyInstalledContent, resetInstalledContentForTests } from "../../installed-content.js";
-import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
+import { ThemeProvider, useTheme } from "../../theme/ThemeProvider.js";
+import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
+import { requireScheme } from "../../theme/schemes/index.js";
 
 /** The app renders every terminal under its root TooltipProvider; the terminal's header chip needs one. */
-const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: TooltipProvider });
+const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: ({ children }) => <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider>{children}</TooltipProvider></ThemeProvider> });
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
@@ -98,8 +97,6 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 afterEach(() => {
   terminals.length = 0;
-  resetInstalledContentForTests();
-  setInstalledThemeBundles([]);
 });
 
 function terminalApi() {
@@ -119,25 +116,22 @@ function terminalApi() {
 }
 
 describe("PtyTerminalView theme", () => {
-  it("re-tints the live terminal in place when the shown theme is updated (same id)", async () => {
-    const harbor = installedTheme("harbor", "dark", { background: "210 40% 12%", foreground: "0 0% 100%" });
-    const { api } = makeMockAveApi({ settings: { appearance: { schemaVersion: 2, bundleId: "harbor" } } });
+  it("requires an applied theme provider", () => {
+    const { api } = makeMockAveApi();
+    expect(() => renderUnwrapped(<PtyTerminalView api={api as never} location="side-panel" tabId="missing-provider" tabLabel="Terminal" />)).toThrow("useTheme() must be used inside <ThemeProvider>");
+  });
+  it("updates the full palette and font without restarting the terminal", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
     const ave = { ...api, terminal: terminalApi() };
-    act(() => { applyInstalledContent(installedThemeContent([harbor]), NO_LANGUAGE_BRIDGE); });
-
-    render(
-      <ThemeProvider api={api as never} initialBundleId="harbor">
-        <PtyTerminalView api={ave as never} location="side-panel" tabId="tab-1" tabLabel="Terminal 1" />
-      </ThemeProvider>,
-    );
+    let switchMode: (() => void) | null = null;
+    function Picker() { const theme = useTheme(); switchMode = () => theme.setMode("dark"); return null; }
+    render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}><Picker /><PtyTerminalView api={ave as never} location="side-panel" tabId="tab-1" tabLabel="Terminal 1" /></ThemeProvider>);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    await waitFor(() => expect(terminals[0]!.options.theme).toEqual({ background: "hsl(210 40% 12%)", foreground: "hsl(0 0% 100%)" }));
-
-    await act(async () => {
-      applyInstalledContent(installedThemeContent([{ ...harbor, tokens: { ...harbor.tokens, background: "210 40% 18%" } }]), NO_LANGUAGE_BRIDGE);
-    });
-
-    await waitFor(() => expect(terminals[0]!.options.theme).toEqual({ background: "hsl(210 40% 18%)", foreground: "hsl(0 0% 100%)" }));
+    expect(terminals[0]!.options.theme).toEqual(requireScheme("github-light").terminal);
+    await act(async () => { switchMode!(); });
+    expect(terminals[0]!.options.theme).toEqual(requireScheme("github-dark").terminal);
+    await act(async () => { await api.updateSettings({ appearance: { terminalFont: { family: "Example Mono", size: 16, lineHeight: 1.5 } } }); });
+    expect(terminals[0]!.options).toEqual(expect.objectContaining({ fontFamily: "Example Mono", fontSize: 16, lineHeight: 1.5 }));
     expect(terminals).toHaveLength(1);
     expect(ave.terminal.spawn).toHaveBeenCalledTimes(1);
   });
