@@ -196,8 +196,9 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   ) : state.phase === "image" ? (
     <ImageViewer src={state.dataUrl} alt={entry.name} />
   ) : (
-    <FilePreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }}
-      source={markdownSource} documentLayout />
+    <div className="min-h-0 flex-1 overflow-auto [&_.markdown-body]:max-h-none [&_.markdown-body]:border-0 [&_pre]:max-h-none">
+      <FilePreviewContent descriptor={{ text: state.content, path: entry.path, truncated: state.truncated }} source={markdownSource} prose />
+    </div>
   );
   return shell(<>
     <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} back={back} />

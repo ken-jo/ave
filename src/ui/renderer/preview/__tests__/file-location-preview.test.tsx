@@ -73,11 +73,16 @@ describe("file location preview", () => {
   it.each(["binary-file", "too-large"])("shows a fact-limited info card for %s without inventing metadata", async (error) => {
     const readFile = vi.fn().mockResolvedValue({ ok: false, error });
     vi.stubGlobal("ave", { preview: { readFile } });
-    render(<PreviewBody observe={false} api={{} as never} target={{ ...target, startLine: undefined, endLine: undefined }} />);
+    render(<PreviewBody observe={false} api={{} as never} target={{ ...target, startLine: undefined, endLine: undefined,
+      title: "a reference label", path: "/workspace/project/src/example.md", workspaceRoot: "/workspace/project" }} />);
     const card = await screen.findByTestId("folder-file-info");
     expect(screen.getByTestId("folder-file-info-reason").getAttribute("data-reason")).toBe(error);
     expect(card.querySelectorAll("dt")).toHaveLength(1);
-    expect(card.querySelector("dd")?.textContent).toBe(target.path);
+    // The same workspace-relative label the header shows, never the absolute (home) path; the name is the file's own.
+    expect(card.querySelector("dd")?.textContent).toBe("src/example.md");
+    expect(card.textContent).toContain("example.md");
+    expect(card.textContent).not.toContain("/workspace/project");
+    expect(card.textContent).not.toContain("a reference label");
     expect(card.querySelector("button")).toBeNull();
     expect(screen.queryByTestId("chat-side-panel-file-error")).toBeNull();
   });

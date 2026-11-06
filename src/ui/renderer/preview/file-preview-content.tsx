@@ -2,23 +2,22 @@ import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { CodePreview, PreviewContent, resolvePreviewRenderer, type PreviewContentDescriptor } from "./preview-renderers.js";
 
-/** Passive content only; readers, observation and actions belong to the caller. */
-export function FilePreviewContent({ descriptor, source = false, documentLayout = false, onRendered }: {
+/** Passive content only; readers, observation and actions belong to the caller. Markdown source mode renders no
+ * PreviewContent and so never calls `onRendered`: an observed document must pass `source` false. */
+export function FilePreviewContent({ descriptor, source = false, prose = false, onRendered }: {
   descriptor: PreviewContentDescriptor;
   source?: boolean;
-  documentLayout?: boolean;
+  /** Rendered Markdown in the reading typography chat answers use, so headings, lists and tables look like a document. */
+  prose?: boolean;
   onRendered?: () => void;
 }) {
   const markdown = resolvePreviewRenderer(descriptor).kind === "markdown";
-  const content = markdown && source ? <CodePreview descriptor={descriptor} />
-    : markdown && documentLayout ? (
-      <div className="prose prose-sm ave-prose max-w-none px-4 py-3" data-testid="folder-markdown-rendered">
-        <PreviewContent descriptor={descriptor} onRendered={onRendered} />
-      </div>
-    ) : <PreviewContent descriptor={descriptor} onRendered={onRendered} />;
-  return documentLayout ? (
-    <div className="min-h-0 flex-1 overflow-auto [&_.markdown-body]:max-h-none [&_.markdown-body]:border-0 [&_pre]:max-h-none">{content}</div>
-  ) : content;
+  if (markdown && source) return <CodePreview descriptor={descriptor} />;
+  return markdown && prose ? (
+    <div className="prose prose-sm ave-prose max-w-none px-4 py-3" data-testid="folder-markdown-rendered">
+      <PreviewContent descriptor={descriptor} onRendered={onRendered} />
+    </div>
+  ) : <PreviewContent descriptor={descriptor} onRendered={onRendered} />;
 }
 
 export function MarkdownPreviewToggle({ source, onSourceChange }: {
