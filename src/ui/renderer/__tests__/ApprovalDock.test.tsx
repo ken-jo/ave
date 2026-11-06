@@ -1213,14 +1213,15 @@ afterEach(() => {
 
 
 describe("unattributed panel approval labels", () => {
-  it("names the plugin panel, including requests with a synthetic session", () => {
-    for (const sessionId of [undefined, "plugin-mcp-app-sample-panel"]) {
-      const label = unattributedRequestLabel({ sourcePluginId: "sample-panel", sessionId }, t);
-      expect(label).toBe("익스텐션 패널 요청 · sample-panel");
-      const { getAllByText, unmount } = render(<ApprovalLaneCard conversationLabel={label} queue={[makeRequest()]} onDecide={vi.fn()} />);
-      expect(getAllByText(label).length).toBeGreaterThan(0);
-      unmount();
-    }
+  it("names only an unattributed plugin request as a panel", () => {
+    const label = unattributedRequestLabel({ sourcePluginId: "sample-panel" }, t);
+    expect(label).toBe("익스텐션 패널 요청 · sample-panel");
+    const { getAllByText } = render(<ApprovalLaneCard conversationLabel={label} queue={[makeRequest()]} onDecide={vi.fn()} />);
+    expect(getAllByText(label).length).toBeGreaterThan(0);
+  });
+  it("keeps background plugin conversations labeled as unopened conversations", () => {
+    expect(unattributedRequestLabel({ sourcePluginId: "sample-panel", sessionId: "background-chat" }, t))
+      .toBe(t("approvalAttribution.headlessSession"));
   });
   it("retains host and unopened conversation attribution", () => {
     expect(unattributedRequestLabel({}, t)).toBe(t("approvalAttribution.hostRequest"));

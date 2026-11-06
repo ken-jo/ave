@@ -65,9 +65,6 @@ export function unregisterMainWindow(win: BrowserWindow): void {
   const entry = mainWindows.get(win);
   if (!entry) return;
   const { id, surface } = entry;
-  // Revoking the owner never approves or settles an outstanding card. Without
-  // a turn abort, it remains pending until the normal five-minute deny timeout.
-  updateApprovalSurface({ kind: "release-owner", surface });
   mainWindows.delete(win);
   const historyIndex = focusHistory.indexOf(id);
   if (historyIndex >= 0) focusHistory.splice(historyIndex, 1);
@@ -77,7 +74,9 @@ export function unregisterMainWindow(win: BrowserWindow): void {
     focusedMainWindowId = [...focusHistory].reverse().find((id) => liveIds.has(id)) ?? null;
   }
   if (primaryMainWindowId === id) primaryMainWindowId = null;
+  // Publish the successor before releasing the old owner so parked cards can hand off atomically.
   updateApprovalSurface({ kind: "attach-unattributed", surface: getMainWindow()?.webContents ?? null });
+  updateApprovalSurface({ kind: "release-owner", surface });
 }
 
 export function markMainWindowFocused(win: BrowserWindow): void {

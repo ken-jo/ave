@@ -97,6 +97,8 @@ export interface ToolPermissionContext {
   ownerUnattended?: boolean;
   /** Host-owned UI capability, independent of routine/headless tool scope. */
   approvalSurface?: ApprovalSurface;
+  /** Host panel calls retain their execution session but deliver cards through the main-window lane. */
+  unattributedApproval?: true;
   allowedPluginIds?: ReadonlySet<string>;
   /** Derived only after hooks finalize the invocation arguments. */
   approvalCacheKey?: string;

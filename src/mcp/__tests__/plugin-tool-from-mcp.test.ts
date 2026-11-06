@@ -205,11 +205,14 @@ describe("plugin read declaration", () => {
     expect(tool.category).toBe("write");
     expect(tool.isReadOnly({})).toBe(false);
   });
-  it("defensively rejects a conflicting destructive wire hint", () => {
-    const tool = mcpToolToPluginTool(PLUGIN_ID, {
-      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint: true, destructiveHint: true },
-    }, async () => ({ text: "read" }));
-    expect(tool.category).toBe("write");
-    expect(tool.mcpReadOnlyHint).toBe(false);
+  it.each([null, [], true, "readOnlyHint"])("rejects malformed wire annotations %j", (annotations) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: annotations as never,
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
+  });
+  it.each(["destructiveHint", "idempotentHint", "openWorldHint", "title"])("rejects unexpected wire annotation %s", (key) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint: true, [key]: true },
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
   });
 });

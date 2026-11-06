@@ -20,7 +20,7 @@ export interface DiscoveredMcpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
+  annotations?: { readOnlyHint?: boolean };
   _meta?: Record<string, unknown>;
 }
 
@@ -70,7 +70,11 @@ export function mcpToolToPluginTool(
     );
   }
   // Ignore wire category; effective risk is derived by the host for each invocation.
-  const readOnly = tool.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true
+  if (tool.annotations !== undefined && (tool.annotations === null || typeof tool.annotations !== "object"
+      || Array.isArray(tool.annotations) || Object.keys(tool.annotations).some((key) => key !== "readOnlyHint"))) {
+    throw new Error(`Plugin tool '${tool.name}' has unsupported annotations; only readOnlyHint is allowed`);
+  }
+  const readOnly = tool.annotations?.readOnlyHint === true
     && Object.values(operationPolicy?.operations ?? {}).every(
       (rule) => rule.kind === "read" && rule.minimumRisk === "read",
     );

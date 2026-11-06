@@ -419,10 +419,9 @@ export function unattributedRequestLabel(
   request: Pick<ApprovalRequest, "sessionId" | "sourcePluginId">,
   t: (key: string, params?: Record<string, string | number>) => string,
 ): string {
+  if (request.sessionId !== undefined) return t("approvalAttribution.headlessSession");
   if (request.sourcePluginId !== undefined) {
     return t("approvalAttribution.pluginRequest", { plugin: request.sourcePluginId });
   }
-  return request.sessionId !== undefined
-    ? t("approvalAttribution.headlessSession")
-    : t("approvalAttribution.hostRequest");
+  return t("approvalAttribution.hostRequest");
 }

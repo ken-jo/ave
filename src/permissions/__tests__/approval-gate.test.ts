@@ -200,7 +200,7 @@ describe("ApprovalGate", () => {
     let owner = windowA;
     const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(() => owner as never, undefined, undefined, auditLogger as never);
-    const promise = gate.requestAndWait(makeRequest({ id: "req-two-windows" }));
+    const promise = gate.requestAndWait(makeRequest({ id: "req-two-windows", sessionId: "moving-conversation" }));
     expect(gate.listPendingRendererRequests(windowB as never)).toEqual([]);
     owner = windowB;
     expect(gate.listPendingRendererRequests(windowA as never)).toEqual([]);

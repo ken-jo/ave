@@ -102,8 +102,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   }
   if (request.exfiltration) return applyMode(request, "exfiltration-guardrail", request.exfiltration.reason);
   if (request.secretRead) return applyMode(request, "secret-read", "Reading this secret file requires approval.");
-  if (request.tool.kind === "mcp" || request.tool.source === "mcp" ||
-      (request.tool.source === "plugin" && request.tool.kind === "read" && request.tool.readOnlyHint === true)) {
+  if (request.tool.kind === "mcp" || request.tool.source === "mcp") {
     return request.tool.readOnlyHint === true
       ? { outcome: "allow", reasonCode: "read-only-tool", reason: "The tool declares a read-only action." }
       : applyMode(request, "external-tool", "This tool requires approval.");

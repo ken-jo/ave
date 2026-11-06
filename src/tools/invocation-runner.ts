@@ -1550,7 +1550,7 @@ export async function runToolInvocation(
           toolCategory: invocationCategory,
           // Same conversation attribution as the Layer 3 tool ask — a
           // directory-confirm modal blocks a specific conversation too.
-          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(sessionId === undefined || invocationPermissionContext.unattributedApproval ? {} : { sessionId }),
           // Host-only; the gate keeps it out of the renderer payload.
           ...(remoteControllerOrigin === undefined
             ? {}
@@ -1560,6 +1560,7 @@ export async function runToolInvocation(
             ? `${approvalReasonPrefix} ${dirLayerResult.reason}`
             : dirLayerResult.reason,
           source: source as ToolSource,
+          ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
           target: { filePath: outOfAllowedTarget.filePath },
           ownerUnattended: invocationPermissionContext.ownerUnattended,

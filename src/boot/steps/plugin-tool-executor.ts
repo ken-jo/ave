@@ -504,15 +504,15 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             input: toPluginToolInput(payload),
           }],
           {
-            // App surfaces use the main window’s unattributed approval lane.
-            // Operation identity remains bound to appSessionId above.
-            sessionId: effectiveOrigin === "plugin" ? invocationSessionId : undefined,
+            // Keep review and breaker scope independent of card attribution.
+            sessionId: invocationSessionId,
             ...(pluginAuthLifecycle ? { pluginAuthLifecycle } : {}),
             permissionContext: pluginSurfacePermissionScope.createPermissionContext(context, {
               // Effective origin selects approval handling: foreground may prompt; headless directory access fails closed.
               // Untrusted app cards may prompt through governed execution but never receive the panel bypass.
               // Bare plugin origin remains a fail-closed headless default for nested producers.
               headless: effectiveOrigin === "plugin",
+              ...(effectiveOrigin === "plugin" ? {} : { unattributedApproval: true as const }),
               trustOrigin: "plugin-emitted",
               ...(pluginOperation ? { pluginOperation } : {}),
               ...(context.expectedMcpServerId

@@ -941,7 +941,7 @@ export async function authorizeToolInvocation(
           // Attribute the modal and every audit row to the conversation whose
           // turn is blocked on it. Sub-agents and side chats reach this line
           // with their own session id.
-          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(sessionId === undefined || invocationPermissionContext.unattributedApproval ? {} : { sessionId }),
           // Host-only; the gate keeps it out of the renderer payload.
           ...(remoteControllerOrigin === undefined
             ? {}

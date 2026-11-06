@@ -22,6 +22,12 @@ export class ApprovalSurfaceRegistry {
   private readonly terminals = new Map<string, WebContents | null>();
   private readonly terminalSessions = new Map<string, string>();
   private unattributed: WebContents | null = null;
+  private readonly ownerReleaseListeners = new Set<(owner: WebContents) => void>();
+
+  observeOwnerReleased(listener: (owner: WebContents) => void): () => void {
+    this.ownerReleaseListeners.add(listener);
+    return () => { this.ownerReleaseListeners.delete(listener); };
+  }
 
   register(sessionId: string, owner: WebContents | null): void {
     requireIdentity(sessionId);
@@ -97,7 +103,7 @@ export class ApprovalSurfaceRegistry {
     this.unattributed = owner;
   }
 
-  /** Revocation never settles a pending card: without turn abort it waits for the normal deny timeout. */
+  /** Revoke registered scopes, then notify pending unattributed cards to hand off or deny. */
   releaseOwner(owner: WebContents): void {
     requireSurface(owner);
     if (owner === null) throw new Error("approval-surface: invalid owner release");
@@ -108,6 +114,7 @@ export class ApprovalSurfaceRegistry {
       if (registered === owner) this.terminals.set(tabId, null);
     }
     if (this.unattributed === owner) this.unattributed = null;
+    for (const listener of [...this.ownerReleaseListeners]) listener(owner);
   }
 
   resolve(sessionId: string | undefined, terminalTabId?: string): WebContents | null {
@@ -156,10 +163,11 @@ export type ApprovalSurfaceUpdate =
 const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
 
 /** Read-only delivery and terminal-binding lookups; all attachment and lifecycle updates use one host function. */
-export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId">> = Object.freeze({
+export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve" | "terminalSessionId" | "observeOwnerReleased">> = Object.freeze({
   resolve: (sessionId: string | undefined, terminalTabId?: string) =>
     registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
   terminalSessionId: (tabId: string) => registeredApprovalSurfaces.terminalSessionId(tabId),
+  observeOwnerReleased: (listener: (owner: WebContents) => void) => registeredApprovalSurfaces.observeOwnerReleased(listener),
 });
 
 /**

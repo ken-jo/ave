@@ -1057,6 +1057,7 @@ export async function executeAuthorizedToolInvocation(
               abortSignal: signal,
               permissionContext: { admissionDenial: permissionResult?.pipelineRequest?.admissionDenial, floor: permissionResult?.pipelineRequest?.floor, exfiltration: permissionResult?.pipelineRequest?.exfiltration, manualRerun: invocationPermissionContext.manualRerun, ownerUnattended: invocationPermissionContext.ownerUnattended, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, permissionStoreError: invocationPermissionContext.permissionStoreError },
               approvalSurface: invocationPermissionContext.approvalSurface,
+              unattributedApproval: invocationPermissionContext.unattributedApproval,
               toolName: toolUse.name,
               ...(sessionId === undefined ? {} : { sessionId }),
             },
