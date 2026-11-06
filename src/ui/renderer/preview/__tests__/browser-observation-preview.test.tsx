@@ -5,6 +5,7 @@ import type { AgentObservationEvent, BrowserObservationEvent, BrowserObservation
 import type { AvePreviewApi } from "../../types.js";
 import { connectBrowserObservations } from "../browser-observation-bridge.js";
 import { BrowserObservationPreviewStore, isElementShown } from "../browser-observation-preview.js";
+import { isHiddenWebSurfaceObserved } from "../web-surfaces.js";
 import { BrowserObservationPreview } from "../BrowserObservationPreview.js";
 
 const SESSION = "browser-session";
@@ -182,4 +183,16 @@ describe("panel visibility probe", () => {
     const detached = document.createElement("div");
     expect(isElementShown(detached)).toBe(false);
   });
+});
+
+it("keeps hidden painting only while a shown preview is admitted and drops it on stop or unmount", () => {
+  const view = render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} observeHidden />);
+  act(() => emitEvents([action(1)]));
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
+  act(() => emitPreview({ ...BINDING, kind: "state", state: "stopped" }));
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
+  act(() => emitEvents([action(2)]));
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
+  view.unmount();
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
 });

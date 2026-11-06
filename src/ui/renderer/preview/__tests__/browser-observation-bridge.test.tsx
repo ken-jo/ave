@@ -25,6 +25,29 @@ let disconnect: (() => void) | undefined;
 afterEach(() => { cleanup(); disconnect?.(); disconnect = undefined; });
 
 describe("browser observation retention", () => {
+  it("selects only the newest exactly hosted event, including status and close, with deterministic ties", () => {
+    const store = new BrowserObservationStore(async () => ({ ok: true }));
+    const first = action(1, {}, "child", "target-a", "parent");
+    store.accept([first]);
+    expect(store.latestHosted("parent")).toBe(first);
+    expect(store.latestHosted("child")).toBeUndefined();
+    expect(store.latestHosted("")).toBeUndefined();
+    expect(store.latestHosted("unrelated")).toBeUndefined();
+    const second = action(2, { rendererTabId: "browser:2" }, "other-child", "target-b", "parent");
+    store.accept([second, { ...first, target: { ...first.target, id: "unrelated", hostSessionId: "other" }, ts: second.ts + 1 }]);
+    expect(store.latestHosted("parent")).toBe(second);
+    const stopped = { ...status(3, "observation-error", "other-child", "parent"), target: second.target };
+    store.accept([stopped]);
+    expect(store.latestHosted("parent")).toBe(stopped);
+    const closed = action(4, { action: "tab-close" }, "other-child", "target-b", "parent");
+    store.accept([closed]);
+    expect(store.latestHosted("parent")).toBe(closed);
+    const tied = { ...closed, target: { ...closed.target, id: "target-z" } };
+    store.accept([tied]);
+    expect(store.latestHosted("parent")).toBe(tied);
+    store.dispose();
+  });
+
   it("consumes the existing mixed-source channel without treating document data as browsing", () => {
     const ack = vi.fn(async () => ({ ok: true }));
     const store = new BrowserObservationStore(ack);

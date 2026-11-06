@@ -37,7 +37,7 @@ import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import type { SideChatOpenRequest, SideChatRuntime } from "./components/SideChatView.js";
-import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
+import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type MainSurfacesStore, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
@@ -138,6 +138,14 @@ function measuredCanvasSize(canvas: HTMLElement | null) {
   return canvas && canvas.clientWidth > 0 && canvas.clientHeight > 0
     ? { width: canvas.clientWidth, height: canvas.clientHeight }
     : undefined;
+}
+
+/** The hidden pane that alone holds this browser tab, if any. */
+function hiddenBrowserPaneOf(groups: ReturnType<typeof useChatGroups>, surfaces: MainSurfacesStore, tabId: string) {
+  const assigned = Object.entries(groups.contentById).filter(([, content]) => content?.surface === tabId);
+  const paneId = assigned.length === 1 ? assigned[0]?.[0] : undefined;
+  return surfaces.get(tabId)?.kind === "browser" && paneId && groups.groups.some((group) => group.id === paneId && group.hidden)
+    ? paneId : undefined;
 }
 
 export function App() {
@@ -632,6 +640,14 @@ export function App() {
     }
     return false;
   }, [activeSurfaceOf]);
+
+  const hiddenBrowserTabIds = useMemo(() => new Set(mainSurfaces.surfaces
+    .filter((surface) => hiddenBrowserPaneOf(chatGroups, mainSurfaces, surface.tabId))
+    .map((surface) => surface.tabId)), [chatGroups, mainSurfaces]);
+  const focusObservedBrowser = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    if (hiddenBrowserPaneOf(groups, surfaces, tabId)) openWorkspaceSurface(tabId);
+  }, [openWorkspaceSurface]);
 
   /** 옆에 분할로 열기 (case 20) for a conversation: a new tile beside the focused one, or the tile already holding it. */
   const openSessionBeside = useCallback((sessionId: string) => {
@@ -2706,6 +2722,8 @@ export function App() {
                                       that is. `contents` while the conversation draws, so
                                       the wrapper adds no box of its own. */}
                                   <ChatGroupSession
+                                    hiddenBrowserTabIds={hiddenBrowserTabIds}
+                                    onFocusObservedBrowser={focusObservedBrowser}
                                     chatGroupId={group.id}
                                     api={api}
                                     registry={chatGroupSessions}
