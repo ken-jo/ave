@@ -8,6 +8,9 @@ import type { SandboxCapabilityInfo } from '../../../src/shared/sandbox-capabili
 
 const GATE_ACTIONS = ['skip', 'activate', 'degrade', 'abort'] as const;
 
+// Each test boots twice (seed, then admitted relaunch), and fixture setup counts toward the budget.
+test.describe.configure({ timeout: 120_000 });
+
 test('the boot gate outcome reaches settings, and the notice matches it', async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome }) => {
   // Pending home content would itself force confinement on (sandbox-init.ts homeTrustPending); admit the seed so boot reflects the settings alone.
   const { app, mainWindow } = await admitFixturePlugins({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome });
