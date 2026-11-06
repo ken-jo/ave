@@ -4,8 +4,8 @@ import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
-import { isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
-import { getApi } from "../api-client.js";
+import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
+import { getApi, isDarwin } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
@@ -364,6 +364,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
             </div>
           </div>
         ))}
+        <GlassTintControl />
       </SettingsSection>
 
       {/* ── 폰트 ────────────────────────────────────── */}
@@ -456,6 +457,78 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
 
       <TerminalFontSection />
 
+    </div>
+  );
+}
+
+const REDUCED_TRANSPARENCY_QUERY = "(prefers-reduced-transparency: reduce)";
+
+/** The OS reduce-transparency switch, followed live. */
+function useReducedTransparency(): boolean {
+  const [reduced, setReduced] = useState(() => window.matchMedia?.(REDUCED_TRANSPARENCY_QUERY).matches ?? false);
+  useEffect(() => {
+    const query = window.matchMedia?.(REDUCED_TRANSPARENCY_QUERY);
+    if (!query) return;
+    const handleChange = () => setReduced(query.matches);
+    query.addEventListener("change", handleChange);
+    return () => query.removeEventListener("change", handleChange);
+  }, []);
+  return reduced;
+}
+
+/**
+ * How much of the card colour covers the macOS window material. macOS only: elsewhere the window is opaque and there is nothing
+ * to tune. The slider repaints on every step and saves when the drag (or key press) ends. With reduce transparency on — now, or
+ * when this window was created, which is when main decides the material (`data-glass`) — it is shown disabled with the reason.
+ */
+function GlassTintControl() {
+  const { t } = useTranslation();
+  const notifySaved = useNotifySaved();
+  const { appearance, setGlassTint } = useTheme();
+  const reducedNow = useReducedTransparency();
+  // A previewed value not yet saved. Every way a gesture can end (release, cancel, lost capture, key up, blur) commits it once;
+  // the later ones of the same gesture find nothing pending, and a key that moved nothing (Tab) saves nothing.
+  const pendingRef = useRef(false);
+  if (!isDarwin()) return null;
+  const available = !reducedNow && document.documentElement.hasAttribute("data-glass");
+  const tint = appearance.glassTint ?? DEFAULT_GLASS_TINT;
+  const commit = (event: { currentTarget: HTMLInputElement }) => {
+    if (!pendingRef.current) return;
+    pendingRef.current = false;
+    setGlassTint(Number(event.currentTarget.value), true);
+    notifySaved();
+  };
+  return (
+    <div className="space-y-2" data-testid="appearance-glass-tint">
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor="appearance-glass-tint-input" className="text-sm font-medium">{t("appearanceTab.glassTintLabel")}</label>
+        <span className="font-mono text-[11px] text-muted-foreground">{tint}%</span>
+      </div>
+      <input
+        id="appearance-glass-tint-input"
+        type="range"
+        min={GLASS_TINT_MIN}
+        max={GLASS_TINT_MAX}
+        step={1}
+        value={tint}
+        disabled={!available}
+        aria-describedby="appearance-glass-tint-hint"
+        aria-valuetext={`${tint}%`}
+        className="w-full accent-primary disabled:opacity-(--opacity-half)"
+        onChange={(event) => { pendingRef.current = true; setGlassTint(Number(event.currentTarget.value), false); }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onLostPointerCapture={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      <div className="flex justify-between text-[11px] text-muted-foreground" aria-hidden="true">
+        <span>{t("appearanceTab.glassTintMin")}</span>
+        <span>{t("appearanceTab.glassTintMax")}</span>
+      </div>
+      <p id="appearance-glass-tint-hint" className="text-xs text-muted-foreground">
+        {t(available ? "appearanceTab.glassTintHint" : "appearanceTab.glassTintReducedHint")}
+      </p>
     </div>
   );
 }

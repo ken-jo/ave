@@ -1192,7 +1192,7 @@ export function Sidebar({
         // Pushed, the cards sit under the docked panels' band; an overlaying list is the floating surface of the moment and must
         // cover everything the tile draws.
         overlayOpen ? "z-50" : "z-30",
-        darwin ? "top-(--chrome-band-height)" : "top-(--shell-card-top)",
+        darwin ? "top-(--shell-card-top-darwin)" : "top-(--shell-card-top)",
       ].join(" ")}
       // The aside overlays the Electron drag band. Mark it no-drag so its controls stay clickable.
       style={{
@@ -1211,7 +1211,7 @@ export function Sidebar({
         // order.
         tabIndex={overlayOpen ? -1 : undefined}
         className={[
-          "ave-surface-raised relative flex min-h-0 flex-col overflow-hidden rounded-2xl bg-card outline-none motion-reduce:transition-none",
+          "ave-glass-tint ave-surface-raised relative flex min-h-0 flex-col overflow-hidden rounded-(--shell-card-radius) bg-card outline-none motion-reduce:transition-none",
           isResizing ? "" : "transition-[width] duration-[var(--motion-base)] ease-[var(--motion-ease-out)]",
         ].join(" ")}
         style={{
@@ -1235,7 +1235,7 @@ export function Sidebar({
           />
         ) : null}
         {/* ── List header (case 04): the project name opens the same menu as the rail button; the right button folds the list. */}
-        <div className="flex h-(--chrome-control-height) shrink-0 items-center gap-1 px-2 pt-2" data-testid="sidebar-list-header">
+        <div className="flex h-(--chrome-band-height) shrink-0 items-center gap-1 px-2" data-testid="sidebar-list-header">
           <ProjectMenu model={menuModel} open={menuFrom === "header"} onOpenChange={menuOpenChange("header")} side="bottom">
             <button
               type="button"

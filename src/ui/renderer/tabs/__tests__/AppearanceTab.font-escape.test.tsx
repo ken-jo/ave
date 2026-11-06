@@ -17,7 +17,7 @@ const { api, theme } = vi.hoisted(() => ({
   },
   theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(), setScheme: vi.fn() },
 }));
-vi.mock("../../api-client.js", () => ({ getApi: () => api }));
+vi.mock("../../api-client.js", () => ({ getApi: () => api, isDarwin: () => false }));
 vi.mock("../../theme/index.js", async () => ({
   ...await vi.importActual<typeof import("../../theme/index.js")>("../../theme/index.js"),
   useTheme: () => theme,

@@ -14,7 +14,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"llm","section":"llm-pricing-overrides","title":"llmTab.pricingOverridesTitle","labels":[]},
   {"tab":"llm","section":"llm-model-catalog","title":"llmTab.modelCatalogTitle","labels":["llmTab.pageTitle"]},
   {"tab":"appearance","section":"appearance-language","title":"settings.appearance.language.title","labels":[]},
-  {"tab":"appearance","section":"appearance-theme","title":"appearanceTab.schemeTitle","labels":["appearanceTab.mode","appearanceTab.scheme.dark","appearanceTab.scheme.light"]},
+  {"tab":"appearance","section":"appearance-theme","title":"appearanceTab.schemeTitle","labels":["appearanceTab.mode","appearanceTab.scheme.dark","appearanceTab.scheme.light","appearanceTab.glassTintLabel","appearanceTab.glassTintKeywords"]},
   {"tab":"appearance","section":"appearance-font","title":"appearanceTab.fontSectionTitle","labels":["appearanceTab.fontFamilyLabel","appearanceTab.fontFamilyRadioGroupLabel","appearanceTab.fontSizeLabel","appearanceTab.fontSizeRadioGroupLabel"]},
   {"tab":"appearance","section":"appearance-terminal","title":"appearanceTab.terminalTitle","labels":["appearanceTab.terminalFamily","appearanceTab.terminalSize","appearanceTab.terminalLineHeight"]},
   {"tab":"chat","section":"chat-optimization","title":"chatTab.conversationOptimizationTitle","labels":["chatTab.autoCompactLabel"]},

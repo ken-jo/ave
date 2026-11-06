@@ -139,6 +139,14 @@
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+
+  /* Every `transition-*` utility without its own duration runs on the one
+   * fast motion step (120ms), so hover, focus and surface swaps share a pace.
+   * Reduced motion is already covered: the global
+   * `@media (prefers-reduced-motion: reduce)` block pins `--motion-fast` to
+   * 1ms with `!important` (beating the inline design-token value), and
+   * `@theme inline` emits this default as `var(--motion-fast)`. */
+  --default-transition-duration: var(--motion-fast);
 }
 
 /* ─── Action color tokens ─────────────────────────────────────────────────
@@ -578,17 +586,29 @@
     /* Surface/elevation — inspired by Linear/Raycast/Vercel references:
      * hierarchy should read through hairlines and tiny stacked shadows, not
      * heavy floating cards. These tokens are intentionally theme-relative. */
-    --surface-hairline: inset 0 0 0 1px hsl(var(--border));
+    /* A card's edge is a hairline of ink, not a mid-grey line: ~7% near-black
+     * on a light ground, ~9% white on a dark one (redefined per shell below),
+     * so it reads the same weight over any scheme's surface and over glass. */
+    --hairline: rgb(9 9 11 / 0.07);
+    --surface-hairline: inset 0 0 0 1px var(--hairline);
     --surface-hairline-strong: inset 0 0 0 1px hsl(var(--ui-line) / 0.42);
+    /* A resting card: a tight contact shadow plus a soft one pulled in by its
+     * negative spread, so the lift shows under the card and not around it. */
+    --elevation-pane:
+      0 8px 18px -12px hsl(var(--overlay) / 0.14),
+      0 1px 2px hsl(var(--overlay) / 0.08);
     --elevation-raised:
-      0 1px 1px hsl(var(--overlay) / 0.10),
-      0 6px 18px hsl(var(--overlay) / 0.12),
+      var(--elevation-pane),
       var(--surface-hairline);
     --elevation-floating:
       0 1px 1px hsl(var(--overlay) / 0.12),
       0 12px 34px hsl(var(--overlay) / 0.20),
       var(--surface-hairline-strong);
   }
+  :root[data-shell="dark"] {
+    --hairline: rgb(255 255 255 / 0.09);
+  }
+
 
   /* A neutral light surface before the synchronous saved appearance read. */
   :root {
@@ -731,14 +751,21 @@
   :root {
     --shell-card-inset: var(--chrome-gap);
     --shell-card-inset-bottom: 12px;
-    /* The sidebar card's top edge. On darwin it is not a chosen number: the
-     * card's cluster strip has to share the traffic lights' centre line, so a
-     * `--chrome-control-height` strip inside a `--chrome-band-height` band
-     * starts exactly where the band would centre it. Elsewhere there are no
-     * lights to align against and the card takes a slightly deeper top so it
-     * reads as lifted off the window's top edge. */
-    --shell-card-top-darwin: calc((var(--chrome-band-height) - var(--chrome-control-height)) / 2);
+    /* The sidebar card's top edge on darwin. It is not a chosen number: the
+     * chat group's tiles start one title band down plus the tile's own
+     * half-gutter (`p-(--chrome-gap-tight)` on each pane cell), so the sidebar
+     * card takes the same sum and both cards share one top line. The first
+     * row inside each card is a `--chrome-band-height` band, so their header
+     * text shares a centre line as well. Elsewhere there are no lights to
+     * align against and the card takes a slightly deeper top so it reads as
+     * lifted off the window's top edge. */
+    --shell-card-top-darwin: calc(var(--chrome-band-height) + var(--chrome-gap-tight));
     --shell-card-top: 6px;
+    /* One corner for every shell card — the rail, the sidebar list, the chat
+     * group's tiles and the docked side panel. px for the same reason as the
+     * insets: the cards sit side by side and a corner that followed the type
+     * scale would round one card differently from the one beside it. */
+    --shell-card-radius: 12px;
     /* What the content surface reserves on its leading edge for the rail. px,
      * like the insets above. `COLLAPSED_RAIL_RESERVE` in shell-geometry.ts is
      * the same number for the band's arithmetic;
@@ -1109,4 +1136,57 @@
 
 .ave-observed-current {
   box-shadow: inset 0 0 0 2px hsl(var(--agent));
+}
+
+/* ── Window glass (macOS) ───────────────────────────────────────────────────
+ * `html[data-glass]` is set by preload when main created the window with the
+ * system material behind it (`window-chrome.ts`: darwin, reduce-transparency
+ * off). The window ground — body, the main column, the title band — goes
+ * clear so the material shows; the sidebar rail and list paint the card
+ * colour over it at `--glass-tint-alpha`; the chat tiles stay opaque (their
+ * own `bg-card`), as do headers, the terminal and every popover.
+ *
+ * Alpha never goes on `--background` / `--card` themselves: the contrast
+ * solver in resolve-theme.ts derives text against those as opaque grounds,
+ * and the material under a tint is close to that ground in both shells.
+ *
+ * The rules sit outside every cascade layer so they outrank the `bg-*`
+ * utilities on the same elements without `!important`.
+ *
+ * `--glass-tint-alpha` — how much of the card colour covers the material —
+ * is set by `applyAppearance` from the user's `appearance.glassTint` slider,
+ * mapped onto the painted shell's range (`glassTintAlpha`). */
+html[data-glass],
+html[data-glass] body,
+html[data-glass] .ave-glass-clear {
+  background-color: transparent;
+}
+html[data-glass] .ave-glass-tint {
+  background-color: hsl(var(--card) / var(--glass-tint-alpha));
+}
+/* An overlaying sidebar floats over a conversation, not over the material:
+ * a see-through card there would print the transcript under the list. */
+html[data-glass] [data-sidebar-overlay="true"] .ave-glass-tint {
+  background-color: hsl(var(--card));
+}
+html[data-glass] .ave-glass-tint ::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+html[data-glass] .ave-glass-tint ::-webkit-scrollbar-thumb {
+  border-color: transparent;
+  background-clip: padding-box;
+}
+/* The OS reduce-transparency switch, followed live — by these rules alone.
+ * Main reads the switch only when it creates the window (a window created
+ * with it on gets no material and no `data-glass`); Electron documents no
+ * event for a later change, so here the shell is painted opaque over the
+ * material, which then shows nowhere. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-glass] body,
+  html[data-glass] .ave-glass-clear {
+    background-color: hsl(var(--background));
+  }
+  html[data-glass] .ave-glass-tint {
+    background-color: hsl(var(--card));
+  }
 }

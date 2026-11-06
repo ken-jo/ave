@@ -2750,6 +2750,13 @@ describe("SettingsService appearance", () => {
     await service.patch({ appearance: { terminalFont: { lineHeight: 1.5 } } });
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toMatchObject({ mode: "light", lightScheme: "one-light", terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, size: 16, lineHeight: 1.5 } });
   });
+  it("persists a valid glass tint across restart and keeps it over an invalid patch", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ appearance: { glassTint: 60 } });
+    for (const glassTint of [-1, 101, 2.5, "40"]) await service.patch({ appearance: { glassTint } } as never);
+    expect(service.get("appearance").glassTint).toBe(60);
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").glassTint).toBe(60);
+  });
   it("rejects unknown fields and invalid scheme, mode and terminal font patches", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await expect(service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never)).rejects.toThrow("Invalid terminal font family");

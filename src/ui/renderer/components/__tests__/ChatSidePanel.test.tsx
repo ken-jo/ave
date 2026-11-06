@@ -2559,7 +2559,7 @@ describe("ChatSidePanel inside a chat group", () => {
       </PaneFrame>,
     );
     const panel = screen.getByTestId(TEST_IDS.chatSidePanel);
-    expect(panel.className).toContain("rounded-2xl");
+    expect(panel.className).toContain("rounded-(--shell-card-radius)");
     expect(within(panel).getByTestId("chat-side-panel-tab-strip")).toBeTruthy();
     expect(
       within(screen.getByTestId("pane-header")).queryByTestId("chat-side-panel-tab-strip"),

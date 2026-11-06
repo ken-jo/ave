@@ -357,15 +357,17 @@ export function PaneFrame({
       className={[
         // `relative` so the drop indicator can cover the half the new tile would take, in the tile's own coordinates. A row: the
         // conversation column, then the work panel's slot beside it, as tall as the tile.
-        "relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden rounded-lg border bg-card",
-        // Focus lives on the frame. `border-border` is the resting hairline;
-        // the focused group swaps the whole border rather than adding a ring,
-        // so a group never changes size when focus moves to it.
+        "relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden rounded-(--shell-card-radius) border bg-card",
+        // Focus lives on the frame, and it is quiet: a resting group is drawn by
+        // its `--hairline` alone; the focused group lifts on the soft
+        // `--elevation-pane` shadow and its edge firms to a faint ink accent
+        // (primary at 15%). Only the colour of the same 1px border changes, so
+        // a group never changes size when focus moves to it.
         // Attention rings OUTSIDE the border (a box shadow), so the tile keeps
         // its size; it outranks focus because it is what is not yet seen.
         attention !== null
           ? "border-primary ring-2 ring-primary/(--opacity-half)"
-          : focused ? "border-primary/(--opacity-half)" : "border-border",
+          : focused ? "border-primary/(--opacity-soft) shadow-(--elevation-pane)" : "border-(--hairline)",
       ].join(" ")}
     >
       {/* One approval scope per pane: the column that holds this pane's

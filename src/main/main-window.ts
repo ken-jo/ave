@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, shell, type IpcMainEvent } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,7 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
-import { getCommonChromeOptions } from "./window-chrome.js";
+import { getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, syncNativeThemeSource } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -68,6 +68,14 @@ function readCurrentAppearance() {
   return normalizeAppearance(stored);
 }
 
+// Main windows created with the macOS material, by renderer. Main reads the OS reduce-transparency switch ONCE, at creation, and
+// the renderer's `data-glass` follows that reading. Main does not follow the switch afterwards: the v45.2.1 docs list no
+// `nativeTheme` event for `prefersReducedTransparency` (https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#event-updated
+// names only the dark-colours, high-contrast and inverted-scheme values). A live change is honoured by the renderer alone:
+// `@media (prefers-reduced-transparency: reduce)` in styles.css paints the whole shell opaque over the material. Turning the
+// switch back off restores glass in that window; a window created with it on stays opaque until a new window is opened.
+const glassContents = new WeakSet<WebContents>();
+
 let initialAppearanceRegistered = false;
 function registerInitialAppearance(): void {
   if (initialAppearanceRegistered) return;
@@ -78,7 +86,7 @@ function registerInitialAppearance(): void {
     if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
       result = { ok: false, error: "unauthorized-frame" };
     } else {
-      try { result = { ok: true, appearance: readCurrentAppearance() }; }
+      try { result = { ok: true, appearance: readCurrentAppearance(), glass: glassContents.has(event.sender) }; }
       catch (error) {
         log.warn({ err: error }, "Could not read current appearance");
         result = { ok: false, error: "appearance-unavailable" };
@@ -103,6 +111,9 @@ export function createWindow(
     throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
+  // The native appearance follows the app's light/dark choice before the material is first drawn.
+  syncNativeThemeSource(readCurrentAppearance().mode);
+  const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
@@ -112,6 +123,8 @@ export function createWindow(
     autoHideMenuBar: false,
     // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
     ...getCommonChromeOptions(),
+    // macOS: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
+    ...getMainWindowGlassOptions(glass),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -122,6 +135,7 @@ export function createWindow(
       webviewTag: true,
     },
   });
+  if (glass) glassContents.add(win.webContents);
   registerMainWindow(win, nextMainWindowRole());
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;

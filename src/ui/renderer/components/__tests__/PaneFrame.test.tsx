@@ -187,13 +187,18 @@ describe("PaneFrame", () => {
   it("swaps the border on focus without changing the frame's size", () => {
     const view = render(pane());
     const frame = () => view.container.querySelector('[data-testid="pane"]')!;
-    expect(frame().className).toContain("border-border");
+    // Resting: the hairline alone, no lift.
+    expect(frame().className).toContain("border-(--hairline)");
     expect(frame().className).not.toContain("border-primary");
+    expect(frame().className).not.toContain("shadow-(--elevation-pane)");
     expect(frame().getAttribute("data-focused")).toBeNull();
 
+    // Focused: a soft lift and a faint accent on the same 1px border — never the heavy half-strength primary.
     view.rerender(pane({ focused: true }));
-    expect(frame().className).toContain("border-primary");
-    expect(frame().className).not.toMatch(/\bborder-border\b/);
+    expect(frame().className).toContain("shadow-(--elevation-pane)");
+    expect(frame().className).toContain("border-primary/(--opacity-soft)");
+    expect(frame().className).not.toContain("border-primary/(--opacity-half)");
+    expect(frame().className).not.toContain("border-(--hairline)");
     expect(frame().getAttribute("data-focused")).toBe("true");
   });
 

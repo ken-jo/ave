@@ -10,7 +10,7 @@ import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
-const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE }));
+const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false }));
 const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
@@ -69,7 +69,7 @@ describe("preload — plugin webview asset URLs", () => {
   beforeEach(() => {
     exposed.clear();
     mockInvoke.mockReset();
-    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE });
+    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false });
     mockSend.mockReset();
     mockOn.mockReset();
     mockRemoveListener.mockReset();
@@ -84,10 +84,16 @@ describe("preload — plugin webview asset URLs", () => {
 
   it("reads fresh main-owned appearance synchronously on every preload start", async () => {
     const { readInitialAppearance } = await import("../preload/internal-surface.js");
-    expect(readInitialAppearance()).toEqual(DEFAULT_APPEARANCE);
-    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" } });
-    expect(readInitialAppearance().darkScheme).toBe("nord");
+    expect(readInitialAppearance()).toEqual({ appearance: DEFAULT_APPEARANCE, glass: false });
+    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" }, glass: true });
+    expect(readInitialAppearance()).toMatchObject({ appearance: { darkScheme: "nord" }, glass: true });
     expect(mockSendSync).toHaveBeenLastCalledWith(CHANNELS.settings.initialAppearance);
+  });
+
+  it("fails clearly when main omits the glass flag", async () => {
+    mockSendSync.mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE } as never);
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    expect(() => readInitialAppearance()).toThrow("Invalid initial appearance glass flag");
   });
 
   it("fails clearly when main refuses an appearance read", async () => {

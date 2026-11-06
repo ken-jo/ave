@@ -128,7 +128,7 @@ export function WorkPanelCard({
     <aside
       data-testid={testId}
       className={[
-        "ave-surface-raised h-full w-full min-h-0 min-w-0 overflow-hidden rounded-2xl bg-card backdrop-blur",
+        "ave-surface-raised h-full w-full min-h-0 min-w-0 overflow-hidden rounded-(--shell-card-radius) bg-card backdrop-blur",
         className,
       ].join(" ")}
     >
