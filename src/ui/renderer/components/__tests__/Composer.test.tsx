@@ -691,25 +691,6 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     expect(ghost.className).toContain("animate-in");
   });
 
-  it("Tab fill records accepted telemetry event", async () => {
-    const { resetSuggestedRepliesCountersForTesting, getSuggestedRepliesCounters } =
-      await import("../../../../telemetry/suggested-replies-counter.js");
-    const { pushSuggestedReply, __resetSuggestedRepliesStoreForTests } =
-      await import("../../hooks/use-suggested-replies.js");
-    __resetSuggestedRepliesStoreForTests();
-    resetSuggestedRepliesCountersForTesting();
-    await act(async () => { pushSuggestedReply("네"); });
-    resetSuggestedRepliesCountersForTesting();
-    render(
-      <Harness
-        suggestedReplies={{ text: "네", isDismissed: false }}
-      />,
-    );
-    const ta = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
-    await act(async () => { fireEvent.keyDown(ta, { key: "Tab" }); });
-    expect(getSuggestedRepliesCounters().accepted).toBe(1);
-  });
-
   it("Enter (send) releases the dismiss latch (PR-D dismiss memory)", async () => {
     const { pushSuggestedReply, dismissSuggestedReplies, __resetSuggestedRepliesStoreForTests } =
       await import("../../hooks/use-suggested-replies.js");

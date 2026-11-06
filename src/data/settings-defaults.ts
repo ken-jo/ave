@@ -17,7 +17,6 @@ import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
 import { DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
-import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
 import { DEFAULT_UPSTREAM_PROXY } from "../shared/upstream-proxy.js";
@@ -129,7 +128,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     sidePanelFileTreeWidth: FILE_TREE_DEFAULT_WIDTH,
     sidePanelSplitPreviewPercent: SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
     sidePanelSplitSubagentPercent: SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
-    sidebarActiveTab: DEFAULT_SIDEBAR_TAB,
     // `home` is the only built-in that is inline-only and always present.
     activeView: "home",
     // Ask the normalizer what an absent tab means rather than restating it.

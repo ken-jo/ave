@@ -1,3 +1,4 @@
+import type { IpcDeps } from "../../types.js";
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
  * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
@@ -306,21 +307,21 @@ describe("marketplace provider preset runtime refresh", () => {
       ...baseDeps,
       settingsService: {
         ...baseDeps.settingsService,
-        installMarketplaceProviderPreset: vi.fn(async () => ({ ok: true })),
+        installMarketplaceProviderPreset: vi.fn(async (_preset: unknown) => ({ ok: true })),
       },
     };
 
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
+    const { mutateMarketplaceProviderPresets } = await import("../settings.js");
 
-    await expect(invoke("ave:settings:marketplace:install-provider-preset", {
+    const ipcDeps = deps as unknown as IpcDeps;
+    await expect(mutateMarketplaceProviderPresets(ipcDeps, () => ipcDeps.settingsService.installMarketplaceProviderPreset({
       providerId: "router-a",
       label: "Router A",
       baseUrl: "https://router.example/v1",
       defaultModel: "router/default",
       modelOptions: ["router/default"],
       requiresApiKey: true,
-    })).resolves.toEqual({ ok: true });
+    }))).resolves.toEqual({ result: { ok: true }, finishError: null });
 
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();

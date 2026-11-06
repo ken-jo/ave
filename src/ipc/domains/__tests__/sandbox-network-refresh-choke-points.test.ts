@@ -1,3 +1,4 @@
+import type { IpcDeps } from "../../types.js";
 // Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolve } from "node:path";
@@ -166,10 +167,11 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
   it("calls refreshSandboxNetworkConfig when the active preset is uninstalled", async () => {
     // Capture the pre-mutation registry signature or uninstall loses the old host from both comparisons.
     const { deps, refreshSandboxNetworkConfig } = makePresetDeps();
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:marketplace:uninstall-provider-preset", "future-router");
+    const { mutateMarketplaceProviderPresets } = await import("../settings.js");
+    const ipcDeps = deps as unknown as IpcDeps;
+    await mutateMarketplaceProviderPresets(ipcDeps, () =>
+      ipcDeps.settingsService.uninstallMarketplaceProviderPreset("future-router"),
+    );
 
     expect(refreshSandboxNetworkConfig).toHaveBeenCalledTimes(1);
   });
@@ -221,7 +223,6 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
       getMainWindow: vi.fn(() => null),
       memoryManager: { getSessionKind: vi.fn(() => "main") },
       starredStore: undefined,
-      feedbackStore: undefined,
       rewireReviewerAgent: vi.fn(),
       refreshActiveLlmWildcard: vi.fn(),
       refreshSandboxNetworkConfig,

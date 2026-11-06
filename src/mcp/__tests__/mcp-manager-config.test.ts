@@ -318,7 +318,7 @@ describe("McpManager — getConfigs()", () => {
     expect(reached.sandboxRoot).toEqual(expect.any(String));
   });
 
-  it("falls back to a legacy .bak when the main config file exists but is corrupt", async () => {
+  it("ignores a legacy backup when the primary config is corrupt", async () => {
     const backupServers: McpServerConfig[] = [
       { id: "backup-srv", transport: "http", url: "https://example.com/mcp" },
     ];
@@ -328,9 +328,7 @@ describe("McpManager — getConfigs()", () => {
     const mgr = await makeManager();
     const result = await mgr.getConfigs();
 
-    expect(result).toEqual([
-      { id: "backup-srv", transport: "http", url: "https://example.com/mcp" },
-    ]);
+    expect(result).toEqual([]);
   });
 
   it.each([
@@ -339,7 +337,7 @@ describe("McpManager — getConfigs()", () => {
     ["a bare array", "[]"],
   ])("refuses to add, update or remove servers over a configuration file with %s, leaving it untouched", async (_label, content) => {
     await writeFile(testConfigPath, content, "utf-8");
-    // Legacy backups may be read, never used to overwrite the user primary file.
+    // Legacy backups must not authorize overwriting the primary file.
     await writeFile(`${testConfigPath}.bak`, JSON.stringify({ servers: [{ id: "backup-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key" }] }), "utf-8");
     const mgr = await makeManager();
     const refused = async (write: Promise<unknown>) => {
@@ -666,31 +664,6 @@ describe("McpManager — removeConfig()", () => {
     await mgr.killSwitch(server.id);
 
     expect(mockAuditLog).toHaveBeenCalledWith(expect.objectContaining({ type: "kill_switch" }));
-  });
-
-  it("removes a server that exists only in the legacy .bak and writes a new primary config", async () => {
-    const bakServers: McpServerConfig[] = [
-      { id: "bak-only-a", transport: "http", url: "https://example.com/mcp" },
-      { id: "bak-only-b", transport: "stdio", command: "cmd" },
-    ];
-    await writeFile(`${testConfigPath}.bak`, JSON.stringify({ servers: bakServers }), "utf-8");
-
-    const mgr = await makeManager();
-    expect(existsSync(testConfigPath)).toBe(false);
-
-    await mgr.removeConfig("bak-only-a");
-
-    expect(existsSync(testConfigPath)).toBe(true);
-    const raw = JSON.parse(await readFile(testConfigPath, "utf-8")) as {
-      servers: McpServerConfig[];
-    };
-    expect(raw.servers).toHaveLength(1);
-    expect(raw.servers[0].id).toBe("bak-only-b");
-
-    const bak = JSON.parse(
-      await readFile(`${testConfigPath}.bak`, "utf-8"),
-    ) as { servers: McpServerConfig[] };
-    expect(bak.servers).toHaveLength(2);
   });
 
   it("is idempotent when removing a server absent from bak-only config", async () => {

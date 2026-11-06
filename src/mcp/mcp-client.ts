@@ -1,7 +1,3 @@
-
-
-
-
 import { spawn, type ChildProcess } from "node:child_process";
 import type {
   McpHttpServerConfig,
@@ -468,7 +464,7 @@ export class McpClient {
 
     if (this.config.transport !== "stdio" && this.config.transport !== "http") {
       throw new Error(
-        `[mcp-client] ${t("be_mcpClient.unsupportedTransport", { transport: this.config.transport })}`,
+        `[mcp-client] ${t("be_mcpClient.unsupportedTransport", { transport: (this.config as { transport: string }).transport })}`,
       );
     }
 

@@ -22,25 +22,20 @@ vi.mock("../../engine/llm/provider-factory.js", () => ({
   secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
 }));
 
-// Keep migration fixtures independent of live defaults.
+// Literal v0.14.0 defaults keep the migration fixture independent of live defaults.
 const REMOVED_DEFAULTS: readonly (readonly [LLMVendor, string])[] = [
-  ["claude", "claude-sonnet-4-6"],
-  ["openai", "gpt-5.4-mini"],
-  ["gemini", "gemini-3.8-flash"],
-  ["azure-foundry", "gpt-5.4-mini"],
-  ["vertex-ai", "gemini-3.5-flash"],
   ["openrouter", "anthropic/claude-sonnet-4.6"],
   ["deepseek", "deepseek-flash"],
   ["xai", "grok-4.20-0309-non-reasoning"],
   ["together", "Qwen/Qwen3.6-Plus"],
-  ["fireworks", "accounts/fireworks/models/glm-5p3-flash"],
-  ["groq", "openai/gpt-oss-120b"],
+  ["fireworks", "accounts/fireworks/models/kimi-k2p6"],
+  ["groq", "moonshotai/kimi-k2-instruct-0905"],
   ["poolside", "poolside/laguna-m.1"],
-  ["cerebras", "gpt-oss-120b"],
+  ["cerebras", "zai-glm-4.7"],
   ["sambanova", "Meta-Llama-3.3-70B-Instruct"],
   ["nebius", "nvidia/nemotron-3-super-120b-a12b"],
   ["baseten", "deepseek-ai/DeepSeek-V4.1-Flash"],
-  ["requesty", "openai/gpt-6-luna"],
+  ["requesty", "openai/gpt-5.4"],
   ["litellm", "gpt-5.4"],
   ["huggingface", "MiniMaxAI/MiniMax-M2.5"],
   ["vercel-ai-gateway", "alibaba/qwen3.6-plus"],
@@ -49,20 +44,25 @@ const REMOVED_DEFAULTS: readonly (readonly [LLMVendor, string])[] = [
   ["hicap", "hicap-pro"],
   ["nous-research", "DeepHermes-3-Llama-3-3-70B-Preview"],
   ["huawei-cloud-maas", "DeepSeek-R1"],
-  ["wandb", "deepseek-ai/DeepSeek-V4.1-Flash"],
+  ["wandb", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"],
   ["xiaomi", "mimo-v2.6-flash"],
-  ["kilo", "openai/gpt-5.4"],
+  ["kilo", "gpt-5.4"],
   ["zai", "glm-5v-turbo"],
   ["zai-coding-plan", "glm-5.2"],
-  ["qwen", "qwen3.7-plus"],
+  ["qwen", "qwen-plus-latest"],
   ["qwen-code", "qwen3-coder-plus"],
   ["doubao", "doubao-1-5-pro-256k-250115"],
   ["mistral", "mistral-medium-latest"],
-  ["moonshot", "kimi-k3"],
+  ["moonshot", "kimi-k2-0905-preview"],
   ["asksage", "gpt-5.4-mini"],
   ["ollama", "llama3.3"],
   ["lmstudio", "local-model"],
   ["oca", "anthropic/claude-3-7-sonnet-20250219"],
+  ["claude", "claude-sonnet-4-6"],
+  ["openai", "gpt-5.4-mini"],
+  ["gemini", "gemini-2.5-flash"],
+  ["azure-foundry", "gpt-5.4-mini"],
+  ["vertex-ai", "gemini-3.5-flash"],
 ];
 const MIGRATION = "built-in-default-models-cleared";
 const encryption = {
@@ -179,16 +179,6 @@ describe("stored built-in default model migration", () => {
     await reloaded.installMarketplaceProviderPreset({ ...marketPreset, defaultModel: "new-default" });
     await reloaded.installMarketplaceProviderPreset(marketPreset);
     expect(marketModel(load())).toBe(marketPreset.defaultModel);
-  });
-
-  it("clears a market default moved from the legacy shared model slot", async () => {
-    const profile = marketProfile();
-    profile.llm = { provider: "openai-compatible", marketplaceProviderPresetId: marketPreset.providerId,
-      vendors: { "openai-compatible": { model: marketPreset.defaultModel } } };
-    const service = load(profile);
-    expect(marketModel(service)).toBe("");
-    await service.patch({});
-    expect(service.get("appliedMigrations")).toContain(marketMarker(marketPreset.providerId));
   });
 
   it("makes a cleared market route unconfigured without dispatching an empty model", async () => {

@@ -17,25 +17,6 @@ class ThrowingProvider implements LLMProvider {
   }
 }
 
-class EmptyStreamProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  // eslint-disable-next-line require-yield
-  async *streamTurn(_params: StreamTurnParams): AsyncIterable<StreamEvent> {
-  }
-}
-
-class HangingProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
-    await new Promise<void>((_, reject) => {
-      params.abortSignal?.addEventListener("abort", () =>
-        reject(new Error("aborted")),
-      );
-    });
-    yield { type: "message_complete", stopReason: "end_turn" };
-  }
-}
-
 function buildLoop(provider: LLMProvider | null): ConversationLoop {
   const toolRegistry = new ToolRegistry();
   const inputClassifier = new InputClassifier();
@@ -59,42 +40,5 @@ describe("ConversationLoop.generateText provider throw", () => {
   it("propagates a streamTurn rejection to the caller", async () => {
     const loop = buildLoop(new ThrowingProvider(new Error("boom-generate")));
     await expect(loop.generateText("prompt")).rejects.toThrow("boom-generate");
-  });
-});
-
-describe("ConversationLoop.pingProvider error branches", () => {
-  it("streamTurn throw → online:false with the thrown error message", async () => {
-    const loop = buildLoop(new ThrowingProvider(new Error("boom-ping")));
-    const result = await loop.pingProvider();
-    expect(result).toMatchObject({
-      configured: true,
-      online: false,
-      vendor: "openai",
-      error: "boom-ping",
-    });
-    expect((result as { latencyMs: number }).latencyMs).toBeGreaterThanOrEqual(0,
-    );
-  });
-
-  it("stream ends with no message_complete/error → error:'stream-ended'", async () => {
-    const loop = buildLoop(new EmptyStreamProvider());
-    const result = await loop.pingProvider();
-    expect(result).toMatchObject({
-      configured: true,
-      online: false,
-      vendor: "openai",
-      error: "stream-ended",
-    });
-  });
-
-  it("timeout abort → error:'timeout'", async () => {
-    const loop = buildLoop(new HangingProvider());
-    const result = await loop.pingProvider(1);
-    expect(result).toMatchObject({
-      configured: true,
-      online: false,
-      vendor: "openai",
-      error: "timeout",
-    });
   });
 });

@@ -35,6 +35,31 @@ describe("sidebar visibility settings", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("scrubs the released sidebar tab once while accepting retired and unknown migration markers", async () => {
+    const service = new SettingsService({ encryption, userDataPath });
+    await service.patch({});
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    const markers = [
+      "subagent-autonomous-wake-default-flip", "marketplace-provider-preset-endpoint-unmirror",
+      "marketplace-provider-preset-model-slot", "llm-vendor-id-package-names",
+      "marketplace-server-settings-removed", "future-settings-marker",
+    ];
+    writeFileSync(settingsPath, JSON.stringify({ ...service.getAll(),
+      appliedMigrations: [...service.get("appliedMigrations") ?? [], ...markers],
+      system: { ...service.get("system"), sidebarActiveTab: "chats", sidebarWidth: 280 },
+    }));
+    const reloaded = new SettingsService({ encryption, userDataPath });
+    expect(reloaded.get("system")).not.toHaveProperty("sidebarActiveTab");
+    expect(reloaded.get("system").sidebarWidth).toBe(280);
+    await Promise.all(writes);
+    const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+    expect(saved.system).not.toHaveProperty("sidebarActiveTab");
+    expect(saved.appliedMigrations).toEqual(expect.arrayContaining(markers));
+    const writesBefore = writes.length;
+    new SettingsService({ encryption, userDataPath });
+    expect(writes).toHaveLength(writesBefore);
+  });
+
   it("keeps an absent choice unset so the window can choose its width-dependent default", async () => {
     const service = new SettingsService({ encryption, userDataPath });
     expect(service.get("system")).not.toHaveProperty("sidebarState");

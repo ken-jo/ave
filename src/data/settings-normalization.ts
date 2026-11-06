@@ -46,7 +46,6 @@ import {
   isOfficialPackageLocale,
 } from "../i18n/index.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
-import { isSidebarTab } from "../shared/sidebar-tab.js";
 import { isSidebarState } from "../shared/sidebar-state.js";
 import { isInlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
@@ -119,7 +118,6 @@ import type {
 import { isRecord } from "../shared/is-record.js";
 
 const log = createLogger("settings");
-
 
 function normalizeModelId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -228,130 +226,6 @@ function marketplaceProviderPresetUsesSeededModelOptions(
 ): boolean {
   const preset = marketplaceProviderPresetForId(providerId, installedProviderPresets);
   return modelDiscoveryPolicyUsesSeededOptions(preset?.modelDiscoveryPolicy);
-}
-
-/** Remove only the selected preset's legacy endpoint mirror; other custom-row URLs may be deliberate user settings. */
-export function withoutMirroredMarketplaceProviderPresetEndpoint(
-  llm: LLMSettings,
-  installedProviderPresets: readonly MarketplaceInstalledProviderPreset[] | undefined,
-): LLMSettings {
-  const block = llm.vendors["openai-compatible"];
-  const baseUrl = block?.baseUrl?.trim();
-  if (!baseUrl) return llm;
-  const selected = marketplaceProviderPresetForId(
-    llm.marketplaceProviderPresetId ?? "",
-    installedProviderPresets,
-  );
-  if (!selected || selected.baseUrl.trim() !== baseUrl) return llm;
-  const vendors: LLMVendorSettingsMap = { ...llm.vendors };
-  const { baseUrl: _mirroredBaseUrl, ...rest } = block!;
-  vendors["openai-compatible"] = getLlmVendorSettings(
-    { ...vendors, "openai-compatible": rest },
-    "openai-compatible",
-  );
-  return { ...llm, vendors };
-}
-
-/** Rename provider ids before normalization drops unknown ids; existing new-id values win. */
-export function withRenamedLlmVendorIds(
-  stored: Record<string, any>,
-  renames: Readonly<Record<string, LLMVendor>>,
-): Record<string, any> {
-  const renamedId = (id: unknown): unknown =>
-    typeof id === "string" && Object.hasOwn(renames, id) ? renames[id] : id;
-  const renameRows = (rows: unknown[], idField: string, modelField: string): unknown[] => {
-    const rowKey = (id: unknown, row: Record<string, unknown>) => `${String(id)}\u0000${String(row[modelField])}`;
-    const present = new Set(rows.filter(isRecord).map((row) => rowKey(row[idField], row)));
-    return rows.flatMap((row) => {
-      if (!isRecord(row)) return [row];
-      const to = renamedId(row[idField]);
-      if (to === row[idField]) return [row];
-      return present.has(rowKey(to, row)) ? [] : [{ ...row, [idField]: to }];
-    });
-  };
-  const cacheKeyOf = (entry: Record<string, unknown>, vendor: string): string =>
-    llmModelListCacheKey(
-      vendor,
-      typeof entry.baseUrl === "string" ? entry.baseUrl : undefined,
-      typeof entry.credentialScope === "string" ? entry.credentialScope : undefined,
-    );
-  const next: Record<string, any> = { ...stored };
-
-  if (isRecord(stored.llm)) {
-    const llm: Record<string, unknown> = { ...stored.llm };
-    if (llm.provider !== undefined) llm.provider = renamedId(llm.provider);
-    if (isRecord(llm.vendors)) {
-      const vendors = { ...llm.vendors };
-      for (const [from, to] of Object.entries(renames)) {
-        if (!Object.hasOwn(vendors, from)) continue;
-        if (!Object.hasOwn(vendors, to)) vendors[to] = vendors[from];
-        delete vendors[from];
-      }
-      llm.vendors = vendors;
-    }
-    if (Array.isArray(llm.fallbackChain)) {
-      llm.fallbackChain = renameRows(llm.fallbackChain, "provider", "model");
-    }
-    if (Array.isArray(llm.pricingOverrides)) {
-      llm.pricingOverrides = renameRows(llm.pricingOverrides, "vendor", "model");
-    }
-    if (isRecord(llm.modelListCache)) {
-      const cache: Record<string, unknown> = {};
-      const renamed: Array<[string, Record<string, unknown>]> = [];
-      for (const [key, entry] of Object.entries(llm.modelListCache)) {
-        const to = isRecord(entry) ? renamedId(entry.vendor) : undefined;
-        if (isRecord(entry) && typeof to === "string" && to !== entry.vendor) {
-          renamed.push([cacheKeyOf(entry, to), { ...entry, vendor: to }]);
-        } else {
-          cache[key] = entry;
-        }
-      }
-      const present = new Set(
-        Object.values(cache)
-          .filter(isRecord)
-          .filter((entry) => typeof entry.vendor === "string")
-          .map((entry) => cacheKeyOf(entry, entry.vendor as string)),
-      );
-      for (const [key, entry] of renamed) {
-        if (!present.has(key)) cache[key] = entry;
-      }
-      llm.modelListCache = cache;
-    }
-    next.llm = llm;
-  }
-
-  if (isRecord(stored.marketplace) && Array.isArray(stored.marketplace.installedProviderIds)) {
-    next.marketplace = {
-      ...stored.marketplace,
-      installedProviderIds: [...new Set(stored.marketplace.installedProviderIds.map(renamedId))],
-    };
-  }
-  return next;
-}
-
-/** Move the active preset's legacy model into its own slot; preserve the generic model when no preset is selected. */
-export function withMarketplaceProviderPresetModelSlot(llm: LLMSettings): LLMSettings {
-  const presetId = llm.marketplaceProviderPresetId?.trim();
-  if (!presetId) return llm;
-  const block = llm.vendors["openai-compatible"];
-  const model = block?.model?.trim();
-  if (!block || !model) return llm;
-  if (block.presetModels?.[presetId]) return llm;
-  const vendors: LLMVendorSettingsMap = {
-    ...llm.vendors,
-    "openai-compatible": getLlmVendorSettings(
-      {
-        ...llm.vendors,
-        "openai-compatible": {
-          ...block,
-          model: "",
-          presetModels: { ...block.presetModels, [presetId]: model },
-        },
-      },
-      "openai-compatible",
-    ),
-  };
-  return { ...llm, vendors };
 }
 
 function isValidCachedModelId(value: unknown): value is string {
@@ -999,7 +873,6 @@ export function normalizeSystem(input: unknown): SystemSettings {
       normalizeSidePanelSplitPercent, "system", STORED_FIELD,
     );
   }
-  acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
   acceptField(result, "sidebarState", obj.sidebarState, isSidebarState, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
   acceptNormalizedField(result, "projectSelection", obj.projectSelection, normalizeProjectSelection, "system", STORED_FIELD);

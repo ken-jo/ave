@@ -123,8 +123,7 @@ type ApiOverrides = {
   hasApiKey?: boolean;
   turnReview?: TurnReviewResult | ((sessionId: string) => TurnReviewResult);
   subscriptionRuntimeStatus?: unknown;
-  hasProvider?: boolean;
-  usage?: unknown;
+
   appInfo?: unknown;
   /** What `gitMarketplace.listSources` answers (the workspace stats read it). */
   marketplaceSources?: unknown[];
@@ -136,7 +135,7 @@ type ApiOverrides = {
   sideChat?: boolean;
   latestRoutineResult?: unknown;
   pendingRoutineResults?: unknown[];
-  routineSessionsByRoutine?: Record<string, unknown[]>;
+
   memoryIndex?: string;
   mainActiveState?: {
     mainActiveSessionId: string | null;
@@ -177,17 +176,6 @@ function seedSettings(override: unknown): unknown {
 
 /** The session id the mock hands the main tile when a test names none. */
 export const MOCK_DEFAULT_SESSION_ID = "sess-default";
-
-const DEFAULT_USAGE = {
-  today: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 },
-  thisWeek: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 },
-  thisMonth: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 },
-  perVendor: [],
-  perModel: [],
-  trend: [],
-  topConversations: [],
-  generatedAt: new Date().toISOString(),
-};
 
 /** The app identity a mock app boots with; exported so a test asserting the version on screen reads the same value the mock serves. */
 export const DEFAULT_APP_INFO = {
@@ -239,8 +227,7 @@ function makeBrowserTabsDouble() {
     stop: vi.fn(async () => ({ ok: true as const })),
     pause: vi.fn(async () => ({ ok: true as const })),
     resume: vi.fn(async () => ({ ok: true as const })),
-    pausePopup: vi.fn(async () => ({ ok: true as const })),
-    resumePopup: vi.fn(async () => ({ ok: true as const })),
+
     getState: vi.fn(async () => state),
     getSessionBindings: vi.fn(async () => bindingState),
     onSessionBindingsChanged: vi.fn((listener: (state: SessionTabBindingsState) => void) => {
@@ -354,8 +341,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     ok: false,
     error: { code: "subscription-runtime-not-configured", message: "not configured" },
   };
-  const hasProvider = overrides.hasProvider ?? true;
-  const usage = overrides.usage ?? DEFAULT_USAGE;
+
   const appInfo = overrides.appInfo ?? DEFAULT_APP_INFO;
   const marketplaceSources = overrides.marketplaceSources ?? [{ id: "ave", enabled: true, status: { state: "up-to-date" } }];
   const agentProfiles = overrides.agentProfiles ?? { agents: [] };
@@ -364,7 +350,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const pluginUiExtensions = overrides.pluginUiExtensions ?? [];
   const latestRoutineResult = overrides.latestRoutineResult ?? null;
   const pendingRoutineResults = overrides.pendingRoutineResults ?? [];
-  const routineSessionsByRoutine = overrides.routineSessionsByRoutine ?? {};
+
   const memoryIndex = overrides.memoryIndex ?? "";
   const mainActiveState = overrides.mainActiveState ?? {
     mainActiveSessionId: null,
@@ -500,8 +486,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       ok: false,
       error: "model-list-not-supported",
     })),
-    installMarketplaceProviderPreset: vi.fn(async () => settings),
-    uninstallMarketplaceProviderPreset: vi.fn(async () => settings),
+
     setWebApiKey: vi.fn(async () => ({ ok: true })),
     hasWebApiKey: vi.fn(async () => false),
     deleteWebApiKey: vi.fn(async () => ({ ok: true })),
@@ -551,7 +536,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       set: vi.fn(async () => ({ ok: true })),
     },
 
-    chatHasProvider: vi.fn(async () => hasProvider),
     // A tile binds its own view of the window api through `chatGroupApi`, so a window with more than one tile needs this to exist at all; without it a split throws
     // `chat-group-unavailable`. Each non-primary group answers with its OWN conversation id, which is what lets a test tell two tiles apart; everything else is deliberately the window's shared mock.
     chatGroup: vi.fn((chatGroupId: string) => {
@@ -610,7 +594,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         sessions: filtered.slice(0, opts?.limit ?? 20),
       };
     }),
-    chatSessionResume: vi.fn(async (id: string) => ({ ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 })),
+    chatSessionResume: vi.fn(async (_id: string) => ({ ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 })),
     // Reached whenever a tile that is NOT focused takes stream activity; the window marks that conversation unread. A window with two tiles hits it in the ordinary course of a test.
     chatSessionUpdate: vi.fn(async () => ({ ok: true as const })),
     chatGetTurnReview: vi.fn(async (sessionId: string): Promise<TurnReviewResult> => typeof overrides.turnReview === "function"
@@ -709,10 +693,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memorySaveNote: vi.fn(async () => ({ ok: true })),
     memoryDeleteNote: vi.fn(async () => undefined),
     memorySearchNotes: vi.fn(async () => []),
-    memoryListEntries: vi.fn(async () => []),
+
     memoryGetDetail: vi.fn(async () => ({ ok: false as const, error: "not-found" as const })),
-    memoryGetSummaries: vi.fn(async (options?: Parameters<AveApi["memoryListEntries"]>[0]): Promise<MemorySummariesResult> => {
-      const notes: Awaited<ReturnType<AveApi["memoryListEntries"]>> = await api.memoryListEntries!(options);
+    memoryGetSummaries: vi.fn(async (options?: Parameters<AveApi["memoryGetSummaries"]>[0]): Promise<MemorySummariesResult> => {
+      const notes: Extract<MemorySummariesResult, { ok: true }>["notes"] = [];
       return {
         ok: true,
         notes,
@@ -774,18 +758,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     // Marketplace agent/skill surface. Settings/dashboard tests still read these counts even though the composer no longer injects them per turn.
     listAgentProfiles: vi.fn(async () => agentProfiles),
     listSkills: vi.fn(async () => skills),
-    uninstallAgentPackage: vi.fn(async (slug: string) => ({
-      ok: true as const,
-      slug,
-      agentId: `mock-agent-${slug}`,
-    })),
-    uninstallSkillPackage: vi.fn(async (slug: string) => ({
-      ok: true as const,
-      slug,
-      skillId: `mock-skill-${slug}`,
-    })),
-    onAgentUninstallResult: vi.fn(() => () => {}),
-    onSkillUninstallResult: vi.fn(() => () => {}),
+
     listPluginUiExtensions: vi.fn(async () => pluginUiExtensions),
     listPluginCards: vi.fn(async () => pluginCards),
     callPluginMethod: vi.fn(async () => ({ ok: true })),
@@ -800,13 +773,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
     getRecentNotes: vi.fn(async () => []),
 
-    getUsageSummary: vi.fn(async () => usage),
     getUsageDailySummary: vi.fn(async () => ({ ok: false, error: "mock-unavailable" })),
     getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
     // Routine API
     listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })),
-    dismissRoutine: vi.fn(async () => ({ ok: true })),
+
     removeRoutine: vi.fn(async () => ({ ok: true })),
     triggerRoutineNow: vi.fn(async () => ({ ok: true })),
     listPendingRoutineResults: vi.fn(async () => pendingRoutineResults),
@@ -832,7 +804,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     }),
     onRoutineRunningFinished: vi.fn((_h: (id: string) => void) => () => {}),
     onRoutineFailed: vi.fn((_handler: (event: { routineId: string; error: string }) => void) => () => {}),
-    listRoutineSessions: vi.fn(async (routineId: string) => routineSessionsByRoutine[routineId] ?? []),
+
     // Work Board API; board panel subscribes to onWorkBoardItemChanged at mount, so the smoke test mock must define these even when the suite
     // doesn't exercise the board. CRUD mocks return the store's discriminated `status` envelopes; events are no-op subscribe handles by default.
     listWorkBoard: vi.fn(async () => ({ status: "ok", items: [] })),
@@ -864,19 +836,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     onWorkBoardRunFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardFailed: vi.fn((_h: (event: { itemId: number; error: string }) => void) => () => {}),
     onWorkBoardDueSoon: vi.fn((_h: (p: unknown) => void) => () => {}),
-    // Overlay trigger lifecycle. Tests that don't exercise the trigger card just need these to be callable subscribe/no-op functions.
-    onTriggerStarted: vi.fn((_h: (p: unknown) => void) => () => {}),
-    onTriggerCompleted: vi.fn((_h: (r: unknown) => void) => () => {}),
-    onTriggerFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
-    onTriggerExpired: vi.fn((_h: (p: unknown) => void) => () => {}),
-    onTriggerImported: vi.fn((_h: (p: unknown) => void) => () => {}),
-    dismissTrigger: vi.fn(async () => ({ ok: true, removed: true })),
-    importTrigger: vi.fn(async () => ({ ok: true, imported: 0 })),
+
     onOverlayShow: vi.fn((handler: (item: unknown) => void) => {
       overlayShowHandlers.add(handler);
       return () => overlayShowHandlers.delete(handler);
     }),
-    onOverlayUpdate: vi.fn((_handler: (id: string, patch: unknown) => void) => () => {}),
+
     onOverlayDismiss: vi.fn((handler: (id: string) => void) => {
       overlayDismissHandlers.add(handler);
       return () => overlayDismissHandlers.delete(handler);

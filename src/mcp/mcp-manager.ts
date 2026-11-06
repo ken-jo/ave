@@ -1,7 +1,3 @@
-
-
-
-
 import { assertInstalledMcpFilesIntact } from "../marketplace/app/mcp-installer.js";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -334,11 +330,10 @@ export class McpManager {
 
   /** Only a parsed primary config authorizes credential cleanup; fallback or missing data does not. */
   private async loadConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
-    const bakPath = `${this.configPath}.bak`;
-    // Read legacy backups without creating new secret-bearing backups on save. Each candidate is one verified buffer: a file
+    // Read one verified primary buffer: a file
     // pending review in the home content trust manifest reads as absent, so its servers neither connect nor survive a rewrite.
     const candidates = new Map<string, string>();
-    for (const path of [this.configPath, bakPath]) {
+    for (const path of [this.configPath]) {
       const input = await readAveHomeInput(path);
       if (input.status === "trusted") candidates.set(path, input.bytes.toString("utf-8"));
       else if (input.status === "untrusted") log.warn("MCP server config is waiting for review and is not loaded: %s", path);

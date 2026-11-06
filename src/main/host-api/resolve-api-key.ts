@@ -10,10 +10,6 @@ import {
   runSecretGate,
 } from "../../plugins/secret-access/secret-gate.js";
 import type { SecretGateOutcome } from "../../plugins/secret-access/secret-gate.js";
-import {
-  incrementHostSecretCounter,
-  sanitizeKeyPrefix,
-} from "../../telemetry/host-secret-counters.js";
 
 export type ResolveApiKeyPurpose = "llm" | "stt" | "embedding" | "vision";
 export type ResolveApiKeyVendor =
@@ -190,7 +186,6 @@ export async function resolveApiKey(
     llmProvider: defaultActiveProvider,
     marketplaceProviderPresetId: llmSettings.marketplaceProviderPresetId,
   });
-  const keyPrefix = sanitizeKeyPrefix(llmKey);
 
   // Own-namespace misses continue into host tiers because the request asks for a vendor credential, not one named key.
   const ownNamespaceKey = `plugin.${deps.pluginId}.llm.apiKey.${vendor}`;
@@ -201,7 +196,7 @@ export async function resolveApiKey(
       "warn",
       `resolveApiKey deny source=plugin-namespace reason=endpoint-url-in-api-key-like-secret vendor=${vendor} purpose=${request.purpose}`,
     );
-    incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);
+
     return { ok: false, reason: "no-host-vendor" };
   }
   if (typeof ownValue === "string" && ownValue.length > 0) {
@@ -210,7 +205,7 @@ export async function resolveApiKey(
       "info",
       `resolveApiKey allow source=plugin-namespace vendor=${vendor} purpose=${request.purpose}`,
     );
-    incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
+
     return makeSuccess(vendor, ownNamespaceKey, "plugin-own", ownValue, mergedSignal);
   }
 
@@ -231,7 +226,7 @@ export async function resolveApiKey(
       "warn",
       `resolveApiKey deny reason=${gateOutcome.reason} vendor=${vendor} (${gateOutcome.tier})`,
     );
-    incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);
+
     if (gateOutcome.tier === "tier-4") {
       return { ok: false, reason: "vendor-mismatch" };
     }
@@ -245,7 +240,7 @@ export async function resolveApiKey(
   if (deps._onCredentialIssuanceStageForTest) await deps._onCredentialIssuanceStageForTest("after-secret-read");
   if (typeof value !== "string" || value.length === 0) {
     audit(deps, "info", `resolveApiKey deny reason=no-host-vendor vendor=${vendor}`);
-    incrementHostSecretCounter("hostSecret_denied", deps.pluginId, keyPrefix);
+
     return { ok: false, reason: "no-host-vendor" };
   }
   audit(
@@ -253,7 +248,6 @@ export async function resolveApiKey(
     "info",
     `resolveApiKey allow source=${grantAuditSource(gateOutcome.via)} vendor=${vendor} purpose=${request.purpose}`,
   );
-  incrementHostSecretCounter("hostSecret_read", deps.pluginId, keyPrefix);
 
   // azure-foundry needs a baseUrl alongside the bearer — the public contract already exposes it. Reach into the per-vendor settings block when the vendor
   // is azure-foundry; otherwise leave baseUrl unset.

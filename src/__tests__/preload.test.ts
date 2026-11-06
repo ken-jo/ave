@@ -496,7 +496,7 @@ describe("preload — plugin webview asset URLs", () => {
     const { buildPublicSurface } = await import("../preload/public-surface.js");
     const publicApi = buildPublicSurface() as Record<string, unknown>;
 
-    expect(typeof publicApi["getUsageSummary"]).toBe("function");
+    expect(publicApi["getUsageSummary"]).toBeUndefined();
     expect(typeof publicApi["getUsageRange"]).toBe("function");
     expect(publicApi["getUsageDailySummary"]).toBeUndefined();
   });
@@ -533,42 +533,6 @@ describe("preload — plugin webview asset URLs", () => {
 
     unsubscribe();
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:subscription:status-updated", listener);
-  });
-
-  it.each([
-    ["codexSubscriptionStatus", "ave:settings:codex-subscription:status"],
-    ["codexSubscriptionStartBrowserLogin", "ave:settings:codex-subscription:start-browser-login"],
-    ["codexSubscriptionStartDeviceCodeLogin", "ave:settings:codex-subscription:start-device-code-login"],
-    ["codexSubscriptionCancelLogin", "ave:settings:codex-subscription:cancel-login"],
-    ["codexSubscriptionLogout", "ave:settings:codex-subscription:logout"],
-    ["codexSubscriptionListModels", "ave:settings:codex-subscription:list-models"],
-  ])("exposes %s through the internal Codex subscription bridge", async (apiKey, channel) => {
-    const api = await loadAveApi();
-    const action = api[apiKey];
-
-    expect(typeof action).toBe("function");
-    await (action as () => Promise<unknown>)();
-
-    expect(mockInvoke).toHaveBeenCalledWith(channel);
-  });
-
-  it.each([
-    ["acpSubscriptionStatus", "ave:settings:acp-subscription:status"],
-    ["acpSubscriptionChooseRuntime", "ave:settings:acp-subscription:choose-runtime"],
-    ["acpSubscriptionForgetRuntime", "ave:settings:acp-subscription:forget-runtime"],
-    ["acpSubscriptionVerify", "ave:settings:acp-subscription:verify"],
-    ["acpSubscriptionStartLogin", "ave:settings:acp-subscription:start-login"],
-    ["acpSubscriptionCancelLogin", "ave:settings:acp-subscription:cancel-login"],
-    ["acpSubscriptionLogout", "ave:settings:acp-subscription:logout"],
-    ["acpSubscriptionOpenLoginBrowser", "ave:settings:acp-subscription:open-login-browser"],
-  ])("exposes %s through the internal ACP subscription bridge", async (apiKey, channel) => {
-    const api = await loadAveApi();
-    const action = api[apiKey];
-
-    expect(typeof action).toBe("function");
-    await (action as (provider: string) => Promise<unknown>)("kimi-code");
-
-    expect(mockInvoke).toHaveBeenCalledWith(channel, "kimi-code");
   });
 
   it.each([

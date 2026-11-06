@@ -1483,9 +1483,8 @@ opener's origin approval or remove sensitive-field restrictions.
 
 Tool `tabId` values are main-issued handles, while embedded chrome identifies
 slots with `rendererTabId`. `BrowserTabsApi.stop`, `pause`, and `resume` accept
-only embedded renderer IDs. Native popup `pausePopup` and `resumePopup` accept
-only main-issued popup handles. These namespaces are not interchangeable, and
-the browser workspace library/find/zoom/preview API targets embedded slots only.
+only embedded renderer IDs. These IDs are distinct from main-issued tool handles,
+and the browser workspace library/find/zoom/preview API targets embedded slots only.
 
 Focusing an embedded page uses a main-owned `focus` operation addressed only by its stored
 renderer ID. It requires a visible owning window, that window's active embedded
@@ -3293,7 +3292,7 @@ with its own owner rule:
   `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
   relative, `/`-separated, lower-cased on Windows) holds `current` and at most
   one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
-  `permissions/` stores, `mcp/servers.json(.bak)`, `governance/mcp-policy.json`,
+  `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
   `routine/routines.json`, the marketplace sources, states and snapshots,

@@ -13,9 +13,7 @@ import type { AveApi } from "../../../types.js";
 import { useStatusBarInstall } from "../use-status-bar-install.js";
 
 type UninstallSubscription =
-  | "onPluginUninstallResult"
-  | "onAgentUninstallResult"
-  | "onSkillUninstallResult";
+  | "onPluginUninstallResult";
 
 function uninstallToastFor(
   payload: PluginInstallResultPayload,
@@ -50,8 +48,6 @@ function uninstallToastFor(
 
 const SUBSCRIPTIONS: readonly [string, UninstallSubscription][] = [
   ["plugin", "onPluginUninstallResult"],
-  ["agent", "onAgentUninstallResult"],
-  ["skill", "onSkillUninstallResult"],
 ];
 
 describe("uninstall refusal toast copy", () => {
@@ -64,11 +60,9 @@ describe("uninstall refusal toast copy", () => {
       );
 
       expect(copy).toContain(t("formatIpcError.packageNotInstalled"));
-      // The three shapes of the regression: the raw code, the English predicate, and the half-localized welding of a Korean noun
-      // onto it.
+      // Reject the raw code and the untranslated English predicate.
       expect(copy).not.toContain(PACKAGE_NOT_INSTALLED_CODE);
       expect(copy).not.toContain("not installed");
-      expect(copy).not.toContain(`${t("useStatusBarInstall.labelAgent")} not`);
     },
   );
 

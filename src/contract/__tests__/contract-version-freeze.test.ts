@@ -151,7 +151,6 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "refreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",
   "starredStore",
-  "feedbackStore",
   "routinesStore",
   "routinesScheduler",
   "sessionTasksStore",

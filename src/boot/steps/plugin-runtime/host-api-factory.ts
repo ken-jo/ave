@@ -69,7 +69,6 @@ import type { SettingsService } from "../../../data/settings-store.js";
 import type { RoutinesStore } from "../../../main/routines-store.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
-import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
 import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
 import { CredentialLeaseRegistry, CredentialLeaseError, type CredentialScheme } from "../../../plugins/secret-access/credential-lease-registry.js";
@@ -694,10 +693,8 @@ export function createHostApiFactory(
       },
       getSecret: async (key) => {
         // Both secret APIs use runSecretGate; this closure owns only its result shape and audit accounting.
-        // Fold unknown key prefixes into other to bound attacker-controlled counter cardinality.
         // Cap audit keys at 64 characters to prevent oversized denial records.
         const auditKey = key.slice(0, 64);
-        const keyPrefix = sanitizeKeyPrefix(key);
         const audit = (type: "info" | "warn", line: string): void => {
           try {
             bootAuditLogger.log({
@@ -731,7 +728,6 @@ export function createHostApiFactory(
         });
         if (outcome.kind === "deny") {
           audit("warn", `hostSecret_denied reason=${outcome.reason} key=${auditKey}`);
-          incrementHostSecretCounter("hostSecret_denied", pluginId, keyPrefix);
           return null;
         }
         const value = await settingsService.getSecret(key);
@@ -741,17 +737,13 @@ export function createHostApiFactory(
             "warn",
             `pluginSecret_denied reason=endpoint-url-in-api-key-like-secret key=${auditKey}`,
           );
-          incrementHostSecretCounter("hostSecret_denied", pluginId, keyPrefix);
           return null;
         }
         if (outcome.via === "own-namespace") {
-          // Count own-namespace reads consistently across both secret APIs.
           audit("info", `pluginSecret_read key=${auditKey}`);
-          incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
           return value;
         }
         audit("info", `hostSecret_read key=${auditKey}`);
-        incrementHostSecretCounter("hostSecret_read", pluginId, keyPrefix);
         return value;
       },
       callLlm: async (prompt, opts) => {
@@ -766,9 +758,7 @@ export function createHostApiFactory(
         const fetchEffectContext = currentEffectGateContext();
         // Use the host’s OS proxy and trust-store transport for declared network access.
         // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
-        // Sanitize denial buckets before telemetry so untrusted reasons cannot grow the counter map.
-        const auditEgressDeny = (reasonBucket: string, detail: string) => {
-          incrementHostSecretCounter("hostFetch_denied", pluginId, sanitizeKeyPrefix(reasonBucket));
+        const auditEgressDeny = (detail: string) => {
           try {
             bootAuditLogger.log({
               timestamp: new Date().toISOString(),
@@ -808,7 +798,7 @@ export function createHostApiFactory(
           ...(effectTarget !== undefined ? { target: effectTarget } : {}),
         });
         if (!manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER)) {
-          auditEgressDeny("capability", "capability external-auth-consumer not declared");
+          auditEgressDeny("capability external-auth-consumer not declared");
           throw new Error(
             `[plugin:${pluginId}] capability not declared: external-auth-consumer (hostFetch)`,
           );
@@ -823,7 +813,7 @@ export function createHostApiFactory(
           allowPrivateNetworks: manifest.networkAccess?.allowPrivateNetworks === true,
         });
         if (!decision.ok) {
-          auditEgressDeny(decision.reason, decision.detail);
+          auditEgressDeny(decision.detail);
           throw new Error(decision.message);
         }
         const url = decision.url;
@@ -831,7 +821,6 @@ export function createHostApiFactory(
         assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
         const credentialUse = auth ? credentialRegistry.beginUse(auth.lease, pluginId, hostIncarnation) : undefined;
         credentialUse?.assertLive("after-await");
-        incrementHostSecretCounter("hostFetch_egress", pluginId, "egress");
         try {
           bootAuditLogger.log({
             timestamp: new Date().toISOString(),
@@ -850,7 +839,6 @@ export function createHostApiFactory(
           ).has("cookie");
           if (pluginSentCookie) {
             auditEgressDeny(
-              "cookie-vault",
               "plugin sent its own Cookie header while authCookiePartition is declared",
             );
             throw new Error(
@@ -905,7 +893,7 @@ export function createHostApiFactory(
               });
             } catch { /* audit must not break host */ }
           },
-          auditDeny: auditEgressDeny,
+          auditDeny: (_reason, detail) => auditEgressDeny(detail),
           onResponseBodyError: (error) => {
             if (error instanceof CredentialLeaseError) leaseDenialAudit.record(pluginId, "hostFetch", error);
           },

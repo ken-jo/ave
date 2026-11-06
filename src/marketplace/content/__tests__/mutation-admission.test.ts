@@ -28,8 +28,8 @@ const STORE_INTERNALS = ["queue", "options", "ledger", "serialize", "mutate", "r
 const LEDGER_INTERNALS = ["path", "entries", "write", "pendingReview", "reloadIfPending"];
 const SETTINGS_OBSERVERS = ["getAll", "get", "getProviderConfigRevision", "getSecretGeneration", "isSecretIdentityUsable",
   "onLeaseStateChanged", "onChanged", "getPluginConfig", "getSecret", "getEncryptedSecret", "hasStoredSecret", "isSecretStorageEncrypted"];
-const SETTINGS_OTHER_WRITES = ["migrateSecrets", "deleteRetiredMarketplaceApiKey", "deleteRetiredLlmVendorApiKeys",
-  "migrateRenamedVendorSecrets", "replaceLlm", "setPluginConfig", "deletePluginConfig", "setSecret", "deleteSecret", "deletePluginSecrets"];
+const SETTINGS_OTHER_WRITES = ["migrateSecrets", "deleteRetiredLlmVendorApiKeys",
+  "replaceLlm", "setPluginConfig", "deletePluginConfig", "setSecret", "deleteSecret", "deletePluginSecrets"];
 const SETTINGS_INTERNALS = ["changeListeners", "providerConfigRevision", "secretGenerations", "observedSecretFingerprint",
   "observedSecretMutation", "secretMutationRegressed", "leaseStateListeners", "readSecretFingerprint", "identityFingerprint",
   "notifyLeaseState", "providerConfigChanged", "secretStateChanged", "secretStatesChanged", "settingsPath", "secretsPath",

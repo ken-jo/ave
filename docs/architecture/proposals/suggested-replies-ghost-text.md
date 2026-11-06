@@ -98,10 +98,6 @@ three consumers so a tag spelling one accepts cannot leak through another.
 - `resetSuggestedReplies()` clears the store without telemetry when the
   conversation on screen changes (new chat, session load, transcript rewind,
   routine seed). `src/ui/renderer/hooks/use-chat-state.ts` calls it.
-- Telemetry counters `shown`, `accepted`, `dismissed`, `ignored` go through
-  `src/telemetry/suggested-replies-counter.ts`. `ignored` is recorded when a new
-  non-empty suggestion replaces one that was visible and neither accepted nor
-  dismissed.
 
 `SuggestedRepliesGhost` in `src/ui/renderer/components/Composer.tsx` renders the
 overlay: absolutely positioned over the textarea, `pointer-events-none`,

@@ -34,45 +34,12 @@ export type CodexSubscriptionErrorCode =
   | "codex-login-failed"
   | "codex-operation-failed";
 
-export type CodexSubscriptionActionResult =
-  | { ok: true; status: CodexSubscriptionStatus }
-  | {
-      ok: false;
-      error: CodexSubscriptionErrorCode;
-      status: CodexSubscriptionStatus;
-    };
-
-/** Device-code login deliberately returns the short-lived code, not its URL. */
-export type CodexSubscriptionDeviceCodeResult =
-  | {
-      ok: true;
-      status: CodexSubscriptionStatus;
-      userCode: string;
-    }
-  | {
-      ok: false;
-      error: CodexSubscriptionErrorCode;
-      status: CodexSubscriptionStatus;
-    };
-
 export interface CodexSubscriptionModel {
   id: string;
   displayName: string;
   isDefault: boolean;
   inputModalities: string[];
 }
-
-export type CodexSubscriptionModelsResult =
-  | {
-      ok: true;
-      status: CodexSubscriptionStatus;
-      models: CodexSubscriptionModel[];
-    }
-  | {
-      ok: false;
-      error: CodexSubscriptionErrorCode;
-      status: CodexSubscriptionStatus;
-    };
 
 export const CODEX_SUBSCRIPTION_SIGNED_OUT_STATUS: CodexSubscriptionStatus = {
   runtime: "ready",

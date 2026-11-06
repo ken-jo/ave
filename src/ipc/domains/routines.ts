@@ -12,8 +12,6 @@ import type {
 import { listRoutineOccurrences } from "../../routines/occurrences.js";
 import { isRoutineScheduleShape } from "../../routines/schedule-advance.js";
 import { ROUTINES } from "../../shared/ipc-channels.js";
-import { toSessionListRow } from "../../memory/memory-manager.js";
-import type { RoutineRunRow } from "../../shared/session-lookup.js";
 import { ensureSuggestionsSession } from "../../main/suggestions-session.js";
 import { isRoutineExecution, isRoutineTrigger, isValidRoutineScope, removeRoutineWithRuns } from "../../main/routines-store.js";
 import { MAX_ROUTINE_SOURCE_LENGTH } from "../../shared/routines-types.js";
@@ -74,16 +72,6 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { routines: [], invalid: [] } satisfies RoutineListResult;
     const projectRoot = projectRootFilter(filter);
     return projectRoot === undefined ? routinesStore.listForDisplay() : routinesStore.listForDisplay({ projectRoot });
-  });
-
-  ipcMain.handle(ROUTINES.dismiss, async (e, id: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.dismiss, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (!routinesStore) return { ok: false, error: "no-store" };
-    const ok = await routinesStore.dismiss(id);
-    return { ok };
   });
 
   ipcMain.handle(ROUTINES.remove, async (e, id: string) => {
@@ -318,17 +306,4 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     return { ok: true, occurrences: listRoutineOccurrences(routines, { from, to, now: Date.now() }), runs, running };
   });
 
-  // Return the sidebar's shared run-row shape so panels and sidebar describe the same sessions.
-  ipcMain.handle(ROUTINES.listSessions, async (e, routineId: string, limit?: number) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, ROUTINES.listSessions, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    return memoryManager
-      .listSessionsByRoutine(routineId, limit ?? 10)
-      .flatMap((session): RoutineRunRow[] => {
-        const row = toSessionListRow("main", session);
-        return row === null ? [] : [{ ...row, preview: session.preview }];
-      });
-  });
 }

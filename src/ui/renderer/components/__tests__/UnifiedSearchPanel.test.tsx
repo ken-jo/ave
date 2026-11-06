@@ -25,9 +25,9 @@ function defaultProps(overrides: Partial<UnifiedSearchPanelProps> = {}): Unified
     },
   ] });
 
-  (api.memoryListEntries as ReturnType<typeof vi.fn>).mockResolvedValue([
+  api.memoryGetSummaries.mockResolvedValue({ ok: true, notes: [
     { filename: "memory.md", title: "검색 메모리", content: "메모리 본문", updatedAt: "2026-05-11T00:00:00.000Z" },
-  ]);
+  ], entries: [], scopeCounts: { project: 0, global: 1, defaultProject: 0, defaultProjectApplicable: false } });
   (api.memoryListSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
     { sessionId: "sess-2", matchedMessage: "대화 본문 검색", timestamp: "2026-05-11T00:00:00.000Z" },
   ]);
