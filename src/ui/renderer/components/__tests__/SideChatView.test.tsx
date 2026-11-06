@@ -22,8 +22,7 @@ function makeApi() {
   // Two subscribers share the side stream — the transcript reducer and the message queue's drain — so the seam fans every
   // frame out to all of them, in subscription order, exactly as the preload channel does.
   const handlers = new Set<(e: ChatStreamEvent) => void>();
-  const fallbackHandlers = new Set<(event: { from: string; to: string }) => void>();
-  const unsubscribeFallback = vi.fn();
+  const fallbackHandlers = new Set<(event: { from: string; to: string; streamId?: number }) => void>();
   const spies = {
     send: vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string) => ({ ok: true as const, result: {} })),
     new: vi.fn(async () => ({ ok: true as const, sessionId: "side-2" })),
@@ -42,17 +41,15 @@ function makeApi() {
           handlers.delete(h);
         };
       },
-      onFallback: vi.fn((handler: (event: { from: string; to: string }) => void) => {
+      onFallback: vi.fn((handler: (event: { from: string; to: string; streamId?: number }) => void) => {
         fallbackHandlers.add(handler);
-        return () => { fallbackHandlers.delete(handler); unsubscribeFallback(); };
+        return () => { fallbackHandlers.delete(handler); };
       }),
     },
   } as unknown as AveApi;
   return {
     api,
-    fallbackHandlers,
-    unsubscribeFallback,
-    emitFallback: (event: { from: string; to: string }) => act(() => { for (const handler of fallbackHandlers) handler(event); }),
+    emitFallback: (event: { from: string; to: string; streamId?: number }) => act(() => { for (const handler of fallbackHandlers) handler(event); }),
     dispatch: (e: ChatStreamEvent) => { for (const h of handlers) h(e); },
     emit: (e: ChatStreamEvent) => act(() => { for (const h of handlers) h(e); }),
     acceptTurn: (streamId: number) => act(() => {
@@ -100,46 +97,76 @@ async function startTurn(text = "hello") {
 }
 
 describe("SideChatView — New button gating during streaming", () => {
-  it("shows provider switches in its composer, replaces the notice, and unsubscribes on unmount", async () => {
-    const { api, acceptTurn, emitFallback, fallbackHandlers, unsubscribeFallback } = makeApi();
-    const view = renderView(api);
-    await startTurn();
-    acceptTurn(1);
-    const event = { from: "primary/model-a", to: "secondary/model-b" };
-    emitFallback(event);
-    const dock = within(screen.getByTestId("side-chat-composer-dock"));
-    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
-    const next = { from: event.to, to: "secondary/model-c" };
-    emitFallback(next);
-    expect(dock.getAllByTestId("status-toast-message")).toHaveLength(1);
-    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", next));
-    const previousHandler = [...fallbackHandlers][0]!;
-    fireEvent.change(sideComposer().textarea, { target: { value: "interrupt and continue" } });
-    fireEvent.keyDown(sideComposer().textarea, { key: "Enter", metaKey: true });
-    await act(async () => {});
-    acceptTurn(2);
-    emitFallback(event);
-    act(() => previousHandler(next));
-    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
-    const lateHandler = [...fallbackHandlers][0]!;
-    const callsBefore = unsubscribeFallback.mock.calls.length;
-    view.unmount();
-    expect(unsubscribeFallback).toHaveBeenCalledTimes(callsBefore + 1);
-    expect(fallbackHandlers.size).toBe(0);
-    act(() => lateHandler(event));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
-  });
-
-  it("drops a captured fallback callback after a session switch", async () => {
-    const { api, acceptTurn, emit, fallbackHandlers } = makeApi();
+  it("shows the active stream's provider warning above its composer", async () => {
+    const { api, acceptTurn, emitFallback } = makeApi();
     renderView(api);
     await startTurn();
     acceptTurn(1);
-    const lateHandler = [...fallbackHandlers][0]!;
-    emit({ type: "done", streamId: 1 });
-    fireEvent.click(screen.getByTestId("side-chat-new"));
+    const event = { streamId: 1, from: "primary/model-a", to: "secondary/model-b" };
+    emitFallback(event);
+    const dock = within(screen.getByTestId("side-chat-composer-dock"));
+    expect(dock.queryByTestId("status-toast-message")).not.toBeNull();
+    const warning = dock.getByTestId("status-toast-message");
+    expect(warning).toHaveTextContent(t("useChatState.fallbackToast", event));
+    expect(warning.compareDocumentPosition(dock.getByTestId("composer-textarea")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it.each(["interrupt", "New"])("ignores retired fallbacks after %s and accepts the next turn", async (transition) => {
+    const { api, acceptTurn, emitFallback, emit } = makeApi();
+    renderView(api);
+    await startTurn();
+    acceptTurn(1);
+    if (transition === "interrupt") {
+      fireEvent.keyDown(sideComposer().textarea, { key: "Escape" });
+    } else {
+      emit({ type: "done", streamId: 1 });
+      fireEvent.click(screen.getByTestId("side-chat-new"));
+    }
     await act(async () => {});
-    act(() => lateHandler({ from: "primary/model-a", to: "secondary/model-b" }));
+    const event = { streamId: 1, from: "primary/model-a", to: "secondary/model-b" };
+    emitFallback(event);
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+    await startTurn("next turn");
+    acceptTurn(2);
+    emitFallback(event);
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+    emitFallback({ ...event, streamId: 2 });
+    expect(screen.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
+  });
+
+  it("shows a fallback only in the owning rail or pane composer", async () => {
+    const { api, acceptTurn, emitFallback } = makeApi();
+    api.sideChat!.paneHistory = vi.fn(async () => ({ ok: true as const, sessionId: null, messages: [] }));
+    const rail = renderView(api);
+    const railView = within(rail.container);
+    await startTurn();
+    acceptTurn(1);
+    const pane = renderView(api, undefined, {
+      boundSurface: { kind: "terminal", tabId: "fallback-pane", name: "Terminal", detail: null, detailTitle: null },
+    });
+    const paneView = within(pane.container);
+    await act(async () => {});
+    fireEvent.change(paneView.getByTestId("composer-textarea"), { target: { value: "pane turn" } });
+    fireEvent.click(paneView.getByTestId("composer-send-button"));
+    await act(async () => {});
+    acceptTurn(2);
+    const event = { from: "primary/model-a", to: "secondary/model-b" };
+    emitFallback({ ...event, streamId: 1 });
+    expect(within(railView.getByTestId("side-chat-composer-dock")).getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
+    expect(paneView.queryByTestId("status-toast-message")).toBeNull();
+    emitFallback({ from: event.to, to: "secondary/model-c", streamId: 2 });
+    expect(within(paneView.getByTestId("side-chat-composer-dock")).getByTestId("status-toast-message")).toHaveTextContent("secondary/model-c");
+    expect(railView.getByTestId("status-toast-message")).not.toHaveTextContent("secondary/model-c");
+  });
+
+  it("ignores fallback events without the active stream id", async () => {
+    const { api, acceptTurn, emitFallback } = makeApi();
+    renderView(api);
+    await startTurn();
+    acceptTurn(3);
+    const event = { from: "primary/model-a", to: "secondary/model-b" };
+    emitFallback({ ...event, streamId: 4 });
+    emitFallback(event);
     expect(screen.queryByTestId("status-toast-message")).toBeNull();
   });
 

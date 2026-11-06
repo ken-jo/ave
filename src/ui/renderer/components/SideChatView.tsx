@@ -34,7 +34,7 @@ import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-dis
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { useContextBudget } from "../hooks/use-context-budget.js";
 import { ComposerContextNotice } from "./ComposerContextNotice.js";
-import { useStatusNotices } from "../hooks/use-status-bar.js";
+import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
 import { StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 
@@ -208,6 +208,7 @@ function SideChatSession({
     onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
   }, [approvals.claims, hasCurrentClaim]);
   const { persistent, visibleToast, pendingCount, upsertToast, removeToast } = useStatusNotices();
+  const handleToastDismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
   const announceProviderFallback = useCallback((message: string) => {
     upsertToast("provider-fallback", { severity: "warning", message, ttlMs: DEFAULT_TOAST_TTL_MS });
   }, [upsertToast]);
@@ -583,7 +584,11 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
-        <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={(toast) => removeToast(toast.id)} />
+        {visibleToast !== null || persistent.length > 0 ? (
+          <div className="mb-1.5 min-w-0">
+            <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
+          </div>
+        ) : null}
         <ComposerFrame>
           <Composer
             ref={composerRef}

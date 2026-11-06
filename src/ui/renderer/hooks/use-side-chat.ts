@@ -1,7 +1,7 @@
 /** Side chat uses shared transcript reducers but subscribes only to its dedicated stream channel; adopt stream ids from
  * matching preludes and drop stale frames before reduction. User sends interrupt, queue drains do not; approval requests
  * remain in the global gate. */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { t } from "../../../i18n/runtime.js";
 import {
   applyReasoningDelta,
@@ -453,17 +453,13 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     };
   }, [runtime, api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
 
-  const fallbackGeneration = sendGenerationRef.current;
-  useEffect(() => {
-    if (!api.sideChat || !isStreaming || !options?.onProviderFallback) return;
-    let alive = true;
-    const off = api.sideChat.onFallback(({ from, to }) => {
-      if (!alive || !viewMountedRef.current || fallbackGeneration !== sendGenerationRef.current
-        || !isStreamingRef.current || activeStreamIdRef.current === null || terminalStreamClosedRef.current) return;
-      options.onProviderFallback?.(t("useChatState.fallbackToast", { from, to }));
-    });
-    return () => { alive = false; off(); };
-  }, [runtime, api.sideChat, isStreaming, sessionId, fallbackGeneration, options?.onProviderFallback]);
+  const onProviderFallbackRef = useRef(options?.onProviderFallback);
+  useLayoutEffect(() => { onProviderFallbackRef.current = options?.onProviderFallback; });
+  useEffect(() => api.sideChat?.onFallback((payload) => {
+    if (!viewMountedRef.current || !isStreamingRef.current || terminalStreamClosedRef.current
+      || payload.streamId !== activeStreamIdRef.current) return;
+    onProviderFallbackRef.current?.(t("useChatState.fallbackToast", { from: payload.from, to: payload.to }));
+  }), [api.sideChat]);
 
   const abandonTurn = useCallback(() => {
     // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial
