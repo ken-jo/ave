@@ -189,8 +189,10 @@ origin?: {
 };
 ```
 
-`installSource` becomes `user | local-dev`; the `admin` value is removed with
-the managed-install mechanism (§10.1, §16.3). Content packages record the same
+`installSource` keeps `admin | user | local-dev`
+(`PluginRegistryEntryInstallSource`): `src/plugins/registry.ts` still derives
+`admin` from a recorded `installedBy: "admin"`, but nothing records new
+`admin` installs since the managed-install mechanism was removed (§10.1). Content packages record the same
 origin in `packages/ledger.json`.
 
 - `commit` is the snapshot commit the install plan was bound to, so the
@@ -3124,11 +3126,13 @@ On first boot of the new version:
 - Plugin entries without an origin remain unmanaged. The migration does not
   bind them to the official source, adopt them through required installs, or
   grant them host secrets.
-- `installSource: "admin"` becomes `user`; the keys of those packages are
-  written to `packages/default-installs.json` as already applied, so nothing
-  is reinstalled or removed.
-- Installed provider presets and theme/language activations become ledger
-  entries.
+- Registry entries keep the `installSource` they were recorded with; `admin`
+  entries are not rewritten (`src/plugins/registry.ts` still derives `admin`
+  from `installedBy`, and `PluginRegistryEntryInstallSource` still admits it).
+  The migration writes nothing to `packages/default-installs.json`.
+- Activated providers and the Korean language activation are adopted from the
+  official source through ordinary install plans when it lists them; a failed
+  adoption leaves the marker incomplete and is retried at the next boot.
 
 ### 16.4 As built
 
@@ -3140,10 +3144,10 @@ Where the sections above and the shipped code differ, the code wins:
   can be uninstalled and disabled. The Plugins tab (`PluginDeploymentGuard`)
   and the marketplace's uninstall apply the same rule, reading the policy
   file at each check; a policy file that cannot be read locks nothing. The
-  deployment guard has no actor model any more, and there are no
-  administrator installs: the first boot turns `installSource: "admin"` into
-  `user` (§16.3), so a required install that finds its package bound to
-  another source performs an ordinary source switch.
+  deployment guard has no actor model any more. A required install that
+  finds its package bound to another source is offered as an ordinary source
+  switch when the required source lists a candidate and is official or
+  managed.
 - **Retired manifest fields (§5.3).** The loader drops both `installPolicy`
   and `publisher` before schema validation, with one warning per plugin;
   git staging and the repository check reject a manifest that carries

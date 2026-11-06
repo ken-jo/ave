@@ -433,10 +433,12 @@ describe("ConversationLoop.resetAndResume", () => {
     const loop = new ConversationLoop(resumeDeps());
     const manualCompact = vi.spyOn(loop, "manualCompact");
     const handleCommand = vi.spyOn(loop, "handleCommand");
-    (loop as unknown as { provider: unknown }).provider = { vendor: "openai", streamTurn: async function* () {} };
+    const streamTurn = vi.fn(async function* () {});
+    (loop as unknown as { provider: unknown }).provider = { vendor: "openai", streamTurn };
 
     await loop.runTurn("/compact", undefined, undefined, { inputOrigin: "plugin-emitted" });
 
+    expect(streamTurn).toHaveBeenCalled();
     expect(handleCommand).not.toHaveBeenCalled();
     expect(manualCompact).not.toHaveBeenCalled();
   });

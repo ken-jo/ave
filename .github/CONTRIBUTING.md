@@ -110,11 +110,11 @@ through the `HostApi` interface declared in `src/plugins/types.ts`. Adding
 plugin-specific code to the host is not accepted.
 
 Key sections:
-- §4.2 — Boot sequence (8 steps)
-- §4.5 — Conversation query loop (10-step message lifecycle)
-- §5 — Memory system (`~/.ave/` file-based)
-- §6 — Core engines (keyword, route, tool registry, permissions)
-- §9 — Plugin system (manifest, UI slots, MCP protocol)
+- Main-process composition and boot readiness
+- Conversation Loop (the traced message lifecycle)
+- Memory (`~/.ave/` file-based)
+- Tool Governance (tool registry and permissions)
+- Extension Runtime (plugins, UI slots, MCP)
 
 Plugin development guide: `docs/guides/plugin-development.md`.
 
