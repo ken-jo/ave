@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsModule from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -532,7 +532,7 @@ describe("workspace.listDir links to network locations", () => {
       // A `..` in a target is not judged lexically: fail closed, even when it would land inside.
       expect(outsideOf("up")).toBe(true);
       // Only the listed folder and its project root are resolved, never a link.
-      expect(realpath.mock.calls.every(([path]) => String(path) === dir || String(path) === root)).toBe(true);
+      expect(realpath.mock.calls.map(([path]) => relative(root, String(path)))).toEqual(["chain", ""]);
     } finally {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });

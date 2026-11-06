@@ -4,14 +4,15 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 // Filesystem and child processes are mocked; no Python installation is used.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, type as osType } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { configureHostResources } from "../host-resources.js";
+import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -28,7 +29,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-vi.mock("node:child_process", () => ({
+// Only spawn is faked; the real module stays for the ACL helper, so the code under test also reaches real execFile.
+vi.mock("node:child_process", async original => ({
+  ...await original<typeof import("node:child_process")>(),
   spawn: vi.fn(),
 }));
 
@@ -42,6 +45,14 @@ vi.mock("../../shared/ave-home.js", async (importOriginal) => {
   } };
 });
 function boundaryCreatedByBoot(): void { runtimeBoundary.createdByBoot = true; }
+
+function configurePackagedHostResources(resourcesPath: string): void {
+  // The real host, not the simulated platform: Windows path facts run the native helper.
+  if (osType() === "Windows_NT") {
+    cpSync(path.resolve("resources/windows-path-kind"), path.join(resourcesPath, "windows-path-kind"), { recursive: true });
+  }
+  configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+}
 
 import * as fsMock from "node:fs/promises";
 import * as pathFacts from "../../shared/windows-path-facts.js";
@@ -232,10 +243,11 @@ describe("uvProxyEnvFromPacResolutions", () => {
 });
 
 describe("PythonRuntimeBootstrapper", () => {
+  beforeAll(() => protectAveHomeFixture(process.env.AVE_HOME!));
   // Real on-disk plugin roots created by registry-discovery cases.
   const registryTempRoots: string[] = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetAllMocks();
     vi.mocked(fsMock.mkdir).mockResolvedValue(undefined);
     vi.mocked(fsMock.appendFile).mockResolvedValue(undefined);
@@ -250,7 +262,7 @@ describe("PythonRuntimeBootstrapper", () => {
     );
     configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false });
     // Boot creates the runtime boundary; Windows runtime setup refuses to recreate it.
-    mkdirSync(path.join(process.env.AVE_HOME!, "runtime"), { recursive: true });
+    await initializeAveHomeFixture(process.env.AVE_HOME!);
     runtimeBoundary.createdByBoot = false;
   });
 
@@ -665,7 +677,7 @@ describe("PythonRuntimeBootstrapper", () => {
     const originalArch = process.arch;
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
     Object.defineProperty(process, "arch", { value: "arm64", configurable: true });
-    configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+    configurePackagedHostResources(resourcesPath);
 
     mockedReadFile.mockResolvedValue(JSON.stringify({ python: { managedBy: "ave" } }));
     mockedAccess.mockImplementation(async (filePath) => {
@@ -718,7 +730,7 @@ describe("PythonRuntimeBootstrapper", () => {
     writeFileSync(path.join(packagedUvDir, `${binName}.gz`), gzipSync(Buffer.from("ready-uv-bin")));
     writeFileSync(path.join(packagedUvDir, "uv.meta.json"), JSON.stringify({ binarySha256: uvSha }));
 
-    configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+    configurePackagedHostResources(resourcesPath);
     mockedAccess.mockResolvedValue(undefined);
 
     try {
@@ -746,7 +758,7 @@ describe("PythonRuntimeBootstrapper", () => {
       binarySha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     }));
 
-    configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+    configurePackagedHostResources(resourcesPath);
     mockedAccess.mockResolvedValue(undefined);
 
     try {
@@ -776,7 +788,7 @@ describe("PythonRuntimeBootstrapper", () => {
     writeFileSync(expectedUvBin, "stale-uv-bin");
     writeFileSync(path.join(pluginRoot, "python-requirements.lock"), "");
 
-    configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+    configurePackagedHostResources(resourcesPath);
     mockedAccess.mockResolvedValue(undefined);
     mockedSpawn
       .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
@@ -1147,7 +1159,7 @@ describe("PythonRuntimeBootstrapper", () => {
       writeFileSync(manifestPath, JSON.stringify({ python: { managedBy: "ave" } }));
       writeFileSync(lockFilePath, "");
 
-      configureHostResources({ resourcePath: resourcesPath, isPackaged: true });
+      configurePackagedHostResources(resourcesPath);
 
       mockedReadFile.mockResolvedValue(JSON.stringify({ python: { managedBy: "ave" } }));
       mockedAccess.mockImplementation(async (filePath) => {

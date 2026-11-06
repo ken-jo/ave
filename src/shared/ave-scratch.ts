@@ -75,6 +75,16 @@ export function removeAveScratchDirIfEmpty(path = aveScratchDir()): AveScratchRe
     return { status: "removed" };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      // Windows reports ENOENT for rmdir on a file, where POSIX reports ENOTDIR; the file is still there.
+      let present: Stats | undefined;
+      try {
+        present = lstatSync(path, { throwIfNoEntry: false });
+      } catch (lstatError) {
+        return { status: "failed", code: (lstatError as NodeJS.ErrnoException).code ?? "unknown" };
+      }
+      if (present && !present.isDirectory()) return { status: "failed", code: "ENOTDIR" };
+    }
     if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return { status: "kept" };
     return { status: "failed", code: code ?? "unknown" };
   }

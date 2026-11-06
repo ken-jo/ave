@@ -2,7 +2,7 @@ import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureAveScratchDir, aveScratchDir, removeAveScratchDirIfEmpty, verifyAveScratchDir } from "../ave-scratch.js";
 
 const posix = process.platform !== "win32";
@@ -124,7 +124,35 @@ describe("removeAveScratchDirIfEmpty", () => {
   it("reports any other failure instead of hiding it", () => {
     const path = join(freshRoot(), "scratch");
     writeFileSync(path, "");
-    expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "failed", code: expect.stringMatching(/^E[A-Z]+$/) });
+    // Windows rmdir reports ENOENT for a file; both platforms report what is there.
+    expect(removeAveScratchDirIfEmpty(path)).toEqual({ status: "failed", code: "ENOTDIR" });
     expect(existsSync(path)).toBe(true);
+  });
+
+  describe("after rmdir reports ENOENT", () => {
+    afterEach(() => {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    });
+
+    async function removeWith(lstatSync: () => unknown) {
+      vi.resetModules();
+      vi.doMock("node:fs", async (importOriginal) => ({
+        ...await importOriginal<typeof import("node:fs")>(),
+        rmdirSync: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); },
+        lstatSync,
+      }));
+      const { removeAveScratchDirIfEmpty: remove } = await import("../ave-scratch.js");
+      return remove(join(freshRoot(), "scratch"));
+    }
+
+    it("reports a file still on the path as not a directory", async () => {
+      expect(await removeWith(() => ({ isDirectory: () => false }))).toEqual({ status: "failed", code: "ENOTDIR" });
+    });
+
+    it("reports a path it cannot inspect with that error's code", async () => {
+      const denied = () => { throw Object.assign(new Error("EPERM"), { code: "EPERM" }); };
+      expect(await removeWith(denied)).toEqual({ status: "failed", code: "EPERM" });
+    });
   });
 });
