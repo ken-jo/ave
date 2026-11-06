@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, shell, type IpcMainEvent } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,7 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
-import { getCommonChromeOptions } from "./window-chrome.js";
+import { applyMainWindowGlass, getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, syncNativeThemeSource } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -68,9 +68,25 @@ function readCurrentAppearance() {
   return normalizeAppearance(stored);
 }
 
+// Main windows created with the macOS material, by renderer. Read once at creation: the renderer's `data-glass` is decided from
+// it, and a live change to the OS reduce-transparency switch is followed by the material (below) and the renderer's own
+// `prefers-reduced-transparency` rule rather than by re-creating the window.
+const glassContents = new WeakSet<WebContents>();
+
 let initialAppearanceRegistered = false;
 function registerInitialAppearance(): void {
   if (initialAppearanceRegistered) return;
+  // Follow the OS reduce-transparency switch (and the light/dark flip of the opaque fallback colour) on every glass window.
+  // `updated` also fires for every themeSource change; re-applying an unchanged material would rebuild the effect view.
+  let lastGlass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
+  nativeTheme.on("updated", () => {
+    const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
+    if (glass && lastGlass) return;
+    lastGlass = glass;
+    for (const win of getMainWindows()) {
+      if (!win.isDestroyed() && glassContents.has(win.webContents)) applyMainWindowGlass(win, glass, nativeTheme.shouldUseDarkColors);
+    }
+  });
   ipcMain.on(CHANNELS.settings.initialAppearance, (event: IpcMainEvent) => {
     const frame = event.senderFrame;
     const owned = getMainWindows().some((win) => !win.isDestroyed() && win.webContents === event.sender);
@@ -78,7 +94,7 @@ function registerInitialAppearance(): void {
     if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
       result = { ok: false, error: "unauthorized-frame" };
     } else {
-      try { result = { ok: true, appearance: readCurrentAppearance() }; }
+      try { result = { ok: true, appearance: readCurrentAppearance(), glass: glassContents.has(event.sender) }; }
       catch (error) {
         log.warn({ err: error }, "Could not read current appearance");
         result = { ok: false, error: "appearance-unavailable" };
@@ -103,6 +119,9 @@ export function createWindow(
     throw new Error(`[ave] preload.cjs not found at ${hostPreload.preload} — run 'npm run build:preload' first`);
   }
 
+  // The native appearance follows the app's light/dark choice before the material is first drawn.
+  syncNativeThemeSource(readCurrentAppearance().mode);
+  const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
@@ -112,6 +131,8 @@ export function createWindow(
     autoHideMenuBar: false,
     // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
     ...getCommonChromeOptions(),
+    // macOS: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
+    ...getMainWindowGlassOptions(glass),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -122,6 +143,7 @@ export function createWindow(
       webviewTag: true,
     },
   });
+  if (glass) glassContents.add(win.webContents);
   registerMainWindow(win, nextMainWindowRole());
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;

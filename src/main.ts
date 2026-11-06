@@ -9,6 +9,7 @@ import { onLocaleChange, t } from "./i18n/index.js";
 import { registerIpcHandlers } from "./ipc-bridge.js";
 import { installHtmlPreviewPartitionBlock } from "./main/html-preview-partition.js";
 import { isAuthOwned } from "./main/auth-window-registry.js";
+import { syncNativeThemeSource } from "./main/window-chrome.js";
 import { isLinkOwned } from "./main/link-window-registry.js";
 import { shouldBlockGlobalWebviewNavigation } from "./main/webview-navigation-policy.js";
 import { installSideBrowserPartitionPolicy } from "./main/side-browser-webview.js";
@@ -199,6 +200,9 @@ async function main() {
   // decision from: a headless one-shot run opens none of its own.
   const services = await bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch);
   setServices(services);
+  // The native appearance (the macOS material, the traffic lights) follows the app's light/dark choice; `createWindow` set it
+  // from the saved mode, this keeps it with every later change. The app-lifetime subscription is never undone.
+  services.settingsService.onChanged("appearance", () => syncNativeThemeSource(services.settingsService.get("appearance").mode));
 
   updateSplashStatus(t("be_main.splashOpeningWorkspace"));
 

@@ -1211,7 +1211,7 @@ export function Sidebar({
         // order.
         tabIndex={overlayOpen ? -1 : undefined}
         className={[
-          "ave-surface-raised relative flex min-h-0 flex-col overflow-hidden rounded-(--shell-card-radius) bg-card outline-none motion-reduce:transition-none",
+          "ave-glass-tint ave-surface-raised relative flex min-h-0 flex-col overflow-hidden rounded-(--shell-card-radius) bg-card outline-none motion-reduce:transition-none",
           isResizing ? "" : "transition-[width] duration-[var(--motion-base)] ease-[var(--motion-ease-out)]",
         ].join(" ")}
         style={{

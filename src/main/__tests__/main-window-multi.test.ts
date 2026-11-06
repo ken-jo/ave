@@ -62,13 +62,15 @@ const electronMock = vi.hoisted(() => {
       return true;
     }
   }
-  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  const nativeTheme = { prefersReducedTransparency: false, shouldUseDarkColors: false, themeSource: "system", on: vi.fn() };
+  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, nativeTheme, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
   app: electronMock.app,
   ipcMain: { on: (channel: string, listener: Listener) => electronMock.ipcListeners.set(channel, listener) },
   BrowserWindow: electronMock.FakeBrowserWindow,
+  nativeTheme: electronMock.nativeTheme,
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
   shell: { openExternal: vi.fn(async () => undefined) },
   Menu: { buildFromTemplate: vi.fn(() => ({})), setApplicationMenu: vi.fn() },
@@ -157,6 +159,23 @@ describe("main windows", () => {
     expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "nord" } });
     appearance = { ...appearance, darkScheme: "tokyo-night" };
     expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "tokyo-night" } });
+  });
+
+  it("creates the window over the macOS material only on darwin with transparency allowed, and tells its renderer", () => {
+    const darwin = process.platform === "darwin";
+    const win = open();
+    const options = win.options as { vibrancy?: string; backgroundColor?: string; transparent?: boolean };
+    expect(options.transparent).toBeUndefined();
+    expect(options.vibrancy).toBe(darwin ? "under-window" : undefined);
+    expect(readAppearance(win)).toMatchObject({ ok: true, glass: darwin });
+    electronMock.nativeTheme.prefersReducedTransparency = true;
+    try {
+      const opaque = open();
+      expect((opaque.options as { vibrancy?: string }).vibrancy).toBeUndefined();
+      expect(readAppearance(opaque)).toMatchObject({ ok: true, glass: false });
+    } finally {
+      electronMock.nativeTheme.prefersReducedTransparency = false;
+    }
   });
 
   it("refuses appearance reads from subframes and navigated documents", () => {
@@ -407,7 +426,7 @@ describe("main windows", () => {
 
   it("quits from the last window only when the close preference says quit", () => {
     appState.setServices({
-      settingsService: { getAll: () => ({ system: { closeBehavior: "quit" } }) },
+      settingsService: { getAll: () => ({ system: { closeBehavior: "quit" }, appearance: { mode: "system" } }) },
     } as never);
     const first = open();
     const second = open();
