@@ -166,8 +166,9 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     try {
       let failure: unknown;
       try { readAveHomeConfigurationFile(path); } catch (error) { failure = error; }
+      // This folder asserts no DACL, so its own ChangeTime is not the signal; the inherited deny lands on the file too, and the file's does.
       expect(failure).toMatchObject({
-        name: "AveHomeConfigurationUntrustedError", reason: "Configuration boundary changed during verification",
+        name: "AveHomeConfigurationUntrustedError", reason: "Configuration identity changed before open",
       });
       const after = lstatSync(home, { bigint: true });
       expect(after.dev).toBe(before.dev);
@@ -437,6 +438,97 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     expect(() => readAveHomeConfigurationFile(path)).toThrowError(AveHomeConfigurationUntrustedError);
     expect(vi.mocked(childProcess.execFileSync).mock.calls.filter(([, args]) =>
       Array.isArray(args) && args[0] === "--dacl" && args.includes(home))).toHaveLength(1);
+  });
+
+  /** Runs `action` just before the `nth` native pin after cold verification's DACL walk: the first pin is the post-verification
+   * boundary check, the second the post-read one. */
+  function beforePin(nth: number, action: () => void): () => void {
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    let walked = false, pins = 0;
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
+      const mode = Array.isArray(args[1]) ? String(args[1][0]) : "";
+      if (mode === "--dacl") walked = true;
+      if (mode === "--pin" && walked && ++pins === nth) action();
+      return Reflect.apply(execute, undefined, args);
+    });
+    return () => vi.mocked(childProcess.execFileSync).mockImplementation(execute);
+  }
+
+  function userDataFolder(): { folder: string; path: string } {
+    const folder = paths();
+    mkdirSync(folder);
+    setFixtureOwner(dirname(folder));
+    const path = join(folder, "ave-secrets.json");
+    writeFileSync(path, '{"secret":"fixture"}');
+    return { folder, path };
+  }
+
+  it.each([1, 2])("reads a userData file while a sibling is created at boundary check %i", (nth) => {
+    // Chromium creates entries in userData while boot reads ave-secrets.json; that folder asserts no DACL, so only its object counts.
+    const { folder, path } = userDataFolder();
+    const restore = beforePin(nth, () => writeFileSync(join(folder, `Local State ${nth}`), "{}"));
+    try { expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"secret":"fixture"}'); } finally { restore(); }
+    vi.clearAllMocks();
+    writeFileSync(join(folder, "Preferences"), "{}");
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"secret":"fixture"}');
+    expectNoChildProcesses();
+  });
+
+  it.each([1, 2])("re-captures the home DACL once when a sibling moves its ChangeTime at boundary check %i", (nth) => {
+    const { home, path } = fixture();
+    const restore = beforePin(nth, () => mkdirSync(join(home, `sibling-${nth}`)));
+    try {
+      vi.clearAllMocks();
+      expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+      expect(vi.mocked(childProcess.execFileSync).mock.calls.filter(([, args]) => Array.isArray(args) && args[0] === "--dacl")).toHaveLength(2);
+    } finally { restore(); }
+  });
+
+  it("accepts a re-captured home DACL whose account names alone resolve differently", () => {
+    // Only SIDs certify a DACL: a SID-to-name lookup that changes between captures must not fail the read.
+    const { home, path } = fixture();
+    const restore = beforePin(1, () => mkdirSync(join(home, "sibling")));
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    let walks = 0;
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
+      const output = Reflect.apply(execute, undefined, args);
+      if (!Array.isArray(args[1]) || args[1][0] !== "--dacl" || ++walks !== 2) return output;
+      expect(String(output)).toContain('"account":"');
+      return String(output).replaceAll('"account":"', '"account":"RENAMED-');
+    });
+    try {
+      vi.clearAllMocks();
+      expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+      expect(walks).toBe(2);
+    } finally { vi.mocked(childProcess.execFileSync).mockImplementation(execute); restore(); }
+  });
+
+  it("refuses a config/ DACL weakened during cold verification", () => {
+    const { home, path } = fixture();
+    const directory = join(home, "config");
+    const restore = beforePin(1, () => childProcess.execFileSync(win32SystemBinary("icacls"), [directory, "/grant", "*S-1-1-0:W", "/q"],
+      { windowsHide: true, stdio: "pipe" }));
+    try {
+      expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({
+        name: "AveHomeConfigurationUntrustedError", reason: "Configuration boundary changed during verification",
+      }));
+    } finally { restore(); }
+  });
+
+  it.each(["replaced", "junction"])("refuses a userData folder %s during cold verification", (swap) => {
+    const { folder, path } = userDataFolder();
+    const moved = `${folder}-moved`;
+    const restore = beforePin(1, () => {
+      renameSync(folder, moved);
+      if (swap === "junction") symlinkSync(moved, folder, "junction");
+      else { mkdirSync(folder); writeFileSync(path, '{"secret":"fixture"}'); }
+    });
+    try {
+      expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    } finally {
+      restore();
+      if (lstatSync(folder).isSymbolicLink()) fs.unlinkSync(folder);
+    }
   });
 
   it("refuses a file replaced by a junction between reads", () => {
