@@ -10,7 +10,6 @@ import { AVE_APP_LOCK_SUITES, isCollectedVitestFile } from "../../scripts/hooks/
 import {
   describeScopedTier,
   FROZEN_LOCKFILE_ARGS,
-  FULL_SUITE_DEFERRED,
   GLOBAL_INPUT_TIER,
   selectNamedPathTests,
   selectScopedTier,

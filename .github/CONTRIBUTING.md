@@ -48,12 +48,13 @@ typecheck, the duplicate-helper scan, the lock suites whose trigger paths
 changed, the changed test files, the recorded readers of a changed test-read
 document, and `vitest related` for the changed modules, narrowed to direct
 importers when a shared module reaches over 150 test files. Each source module
-must have related test files; empty discovery selects full checks and a
-zero-test run fails closed. A new sub-branch is measured from the closest live
-tip of the default or an `integration/*` branch. The full `bun run test` and
-`bun run build` run once before merge on the merged tree, and on every push to
-`main` or `integration/*`. The hook never runs them; it runs the global-input
-tier for pushes to `integration/*`, non-fast-forward pushes, deleted modules, documentation consumed by runtime,
+must have related test files; empty discovery selects the global-input tier
+and a zero-test run fails closed. A new sub-branch is measured from the closest live
+tip of the default or an `integration/*` branch. A non-fast-forward push is measured
+the same way, plus the remote commit it replaces. The full `bun run test` and
+`bun run build` run in CI on the merged tree before a category merges to
+`main`, and on every push to `main`. The hook never runs them; it runs the
+global-input tier for pushes to `main` or `integration/*`, deleted modules, documentation consumed by runtime,
 tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
 compiler, Vitest and build configs, Vitest setup files, `scripts/`,

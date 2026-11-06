@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [main, "integration/**"]
   push:
-    branches: [main, "integration/**"]
+    branches: [main]
     tags: ["v*"]
   schedule:
     # 18:00 UTC is 03:00 KST, outside the owner's working hours.
@@ -405,8 +405,8 @@ jobs:
 
   build-and-test:
     # Reject upstream failures and cancellations even when shards are skipped.
-    # `build-and-test` and `naming-gate` are the required status checks on
-    # `main` (gh api repos/ken-jo/ave/branches/main/protection --jq
+    # `build-and-test`, `naming-gate` and `Linux confinement path tests` are
+    # the required status checks on `main` (gh api repos/ken-jo/ave/branches/main/protection --jq
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.

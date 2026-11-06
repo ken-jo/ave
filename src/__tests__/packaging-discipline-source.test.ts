@@ -1555,7 +1555,7 @@ describe("installer smoke and packaging discipline", () => {
   });
 
   // gate-core and mxc-pins are not required status checks (gh api repos/ken-jo/ave/branches/main/protection --jq
-  // .required_status_checks.contexts lists build-and-test and naming-gate), so the aggregate must reject any result but success.
+  // .required_status_checks.contexts lists build-and-test, naming-gate and Linux confinement path tests), so the aggregate must reject any result but success.
   it.each(["GATE_CORE_RESULT", "MXC_PINS_RESULT"])("requires %s success before the docs-only exit", (variable) => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
