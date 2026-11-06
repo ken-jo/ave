@@ -3,6 +3,13 @@ import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 
 describe("mock settings snapshots", () => {
+  it("keeps canonical namespaces off the legacy api double", () => {
+    const { api } = makeMockAveApi();
+    expect(["permission", "approval", "userApproval", "policy", "mcp"].filter(
+      (namespace) => namespace in api,
+    )).toEqual([]);
+  });
+
   it("defaults only appearance when a fixture omits it", async () => {
     const { api } = makeMockAveApi({ settings: { system: { sidebarState: "hidden" } } });
 
