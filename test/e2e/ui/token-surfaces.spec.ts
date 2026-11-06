@@ -60,7 +60,7 @@ test.describe("context-budget token surfaces", () => {
   test("seeded JSONL turn_summary drives TokenProgressRing and TokenCostBadge", async () => {
     const now = Date.now();
     const ctx = await launchSeededElectron({
-      settings: buildLlmSettings("openai", "gpt-5.4-mini"),
+      settings: buildLlmSettings("openai", "gpt-5.4-nano"),
       sessionTitle: "token surface replay",
       historyRows: [
         { index: 0, role: "user", content: "토큰 표면 테스트", createdAt: now - 10_000 },
@@ -114,7 +114,7 @@ test.describe("context-budget token surfaces", () => {
   test("compact replay suppresses stale pre-compact summaries and keeps post-compact tokens visible", async () => {
     const now = Date.now();
     const ctx = await launchSeededElectron({
-      settings: buildLlmSettings("openai", "gpt-5.4-mini"),
+      settings: buildLlmSettings("openai", "gpt-5.4-nano"),
       sessionTitle: "compact token replay",
       historyRows: [
         {
@@ -182,7 +182,7 @@ test.describe("context-budget token surfaces", () => {
     const now = Date.now();
     const largeToolResult = "large web_fetch result chunk\n".repeat(600);
     const ctx = await launchSeededElectron({
-      settings: buildLlmSettings("openai", "gpt-5.4-mini"),
+      settings: buildLlmSettings("openai", "gpt-5.4-nano"),
       sessionTitle: "multimodal large tool replay",
       historyRows: [
         {

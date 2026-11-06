@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { resolve } from "node:path";
 
 type Listener = (...args: unknown[]) => void;
 
@@ -83,7 +84,7 @@ vi.mock("node:fs", async (importOriginal) => {
     ...original,
     existsSync: () => true,
     readFileSync: (path: Parameters<typeof original.readFileSync>[0], options: Parameters<typeof original.readFileSync>[1]) =>
-      path === "/tmp/ave-test/ave-settings.json"
+      path === resolve("/tmp/ave-test", "ave-settings.json")
         ? JSON.stringify({ appearance: electronMock.savedAppearance })
         : original.readFileSync(path, options),
   };

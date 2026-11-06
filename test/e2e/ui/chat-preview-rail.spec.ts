@@ -9,6 +9,7 @@ import {
   type SeededElectronContext,
 } from "./seeded-electron";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { showFileColumns } from "./document-preview-flow.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -268,21 +269,25 @@ test.describe("chat preview rail", () => {
       await expect(ctx.page.getByTestId("chat-side-panel-launcher")).toBeVisible();
       await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
       await expect(ctx.page.getByTestId("chat-side-panel-tab-file-browser")).toBeVisible();
-      // Session artifacts require the Session files source rather than the default Directory source.
-      await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
+      // Files is one filtered project tree (315307c02): the written artifact is under Changed, the file only read under Session.
+      const changedFilter = ctx.page.getByTestId("chat-side-panel-file-filter-changed");
+      await changedFilter.click();
+      await expect(changedFilter).toHaveAttribute("aria-pressed", "true");
       await expect(rail).toContainText("report.md");
-      await expect(ctx.page.getByTestId("chat-side-panel-file-tree")).toBeVisible();
-      await expect(ctx.page.getByTestId("chat-side-panel-file-splitter")).toBeVisible();
-      const splitLayout = ctx.page.getByTestId("chat-side-panel-file-split-layout");
+      const fileTree = ctx.page.getByTestId("chat-side-panel-file-tree");
+      await expect(fileTree).toBeVisible();
+      // Tree and detail are resizable columns once the panel is wide enough; drag their separator with the pointer.
+      await showFileColumns(ctx.page);
       const splitter = ctx.page.getByTestId("chat-side-panel-file-splitter");
-      const splitBeforeDrag = await splitLayout.evaluate((element) => (element as HTMLElement).style.gridTemplateRows);
+      await expect(splitter).toBeVisible();
+      const treeWidthBeforeDrag = await fileTree.evaluate((element) => (element as HTMLElement).style.width);
       const splitterBox = await splitter.boundingBox();
       expect(splitterBox).not.toBeNull();
       await ctx.page.mouse.move(splitterBox!.x + splitterBox!.width / 2, splitterBox!.y + splitterBox!.height / 2);
       await ctx.page.mouse.down();
-      await ctx.page.mouse.move(splitterBox!.x + splitterBox!.width / 2, splitterBox!.y + 80, { steps: 4 });
+      await ctx.page.mouse.move(splitterBox!.x + splitterBox!.width / 2 - 60, splitterBox!.y + splitterBox!.height / 2, { steps: 4 });
       await ctx.page.mouse.up();
-      await expect.poll(async () => splitLayout.evaluate((element) => (element as HTMLElement).style.gridTemplateRows)).not.toBe(splitBeforeDrag);
+      await expect.poll(async () => fileTree.evaluate((element) => (element as HTMLElement).style.width)).not.toBe(treeWidthBeforeDrag);
 
       const tabCountBefore = await ctx.page.getByRole("tab").count();
       const addTabTrigger = ctx.page.getByTestId("chat-side-panel-add-tab");
@@ -405,19 +410,18 @@ test.describe("chat preview rail", () => {
       });
 
       await ctx.page.getByTestId("chat-side-panel-tab-file-browser").click();
-      await ctx.page.getByTestId("chat-side-panel-file-source-changed").click();
-      const changedRows = rail.getByTestId("chat-side-panel-file-change-row");
+      await ctx.page.getByTestId("chat-side-panel-file-filter-changed").click();
+      const changedRows = rail.getByTestId("chat-side-panel-fs-file");
       await expect(changedRows).toHaveCount(1);
       await expect(changedRows.first()).toContainText("report.md");
-      await expect(rail.getByTestId("chat-side-panel-file-change-operation")).toHaveText("씀");
+      await expect(rail.getByTestId("chat-side-panel-file-change-operation")).toHaveAttribute("title", "씀");
 
-      // Remounting resets the file source to Directory; reselect Session files.
-      await ctx.page.getByTestId("chat-side-panel-tab-file-browser").click();
-      await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
+      // All lists every file the conversation touched; the search narrows the tree.
+      await ctx.page.getByTestId("chat-side-panel-file-filter-all").click();
       await expect(rail).toContainText("notes.md");
       await expect(rail).toContainText("report.md");
-      await ctx.page.getByTestId("chat-preview-search").fill("report");
-      const filteredFileRows = rail.getByTestId("chat-side-panel-file-tree-file");
+      await rail.getByTestId("chat-side-panel-file-tree").getByTestId("chat-preview-search").fill("report");
+      const filteredFileRows = rail.getByTestId("chat-side-panel-fs-file");
       await expect(filteredFileRows).toHaveCount(1);
       await expect(filteredFileRows.first()).toContainText("report.md");
       await expect(filteredFileRows.first()).not.toContainText("notes.md");

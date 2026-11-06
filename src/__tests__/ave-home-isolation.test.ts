@@ -1,9 +1,9 @@
 /** Mock the account home so a broken isolation guard can only resolve scratch paths. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, parse, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -14,6 +14,8 @@ import { defaultAveHome, aveHome } from "../shared/ave-home.js";
 import { checkSandboxSweepRoot, AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { AVE_HOME_AT_IMPORT } from "./fixtures/import-time-ave-home.js";
 import { canonicalPath } from "./support/ave-home-isolation-guard.js";
+import { withProvidedContext } from "./support/provided-context.js";
+import { configuredTestTmpRoot } from "./support/test-tmp-root.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
@@ -21,6 +23,7 @@ const fileEnv = {
   AVE_HOME: process.env.AVE_HOME,
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
+  AVE_TEST_TMP_ROOT: process.env.AVE_TEST_TMP_ROOT,
 };
 const refusal = /refusing to resolve AVE_HOME to .* from a test process; it is under the real /;
 const scratch = useTempDirs("ave-home-guard-");
@@ -66,7 +69,7 @@ describe("the test process's Ave home", () => {
     expect(runHome).toBeDefined();
     expect(fileEnv.AVE_HOME).toBeDefined();
     expect(dirname(fileEnv.AVE_HOME!)).toBe(runHome);
-    expect(dirname(runHome!)).toBe(join(defaultAveHome(), "test-tmp"));
+    expect(dirname(runHome!)).toBe(configuredTestTmpRoot(homedir()) ?? join(defaultAveHome(), "test-tmp"));
     expect(aveHome()).toBe(fileEnv.AVE_HOME);
   });
 
@@ -146,6 +149,34 @@ describe("the test process's Ave home", () => {
     expect(aveHome()).toBe(join(elsewhere, ".ave"));
   });
 
+  it("is not widened by a test that sets AVE_TEST_TMP_ROOT: workers trust only the root global setup provided", () => {
+    const { ave } = account();
+    const root = join(ave, "test-tmp-widened");
+    process.env.AVE_TEST_TMP_ROOT = root;
+    expect(inject("explicitTestTmpRoot")).toEqual(fileEnv.AVE_TEST_TMP_ROOT === undefined ? null : expect.any(String));
+    process.env.AVE_HOME = join(root, "h-explicit");
+    expect(() => aveHome()).toThrow(refusal);
+    expect(() => checkSandboxSweepRoot(join(root, "sbx-x"))).toThrow(/refusing to sweep .* from a test process/);
+    process.env.AVE_HOME = join(ave, "test-tmp", "h-default");
+    expect(aveHome()).toBe(join(ave, "test-tmp", "h-default"));
+  });
+
+  it("refuses an explicit AVE_TEST_TMP_ROOT that is relative, contains the real account home, or sits in its Ave home", () => {
+    // Checked against the real account home global setup captured, not HOME or the mocked one; on a Windows runner HOME
+    // may sit on another drive (D:\a\_temp\home) than the account profile, so the root must come from that capture.
+    const realHome = inject("realAccountHome");
+    for (const [value, error] of [
+      ["relative-root", /AVE_TEST_TMP_ROOT must be absolute/],
+      ["", /AVE_TEST_TMP_ROOT must be absolute/],
+      [parse(realHome).root, /AVE_TEST_TMP_ROOT must not contain/],
+      [join(realHome, ".ave", "plugins"), /AVE_TEST_TMP_ROOT may sit inside .* only under its test-tmp/],
+      [join(realHome, ".ave", "sessions", "x"), /AVE_TEST_TMP_ROOT may sit inside .* only under its test-tmp/],
+    ] as const) {
+      expect(() => configuredTestTmpRoot(realHome, value), value).toThrow(error);
+    }
+    expect(configuredTestTmpRoot(realHome, join(realHome, ".ave", "test-tmp", "explicit"))).toBe(join(realHome, ".ave", "test-tmp", "explicit"));
+  });
+
   it("guards a sandbox sweep against HOME's ~/.ave as well as the account's", () => {
     const { ave } = account();
     const elsewhere = scratch();
@@ -219,5 +250,71 @@ describe("canonicalPath", () => {
 
   it.runIf(process.platform === "darwin")("reads /tmp as /private/tmp for a path that does not exist", () => {
     expect(canonicalPath("/tmp/ave-home-guard-not-there/child")).toBe("/private/tmp/ave-home-guard-not-there/child");
+  });
+});
+
+describe("an explicit AVE_TEST_TMP_ROOT", () => {
+  // The path-flavour cases have no filesystem to resolve links on.
+  const same = (path: string) => path;
+
+  it("is refused on Windows when it is the drive root, or any ancestor, of the account home, whatever the letter case", () => {
+    const home = "D:\\a\\_temp\\home";
+    const check = (value: string) => configuredTestTmpRoot(home, value, true, win32, same);
+    for (const value of ["D:\\", "d:\\", "D:/", "D:\\a", "D:\\A\\_TEMP\\", home, `${home}\\.ave`]) {
+      expect(() => check(value), value).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    }
+    for (const value of [`${home}\\.ave\\scratch`, `${home}\\.ave\\plugins`, `${home}\\.AVE\\Sessions`, `${home}\\.ave\\test-tmp-sibling`]) {
+      expect(() => check(value), value).toThrow(/AVE_TEST_TMP_ROOT may sit inside .* only under its test-tmp/);
+    }
+    expect(() => check("scratch")).toThrow(/AVE_TEST_TMP_ROOT must be absolute/);
+    expect(check("D:\\scratch\\")).toBe("D:\\scratch");
+    expect(check("E:\\")).toBe("E:\\");
+    expect(check(`${home}\\.ave\\test-tmp`)).toBe(`${home}\\.ave\\test-tmp`);
+    expect(check(`${home}\\.ave\\test-tmp\\explicit`)).toBe(`${home}\\.ave\\test-tmp\\explicit`);
+    expect(check("D:\\a\\_temp\\home-sibling")).toBe("D:\\a\\_temp\\home-sibling");
+  });
+
+  it("is refused on POSIX when it is / or an ancestor of the account home, case-sensitively on Linux", () => {
+    const home = "/home/runner";
+    for (const value of ["/", "/home", "/home/", home, `${home}/.ave`]) {
+      expect(() => configuredTestTmpRoot(home, value, false, posix, same), value).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    }
+    for (const value of [`${home}/.ave/plugins`, `${home}/.ave/audit/x`, `${home}/.ave/test-tmp-sibling`]) {
+      expect(() => configuredTestTmpRoot(home, value, false, posix, same), value).toThrow(/only under its test-tmp/);
+    }
+    expect(configuredTestTmpRoot(home, `${home}/.ave/test-tmp/explicit`, false, posix, same)).toBe(`${home}/.ave/test-tmp/explicit`);
+    expect(configuredTestTmpRoot(home, "/HOME", false, posix, same)).toBe("/HOME");
+    expect(() => configuredTestTmpRoot(home, "/HOME", true, posix, same)).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    expect(configuredTestTmpRoot(home, "/tmp/ave-scratch", false, posix, same)).toBe("/tmp/ave-scratch");
+  });
+
+  // A directory link needs a privilege Windows does not grant by default; the Windows job covers short names instead.
+  it.runIf(process.platform !== "win32")("is refused when a link leads into the Ave home, or to an ancestor of the home", () => {
+    const { home, ave } = account();
+    mkdirSync(join(ave, "plugins"), { recursive: true });
+    const intoPlugins = link(join(ave, "plugins"), join(scratch(), "into-plugins"));
+    expect(() => configuredTestTmpRoot(home, intoPlugins), intoPlugins).toThrow(/only under its test-tmp/);
+    expect(() => configuredTestTmpRoot(home, join(intoPlugins, "later")), "below the link").toThrow(/only under its test-tmp/);
+    const toParent = link(dirname(home), join(scratch(), "to-parent"));
+    expect(() => configuredTestTmpRoot(home, toParent), toParent).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    mkdirSync(join(ave, "test-tmp"), { recursive: true });
+    const intoTestTmp = link(join(ave, "test-tmp"), join(scratch(), "into-test-tmp"));
+    expect(configuredTestTmpRoot(home, intoTestTmp)).toBe(intoTestTmp);
+  });
+});
+
+describe("withProvidedContext", () => {
+  it("refuses a body that returns a promise, and still puts the provided value back", async () => {
+    const before = inject("explicitTestTmpRoot");
+    const pending = Promise.resolve();
+    // @ts-expect-error A Promise-returning body is rejected at the type level as well.
+    const typed = () => withProvidedContext("explicitTestTmpRoot", "/scratch/async", async () => {});
+    void typed;
+    expect(() => withProvidedContext("explicitTestTmpRoot", "/scratch/async", (() => pending) as () => void))
+      .toThrow(/body returned a promise/);
+    await pending;
+    expect(inject("explicitTestTmpRoot")).toBe(before);
+    expect(withProvidedContext("explicitTestTmpRoot", "/scratch/sync", () => inject("explicitTestTmpRoot"))).toBe("/scratch/sync");
+    expect(inject("explicitTestTmpRoot")).toBe(before);
   });
 });

@@ -3,30 +3,37 @@ import { test, expect } from './fixtures.js';
 import { closeInlineSettings, forceWideMainWindow, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from '../../../src/shared/test-ids.js';
 import type { AveApi } from '../../../src/ui/renderer/types.js';
+import { DEFAULT_LLM_VENDOR } from '../../../src/shared/llm-vendor-defaults.js';
 
 test.use({ seedLlmProvider: 'copilot', seedLocale: 'en' });
 
-test('choosing the migrated model from the composer resolves provider retirement', async ({ app, mainWindow }) => {
-  await forceWideMainWindow(app);
-  const notice = mainWindow.getByTestId('retired-provider-notice');
-  await expect(notice).toBeVisible();
-  await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A draft held for an explicit model choice');
-  const send = mainWindow.getByRole('button', { name: 'Send', exact: true });
-  await expect(send).toBeDisabled();
-  const before = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
-  expect(before.llm.retiredProvider).toBe('copilot');
-  const model = before.llm.vendors[before.llm.provider]?.model;
-  expect(model).toBeTruthy();
+test.describe('a profile that also saved a model for the fallback vendor', () => {
+  // Built-in vendors no longer pick a model, and the one-time migration clears a saved model equal to a removed built-in
+  // default (gpt-5.4-mini for OpenAI). The fallback route therefore offers a model only when the profile saved another one.
+  test.use({ seedLlmVendors: { [DEFAULT_LLM_VENDOR]: { model: 'gpt-5.4' } } });
 
-  await mainWindow.getByTestId('iab-status-model').click();
-  await mainWindow.getByTestId(`model-quick-picker-option:${before.llm.provider}:${model}`).click();
-  await expect.poll(async () => {
-    const settings = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
-    return settings.llm.retiredProvider ?? null;
-  }).toBeNull();
-  await expect(notice).toHaveCount(0);
-  await expect(send).toBeEnabled();
-  await mainWindow.screenshot({ path: test.info().outputPath('retired-provider-composer-choice.png') });
+  test('choosing the migrated model from the composer resolves provider retirement', async ({ app, mainWindow }) => {
+    await forceWideMainWindow(app);
+    const notice = mainWindow.getByTestId('retired-provider-notice');
+    await expect(notice).toBeVisible();
+    await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A draft held for an explicit model choice');
+    const send = mainWindow.getByRole('button', { name: 'Send', exact: true });
+    await expect(send).toBeDisabled();
+    const before = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
+    expect(before.llm.retiredProvider).toBe('copilot');
+    const model = before.llm.vendors[before.llm.provider]?.model;
+    expect(model).toBeTruthy();
+
+    await mainWindow.getByTestId('iab-status-model').click();
+    await mainWindow.getByTestId(`model-quick-picker-option:${before.llm.provider}:${model}`).click();
+    await expect.poll(async () => {
+      const settings = await mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.getSettings());
+      return settings.llm.retiredProvider ?? null;
+    }).toBeNull();
+    await expect(notice).toHaveCount(0);
+    await expect(send).toBeEnabled();
+    await mainWindow.screenshot({ path: test.info().outputPath('retired-provider-composer-choice.png') });
+  });
 });
 
 test('a retired profile stays blocked until an explicit model choice', async ({ app, mainWindow }) => {
@@ -104,13 +111,18 @@ for (const locale of ['en', 'ko'] as const) {
           page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         };
       };
+      // The window reaches 420px first; the shell then relayouts from its ResizeObservers (sidebar and pane width tiers)
+      // over the next frames. Sample until that settles, so an overflow that persists still fails.
       const cdp = await mainWindow.context().newCDPSession(mainWindow);
-      const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', { expression: `(${measure.toString()})()`, returnByValue: true });
-      await cdp.detach();
-      expect(exceptionDetails).toBeUndefined();
-      const metrics = result.value as ReturnType<typeof measure>;
-      expect(metrics.notice.scrollWidth).toBeLessThanOrEqual(metrics.notice.clientWidth);
-      expect(metrics.page).toBeLessThanOrEqual(0);
+      let metrics: ReturnType<typeof measure> | undefined;
+      try {
+        await expect.poll(async () => {
+          const { result, exceptionDetails } = await cdp.send('Runtime.evaluate', { expression: `(${measure.toString()})()`, returnByValue: true });
+          expect(exceptionDetails).toBeUndefined();
+          metrics = result.value as ReturnType<typeof measure>;
+          return metrics.notice.scrollWidth <= metrics.notice.clientWidth && metrics.page <= 0;
+        }, { message: 'deprecated notice fits a 420px window' }).toBe(true);
+      } finally { await cdp.detach(); }
       await testInfo.attach('deprecated-notice-metrics-narrow', { body: JSON.stringify(metrics), contentType: 'application/json' });
       await testInfo.attach('deprecated-notice-narrow', { body: await notice.screenshot(), contentType: 'image/png' });
       await forceWideMainWindow(app);

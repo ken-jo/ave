@@ -1001,7 +1001,6 @@ export function BrowserWorkspace({
   const { t } = useTranslation();
   const guest = useWebSurfaceGuest(tabId);
   const navigation = useGuestNavigation(guest);
-  const navigate = (action: () => void) => { void navigateBrowserTabAsUser(api, tabId, action); };
   const [addressDraft, setAddressDraft] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
   const latestTarget = useMemo(
@@ -1012,10 +1011,29 @@ export function BrowserWorkspace({
     [targets],
   );
 
-  useEffect(() => {
-    setAddressDraft(navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
+  // The tab whose address row holds text the user is typing and has not submitted. While the field has focus, a page that
+  // reports a new address (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
+  // The draft lives only that long: leaving the field, Escape, and back, forward or reload put the page's real address back,
+  // so the row never shows a typed address for a page it is not showing.
+  const draftEditedForTab = useRef<string | null>(null);
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
+  const goButtonRef = useRef<HTMLButtonElement | null>(null);
+  const currentAddress = navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : "");
+  const discardDraft = () => {
+    draftEditedForTab.current = null;
+    setAddressDraft(currentAddress);
     setAddressError(null);
-  }, [navigation.url, manualUrl, latestTarget, tabId]);
+  };
+  useEffect(() => {
+    if (draftEditedForTab.current === tabId) return;
+    draftEditedForTab.current = null;
+    setAddressDraft(currentAddress);
+    setAddressError(null);
+  }, [currentAddress, tabId]);
+  const navigate = (action: () => void) => {
+    discardDraft();
+    void navigateBrowserTabAsUser(api, tabId, action);
+  };
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1045,6 +1063,7 @@ export function BrowserWorkspace({
       setAddressError(t("chatPreviewRail.browserInvalidUrl"));
       return;
     }
+    draftEditedForTab.current = null;
     setAddressDraft(normalized);
     setAddressError(null);
     void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
@@ -1059,6 +1078,17 @@ export function BrowserWorkspace({
       */}
       <form
         className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
+        onBlur={(event) => {
+          // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
+          // from either of them, drops it. Switching away from the whole window is not leaving the edit: focus comes back to
+          // the field when the window does, so the draft stays, as in Chrome.
+          const left: EventTarget = event.target;
+          const next: EventTarget | null = event.relatedTarget;
+          if (left !== addressInputRef.current && left !== goButtonRef.current) return;
+          if (next === addressInputRef.current || next === goButtonRef.current) return;
+          if (next === null && !document.hasFocus()) return;
+          discardDraft();
+        }}
         onSubmit={(event) => {
           event.preventDefault();
           submitAddress();
@@ -1081,11 +1111,16 @@ export function BrowserWorkspace({
         </Button>
         <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
+          ref={addressInputRef}
           data-testid="chat-side-panel-browser-address"
           value={addressDraft}
           onChange={(event) => {
+            draftEditedForTab.current = tabId;
             setAddressDraft(event.target.value);
             if (addressError) setAddressError(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") discardDraft();
           }}
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-8 min-w-0 flex-1 text-xs"
@@ -1097,6 +1132,7 @@ export function BrowserWorkspace({
               size="icon"
               variant="ghost"
               className="h-8 w-8 shrink-0"
+              ref={goButtonRef}
               aria-label={t("chatPreviewRail.browserGo")}
               data-testid="chat-side-panel-browser-go"
             >

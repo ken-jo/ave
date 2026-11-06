@@ -1,7 +1,7 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { expect, test } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent } from "../../../src/shared/agent-observation.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
@@ -140,7 +140,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     const errors: string[] = [];
     page.on("crash", () => errors.push("Main renderer crashed"));
     page.on("pageerror", (error) => errors.push(error.message));
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: {
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: {
       reviewer: { interactive: { autoApprove: "off" } } } }));
     await ctx.app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());

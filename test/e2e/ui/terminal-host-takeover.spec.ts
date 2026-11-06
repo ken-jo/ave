@@ -11,6 +11,7 @@ import {
   teardownSeededElectron,
 } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 
 // A workspace terminal's own pane chat asks to run one command in that host shell. A person approves it on the card, the agent types it,
 // the user takes over mid-command, and only output from the agent's period returns to the model. The loopback endpoint only supplies
@@ -69,8 +70,6 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     mkdirSync(userData, { recursive: true });
     mkdirSync(workspace, { recursive: true });
     mkdirSync(featureHome, { recursive: true });
-    // Boot owns migration from the legacy root into its committed configuration namespace.
-    writeFileSync(join(featureHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [workspace] } }), { mode: 0o600 });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
     const settings = buildLlmSettings("openai-compatible", model);
@@ -108,6 +107,13 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     page = await app.firstWindow();
     page.on("pageerror", (error) => appErrors.push(error.message));
     await setWindowSize(app, 1280, 860);
+    await expect(page.getByTestId("main-toolbar").first()).toBeVisible({ timeout: 60_000 });
+    // First boot commits the configuration namespace from defaults (the legacy root migration carries restrictions only), so the
+    // registered folder is written after it. The sidebar tree lists the selected project's terminals, so select the terminal's
+    // project and reload to read the project list again.
+    writePermissionSettingsFixture(featureHome, JSON.stringify({ permissions: { additionalDirectories: [workspace] } }));
+    await page.evaluate((root) => window.aveApi.updateSettings({ system: { projectSelection: { kind: "root", root } } }), realpathSync(workspace));
+    await page.reload();
     await expect(page.getByTestId("main-toolbar").first()).toBeVisible({ timeout: 60_000 });
     await page.evaluate((id) => {
       const state = window as unknown as { hostOutput: string };

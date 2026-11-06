@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ElectronApplication, Page } from "playwright";
+import { admitFixturePlugins } from "./admit-fixture-plugins.js";
 import { test, expect } from "./fixtures.js";
 import { openInlineSettings } from "./inline-settings.js";
 import { captureApprovalWorkingDirectory } from "../../../src/permissions/user-approval-store.js";
@@ -79,7 +80,7 @@ for (const locale of ["en", "ko"] as const) {
   });
 }
 
-test("Settings loads and revokes a project rule through the real host bridge", async ({ app, mainWindow, userDataDir, aveHome }, testInfo) => {
+test("Settings loads and revokes a project rule through the real host bridge", async ({ app: seededApp, mainWindow: seededWindow, userDataDir, aveHome, tempHome, t }, testInfo) => {
   const project = join(userDataDir, "rules-project");
   mkdirSync(project, { recursive: true });
   const captured = captureApprovalWorkingDirectory(project);
@@ -92,24 +93,27 @@ test("Settings loads and revokes a project rule through the real host bridge", a
     rules: [{ pattern: "Bash(npm run *)", action: "allow" }, { pattern: "Bash(npm test *)", action: "allow" }],
     updatedAt: new Date().toISOString(),
   }), { mode: 0o600 });
-
-  const settings = await openInlineSettings(app, mainWindow, "permissions");
-  const table = settings.getByTestId("permissions-rules-table");
-  const row = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm test *)" });
-  const inert = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm run *)" });
-  await expect(inert.getByTestId("permissions-rule-invalid")).toContainText(/Not in force|적용되지 않음/);
-  await inert.scrollIntoViewIfNeeded();
-  await mainWindow.screenshot({ path: testInfo.outputPath("inert-project-rule.png") });
-  await inert.getByRole("button").click();
-  await expect(inert).toHaveCount(0);
-  expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([{ pattern: "Bash(npm test *)", action: "allow" }]);
-  await expect(row).toBeVisible();
-  await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(/outside the sandbox|샌드박스 밖 실행/);
-  await expect(row).toContainText(captured.path);
-  await row.scrollIntoViewIfNeeded();
-  await expect(row).toBeInViewport();
-  await mainWindow.screenshot({ path: testInfo.outputPath("project-rule-settings.png") });
-  await row.getByRole("button").click();
-  await expect(row).toHaveCount(0);
-  expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([]);
+  // A rules file written outside Ave stays quarantined until the user admits it through the home trust review.
+  const { app, mainWindow } = await admitFixturePlugins({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome });
+  try {
+    const settings = await openInlineSettings(app, mainWindow, "permissions");
+    const table = settings.getByTestId("permissions-rules-table");
+    const row = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm test *)" });
+    const inert = table.locator('tr[data-rule-store="scoped"]').filter({ hasText: "Bash(npm run *)" });
+    await expect(inert.getByTestId("permissions-rule-invalid")).toContainText(/Not in force|적용되지 않음/);
+    await inert.scrollIntoViewIfNeeded();
+    await mainWindow.screenshot({ path: testInfo.outputPath("inert-project-rule.png") });
+    await inert.getByRole("button").click();
+    await expect(inert).toHaveCount(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([{ pattern: "Bash(npm test *)", action: "allow" }]);
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId("permissions-shell-outside-sandbox")).toContainText(t("permissionsTab.shellOutsideSandbox"));
+    await expect(row).toContainText(captured.path);
+    await row.scrollIntoViewIfNeeded();
+    await expect(row).toBeInViewport();
+    await mainWindow.screenshot({ path: testInfo.outputPath("project-rule-settings.png") });
+    await row.getByRole("button").click();
+    await expect(row).toHaveCount(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([]);
+  } finally { await app.close(); }
 });

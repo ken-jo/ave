@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { openInlineSettings } from './inline-settings.js';
 import { setWindowSize } from './seeded-electron.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -22,21 +22,29 @@ async function expectSettingsBottomClearance(
       '[role="tabpanel"][data-state="active"]',
     );
     const content = activePanel?.lastElementChild as HTMLElement | null;
-    if (!activePanel || !content) return { gap: -1, display: '' };
+    if (!activePanel || !content) return { gap: -1, clearance: Number.POSITIVE_INFINITY, rootFont: Number.POSITIVE_INFINITY, display: '' };
 
     return {
       gap: Math.round(
         scroller.getBoundingClientRect().bottom - content.getBoundingClientRect().bottom,
       ),
+      // The scroller's bottom padding (pb-12, 3rem) is the clearance; rem follows the root type scale, so read it, not a px constant.
+      clearance: Number.parseFloat(getComputedStyle(scroller).paddingBottom),
+      rootFont: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       display: getComputedStyle(activePanel).display,
     };
   });
 
-  await expect.poll(async () => (await measure()).gap, { timeout: 5_000 }).toBeGreaterThanOrEqual(44);
+  // The last row clears the bottom by the scroller's own padding, and never by less than 3rem: a shrunken padding class
+  // would pass the relative check alone.
+  await expect.poll(async () => {
+    const { gap, clearance, rootFont } = await measure();
+    return Math.min(gap - clearance, gap - 3 * rootFont);
+  }, { timeout: 5_000 }).toBeGreaterThanOrEqual(-1);
   expect((await measure()).display).toBe('flex');
 }
 
-test('Settings inline shell is responsive (wide master-detail ↔ narrow 2-depth)', async ({ app, mainWindow }) => {
+test('Settings inline shell is responsive (wide master-detail ↔ narrow 2-depth)', async ({ app, mainWindow, t }) => {
   mkdirSync(OUT, { recursive: true });
 
   await openInlineSettings(app, mainWindow, 'llm');
@@ -47,7 +55,7 @@ test('Settings inline shell is responsive (wide master-detail ↔ narrow 2-depth
   await expect(mainWindow.getByTestId('settings-mobile-list')).toHaveCount(0);
   await expectSettingsBottomClearance(mainWindow);
 
-  await root.getByRole('tab', { name: /Plugin Settings|플러그인 설정/ }).click();
+  await root.getByRole('tab', { name: t('settingsContent.tabPluginConfig') }).click();
   await expectSettingsBottomClearance(mainWindow);
   await root.getByRole('tab', { name: /Model|모델/ }).first().click();
 

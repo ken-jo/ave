@@ -6,8 +6,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { makeTestT } from "./i18n.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// buildE2eBaseSettings seeds the Korean UI.
+const t = makeTestT("ko");
 const REPO_ROOT = resolve(HERE, "../../..");
 const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
@@ -112,7 +115,8 @@ test.describe("workspace rail follow-up", () => {
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
-    const tree = page.getByRole("tree");
+    // The sidebar has its own project tree; this is the side panel's file tree.
+    const tree = page.getByTestId(TEST_IDS.chatSidePanel).getByRole("tree");
     await expect(tree).toBeVisible();
     const folderRow = page.getByTestId("chat-side-panel-fs-folder").filter({ hasText: "docs" });
     await expect(folderRow).toBeVisible({ timeout: 10_000 });
@@ -128,12 +132,25 @@ test.describe("workspace rail follow-up", () => {
     await folderRow.press("ArrowLeft");
     await expect(folderRow).toHaveAttribute("aria-expanded", "false");
 
-    // Close the context menu without invoking the OS file manager.
+    // The row's context menu is the native one (2c9231830). Record the menu main builds instead of showing an OS menu, then
+    // choose its Open item, which must reach the renderer's own handler and expand the folder.
+    await app.evaluate(({ Menu }) => {
+      const state = globalThis as unknown as { aveE2eMenus: Electron.Menu[] };
+      state.aveE2eMenus = [];
+      Menu.prototype.popup = function popup(this: Electron.Menu) { state.aveE2eMenus.push(this); };
+    });
     await folderRow.click({ button: "right" });
-    await expect(page.getByTestId("chat-side-panel-fs-context-menu")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-fs-ctx-reveal")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-fs-ctx-copy-path")).toBeVisible();
-    await page.keyboard.press("Escape");
+    const labels = () => app.evaluate(() => (globalThis as unknown as { aveE2eMenus: Electron.Menu[] }).aveE2eMenus
+      .at(-1)?.items.filter((item) => item.type !== "separator").map((item) => item.label) ?? []);
+    await expect.poll(labels).toEqual([t("chatPreviewRail.ctxOpen"),
+      t(process.platform === "darwin" ? "chatPreviewRail.revealInFinder" : "chatPreviewRail.revealInExplorer"),
+      t("chatPreviewRail.copyPath"), t("chatPreviewRail.copyRelativePath")]);
+    await app.evaluate(() => {
+      const open = (globalThis as unknown as { aveE2eMenus: Electron.Menu[] }).aveE2eMenus.at(-1)?.items[0];
+      if (!open) throw new Error("No native workspace menu was built");
+      open.click();
+    });
+    await expect(folderRow).toHaveAttribute("aria-expanded", "true");
 
     await expect(page.getByTestId("chat-side-panel-collapse-all")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-remove-root")).toHaveCount(0);

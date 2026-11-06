@@ -2,18 +2,22 @@
 import { createRequire } from "node:module";
 import { homedir, userInfo } from "node:os";
 import { inject } from "vitest";
+import { canonicalPath } from "./test-tmp-root.js";
+
+export { canonicalPath };
 
 declare module "vitest" {
   export interface ProvidedContext {
     realProgramData: string | null;
     realAccountHome: string;
+    /** The AVE_TEST_TMP_ROOT global setup validated, or null when the run uses the default roots. */
+    explicitTestTmpRoot: string | null;
   }
 }
 
 // Use real filesystem functions despite suite mocks; allow account-home mocks for guard tests.
 const nodeRequire = createRequire(import.meta.url);
-const { lstatSync, readlinkSync, realpathSync } = nodeRequire("node:fs") as typeof import("node:fs");
-const { basename, dirname, join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
+const { join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
 
 export const AVE_HOME_ISOLATION_GUARD_ACTIVE: boolean = true;
 
@@ -46,7 +50,11 @@ export function checkSandboxStampTargets(paths: readonly string[]): void {
   for (const path of paths) {
     const action = "stamp or grant sandbox target; constrain the test's deny/allow targets to fixtures:";
     // Windows runs keep TEMP under the profile (runTmpRoot in test-run-dirs.ts), so fixtures there are the run's own.
-    const sanctioned = [join(realAccountHome, ".ave", "test-tmp"), ...(process.platform === "win32" ? [join(realAccountHome, ".ave-test-tmp")] : [])];
+    const sanctioned = [
+      join(realAccountHome, ".ave", "test-tmp"),
+      ...(process.platform === "win32" ? [join(realAccountHome, ".ave-test-tmp")] : []),
+      ...explicitTestTmpRoot(),
+    ];
     refuseUnder(path, action, [resolve(realAccountHome)], true, true, sanctioned);
     if (realProgramData !== null) {
       refuseUnder(path, action, [resolve(realProgramData), resolve("C:\\ProgramData")], false, true);
@@ -79,6 +87,16 @@ function accountAveHome(): string {
   return resolve(join(accountHome, ".ave"));
 }
 
+/** The caller's explicit scratch root, as global setup validated it against the real account home; nothing wider is
+ * sanctioned. It is read only from the provided context, so a test that changes AVE_TEST_TMP_ROOT cannot widen the guard. */
+function explicitTestTmpRoot(): string[] {
+  const root = inject("explicitTestTmpRoot");
+  if (root === undefined) {
+    throw new Error("Ave home isolation requires explicitTestTmpRoot provided by vitest.globalSetup.ts");
+  }
+  return root === null ? [] : [root];
+}
+
 function refuseUnder(path: string, action: string, realHomes: readonly string[], allowTestTmp = true, caseInsensitive = process.platform !== "linux", testTmpRoots?: readonly string[]): void {
   // Check both named and resolved paths so links cannot hide real-home access.
   const homes = [...new Set(realHomes.flatMap((home) => [home, canonicalPath(home)]))];
@@ -88,47 +106,13 @@ function refuseUnder(path: string, action: string, realHomes: readonly string[],
   const inside = (candidate: string, dir: string) =>
     fold(candidate) === fold(dir) || fold(candidate).startsWith(fold(dir).replace(/[\\/]+$/, "") + sep);
   for (const real of homes) {
-    const sanctioned = testTmpRoots ?? [join(real, "test-tmp")];
+    // A guard test may mock the account home into the run's own scratch; never sanction a root that holds the home checked.
+    const sanctioned = testTmpRoots ?? [join(real, "test-tmp"), ...explicitTestTmpRoot().filter((root) => !inside(real, root))];
     for (const candidate of paths) {
       if (inside(candidate, real) && !(allowTestTmp && sanctioned.some((root) => inside(candidate, root)))) {
         throw new Error(`refusing to ${action} ${path} from a test process; it is under the real ${real}`);
       }
     }
-  }
-}
-
-/** Resolve existing ancestors and dangling links so missing paths cannot hide a real-home target. */
-export function canonicalPath(path: string): string {
-  const missing: string[] = [];
-  let current = resolve(path);
-  for (let hops = 0; ; ) {
-    try {
-      return join(realpathSync.native(current), ...missing);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
-        if (/^\\\\(?:\?\\UNC\\|[^?.\\])/i.test(current)) return resolve(path);
-        throw error;
-      }
-    }
-    let link: string | undefined;
-    try {
-      if (lstatSync(current).isSymbolicLink()) link = readlinkSync(current);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") {
-        throw error;
-      }
-    }
-    if (link !== undefined) {
-      // Linux allows 40 links in one resolution; past that the path is a loop.
-      if (++hops > 40) throw new Error(`too many links resolving ${path}`);
-      current = resolve(dirname(current), link);
-      continue;
-    }
-    const parent = dirname(current);
-    if (parent === current) return join(current, ...missing);
-    missing.unshift(basename(current));
-    current = parent;
   }
 }
 

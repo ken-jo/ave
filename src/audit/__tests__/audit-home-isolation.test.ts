@@ -13,6 +13,7 @@ import { AuditLogger } from "../audit-logger.js";
 import { AuditService } from "../../main/audit-service.js";
 import { defaultAveHome } from "../../shared/ave-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { configuredTestTmpRoot } from "../../__tests__/support/test-tmp-root.js";
 
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const fileEnv = {
@@ -44,7 +45,7 @@ function homelessOnScratchAccount(): string {
 describe("audit writers under the test runner", () => {
   it("start in this file's own home under test-tmp", () => {
     expect(fileEnv.AVE_HOME).toBeDefined();
-    expect(dirname(dirname(fileEnv.AVE_HOME!))).toBe(join(defaultAveHome(), "test-tmp"));
+    expect(dirname(dirname(fileEnv.AVE_HOME!))).toBe(configuredTestTmpRoot(actualOs.homedir()) ?? join(defaultAveHome(), "test-tmp"));
   });
 
   it("write a default AuditLogger's log into this file's home", async () => {

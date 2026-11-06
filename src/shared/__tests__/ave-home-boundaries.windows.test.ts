@@ -51,7 +51,7 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
   function explicitParent(parent: string): string {
     mkdirSync(parent, { recursive: true });
     setFixtureOwner(parent);
-    native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;'+$u.Value+')'); [System.IO.Directory]::SetAccessControl($env:AVE_TEST_TARGET, $s)", parent);
+    native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;'+$u.Value+')', [System.Security.AccessControl.AccessControlSections]::Access); [System.IO.Directory]::SetAccessControl($env:AVE_TEST_TARGET, $s)", parent);
     const facts = readWindowsDirectoryDacls([parent])[0]!;
     expect(facts).toMatchObject({ protected: true });
     expect(new Set(facts.rules?.map((rule) => rule.sid))).toEqual(new Set(["S-1-5-18", "S-1-5-32-544", facts.currentUserSid]));

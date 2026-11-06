@@ -150,7 +150,7 @@ describe("the pre-lock AVE_HOME write of a process start", () => {
     expect(realpathSync(process.cwd())).toBe(realpathSync(cwd));
     const { buildAllowedScope } = await import("../../permissions/allowed-directories.js");
     const { directories } = buildAllowedScope([]);
-    const fold = (path: string) => realpathSync(path).toLowerCase();
+    const fold = (path: string) => realpathSync(path).toLowerCase().replaceAll("\\", "/");
     expect(directories.map((dir) => dir.toLowerCase())).toContain(fold(cwd));
     expect(directories.map((dir) => dir.toLowerCase())).not.toContain(fold(tmpdir()));
   });

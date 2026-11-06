@@ -14,9 +14,20 @@ async function summaryApp() {
     })) } }),
   });
 }
+// The summary renders only after a chain of mocked IPC answers, each followed by an App commit: the restored history names the
+// session, that session's turn review is fetched, and its snapshot is derived. The first test of the file also pays the App's
+// cold first render, which a loaded CI worker stretched past the 1s findBy default (CI 2026-11-06, test 1873ms). Wait for the
+// review request itself first, then for its result, each bounded by the repository's 5s ceiling for app-level async waits.
+const SUMMARY_SETTLE = { timeout: 5_000 } as const;
+
+async function settledSummary(api: Awaited<ReturnType<typeof summaryApp>>["api"]): Promise<HTMLElement> {
+  await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledWith("settled-review-session"), SUMMARY_SETTLE);
+  return screen.findByTestId("latest-turn-summary", undefined, SUMMARY_SETTLE);
+}
+
 it("places only the compact five-file summary above the composer and its status row", async () => {
-  const { container } = await summaryApp();
-  const summary = await screen.findByTestId("latest-turn-summary");
+  const { container, api } = await summaryApp();
+  const summary = await settledSummary(api);
   const queue = container.querySelector('[data-testid="composer-queue-dock"]')!;
   const frame = container.querySelector('[data-testid="composer-frame"]')!;
   const status = container.querySelector('[data-testid="iab-status-row"]')!;
@@ -29,8 +40,9 @@ it("places only the compact five-file summary above the composer and its status 
   expect(screen.queryByTestId("turn-change-review")).toBeNull();
 });
 it("Show more reveals the first latest file in the existing Files tab with the Changed filter", async () => {
-  await summaryApp();
-  fireEvent.click(await screen.findByRole("button", { name: t("fileEditDiff.summaryShowMore") }));
+  const { api } = await summaryApp();
+  await settledSummary(api);
+  fireEvent.click(screen.getByRole("button", { name: t("fileEditDiff.summaryShowMore") }));
   await screen.findByTestId("chat-side-panel-file-browser");
   await waitFor(() => expect(screen.getByRole("button", { name: /^변경|^Changed/ })).toHaveAttribute("aria-pressed", "true"));
   await waitFor(() => expect(screen.getByRole("treeitem", { name: /source-0.ts/ })).toHaveAttribute("aria-selected", "true"));
@@ -38,12 +50,16 @@ it("Show more reveals the first latest file in the existing Files tab with the C
   expect(screen.getByTestId("latest-turn-summary")).not.toContainElement(screen.getByTestId("turn-change-detail"));
 });
 it("summary row reveal selects that file and its detail hunk references the active composer", async () => {
-  const { container } = await summaryApp();
-  const rows = await screen.findAllByTestId("latest-turn-summary-file");
+  const { container, api } = await summaryApp();
+  await settledSummary(api);
+  const rows = screen.getAllByTestId("latest-turn-summary-file");
   fireEvent.click(rows[2]!);
-  await screen.findByTestId("turn-change-detail");
+  // The reveal refreshes the review, and a hunk becomes referenceable only from that fresh answer.
+  const detail = await screen.findByTestId("turn-change-detail", undefined, SUMMARY_SETTLE);
   await waitFor(() => expect(screen.getByRole("treeitem", { name: /source-2.ts/ })).toHaveAttribute("aria-selected", "true"));
-  fireEvent.click(within(screen.getByTestId("turn-change-detail")).getByRole("button", { name: /Reference hunk|변경 부분 1 참조/ }));
+  const hunk = () => within(detail).getByRole("button", { name: /Reference hunk|변경 부분 1 참조/ });
+  await waitFor(() => expect(hunk()).toBeEnabled(), SUMMARY_SETTLE);
+  fireEvent.click(hunk());
   const composer = container.querySelector('[data-testid="composer-textarea"][data-composer-surface="main"]') as HTMLTextAreaElement;
   expect(composer.value).toContain("[File #1]");
   expect(screen.getByText("@src/source-2.ts:1-1")).toBeVisible();
@@ -58,8 +74,9 @@ it("reveals Files visibly over a narrow chat tile instead of hiding the requeste
     disconnect() {}
   });
   try {
-    await summaryApp();
-    fireEvent.click(await screen.findByRole("button", { name: t("fileEditDiff.summaryShowMore") }));
+    const { api } = await summaryApp();
+    await settledSummary(api);
+    fireEvent.click(screen.getByRole("button", { name: t("fileEditDiff.summaryShowMore") }));
     await waitFor(() => {
       const panel = screen.getByTestId("chat-side-panel-motion");
       expect(panel).toHaveAttribute("data-panel-mode", "overlay");

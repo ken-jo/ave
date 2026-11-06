@@ -42,8 +42,9 @@ test("MCP elicitation approval form returns structured content", async ({ app, m
         type: "object",
         required: ["date", "count"],
         properties: {
-          date: { type: "string", title: "Date" },
-          count: { type: "integer", title: "Count" },
+          // Approval cards render no typeable controls (ade798687): typed values arrive as server-supplied defaults.
+          date: { type: "string", title: "Date", default: "2026-07-01" },
+          count: { type: "integer", title: "Count", default: 2 },
           includeNotes: { type: "boolean", title: "Include notes" },
         },
       },
@@ -57,8 +58,10 @@ test("MCP elicitation approval form returns structured content", async ({ app, m
   });
 
   await expect(mainWindow.getByTestId("mcp-elicitation-form")).toBeVisible();
-  await mainWindow.getByTestId("mcp-elicitation-field-date").fill("2026-07-01");
-  await mainWindow.getByTestId("mcp-elicitation-field-count").fill("2");
+  const form = mainWindow.getByTestId("mcp-elicitation-form");
+  await expect(form.locator('input:not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"], [role="textbox"]')).toHaveCount(0);
+  await expect(mainWindow.getByTestId("mcp-elicitation-field-date")).toHaveText("2026-07-01");
+  await expect(mainWindow.getByTestId("mcp-elicitation-field-count")).toHaveText("2");
   await mainWindow.getByTestId("mcp-elicitation-field-includeNotes").click();
   await expect(mainWindow.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
   await mainWindow.getByTestId(TEST_IDS.approveButton).click();

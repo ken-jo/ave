@@ -229,29 +229,40 @@ export function useChatScroll({
 
   // Mount-scoped: every dependency is stable, so the listener is attached once
   // for the lifetime of the transcript viewport (ChatTranscript renders its
-  // ScrollArea unconditionally). The eager `onScroll()` is a one-shot seed of
+  // ScrollArea unconditionally). The eager `measure(true)` is a one-shot seed of
   // the pinned/jump-button state — it must never re-run mid-conversation, see
   // the note on `scrollSnapshotInputsRef`.
   useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
-    const onScroll = () => {
+    // Scroll events are dispatched a frame after the offset changes, so the content can grow in between: a pin that landed
+    // at the bottom is then measured as a gap. Growth and pins never move `scrollTop` up; only the user (wheel, keys,
+    // scrollbar) or a clamp from content shrinking does, and a clamp lands at the bottom. So a pinned transcript is
+    // released only when the offset moved up and the viewport is no longer near the bottom.
+    let lastScrollTop = viewport.scrollTop;
+    // `seed` measures the mounted viewport once; there is no earlier offset to compare with, so it reads the bottom only.
+    const measure = (seed: boolean) => {
       // Hiding the tile zeroes the viewport, and the browser may report that as a scroll. Measured there, every position reads
       // as "at the bottom" and would overwrite the one the restore puts back when the tile returns.
       if (viewport.clientHeight === 0) return;
+      const movedUp = viewport.scrollTop < lastScrollTop - 1;
+      lastScrollTop = viewport.scrollTop;
       const nearBottom = isNearBottom();
-      pinnedToBottomRef.current = nearBottom;
-      if (!nearBottom) cancelAutoBottomPin();
-      setShowJumpToBottom(!nearBottom);
+      const pinned = nearBottom || (!seed && pinnedToBottomRef.current && !movedUp);
+      pinnedToBottomRef.current = pinned;
+      if (pinned && !nearBottom) scheduleAutoBottomPin();
+      if (!pinned) cancelAutoBottomPin();
+      setShowJumpToBottom(!pinned);
       saveScrollPosition(viewport);
     };
-    onScroll();
+    const onScroll = () => measure(false);
+    measure(true);
     viewport.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       saveScrollPosition(viewport, { preserveAwayFromBottom: true });
       viewport.removeEventListener("scroll", onScroll);
     };
-  }, [cancelAutoBottomPin, isNearBottom, saveScrollPosition, scrollViewportRef]);
+  }, [cancelAutoBottomPin, isNearBottom, saveScrollPosition, scheduleAutoBottomPin, scrollViewportRef]);
 
   useEffect(() => {
     const previousEntryCount = previousEntryCountRef.current;

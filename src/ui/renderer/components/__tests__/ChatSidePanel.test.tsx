@@ -609,6 +609,113 @@ describe("ChatSidePanel", () => {
     expect(screen.getAllByText("metrics.json").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("keeps an address the user is typing when the page reports a new address, until it is submitted", async () => {
+    const targets: ChatPreviewTarget[] = [{
+      id: "url-1", kind: "url", title: "example.com/docs", subtitle: "web_fetch", sourceLabel: "builtin",
+      createdOrder: 1, url: "https://example.com/docs", origin: "result",
+    }];
+    renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
+    addTabViaMenu("browser");
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]') as HTMLElement
+      & { getURL?: () => string; getTitle?: () => string; canGoBack?: () => boolean; canGoForward?: () => boolean };
+    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
+    expect(addressInput.value).toBe("https://example.com/docs");
+    fireEvent.change(addressInput, { target: { value: "google.com" } });
+    // The first page finishes loading (or fails) while the user types: the page's report must not erase the draft.
+    let guestUrl = "https://example.com/docs/redirected";
+    Object.assign(webview, { getURL: () => guestUrl, getTitle: () => "", canGoBack: () => false, canGoForward: () => false });
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("google.com");
+    await act(async () => { fireEvent.click(screen.getByTestId("chat-side-panel-browser-go")); });
+    expect(webview.getAttribute("src")).toBe("https://google.com/");
+    // Once submitted, the address follows the page again.
+    guestUrl = "https://www.google.com/";
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://www.google.com/");
+  });
+
+  it("drops a draft the user leaves, so the address row never shows a typed address for another page", async () => {
+    const targets: ChatPreviewTarget[] = [{
+      id: "url-1", kind: "url", title: "example.com/docs", subtitle: "web_fetch", sourceLabel: "builtin",
+      createdOrder: 1, url: "https://example.com/docs", origin: "result",
+    }];
+    renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
+    addTabViaMenu("browser");
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]') as HTMLElement
+      & { goBack?: () => void };
+    let guestUrl = "https://example.com/docs";
+    let canGoBack = false;
+    const goBack = vi.fn();
+    Object.assign(webview, {
+      getURL: () => guestUrl, getTitle: () => "", canGoBack: () => canGoBack, canGoForward: () => false, goBack,
+    });
+    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
+
+    // Typed, then left without submitting: the page then moves elsewhere and the row must say where it really is.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    // Focus moves to the page body while the window keeps focus.
+    expect(document.hasFocus()).toBe(true);
+    fireEvent.blur(addressInput, { relatedTarget: null });
+    expect(addressInput.value).toBe("https://example.com/docs");
+    guestUrl = "https://evil.example/";
+    canGoBack = true;
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://evil.example/");
+
+    // Escape drops the draft as well.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    fireEvent.keyDown(addressInput, { key: "Escape" });
+    expect(addressInput.value).toBe("https://evil.example/");
+
+    // Back (also forward and reload) drops it before the page moves.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("browser-back")); });
+    expect(addressInput.value).toBe("https://evil.example/");
+    await waitFor(() => expect(goBack).toHaveBeenCalled());
+    guestUrl = "https://example.com/docs";
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://example.com/docs");
+
+    // Switching to another window is not leaving the edit: focus returns to the field with the window, so the draft stays.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      fireEvent.blur(addressInput, { relatedTarget: null });
+    } finally {
+      hasFocus.mockRestore();
+    }
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.keyDown(addressInput, { key: "Escape" });
+    expect(addressInput.value).toBe("https://example.com/docs");
+
+    // Focus that reaches Go and then leaves it (pressed and dragged off, then clicked elsewhere) drops the draft too.
+    const go = screen.getByTestId("chat-side-panel-browser-go");
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.blur(go, { relatedTarget: null });
+    expect(addressInput.value).toBe("https://example.com/docs");
+    guestUrl = "https://evil.example/";
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://evil.example/");
+
+    // Tab from Go to the next control drops it as well; Tab back from Go to the field keeps it.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    fireEvent.blur(go, { relatedTarget: addressInput });
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    fireEvent.blur(go, { relatedTarget: screen.getByTestId("browser-back") });
+    expect(addressInput.value).toBe("https://evil.example/");
+
+    // Moving to the Go button keeps the draft, so it is what gets submitted.
+    fireEvent.change(addressInput, { target: { value: "google.com" } });
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    expect(addressInput.value).toBe("google.com");
+    await act(async () => { fireEvent.click(go); });
+    expect(webview.getAttribute("src")).toBe("https://google.com/");
+  });
+
   it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", () => {
     const targets: ChatPreviewTarget[] = [
       {

@@ -1,5 +1,5 @@
 import { test, expect } from "./fixtures";
-import { type ElectronApplication, type Page } from "playwright";
+import { type ElectronApplication, type Locator, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -8,13 +8,20 @@ import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchEl
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { FONT_SIZE_SCALE_VALUES } from "../../../src/shared/appearance-font.js";
+import { showFileColumns } from "./document-preview-flow.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
 const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 const CLEANUP_RM_OPTIONS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
 
-// Exercise workspace split sizing, source selection and grouped agent transcripts against a real project.
+async function boxOf(locator: Locator) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error("Element has no layout box");
+  return box;
+}
+
+// Exercise workspace column sizing, file filters and grouped agent transcripts against a real project.
 test.describe("workspace rail UX redesign", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
 
@@ -73,41 +80,53 @@ test.describe("workspace rail UX redesign", () => {
     if (tempHome) rmSync(tempHome, CLEANUP_RM_OPTIONS);
   });
 
-  test("file tab: directory/session segment toggle (default directory, session disabled empty)", async () => {
+  // Files is one filtered project tree (315307c02): All / Changed / Session filters replace the former Directory/Session source
+  // toggle, and the search field filters the tree.
+  test("file tab: All/Changed/Session filters (default All, empty Session) and a working tree search", async () => {
     await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
-    await expect(page.getByTestId("chat-side-panel-file-source-directory")).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "architecture.md" })).toBeVisible();
+    const filters = page.getByTestId("chat-side-panel-file-tree").getByRole("group");
+    await expect(filters.getByRole("button")).toHaveCount(3);
+    await expect(page.getByTestId("chat-side-panel-file-filter-all")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("chat-side-panel-file-filter-changed")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("chat-side-panel-file-filter-session")).toHaveText(/0$/u);
+    const file = page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "architecture.md" });
+    await expect(file).toBeVisible();
 
-    const sessionSeg = page.getByTestId("chat-side-panel-file-source-session");
-    await expect(sessionSeg).toBeDisabled();
-    await expect(page.getByTestId("chat-side-panel-file-source-session-count")).toHaveText("0");
+    // The filters stay inside the tree column instead of overflowing a narrow pane.
+    const treeBox = await boxOf(page.getByTestId("chat-side-panel-file-tree"));
+    const filterBox = await boxOf(filters);
+    expect(filterBox.x).toBeGreaterThanOrEqual(treeBox.x);
+    expect(filterBox.x + filterBox.width).toBeLessThanOrEqual(treeBox.x + treeBox.width + 0.5);
+    // And stay compact enough for narrow file panes.
+    expect((await boxOf(page.getByTestId("chat-side-panel-file-filter-all"))).height).toBeLessThanOrEqual(26);
+    expect(filterBox.height).toBeLessThanOrEqual(30);
 
-    // Keep source selectors compact enough for narrow file panes.
-    const dirBtnBox = await page.getByTestId("chat-side-panel-file-source-directory").boundingBox();
-    expect(dirBtnBox).not.toBeNull();
-    expect(dirBtnBox!.height).toBeLessThanOrEqual(26);
-    const stripBox = await page.getByTestId("chat-side-panel-file-source-segment").boundingBox();
-    expect(stripBox).not.toBeNull();
-    expect(stripBox!.height).toBeLessThanOrEqual(30);
-
-    // Directory mode has no query wiring and must not expose an inert search field.
-    await expect(page.getByTestId("chat-preview-search")).toHaveCount(0);
+    const search = page.getByTestId("chat-side-panel-file-tree").getByTestId("chat-preview-search");
+    await search.fill("no-such-file");
+    await expect(file).toHaveCount(0);
+    await search.fill("architecture");
+    await expect(file).toBeVisible();
 
     const shot = await page.getByTestId(TEST_IDS.chatSidePanel).screenshot();
-    await test.info().attach("file-source-segment.png", { contentType: "image/png", body: shot });
+    await test.info().attach("file-filters.png", { contentType: "image/png", body: shot });
   });
 
-  test("file tab: the vertical separator keeps a 20px drag hit area at every font scale", async () => {
+  // The tree and the file detail are resizable columns. Their separator is a fixed 9px bar (315307c02); it must not shrink with
+  // the UI font scale or lose the full column height.
+  test("file tab: the column separator keeps its fixed hit width at every font scale", async () => {
     await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
+    await showFileColumns(page);
 
     const splitter = page.getByTestId("chat-side-panel-file-splitter");
-    await expect(splitter).toBeVisible();
+    await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+    const baseline = await boxOf(splitter);
+    expect(baseline.width).toBeGreaterThanOrEqual(8);
     const originalScale = await page.evaluate(() => document.documentElement.style.getPropertyValue("--ave-font-size-scale"));
     const rootFontSizes = new Set<number>();
     try {
@@ -117,9 +136,10 @@ test.describe("workspace rail UX redesign", () => {
           return Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
         }, sizeScale);
         rootFontSizes.add(rootFontSize);
-        const box = await splitter.boundingBox();
-        expect(box).not.toBeNull();
-        expect(box!.height, `separator hit area at font scale ${sizeScale}`).toBeGreaterThanOrEqual(20);
+        const box = await boxOf(splitter);
+        const tree = await boxOf(page.getByTestId("chat-side-panel-file-tree"));
+        expect(box.width, `separator hit width at font scale ${sizeScale}`).toBe(baseline.width);
+        expect(box.height, `separator spans the columns at font scale ${sizeScale}`).toBeGreaterThanOrEqual(tree.height - 1);
       }
       expect(rootFontSizes.size).toBe(FONT_SIZE_SCALE_VALUES.length);
     } finally {
@@ -133,37 +153,41 @@ test.describe("workspace rail UX redesign", () => {
     await test.info().attach("separator-drag-zone.png", { contentType: "image/png", body: shot });
   });
 
-  test("file tab: vertical splitter persists across restart", async () => {
+  // The former vertical split preference migrated to one persisted tree width (use-file-tree-width.ts).
+  test("file tab: the tree column width persists across restart", async () => {
     await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
+    await showFileColumns(page);
 
-    const splitLayout = page.getByTestId("chat-side-panel-file-split-layout");
-    await expect(splitLayout).toBeVisible();
-    const before = await splitLayout.evaluate((el) => (el as HTMLElement).style.gridTemplateRows);
-
-    // Drive the splitter by keyboard for deterministic persisted-ratio checks.
+    const tree = page.getByTestId("chat-side-panel-file-tree");
+    const before = await tree.evaluate((el) => (el as HTMLElement).style.width);
+    // Drive the separator by keyboard for a deterministic persisted width; ArrowLeft narrows an end-edge column.
     const splitter = page.getByTestId("chat-side-panel-file-splitter");
     await splitter.focus();
-    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowDown");
-    await expect
-      .poll(async () => splitLayout.evaluate((el) => (el as HTMLElement).style.gridTemplateRows))
-      .not.toBe(before);
-    const afterDrag = await splitLayout.evaluate((el) => (el as HTMLElement).style.gridTemplateRows);
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
+    await expect.poll(async () => tree.evaluate((el) => (el as HTMLElement).style.width)).not.toBe(before);
+    const afterResize = await tree.evaluate((el) => (el as HTMLElement).style.width);
 
     await app.close();
     await launch();
     await setWindowSize(app, 1400, 840);
-    await page.getByTestId(TEST_IDS.panePanelToggle).click();
+    // The window layout restores the open side panel at its widened width, on its empty landing: content tabs are not
+    // restored. Toggling the panel here would close it, so Files is opened from the landing.
+    await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
+    await expect(page.getByTestId("chat-side-panel-launcher")).toBeVisible();
+    const restoredFiles = page.getByTestId("chat-side-panel-file-browser");
+    await expect(restoredFiles).not.toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
+    await expect(restoredFiles).toHaveAttribute("data-file-layout", "columns");
     await expect
-      .poll(async () =>
-        page.getByTestId("chat-side-panel-file-split-layout").evaluate((el) => (el as HTMLElement).style.gridTemplateRows),
-      )
-      .toBe(afterDrag);
+      .poll(async () => page.getByTestId("chat-side-panel-file-tree").evaluate((el) => (el as HTMLElement).style.width))
+      .toBe(afterResize);
   });
 
-  test("browser tab: single address bar and searchable visited-page list", async () => {
+  // A browser tab is its address row and page only (469497456); the conversation's visited pages are listed, and searched,
+  // on the side panel's empty landing.
+  test("browser: visited pages are searchable on the landing and a browser tab has a single address bar", async () => {
     // Local artifacts provide distinct visited rows without network requests.
     await app.close();
     const browserSessionId = "b2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
@@ -187,11 +211,9 @@ test.describe("workspace rail UX redesign", () => {
     await launch();
     await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
-    await page.getByTestId(chatSidePanelLauncherTestId("browser")).click();
 
     const panel = page.getByTestId(TEST_IDS.chatSidePanel);
-    await expect(panel.getByTestId("chat-side-panel-browser-address")).toHaveCount(1);
-    await expect(panel.getByTestId("chat-side-panel-browser-split-layout")).toBeVisible();
+    await expect(panel.getByTestId("chat-side-panel-launcher")).toBeVisible();
     const visited = panel.getByTestId("chat-side-panel-browser-visited");
     await expect(visited).toBeVisible();
     const rows = visited.getByTestId("chat-side-panel-browser-row");
@@ -205,9 +227,16 @@ test.describe("workspace rail UX redesign", () => {
     await expect(visited).not.toContainText("Beta notes");
     await search.clear();
     await expect(rows).toHaveCount(2);
+    const landingShot = await panel.screenshot();
+    await test.info().attach("browser-visited-landing-search.png", { contentType: "image/png", body: landingShot });
+
+    await page.getByTestId(chatSidePanelLauncherTestId("browser")).click();
+    await expect(panel.getByTestId("chat-side-panel-tab-browser")).toBeVisible();
+    await expect(panel.getByTestId("chat-side-panel-browser-address")).toHaveCount(1);
+    await expect(panel.getByTestId("chat-side-panel-browser-visited")).toHaveCount(0);
 
     const shot = await panel.screenshot();
-    await test.info().attach("browser-single-address-visited-search.png", { contentType: "image/png", body: shot });
+    await test.info().attach("browser-single-address.png", { contentType: "image/png", body: shot });
   });
 
   test("subagent tab: opens from the launcher and shows the empty state", async () => {

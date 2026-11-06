@@ -1,4 +1,4 @@
-import type { ElectronApplication } from "playwright";
+import type { ElectronApplication, Page } from "playwright";
 import { expect, test } from "./fixtures.js";
 
 type CapturedResponse = {
@@ -7,11 +7,23 @@ type CapturedResponse = {
   dismissed?: boolean;
 };
 
+// A question belongs to one conversation; only the tile that owns it draws the card (use-workflow-tools.ts).
+async function currentSessionId(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const listed = await (window as unknown as { aveApi: { chatSessions: (opts?: { kind?: string }) => Promise<{ current?: string }> } })
+      .aveApi.chatSessions({ kind: "main" });
+    if (typeof listed.current !== "string" || listed.current.length === 0) throw new Error("current chat session id unavailable");
+    return listed.current;
+  });
+}
+
 async function installQuestionHarness(
   app: ElectronApplication,
+  page: Page,
   requestId: string,
   responseResult: { ok: boolean; error?: string } = { ok: true },
 ): Promise<void> {
+  const sessionId = await currentSessionId(page);
   await app.evaluate(
     ({ BrowserWindow, ipcMain }, payload) => {
       const state = globalThis as unknown as { __askUserQuestionResponses: unknown[] };
@@ -25,6 +37,7 @@ async function installQuestionHarness(
       const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       win?.webContents.send("ave:ask-user-question:request", {
         id: payload.requestId,
+        sessionId: payload.sessionId,
         createdAt: Date.now(),
         questions: [
           {
@@ -34,7 +47,7 @@ async function installQuestionHarness(
         ],
       });
     },
-    { requestId, responseResult },
+    { requestId, responseResult, sessionId },
   );
 }
 
@@ -56,7 +69,7 @@ test.use({ seedViewFixturePlugin: false });
 
 test.describe("ask_user_question interaction", () => {
   test("submits a declared choice and removes the resolved card", async ({ app, mainWindow }) => {
-    await installQuestionHarness(app, "e2e-choice-submit");
+    await installQuestionHarness(app, mainWindow, "e2e-choice-submit");
 
     const card = mainWindow.getByTestId("ask-user-question-card");
     await expect(card).toBeVisible();
@@ -74,7 +87,7 @@ test.describe("ask_user_question interaction", () => {
   });
 
   test("dismisses the card without synthesizing a manual answer", async ({ app, mainWindow }) => {
-    await installQuestionHarness(app, "e2e-choice-dismiss");
+    await installQuestionHarness(app, mainWindow, "e2e-choice-dismiss");
 
     const card = mainWindow.getByTestId("ask-user-question-card");
     await expect(card).toBeVisible();
@@ -88,7 +101,7 @@ test.describe("ask_user_question interaction", () => {
   });
 
   test("keeps the card visible when main rejects the response", async ({ app, mainWindow }) => {
-    await installQuestionHarness(app, "e2e-choice-rejected", {
+    await installQuestionHarness(app, mainWindow, "e2e-choice-rejected", {
       ok: false,
       error: "invalid-answer",
     });

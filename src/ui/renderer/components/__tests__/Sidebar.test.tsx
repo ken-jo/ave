@@ -2186,7 +2186,7 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
     }
   });
 
-  it("walks the rows with the arrow keys, Home and End, and opens with Enter or beside the focused tile with ⌥Enter", () => {
+  it("walks the rows with the arrow keys, Home and End, and opens with Enter or Space, or beside the focused tile with ⌥Enter", () => {
     const onOpenSessionBeside = vi.fn();
     const { container, onLoadSession, restore } = renderSidebar({ ...inProject(DEFAULT_PROJECT), onOpenSessionBeside });
     try {
@@ -2205,6 +2205,8 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
       expect(onOpenSessionBeside).toHaveBeenCalledWith("sess-2");
       fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
       expect(key(document.activeElement!)).toBe("session:sess-1");
+      fireEvent.keyDown(document.activeElement!, { key: " " });
+      expect(onLoadSession).toHaveBeenLastCalledWith("sess-1");
     } finally {
       restore();
     }

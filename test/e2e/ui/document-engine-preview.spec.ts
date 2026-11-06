@@ -1,10 +1,16 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setWindowSize, builtMainExists, launchSeededElectron } from "./seeded-electron.js";
 import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { openInlineSettings } from "./inline-settings.js";
+import { makeTestT } from "./i18n.js";
+import { documentEngineImportSupported } from "../../../src/observation/libreoffice-engine.js";
 import { wordDocumentFixture, textDocumentFixture } from "../../../src/__tests__/support/structured-document-fixtures.js";
+
+// launchSeededElectron seeds the Korean UI.
+const t = makeTestT("ko");
 
 test("optional engine absence keeps document outlines and an explicit installation surface", async () => {
   expect(builtMainExists()).toBe(true);
@@ -27,7 +33,7 @@ test("optional engine absence keeps document outlines and an explicit installati
     ],
   });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
     await setWindowSize(ctx.app, 1280, 860);
     await openDocumentSessionFiles(ctx.page, directory);
     await openDocumentSessionFile(ctx.page, "report.docx");
@@ -42,7 +48,10 @@ test("optional engine absence keeps document outlines and an explicit installati
     await openDocumentSessionFile(ctx.page, "report.odt");
     await expect(preview).toContainText("Heading");
     await openDocumentSessionFile(ctx.page, "report.hwpx");
-    await expect(preview.getByTestId("chat-side-panel-file-error")).toContainText("문서 엔진이 설치되지 않았습니다");
+    // Owner decision 6b96ef3ab: HWP/HWPX are refused on macOS before any engine lookup, so there the viewer names the
+    // platform; elsewhere the absent engine is named (documentEngineImportSupported).
+    await expect(preview.getByTestId("chat-side-panel-file-error")).toContainText(t(documentEngineImportSupported(process.platform)
+      ? "documentEngine.previewUnavailable" : "documentEngine.previewPlatformUnsupported"));
     await openInlineSettings(ctx.app, ctx.page, "chat");
     const installation = ctx.page.getByTestId("document-engine-install");
     await installation.scrollIntoViewIfNeeded();
