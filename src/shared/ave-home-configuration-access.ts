@@ -159,6 +159,8 @@ interface WindowsReadBoundary {
   file: WindowsPathFacts;
   path: string;
   directories: readonly WindowsPathFacts[];
+  /** The verified DACL of the root and of `config/`, each null when this boundary asserts none for it. */
+  verifiedDacls: readonly [string | null, string | null];
   handles?: WindowsConfigurationHandles;
 }
 
@@ -192,6 +194,31 @@ function windowsBoundarySnapshot(boundary: Pick<WindowsReadBoundary, "protectedD
     identity: [...directories.map(row => `${windowsObjectKey(row)}:${row.changeTime}`), ...root.ancestors.map(windowsObjectKey)].join("|"),
     cacheable: directories.every(row => row.changeTime !== null && BigInt(row.changeTime) !== 0n),
   };
+}
+
+function verifiedDacls(rows: readonly WindowsDaclFacts[], verifyHome: boolean, protectedDirectory: boolean): [string | null, string | null] {
+  return [verifyHome ? JSON.stringify(rows[0]!.dacl) : null, protectedDirectory ? JSON.stringify(rows[1]!.dacl) : null];
+}
+
+/**
+ * Whether a certified boundary still holds: the same directory and ancestor objects and, where the certificate asserted a DACL, that
+ * DACL. ChangeTime only shortcuts the DACL comparison, since it also moves when any entry is created in the directory (Chromium writes
+ * into userData while boot reads ave-secrets.json there); a directory with no asserted DACL is its object identity alone.
+ */
+function windowsBoundaryHolds(boundary: WindowsReadBoundary, rows: readonly WindowsPathFacts[]): boolean {
+  const objects = windowsBoundaryObjects(boundary);
+  const sameObjects = (current: readonly WindowsPathFacts[]) =>
+    windowsBoundaryObjects({ protectedDirectory: boundary.protectedDirectory, identity: windowsBoundarySnapshot(boundary, current).identity }) === objects;
+  if (!sameObjects(rows)) return false;
+  const moved = boundary.verifiedDacls.some((dacl, index) => dacl !== null && rows[index]!.changeTime !== boundary.directories[index]!.changeTime);
+  if (!moved) return true;
+  // The DACL walk holds each component's handle through capture, so its rows name the objects these DACLs belong to.
+  const fresh = readWindowsDacls([boundary.root, boundary.directory]);
+  if (!sameObjects(fresh) || !boundary.verifiedDacls.every((dacl, index) => dacl === null || dacl === JSON.stringify(fresh[index]!.dacl))) return false;
+  // The same objects with the same DACLs: these facts are the new baseline the certificate's handles compare against.
+  boundary.directories = fresh.slice(0, 2);
+  boundary.identity = windowsBoundarySnapshot(boundary, fresh).identity;
+  return true;
 }
 
 function windowsBoundaryIdentity(boundary: WindowsReadBoundary): string {
@@ -267,7 +294,7 @@ function windowsReadBoundary(path: string, seen: { present: boolean }): WindowsR
   const cached = windowsReadCertificates.get(key);
   if (cached !== undefined) {
     const { handles, fileOpened } = openWindowsConfigurationHandles([
-      ...windowsConfigurationDirectoryEntries(root, cached.directories[0]!),
+      ...windowsConfigurationDirectoryEntries(root, cached.directories[0]!, cached.verifiedDacls[0] !== null),
       ...(protectedDirectory ? windowsConfigurationDirectoryEntries(directory, cached.directories[1]!) : []),
       { path, facts: cached.file, changeTimeRequired: true },
     ]);
@@ -277,7 +304,10 @@ function windowsReadBoundary(path: string, seen: { present: boolean }): WindowsR
   const paths = [root, directory, path];
   const rows = readWindowsDacls(paths);
   const snapshot = windowsBoundarySnapshot({ protectedDirectory }, rows);
-  const boundary: WindowsReadBoundary = { key, ...snapshot, root, directory, protectedDirectory, path, directories: rows.slice(0, 2), file: rows[2]! };
+  const boundary: WindowsReadBoundary = {
+    key, ...snapshot, root, directory, protectedDirectory, path, directories: rows.slice(0, 2), file: rows[2]!,
+    verifiedDacls: verifiedDacls(rows, verifyHome, protectedDirectory),
+  };
   if (cached !== undefined && cached.identity.split("|").slice(protectedDirectory ? 2 : 1).join("|")
     !== boundary.identity.split("|").slice(protectedDirectory ? 2 : 1).join("|")) {
     throw new Error("Configuration path ancestry changed");
@@ -288,9 +318,7 @@ function windowsReadBoundary(path: string, seen: { present: boolean }): WindowsR
   if (protectedDirectory && (!directoryFacts!.dacl?.protected || !isOwnerOnlyDacl({
     ownerSid: directoryFacts!.dacl.owner, elevated: directoryFacts!.elevated, rules: windowsOwnerRules(directoryFacts!.dacl),
   }, directoryFacts!.currentUserSid))) throw new Error("Configuration boundary protection is unverified");
-  if (snapshot.identity !== boundary.identity || windowsBoundaryIdentity(boundary) !== boundary.identity) {
-    throw new Error("Configuration boundary changed during verification");
-  }
+  if (!windowsBoundaryHolds(boundary, pinWindowsPaths([root, directory]))) throw new Error("Configuration boundary changed during verification");
   boundary.file = rows[2]!;
   if (boundary.cacheable) windowsReadCertificates.set(key, boundary);
   return boundary;
@@ -346,7 +374,7 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
       const current = rows[2]!;
       if (!admitWindowsReparse(current, "evidence") || current.exists !== true || current.directory
         || windowsObjectKey(current) !== windowsObjectKey(boundary.file) || current.changeTime !== boundary.file.changeTime
-        || windowsBoundarySnapshot(boundary, rows).identity !== boundary.identity) {
+        || !windowsBoundaryHolds(boundary, rows)) {
         windowsReadCertificates.delete(boundary.key);
         throw new Error("Configuration boundary changed during read");
       }
