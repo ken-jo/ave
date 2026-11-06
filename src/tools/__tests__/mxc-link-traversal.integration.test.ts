@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
@@ -16,7 +17,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 
-// A link inside a granted cwd must not expose a credential-floor target to recursive or direct reads.
+// Host admission and recursive-traversal guards refuse before launch; ordinary secret reads stay contained.
 describe.runIf(process.platform === "win32")("MXC link traversal into a denied path", () => {
   it.for(["junction", "dir"] as const)("blocks reads through a %s link", { timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async (linkType, testContext) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
@@ -63,13 +64,15 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
       console.info("MXC link evidence " + JSON.stringify({ link: linkType, case: "baseline-unsandboxed", exitCode: baseline.status,
         leaked: secrets.every((value) => baseline.stdout.includes(value)), controlVisible: baseline.stdout.includes(control) }));
       expect(secrets.every((value) => baseline.stdout.includes(value)), baseline.stdout + baseline.stderr).toBe(true);
-      // "host": refused before launch; "container": runs in MXC, which must withhold the target.
+      // "host": admission-denied or recursive-traversal refusal; container layers withhold ordinary secrets.
+      // A localized access-denied line need not name the path, so direct reads report the error reason instead.
+      const directRead = (path: string) => `try { Get-Content -LiteralPath ${quotePowerShell(path)} -ErrorAction Stop } catch { $_.CategoryInfo.Reason; exit 1 }`;
       const cases = [
         { name: "recurse-get-content", layer: "host", command: `${listing} -Recurse -File | Get-Content`, refusal: /recursive shell filesystem traversal/ },
         { name: "depth-prefix-get-content", layer: "host", command: `${listing} -Dep 3 -File | Get-Content`, refusal: /recursive shell filesystem traversal/ },
         { name: "recurse-select-string",layer: "host", command: `${listing} -Recurse -File | Select-String -Pattern 'AVE-T6-'`, refusal: /recursive shell filesystem traversal/ },
-        { name: "direct-plain-name", layer: "host", command: `Get-Content -LiteralPath ${quotePowerShell(join(linked, "notes.txt"))}`, refusal: /Sensitive path: .*\.ssh/ },
-        { name: "direct-id-rsa", layer: "host", command: `Get-Content -LiteralPath ${quotePowerShell(join(linked, "id_rsa"))}`, refusal: /Sensitive path: .*\.ssh/ },
+        { name: "direct-plain-name", layer: "container-direct", command: directRead(join(linked, "notes.txt")) },
+        { name: "direct-id-rsa", layer: "container-direct", command: directRead(join(linked, "id_rsa")) },
         { name: "pipe-get-content", layer: "container", command: pipeRead },
         { name: "pipe-select-string", layer: "container", command: `${listing} | Get-ChildItem -File | Select-String -Pattern 'AVE-T6-'` },
       ];
@@ -86,19 +89,25 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
           expect(result.output).toMatch(refusal);
         } else {
           expect(result.metadata?.sandboxed, result.output).toBe(true);
-          expect(result.output, "control file must be readable").toContain(control);
-          // The container refuses the link itself (localized access-denied error naming it).
           expect(result.isError, result.output).toBe(true);
-          expect(result.output).toContain(linked);
+          if (layer === "container-direct") {
+            expect(result.output).toMatch(/^UnauthorizedAccessException$/m);
+          } else {
+            expect(result.output, "control file must be readable").toContain(control);
+            // The container refuses the link itself (localized access-denied error naming it); CLIXML wraps long lines at console width.
+            expect(result.output.replaceAll('_x000D__x000A_</S><S S="Error">', "")).toContain(linked);
+          }
         }
       }
       const bash = await new BashTool().execute({ command: `cat ${quotePowerShell(join(linked, "id_rsa"))}`, timeoutSeconds }, context);
       const bashLeaked = secrets.some((value) => bash.output.includes(value));
-      console.info("MXC link evidence " + JSON.stringify({ link: linkType, case: "bash-direct", layer: "host", exitCode: bash.metadata?.returncode ?? null,
+      console.info("MXC link evidence " + JSON.stringify({ link: linkType, case: "bash-direct", layer: "unavailable", exitCode: bash.metadata?.returncode ?? null,
         isError: bash.isError, sandboxed: bash.metadata?.sandboxed ?? null, leaked: bashLeaked, error: bash.output.slice(0, 400) }));
       expect(bashLeaked).toBe(false);
       expect(bash.isError).toBe(true);
-      expect(bash.output).toMatch(/Sensitive path: .*id_rsa/);
+      // This substrate refuses the Bash runtime before launch rather than running it in the container.
+      expect(bash.output).toBe(MXC_BASH_UNAVAILABLE_MESSAGE);
+      expect(bash.metadata).toMatchObject({ sandboxed: false, sandboxAttempted: true, isolation: "unavailable" });
     } finally {
       await resetAsrtSandbox();
       vi.restoreAllMocks();

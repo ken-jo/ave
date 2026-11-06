@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+import * as policyHome from "../../shared/policy-home.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
+import { canonicalizePathForMatch, createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { evaluateScopedRules } from "../rules/scoped-rule-matcher.js";
 import { inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
@@ -69,6 +71,41 @@ describe("permission path facts", () => {
     expect(createPermissionPathEvidence(project)({ lexical: path, canonical: path, effect: "read" })).toMatchObject({
       secret: expect.any(String), admissionDenial: null, protectedControl: undefined, projectEscape: false,
     });
+  });
+
+  it.for(["notes.txt", "id_rsa"])("asks before reading an ordinary secret through a workspace link: %s", async (name, testContext) => {
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    if (!canCreateSymlinks(linkType)) testContext.skip("Directory links cannot be created");
+    const home = join(project, "fixture-home");
+    const ssh = join(home, ".ssh");
+    mkdirSync(ssh, { recursive: true });
+    writeFileSync(join(ssh, name), "synthetic secret");
+    const linked = join(project, "linked");
+    symlinkSync(ssh, linked, linkType);
+    const homeAnchors = vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home]);
+    try {
+      const lexical = join(linked, name);
+      const canonical = canonicalizePathForMatch(lexical);
+      expect(canonical).toBe(canonicalizePathForMatch(join(ssh, name)));
+      expect(canonical).not.toBe(lexical.replaceAll("\\", "/"));
+      const path = { lexical, canonical, effect: "read" as const };
+      expect(createPermissionPathEvidence(project)(path)).toMatchObject({
+        secret: expect.any(String), admissionDenial: null, protectedControl: undefined, projectEscape: false,
+      });
+      const manager = new PermissionManager(join(root, "permissions.json"));
+      manager.setMode("default");
+      await manager.ensureProjectRulesLoaded(project);
+      const result = manager.checkDetailed("read_file", "builtin", "read", null, {
+        paths: [path], projectRulesCwd: project,
+      });
+      expect(result).toMatchObject({ decision: "ask", reasonCode: "secret-read", pipelineRequest: { secretRead: true } });
+      expect(result.pipelineRequest?.admissionDenial).toBeUndefined();
+      expect(result.pipelineRequest?.floor).toBeUndefined();
+      expect(result.forceModal).toBeUndefined();
+    } finally {
+      homeAnchors.mockRestore();
+      unlinkSync(linked);
+    }
   });
 
   it("keeps read and write facts separate while sharing each decision's policy roots", () => {
