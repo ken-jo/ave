@@ -17,7 +17,8 @@ export async function admitFixturePlugins({ app, mainWindow, aveHome, userDataDi
     env: buildIsolatedElectronEnv({ ...launchEnv, HOME: tempHome, USERPROFILE: tempHome, AVE_HOME: aveHome, AVE_DEV: devFlag ? "1" : undefined }),
   });
   const page = await restarted.firstWindow();
-  await expect(page.getByTestId("sidebar-settings")).toBeVisible();
+  // Same boot budget as the fixture's first launch: a confined boot also starts the OS sandbox.
+  await expect(page.getByTestId("sidebar-settings")).toBeVisible({ timeout: 60_000 });
   // The reload restores Settings; start from a composer so later Settings visits have a return destination.
   await page.getByTestId("sidebar-new-chat").click();
   await expect(page.getByTestId("composer-textarea").first()).toBeVisible();

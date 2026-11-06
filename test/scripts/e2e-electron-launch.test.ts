@@ -1,6 +1,8 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { launchBaseEnv, windowsProfileEnv } from "../e2e/ui/windows-e2e-profile.js";
 
 // The shared launcher substitutes keychain access to prevent real prompts.
 const ROOT = process.cwd();
@@ -56,5 +58,34 @@ describe("e2e Electron launches", () => {
       'export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });',
     );
     expect(harness).toContain("env: { ...baseEnv, ...E2E_RUNTIME_ENV },");
+  });
+});
+
+describe("Windows e2e launch env", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("puts APPDATA inside the overridden profile on win32 only", () => {
+    const profile = mkdtempSync(join(tmpdir(), "ave-e2e-win-profile-"));
+    dirs.push(profile);
+    expect(windowsProfileEnv(profile, "win32")).toEqual({ APPDATA: join(profile, "AppData", "Roaming") });
+    expect(existsSync(join(profile, "AppData", "Roaming"))).toBe(true);
+    expect(windowsProfileEnv(profile, "linux")).toEqual({});
+    expect(windowsProfileEnv(undefined, "win32")).toEqual({});
+  });
+
+  it("never passes LOCALAPPDATA on win32, inherited or spec-supplied", () => {
+    const inherited = { PATH: "p", LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local", UNSET: undefined };
+    expect(launchBaseEnv(inherited, "win32")).toEqual({ PATH: "p" });
+    expect(launchBaseEnv({ APPDATA: "a", LocalAppData: "spec" }, "win32")).toEqual({ APPDATA: "a" });
+    expect(launchBaseEnv({ LOCALAPPDATA: "l" }, "linux")).toEqual({ LOCALAPPDATA: "l" });
+  });
+
+  it("builds every launch env through both", () => {
+    const harness = readFileSync(resolve(ROOT, HARNESS), "utf8");
+    expect(harness).toContain("const baseEnv = launchBaseEnv(options?.env ?? process.env);");
+    expect(harness).toContain("...safeProcessEnv(), ...windowsProfileEnv(overrides.USERPROFILE), ...overrides");
   });
 });
