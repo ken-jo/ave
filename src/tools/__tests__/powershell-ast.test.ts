@@ -84,3 +84,17 @@ it.each([String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`, String.
   "Env:fixture", "Function:fixture", "Variable:fixture"])("rejects provider target before filesystem resolution: %s", path => {
   expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
 });
+
+// URL operands are not provider drives; the gate inspects every argument on every route.
+it.each([
+  ["iwr", command("iwr", [literal("https://example.com"), { kind: "parameter", name: "OutFile", text: "-OutFile", argument: literal("x.txt") }])],
+  ["Invoke-WebRequest -Uri", command("Invoke-WebRequest", [{ kind: "parameter", name: "Uri", text: "-Uri", argument: literal("https://example.com/a") }])],
+  ["git clone", command("git", [literal("clone"), literal("https://github.com/a/b")])],
+  ["git+https", command("git", [literal("clone"), literal("git+https://github.com/a/b")])],
+] as const)("allows a URL operand at the runtime gate: %s", (_name, summary) => {
+  expect(check(summary)).toBeNull();
+});
+
+it.each([String.raw`HKCU:\Software\Foo`, "file:///C:/Users/example/.ssh/id_test"])("still refuses %s beside the URL exception", path => {
+  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
+});

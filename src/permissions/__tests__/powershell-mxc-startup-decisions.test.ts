@@ -71,6 +71,7 @@ describe("confined native shell startup decisions", () => {
     ["partial sandbox", buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: { ...CAPABILITY, confines: { filesystem: false, process: false, network: true } } })],
     ["other substrate", buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, shellSubstrate: "asrt", activeCapability: CAPABILITY })],
     ["unknown", undefined],
+    ["unissued lookalike", { ...MXC_PLAN }],
   ] as const)("keeps writes unproven on the %s route", (_name, plan) => {
     expect(isPowerShellStartupPinned("win32", plan)).toBe(false);
     for (const command of WRITES) {
