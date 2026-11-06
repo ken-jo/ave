@@ -2414,32 +2414,49 @@ describe("installer smoke and packaging discipline", () => {
     expect(packageFootprint).not.toContain('"/dist/scripts/uv-targets.mjs",');
   });
 
-  it("keeps electron-builder host runtime resources aligned with the runtime asset inventory", async () => {
+  it("keeps static host runtime resources equal to the runtime asset inventory", async () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as {
-      build?: { extraResources?: Array<{ from?: string; to?: string }> };
+      build: { extraResources: Array<{ from: string; to: string }>; asarUnpack: string[] };
     };
     const runtimeAssets = await import("../../scripts/packaged-runtime-assets.mjs");
-    const extraResources = packageJson.build?.extraResources ?? [];
-    const hostResources = runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS.flatMap(
+    const extraResources: Array<{ from: string; to: string }> = packageJson.build.extraResources;
+    expect(new Set(extraResources.map(({ to }) => to)).size).toBe(extraResources.length);
+    const destinations: string[] = [];
+    const hostResources: Array<{ from: string; to: string }> = runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS.flatMap(
       (asset: {
-        stagedBy?: string;
-        packageResource?: { from: string; to: string };
-        licenseResource?: { from: string; to: string };
-      }) =>
-        // asar-unpacked native binaries (e.g. the better-sqlite3 N-API prebuild)
-        // are packaged via asarUnpack + afterPack, not electron-builder
-        // extraResources, so they are not expected in build.extraResources.
-        asset.packageResource?.to?.startsWith("app.asar.unpacked/")
-          ? []
-          : [asset.packageResource, asset.licenseResource].filter(Boolean),
+        packageResource: { from: string; to: string };
+        licenseResource?: { from: string; to: string; requiredFiles: readonly string[] };
+      }) => {
+        const { packageResource, licenseResource } = asset;
+        destinations.push(packageResource.to);
+        const resources: Array<{ from: string; to: string }> = [];
+        if (packageResource.to.startsWith("app.asar.unpacked/")) {
+          expect(packageResource.to).toBe(`app.asar.unpacked/${packageResource.from}`);
+          const unpackPatterns: string[] = packageJson.build.asarUnpack;
+          expect(unpackPatterns.filter((pattern) =>
+            pattern.endsWith("/**") && packageResource.from.startsWith(pattern.slice(0, -2)),
+          )).toHaveLength(1);
+        } else {
+          resources.push(packageResource);
+        }
+        if (licenseResource) {
+          destinations.push(licenseResource.to);
+          expect(licenseResource.requiredFiles.length).toBeGreaterThan(0);
+          for (const file of licenseResource.requiredFiles) {
+            expect(readRepoFile(`${licenseResource.from}/${file}`).trim()).not.toBe("");
+          }
+          resources.push({ from: licenseResource.from, to: licenseResource.to });
+        }
+        return resources;
+      },
     );
 
-    for (const resource of hostResources) {
-      expect(extraResources).toContainEqual({
-        from: resource.from,
-        to: resource.to,
-      });
-    }
+    expect(hostResources.length).toBeGreaterThan(0);
+    expect(new Set(destinations).size).toBe(destinations.length);
+    const runtimeResources = extraResources.filter((resource) => hostResources.some(
+      ({ from, to }) => resource.from === from || resource.to === to,
+    ));
+    expect(runtimeResources).toEqual(hostResources);
   });
 
   it("ships the palette and color-derivation license notices as resources", () => {
