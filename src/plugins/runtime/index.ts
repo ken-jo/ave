@@ -6745,42 +6745,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.perf.snapshot();
   }
 
-  /** Test-only injection bypasses lifecycle loading; production callers must use normal admission. */
-  _testInjectPlugin(
-    pluginId: string,
-    toolName: string,
-    handler: (payload?: unknown) => Promise<unknown>,
-  ): void {
-    const stub: LoadedPlugin = {
-      activationId: randomUUID(),
-      manifest: {
-        id: pluginId,
-        name: pluginId,
-        version: "1.0.0",
-        entry: "index.js",
-        description: "Test fixture",
-        tools: [
-          {
-            name: toolName,
-            inputSchema: { type: "object", properties: {} },
-            _meta: { ui: { visibility: ["model"] } },
-          },
-        ],
-      },
-      pluginRoot: "/tmp/test-inject",
-      instance: {} as import("../types.js").RuntimePlugin,
-      methods: new Map([[toolName, handler as import("../types.js").PluginToolHandler]]),
-      started: true,
-      // Injected handlers run in-process without a child.
-      arm: "in-process",
-      confinement: "not-spawned",
-    };
-    this.plugins.set(pluginId, stub);
-    this.markPluginUiRevision(pluginId);
-    this.methodMap.set(toolName, { pluginId, handler: handler as import("../types.js").PluginToolHandler });
-    this.perf.ensure(pluginId);
-  }
-
   registerDisposer(pluginId: string, dispose: () => void): void {
     let list = this.disposers.get(pluginId);
     if (!list) {

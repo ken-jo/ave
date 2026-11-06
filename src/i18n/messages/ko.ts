@@ -394,7 +394,6 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginConfigTab.runtimeArmLabel": "실행 방식",
   "pluginConfigTab.runtimeArmLine": "{arm} · {confinement}",
   "pluginConfigTab.armChild": "별도 프로세스",
-  "pluginConfigTab.armInProcess": "앱 프로세스 내부",
   "pluginConfigTab.confinementMacosSandbox": "macOS 샌드박스",
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux 샌드박스(bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows 샌드박스",

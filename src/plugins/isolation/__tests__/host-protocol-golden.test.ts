@@ -37,10 +37,10 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import type {
   ValidationHost,
   ValidationHostOverrides,
-} from "../../validate/validation-host.js";
+} from "../../../__tests__/support/plugin-validation/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
-import { openValidationSession } from "../../validate/validation-session.js";
-import { createValidationChildLink } from "../../validate/validation-child-link.js";
+import { openValidationSession } from "../../../__tests__/support/plugin-validation/validation-session.js";
+import { createValidationChildLink } from "../../../__tests__/support/plugin-validation/validation-child-link.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { goldenFiles } from "./host-protocol-golden-files.js";
 import { settle } from "./stream-turns.js";
@@ -703,13 +703,15 @@ describe("a golden reads the same on every machine", () => {
 
 describe("one conversation per installed plugin's surface", () => {
   it.each([
-    ["meeting", /speaks host protocol 2; this app serves 5/],
-    ["samplemail", /speaks host protocol 3; this app serves 5/],
-    ["local-indexer", /does not declare a host protocol/],
-  ] as const)("refuses an old %s bundle before its child connects", async (pluginId, refusal) => {
-    const dir = join(GOLDEN_ROOT, "old-bundles", pluginId);
+    ["2", /speaks host protocol 2; this app serves 5/],
+    ["3", /speaks host protocol 3; this app serves 5/],
+    [undefined, /does not declare a host protocol/],
+  ] as const)("refuses unsupported protocol %s before its child connects", async (hostProtocol, refusal) => {
+    const pluginId = "meeting";
+    const dir = join(GOLDEN_ROOT, "plugins", pluginId);
     const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
-    // A throwing entry and a write-refusing link prove old protocols fail before import or child traffic.
+    manifest.requires = { ...manifest.requires, hostProtocol };
+    // A write-refusing link proves protocol admission happens before child traffic.
     const written: unknown[] = [];
     const output = new Writable({
       write(chunk, _encoding, callback) {

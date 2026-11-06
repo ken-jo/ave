@@ -3,16 +3,6 @@ import {
   runPluginFactoryWithTimeout,
   runStartWithTimeout,
 } from "../index.js";
-// Only the retained in-process factory owns this import bound; production main never imports plugin code.
-import {
-  importInProcessPluginFactory,
-  PluginImportTimeoutError,
-  runPluginImportWithTimeout,
-} from "../plugin-loader.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 describe("runStartWithTimeout — plugin instance.start() host-enforced timeout", () => {
@@ -116,64 +106,5 @@ describe("runPluginFactoryWithTimeout", () => {
     await vi.runAllTimersAsync();
     await Promise.resolve();
     expect(cleanup).toHaveBeenCalledWith({ id: "late" });
-  });
-});
-
-describe("runPluginImportWithTimeout", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("bounds non-settling ESM evaluation with a typed quarantine signal", async () => {
-    const promise = runPluginImportWithTimeout(
-      () => new Promise<never>(() => undefined),
-      1_000,
-    );
-    const rejection = promise.catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(1_001);
-    const error = await rejection;
-    expect(error).toBeInstanceOf(PluginImportTimeoutError);
-    expect(error).toMatchObject({
-      code: "plugin-import-timeout",
-      message: "plugin import timeout (>1000ms)",
-    });
-  });
-});
-
-/** The deprecated in-process factory has no production caller; keep its import behavior tested until removal. */
-describe("importInProcessPluginFactory", () => {
-  it("imports the entry module into this process and returns its own default export", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "in-process-plugin-"));
-    const entryPath = join(dir, "plugin.mjs");
-    // Use import.meta.url to prove this exact fixture module produced the instance.
-    writeFileSync(entryPath, "export default () => ({ handlers: {}, marker: import.meta.url });\n", "utf-8");
-    try {
-      const factory = await importInProcessPluginFactory(entryPath);
-      expect(typeof factory).toBe("function");
-      const instance = (await factory!({} as never)) as { marker?: string };
-      expect(instance.marker).toBe(pathToFileURL(entryPath).href);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("returns undefined when the module exports no factory", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "in-process-plugin-"));
-    const entryPath = join(dir, "plugin.mjs");
-    writeFileSync(entryPath, "export const notAFactory = 1;\n", "utf-8");
-    try {
-      await expect(importInProcessPluginFactory(entryPath)).resolves.toBeUndefined();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects an entry that cannot be imported", async () => {
-    await expect(
-      importInProcessPluginFactory(join(tmpdir(), "no-such-plugin-entry.mjs")),
-    ).rejects.toThrow();
   });
 });

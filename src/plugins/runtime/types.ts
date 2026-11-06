@@ -19,8 +19,8 @@ export type PluginLifecycleHookScope = {
   depth: number;
 };
 
-/** Routing records the actual factory arm; in-process remains only while its deprecated factory exists. */
-export type PluginLoadArm = "child" | "in-process";
+/** Loaded plugin generations run in child processes. */
+export type PluginLoadArm = "child";
 
 /** Report actual spawn confinement, or not-spawned when construction failed first. */
 export type PluginConfinementReport = SpawnConfinement | "not-spawned";

@@ -1,6 +1,6 @@
 # python-smoke
 
-The cross-language smoke (`docs/design/plugin-hostapi-protocol.md` §9.7 P5): a
+The cross-language smoke (`docs/history/plugin-hostapi-protocol-migration.md` §9.7 P5): a
 `process` plugin written in Python that speaks the host protocol over its own
 stdin and stdout.
 
@@ -17,7 +17,7 @@ stdin and stdout.
   `io.modelcontextprotocol/protocolVersion` or
   `io.modelcontextprotocol/clientCapabilities`, before the library sees it.
 - Beside `echo` it serves `escape_secrets` and `escape_network`, Admission's
-  escapes 1 and 2 (`plugin-hostapi-protocol.md` §9.8 A2) from a child that is
+  escapes 1 and 2 (`plugin-hostapi-protocol-migration.md` §9.8 A2) from a child that is
   not JavaScript: a read of the host's secrets directory and of another
   plugin's data directory, after a write and read-back of its own as the
   in-sandbox control, and a raw socket to a loopback listener. They

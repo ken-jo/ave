@@ -28,12 +28,7 @@ The extension's `contract/` directory holds the public contract and schemas
 vendored from an app release tag; see [Manifest Basics](./plugin-development.md#manifest-basics)
 and the [Extension Version Quick Reference](./plugin-version-quickref.md).
 
-Before installing, run the validator from this repository against the build
-folder (see [Testing Checklist](./plugin-development.md#testing-checklist)):
-
-```bash
-bun run plugin:validate <extension build folder>
-```
+Before installing, follow the [Testing Checklist](./plugin-development.md#testing-checklist).
 
 ## Install A Build Folder
 

@@ -314,7 +314,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           : "none";
     const available = kind !== "none";
     // Meaningful, platform-honest reason surfaced to the UI alongside the capability. This describes PLATFORM POTENTIAL only. Runtime registration is boot-time, so it is reported separately below. On Windows the filesystem
-    // confinement is against the host only: every confined process runs as the one `srt-sandbox` account, so plugins are not isolated from each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md §9.8 A2).
+    // confinement is against the host only: every confined process runs as the one `srt-sandbox` account, so plugins are not isolated from each other there (owner decision 2026-10-10, plugin-hostapi-protocol-migration.md §9.8 A2).
     const potentialReason =
       platform === "darwin"
         ? "ASRT (Seatbelt) confines filesystem, process, and network egress when enabled"
