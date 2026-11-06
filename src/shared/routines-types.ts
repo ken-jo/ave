@@ -82,6 +82,8 @@ export interface RoutineRecord {
   scope?: RoutineScope;
   createdAt: string;
   lastFiredAt?: string;
+  /** Completed fires, including connected-chat turns without a dedicated session. Older records have no history. */
+  runs?: RoutineRun[];
   /** Latest scheduled occurrence skipped: every named plugin was absent, or the connected chat was busy with another turn. */
   lastSkippedReason?: "plugins-missing" | "chat-busy";
   /** UTC minute of a skipped cron occurrence; distinct from a completed fire. */
@@ -137,10 +139,18 @@ export interface RoutineOccurrence {
 }
 
 /** One past fire for the schedule grids; `failed` when the item's lastFailure names this fire. */
+export interface RoutineRunMetrics {
+  startedAt: string;
+  durationMs: number;
+  /** Same turn usage as the transcript badge; absent when the provider supplied no usage. */
+  tokens?: { input: number; output: number; total: number };
+}
+
 export interface RoutineRun {
   routineId: string;
   firedAt: string;
   status: "done" | "failed";
+  metrics?: RoutineRunMetrics;
   sessionId?: string;
 }
 

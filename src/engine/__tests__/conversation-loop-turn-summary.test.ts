@@ -1,3 +1,4 @@
+import { captureRoutineRun } from "../routine-run-metrics.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -184,12 +185,14 @@ describe("ConversationLoop onTurnSummary", () => {
         }
       | null = null;
 
-    await loop.runTurn("질문", {
+    const captured = captureRoutineRun(() => loop.runTurn("질문", {
       onTurnSummary: (s) => {
         summary = s;
       },
     }, undefined, { ...userKeyboardTurn() },
-    );
+    ));
+    await captured.result;
+    expect(captured.metrics()).toMatchObject({ durationMs: expect.any(Number), tokens: { input: 240, output: 45, total: 285 } });
 
     expect(summary).not.toBeNull();
     expect(summary!.toolCount).toBe(3);
@@ -1507,5 +1510,76 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(summary!.freshInputTokens).toBe(0);
     expect(savedAssistant?.meta?.turnSummary?.tokensIn).toBe(expectedProjection.totalTokens,
     );
+  });
+});
+
+describe("routine metrics from transcript usage", () => {
+  it("uses fresh API input and output from the same cached turn as the transcript", async () => {
+    const provider = new FakeProvider([[
+      { type: "text_delta", text: "answer" },
+      { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 200 } },
+    ]]);
+    const loop = createLoopWithRegistry(provider, new ToolRegistry());
+    let summary: TurnSummary | undefined;
+    const captured = captureRoutineRun(() => loop.runTurn("Report.", { onTurnSummary: (value) => { summary = value; } }, undefined, userKeyboardTurn()));
+    await captured.result;
+    expect(captured.metrics().tokens).toEqual({ input: summary!.freshInputTokens, output: summary!.tokensOut, total: summary!.freshInputTokens + summary!.tokensOut });
+    expect(captured.metrics().tokens).toEqual({ input: 400, output: 100, total: 500 });
+  });
+
+  it("uses the subscription transcript's reported total including reasoning", async () => {
+    const loop = createLoopWithRegistry(createUsageReportingSubscriptionProvider(), new ToolRegistry(), {
+      settingsService: { get: fakeUsageReportingSubscriptionSettings, getSecret: () => "test-key" } as never,
+    });
+    let summary: TurnSummary | undefined;
+    const captured = captureRoutineRun(() => loop.runTurn("Report.", { onTurnSummary: (value) => { summary = value; } }, undefined, userKeyboardTurn()));
+    await captured.result;
+    expect(captured.metrics().tokens).toEqual({ input: 1000, output: 230, total: 1830 });
+    expect(captured.metrics().tokens!.total).toBe(summary!.subscriptionUsage![0]!.totalTokens);
+  });
+
+  it("isolates concurrent fires and excludes earlier connected-chat turns", async () => {
+    const response = (inputTokens: number): StreamEvent[] => [
+      { type: "text_delta", text: "answer" },
+      { type: "message_complete", stopReason: "end_turn", usage: { inputTokens, outputTokens: 10 } },
+    ];
+    const chat = createLoopWithRegistry(new FakeProvider([response(900), response(100), response(200)]), new ToolRegistry());
+    await chat.runTurn("Earlier chat turn", undefined, undefined, userKeyboardTurn());
+    const other = createLoopWithRegistry(new FakeProvider([response(500)]), new ToolRegistry());
+    const connected = captureRoutineRun(async () => {
+      await chat.runTurn("First run turn", undefined, undefined, userKeyboardTurn());
+      await chat.runTurn("Second run turn", undefined, undefined, userKeyboardTurn());
+    });
+    const concurrent = captureRoutineRun(() => other.runTurn("Other fire", undefined, undefined, userKeyboardTurn()));
+    await Promise.all([connected.result, concurrent.result]);
+    expect(connected.metrics().tokens).toEqual({ input: 300, output: 20, total: 320 });
+    expect(concurrent.metrics().tokens).toEqual({ input: 500, output: 10, total: 510 });
+  });
+
+  it("leaves missing provider usage absent instead of recording zero", async () => {
+    const loop = createLoopWithRegistry(new FakeProvider([[
+      { type: "text_delta", text: "answer" },
+      { type: "message_complete", stopReason: "end_turn" },
+    ]]), new ToolRegistry());
+    const captured = captureRoutineRun(() => loop.runTurn("Report.", undefined, undefined, userKeyboardTurn()));
+    await captured.result;
+    expect(captured.metrics()).toMatchObject({ startedAt: expect.any(String), durationMs: expect.any(Number) });
+    expect(captured.metrics().tokens).toBeUndefined();
+  });
+
+  it("keeps spent usage when a later tool round fails", async () => {
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({ name: "read_report", description: "Read report", source: "builtin", category: "read", jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true, execute: async () => ({ output: "report", isError: false }) }));
+    const loop = createLoopWithRegistry(new FakeProvider([
+      [
+        { type: "tool_call", id: "read-1", name: "read_report", input: {} },
+        { type: "message_complete", stopReason: "tool_use", usage: { inputTokens: 100, outputTokens: 20 } },
+      ],
+      [{ type: "error", error: "synthetic provider failure" }],
+    ]), registry);
+    const captured = captureRoutineRun(() => loop.runTurn("Read report.", undefined, undefined, userKeyboardTurn()));
+    const result = await captured.result;
+    expect(result.stopReason).toBe("stream-error");
+    expect(captured.metrics().tokens).toEqual({ input: 100, output: 20, total: 120 });
   });
 });

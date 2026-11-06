@@ -1,3 +1,4 @@
+import type { MemoryDetailResult, MemorySummariesResult } from "../../shared/memory-detail.js";
 import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 import type { DocumentEngineApi } from "../../shared/document-engine-api.js";
@@ -354,6 +355,7 @@ export type ProjectQueryOptions = {
 
 /** Host-owned metadata attached to a managed long-term memory. */
 type MemoryEntry = {
+  origin?: import("../../memory/memory-manager.js").MemoryOriginV1;
   filename: string;
   title: string;
   content: string;
@@ -891,11 +893,13 @@ export type AveApi = {
   starredList: () => Promise<Array<{ id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string }>>;
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
+  memoryGetDetail: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryDetailResult>;
+  memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
   memoryListEntries: (opts?: ProjectQueryOptions) => Promise<MemoryEntry[]>;
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;
   memoryUndo: (token: string) => Promise<MemoryUndoIpcResult>;
   onMemorySaveResult: (handler: (event: MemorySaveResultEvent) => void) => () => void;
-  memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<{ id?: string; filename?: string; title: string; content?: string; excerpt: string; updatedAt: string; projectRoot?: string; projectName?: string }>>;
+  memorySearchEntries: (q: string, opts?: ProjectQueryOptions) => Promise<Array<MemoryEntry & { excerpt: string }>>;
   memoryGetIndex: (opts?: ProjectQueryOptions) => Promise<string>;
   memoryUpdateIndexIfUnchanged: (expectedContent: string, nextContent: string) => Promise<boolean>;
   memoryUpdateIndexSections: (sections: { urgentMemory?: string; references?: string }) => Promise<unknown>;

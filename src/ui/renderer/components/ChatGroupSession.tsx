@@ -1,3 +1,4 @@
+import type { ChatMessageRevealRequest } from "../hooks/use-chat-scroll.js";
 import type { SideChatOpenRequest } from "./SideChatView.js";
 import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
@@ -175,6 +176,8 @@ export interface ChatGroupEnvironment {
 }
 
 export interface ChatGroupSessionProps {
+  revealMessage?: ChatMessageRevealRequest | null;
+  onMessageRevealHandled?: (nonce: number) => void;
   chatGroupId: string;
   /** The window's api. The tile binds its own group view of it. */
   api: AveApi;
@@ -237,7 +240,7 @@ export interface ChatGroupSessionProps {
  */
 export function ChatGroupSession({
   chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
-  paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange,
+  paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange, revealMessage, onMessageRevealHandled,
 }: ChatGroupSessionProps) {
   const { t } = useTranslation();
 
@@ -994,6 +997,8 @@ export function ChatGroupSession({
       <ChatView
         api={api}
         chatGroupId={chatGroupId}
+        revealMessage={revealMessage}
+        onMessageRevealHandled={onMessageRevealHandled}
         onAsk={(q, intent, opts) => {
           // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
           if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);

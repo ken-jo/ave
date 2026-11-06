@@ -12,6 +12,12 @@ import {
   type SavedChatScrollPosition,
 } from "../state/chat-scroll-store.js";
 
+export interface ChatMessageRevealRequest {
+  sessionId: string;
+  messageId: string;
+  nonce: number;
+}
+
 export interface UseChatScrollParams {
   entries: ChatEntry[];
   currentSessionId: string;
@@ -22,6 +28,8 @@ export interface UseChatScrollParams {
   searchIdx: number;
   /** The tile around this transcript is mounted but not drawn. */
   hidden: boolean;
+  revealMessage?: ChatMessageRevealRequest | null;
+  onMessageRevealHandled?: (nonce: number) => void;
 }
 
 export interface UseChatScrollResult {
@@ -49,12 +57,16 @@ export function useChatScroll({
   searchMatches,
   searchIdx,
   hidden,
+  revealMessage,
+  onMessageRevealHandled,
 }: UseChatScrollParams): UseChatScrollResult {
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const previousEntryCountRef = useRef(entries.length);
   const previousSessionIdRef = useRef(currentSessionId);
   const pinnedToBottomRef = useRef(true);
   const autoBottomPinFrameRef = useRef<number | null>(null);
+  const revealedNonceRef = useRef<number | null>(null);
+  const observedRevealSessionRef = useRef<number | null>(null);
   const scrollFollowSignature = useMemo(() => bottomFollowSignature(entries), [entries]);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
@@ -260,6 +272,38 @@ export function useChatScroll({
       scheduleAutoBottomPin();
     }
   }, [currentSessionId, entries.length, isNearBottom, scheduleAutoBottomPin, scrollFollowSignature, viewMode]);
+
+  useEffect(() => {
+    if (!revealMessage || revealMessage.nonce === revealedNonceRef.current) return;
+    if (revealMessage.sessionId !== currentSessionId) {
+      if (observedRevealSessionRef.current === revealMessage.nonce) {
+        revealedNonceRef.current = revealMessage.nonce;
+        onMessageRevealHandled?.(revealMessage.nonce);
+      }
+      return;
+    }
+    observedRevealSessionRef.current = revealMessage.nonce;
+    if (hidden || viewMode) return;
+    const entryIndex = entries.findIndex((entry) => "messageId" in entry && entry.messageId === revealMessage.messageId);
+    if (entryIndex < 0) {
+      revealedNonceRef.current = revealMessage.nonce;
+      onMessageRevealHandled?.(revealMessage.nonce);
+      return;
+    }
+    cancelAutoBottomPin();
+    pinnedToBottomRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = scrollViewportRef.current;
+      const target = viewport?.querySelector<HTMLElement>(`[data-chat-entry-index="${entryIndex}"]`);
+      if (!target) return;
+      target.scrollIntoView({ behavior: "auto", block: "center" });
+      revealedNonceRef.current = revealMessage.nonce;
+      setShowJumpToBottom(!isNearBottom());
+      saveScrollPosition(viewport);
+      onMessageRevealHandled?.(revealMessage.nonce);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [cancelAutoBottomPin, currentSessionId, entries, hidden, isNearBottom, onMessageRevealHandled, revealMessage, saveScrollPosition, viewMode]);
 
   const handleJumpToEntry = useCallback((entryIndex: number) => {
     const el = scrollViewportRef.current?.querySelector<HTMLElement>(

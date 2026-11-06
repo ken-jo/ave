@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
+import type { MemorySummariesResult } from "../../../shared/memory-detail.js";
 import type { AveApi } from "../types.js";
+import type { MemoryKind, MemoryOriginV1 } from "../../../memory/memory-manager.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 
 export interface NoteResult {
+  kind?: MemoryKind;
+  origin?: MemoryOriginV1;
+  content?: string;
   title: string;
   excerpt: string;
   updatedAt?: string;
+  createdAt?: string;
   filename?: string;
   /** Absent on a legacy note without front matter; such a note can be deleted but not fixed by id. */
   id?: string;
@@ -32,7 +38,7 @@ export function memoryProjectOptions(project: ProjectIdentity | undefined) {
   };
 }
 
-function stripTopHeading(content: string): string {
+export function stripTopHeading(content: string): string {
   return content.replace(/^#\s+.+(?:\r?\n)+/m, "").trim();
 }
 
@@ -53,9 +59,9 @@ function memoryGetIndex(api: AveApi, project: ProjectIdentity | undefined) {
   return opts ? api.memoryGetIndex(opts) : api.memoryGetIndex();
 }
 
-function memoryListEntries(api: AveApi, project: ProjectIdentity | undefined) {
+function memoryGetSummaries(api: AveApi, project: ProjectIdentity | undefined) {
   const opts = memoryProjectOptions(project);
-  return opts ? api.memoryListEntries(opts) : api.memoryListEntries();
+  return opts ? api.memoryGetSummaries(opts) : api.memoryGetSummaries();
 }
 
 function memoryListSessions(api: AveApi, project: ProjectIdentity | undefined) {
@@ -76,6 +82,8 @@ function memorySearchSessions(api: AveApi, query: string, project: ProjectIdenti
 /** Memory search hook. Debounces query (200 ms), fires IPC calls, guards post-unmount setState with aliveRef pattern. */
 export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   const [query, setQuery] = useState("");
+  const [summaries, setSummaries] = useState<MemorySummariesResult>();
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const [noteCatalog, setNoteCatalog] = useState<NoteResult[]>([]);
   const [sessionCatalog, setSessionCatalog] = useState<SessionResult[]>([]);
   const [noteResults, setNoteResults] = useState<NoteResult[]>([]);
@@ -94,13 +102,15 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [memoryIndex, notes, sessions] = await Promise.all([
+      const [memoryIndex, summaryResult, sessions] = await Promise.all([
         memoryGetIndex(api, project),
-        memoryListEntries(api, project),
+        memoryGetSummaries(api, project),
         memoryListSessions(api, project),
       ]);
       if (!aliveRef.current) return;
-      const mappedNotes = (notes ?? []).map((note) => ({
+      setSummaries(summaryResult);
+      const mappedNotes = (summaryResult.ok ? summaryResult.notes : []).map((note) => ({
+        ...note,
         filename: note.filename,
         ...(note.id ? { id: note.id } : {}),
         title: note.title,
@@ -110,12 +120,15 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
         ...(note.projectName ? { projectName: note.projectName } : {}),
       }));
       const mappedMemory = [...memoryIndexResult(memoryIndex), ...mappedNotes];
+      setCatalogRevision((revision) => revision + 1);
       setNoteCatalog(mappedMemory);
       setSessionCatalog(sessions ?? []);
       setNoteResults(mappedMemory);
       setSessionResults(sessions ?? []);
     } catch {
       if (!aliveRef.current) return;
+      setSummaries({ ok: false, error: "read-failed" });
+      setCatalogRevision((revision) => revision + 1);
       setNoteCatalog([]);
       setSessionCatalog([]);
       setNoteResults([]);
@@ -123,7 +136,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
     } finally {
       if (aliveRef.current) setLoading(false);
     }
-  }, [api, project, projectKey]);
+  }, [api, projectKey]);
 
   useEffect(() => {
     void refresh();
@@ -160,7 +173,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       }
     }, 200);
     return () => clearTimeout(timer);
-  }, [query, api, noteCatalog, sessionCatalog, project, projectKey]);
+  }, [query, api, noteCatalog, sessionCatalog, projectKey]);
 
   const reset = useCallback(() => {
     setQuery("");
@@ -168,5 +181,5 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
     setSessionResults([]);
   }, []);
 
-  return { query, setQuery, noteResults, sessionResults, loading, refresh, reset };
+  return { query, setQuery, summaries, catalogRevision, noteCatalog, noteResults, sessionResults, loading, refresh, reset };
 }
