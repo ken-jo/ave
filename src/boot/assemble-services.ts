@@ -126,7 +126,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.idleScheduler?.stop());
         attempt(() => ctx.a2aRemoteRuntime?.dispose());
         attempt(() => ctx.routinesScheduler.stop());
-        if (ctx.dueSoonTimer) attempt(() => clearInterval(ctx.dueSoonTimer));
+        attempt(() => ctx.stopWorkBoardDueSoon?.());
         attempt(() => ctx.alertsService.stop());
 
         attempt(() => ctx.conversationLoop.abortCurrentTurn(new Error("application shutdown"),

@@ -329,11 +329,11 @@ The Work Board's due-soon nudge uses the same pipeline as a host-declared kind
 `@host` namespace cannot collide with a plugin because plugin ids cannot
 contain `@` (`plugin-manifest.schema.json:22`) — a plugin named `work-board`
 declaring `due-soon` would otherwise share the settings key and could withdraw
-the host's card. `scanAndEmitDueSoon` (`src/work-board/due-soon.ts:55`) keeps
-emitting `work_board.work_item.due_soon` for plugin subscribers and
-additionally raises the host kind, so the nudge is visible with no plugin
-installed — today it is visible only because `assistant` subscribed to
-it. The kind is `defaultEnabled: false` like every other; how a former
+the host's card. `scanAndRaiseDueSoon` (`src/work-board/due-soon.ts`) raises
+only the host kind, so the nudge is visible with no plugin installed. The alert service
+owns identity, lifetime and delivery retries; the scanner neither reads nor
+changes an existing `work-board/due-soon-notified.json` file.
+The kind is `defaultEnabled: false` like every other; how a former
 assistant user's `work-item-due-soon` choice reaches it is under
 Migration (the host cannot name the plugin, so the mapping is marketplace
 data). A host kind has no predecessor to block on, so on the first boot of
@@ -1222,8 +1222,8 @@ Contract tests (host):
   `absentSinceAppVersion` set on uninstall, cleared on reinstall, entry
   dropped two minors later; `settings.alerts` is written only through the
   alerts service.
-- Host kind: due-soon raises `@host:due-soon` through the pipeline and still
-  emits the bus event; resolved off on first boot, then re-resolved from the
+- Host kind: due-soon raises `@host:due-soon` only through the pipeline;
+  resolved off on first boot, then re-resolved from the
   `successors.hostKinds` mapping when the retired record is written; source
   `overlay:host--due-soon` passes the staged-origin pattern and the plugin
   id `host` is rejected by manifest validation.
