@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
+  setWindowSize,
   buildLlmSettings,
   builtMainExists,
   launchSeededElectron,
@@ -81,7 +82,7 @@ async function launchLargeTranscriptProbe(): Promise<SeededElectronContext> {
     userDataPrefix: "ave-render-perf-user-data-",
     homePrefix: "ave-render-perf-home-",
   });
-  await ctx.page.setViewportSize({ width: 640, height: 920 });
+  await setWindowSize(ctx.app, 640, 920);
   await ctx.page.locator(testIdSelector(TEST_IDS.composerTextarea)).first().waitFor({
     state: "visible",
     timeout: 20_000,

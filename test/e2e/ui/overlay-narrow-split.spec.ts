@@ -4,7 +4,7 @@ import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../src/shared/suggestions-session.js";
 import { makeTestT } from "./i18n.js";
 import type { AlertCard } from "../../../src/shared/alerts-types.js";
-import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test("a narrowed split keeps alert and approval actions reachable", async ({}, testInfo) => {
   const t = makeTestT("en");
@@ -16,7 +16,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
   });
   try {
     const { app, page } = ctx;
-    await page.setViewportSize({ width: 1440, height: 900 });
+    await setWindowSize(app, 1440, 900);
     const skipTour = page.getByTestId("spotlight-tour:skip");
     if (await skipTour.isVisible()) await skipTour.click();
     const sidebarToggle = page.getByTestId("sidebar-collapse-toggle");
@@ -51,7 +51,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     const suggestionsPane = page.getByTestId("pane").filter({ has: overlay });
     await suggestionsPane.getByRole("heading").first().click();
     await expect(suggestionsPane).toHaveAttribute("data-focused", "true");
-    await page.setViewportSize({ width: 390, height: 900 });
+    await setWindowSize(app, 390, 900);
 
     const layout = () => page.evaluate(() => {
       const card = document.querySelector<HTMLElement>('[data-testid="routine-card"]');
@@ -105,7 +105,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
 
     // Short enough that the card overflows its lane and its primary action starts out of view. Suggestions has no composer under the lane, so the lane reaches lower than
     // in a conversation tile and the window must be shorter for the card to need scrolling.
-    await page.setViewportSize({ width: 390, height: 240 });
+    await setWindowSize(app, 390, 240);
     const short = await layout();
     expect(short).not.toBeNull();
     expect(short!.laneScrollHeight).toBeGreaterThan(short!.laneClientHeight);
@@ -216,7 +216,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
 
     // The shared approval row (c7701bb5e) fits its card at the narrow split's 320px height, so no scrolling stands between the
     // user and its decisions there: every button is reachable as drawn.
-    await page.setViewportSize({ width: 390, height: 320 });
+    await setWindowSize(app, 390, 320);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     const approvalShown = await approvalLayout();
     expect(approvalShown!.shrink).toBe("0");

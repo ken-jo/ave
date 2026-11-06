@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
+import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 import { makeTestT } from "./i18n.js";
 
@@ -220,7 +220,7 @@ test.describe("chat layout overflow", () => {
   });
 
   test("historical WorkGroup tools do not clip chat horizontally", async () => {
-    await page.setViewportSize({ width: 560, height: 900 });
+    await setWindowSize(app, 560, 900);
     // A cleanly completed historical turn collapses into one "work complete"
     // group with no step count; expanding it shows the tool rows.
     const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: t("workGroup.completed") });

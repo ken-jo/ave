@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import {
+  setWindowSize,
   buildLlmSettings,
   builtMainExists,
   launchSeededElectron,
@@ -233,7 +234,7 @@ test.describe("chat preview rail", () => {
       });
       const sideBrowserHost = new URL(sideBrowser.url).host;
       const sideBrowserOrigin = new URL(sideBrowser.url).origin;
-      await ctx.page.setViewportSize({ width: 1280, height: 860 });
+      await setWindowSize(ctx.app, 1280, 860);
       await ctx.page.waitForFunction(
         () => typeof (window as unknown as { __aveChatStream?: { _emit?: unknown } })
           .__aveChatStream?._emit === "function",

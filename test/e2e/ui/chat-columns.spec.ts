@@ -1,9 +1,10 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from "./fixtures.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/shared/shell-geometry.js";
 
-test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ mainWindow: page }, testInfo) => {
-  await page.setViewportSize({ width: 1920, height: 1080 });
+test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ app, mainWindow: page }, testInfo) => {
+  await setWindowSize(app, 1920, 1080);
   const thumbnailsToggle = page.getByTestId(TEST_IDS.paneThumbnailToggle);
   const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
   const thumbnails = page.getByTestId("chat-thumbnail-column");
@@ -50,7 +51,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
   await panelToggle.click();
 
-  await page.setViewportSize({ width: 1100, height: 820 });
+  await setWindowSize(app, 1100, 820);
   await expect(thumbnails).toHaveCount(0);
   await expect(panel).toHaveAttribute("aria-hidden", "false");
   await expect(thumbnailsToggle).toHaveAttribute("aria-disabled", "true");
@@ -59,7 +60,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   await thumbnailsToggle.dispatchEvent("click");
   await expect(thumbnailsToggle).toHaveAttribute("aria-disabled", "true");
   await expect.poll(async () => (await chat.boundingBox())!.width).toBeGreaterThanOrEqual(MIN_DOCKED_TRANSCRIPT_WIDTH);
-  await page.setViewportSize({ width: 900, height: 720 });
+  await setWindowSize(app, 900, 720);
   await expect(thumbnails).toHaveCount(0);
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("aria-hidden", "false");
@@ -83,7 +84,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
       && panelBox.y + panelBox.height <= paneBox.y + paneBox.height + 1;
   }).toBe(true);
   await testInfo.attach("narrow-chat-columns.png", { body: await page.screenshot({ path: testInfo.outputPath("narrow-chat-columns.png") }), contentType: "image/png" });
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  await setWindowSize(app, 1920, 1080);
   await expect(thumbnails).toBeVisible();
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("data-panel-mode", "docked");

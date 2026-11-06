@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import type { ElectronApplication, Page } from 'playwright';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
@@ -85,7 +86,7 @@ test.describe('ask_user_question overlay layout', () => {
       app,
       mainWindow,
     }) => {
-      await mainWindow.setViewportSize(viewport);
+      await setWindowSize(app, viewport.width, viewport.height);
 
       const visible = await ensureQuestionOverlayVisible(
         app,

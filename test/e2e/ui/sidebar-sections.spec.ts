@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { BROWSER_FAVICON_DATA_URL } from "../../../src/__tests__/support/browser-control-fixture.js";
-import { buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 // A real renderer measures truncation; the component tests cover assignment and actions.
 test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({}, testInfo) => {
@@ -38,7 +38,7 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     await expect(page.getByTestId("sidebar-sections")).toBeVisible();
     await expect(page.getByTestId("sidebar-card")).toHaveCSS("width", "200px");
     for (const width of [720, 900, 1100]) {
-      await page.setViewportSize({ width, height: 800 });
+      await setWindowSize(ctx.app, width, 800);
       await expect(page.getByTestId(`sidebar-session-${sessionId}`)).toBeVisible();
       await expect(page.getByTestId("sidebar-surface-browser:abc12345-1")).toBeVisible();
       await expect(page.getByTestId("sidebar-surface-terminal:abc12345-2")).toBeVisible();

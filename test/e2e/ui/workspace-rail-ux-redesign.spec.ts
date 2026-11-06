@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
+import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { FONT_SIZE_SCALE_VALUES } from "../../../src/shared/appearance-font.js";
@@ -74,7 +74,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("file tab: directory/session segment toggle (default directory, session disabled empty)", async () => {
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
@@ -102,7 +102,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("file tab: the vertical separator keeps a 20px drag hit area at every font scale", async () => {
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
@@ -134,7 +134,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("file tab: vertical splitter persists across restart", async () => {
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
@@ -153,7 +153,7 @@ test.describe("workspace rail UX redesign", () => {
 
     await app.close();
     await launch();
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
     await expect
@@ -185,7 +185,7 @@ test.describe("workspace rail UX redesign", () => {
       mainActiveMode: "resume", mainActiveSessionId: browserSessionId, updatedAt: new Date().toISOString(),
     }));
     await launch();
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("browser")).click();
 
@@ -211,7 +211,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test("subagent tab: opens from the launcher and shows the empty state", async () => {
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(page.getByTestId(chatSidePanelLauncherTestId("subagent"))).toBeVisible();
     await expect(page.getByTestId(chatSidePanelLauncherTestId("side-chat"))).toBeVisible();
@@ -226,7 +226,7 @@ test.describe("workspace rail UX redesign", () => {
 
   test("subagent tab: a spawn + its resume (shared childSessionId) render as ONE unified, live-growing transcript", async () => {
     // Inject production spawn events to verify original and resumed calls form one logical transcript.
-    await page.setViewportSize({ width: 1400, height: 840 });
+    await setWindowSize(app, 1400, 840);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await page.getByTestId(chatSidePanelLauncherTestId("subagent")).click();
     await expect(page.getByTestId("chat-side-panel-tab-subagent")).toBeVisible();

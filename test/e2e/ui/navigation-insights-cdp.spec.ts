@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CDPSession } from "playwright";
 import { test, expect } from "./fixtures.js";
 import {
+  setWindowSize,
   builtMainExists,
   launchSeededElectron,
   teardownSeededElectron,
@@ -240,7 +241,7 @@ test.describe("navigation and monthly insights under CDP", () => {
 
       await openFeatureRow(ctx.page, "sidebar-starred");
       await expect(ctx.page.getByTestId("view-path-current-insights")).toBeVisible();
-      await ctx.page.setViewportSize({ width: 460, height: 900 });
+      await setWindowSize(ctx.app, 460, 900);
       await expect(ctx.page.getByTestId(TEST_IDS.viewPathBack)).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-forward")).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-breadcrumb")).toBeHidden();

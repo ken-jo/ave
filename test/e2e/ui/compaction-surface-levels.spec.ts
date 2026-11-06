@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from "./fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
@@ -8,7 +9,7 @@ test.use({ seedViewFixturePlugin: false });
 for (const surface of ["main", "side"] as const) {
   for (const width of [360, 900, 1243, 1600]) {
     test(`${surface} compaction history and next-send warning keep their levels at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
-      await page.setViewportSize({ width: 1243, height: 900 });
+      await setWindowSize(app, 1243, 900);
       const contextWindow = 200_000;
       await page.evaluate(async (contextWindow) => {
         const api = window.aveApi;
@@ -53,7 +54,7 @@ for (const surface of ["main", "side"] as const) {
         host.append(column);
         (column as HTMLElement).style.cssText = "display:flex;flex:1;min-width:0;width:100%;height:100%";
       });
-      await page.setViewportSize({ width, height: 900 });
+      await setWindowSize(app, width, 900);
       const warning = dock.getByTestId("composer-context-notice");
       await expect(warning).toBeVisible();
       await expect(warning).toHaveAttribute("role", "status");

@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  setWindowSize,
   buildLlmSettings,
   builtMainExists,
   launchSeededElectron,
@@ -26,7 +27,7 @@ test.describe("chat no-API-key layout", () => {
       homePrefix: "ave-no-api-key-layout-home-",
     });
 
-    await ctx.page.setViewportSize({ width: 1040, height: 360 });
+    await setWindowSize(ctx.app, 1040, 360);
 
     const chip = ctx.page.locator('[data-testid="composer-api-key-chip"]');
     const composer = ctx.page.locator(testIdSelector(TEST_IDS.composerInputBar));
@@ -91,7 +92,7 @@ test.describe("chat no-API-key layout", () => {
       homePrefix: "ave-no-api-key-tall-layout-home-",
     });
 
-    await ctx.page.setViewportSize({ width: 1076, height: 798 });
+    await setWindowSize(ctx.app, 1076, 798);
 
     await expect(ctx.page.locator('[data-testid="composer-api-key-chip"]')).toBeVisible();
     await expect(ctx.page.locator(testIdSelector(TEST_IDS.composerInputBar))).toBeVisible();
@@ -126,7 +127,7 @@ test.describe("chat no-API-key layout", () => {
       homePrefix: "ave-no-api-key-popover-home-",
     });
 
-    await ctx.page.setViewportSize({ width: 1076, height: 798 });
+    await setWindowSize(ctx.app, 1076, 798);
 
     const chip = ctx.page.locator('[data-testid="composer-api-key-chip"]');
     await expect(chip).toBeVisible();

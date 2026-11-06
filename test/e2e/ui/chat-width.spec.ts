@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from './fixtures';
 
 // Guard layout checks when the build or relevant DOM nodes are unavailable.
@@ -7,7 +8,7 @@ const CHAT_OUTER_SELECTOR =
 
 test.describe('chat column width constraints', () => {
   test('at 1920x1080 — chat column is ≤800px wide and ≥600px wide', async ({ app, mainWindow }) => {
-    await app.firstWindow().then((w) => w.setViewportSize({ width: 1920, height: 1080 }).catch(() => {}));
+    await setWindowSize(app, 1920, 1080);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter
@@ -25,7 +26,7 @@ test.describe('chat column width constraints', () => {
   });
 
   test('at 1024x720 — chat column fills most of main area (no shrink-wrap below 700px)', async ({ app, mainWindow }) => {
-    await app.firstWindow().then((w) => w.setViewportSize({ width: 1024, height: 720 }).catch(() => {}));
+    await setWindowSize(app, 1024, 720);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter
@@ -42,7 +43,7 @@ test.describe('chat column width constraints', () => {
   });
 
   test('at 1920x1080 — chat column is horizontally centered within the main content area', async ({ app, mainWindow }) => {
-    await app.firstWindow().then((w) => w.setViewportSize({ width: 1920, height: 1080 }).catch(() => {}));
+    await setWindowSize(app, 1920, 1080);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter

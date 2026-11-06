@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  setWindowSize,
   builtMainExists,
   launchSeededElectron,
   teardownSeededElectron,
@@ -42,7 +43,7 @@ test("session files distinguish completed and cancelled transfer destinations", 
     ],
   });
   try {
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     const toggle = ctx.page.getByTestId(TEST_IDS.panePanelToggle);
     await expect(toggle).toBeVisible({ timeout: 20_000 });
     await toggle.click();

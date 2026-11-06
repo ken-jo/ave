@@ -2,7 +2,7 @@ import { writePermissionSettingsFixture } from "../../../src/__tests__/support/p
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { builtMainExists, launchSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, builtMainExists, launchSeededElectron } from "./seeded-electron.js";
 import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { pdfFixture, presentationFixture } from "../../../src/__tests__/support/page-document-fixtures.js";
 
@@ -29,7 +29,7 @@ test("document pages render, navigate and refuse malformed files through the rea
   });
   try {
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     await openDocumentSessionFiles(ctx.page, directory);
     await openDocumentSessionFile(ctx.page, "slides.pptx");
     const preview = ctx.page.getByTestId("chat-side-panel-page-preview");

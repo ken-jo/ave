@@ -2,7 +2,7 @@ import { writePermissionSettingsFixture } from "../../../src/__tests__/support/p
 import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { builtMainExists, launchSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, builtMainExists, launchSeededElectron } from "./seeded-electron.js";
 import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../../src/shared/preview-document.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
@@ -79,7 +79,7 @@ test("table previews show bounded counts, late source rows and explicit parser r
   try {
     // This is the existing additional-directory grant, read fresh by preview IPC.
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [dir] } }));
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     await ctx.page.addStyleTag({ content: CLASSIC_GRID_SCROLLBARS });
     await openDocumentSessionFiles(ctx.page, dir);
     await openDocumentSessionFile(ctx.page, "records.csv");

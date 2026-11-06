@@ -1,6 +1,7 @@
 import { _electron as electron, type ElectronApplication, type Page,
 } from "playwright";
 import { once } from "node:events";
+import { expect } from "@playwright/test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -340,19 +341,62 @@ export async function sendRendererStreamEvent(
 }
 
 /** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a
- * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process. */
+ * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process.
+ * Reject unattainable sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
 export async function setWindowSize(
   app: ElectronApplication,
   w: number,
   h: number,
 ): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, size) => {
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`Invalid window content size: ${w}x${h}`);
+  }
+  const windowId = await app.evaluate(({ BrowserWindow, screen }, size) => {
     const windows = BrowserWindow.getAllWindows().filter(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
     const target = windows.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
-    if (target) target.setContentSize(size.w, size.h);
+    if (!target) throw new Error("No visible main window to resize");
+    const bounds = target.getBounds();
+    const content = target.getContentBounds();
+    const outerWidth = size.w + bounds.width - content.width;
+    const outerHeight = size.h + bounds.height - content.height;
+    const [minWidth, minHeight] = target.getMinimumSize();
+    const workArea = screen.getDisplayMatching(bounds).workArea;
+    if (outerWidth < minWidth || outerHeight < minHeight) {
+      throw new Error(`Requested content ${size.w}x${size.h} is below window minimum ${minWidth}x${minHeight} (outer size ${outerWidth}x${outerHeight}); no test minimum-size override is available`);
+    }
+    if (outerWidth > workArea.width || outerHeight > workArea.height) {
+      throw new Error(`Requested content ${size.w}x${size.h} exceeds display work area ${workArea.width}x${workArea.height} (outer size ${outerWidth}x${outerHeight}); refusing a clamped layout`);
+    }
+    target.setContentSize(size.w, size.h);
+    return target.id;
   }, { w, h });
+  let actual: unknown;
+  try {
+    await expect.poll(async () => {
+      const measured = await app.evaluate(async ({ BrowserWindow }, id) => {
+        const target = BrowserWindow.fromId(id);
+        if (!target || target.isDestroyed()) throw new Error("Main window closed during resize");
+        const content = target.getContentSize();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const renderer = await Promise.race([
+          target.webContents.executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })") as Promise<{ width: number; height: number }>,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("Renderer size probe timed out")), 1_000);
+          }),
+        ]).finally(() => clearTimeout(timer));
+        return { content, renderer };
+      }, windowId);
+      actual = measured;
+      return Math.abs(measured.renderer.width - w) <= 1
+        && Math.abs(measured.renderer.height - h) <= 1
+        && Math.abs(measured.content[0] - w) <= 1
+        && Math.abs(measured.content[1] - h) <= 1;
+    }, { timeout: 5_000, message: `Wait for window content ${w}x${h}` }).toBe(true);
+  } catch (cause) {
+    throw new Error(`Window resize did not settle: requested ${w}x${h}; actual ${JSON.stringify(actual)}`, { cause });
+  }
 }

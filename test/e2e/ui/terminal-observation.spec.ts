@@ -3,7 +3,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent } from "../../../src/shared/agent-observation.js";
 
@@ -58,7 +58,7 @@ test(`agent shell output streams locally while user terminal commands stay outsi
     ctx.page.on("crash", () => appErrors.push("Renderer process crashed"));
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(ctx.page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
