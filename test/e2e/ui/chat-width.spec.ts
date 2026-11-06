@@ -1,14 +1,22 @@
 import { setWindowSize } from "./seeded-electron.js";
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 
 // Guard layout checks when the build or relevant DOM nodes are unavailable.
 
-const CHAT_OUTER_SELECTOR =
-  '.grid.grid-rows-\\[1fr_auto\\]';
+const CHAT_OUTER_SELECTOR = '.chat-composer-column';
+
+// The reading-column cap is 58rem; cross it by one pixel after reserving shell space and parent padding.
+function readingCapWindowWidth(column: Element): number {
+  const parent = column.parentElement!;
+  const style = getComputedStyle(parent);
+  const available = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  return Math.ceil(innerWidth - available + parseFloat(getComputedStyle(column).maxWidth) + 1);
+}
 
 test.describe('chat column width constraints', () => {
-  test('at 1920x1080 — chat column is ≤800px wide and ≥600px wide', async ({ app, mainWindow }) => {
-    await setWindowSize(app, 1920, 1080);
+  test('the reading column reaches its configured width cap', async ({ app, mainWindow }) => {
+    const wideWidth = await mainWindow.locator(CHAT_OUTER_SELECTOR).first().evaluate(readingCapWindowWidth);
+    await setWindowSize(app, wideWidth, 860);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter
@@ -20,8 +28,8 @@ test.describe('chat column width constraints', () => {
 
     const box = await chatOuter.boundingBox();
     expect(box).not.toBeNull();
-    // Allow padding and scrollbar headroom above the column-width limit.
-    expect(box!.width).toBeLessThanOrEqual(800);
+    const cap = await chatOuter.evaluate((column) => parseFloat(getComputedStyle(column).maxWidth));
+    expect(Math.abs(box!.width - cap)).toBeLessThanOrEqual(1);
     expect(box!.width).toBeGreaterThan(600);
   });
 
@@ -42,8 +50,9 @@ test.describe('chat column width constraints', () => {
     expect(box!.width).toBeGreaterThan(600);
   });
 
-  test('at 1920x1080 — chat column is horizontally centered within the main content area', async ({ app, mainWindow }) => {
-    await setWindowSize(app, 1920, 1080);
+  test('the capped reading column is horizontally centered', async ({ app, mainWindow }) => {
+    const wideWidth = await mainWindow.locator(CHAT_OUTER_SELECTOR).first().evaluate(readingCapWindowWidth);
+    await setWindowSize(app, wideWidth, 860);
 
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter

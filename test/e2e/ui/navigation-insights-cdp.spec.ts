@@ -241,7 +241,7 @@ test.describe("navigation and monthly insights under CDP", () => {
 
       await openFeatureRow(ctx.page, "sidebar-starred");
       await expect(ctx.page.getByTestId("view-path-current-insights")).toBeVisible();
-      await setWindowSize(ctx.app, 460, 900);
+      await setWindowSize(ctx.app, 460, 860);
       await expect(ctx.page.getByTestId(TEST_IDS.viewPathBack)).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-forward")).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-breadcrumb")).toBeHidden();

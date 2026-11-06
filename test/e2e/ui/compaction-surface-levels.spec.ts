@@ -7,9 +7,9 @@ import { getUsableContext } from "../../../src/shared/context-budget.js";
 test.use({ seedViewFixturePlugin: false });
 
 for (const surface of ["main", "side"] as const) {
-  for (const width of [360, 900, 1243, 1600]) {
+  for (const width of [360, 900, 1243, 1440]) {
     test(`${surface} compaction history and next-send warning keep their levels at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
-      await setWindowSize(app, 1243, 900);
+      await setWindowSize(app, 1243, 860);
       const contextWindow = 200_000;
       await page.evaluate(async (contextWindow) => {
         const api = window.aveApi;
@@ -54,7 +54,7 @@ for (const surface of ["main", "side"] as const) {
         host.append(column);
         (column as HTMLElement).style.cssText = "display:flex;flex:1;min-width:0;width:100%;height:100%";
       });
-      await setWindowSize(app, width, 900);
+      await setWindowSize(app, width, 860);
       const warning = dock.getByTestId("composer-context-notice");
       await expect(warning).toBeVisible();
       await expect(warning).toHaveAttribute("role", "status");

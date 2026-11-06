@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
@@ -41,21 +42,6 @@ function seededModelListCache() {
 
 // The popup floor must distinguish a squeezed list while fitting the supported cap.
 const MIN_POPUP_HEIGHT = 320;
-
-// Resize the native window because settings layout follows panel width.
-async function setWindowSize(
-  app: import('@playwright/test').ElectronApplication,
-  w: number,
-  h: number,
-): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, size) => {
-    const wins = BrowserWindow.getAllWindows().filter((x) => !x.isDestroyed() && x.isVisible());
-    const target = wins.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    if (target) target.setContentSize(size.w, size.h);
-  }, { w, h });
-}
 
 for (const bundleId of ['moonstone', 'gallery'] as const) {
   for (const { name: sizeName, width } of [

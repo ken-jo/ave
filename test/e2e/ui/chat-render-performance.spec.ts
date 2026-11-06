@@ -82,7 +82,7 @@ async function launchLargeTranscriptProbe(): Promise<SeededElectronContext> {
     userDataPrefix: "ave-render-perf-user-data-",
     homePrefix: "ave-render-perf-home-",
   });
-  await setWindowSize(ctx.app, 640, 920);
+  await setWindowSize(ctx.app, 640, 860);
   await ctx.page.locator(testIdSelector(TEST_IDS.composerTextarea)).first().waitFor({
     state: "visible",
     timeout: 20_000,

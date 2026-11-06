@@ -1,10 +1,15 @@
 import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from "./fixtures.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { SIDE_PANEL_MIN_RESERVE } from "../../../src/shared/side-panel.js";
+import { CHAT_THUMBNAIL_WIDTH } from "../../../src/ui/renderer/preview/chat-columns-layout.js";
 import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/shared/shell-geometry.js";
 
 test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ app, mainWindow: page }, testInfo) => {
-  await setWindowSize(app, 1920, 1080);
+  // Both columns appear at a 1064px tile: 320px transcript + 280px thumbnails + 464px panel reserve.
+  const shellReserve = await page.evaluate(() => innerWidth - document.querySelector<HTMLElement>('[data-testid="pane"]')!.clientWidth);
+  const wideWidth = Math.ceil(shellReserve + MIN_DOCKED_TRANSCRIPT_WIDTH + CHAT_THUMBNAIL_WIDTH + SIDE_PANEL_MIN_RESERVE);
+  await setWindowSize(app, wideWidth, 860);
   const thumbnailsToggle = page.getByTestId(TEST_IDS.paneThumbnailToggle);
   const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
   const thumbnails = page.getByTestId("chat-thumbnail-column");
@@ -84,7 +89,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
       && panelBox.y + panelBox.height <= paneBox.y + paneBox.height + 1;
   }).toBe(true);
   await testInfo.attach("narrow-chat-columns.png", { body: await page.screenshot({ path: testInfo.outputPath("narrow-chat-columns.png") }), contentType: "image/png" });
-  await setWindowSize(app, 1920, 1080);
+  await setWindowSize(app, wideWidth, 860);
   await expect(thumbnails).toBeVisible();
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("data-panel-mode", "docked");

@@ -189,7 +189,7 @@ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
 const origin = `http://127.0.0.1:${address.port}`;
-win = new BrowserWindow({ width: 1180, height: 900, x: 40, y: 40, show: false,
+win = new BrowserWindow({ width: 1180, height: 860, x: 40, y: 40, show: false,
   webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
 if (fixtureMode === "foreground") win.show(); else win.showInactive();
 win.webContents.on("will-attach-webview", (_event, preferences) => {

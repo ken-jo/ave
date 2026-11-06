@@ -342,7 +342,7 @@ export async function sendRendererStreamEvent(
 
 /** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a
  * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process.
- * Reject unattainable sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
+ * Reject below-minimum sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
 export async function setWindowSize(
   app: ElectronApplication,
   w: number,
@@ -351,7 +351,7 @@ export async function setWindowSize(
   if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
     throw new Error(`Invalid window content size: ${w}x${h}`);
   }
-  const windowId = await app.evaluate(({ BrowserWindow, screen }, size) => {
+  const { windowId, workArea } = await app.evaluate(({ BrowserWindow, screen }, size) => {
     const windows = BrowserWindow.getAllWindows().filter(
       (window) => !window.isDestroyed() && window.isVisible(),
     );
@@ -368,13 +368,12 @@ export async function setWindowSize(
     if (outerWidth < minWidth || outerHeight < minHeight) {
       throw new Error(`Requested content ${size.w}x${size.h} is below window minimum ${minWidth}x${minHeight} (outer size ${outerWidth}x${outerHeight}); no test minimum-size override is available`);
     }
-    if (outerWidth > workArea.width || outerHeight > workArea.height) {
-      throw new Error(`Requested content ${size.w}x${size.h} exceeds display work area ${workArea.width}x${workArea.height} (outer size ${outerWidth}x${outerHeight}); refusing a clamped layout`);
-    }
+    target.setPosition(workArea.x, workArea.y);
     target.setContentSize(size.w, size.h);
-    return target.id;
+    return { windowId: target.id, workArea };
   }, { w, h });
-  let actual: unknown;
+  let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
+  // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
   try {
     await expect.poll(async () => {
       const measured = await app.evaluate(async ({ BrowserWindow }, id) => {
@@ -397,6 +396,8 @@ export async function setWindowSize(
         && Math.abs(measured.content[1] - h) <= 1;
     }, { timeout: 5_000, message: `Wait for window content ${w}x${h}` }).toBe(true);
   } catch (cause) {
-    throw new Error(`Window resize did not settle: requested ${w}x${h}; actual ${JSON.stringify(actual)}`, { cause });
+    const clamped = actual && (Math.abs(actual.content[0] - w) > 1 || Math.abs(actual.content[1] - h) > 1);
+    const reason = clamped ? "Display work area clamped requested window content" : "Window renderer did not settle";
+    throw new Error(`${reason}: requested ${w}x${h}; actual content ${actual?.content.join("x") ?? "unavailable"}; renderer ${JSON.stringify(actual?.renderer)}; display work area ${workArea.width}x${workArea.height} at ${workArea.x},${workArea.y}`, { cause });
   }
 }

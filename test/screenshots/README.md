@@ -62,15 +62,7 @@ Each entry is one of:
 
 ## Window size
 
-Fixed at **1600x1000** (`CAPTURE_VIEWPORT` in `fixtures.ts`). This was *not*
-picked to match any single existing screenshot — inspecting the previously
-published docs-site captures showed **inconsistent aspect ratios**
-per file (e.g. `chat-todo-queue.png` is 1600x830 ≈1.93:1, `chat-plugin-panel.png`
-is 484x889 ≈0.54:1) — each existing
-asset was clearly cropped to its own target element/region after capture, not
-captured at one fixed app window size. 1600x1000 is wide enough to show the
-expanded sidebar rail + full chat column without clipping, and gives full
-per-key crops (`locator`-scoped captures) plenty of source resolution.
+The native content size defaults to `CAPTURE_VIEWPORT` in `fixtures.ts`; per-scenario overrides live in `matrix.ts`. The shared resize helper moves the window to its display work-area origin and waits for native content and renderer dimensions to agree. Captures therefore use the real window layout.
 
 Animations/transitions are globally killed via `page.addStyleTag` in the
 `mainWindow` fixture (`transition-duration:0ms`, `animation-duration:0ms`,

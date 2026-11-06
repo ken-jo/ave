@@ -1,3 +1,5 @@
+import { SETTINGS_NARROW_ENTER_WIDTH } from "../../../src/shared/shell-geometry.js";
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from './fixtures.js';
 import { openInlineSettings } from './inline-settings.js';
 import type { ElectronApplication, Page } from '@playwright/test';
@@ -33,16 +35,6 @@ async function stubSubscriptionRuntime(app: ElectronApplication): Promise<void> 
       })),
     }));
   }, MODEL_COUNT);
-}
-
-async function setWindowSize(app: ElectronApplication, w: number): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, size) => {
-    const wins = BrowserWindow.getAllWindows().filter((x) => !x.isDestroyed() && x.isVisible());
-    const target = wins.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    if (target) target.setContentSize(size.w, 860);
-  }, { w });
 }
 
 async function gotoModelTab(w: Page): Promise<void> {
@@ -104,8 +96,10 @@ async function openSubscriptionModelPopup(
 ): Promise<Page> {
   await stubSubscriptionRuntime(app);
   const w = await openInlineSettings(app, mainWindow, 'llm');
-  await setWindowSize(app, width);
-  await w.waitForTimeout(700);
+  await setWindowSize(app, width, 860);
+  // Native size settles before the settings width observer commits its responsive navigation.
+  await expect.poll(() => w.locator('[data-settings-layout]').getAttribute('data-settings-layout'))
+    .toBe(width < SETTINGS_NARROW_ENTER_WIDTH ? 'narrow' : 'wide');
   await gotoModelTab(w);
 
   // Connected subscriptions fetch models automatically; the chooser has no separate load action.

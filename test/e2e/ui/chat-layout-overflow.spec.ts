@@ -220,7 +220,7 @@ test.describe("chat layout overflow", () => {
   });
 
   test("historical WorkGroup tools do not clip chat horizontally", async () => {
-    await setWindowSize(app, 560, 900);
+    await setWindowSize(app, 560, 860);
     // A cleanly completed historical turn collapses into one "work complete"
     // group with no step count; expanding it shows the tool rows.
     const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: t("workGroup.completed") });

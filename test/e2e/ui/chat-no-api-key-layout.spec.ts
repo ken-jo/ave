@@ -32,7 +32,8 @@ test.describe("chat no-API-key layout", () => {
     await setWindowSize(ctx.app, 1200, 700);
     const sidebarToggle = ctx.page.getByTestId("sidebar-collapse-toggle");
     if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
-    await ctx.page.getByTestId("pane-split").click();
+    const targetPane = ctx.page.getByTestId("pane").first();
+    await targetPane.getByTestId("pane-split").click();
     await ctx.page.getByTestId("pane-split-column").click();
     await expect(ctx.page.getByTestId("pane")).toHaveCount(2);
     const pane = ctx.page.getByTestId("pane").first();
