@@ -63,14 +63,11 @@
   --color-emphasis-foreground: hsl(var(--emphasis-foreground));
   --color-agent: hsl(var(--agent));
   --color-action-view: hsl(var(--action-view));
-  --color-action-branch: hsl(var(--action-branch));
-  --color-action-compact: hsl(var(--action-compact));
   --color-message-user: hsl(var(--message-user-bg));
   --color-message-user-foreground: hsl(var(--message-user-fg));
   --color-message-user-border: hsl(var(--message-user-border));
   --color-message-user-muted: hsl(var(--message-user-muted));
   --color-message-user-action: hsl(var(--message-user-action));
-  --color-message-user-emphasis: hsl(var(--message-user-emphasis));
   --color-input-bar: hsl(var(--input-bar-bg));
   --color-input-bar-foreground: hsl(var(--input-bar-fg));
   --color-input-bar-placeholder: var(--input-bar-placeholder);
@@ -146,19 +143,13 @@
 }
 
 /* ─── Action color tokens ─────────────────────────────────────────────────
-   Semantic action color tokens used by CheckpointDivider buttons and
-   ViewModeBanner — single SoT for both surfaces.
-
-   --action-view:    "view this point" — violet (reading / passive)
-   --action-branch:  "restart from here" — orange (destructive-adjacent / active)
-   --action-compact: "compact now" — blue (neutral, matches default checkpoint trigger)
+   --action-view / --action-branch / --action-compact come from the active
+   scheme (theme/resolve-theme.ts) like every other semantic color; the agent
+   accent follows the "view" action.
 ─────────────────────────────────────────────────────────────────────────────── */
 @layer base {
   :root {
     --agent: var(--action-view);
-    --action-view:    262 83% 58%;   /* violet-500 */
-    --action-branch:  25  95% 53%;   /* orange-500 */
-    --action-compact: 217 91% 60%;   /* blue-400 */
 
     /* ─── Semantic opacity scale ──────────────────────────────────────────
        Named alpha tokens for color-mix opacity modifiers. Use them through
@@ -512,7 +503,6 @@
     --message-user-border: var(--message-user-fg);
     --message-user-muted: var(--message-user-fg);
     --message-user-action: var(--message-user-fg);
-    --message-user-emphasis: var(--message-user-fg);
     --input-bar-fg: var(--foreground);
     --input-bar-placeholder: hsl(var(--input-bar-fg) / 82%);
     --input-bar-border: var(--ui-line);
