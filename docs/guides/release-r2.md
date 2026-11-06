@@ -87,11 +87,8 @@ Website links: `https://downloads.agent-connector.ai/latest/mac-arm64.dmg`,
    workflow (`.github/workflows/r2-probe.yml`) from `main` only. It
    uploads one small object under `_ci-probe/`, confirms it is listed, deletes
    it, and confirms it is gone; nothing outside `_ci-probe/` is touched.
-   The contract bundle probe also requires a `main` dispatch of
-   `build-installers.yml` with `contract_probe=true`; it builds, signs, uploads,
-   checks signature reuse and deletes its `_ci-probe/contract/<run>/` bundle
-   without building installers. Both probes skip other refs, including tags;
-   tag pushes retain the protected annotated-tag validation for publication.
+   The probe skips other refs, including tags. Tag pushes retain the
+   protected annotated-tag validation for installer publication.
 5. Do not add a Cache Rule that caches everything on this host: the feed and
    the `latest/` aliases rely on their `no-cache` origin header.
 

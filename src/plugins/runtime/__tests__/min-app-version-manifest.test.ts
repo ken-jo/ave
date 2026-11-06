@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePluginJson } from "../manifest-validation.js";
-import { HOST_PROTOCOL_VERSIONS_SERVED } from "../../isolation/host-api-wire.js";
+import { HOST_PROTOCOL_VERSION } from "../../isolation/host-api-wire.js";
 import {
   permissiveManifestValidatorFactory,
   pluginManifestWriter,
@@ -102,7 +102,7 @@ describe("manifest requires.hostProtocol validator", () => {
   );
 
   it("accepts a positive integer written as a string", async () => {
-    const version = HOST_PROTOCOL_VERSIONS_SERVED[0];
+    const version = HOST_PROTOCOL_VERSION;
     const path = await writeManifest({ requires: { capabilities: [], hostProtocol: version } });
     const parsed = await parsePluginJson(path, makeValidator());
     expect(parsed.requires?.hostProtocol).toBe(version);
@@ -110,7 +110,7 @@ describe("manifest requires.hostProtocol validator", () => {
 
   it("accepts a version this app does not serve, which the load gate refuses instead", async () => {
     // Well-formed future versions parse; runtime decides whether this app supports them.
-    const futureVersion = String(Math.max(...HOST_PROTOCOL_VERSIONS_SERVED.map(Number)) + 1);
+    const futureVersion = String(Number(HOST_PROTOCOL_VERSION) + 1);
     const path = await writeManifest({ requires: { capabilities: [], hostProtocol: futureVersion } });
     const parsed = await parsePluginJson(path, makeValidator());
     expect(parsed.requires?.hostProtocol).toBe(futureVersion);
@@ -119,7 +119,7 @@ describe("manifest requires.hostProtocol validator", () => {
   it("suggests a served protocol version when the value is malformed", async () => {
     const path = await writeManifest({ requires: { capabilities: [], hostProtocol: "02" } });
     await expect(parsePluginJson(path, makeValidator())).rejects.toThrow(
-      `Example: "requires": { "hostProtocol": "${HOST_PROTOCOL_VERSIONS_SERVED[0]}" }`,
+      `Example: "requires": { "hostProtocol": "${HOST_PROTOCOL_VERSION}" }`,
     );
   });
 

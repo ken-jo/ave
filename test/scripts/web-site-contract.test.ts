@@ -122,22 +122,9 @@ describe("machine-readable files the app fetches", () => {
     }
   });
 
-  it("keeps the plugin host protocol schema mirror in the public tree", () => {
-    const manifest = JSON.parse(read(join(pub, "schemas/plugin-host-protocol/mirror.json"))) as {
-      copies: { protocol: string; appVersion: string }[];
-    };
-    expect(manifest.copies.length).toBeGreaterThan(0);
-    for (const copy of manifest.copies) {
-      expect(existsSync(join(pub, `schemas/plugin-host-protocol/${copy.protocol}/v${copy.appVersion}/protocol.schema.json`))).toBe(true);
-    }
-    // Only recorded protocols are published: the host serves no other wire.
-    const published = readdirSync(join(pub, "schemas/plugin-host-protocol")).filter((name) => name !== "mirror.json").sort();
-    expect(published).toEqual([...new Set(manifest.copies.map((copy) => copy.protocol))].sort());
-  });
-
   it("serves every published schema at its $id under the schema identity origin", () => {
     const schemaOrigin = /^const AVE_SCHEMA_ORIGIN = "([^"]+)";$/mu
-      .exec(read(resolve(root, "scripts/lib/plugin-host-protocol-mirror.mjs")))?.[1];
+      .exec(read(resolve(root, "scripts/lib/published-schemas.mjs")))?.[1];
     expect(schemaOrigin).toBeDefined();
     const schemas = join(pub, "schemas");
     const files = (readdirSync(schemas, { recursive: true }) as string[])

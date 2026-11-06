@@ -124,27 +124,11 @@ release checks in the [host protocol design](../design/plugin-hostapi-protocol.m
 If those checks fail, leave the release as a draft and supersede it with a new
 tag. Never change the bytes behind the existing tag or its schema URL. Published
 extension artifacts stay available: older apps still select their older versions
-from the frozen legacy marketplace index. Promote the protocol-2 web schema
-alias only after the app draft is published, in a `web`-only change that runs
-`node scripts/sync-plugin-host-protocol-mirror.mjs --publish 2/<version>`. The
-command marks the tag-named mirror copy published and points the `2` alias at
-the newest published copy of protocol 2, so promoting an older copy after a
-newer one leaves the alias on the newer copy.
-`check:plugin-host-protocol-mirror` refuses an alias that names any other copy,
-whether or not a candidate is open.
+from the frozen legacy marketplace index.
 
-## Between releases: the next protocol candidate
+## Protocol schema
 
-Once a release is tagged, its protocol schema copy is frozen, and
-`check:plugin-host-protocol-mirror` refuses any change to the canonical schema
-that would alter it: a recorded copy whose version has a `v<version>` tag in the
-checkout must be the bytes that tag carries, published or not. The first
-change after the tag therefore bumps `package.json` to the next version (patch
-or minor, per the release plan). It regenerates the schema with
-`bun run generate:plugin-host-protocol-schema` and runs
-`node scripts/sync-plugin-host-protocol-mirror.mjs`, which records a new
-candidate copy with `publishedTag: null`. Later protocol changes refresh only
-that candidate. The previous release's copy keeps its recorded bytes until its
-own publication marks it published with the `--publish` command above, which may
-run after this bump. The release PR then folds the changelog and
-regenerates the candidate once more at the final commit.
+Regenerate the current v5 JSON schema after a version bump with
+`bun run generate:plugin-host-protocol-schema`. The build checks it against
+the host sources. There is no protocol web mirror, generated TypeScript
+protocol client, or signed contract bundle.

@@ -91,8 +91,6 @@ async function main() {
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
   // Regenerate the schema after a version bump because its id includes the app version.
   run("bun", ["run", "generate:plugin-host-protocol-schema"]);
-  run("bun", ["run", "generate:plugin-host-protocol-client"]);
-  run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);
 
   run("node", [
     "scripts/build-installers.mjs",

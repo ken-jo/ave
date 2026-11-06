@@ -60,8 +60,8 @@ import type {
 import type { PluginSandboxDeclaration, PluginSandboxGrant } from "../public-contract.js";
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import {
+  HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
-  isServedHostProtocolVersion,
   type HostProtocolVersion,
 } from "./host-api-wire.js";
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
@@ -755,7 +755,7 @@ export interface OutOfProcessPluginSpec {
  * versions fail before activation on the runtime loader's two paths; this check also protects a direct connection from bypassing that gate. */
 export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVersion {
   const declared = manifest.requires?.hostProtocol;
-  if (!isServedHostProtocolVersion(declared)) {
+  if (declared !== HOST_PROTOCOL_VERSION) {
     throw new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null });
   }
   return declared;

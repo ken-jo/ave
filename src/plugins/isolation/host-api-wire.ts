@@ -59,25 +59,10 @@ import { randomBytes } from "node:crypto";
  * the previous version after its announced boundary (§3.2). The same value
  * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["5"] as const;
+export const HOST_PROTOCOL_VERSION = "5";
 
 /** One served version, as it travels: an integer written as a string. */
-export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
-
-/**
- * Known first published app release for each served protocol. An unreleased
- * protocol has no numeric floor: requires.hostProtocol negotiation determines
- * availability, independently of the open app-version candidate. Release
- * preparation records the actual first version when that protocol ships.
- */
-export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string | undefined>> = {
-  "5": undefined,
-};
-
-/** Whether `value` names a version this build serves. */
-export function isServedHostProtocolVersion(value: unknown): value is HostProtocolVersion {
-  return (HOST_PROTOCOL_VERSIONS_SERVED as readonly unknown[]).includes(value);
-}
+export type HostProtocolVersion = typeof HOST_PROTOCOL_VERSION;
 
 /**
  * The load refusal for a plugin that speaks a host protocol this host cannot
@@ -98,9 +83,9 @@ export class IncompatibleHostProtocolError extends Error {
       "declared" in detail
         ? detail.declared === null
           ? `plugin '${pluginId}' does not declare a host protocol; this app serves `
-            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+            + HOST_PROTOCOL_VERSION
           : `plugin '${pluginId}' speaks host protocol ${detail.declared}; this app serves `
-            + HOST_PROTOCOL_VERSIONS_SERVED.join(", ")
+            + HOST_PROTOCOL_VERSION
         : `plugin '${pluginId}' requires host methods this app does not serve: `
           + detail.missingCapabilities.join(", "),
     );
