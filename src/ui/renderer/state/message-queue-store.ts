@@ -1,8 +1,11 @@
+import { isAppMessageOrigin } from "../../../shared/mcp-app-message-source.js";
 import { t } from "../../../i18n/runtime.js";
 
 export interface MessageQueueItem {
   id: string;
   text: string;
+  /** Remains bound to this item through editing, reservation and delivery. */
+  appSource?: string;
   selected: boolean;
   createdAt: number;
 
@@ -45,6 +48,11 @@ export function formatQueueInject(items: readonly MessageQueueItem[]): string {
   );
 }
 
+/** Mixed batches retain app provenance for the whole delivery; text is enveloped by the host send boundary. */
+export function queueAppSource(items: readonly MessageQueueItem[]): string | undefined {
+  return items.find((item) => item.appSource !== undefined)?.appSource;
+}
+
 export class MessageQueueStore {
   /** 큐 capacity caps — economic DoS 방어. add() 가 throw 함. */
   static readonly MAX_ITEMS = 50;
@@ -64,7 +72,10 @@ export class MessageQueueStore {
     this.notify();
   }
 
-  add(text: string): MessageQueueItem {
+  add(text: string, appSource?: string): MessageQueueItem {
+    if (appSource !== undefined && !isAppMessageOrigin(appSource)) {
+      throw new Error("MessageQueueStore.add: invalid app source");
+    }
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       throw new Error("MessageQueueStore.add: empty text rejected");
@@ -85,6 +96,7 @@ export class MessageQueueStore {
     const item: MessageQueueItem = {
       id: makeId(),
       text: trimmed,
+      ...(appSource === undefined ? {} : { appSource }),
       selected: false,
       createdAt: now,
       expiresAt: now + MessageQueueStore.DEFAULT_TTL_MS,

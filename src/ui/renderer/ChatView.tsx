@@ -61,6 +61,7 @@ import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { useChatScroll, type ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
 import { useCheckpointView } from "./hooks/use-checkpoint-view.js";
+import type { ComposerSendOptions } from "./hooks/use-send-message.js";
 import { useMessageQueue } from "./hooks/use-message-queue.js";
 import { useAttachmentPicker } from "./hooks/use-attachment-picker.js";
 import { TranscriptRenderer, type TurnSummary } from "./components/TranscriptRenderer.js";
@@ -80,7 +81,7 @@ export interface ChatViewProps {
   onAsk: (
     q: string,
     intent?: UserKeyboardIntentSnapshot,
-    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+    opts?: ComposerSendOptions,
   ) => void | Promise<void>;
   /** Run a server-declared MCP prompt (staged, untrusted provenance). */
   onRunMcpPrompt: (prompt: McpPromptEntry) => void;
@@ -96,7 +97,7 @@ export interface ChatViewProps {
   isEntryStarred: (idx: number) => string | null;
   onAbort: () => void | Promise<void>;
   /** Mid-stream "guide" utterance — non-interrupting direction adjustment. Returns IPC result so caller can preserve typed text on rejection. */
-  onGuide: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onGuide: (text: string, intent?: UserKeyboardIntentSnapshot, appSource?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Surface visible error in chat transcript when guide is rejected (queue-full / too-long / no-active-turn). */
   onGuideError: (message: string) => void;
   onFeedback?: (messageIdx: number, rating: "up" | "down", reason?: string) => void | Promise<void>;
@@ -169,7 +170,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const readingColumnClass = "chat-reading-column mx-auto w-full max-w-(--reading-column-max)";
   const {
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, setQuestion, chatEndRef, currentSessionId, hidden,
+    question, appSource, draftIdentity, setQuestion, chatEndRef, currentSessionId, hidden,
     hasApiKey, settingsLoaded, onOpenSettings, onOpenMemory, memoryFix, onDismissMemoryFix,
     searchOpen, searchMatches, searchMatchSet, searchIdx, searchHighlight,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget, autoCompactEnabled,
@@ -645,6 +646,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     composerRef,
     currentSessionId,
     question,
+    appSource,
+    draftIdentity,
     attachments,
     streaming,
     setQuestion,

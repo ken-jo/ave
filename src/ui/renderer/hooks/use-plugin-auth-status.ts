@@ -25,6 +25,19 @@ export function parsePluginAuthStatus(raw: unknown): PluginAuthState {
   return { kind: "unauthed" };
 }
 
+/** Keep app lifetimes tied to authentication and account identity, never transient loading or error text. */
+export function usePluginAuthRevision(status: PluginAuthState | undefined): number {
+  const identityRef = useRef<string | undefined>(undefined);
+  const revisionRef = useRef(0);
+  const identity = status?.kind === "authed" ? JSON.stringify([true, status.account ?? null])
+    : status?.kind === "unauthed" ? JSON.stringify([false]) : undefined;
+  if (identity !== undefined) {
+    if (identityRef.current !== undefined && identityRef.current !== identity) revisionRef.current += 1;
+    identityRef.current = identity;
+  }
+  return revisionRef.current;
+}
+
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
 }
@@ -34,6 +47,7 @@ const AUTH_STATUS_REFRESH_INTERVAL_MS = 5_000;
 export function usePluginAuthStatuses(
   api: AveApi | null,
   plugins: PluginCardSummary[],
+  mountedPluginIds: readonly string[] = [],
 ): {
   statuses: Map<string, PluginAuthState>;
   refresh: (pluginId: string) => void;
@@ -64,6 +78,10 @@ export function usePluginAuthStatuses(
       .sort()
       .join(";");
   }, [plugins]);
+
+  const mountedKey = [...new Set(mountedPluginIds)].sort().join(";");
+  const mountedIdsRef = useRef(mountedPluginIds);
+  mountedIdsRef.current = mountedPluginIds;
 
   const refresh = useCallback(
     (pluginId: string) => {
@@ -137,18 +155,24 @@ export function usePluginAuthStatuses(
     });
 
     for (const p of authPlugins) refresh(p.id);
+    // A returning auth window may complete a pending login before its panel is mounted.
+    const handleFocus = () => { for (const plugin of authPlugins) refresh(plugin.id); };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [api, authCacheKey, refresh]);
 
-    const refreshAll = () => { for (const plugin of authPlugins) refresh(plugin.id); };
-    window.addEventListener("focus", refreshAll);
+  useEffect(() => {
+    if (!api) return;
+    const refreshAll = () => { for (const pluginId of mountedIdsRef.current) refresh(pluginId); };
+    if (mountedIdsRef.current.length === 0) return;
+    refreshAll();
     const timer = window.setInterval(refreshAll, AUTH_STATUS_REFRESH_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("focus", refreshAll);
     };
-    // Deliberate: depend on the cache key (not `plugins`) so this effect
-    // only re-runs when the auth-bearing set changes shape.
+    // Depend on mounted ids rather than transient array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, authCacheKey, refresh]);
+  }, [api, mountedKey, refresh]);
 
   return { statuses, refresh };
 }

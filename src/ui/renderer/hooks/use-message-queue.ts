@@ -4,8 +4,10 @@ import { useTranslation } from "../../../i18n/react.js";
 import {
   MessageQueueStore,
   formatQueueInject,
+  queueAppSource,
   type MessageQueueItem,
 } from "../state/message-queue-store.js";
+import type { ComposerSendOptions } from "./use-send-message.js";
 import type { Attachment } from "../types/attachments.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
@@ -23,7 +25,7 @@ import { augmentFileReferenceMarkers } from "../utils/compose.js";
 interface MessageQueueGuide {
   /** `intent` is present only for a guide the user just typed (⌘K); a queue flush at a round boundary has none, so main treats it as
    * another principal's text, as a queued send is `queue-auto` rather than the keyboard. */
-  inject: (text: string, intent?: UserKeyboardIntentSnapshot) => Promise<{ ok: true } | { ok: false; error: string }>;
+  inject: (text: string, intent?: UserKeyboardIntentSnapshot, appSource?: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   onError: (message: string) => void;
 }
 
@@ -56,6 +58,10 @@ export interface UseMessageQueueParams {
   composerRef: RefObject<ComposerHandle | null>;
   currentSessionId: string;
   question: string;
+  /** Source belongs to the current composer text; queue rows capture it before the composer clears. */
+  appSource?: string;
+  /** Immutable composer snapshot; delivery cannot clear a replacement with identical text and source. */
+  draftIdentity?: object;
   attachments: Attachment[];
   streaming: boolean;
   setQuestion: React.Dispatch<React.SetStateAction<string>>;
@@ -63,7 +69,7 @@ export interface UseMessageQueueParams {
   onAsk: (
     q: string,
     intent?: UserKeyboardIntentSnapshot,
-    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+    opts?: ComposerSendOptions,
   ) => void | Promise<void>;
   guide?: MessageQueueGuide;
   onAbort: () => void | Promise<void>;
@@ -91,6 +97,8 @@ export function useMessageQueue({
   composerRef,
   currentSessionId,
   question,
+  appSource,
+  draftIdentity,
   attachments,
   streaming,
   setQuestion,
@@ -104,6 +112,10 @@ export function useMessageQueue({
   const { t } = useTranslation();
 
   const messageQueueStore = useMemo(() => new MessageQueueStore(), []);
+  const appSourceRef = useRef(appSource);
+  appSourceRef.current = appSource;
+  const draftIdentityRef = useRef(draftIdentity);
+  draftIdentityRef.current = draftIdentity;
 
   const queueAutoInflightRef = useRef(false);
   /** A guide hand-off is awaiting its result — do not send the same items again. */
@@ -169,7 +181,8 @@ export function useMessageQueue({
     const send = async () => {
       try {
         startQueueTurn();
-        await onAsk(formatted, undefined, { injectHint: "queue", inputOrigin: "queue-auto" });
+        await onAsk(formatted, undefined, { injectHint: "queue", inputOrigin: "queue-auto",
+          ...(queueAppSource(taken) === undefined ? {} : { appSource: queueAppSource(taken) }) });
       } finally {
         queueAutoInflightRef.current = false;
       }
@@ -205,7 +218,8 @@ export function useMessageQueue({
         console.warn(`[message-queue] guide flush refused (${reason}), items kept:`, formatted.slice(0, 80));
       };
       try {
-        const result = await guide.inject(formatted);
+        const source = queueAppSource(reservation.items);
+        const result = source === undefined ? await guide.inject(formatted) : await guide.inject(formatted, undefined, source);
         if (guideFlushInflightRef.current !== handoff) return;
         if (handoff.disposition === "delivered" || result?.ok === true) {
           if (handoff.disposition === "dropped") return;
@@ -302,7 +316,8 @@ export function useMessageQueue({
     const formatted = formatQueueInject(taken);
     // ESC / esc 취소 = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
     startQueueTurn();
-    void onAsk(formatted, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
+    void onAsk(formatted, captureComposerKeyboardIntent(), { injectHint: "interrupt",
+      ...(queueAppSource(taken) === undefined ? {} : { appSource: queueAppSource(taken) }) });
   }, [messageQueueStore, onAbort, onAsk, startQueueTurn]);
 
   // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
@@ -310,7 +325,7 @@ export function useMessageQueue({
     (intent: UserKeyboardIntentSnapshot) => {
       const text = question;
       if (text.trim().length === 0 && attachments.length === 0) return;
-      if (interceptSubmit?.(text)) {
+      if (appSource === undefined && interceptSubmit?.(text)) {
         setQuestion("");
         return;
       }
@@ -318,7 +333,7 @@ export function useMessageQueue({
         // Busy: 큐에 추가. cap 초과 throw catch 해서 textarea 보존.
         if (text.trim().length > 0) {
           try {
-            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments));
+            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments), appSource);
           } catch (err) {
             console.warn("[message-queue] add rejected:", errorMessage(err));
             return;
@@ -331,18 +346,19 @@ export function useMessageQueue({
       } else {
         // Idle: 직행 전송
         startQueueTurn();
-        void onAsk(text, intent);
+        if (appSource === undefined) void onAsk(text, intent);
+        else void onAsk(text, undefined, { appSource });
       }
     },
     [
-      question, attachments, streaming, messageQueueStore, onAsk,
+      question, appSource, attachments, streaming, messageQueueStore, onAsk,
       setQuestion, setAttachments, interceptSubmit, startQueueTurn,
     ],
   );
 
   const handleImmediateInject = useCallback(() => {
     const text = question.trim();
-    if (interceptSubmit?.(text)) {
+    if (appSource === undefined && queueAppSource(messageQueueStore.getPending().filter((item) => item.selected)) === undefined && interceptSubmit?.(text)) {
       setQuestion("");
       return;
     }
@@ -355,15 +371,18 @@ export function useMessageQueue({
     setQuestion("");
     // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
     startQueueTurn();
-    void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
-  }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
+    const source = queueAppSource(taken) ?? appSource;
+    void onAsk(combined, captureComposerKeyboardIntent(), { injectHint: "interrupt",
+      ...(source === undefined ? {} : { appSource: source }) });
+  }, [question, appSource, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
 
   const handleMessageQueueSendNow = useCallback((item: MessageQueueItem) => {
     const taken = messageQueueStore.takeOne(item.id);
     if (!taken) return;
     const text = formatQueueInject([taken]);
     startQueueTurn();
-    void onAsk(text, captureComposerKeyboardIntent(), { injectHint: "interrupt" });
+    void onAsk(text, captureComposerKeyboardIntent(), { injectHint: "interrupt",
+      ...(taken.appSource === undefined ? {} : { appSource: taken.appSource }) });
   }, [messageQueueStore, onAsk, startQueueTurn]);
 
   // ESC 우선순위
@@ -423,9 +442,12 @@ export function useMessageQueue({
       // Capture the gesture's one-shot intent now, inside the key handler, before any await.
       const intent = captureComposerKeyboardIntent();
       void (async () => {
-        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments), intent);
+        const formatted = augmentFileReferenceMarkers(text, attachments);
+        const result = appSource === undefined ? await guide.inject(formatted, intent) : await guide.inject(formatted, undefined, appSource);
         if (result?.ok === true) {
-          setQuestion("");
+          if (draftIdentityRef.current === draftIdentity && appSourceRef.current === appSource) {
+            setQuestion((current) => current === question ? "" : current);
+          }
         } else if (result?.ok === false) {
           const message =
             result.error === "queue-full" ? t("chatView.guideErrorQueueFull") :
@@ -438,7 +460,7 @@ export function useMessageQueue({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [question, attachments, guide, setQuestion, t]);
+  }, [question, appSource, draftIdentity, attachments, guide, setQuestion, t]);
 
   return {
     messageQueueStore,

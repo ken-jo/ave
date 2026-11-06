@@ -15,4 +15,10 @@ describe("composer draft provenance", () => {
     expect(takeComposerDraft("a")).toEqual({ text: "" });
     expect(takeComposerDraft("b")).toEqual({ text: "User text" });
   });
+  it("parks a pending app suggestion even when the current composer is empty", () => {
+    const pending = [{ text: "Suggested", appSource: "app:fixture" }];
+    parkComposerDraft("chat", "", undefined, pending);
+    expect(takeComposerDraft("chat")).toEqual({ text: "", pendingAppDrafts: pending });
+  });
+
 });

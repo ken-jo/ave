@@ -14,12 +14,16 @@ const VIEW_FIXTURE_MANIFEST = {
   description: "In-repository plugin with one sidebar view and one tool, for local UI verification.",
   entry: "dist/hostPlugin.js",
   requires: { minAppVersion: "0.12.0", hostProtocol: "5" },
+  auth: { statusTool: "viewfixture_status", loginTool: "viewfixture_login" },
   tools: [{
     name: VIEW_FIXTURE_TOOL,
     description: "Return a marker that proves the host dispatched this call into the plugin.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     _meta: { ui: { visibility: ["model", "app"] } },
-  }],
+  }, ...["viewfixture_status", "viewfixture_login", "viewfixture_set_auth", "viewfixture_open_dock"].map((name) => ({
+    name, description: "Fixture authentication and dock controls", inputSchema: { type: "object", properties: { authenticated: { type: "boolean" } }, additionalProperties: false },
+    _meta: { ui: { visibility: ["app"] } },
+  }))],
   uiResources: [{ uri: "ui://viewfixture/control" }],
   ui: [{
     id: "viewfixture_control",
@@ -29,6 +33,8 @@ const VIEW_FIXTURE_MANIFEST = {
     title: "View Fixture",
     description: "Sidebar view used to prove plugin views reach the command menu.",
     resourceUri: "ui://viewfixture/control",
+  }, {
+    id: "viewfixture_dock", slot: "floating", kind: "mcp-app", title: "View Fixture Dock", resourceUri: "ui://viewfixture/control",
   }],
 };
 
@@ -60,9 +66,14 @@ document.getElementById('draft').onclick = async () => {
 </script></body></html>`;
 
 const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
-  "dist/hostPlugin.js": `export default function createPlugin() {
+  "dist/hostPlugin.js": `export default function createPlugin({ hostApi }) {
+  let authenticated = true;
   return {
     handlers: {
+      viewfixture_status: async () => ({ authenticated, account: "fixture-account" }),
+      viewfixture_login: async () => ({ authenticated: (authenticated = true) }),
+      viewfixture_set_auth: async ({ authenticated: next }) => ({ authenticated: (authenticated = next) }),
+      viewfixture_open_dock: async () => { await hostApi.attachFloatingPanel({ extensionId: "viewfixture_dock", height: 240 }); return { ok: true }; },
       ${VIEW_FIXTURE_TOOL}: async (args) => ({ ok: true, marker: ${JSON.stringify(VIEW_FIXTURE_DISPATCH_MARKER)}, args }),
     },
     readUiResource: async () => ${JSON.stringify(VIEW_FIXTURE_HTML)},

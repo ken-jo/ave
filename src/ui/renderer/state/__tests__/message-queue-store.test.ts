@@ -1,7 +1,7 @@
 /** See docs/blueprints/composer-redesign-message-queue.md#message-queue-semantics. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MessageQueueStore, formatQueueInject } from "../message-queue-store.js";
+import { MessageQueueStore, formatQueueInject, queueAppSource } from "../message-queue-store.js";
 
 describe("MessageQueueStore", () => {
   let store: MessageQueueStore;
@@ -461,5 +461,29 @@ describe("MessageQueueStore selection during handoff", () => {
     store.settleReservation(reservation.id);
     expect(store.selectedCount()).toBe(1);
     expect(store.takeSelected().map((item) => item.text)).toEqual(["reserved"]);
+  });
+});
+
+
+describe("app source ownership", () => {
+  it("preserves a source through editing, reservation, release and consumption", () => {
+    const store = new MessageQueueStore();
+    const item = store.add("App text", "app:fixture");
+    store.update(item.id, "User-edited app text");
+    expect(store.getPending()[0].appSource).toBe("app:fixture");
+    const reservation = store.reservePending()!;
+    expect(reservation.items[0].appSource).toBe("app:fixture");
+    store.settleReservation(reservation.id, "delivered");
+    store.releaseHandedOff();
+    expect(store.takeOne(item.id)).toMatchObject({ text: "User-edited app text", appSource: "app:fixture" });
+  });
+  it("selects app provenance for a mixed batch and rejects malformed sources", () => {
+    const store = new MessageQueueStore();
+    store.add("User text");
+    store.add("App text", "app:fixture");
+    store.add("Other app text", "app:other");
+    expect(queueAppSource(store.getPending())).toBe("app:fixture");
+    expect(queueAppSource([])).toBeUndefined();
+    expect(() => store.add("Text", "user-keyboard")).toThrow("invalid app source");
   });
 });

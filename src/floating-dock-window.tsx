@@ -1,6 +1,6 @@
 /** Host-owned dock chrome renders each panel through the standard app view. */
 import { useEffect, useState } from "react";
-import { parsePluginAuthStatus } from "./ui/renderer/hooks/use-plugin-auth-status.js";
+import { parsePluginAuthStatus, usePluginAuthRevision, type PluginAuthState } from "./ui/renderer/hooks/use-plugin-auth-status.js";
 import { createRoot, type Root } from "react-dom/client";
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
@@ -14,7 +14,7 @@ function element(id: string): HTMLElement {
   return node;
 }
 const roots = new Map<string, Root>();
-const panels = new Map<string, { payload: McpUiPayload; authStatusTool?: string }>();
+const panels = new Map<string, { panelId: string; payload: McpUiPayload; authStatusTool?: string }>();
 let hostTheme: { shell: "light" | "dark"; tokens: Record<string, string> } | undefined;
 const slots = element("slots");
 dock.onActivity((value) => {
@@ -55,8 +55,8 @@ dock.onMount((value) => {
   slots.appendChild(container);
   const root = createRoot(body);
   roots.set(slot.panelId, root);
-  panels.set(slot.panelId, { payload: slot.payload, authStatusTool: slot.authStatusTool });
-  root.render(<DockAppContent payload={slot.payload} authStatusTool={slot.authStatusTool} hostTheme={hostTheme} />);
+  panels.set(slot.panelId, { panelId: slot.panelId, payload: slot.payload, authStatusTool: slot.authStatusTool });
+  root.render(<DockAppContent panelId={slot.panelId} payload={slot.payload} authStatusTool={slot.authStatusTool} hostTheme={hostTheme} />);
 });
 dock.onUnmount((value) => {
   const { panelId } = value as { panelId: string };
@@ -78,13 +78,15 @@ dock.onRetitle((value) => {
 
 const AUTH_STATUS_REFRESH_INTERVAL_MS = 5_000;
 
-/** Host chrome observes auth with governed standard tool calls; changed state retires the app bridge. */
-function DockAppContent({ payload, authStatusTool, hostTheme: theme }: {
+/** Host chrome observes its trusted-panel auth source; changed identity retires the app bridge. */
+function DockAppContent({ panelId, payload, authStatusTool, hostTheme: theme }: {
+  panelId: string;
   payload: McpUiPayload;
   authStatusTool?: string;
   hostTheme?: { shell: "light" | "dark"; tokens: Record<string, string> };
 }) {
-  const [authKey, setAuthKey] = useState("");
+  const [authStatus, setAuthStatus] = useState<PluginAuthState | undefined>();
+  const authRevision = usePluginAuthRevision(authStatus);
   useEffect(() => {
     if (!authStatusTool) return;
     let cancelled = false;
@@ -93,11 +95,11 @@ function DockAppContent({ payload, authStatusTool, hostTheme: theme }: {
       if (pending) return;
       pending = true;
       try {
-        const outcome = await window.ave.mcp.callTool(payload.serverId, authStatusTool, {}, payload.generationId);
+        const status = await dock.readAuthStatus(panelId);
         if (cancelled) return;
-        setAuthKey(outcome.ok ? JSON.stringify(parsePluginAuthStatus(outcome.result)) : "auth-status-refused");
+        setAuthStatus(parsePluginAuthStatus(status));
       } catch {
-        if (!cancelled) setAuthKey("auth-status-refused");
+        if (!cancelled) setAuthStatus({ kind: "error", message: "Auth status unavailable" });
       } finally { pending = false; }
     };
     const handleRefresh = () => { void refresh(); };
@@ -105,6 +107,6 @@ function DockAppContent({ payload, authStatusTool, hostTheme: theme }: {
     const timer = window.setInterval(handleRefresh, AUTH_STATUS_REFRESH_INTERVAL_MS);
     window.addEventListener("focus", handleRefresh);
     return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", handleRefresh); };
-  }, [payload, authStatusTool]);
-  return <McpAppView key={authKey} payload={payload} hostTheme={theme} />;
+  }, [panelId, authStatusTool]);
+  return <McpAppView key={authRevision} payload={payload} hostTheme={theme} />;
 }

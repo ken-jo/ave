@@ -10,14 +10,30 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
+const mountedAuthTools = new Map<string, string>();
+
 const dockBridge = {
   onActivity: (handler: (activity: unknown) => void) =>
     subscribe(CHANNELS.dock.activity, handler),
-  onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, handler),
+  onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, (slot) => {
+    const mount = slot as { panelId: string; authStatusTool?: string };
+    mountedAuthTools.delete(mount.panelId);
+    if (mount.authStatusTool) mountedAuthTools.set(mount.panelId, mount.authStatusTool);
+    handler(slot);
+  }),
   onResize: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.resize, handler),
   /** A card's header title changed — the host resolved it in a new UI language. */
   onRetitle: (handler: (change: unknown) => void) => subscribe(CHANNELS.dock.retitle, handler),
-  onUnmount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.unmount, handler),
+  onUnmount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.unmount, (slot) => {
+    mountedAuthTools.delete((slot as { panelId: string }).panelId);
+    handler(slot);
+  }),
+  /** Only host-issued mounted panels select a status method; the untrusted app cannot call this chrome API. */
+  readAuthStatus: (panelId: string): Promise<unknown> => {
+    const method = mountedAuthTools.get(panelId);
+    if (!method) throw new Error("Dock panel has no auth status source");
+    return ipcRenderer.invoke(CHANNELS.plugins.call, method, undefined, { userAction: false });
+  },
   /** The host theme current when the window opened, then each later one (main sends both). */
   onTheme: (handler: (theme: unknown) => void) => subscribe(CHANNELS.dock.theme, handler),
 

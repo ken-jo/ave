@@ -4,7 +4,7 @@ import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
+import { isComposerDraftEmpty, parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { GalleryVerticalEnd, PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -37,6 +37,7 @@ import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 import { useCurrentSession } from "../hooks/use-sessions.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { isSecondaryMainWindow } from "../utils/main-window-role.js";
+import { useComposerDraft } from "../hooks/use-composer-draft.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
@@ -47,6 +48,7 @@ import { composeOutgoing as composeOutgoingUtil, type ComposedOutgoing } from ".
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { McpPromptArgsDialog } from "../dialogs/McpPromptArgsDialog.js";
 import { AgentPluginPromptArgsDialog } from "../dialogs/AgentPluginPromptArgsDialog.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
@@ -364,7 +366,8 @@ export function ChatGroupSession({
     onToastDismiss: (toast: { id: string }) => removeTileNotice(toast.id),
   }), [tileNoticePersistent, tileNoticeVisible, tileNoticePending, removeTileNotice]);
 
-  const [question, setQuestion] = useState("");
+  const { draft: composerDraft, draftRef: composerDraftRef, setDraft: setComposerDraft, setQuestion, stageAppMessage, acceptPendingAppDraft, dismissPendingAppDraft } = useComposerDraft();
+  const question = composerDraft.text;
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentNCounter = useRef(0);
@@ -431,12 +434,6 @@ export function ChatGroupSession({
   // under the conversation it was written for and handed back when that
   // conversation returns to a tile (this one or another). Layout timing so the
   // previous conversation's text never paints over the next one.
-  const appDraftSourcesRef = useRef(new Map<string, { source: string }>());
-
-  const stageAppMessage = useCallback((text: string, source: string) => {
-    appDraftSourcesRef.current.set(currentSessionId, { source });
-    setQuestion((current) => current ? current + "\n\n" + text : text);
-  }, [currentSessionId]);
   const questionRef = useRef(question);
   questionRef.current = question;
   const draftSessionIdRef = useRef<string | null>(null);
@@ -450,9 +447,7 @@ export function ChatGroupSession({
   useLayoutEffect(() => {
     const restoreDraft = () => {
       const draft = takeComposerDraft(currentSessionId);
-      if (draft.appSource) appDraftSourcesRef.current.set(currentSessionId, { source: draft.appSource });
-      else appDraftSourcesRef.current.delete(currentSessionId);
-      setQuestion(draft.text);
+      setComposerDraft(draft);
     };
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
@@ -462,9 +457,12 @@ export function ChatGroupSession({
     const opening = newChatDraftRef.current;
     if (opening && opening.sessionId === currentSessionId) {
       newChatDraftRef.current = null;
-      if (opening.appSource) appDraftSourcesRef.current.set(currentSessionId, { source: opening.appSource });
+      if (opening.appSource) {
+        stageAppMessage(opening.text, opening.appSource);
+        return;
+      }
       if (previous && !carry) {
-        parkComposerDraft(previous, questionRef.current, appDraftSourcesRef.current.get(previous)?.source);
+        parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
         setQuestion(opening.text);
       } else {
         // Text typed into the conversation being replaced arrives with it, as on the ordinary path, after the opening text.
@@ -476,20 +474,16 @@ export function ChatGroupSession({
     // an empty one being replaced: whatever was typed belongs to the
     // conversation that is arriving, so it stays, and a parked draft only
     // fills an empty composer (otherwise it stays parked).
-    if (carry && previous) {
-      const source = appDraftSourcesRef.current.get(previous);
-      if (source) appDraftSourcesRef.current.set(currentSessionId, source);
-    }
     if (!previous || carry) {
-      if (!questionRef.current) restoreDraft();
+      if (isComposerDraftEmpty(composerDraftRef.current)) restoreDraft();
       return;
     }
-    parkComposerDraft(previous, questionRef.current, appDraftSourcesRef.current.get(previous)?.source);
+    parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
     restoreDraft();
   }, [currentSessionId]);
   useEffect(() => () => {
     const sessionId = draftSessionIdRef.current;
-    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current, appDraftSourcesRef.current.get(sessionId)?.source);
+    if (sessionId !== null) parkComposerDraft(sessionId, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
     draftSessionIdRef.current = null;
   }, []);
 
@@ -626,22 +620,27 @@ export function ChatGroupSession({
   const handleGuide = useCallback(async (
     text: string,
     intent?: UserKeyboardIntentSnapshot,
+    appSource?: string,
   ): Promise<{ ok: true } | { ok: false; error: string }> => {
     if (text.trim().length === 0) return { ok: false, error: "empty-text" };
     try {
-      const result = await api.chatGuide(text, intent);
+      const result = await api.chatGuide(text, intent, appSource);
       // Main-process handler returns `{ ok: boolean, error?: string }`. Type-narrow defensively since the IPC boundary is
       // `Promise<unknown>`.
       if (result && typeof result === "object" && "ok" in result) {
         const r = result as { ok: boolean; error?: string };
-        if (r.ok) return { ok: true };
+        if (r.ok) {
+          if (appSource) insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource,
+            prompt: formatAppMessageEnvelope(text, appSource), summary: text });
+          return { ok: true };
+        }
         return { ok: false, error: r.error ?? "unknown-error" };
       }
       return { ok: false, error: "invalid-response" };
     } catch (err) {
       return { ok: false, error: (err as Error)?.message ?? "ipc-error" };
     }
-  }, [api]);
+  }, [api, insertImportedTriggerEntry]);
 
   const handleFeedback = useCallback(
     async (messageIdx: number, rating: "up" | "down", reason?: string) => {
@@ -679,10 +678,12 @@ export function ChatGroupSession({
       // along then.
       if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
       if (opening !== undefined && applied !== null) {
-        if (opening.appSource) appDraftSourcesRef.current.set(applied, { source: opening.appSource });
         // The new conversation opens with this text in its composer: set it if the tile already switched (keeping what the
         // switch carried over), otherwise hand it to the switch.
-        if (draftSessionIdRef.current === applied) setQuestion(withOpeningText(opening.draft, questionRef.current));
+        if (draftSessionIdRef.current === applied) {
+          if (opening.appSource) stageAppMessage(opening.draft, opening.appSource);
+          else setQuestion(withOpeningText(opening.draft, questionRef.current));
+        }
         else newChatDraftRef.current = { sessionId: applied, text: opening.draft, appSource: opening.appSource };
         setMemoryFix(opening.fixMemory ? { sessionId: applied, memory: opening.fixMemory } : null);
       }
@@ -976,7 +977,7 @@ export function ChatGroupSession({
   const dismissMemoryFix = useCallback(() => setMemoryFix(null), []);
   const chatContextValue = useMemo<ChatContextValue>(() => ({
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, setQuestion, chatEndRef, currentSessionId, hidden,
+    question, appSource: composerDraft.appSource, draftIdentity: composerDraft, setQuestion, chatEndRef, currentSessionId, hidden,
     publishSideChatSurface: setSideChatSurface,
     hasApiKey: env.effectiveLlmReady, settingsLoaded: env.settingsLoaded,
     onOpenSettings: env.onOpenSettings,
@@ -1006,7 +1007,7 @@ export function ChatGroupSession({
     llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
   }), [
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, currentSessionId, hidden, env, memoryFix, dismissMemoryFix,
+    question, composerDraft, currentSessionId, hidden, env, memoryFix, dismissMemoryFix,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     tpmLimit, tpmPct, isTpmOverflow,
     attachments, costEstimate, costBadgeClass,
@@ -1022,14 +1023,13 @@ export function ChatGroupSession({
         onAsk={(q, intent, opts) => {
           // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
           if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);
-          const appDraft = appDraftSourcesRef.current.get(currentSessionId);
-          const appSource = appDraft?.source;
-          if (appSource && opts?.inputOrigin !== "queue-auto") {
+          const appSource = opts?.appSource;
+          if (appSource) {
             const envelope = formatAppMessageEnvelope(q, appSource);
             return handleAsk(envelope, "app-message", undefined, {
-              onRefused: () => setQuestion((current) => current || q),
+              ...opts,
+              onRefused: () => setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource }),
               onAccepted: () => {
-                if (appDraftSourcesRef.current.get(currentSessionId) === appDraft) appDraftSourcesRef.current.delete(currentSessionId);
                 insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource, prompt: envelope, summary: q });
               },
             });
@@ -1083,6 +1083,19 @@ export function ChatGroupSession({
         onRefreshProjects={env.onRefreshProjects}
         onProjectError={env.onProjectError}
       />
+      <Dialog open={!hidden && Boolean(composerDraft.pendingAppDrafts?.length)} onOpenChange={(open) => { if (!open) dismissPendingAppDraft(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("app.replaceAppDraftTitle")}</DialogTitle>
+            <DialogDescription>{t("app.replaceAppDraftConfirm")}</DialogDescription>
+          </DialogHeader>
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap text-sm">{composerDraft.pendingAppDrafts?.[0]?.text}</pre>
+          <DialogFooter>
+            <Button variant="outline" onClick={dismissPendingAppDraft}>{t("app.dismissAppDraft")}</Button>
+            <Button onClick={acceptPendingAppDraft}>{t("app.replaceAppDraft")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* The arguments form belongs to the tile that asked for the prompt:
           a window-level dialog would send the result to whichever tile
           happened to be focused when the user finished typing. */}

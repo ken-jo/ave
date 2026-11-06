@@ -1,5 +1,9 @@
 // i18n fragment. Source: src/ui/renderer/App.tsx.
 export const en = {
+  "app.replaceAppDraftTitle": "App message draft",
+  "app.replaceAppDraft": "Replace current draft",
+  "app.dismissAppDraft": "Dismiss suggestion",
+  "app.replaceAppDraftConfirm": "Replace the current composer draft with this app message?",
   "app.routineFailedTitle": "[Failed] Routine",
   "app.conversationCeilingReached": "The window is already holding {count} conversations and none of the others can be set aside — every one that could be is generating a reply. Stop one or wait for it to finish.",
   "app.conversationSetAside": "A conversation was closed to make room. It is saved, so reopening it picks up where it left off; anything typed but unsent is not kept.",
@@ -65,6 +69,10 @@ export const en = {
   "app.deprecatedModelNoticeDismiss": "Dismiss",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "app.replaceAppDraftTitle": "앱 메시지 초안",
+  "app.replaceAppDraft": "현재 초안 교체",
+  "app.dismissAppDraft": "제안 닫기",
+  "app.replaceAppDraftConfirm": "현재 작성 중인 초안을 이 앱 메시지로 교체할까요?",
   "app.routineFailedTitle": "[실패] 루틴",
   "app.conversationCeilingReached": "이미 {count}개의 대화가 열려 있고, 비워 둘 수 있는 대화가 없습니다 — 비울 수 있는 대화는 모두 응답을 생성 중입니다. 하나를 중지하거나 끝날 때까지 기다려 주세요.",
   "app.conversationSetAside": "자리를 만들기 위해 대화 하나를 닫았습니다. 대화는 저장되어 있어 다시 열면 이어서 계속되지만, 입력하다 만 내용은 남지 않습니다.",

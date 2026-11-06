@@ -276,6 +276,19 @@ describe("handleAsk — a turn carrying an attached resource", () => {
     expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
   });
 
+  it("keeps queued app input app-emitted and leaves a newer composer draft untouched", async () => {
+    const onAccepted = vi.fn();
+    const s = setup({ attachments: [] });
+    const envelope = '<app-message source="app:fixture">queued app draft</app-message>';
+    await act(async () => s.result.current.handleAsk(envelope, "app-message", undefined, {
+      inputOrigin: "queue-auto", appSource: "app:fixture", onAccepted,
+    }));
+    expect(s.chatSend.mock.calls[0]?.[0]).toBe(envelope);
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+    expect(s.setQuestion).not.toHaveBeenCalled();
+    expect(onAccepted).toHaveBeenCalledOnce();
+  });
+
   it("never puts a staged envelope in the composer when a staged send throws", async () => {
     // For a staged mode the first argument IS the provenance envelope, not anything the
     // user typed. Handing it back as a draft would offer server-authored text as the

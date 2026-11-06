@@ -1,4 +1,4 @@
-// The host fixes dock window geometry and privileges; plugins contribute cards through the existing sandboxed UI shell.
+// The host fixes dock window geometry and privileges; app panels run in per-server sandboxes.
 import { BrowserWindow, ipcMain, screen } from "electron";
 import { runtimeAssetPath } from "./main-paths.js";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -21,15 +21,13 @@ const log = createLogger("floating-dock");
 // The real window. Created lazily and destroyed on `hide()` rather than merely hidden: a dock with nothing in it has no state worth keeping alive, and a
 // destroyed window cannot be left floating by a bug in the visibility bookkeeping.
 export interface ElectronFloatingDockSurfaceDeps {
-  // Subscribe to the host theme broadcast (`host.theme.changed`, the payload plugin webviews receive). The dock's own chrome reads the theme once when its
-  // window loads; every later theme reaches it through this.
+  // Host chrome receives the current validated theme and later changes through this internal feed.
   onThemeChanged(listener: (theme: unknown) => void): () => void;
   // The theme current now — the host renderer's last validated one — or null before the first.
   currentTheme(): unknown;
 }
 
-// The host's theme feed, the one plugin webviews get: the validated `host.theme.changed` broadcast and the replay cache behind it. Main pushes both to
-// the dock, so the dock asks nothing through the plugin-only `getTheme`, whose guard rightly refuses a non-plugin frame.
+// Main supplies validated themes to dock chrome; app frames receive standard host context from that chrome.
 export const hostDockThemeSource: ElectronFloatingDockSurfaceDeps = {
   onThemeChanged: (listener) => onEvent("host.theme.changed", listener),
   currentTheme: getLastThemePayload,

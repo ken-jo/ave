@@ -65,7 +65,9 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
         : {}),
     }, chatGroupId),
   // The same one-shot keyboard intent chatSend consumes; a guide without one (a queue flush) carries none, so main treats it as another principal's.
-  chatGuide: async (input: string, userIntent?: UserKeyboardIntentSnapshot) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId, {
+  chatGuide: async (input: string, userIntent?: UserKeyboardIntentSnapshot, appSource?: string) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId, appSource !== undefined ? {
+    inputOrigin: "app-emitted", appSource,
+  } : {
     inputOrigin: "user-keyboard",
     userActivation: consumeUserKeyboardIntent(userIntent),
   }),
