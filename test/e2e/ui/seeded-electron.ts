@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 } from "../../../src/shared/llm-vendor-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
+import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "../../..");
@@ -58,10 +59,8 @@ export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" })
 /** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs keeps it that way): Playwright's launch with {@link
  * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it). */
 export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
-  const baseEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(options?.env ?? process.env)) {
-    if (value !== undefined) baseEnv[key] = value;
-  }
+  // Windows UI e2e never starts the real srt-win: it would stamp the real account profile.
+  const baseEnv = launchBaseEnv(options?.env ?? process.env);
   return electron.launch({
     ...options,
     args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])],
@@ -69,10 +68,11 @@ export function launchElectron(options: Parameters<typeof electron.launch>[0]): 
   });
 }
 
-/** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. */
+/** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. A Windows USERPROFILE override also gets its own
+ * APPDATA. */
 export function buildIsolatedElectronEnv(overrides: LaunchEnv): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries({ ...safeProcessEnv(), ...overrides })) {
+  for (const [key, value] of Object.entries({ ...safeProcessEnv(), ...windowsProfileEnv(overrides.USERPROFILE), ...overrides })) {
     if (value !== undefined) env[key] = value;
   }
   return env;
