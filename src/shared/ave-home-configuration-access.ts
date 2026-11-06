@@ -203,7 +203,8 @@ function verifiedDacls(rows: readonly WindowsDaclFacts[], verifyHome: boolean, p
 /**
  * Whether a certified boundary still holds: the same directory and ancestor objects and, where the certificate asserted a DACL, that
  * DACL. ChangeTime only shortcuts the DACL comparison, since it also moves when any entry is created in the directory (Chromium writes
- * into userData while boot reads ave-secrets.json there); a directory with no asserted DACL is its object identity alone.
+ * into userData while boot reads ave-secrets.json there); a directory with no asserted DACL is its object identity alone. Only the DACL at
+ * re-capture counts: ChangeTime is no continuity guarantee, so a DACL weakened and restored in between is not detected.
  */
 function windowsBoundaryHolds(boundary: WindowsReadBoundary, rows: readonly WindowsPathFacts[]): boolean {
   const objects = windowsBoundaryObjects(boundary);
@@ -388,6 +389,8 @@ function readOpenedFile(path: string, seen: { present: boolean }): Buffer | unde
       descriptor = undefined;
       return readOpenedFile(path, seen);
     }
+    // A boundary check that threw (a reparse row, a failed DACL walk) must not leave its certificate cached.
+    if (boundary !== undefined) windowsReadCertificates.delete(boundary.key);
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   } finally {
