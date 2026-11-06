@@ -48,7 +48,6 @@ import { composeOutgoing as composeOutgoingUtil, type ComposedOutgoing } from ".
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { HEADER_BUTTON_CLASS } from "./PaneFrame.js";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { McpPromptArgsDialog } from "../dialogs/McpPromptArgsDialog.js";
 import { AgentPluginPromptArgsDialog } from "../dialogs/AgentPluginPromptArgsDialog.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
@@ -457,12 +456,15 @@ export function ChatGroupSession({
     const opening = newChatDraftRef.current;
     if (opening && opening.sessionId === currentSessionId) {
       newChatDraftRef.current = null;
+      if (previous && !carry) {
+        parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
+        setComposerDraft({ text: "" });
+      }
       if (opening.appSource) {
         stageAppMessage(opening.text, opening.appSource);
         return;
       }
       if (previous && !carry) {
-        parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
         setQuestion(opening.text);
       } else {
         // Text typed into the conversation being replaced arrives with it, as on the ordinary path, after the opening text.
@@ -1013,6 +1015,7 @@ export function ChatGroupSession({
     attachments, costEstimate, costBadgeClass,
   ]);
 
+  const pendingAppDraft = composerDraft.pendingAppDrafts?.[0];
   const content = (
     <ChatContextProvider value={chatContextValue}>
       <ChatView
@@ -1026,7 +1029,7 @@ export function ChatGroupSession({
           const appSource = opts?.appSource;
           if (appSource) {
             const envelope = formatAppMessageEnvelope(q, appSource);
-            return handleAsk(envelope, "app-message", undefined, {
+            return handleAsk(envelope, "app-message", intent, {
               ...opts,
               onRefused: () => setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource }),
               onAccepted: () => {
@@ -1082,20 +1085,14 @@ export function ChatGroupSession({
         onNewChatForProject={env.onNewChatForProject}
         onRefreshProjects={env.onRefreshProjects}
         onProjectError={env.onProjectError}
+        appDraftSuggestion={pendingAppDraft ? {
+          appName: env.plugins.find((plugin) => plugin.pluginId === pendingAppDraft.appSource.slice(4))?.label
+            ?? pendingAppDraft.appSource.slice(4),
+          text: pendingAppDraft.text,
+          onReplace: acceptPendingAppDraft,
+          onDismiss: dismissPendingAppDraft,
+        } : undefined}
       />
-      <Dialog open={!hidden && Boolean(composerDraft.pendingAppDrafts?.length)} onOpenChange={(open) => { if (!open) dismissPendingAppDraft(); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("app.replaceAppDraftTitle")}</DialogTitle>
-            <DialogDescription>{t("app.replaceAppDraftConfirm")}</DialogDescription>
-          </DialogHeader>
-          <pre className="max-h-60 overflow-auto whitespace-pre-wrap text-sm">{composerDraft.pendingAppDrafts?.[0]?.text}</pre>
-          <DialogFooter>
-            <Button variant="outline" onClick={dismissPendingAppDraft}>{t("app.dismissAppDraft")}</Button>
-            <Button onClick={acceptPendingAppDraft}>{t("app.replaceAppDraft")}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       {/* The arguments form belongs to the tile that asked for the prompt:
           a window-level dialog would send the result to whichever tile
           happened to be focused when the user finished typing. */}

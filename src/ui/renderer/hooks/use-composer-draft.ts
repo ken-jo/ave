@@ -20,19 +20,19 @@ export function useComposerDraft() {
   const stageAppMessage = useCallback((text: string, source: string) => {
     if (!isAppMessageOrigin(source)) throw new Error("Invalid app draft source");
     setDraft((current) => !isComposerDraftEmpty(current)
-      ? { ...current, pendingAppDrafts: [...(current.pendingAppDrafts ?? []), { text, appSource: source }] }
+      ? { ...current, pendingAppDrafts: [{ text, appSource: source }] }
       : { ...current, text, appSource: source });
   }, [setDraft]);
   const acceptPendingAppDraft = useCallback(() => {
     setDraft((current) => {
-      const [next, ...rest] = current.pendingAppDrafts ?? [];
-      return next ? { ...next, ...(rest.length ? { pendingAppDrafts: rest } : {}) } : current;
+      const next = current.pendingAppDrafts?.[0];
+      return next ? { ...next } : current;
     });
   }, [setDraft]);
   const dismissPendingAppDraft = useCallback(() => {
     setDraft((current) => {
-      const { pendingAppDrafts: pending, ...rest } = current;
-      return pending && pending.length > 1 ? { ...rest, pendingAppDrafts: pending.slice(1) } : rest;
+      const { pendingAppDrafts: _pending, ...rest } = current;
+      return rest;
     });
   }, [setDraft]);
   return { draft, draftRef, setDraft, setQuestion, stageAppMessage, acceptPendingAppDraft, dismissPendingAppDraft };

@@ -44,15 +44,17 @@ describe("composer text provenance", () => {
     expect(result.current.draft).toEqual({ text: "User draft" });
   });
 
-  it("keeps pending consent after clearing editable text and receiving another suggestion", () => {
+  it("replaces the pending suggestion with the latest while preserving consent after text is cleared", () => {
     const { result } = renderHook(() => useComposerDraft());
     act(() => result.current.setQuestion("User draft"));
     act(() => result.current.stageAppMessage("First app text", "app:first"));
     act(() => result.current.setQuestion(""));
     act(() => result.current.stageAppMessage("Second app text", "app:second"));
     expect(result.current.draft).toEqual({ text: "", pendingAppDrafts: [
-      { text: "First app text", appSource: "app:first" }, { text: "Second app text", appSource: "app:second" },
+      { text: "Second app text", appSource: "app:second" },
     ] });
+    act(() => result.current.acceptPendingAppDraft());
+    expect(result.current.draft).toEqual({ text: "Second app text", appSource: "app:second" });
   });
 
 });

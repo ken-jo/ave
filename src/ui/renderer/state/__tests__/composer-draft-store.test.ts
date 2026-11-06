@@ -20,5 +20,14 @@ describe("composer draft provenance", () => {
     parkComposerDraft("chat", "", undefined, pending);
     expect(takeComposerDraft("chat")).toEqual({ text: "", pendingAppDrafts: pending });
   });
+  it("parks only the latest pending suggestion per conversation", () => {
+    parkComposerDraft("a", "User draft", undefined, [
+      { text: "Older", appSource: "app:first" },
+      { text: "Latest", appSource: "app:second" },
+    ]);
+    parkComposerDraft("b", "Other draft", undefined, [{ text: "Other", appSource: "app:third" }]);
+    expect(takeComposerDraft("a")).toEqual({ text: "User draft", pendingAppDrafts: [{ text: "Latest", appSource: "app:second" }] });
+    expect(takeComposerDraft("b")).toEqual({ text: "Other draft", pendingAppDrafts: [{ text: "Other", appSource: "app:third" }] });
+  });
 
 });

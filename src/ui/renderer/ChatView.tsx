@@ -74,10 +74,12 @@ import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWork
 import { formatTokensExact } from "../../lib/cost-format.js";
 import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
 import { MemoryFixCard } from "./components/MemoryFixCard.js";
+import { AppDraftBanner, type AppDraftBannerProps } from "./components/AppDraftBanner.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
   api: AveApi;
+  appDraftSuggestion?: AppDraftBannerProps;
   onAsk: (
     q: string,
     intent?: UserKeyboardIntentSnapshot,
@@ -158,7 +160,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
+export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -909,6 +911,10 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         notices={<>
+          {appDraftSuggestion ? <AppDraftBanner {...appDraftSuggestion}
+            onReplace={() => { appDraftSuggestion.onReplace(); composerRef.current?.focus(); }}
+            onDismiss={() => { appDraftSuggestion.onDismiss(); composerRef.current?.focus(); }}
+          /> : null}
           {memoryFix && visibleEntries.length === 0 ? <MemoryFixCard memory={memoryFix} onDismiss={onDismissMemoryFix} /> : null}
           <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={autoCompactEnabled} />
           {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.80 && (

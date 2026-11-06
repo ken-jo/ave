@@ -19,7 +19,7 @@ export function parkComposerDraft(sessionId: string, text: string, appSource?: s
   const kept = stripMarkers(text);
   drafts.delete(sessionId);
   if (!kept && !pendingAppDrafts?.length) return;
-  drafts.set(sessionId, { text: kept, ...(kept && appSource ? { appSource } : {}), ...(pendingAppDrafts?.length ? { pendingAppDrafts } : {}) });
+  drafts.set(sessionId, { text: kept, ...(kept && appSource ? { appSource } : {}), ...(pendingAppDrafts?.length ? { pendingAppDrafts: pendingAppDrafts.slice(-1) } : {}) });
   if (drafts.size > MAX_PARKED_DRAFTS) {
     const oldest = drafts.keys().next().value;
     if (oldest !== undefined) drafts.delete(oldest);
