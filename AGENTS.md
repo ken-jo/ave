@@ -283,8 +283,8 @@ Pre-push picks one tier and logs it with the reason
   changed test files, the recorded readers of a changed test-read document,
   and `vitest related` for the changed modules (narrowed to direct importers
   when a shared module reaches over 150 test files). A message catalog change
-  (`src/i18n/messages/` seeds, fragments and barrels) adds
-  `check:i18n-catalog`, `check:i18n-barrels`, the `src/i18n/__tests__`
+  (`src/i18n/messages/` locale catalogs) adds
+  `check:i18n-catalog`, the `src/i18n/__tests__`
   suites, and the tests and modules that name a changed key's namespace.
   No full `bun run test`, no build. A new sub-branch is measured from the
   closest live tip of the default or an `integration/*` branch, so only its

@@ -279,11 +279,6 @@
     },
     {
       "type": "files",
-      "file": "scripts/i18n-build-catalog.mjs",
-      "name": "scripts/i18n-build-catalog.mjs"
-    },
-    {
-      "type": "files",
       "file": "scripts/recover-electron-native-reaper.mjs",
       "name": "scripts/recover-electron-native-reaper.mjs"
     },

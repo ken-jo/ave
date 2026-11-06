@@ -9,7 +9,8 @@ import { horizontalScrollbarBlockPx, tableGridBlockStyle } from "../table-docume
 import { columnLetters } from "../table-coordinates.js";
 import { tableErrorKey } from "../table-document-preview.js";
 import type { DocumentObservationEvent } from "../../../../shared/agent-observation.js";
-import { en as previewEn, ko as previewKo } from "../../../../i18n/messages/generated/chatPreviewRail.js";
+import { en as previewEn } from "../../../../i18n/messages/en.js";
+import { ko as previewKo } from "../../../../i18n/messages/ko.js";
 import type { ChatPreviewTarget } from "../preview-targets.js";
 import type { PreviewReadDocumentResult, PreviewTableDocument } from "../../../../shared/preview-document.js";
 

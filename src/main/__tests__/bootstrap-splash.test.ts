@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { generatedEn } from "../../i18n/messages/generated/index.js";
+import { en } from "../../i18n/messages/en.js";
 import { t } from "../../i18n/index.js";
 
 const SOURCE = resolve(import.meta.dirname, "../bootstrap-splash.ts");
@@ -16,7 +16,7 @@ describe("bootstrap splash status messages", () => {
   it("resolves every t() key the splash module names", () => {
     const keys = splashKeysFromSource();
     expect(keys.length).toBeGreaterThan(0);
-    const catalog = generatedEn as Record<string, string>;
+    const catalog = en as Record<string, string>;
     for (const key of keys) {
       expect(catalog[key], `missing i18n key ${key}`).toBeTypeOf("string");
     }

@@ -211,7 +211,7 @@ src/alerts/
 src/boot/steps/alerts-setup.ts    builds the pipeline after conversation-wiring; deferred start
 src/ipc/domains/alerts.ts          ave:alerts:* (renderer only)
 src/shared/alerts-types.ts         renderer DTOs
-src/i18n/messages/generated/alerts.ts   alerts.* (renderer) and be_alerts.* (main)
+src/i18n/messages/{en,ko}.ts   alerts.* (renderer) and be_alerts.* (main)
 ```
 
 Order of operations for `raiseAlert`, each step producing exactly one result
@@ -1073,7 +1073,7 @@ the successors without the host naming any plugin.
 | Routines | `src/boot/routine.ts`, `src/main/routines-scheduler.ts`, `RoutinePanel.tsx`, `src/shared/routines-types.ts` | `plugins-missing` skip, `needsAttention` |
 | Retirement of host references | Done by the PR that removed the host's plugin tours: `src/ui/renderer/onboarding/default-tour-scenarios.ts` keeps only `first-boot-essentials`. Removed with their catalog keys: `assistant-tour` and `assistant-walkthrough` (the last host code that named the plugin), `multi-agent-tour` (Agent Hub, archived), and the four tours for live extensions — `meeting-summary-tour`, `doc-search-tour`, `meeting-walkthrough`, `indexer-walkthrough` — whose anchors existed in neither the host nor the plugins and which nothing started. An extension introduces itself through `manifest.onboarding` instead. The rest was already gone: the `OUT_OF_PROCESS_PLUGIN_IDS` census in `out-of-process-plugins.ts`, the per-file exemption in `app-plugin-decoupling-audit.test.ts` (which exempts no file now), and the plugin literals in the test harnesses (the Playwright suite and the screenshot harness seed only `test/fixtures/e2e-plugins`). | `tour-anchors-trigger.test.tsx` keeps the registry to host tours: every anchor must be one the host renderer ships, and no catalog key goes unused |
 | Docs | `docs/architecture/architecture.md` (Plugin Runtime), `docs/references/overlay-trigger.md`, `CHANGELOG.md` | contract, deprecations, the opt-in loss |
-| i18n | `src/i18n/messages/generated/alerts.ts` | `alerts.*`, `be_alerts.*` |
+| i18n | `src/i18n/messages/{en,ko}.ts` | `alerts.*`, `be_alerts.*` |
 
 ## Tests
 

@@ -1973,7 +1973,6 @@ describe("installer smoke and packaging discipline", () => {
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
-      "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
       "node scripts/check-color-tokens.mjs",
       "node scripts/check-shell-geometry-tokens.mjs",
@@ -1998,7 +1997,6 @@ describe("installer smoke and packaging discipline", () => {
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
       "bun run check:i18n-catalog",
-      "bun run check:i18n-barrels",
     ]);
   });
 

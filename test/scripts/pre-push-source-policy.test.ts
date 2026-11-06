@@ -209,7 +209,7 @@ describe("pre-push fast source tier", () => {
     "src/shared/ambient.d.mts",
     "src/i18n/messages/index.ts",
     "src/i18n/messages/catalog-helpers.ts",
-    "src/i18n/messages/generated/nested/fragment.ts",
+    "src/i18n/messages/nested/catalog.ts",
     "src/preload.ts",
     "src/floating-dock-preload.ts",
     "src/plugins/isolation/plugin-child-main.ts",
@@ -439,34 +439,21 @@ describe("pre-push message catalog selection", () => {
     if (!texts.has(path)) texts.set(path, readFileSync(resolve(root, path), "utf8"));
     return texts.get(path)!;
   };
-  const catalogFiles = () => [
-    "en.ts",
-    "ko.ts",
-    ...readdirSync(resolve(root, MESSAGES, "generated")).filter((name) => name !== "index.ts").map((name) => `generated/${name}`),
-  ].map((name) => `${MESSAGES}/${name}`);
+  const catalogFiles = () => ["en.ts", "ko.ts"].map((name) => `${MESSAGES}/${name}`);
 
-  it("takes catalog data on the fast tier and leaves the loader and unknown files global", () => {
-    for (const path of [
-      `${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`,
-      `${MESSAGES}/generated/index.ts`, `${MESSAGES}/generated-locales/ko.ts`,
-    ]) {
+  it("takes locale catalogs on the fast tier and leaves the loader and unknown files global", () => {
+    for (const path of catalogFiles()) {
       expect(isMessageCatalogPath(path), path).toBe(true);
       expect(isFullCheckGlobalInput(path), path).toBe(false);
     }
     expect(isFullCheckGlobalInput(`${MESSAGES}/index.ts`)).toBe(true);
-    const changes = [
-      modified(`${MESSAGES}/generated/shellExecution.ts`),
-      added(`${MESSAGES}/generated/newSurface.ts`),
-      modified(`${MESSAGES}/generated/index.ts`),
-      modified(`${MESSAGES}/generated-locales/ko.ts`),
-      modified(`${MESSAGES}/ko.ts`),
-    ];
+    expect(isMessageCatalogPath(`${MESSAGES}/nested/catalog.ts`)).toBe(false);
+    const changes = [modified(`${MESSAGES}/en.ts`), modified(`${MESSAGES}/ko.ts`)];
     const result = selectFastSourceChecks(changes);
     expect(result).toMatchObject({ eligible: true, testFiles: [], relatedFiles: [] });
     expect(result.messageCatalogEntries).toEqual(changes);
-    expect(result.reason).toBe("0 source module(s) and 0 test file(s) changed, with 5 message catalog file(s)");
-    // Removed fragments require keys from the old tree.
-    expect(selectFastSourceChecks([deleted(`${MESSAGES}/generated/shellExecution.ts`)]).eligible).toBe(false);
+    expect(result.reason).toBe("0 source module(s) and 0 test file(s) changed, with 2 message catalog file(s)");
+    expect(selectFastSourceChecks([deleted(`${MESSAGES}/en.ts`)]).eligible).toBe(false);
     expect(selectFastSourceChecks([{ ...modified(`${MESSAGES}/en.ts`), newMode: "100755" }]).eligible).toBe(false);
   });
 
@@ -481,60 +468,48 @@ describe("pre-push message catalog selection", () => {
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
-    for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`]) {
+    for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`]) {
       expect(byPath.get(path), path).toEqual(readMessageCatalogEntries(texts.get(path)!, path));
     }
-    // Barrels carry no keys; verify them separately against the fragments.
-    const barrel = readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8");
-    expect(readMessageCatalogEntries(barrel)).toBeNull();
-    expect(readMessageCatalogEntriesByPath(new Map([
-      [`${MESSAGES}/generated/index.ts`, barrel],
-      [`${MESSAGES}/generated/panel.ts`, "export const en = {"],
-      [`${MESSAGES}/generated/other.ts`, null],
-    ]))).toEqual(new Map([
-      [`${MESSAGES}/generated/index.ts`, null],
-      [`${MESSAGES}/generated/panel.ts`, null],
-      [`${MESSAGES}/generated/other.ts`, null],
-    ]));
   });
 
   it("keeps by-path catalog results equal to individual reads with mixed valid and refused modules", () => {
     const texts = new Map<string, string | null>([
-      [`${MESSAGES}/en.ts`, 'export const en = { "seed.title": "Seed" } as const;'],
-      [`${MESSAGES}/generated/panel.ts`, 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
-      [`${MESSAGES}/generated/dynamic.ts`, 'export const en = { "panel.title": label("Panel") } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
-      [`${MESSAGES}/generated/broken.ts`, 'export const en = { "panel.title": "unterminated };'],
-      [`${MESSAGES}/generated/separator.ts`, 'export const en = { "panel.title": "Panel\u2028title" } as const;'],
-      [`${MESSAGES}/generated/absent.ts`, null],
-      [`${MESSAGES}/generated/index.ts`, 'export { en } from "./panel.js";'],
+      [`${MESSAGES}/en.ts`, 'export const en = { "panel.title": "Panel" } as const;'],
+      [`${MESSAGES}/ko.ts`, 'import type { MessageCatalogKey } from "./en.js"; export const ko: Record<MessageCatalogKey, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/dynamic.ts`, 'export const en = { "panel.title": label("Panel") } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/broken.ts`, 'export const en = { "panel.title": "unterminated };'],
+      [`${MESSAGES}/separator.ts`, 'export const en = { "panel.title": "Panel\u2028title" } as const;'],
+      [`${MESSAGES}/absent.ts`, null],
+      [`${MESSAGES}/index.ts`, 'export { en } from "./panel.js";'],
     ]);
     const catalogs = readMessageCatalogEntriesByPath(texts);
     expect([...catalogs.keys()]).toEqual([...texts.keys()]);
     for (const [path, text] of texts) {
       expect(catalogs.get(path), path).toEqual(readMessageCatalogEntries(text, path));
     }
-    expect(catalogs.get(`${MESSAGES}/en.ts`)).toEqual(new Map([["seed.title", { en: "Seed" }]]));
-    expect(catalogs.get(`${MESSAGES}/generated/panel.ts`)).toEqual(new Map([["panel.title", { en: "Panel", ko: "패널" }]]));
+    expect(catalogs.get(`${MESSAGES}/en.ts`)).toEqual(new Map([["panel.title", { en: "Panel" }]]));
+    expect(catalogs.get(`${MESSAGES}/ko.ts`)).toEqual(new Map([["panel.title", { ko: "패널" }]]));
     for (const name of ["dynamic", "broken", "separator", "absent", "index"]) {
-      expect(catalogs.get(`${MESSAGES}/generated/${name}.ts`), name).toBeNull();
+      expect(catalogs.get(`${MESSAGES}/${name}.ts`), name).toBeNull();
     }
-    expect(readMessageCatalogEntries(texts.get(`${MESSAGES}/generated/index.ts`)!)).toBeNull();
+    expect(readMessageCatalogEntries(texts.get(`${MESSAGES}/index.ts`)!)).toBeNull();
   });
 
   it("refuses a colliding batch without retaining catalog state for the next snapshot", () => {
-    const path = `${MESSAGES}/generated/panel.ts`;
-    const alias = `${MESSAGES}/generated/./panel.ts`;
-    const text = 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };';
+    const path = `${MESSAGES}/en.ts`;
+    const alias = `${MESSAGES}/./en.ts`;
+    const text = 'export const en = { "panel.title": "Panel" } as const;';
     expect(readMessageCatalogEntriesByPath(new Map([[path, text], [alias, text]]))).toEqual(new Map([
       [path, null],
       [alias, null],
     ]));
     expect(readMessageCatalogEntriesByPath(new Map([[path, text]])).get(path)).toEqual(new Map([
-      ["panel.title", { en: "Panel", ko: "패널" }],
+      ["panel.title", { en: "Panel" }],
     ]));
     const restored = text.replaceAll("Panel", "Restored");
     expect(readMessageCatalogEntriesByPath(new Map([[path, restored]])).get(path)).toEqual(new Map([
-      ["panel.title", { en: "Restored", ko: "패널" }],
+      ["panel.title", { en: "Restored" }],
     ]));
     expect(readMessageCatalogEntriesByPath(new Map())).toEqual(new Map());
   });
@@ -562,9 +537,10 @@ describe("pre-push message catalog selection", () => {
     }
   });
 
-  const fragment = (title: string, other = "Other") =>
-    `export const en = {\n  "panel.title": ${JSON.stringify(title)},\n  "other.label": ${JSON.stringify(other)},\n} as const;\n` +
-    'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
+  const catalog = (title: string, other = "Other") =>
+    `export const en = {\n  "panel.title": ${JSON.stringify(title)},\n  "other.label": ${JSON.stringify(other)},\n} as const;\n`;
+  const koreanCatalog = (text: string) => 'import type { MessageCatalogKey } from "./en.js";\n' +
+    text.replace("export const en =", "export const ko: Record<MessageCatalogKey, string> =");
   const runtimeTree = new Map([
     ["src/i18n/runtime.ts", 'export function t(key: string, vars?: unknown) { return key; } export function getLocale() { return "en"; }'],
     ["src/i18n/translate.ts", 'export type TranslateFn = (key: string, vars?: unknown) => string; export function translate(locale: string, key: string, vars?: unknown) { return key; } export function interpolate(value: string) { return value; }'],
@@ -583,11 +559,11 @@ describe("pre-push message catalog selection", () => {
   ]);
   const selectFixture = (before: string | null, after: string, tree = fixtureTree, allowKeyChanges = false, includeUnresolvedConsumers = false) =>
     selectMessageCatalogChecks(
-      [{ ...(before === null ? added : modified)(`${MESSAGES}/generated/panel.ts`), baseSha: "base", localSha: "local" }],
+      [{ ...(before === null ? added : modified)(`${MESSAGES}/en.ts`), baseSha: "base", localSha: "local" }],
       {
         allowKeyChanges,
         includeUnresolvedConsumers,
-        readBlob: (sha, path) => (path === `${MESSAGES}/generated/panel.ts` ? (sha === "base" ? before : after) : null),
+        readBlob: (sha, path) => (path === `${MESSAGES}/en.ts` ? (sha === "base" ? before : after) : null),
         trackedFiles: [...new Set([...runtimeTree.keys(), ...tree.keys()])],
         readTrackedFile: (path) => tree.get(path) ?? runtimeTree.get(path) ?? null,
       },
@@ -597,15 +573,15 @@ describe("pre-push message catalog selection", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.ts", 'import { t } from "../i18n/runtime.js"; export const title = (key: string) => t(key);');
     tree.set("src/ui/__tests__/dynamic.test.ts", 'import { t } from "../../i18n/runtime.js"; export const title = (key: string) => t(key);');
-    expect(selectFixture(fragment("Panel"), fragment("New"), tree).reason).toContain("unresolved dynamic");
-    const plan = selectFixture(fragment("Panel"), fragment("New"), tree, false, true);
+    expect(selectFixture(catalog("Panel"), catalog("New"), tree).reason).toContain("unresolved dynamic");
+    const plan = selectFixture(catalog("Panel"), catalog("New"), tree, false, true);
     expect(plan.reason).toBeUndefined();
     expect(plan.consumerModules).toContain("src/ui/dynamic.ts");
     expect(plan.testFiles).toContain("src/ui/__tests__/dynamic.test.ts");
   });
 
   it("allows static key additions and removals only under the explicit CI policy", () => {
-    const before = fragment("Panel");
+    const before = catalog("Panel");
     const after = before.replace('"panel.title": "Panel",', '"panel.title": "Panel", "panel.subtitle": "Subtitle",')
       .replace('"panel.title": "패널",', '"panel.title": "패널", "panel.subtitle": "부제",');
     expect(selectFixture(before, after).reason).toContain("outside attributable message values");
@@ -620,56 +596,55 @@ describe("pre-push message catalog selection", () => {
   });
 
   it("selects the modules and tests that name a changed namespace, the catalog readers and the i18n suites", () => {
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"))).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"))).toEqual({
       namespaces: ["panel"],
       testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
       consumerModules: ["src/marketplace/language-check.ts", "src/ui/panel-kinds.ts", "src/ui/panel.tsx"],
     });
-    expect(selectFixture(fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"')).namespaces).toEqual(["panel"]);
-    expect(selectFixture(null, fragment("Panel")).namespaces).toEqual(["other", "panel"]);
+
+    expect(selectFixture(null, catalog("Panel")).namespaces).toEqual(["other", "panel"]);
     // Unattributable source value changes require full checks.
-    expect(selectFixture(fragment("Panel"), `// reflowed\n${fragment("Panel")}`)).toEqual({
-      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+    expect(selectFixture(catalog("Panel"), `// reflowed\n${catalog("Panel")}`)).toEqual({
+      reason: `${MESSAGES}/en.ts has changes outside attributable message values; full checks required`,
     });
   });
 
-  const orderedFragment = 'export const en = { "panel.title": "Panel", "other.label": "Other" };\n' +
-    'export const ko = { "panel.title": "패널", "other.label": "기타" };\n';
-  const reorderedFragment = orderedFragment.replace('"panel.title": "Panel", "other.label": "Other"',
+  const orderedCatalog = 'export const en = { "panel.title": "Panel", "other.label": "Other" };\n';
+  const reorderedCatalog = orderedCatalog.replace('"panel.title": "Panel", "other.label": "Other"',
     '"other.label": "Other", "panel.title": "Panel"');
 
   it("keeps full checks when a catalog reorder changes an order exported through an i18n helper", () => {
     const order = (text: string) => runInNewContext(`${text.replaceAll("export const ", "const ")}; Object.keys(en);`);
-    expect(order(orderedFragment)).toEqual(["panel.title", "other.label"]);
-    expect(order(reorderedFragment)).toEqual(["other.label", "panel.title"]);
+    expect(order(orderedCatalog)).toEqual(["panel.title", "other.label"]);
+    expect(order(reorderedCatalog)).toEqual(["other.label", "panel.title"]);
     const tree = new Map(fixtureTree);
-    tree.set("src/i18n/message-order.ts", 'import { en } from "./messages/generated/panel.js"; export const messageOrder = Object.keys(en);');
+    tree.set("src/i18n/message-order.ts", 'import { en } from "./messages/en.js"; export const messageOrder = Object.keys(en);');
     tree.set("src/ui/__tests__/message-order.test.ts", 'import { messageOrder } from "../../i18n/message-order.js"; export const actual = messageOrder;');
-    expect(selectFixture(orderedFragment, reorderedFragment, tree)).toEqual({
-      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+    expect(selectFixture(orderedCatalog, reorderedCatalog, tree)).toEqual({
+      reason: `${MESSAGES}/en.ts has changes outside attributable message values; full checks required`,
     });
   });
 
   it.each([
-    ["english value", "generated/panel.ts", fragment("Panel"), fragment("Panel heading"), ["panel"]],
-    ["translated value", "generated/panel.ts", fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"'), ["panel"]],
-    ["literal whitespace", "generated/panel.ts", fragment("Panel"), fragment(" Panel "), ["panel"]],
-    ["literal newline", "generated/panel.ts", fragment("Panel"), fragment("Panel\n"), ["panel"]],
-    ["multibyte values", "generated/panel.ts", fragment("🧪 패널"), fragment("🧪 패널 제목", "Other heading"), ["other", "panel"]],
-    ["equivalent escape", "generated/panel.ts", fragment("Panel"), fragment("Panel").replace('"Panel"', String.raw`"\u0050anel"`), null],
-    ["equivalent escape with another value", "generated/panel.ts", fragment("Panel"), fragment("Panel", "Other heading").replace('"Panel"', String.raw`"\u0050anel"`), null],
-    ["added comment", "generated/panel.ts", fragment("Panel"), `// catalog note\n${fragment("Panel")}`, null],
-    ["comment with value", "generated/panel.ts", fragment("Panel"), `// catalog note\n${fragment("Panel heading")}`, null],
-    ["source whitespace", "generated/panel.ts", fragment("Panel"), `${fragment("Panel")}\n`, null],
-    ["english reorder", "generated/panel.ts", orderedFragment, reorderedFragment, null],
-    ["english reorder with value", "generated/panel.ts", orderedFragment, reorderedFragment.replace('"Panel"', '"Panel heading"'), null],
-    ["translated reorder", "generated/panel.ts", orderedFragment, orderedFragment.replace('"panel.title": "패널", "other.label": "기타"', '"other.label": "기타", "panel.title": "패널"'), null],
-    ["translated reorder with value", "generated/panel.ts", orderedFragment, orderedFragment.replace('"panel.title": "패널", "other.label": "기타"', '"other.label": "기타", "panel.title": "패널 제목"'), null],
-    ["new fragment", "generated/panel.ts", null, fragment("Panel"), ["other", "panel"]],
-    ["empty fragment", "generated/panel.ts", null, "export const en = {}; export const ko = {};", null],
-    ["seed comment", "en.ts", 'export const en = { "panel.title": "Panel" };', '// catalog note\nexport const en = { "panel.title": "Panel" };', null],
-    ["barrel comment", "generated/index.ts", 'export { en } from "./panel.js";', '// catalog note\nexport { en } from "./panel.js";', null],
-    ["locale barrel comment", "generated-locales/ko.ts", 'export { ko } from "../generated/panel.js";', '// catalog note\nexport { ko } from "../generated/panel.js";', null],
+    ["english value", "en.ts", catalog("Panel"), catalog("Panel heading"), ["panel"]],
+    ["translated value", "ko.ts", koreanCatalog(catalog("패널")), koreanCatalog(catalog("패널 제목")), ["panel"]],
+    ["literal whitespace", "en.ts", catalog("Panel"), catalog(" Panel "), ["panel"]],
+    ["literal newline", "en.ts", catalog("Panel"), catalog("Panel\n"), ["panel"]],
+    ["multibyte values", "en.ts", catalog("🧪 패널"), catalog("🧪 패널 제목", "Other heading"), ["other", "panel"]],
+    ["equivalent escape", "en.ts", catalog("Panel"), catalog("Panel").replace('"Panel"', String.raw`"\u0050anel"`), null],
+    ["equivalent escape with another value", "en.ts", catalog("Panel"), catalog("Panel", "Other heading").replace('"Panel"', String.raw`"\u0050anel"`), null],
+    ["added comment", "en.ts", catalog("Panel"), `// catalog note\n${catalog("Panel")}`, null],
+    ["comment with value", "en.ts", catalog("Panel"), `// catalog note\n${catalog("Panel heading")}`, null],
+    ["source whitespace", "en.ts", catalog("Panel"), `${catalog("Panel")}\n`, null],
+    ["english reorder", "en.ts", orderedCatalog, reorderedCatalog, null],
+    ["english reorder with value", "en.ts", orderedCatalog, reorderedCatalog.replace('"Panel"', '"Panel heading"'), null],
+    ["translated reorder", "ko.ts", koreanCatalog(orderedCatalog), koreanCatalog(reorderedCatalog), null],
+    ["translated reorder with value", "ko.ts", koreanCatalog(orderedCatalog), koreanCatalog(reorderedCatalog.replace('"Panel"', '"패널 제목"')), null],
+    ["new catalog", "en.ts", null, catalog("Panel"), ["other", "panel"]],
+    ["empty catalog", "en.ts", null, "export const en = {}; export const ko = {};", null],
+    ["catalog comment", "en.ts", 'export const en = { "panel.title": "Panel" };', '// catalog note\nexport const en = { "panel.title": "Panel" };', null],
+    ["unsupported re-export comment", "en.ts", 'export { en } from "./panel.js";', '// catalog note\nexport { en } from "./panel.js";', null],
+    ["locale catalog comment", "ko.ts", koreanCatalog(catalog("패널")), '// catalog note\n' + koreanCatalog(catalog("패널")), null],
   ] as const)("never returns an empty fast namespace selection for a changed catalog: %s", (_kind, name, before, after, expected) => {
     expect(after).not.toBe(before);
     const path = `${MESSAGES}/${name}`;
@@ -689,14 +664,14 @@ describe("pre-push message catalog selection", () => {
   });
 
   it.each([false, true])("keeps full checks for an unattributed file beside an attributed value edit (reverse=%j)", (reverse) => {
-    const valuePath = `${MESSAGES}/generated/panel.ts`;
-    const unassignedPath = `${MESSAGES}/generated/other.ts`;
+    const valuePath = `${MESSAGES}/en.ts`;
+    const unassignedPath = `${MESSAGES}/ko.ts`;
     const changes = [valuePath, unassignedPath].map((path) => ({ ...modified(path), baseSha: "base", localSha: "local" }));
     if (reverse) changes.reverse();
     expect(selectMessageCatalogChecks(changes, {
       readBlob: (sha, path) => path === valuePath
-        ? fragment(sha === "base" ? "Panel" : "Panel heading")
-        : `${sha === "base" ? "" : "// catalog note\n"}${fragment("Panel")}`,
+        ? catalog(sha === "base" ? "Panel" : "Panel heading")
+        : `${sha === "base" ? "" : "// catalog note\n"}${koreanCatalog(catalog("패널"))}`,
       trackedFiles: [...runtimeTree.keys(), ...fixtureTree.keys()],
       readTrackedFile: (path) => fixtureTree.get(path) ?? runtimeTree.get(path) ?? null,
     })).toEqual({
@@ -707,15 +682,15 @@ describe("pre-push message catalog selection", () => {
   it("keeps the full checks when a changed namespace has no literal consumer or a consumer is a global input", () => {
     const unnamed = new Map([...fixtureTree].filter(([path]) => !["src/ui/panel.tsx", "src/ui/panel-kinds.ts",
       "src/ui/__tests__/panel-copy.test.tsx", "test/e2e/panel.spec.ts"].includes(path)));
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), unnamed)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), unnamed)).toEqual({
       reason: "no source file names message namespace panel; a computed key may reach it, full checks required",
     });
     const preload = new Map([...fixtureTree, ["src/panel-preload.ts", 'import { t } from "./i18n/runtime.js"; const title = t("panel.title");']]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), preload)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), preload)).toEqual({
       reason: "src/panel-preload.ts names a changed message namespace and is a global test or build input",
     });
-    expect(selectFixture("export const en = { ...base };", fragment("Panel heading"))).toEqual({
-      reason: `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
+    expect(selectFixture("export const en = { ...base };", catalog("Panel heading"))).toEqual({
+      reason: `${MESSAGES}/en.ts has a shape the message key reader does not accept; full checks required`,
     });
   });
 
@@ -768,7 +743,7 @@ describe("pre-push message catalog selection", () => {
   ])("keeps full checks for an unresolved consumer alongside a literal consumer: %s", (text) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.ts", text);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -783,7 +758,7 @@ describe("pre-push message catalog selection", () => {
     'import { t } from "../i18n/./runtime.js"; export const title = () => t("panel.title", { ...vars });',
   ])("recognizes a proven literal-key call: %s", (text) => {
     const tree = new Map([["src/ui/literal.ts", text]]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
     });
   });
@@ -794,7 +769,7 @@ describe("pre-push message catalog selection", () => {
   ])("requires full checks for the reviewed %s omission beside a literal consumer", (_kind, path, text) => {
     const tree = new Map(fixtureTree);
     tree.set(path!, text!);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: `${path} has an unresolved dynamic message consumer; full checks required`,
     });
   });
@@ -858,14 +833,14 @@ describe("pre-push message catalog selection", () => {
   ])("rejects the unrecognized %s form with a literal sibling present", (_kind, text) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.ts", text!);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
 
   it("resolves a named import from the importing module's directory", () => {
     const tree = new Map([["src/i18n/literal.ts", 'import { t as render } from "./runtime.js"; render("panel.title");']]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/i18n/literal.ts"],
     });
   });
@@ -875,7 +850,7 @@ describe("pre-push message catalog selection", () => {
       ["src/shared/copy.ts", 'export function copy(value: string) { return value; }'],
       ["src/ui/literal.ts", 'import { copy } from "../shared/copy.js"; import { t } from "../i18n/runtime.js"; function label() { return copy(t("panel.title")); } label();'],
     ]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
     });
   });
@@ -887,16 +862,16 @@ describe("pre-push message catalog selection", () => {
   ])("keeps full checks for invocation syntax without a proven direct call", (source) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.tsx", source);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
     });
   });
 
-  it("keeps full checks for a fragment with an unparsed custom runtime beside a literal consumer", () => {
+  it("keeps full checks for JSX with an unparsed custom runtime beside a literal consumer", () => {
     const tree = new Map(fixtureTree);
     tree.set("scripts/catalog-runtime/jsx-runtime.ts", 'import { t } from "../../src/i18n/runtime.js"; export const Fragment = "fragment"; export function jsx() { return t("panel.title"); } export function jsxs() { return t("panel.title"); }');
     tree.set("src/ui/dynamic.tsx", '/** @jsxImportSource ../../scripts/catalog-runtime */\nexport const view = <>fixed</>;');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -912,7 +887,7 @@ describe("pre-push message catalog selection", () => {
   ])("keeps full checks for every JSX form beside a literal consumer: %s", (source) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.tsx", source);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -927,7 +902,7 @@ describe("pre-push message catalog selection", () => {
   ])("keeps full checks for a JSX override even without JSX syntax: %s", (pragma) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.tsx", `${pragma}\nexport const marker = "fixed";`);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.tsx has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -935,7 +910,7 @@ describe("pre-push message catalog selection", () => {
   it("allows a JSX-looking string when the module has no JSX syntax or override", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/example.tsx", 'export const example = "<>fixed</>";');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"],
       testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
       consumerModules: ["src/marketplace/language-check.ts", "src/ui/panel-kinds.ts", "src/ui/panel.tsx"],
@@ -945,7 +920,7 @@ describe("pre-push message catalog selection", () => {
   it("keeps full checks when a dynamic scope can replace a proven local callable", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.cjs", 'function render(key) { return key; } with (scope) { render(dynamicKey); }');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.cjs has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -955,7 +930,7 @@ describe("pre-push message catalog selection", () => {
       ["src/i18n/react.tsx", 'import type { TranslateFn as RenderFn } from "./translate.js"; export interface I18nContextValue { t: RenderFn; } export function useTranslation(): I18nContextValue { throw null; }'],
       ["src/ui/literal.ts", 'import { useTranslation } from "../i18n/react.js"; const { t: render } = useTranslation(); render("panel.title");'],
     ]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
     });
   });
@@ -968,7 +943,7 @@ describe("pre-push message catalog selection", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/shared/ambient.d.ts", 'declare function render(locale: string, key: string): string;');
     tree.set("src/ui/dynamic.ts", scopedAliasConsumer);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -976,7 +951,7 @@ describe("pre-push message catalog selection", () => {
   it("keeps full checks for a proven alias referenced outside its declaring scope", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.ts", scopedAliasConsumer);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -989,7 +964,7 @@ describe("pre-push message catalog selection", () => {
   ])("keeps full checks when a %s shadows a proven binding", (_kind, source) => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/dynamic.ts", source!);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -999,7 +974,7 @@ describe("pre-push message catalog selection", () => {
     'import { useTranslation } from "../i18n/react.js"; const { t: render } = useTranslation(); export function label() { return render("panel.title"); }',
   ])("allows a nested call that resolves to the proven declaration: %s", (source) => {
     const tree = new Map([["src/ui/literal.ts", source]]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/literal.ts"],
     });
   });
@@ -1008,7 +983,7 @@ describe("pre-push message catalog selection", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/i18n/index.ts", 'export { t } from "./runtime.js";');
     tree.set("src/ui/dynamic.ts", 'import { t } from "../i18n/index.js"; t("panel.title");');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toBe(
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).reason).toBe(
       "src/i18n/index.ts has an unresolved dynamic message consumer; full checks required",
     );
   });
@@ -1022,7 +997,7 @@ describe("pre-push message catalog selection", () => {
     const tree = new Map(fixtureTree);
     tree.set("scripts/catalog-consumer.mjs", 'export { t as render } from "../src/i18n/runtime.js";');
     tree.set("src/ui/dynamic.ts", source!);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -1032,7 +1007,7 @@ describe("pre-push message catalog selection", () => {
     tree.set("scripts/catalog-consumer.mjs", 'export { t as render } from "../src/i18n/runtime.js";');
     tree.set("src/shared/catalog-bridge.ts", 'export { render } from "../../scripts/catalog-consumer.mjs";');
     tree.set("src/ui/dynamic.ts", 'import { render } from "../shared/catalog-bridge.js"; render(expression);');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/shared/catalog-bridge.ts has an unresolved dynamic message consumer; full checks required",
     });
   });
@@ -1056,14 +1031,14 @@ describe("pre-push message catalog selection", () => {
       const specifier = kind === "foreign runtime" ? "../shared/i18n/runtime.js" : "../i18n/runtime.js";
       tree.set("src/ui/dynamic.ts", `import { t as render } from "${specifier}"; render("panel.title");`);
     }
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toMatch(/full checks required$/);
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).reason).toMatch(/full checks required$/);
   });
 
   it.each(["src/ui/__tests__/dynamic.test.ts", "test/e2e/dynamic.spec.ts", "src/i18n/dynamic.ts"])(
     "does not ignore unresolved consumers in %s", (path) => {
       const tree = new Map(fixtureTree);
       tree.set(path, 't(`${namespace}.title`);');
-      expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toBe(
+      expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).reason).toBe(
         `${path} has an unresolved dynamic message consumer; full checks required`,
       );
     },
@@ -1074,7 +1049,7 @@ describe("pre-push message catalog selection", () => {
       ["src/ui/panel.ts", String.raw`import { t } from "../i18n/runtime.js"; const label = t("\u0070anel.title"); // t(dynamic)`],
       ["src/ui/example.ts", 'const example = "t(dynamic)";'],
     ]);
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree)).toEqual({
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       namespaces: ["panel"], testFiles: [], consumerModules: ["src/ui/panel.ts"],
     });
   });
@@ -1082,57 +1057,61 @@ describe("pre-push message catalog selection", () => {
   it("keeps full checks for unreadable or unparseable consumers", () => {
     const tree = new Map(fixtureTree);
     tree.set("src/ui/invalid.ts", 't("panel.title"');
-    expect(selectFixture(fragment("Panel"), fragment("Panel heading"), tree).reason).toBe(
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).reason).toBe(
       "src/ui/invalid.ts could not be parsed for message consumers; full checks required",
     );
   });
 
   it("compares values by their locale bindings, including decoded escapes", () => {
-    expect(readMessageCatalogEntries(fragment("Panel"), `${MESSAGES}/generated/panel.ts`)?.get("panel.title"))
-      .toEqual({ en: "Panel", ko: "패널" });
-    expect(readMessageCatalogEntries(fragment("Panel"))?.get("panel.title")).toEqual({ en: "Panel", ko: "패널" });
-    const before = fragment("Panel");
+    expect(readMessageCatalogEntries(catalog("Panel"), `${MESSAGES}/en.ts`)?.get("panel.title"))
+      .toEqual({ en: "Panel" });
+    expect(readMessageCatalogEntries(catalog("Panel"))?.get("panel.title")).toEqual({ en: "Panel" });
+    const before = catalog("Panel");
     const after = before.replace('"Panel"', String.raw`"\u0050anel"`);
     expect(after).not.toBe(before);
     expect(selectFixture(before, after)).toEqual({
-      reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
+      reason: `${MESSAGES}/en.ts has changes outside attributable message values; full checks required`,
     });
     const changed = after.replace(String.raw`\u0050anel`, String.raw`\u0050anel heading`);
     expect(selectFixture(before, changed).namespaces).toEqual(["panel"]);
   });
 
-  it("keeps full checks when the real fragment's locale bindings are swapped", () => {
-    const before = readFileSync(resolve(root, MESSAGES, "generated/be_hookRunner.ts"), "utf8");
-    const after = before.replace("const en =", "const ko =").replace("const ko:", "const en:");
+  it.each(["en", "ko"])("keeps full checks when the real %s catalog has the wrong locale binding", (locale) => {
+    const path = `${MESSAGES}/${locale}.ts`;
+    const before = readFileSync(resolve(root, path), "utf8");
+    const after = before.replace(`const ${locale}`, `const ${locale === "en" ? "ko" : "en"}`);
     expect(after).not.toBe(before);
-    expect(selectFixture(before, after)).toEqual({
-      reason: `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
-    });
+    expect(selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
+      readBlob: (sha) => sha === "base" ? before : after,
+      trackedFiles: [...runtimeTree.keys(), ...fixtureTree.keys()],
+      readTrackedFile: (path) => fixtureTree.get(path) ?? runtimeTree.get(path) ?? null,
+    })).toEqual({ reason: `${path} has a shape the message key reader does not accept; full checks required` });
   });
 
   it.each(["\u2028", "\u2029", "\r"])("handles a line comment terminated by %j conservatively", (terminator) => {
-    const before = fragment("Panel").replace('"panel.title": "Panel",', `// comment${terminator}"panel.title": "Panel",`);
+    const before = catalog("Panel").replace('"panel.title": "Panel",', `// comment${terminator}"panel.title": "Panel",`);
     const after = before.replace('"Panel"', '"Panel heading"');
     const selection = selectFixture(before, after);
     if (terminator === "\r") expect(selection.namespaces).toEqual(["panel"]);
-    else expect(selection.reason).toBe(`${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`);
+    else expect(selection.reason).toBe(`${MESSAGES}/en.ts has a shape the message key reader does not accept; full checks required`);
   });
 
   it.each([
     (text: string) => `${text}en["panel.title"] = "replacement";`,
     (text: string) => `${text}export { en as extra };`,
     (text: string) => text.replace("export const en", "export let en"),
-    (text: string) => text.replace("keyof typeof en", "keyof typeof other"),
-    (text: string) => text.replace('"panel.title": "패널",', ""),
+    (text: string) => `${text}export type MessageCatalogKey = string;`,
+    (text: string) => text.replace("export const en", "export const ko"),
     (text: string) => text.replace('"panel.title": "Panel",', '"panel.title": "Panel", "panel.title": "duplicate",'),
-  ])("validates the whole fragment before selecting checks", (change) => {
-    expect(selectFixture(fragment("Panel"), change(fragment("Panel"))).reason).toBe(
-      `${MESSAGES}/generated/panel.ts has a shape the message key reader does not accept; full checks required`,
+  ])("validates the whole catalog before selecting checks", (change) => {
+    expect(change(catalog("Panel"))).not.toBe(catalog("Panel"));
+    expect(selectFixture(catalog("Panel"), change(catalog("Panel"))).reason).toBe(
+      `${MESSAGES}/en.ts has a shape the message key reader does not accept; full checks required`,
     );
   });
 
   it("keeps full checks on the real tree when any dynamic consumer remains unresolved", () => {
-    const path = `${MESSAGES}/generated/shellExecution.ts`;
+    const path = `${MESSAGES}/en.ts`;
     const after = readFileSync(resolve(root, path), "utf8");
     const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
     const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
@@ -1145,7 +1124,7 @@ describe("pre-push message catalog selection", () => {
   }, 30_000);
 
   it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {
-    const path = `${MESSAGES}/generated/shellExecution.ts`;
+    const path = `${MESSAGES}/en.ts`;
     const after = readFileSync(resolve(root, path), "utf8");
     const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
     expect(before).not.toBe(after);

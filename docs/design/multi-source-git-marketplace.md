@@ -3076,7 +3076,7 @@ Unchanged banner component; the only difference is the fetch origin.
 All dialogs are focus-trapped with labelled steps; source badges carry a text
 label (not color alone); SHAs use monospace with a tooltip of the full value;
 state chips use the existing token colors. New copy is added to the i18n
-catalogs through the generator; no raw keys.
+catalogs (en.ts and ko.ts); no raw keys.
 
 ## 16. Migration and disposition
 
@@ -4871,7 +4871,7 @@ prints `CODE · <main's English message>` for every other (`:116`). From 0.13.0:
 
 Class: **P** policy block, **W** warning, **R** refusal, **E** fixable error,
 **S** status. Every row carries what happened, why, and the next action; the
-exact English and Korean text is written through the i18n generator (§15.9) in
+exact English and Korean text is written to both locale catalogs (§15.9) in
 the slice that adds the code or reason.
 
 | Code · reason | Class | What happened, and why | Next action | Korean direction |

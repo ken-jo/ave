@@ -205,8 +205,8 @@ describe("CI test selection fallbacks", () => {
   };
 
   it("runs the full suite for message catalog data", () => {
-    expect(select([modified("src/i18n/messages/generated/chat.ts")], noDiscovery))
-      .toMatchObject({ mode: "full", reason: "src/i18n/messages/generated/chat.ts is message catalog data" });
+    expect(select([modified("src/i18n/messages/en.ts")], noDiscovery))
+      .toMatchObject({ mode: "full", reason: "src/i18n/messages/en.ts is message catalog data" });
   });
 
   it("runs the full suite when a changed module computes what it imports", () => {
@@ -541,9 +541,9 @@ describe("CI selection for integration bases", () => {
     },
     {
       name: "a message catalog",
-      path: "src/i18n/messages/generated/chat.ts",
+      path: "src/i18n/messages/en.ts",
       discovery: "normal" as const,
-      fullReason: "src/i18n/messages/generated/chat.ts is message catalog data",
+      fullReason: "src/i18n/messages/en.ts is message catalog data",
       relatedCount: 1,
       locks: preloadLocks,
     },
@@ -845,7 +845,7 @@ describe("change-triggered mandatory domains and native runners", () => {
   });
 
   it("uses catalog consumer selection and keeps its failure conservative", () => {
-    const changes = [modified("src/i18n/messages/generated/chat.ts")];
+    const changes = [modified("src/i18n/messages/en.ts")];
     const files = ["test/consumer.test.ts", "test/smoke.test.ts"];
     const input = { changes, trackedTests: files, mustRunTests: [files[1]!], readText: () => "export {};", discoverRelated: () => [] };
     const selected = selectCiTests({ ...input, selectCatalog: () => ({ testFiles: [files[0]!], consumerModules: [] }) });

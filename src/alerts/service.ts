@@ -30,7 +30,7 @@ import {
   effectiveVisibility,
 } from "./gate.js";
 import { RegistrationLedger, alertKindKey, markPluginAbsent, resolveRegistration } from "./kinds.js";
-import { HOST_ALERT_KINDS } from "./host-kinds.js";
+import { hostAlertKinds } from "./host-kinds.js";
 import { formatPluginNotificationTitle, resolvePluginDisplayName } from "../shared/plugin-provenance.js";
 
 const log = createLogger("alerts");
@@ -179,9 +179,10 @@ export class AlertsService {
     return this.mutate(async () => { await this.loaded(); await this.migration.run(); });
   }
 
-  registerHostKinds(): Promise<void> {
+  async registerHostKinds(): Promise<void> {
+    const kinds = await hostAlertKinds();
     return this.register(ALERT_HOST_PLUGIN_ID, {
-      alerts: { reasoning: translate("en", "be_alerts.reasoning"), kinds: [...HOST_ALERT_KINDS] },
+      alerts: { reasoning: translate("en", "be_alerts.reasoning"), kinds },
     });
   }
 
