@@ -7,13 +7,11 @@ import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetAveHomeInputSync, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
-import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import { LocalRepositoryDamagedError, type GitCommands, type GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import { classifyFolder, folderMoved, resolveFolderRoot, type FolderRoot } from "../net/source-input.js";
-import { errorMessage } from "../../shared/error-message.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { FolderFs } from "./folder-fs.js";
 import { FolderTree, type FolderCapture } from "./folder-tree.js";
@@ -482,17 +480,13 @@ async function readPinnedSnapshot(root: string, id: string, use: SourceDataUse =
       ...(cause === undefined ? {} : { cause }),
       detail: { reason: "snapshot-invalid", sourceId: id },
     });
-  let parsed: unknown;
-  try {
-    parsed = parseStrictJson(text);
-  } catch (error) {
-    throw invalid(`is invalid: ${errorMessage(error)}`, error);
+  const validated = validateCachedSnapshotText(text);
+  if (!validated.ok) throw invalid(`is invalid: ${validated.error}`);
+  const snapshot = validated.value;
+  if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
+    throw invalid(`names ${String(snapshot.sourceId)}@${String(snapshot.commit)}`);
   }
-  const named = typeof parsed === "object" && parsed !== null ? (parsed as Partial<SourceSnapshot>) : {};
-  if (named.sourceId !== id || named.commit !== pinnedCommit) {
-    throw invalid(`names ${String(named.sourceId)}@${String(named.commit)}`);
-  }
-  return admitSnapshotPackages(parsed as SourceSnapshot);
+  return admitSnapshotPackages(snapshot);
 }
 
 /** Missing pinned snapshots throw rather than silently dropping revocations. Revocations only withdraw, so data pending review

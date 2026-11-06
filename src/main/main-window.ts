@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen, shell } from "electron";
+import { app, BrowserWindow, ipcMain, screen, shell, type IpcMainEvent } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,14 +10,15 @@ import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
-import { INITIAL_APPEARANCE_ARG_PREFIX } from "../shared/initial-appearance.js";
+import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
+import { CHANNELS } from "../contract/app-contract.js";
 import { normalizeAppearance } from "../shared/appearance-settings.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import { computeInitialMainWindowBounds } from "./main-window-bounds.js";
 import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-geometry.js";
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
-import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
+import { BOOTSTRAP_SPLASH_URL, markBootstrapSplashShown } from "./bootstrap-splash.js";
 import { requestNativeChromeRefresh } from "./native-window-coordinator.js";
 import { killTerminalsOwnedBy } from "./terminal/pty-manager.js";
 import { preloadPreferences } from "./preload-bundles.js";
@@ -55,18 +56,37 @@ function initialMainWindowBounds(): { x: number; y: number; width: number; heigh
 }
 
 /** Read the same validated appearance before services exist so preload can paint the saved scheme. */
-export function initialAppearanceArgs(): string[] {
-  let stored: unknown;
+function readCurrentAppearance() {
   const live = getServices();
-  if (live) stored = live.settingsService.getAll().appearance;
-  else {
-    const path = settingsFilePath(app.getPath("userData"));
-    if (existsSync(path)) {
-      try { stored = (JSON.parse(readFileSync(path, "utf8")) as { appearance?: unknown }).appearance; }
-      catch (error) { log.warn({ err: error }, "Could not read initial appearance"); }
-    }
+  if (live) return live.settingsService.getAll().appearance;
+  let stored: unknown;
+  const path = settingsFilePath(app.getPath("userData"));
+  if (existsSync(path)) {
+    try { stored = (JSON.parse(readFileSync(path, "utf8")) as { appearance?: unknown }).appearance; }
+    catch (error) { log.warn({ err: error }, "Could not read initial appearance"); }
   }
-  return [INITIAL_APPEARANCE_ARG_PREFIX + JSON.stringify(normalizeAppearance(stored))];
+  return normalizeAppearance(stored);
+}
+
+let initialAppearanceRegistered = false;
+function registerInitialAppearance(): void {
+  if (initialAppearanceRegistered) return;
+  ipcMain.on(CHANNELS.settings.initialAppearance, (event: IpcMainEvent) => {
+    const frame = event.senderFrame;
+    const owned = getMainWindows().some((win) => !win.isDestroyed() && win.webContents === event.sender);
+    let result: InitialAppearanceResult;
+    if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
+      result = { ok: false, error: "unauthorized-frame" };
+    } else {
+      try { result = { ok: true, appearance: readCurrentAppearance() }; }
+      catch (error) {
+        log.warn({ err: error }, "Could not read current appearance");
+        result = { ok: false, error: "appearance-unavailable" };
+      }
+    }
+    event.returnValue = result;
+  });
+  initialAppearanceRegistered = true;
 }
 
 // Open one main app window. Several may be open at once; the first live one owns the primary conversation (see `app-state.ts`). Returns the window, or
@@ -76,6 +96,7 @@ export function createWindow(
 ): BrowserWindow | null {
   // One-shot runs have no desktop surface and must not allocate a renderer.
   if (options.headless) return null;
+  registerInitialAppearance();
   const showBootstrapSplash = options.showBootstrapSplash ?? true;
   const hostPreload = preloadPreferences("preload");
   if (!existsSync(hostPreload.preload)) {
@@ -99,8 +120,6 @@ export function createWindow(
       // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
       // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      // Apply saved appearance before the renderer mounts.
-      additionalArguments: initialAppearanceArgs(),
     },
   });
   registerMainWindow(win, nextMainWindowRole());
@@ -228,7 +247,7 @@ export function createWindow(
     // §M-race: bootstrap 동안 splash만 표시. 실 index.html 로드는 main()이 IPC 핸들러 등록 후 수행.
     markBootstrapSplashShown();
     void win
-      .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(BOOTSTRAP_SPLASH)}`)
+      .loadURL(BOOTSTRAP_SPLASH_URL)
       .then(() => showMainWindow(win))
       .catch((err) => log.error({ err }, "splash load failed"));
   }

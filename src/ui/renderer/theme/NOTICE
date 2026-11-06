@@ -1,6 +1,0 @@
-OKLCH conversion, interpolation, and contrast-bisection algorithms adapted from Dure at 4d4fbfd.
-Dure (including Hmux)
-Copyright 2026 Hebbian AI
-Licensed under the Apache License, Version 2.0; see LICENSE-APACHE.
-https://github.com/hebbianai/dure
-Changes: trimmed interfaces and comments, adapted derivation to host semantic tokens and surfaces.

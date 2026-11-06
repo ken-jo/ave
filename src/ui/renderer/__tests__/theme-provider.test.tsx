@@ -62,7 +62,7 @@ describe("appearance provider", () => {
     render(<ThemeProvider initialAppearance={appearance}><Picker /></ThemeProvider>);
     expect(document.documentElement.style.cssText).toBe(first);
     expect(schemeToHostTokens(theme)["--ave-bg"]).toMatch(/^hsl\(/);
-    expect(schemeToHostTokens(theme)).not.toHaveProperty("--ave-motion-fast");
+    expect(schemeToHostTokens(theme)["--ave-motion-fast"]).toBe("120ms");
   });
 
   it("requires the provider at required consumers", () => {

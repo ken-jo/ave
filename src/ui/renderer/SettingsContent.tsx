@@ -372,9 +372,12 @@ export function SettingsContent({
         <input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
           aria-label={t("settingsContent.search")} placeholder={t("settingsContent.search")}
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs" />
-        {searchQuery.trim() && <div role="list" className="mt-2 max-h-64 overflow-y-auto">
-          {searchResults.length === 0 && <p className="p-2 text-xs text-muted-foreground">{t("settingsContent.searchEmpty")}</p>}
-          {searchResults.map((result) => <button key={result.section} type="button" role="listitem"
+        <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {searchQuery.trim() ? t("settingsContent.searchCount", { count: searchResults.length }) : ""}
+        </span>
+        {searchQuery.trim() && <ul aria-label={t("settingsContent.search")} className="mt-2 max-h-64 overflow-y-auto">
+          {searchResults.length === 0 && <li className="p-2 text-xs text-muted-foreground">{t("settingsContent.searchEmpty")}</li>}
+          {searchResults.map((result) => <li key={result.section}><button type="button"
             className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent"
             onClick={() => {
               selectTab(result.tab);
@@ -384,8 +387,8 @@ export function SettingsContent({
             }}>
             <span className="block text-muted-foreground">{t(SETTINGS_TAB_LABEL_KEYS[result.tab])}</span>
             {t(result.title)}
-          </button>)}
-        </div>}
+          </button></li>)}
+        </ul>}
       </div>
       {/* No heading above this list. The pane's header carries "Settings" —
           the same 36px band every other pane gets — so a second title here

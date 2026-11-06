@@ -1,5 +1,5 @@
 /** Configure the shared interface and terminal appearance. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
@@ -18,6 +18,19 @@ import { useTranslation } from "../../../i18n/react.js";
 import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
 
 type AppearanceMarketplaceFilter = "language";
+
+function handleRadioGroupKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+  const directions = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as const;
+  if (!(event.key in directions) && event.key !== "Home" && event.key !== "End") return;
+  const radios = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'));
+  const current = radios.indexOf(event.target as HTMLButtonElement);
+  if (current < 0 || radios.length === 0) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? radios.length - 1
+    : (current + directions[event.key as keyof typeof directions] + radios.length) % radios.length;
+  radios[next]!.focus();
+  radios[next]!.click();
+}
 
 /* ─── Font family + size presets ─────────────────────────────────────────── */
 
@@ -319,9 +332,9 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
         title={t("appearanceTab.schemeTitle")}
         description={t("appearanceTab.schemeDescription")}
       >
-        <div role="radiogroup" aria-label={t("appearanceTab.mode")} className="flex gap-2">
+        <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t("appearanceTab.mode")} className="flex gap-2">
           {(["system", "dark", "light"] as const).map((value) => (
-            <button key={value} type="button" role="radio" aria-checked={mode === value}
+            <button key={value} type="button" role="radio" aria-checked={mode === value} tabIndex={mode === value ? 0 : -1}
               data-testid={`appearance-mode-${value}`}
               className={`rounded-md border px-4 py-2 text-sm ${mode === value ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}
               onClick={() => { setMode(value); notifySaved(); }}>
@@ -332,10 +345,10 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
         {(["dark", "light"] as const).filter((shell) => mode === "system" || mode === shell).map((shell) => (
           <div key={shell} className="space-y-2">
             <h3 className="text-sm font-medium">{t(`appearanceTab.scheme.${shell}`)}</h3>
-            <div role="radiogroup" aria-label={t(`appearanceTab.scheme.${shell}`)} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t(`appearanceTab.scheme.${shell}`)} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {SCHEMES.filter((scheme) => scheme.shell === shell).map((scheme) => {
                 const selected = scheme.id === (shell === "dark" ? darkScheme : lightScheme);
-                return <button key={scheme.id} type="button" role="radio" aria-checked={selected}
+                return <button key={scheme.id} type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
                   data-scheme-id={scheme.id}
                   className={`flex min-w-0 items-center gap-2 rounded-lg border p-2 text-left ${selected ? "border-primary ring-1 ring-primary" : "border-border"}`}
                   onClick={() => { setScheme(shell, scheme.id); notifySaved(); }}>
@@ -370,11 +383,12 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
           <label className="text-[11px] text-muted-foreground">{t("appearanceTab.fontFamilyLabel")}</label>
           <div
             role="radiogroup"
+            onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontFamilyRadioGroupLabel")}
             data-testid="font-family-presets"
             className="flex flex-wrap gap-2"
           >
-            {fontOptions.map((opt) => {
+            {fontOptions.map((opt, index) => {
               const checked = activePreset === opt.value;
               return (
                 <button
@@ -382,6 +396,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
                   type="button"
                   role="radio"
                   aria-checked={checked}
+                  tabIndex={checked || (activePreset === "custom" && index === 0) ? 0 : -1}
                   data-value={opt.value}
                   onClick={() => setFamily(opt.stack)}
                   className={`rounded-full border px-3 py-1 text-xs transition-colors ${
@@ -408,6 +423,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
           <label className="text-[11px] text-muted-foreground">{t("appearanceTab.fontSizeLabel")}</label>
           <div
             role="radiogroup"
+            onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontSizeRadioGroupLabel")}
             data-testid="font-size-scale"
             className="flex flex-wrap gap-2"
@@ -420,6 +436,7 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
                   type="button"
                   role="radio"
                   aria-checked={checked}
+                  tabIndex={checked ? 0 : -1}
                   data-value={String(opt.value)}
                   onClick={() => setSizeScale(opt.value)}
                   className={`rounded-full border px-3 py-1 transition-colors ${
@@ -454,7 +471,7 @@ function TerminalFontSection() {
     const next = { ...font, ...patch };
     setFont(next);
     setFailed(false);
-    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => setFailed(true));
+    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => { setFailed(true); setFont(appearance.terminalFont); });
   };
   return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
     {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
@@ -462,7 +479,7 @@ function TerminalFontSection() {
       <label className="space-y-1 text-xs">{t("appearanceTab.terminalFamily")}
         <input className="w-full rounded border border-input bg-background p-2" value={font.family} maxLength={256}
           onChange={(event) => setFont({ ...font, family: event.target.value })}
-          onBlur={() => { if (font.family.trim()) updateFont({ family: font.family.trim() }); }} />
+          onBlur={() => updateFont({ family: font.family.trim() })} />
       </label>
       <label className="space-y-1 text-xs">{t("appearanceTab.terminalSize")}
         <TerminalNumberInput value={font.size} validate={isTerminalFontSize} inputMode="numeric"

@@ -1,5 +1,6 @@
 /** Schemas check shape; semantic rules enforce uniqueness, ordering and reserved identities.
  * Invalid roots reject the commit; invalid entries are dropped with diagnostics. */
+import { createMarketplaceLogger } from "../log.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
@@ -29,6 +30,16 @@ import {
   type RevocationsFile,
 } from "./types.js";
 import { parseVersionRange } from "./version-range.js";
+
+const log = createMarketplaceLogger("marketplace-catalog");
+
+/** External catalogs may retain retired entries; every remaining entry still passes normal validation. */
+function omitRetiredThemes(entries: readonly unknown[]): unknown[] {
+  const retained = entries.filter((entry) => !isRecord(entry) || entry.kind !== "theme");
+  const entriesSkipped = entries.length - retained.length;
+  if (entriesSkipped > 0) log.info({ entriesSkipped }, "Retired catalog entries skipped");
+  return retained;
+}
 
 export interface CatalogDiagnostic {
   subject: string;
@@ -325,7 +336,9 @@ export function validateIndexText(text: string, context: IndexContext): Validati
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
+  let retiredCount = 0;
   root.packages.forEach((raw, position) => {
+    if (isRecord(raw) && raw.kind === "theme") { retiredCount += 1; return; }
     const entry = raw as Partial<IndexPackage>;
     // A name with a credential's shape is named by its position, never by itself.
     const named = typeof entry.kind === "string" && typeof entry.name === "string" && !holdsCredential(entry.name);
@@ -353,6 +366,8 @@ export function validateIndexText(text: string, context: IndexContext): Validati
     claim(byPath, (raw as IndexPackage).path);
     candidates.push(raw as IndexPackage);
   });
+
+  if (retiredCount > 0) log.info({ entriesSkipped: retiredCount }, "Retired catalog entries skipped");
 
   // (kind, name) and path must each name one package; an ambiguous pair drops every claimant.
   const packages = candidates.filter((entry) => {
@@ -481,9 +496,11 @@ export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot 
 export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {
   const parsed = parse(text);
   if (!parsed.ok) return parsed;
+  const value = isRecord(parsed.value) && Array.isArray(parsed.value.packages)
+    ? { ...parsed.value, packages: omitRetiredThemes(parsed.value.packages) } : parsed.value;
   const validate = validators().snapshot;
-  if (!validate(parsed.value)) return { ok: false, error: "snapshot: " + describeErrors(validate.errors) };
-  const snapshot = parsed.value as SourceSnapshot;
+  if (!validate(value)) return { ok: false, error: "snapshot: " + describeErrors(validate.errors) };
+  const snapshot = value as SourceSnapshot;
   const plain = validateRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.revocations }));
   if (!plain.ok) return plain;
   const conditional = validateConditionalRevocationsText(JSON.stringify({ schemaVersion: 1, revocations: snapshot.conditionalRevocations }));

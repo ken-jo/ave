@@ -1024,6 +1024,10 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    const terminalFontPatch = partial.appearance?.terminalFont;
+    if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
+      throw new Error("Invalid terminal font family");
+    }
     const chatPatch = partial.chat;
     if (
       chatPatch
@@ -1754,8 +1758,8 @@ export class SettingsService {
       };
 
       const onDisk = parsed.appearance as Record<string, unknown> | null | undefined;
-      // Detect v1 (legacy tri-axis) to trigger write-back after constructor.
-      const needsAppearanceWriteBack = !!onDisk && typeof onDisk === "object" && onDisk.schemaVersion !== 3;
+      // Persist normalized appearance so retired or invalid fields are repaired once.
+      let needsAppearanceWriteBack = !!onDisk && typeof onDisk === "object" && onDisk.schemaVersion !== 3;
 
       const marketplace = normalizeMarketplace(marketplaceParsed);
       const normalizedLlm = mergeLlmPatch(
@@ -1765,7 +1769,8 @@ export class SettingsService {
       );
       llm = normalizedLlm;
 
-      const appearance = normalizeAppearance(parsed.appearance);
+      const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
+      needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 
       // One-time migration: un-fossilize subAgentAutonomousWake. saveSettings() writes the merged settings; defaults included; back to disk, so installs from the era when this flag defaulted to false carry an explicit `false` the user never chose, and the later default flip to `true` can never reach
       // them (explicit false beats the default merge below). Drop exactly that fossil once. A `false` written AFTER this migration ran is a real opt-out and sticks, because the marker suppresses any re-run. Remove this block (and the marker constant) once no pre-flip installs remain; target 2026-10.

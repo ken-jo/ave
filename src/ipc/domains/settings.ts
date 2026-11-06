@@ -83,6 +83,7 @@ import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catal
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 import { mainWindowForContents, getPrimaryMainWindow } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
 
 let subscriptionRuntimeStatusRevision = 0;
@@ -795,9 +796,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (
       marketplacePatch
       && typeof marketplacePatch === "object"
-      && ["installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
+      && ["installedThemeBundleIds", "installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
     ) {
       return { ok: false, error: "legacy-marketplace-lists-main-owned" };
+    }
+    const appearancePatch = (partial as Record<string, unknown> | null | undefined)?.appearance as Record<string, unknown> | undefined;
+    const terminalFontPatch = appearancePatch?.terminalFont as Record<string, unknown> | undefined;
+    if (terminalFontPatch && typeof terminalFontPatch === "object" && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
+      throw new Error("Invalid terminal font family");
     }
     const permissionsPatch = (partial as Record<string, unknown> | null | undefined)?.permissions;
     if (permissionsPatch !== undefined && (!permissionsPatch || typeof permissionsPatch !== "object" || Array.isArray(permissionsPatch) || Object.keys(permissionsPatch).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes((permissionsPatch as Record<string, unknown>).ownerAwayAutoSkipMinutes))) {

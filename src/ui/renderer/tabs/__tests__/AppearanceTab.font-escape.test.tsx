@@ -1,3 +1,4 @@
+import { SavedToastProvider } from "../../context/SavedToastContext.js";
 /** Escape must skip the synchronous blur commit via escapingRef; a batched state reset alone leaves the blur closure
  * holding the typed draft. */
 import "../../../../../test/renderer/setup.js";
@@ -96,4 +97,19 @@ it("keeps intermediate keyboard drafts and commits valid terminal metrics", asyn
   expect(api.updateSettings).not.toHaveBeenCalled();
   await user.keyboard("{Enter}");
   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.5 } } });
+});
+
+
+it("reports a rejected terminal family without announcing Saved", async () => {
+  const notifySaved = vi.fn();
+  api.updateSettings.mockClear();
+  api.updateSettings.mockRejectedValueOnce(new Error("invalid-terminal-font-family"));
+  render(<SavedToastProvider value={notifySaved}><AppearanceTab /></SavedToastProvider>);
+  const section = document.querySelector('[data-settings-section="appearance-terminal"]')!;
+  const family = section.querySelector("input")!;
+  fireEvent.change(family, { target: { value: "Broken; color: red" } });
+  fireEvent.blur(family);
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("글꼴 설정을 불러오거나 저장하지 못했습니다."));
+  expect(notifySaved).not.toHaveBeenCalled();
+  expect(family).toHaveValue("monospace");
 });

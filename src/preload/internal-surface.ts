@@ -12,7 +12,7 @@ import {
   CHANNELS,
   UI,
 } from "../contract/app-contract.js";
-import { INITIAL_APPEARANCE_ARG_PREFIX, type InitialAppearance } from "../shared/initial-appearance.js";
+import type { InitialAppearance, InitialAppearanceResult } from "../shared/initial-appearance.js";
 import { isAppearanceMode, isDarkSchemeId, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, normalizeAppearance } from "../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride } from "../shared/appearance-font.js";
 import { applyAppearance } from "../ui/renderer/theme/resolve-theme.js";
@@ -28,10 +28,10 @@ import {
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
-export function readInitialAppearanceArg(): InitialAppearance | null {
-  const arg = process.argv.find((value) => value.startsWith(INITIAL_APPEARANCE_ARG_PREFIX));
-  if (!arg) return null;
-  const parsed: unknown = JSON.parse(arg.slice(INITIAL_APPEARANCE_ARG_PREFIX.length));
+export function readInitialAppearance(): InitialAppearance {
+  const response = ipcRenderer.sendSync(CHANNELS.settings.initialAppearance) as InitialAppearanceResult;
+  if (!response || !response.ok) throw new Error("Initial appearance unavailable");
+  const parsed: unknown = response.appearance;
   if (!parsed || typeof parsed !== "object" || (parsed as { schemaVersion?: unknown }).schemaVersion !== 3) {
     throw new Error("Invalid initial appearance");
   }

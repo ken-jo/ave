@@ -1,3 +1,6 @@
+import { STATIC_DESIGN_TOKENS } from "../theme/design-tokens.js";
+import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
+import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 /** Translate host theme tokens into standard MCP UI style variables; proprietary tokens must not leak to guests. */
 
 // `McpUiDisplayMode` is the ONE standard type NOT re-declared below: the host's
@@ -144,11 +147,11 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
   ["--ave-ring", "--color-ring-info"],
   // Status (1:1)
   ["--ave-danger", "--color-background-danger"],
-  ["--ave-danger-fg", "--color-text-danger"],
+  ["--ave-danger", "--color-text-danger"],
   ["--ave-warning", "--color-background-warning"],
-  ["--ave-warning-fg", "--color-text-warning"],
+  ["--ave-warning", "--color-text-warning"],
   ["--ave-success", "--color-background-success"],
-  ["--ave-success-fg", "--color-text-success"],
+  ["--ave-success", "--color-text-success"],
   ["--ave-radius-xs", "--border-radius-xs"],
   ["--ave-radius-sm", "--border-radius-sm"],
   ["--ave-radius", "--border-radius-md"],
@@ -162,10 +165,53 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
   ["--ave-weight-normal", "--font-weight-normal"],
   ["--ave-weight-medium", "--font-weight-medium"],
   ["--ave-weight-semibold", "--font-weight-semibold"],
-  // Font family — only present when the user set a custom family (ThemeProvider writes `--ave-font-family` on the document
-  // root). Absent from the curated bundle token map, so it is emitted only when the caller threads it in.
+  ["--ave-fg", "--color-background-inverse"],
+  ["--ave-bg", "--color-background-ghost"],
+  ["--ave-secondary", "--color-background-disabled"],
+  ["--ave-fg-muted", "--color-text-tertiary"],
+  ["--ave-fg-muted", "--color-text-ghost"],
+  ["--ave-primary", "--color-text-info"],
+  ["--ave-border", "--color-border-secondary"],
+  ["--ave-border", "--color-border-tertiary"],
+  ["--ave-primary-fg", "--color-border-inverse"],
+  ["--ave-border", "--color-border-ghost"],
+  ["--ave-primary", "--color-border-info"],
+  ["--ave-danger", "--color-border-danger"],
+  ["--ave-success", "--color-border-success"],
+  ["--ave-warning", "--color-border-warning"],
+  ["--ave-border", "--color-border-disabled"],
+  ["--ave-ring", "--color-ring-secondary"],
+  ["--ave-primary-fg", "--color-ring-inverse"],
+  ["--ave-danger", "--color-ring-danger"],
+  ["--ave-success", "--color-ring-success"],
+  ["--ave-warning", "--color-ring-warning"],
+  // A configured font overrides the host stack below.
   ["--ave-font-family", "--font-sans"],
 ];
+
+const STATIC_STYLE_SOURCES = {
+  "--font-weight-bold": "--type-weight-bold",
+  "--border-radius-xl": "--shape-radius-xl",
+  "--border-width-regular": "--border-width",
+  "--font-text-xs-line-height": "--type-leading-16",
+  "--font-text-sm-line-height": "--type-leading-20",
+  "--font-text-md-line-height": "--type-leading-24",
+  "--font-text-lg-line-height": "--type-leading-28",
+  "--font-heading-xs-size": "--type-size-12",
+  "--font-heading-xs-line-height": "--type-leading-16",
+  "--font-heading-sm-size": "--type-size-14",
+  "--font-heading-sm-line-height": "--type-leading-20",
+  "--font-heading-md-size": "--type-size-16",
+  "--font-heading-md-line-height": "--type-leading-24",
+  "--font-heading-lg-size": "--type-size-18",
+  "--font-heading-lg-line-height": "--type-leading-28",
+  "--font-heading-xl-size": "--type-size-20",
+  "--font-heading-xl-line-height": "--type-leading-28",
+  "--font-heading-2xl-size": "--type-size-24",
+  "--font-heading-2xl-line-height": "--type-leading-32",
+  "--font-heading-3xl-size": "--type-size-30",
+  "--font-heading-3xl-line-height": "--type-leading-36"
+} as const satisfies Partial<Record<McpUiStyleVariableKey, keyof typeof STATIC_DESIGN_TOKENS>>;
 
 export interface McpAppHostContextInput {
   /** Active shell scheme (maps 1:1 to the standard `McpUiTheme`). */
@@ -195,6 +241,20 @@ export function buildMcpAppHostContext(input: McpAppHostContextInput): McpUiHost
     const value = tokens[source];
     if (typeof value === "string" && value.length > 0) {
       variables[target] = value;
+    }
+  }
+
+  if (Object.keys(tokens).length > 0) {
+    for (const [target, source] of Object.entries(STATIC_STYLE_SOURCES)) variables[target as McpUiStyleVariableKey] = STATIC_DESIGN_TOKENS[source];
+    variables["--font-sans"] = tokens["--ave-font-family"] || HOST_FONT_STACK;
+    variables["--font-mono"] = DEFAULT_APPEARANCE.terminalFont.family;
+    const border = tokens["--ave-border"];
+    const overlay = tokens["--ave-surface-overlay"];
+    if (border && overlay) {
+      variables["--shadow-hairline"] = `0 0 0 ${STATIC_DESIGN_TOKENS["--border-width"]} ${border}`;
+      variables["--shadow-sm"] = `${STATIC_DESIGN_TOKENS["--shadow-sm-offsets"]} ${overlay}`;
+      variables["--shadow-md"] = `${STATIC_DESIGN_TOKENS["--shadow-md-offsets"]} ${overlay}`;
+      variables["--shadow-lg"] = `${STATIC_DESIGN_TOKENS["--shadow-lg-offsets"]} ${overlay}`;
     }
   }
 

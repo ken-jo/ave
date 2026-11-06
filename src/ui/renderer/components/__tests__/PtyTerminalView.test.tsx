@@ -20,7 +20,7 @@ import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme } from "../../theme/schemes/index.js";
 
 /** The app renders every terminal under its root TooltipProvider; the terminal's header chip needs one. */
-const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: TooltipProvider });
+const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: ({ children }) => <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider>{children}</TooltipProvider></ThemeProvider> });
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
@@ -116,6 +116,10 @@ function terminalApi() {
 }
 
 describe("PtyTerminalView theme", () => {
+  it("requires an applied theme provider", () => {
+    const { api } = makeMockAveApi();
+    expect(() => renderUnwrapped(<PtyTerminalView api={api as never} location="side-panel" tabId="missing-provider" tabLabel="Terminal" />)).toThrow("useTheme() must be used inside <ThemeProvider>");
+  });
   it("updates the full palette and font without restarting the terminal", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
     const ave = { ...api, terminal: terminalApi() };

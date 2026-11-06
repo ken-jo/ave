@@ -1,10 +1,11 @@
-// Color mixing and contrast bisection adapted under NOTICE and LICENSE-APACHE.
+// Attribution and licenses: resources/licenses/appearance/NOTICE.
 import type { AppearanceSettings } from "../../../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_DEFAULT } from "../../../shared/appearance-font.js";
 import { THEME_TOKEN_NAMES, THEME_SURFACE_NAMES } from "../../../shared/theme-tokens.js";
 import type { ThemeTokens, ThemeSurfaces } from "../../../shared/theme-tokens.js";
 import { hexToOklch, mixOklch, oklchToHex } from "./oklch.js";
 import { requireScheme } from "./schemes/index.js";
+import { STATIC_DESIGN_TOKENS } from "./design-tokens.js";
 import type { ColorScheme, ResolvedTheme } from "./types.js";
 
 /** Relative luminance contrast of concrete sRGB colors. */
@@ -31,6 +32,25 @@ function hexToTriple(hex: string): string {
   return `${hue.toFixed(4)} ${(saturation * 100).toFixed(4)}% ${(light * 100).toFixed(4)}%`;
 }
 
+/** Keep the hue while finding the nearest lightness that clears every surface. */
+function readableColor(color: string, surfaces: readonly string[], minimum: number, light: boolean, label: string): string {
+  const source = hexToOklch(color);
+  const ink = (l: number) => oklchToHex({ ...source, l });
+  const worst = (l: number) => Math.min(...surfaces.map((surface) => contrastRatio(ink(l), surface)));
+  let fails = source.l;
+  let passes = light ? 1 : 0;
+  if (worst(fails) >= minimum + 0.01) return ink(fails);
+  if (worst(passes) < minimum + 0.01) throw new Error(`Color cannot reach required contrast: ${label}`);
+  for (let i = 0; i < 24; i++) {
+    const middle = (fails + passes) / 2;
+    if (worst(middle) >= minimum + 0.01) passes = middle;
+    else fails = middle;
+  }
+  const result = ink(passes);
+  if (surfaces.some((surface) => contrastRatio(result, surface) < minimum)) throw new Error(`Color contrast failed: ${label}`);
+  return result;
+}
+
 export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
   const dark = scheme.shell === "dark";
   const palette = scheme.terminal;
@@ -54,17 +74,12 @@ export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
   const ink = (lightness: number) => oklchToHex({ l: lightness, c: Math.min(fg.c, 0.012), h: fg.h });
   const foreground = ink(dark ? 0.985 : 0.16);
   const surfaces = Object.values(surfaceHex);
-  const worst = (l: number) => Math.min(...surfaces.map((surface) => contrastRatio(ink(l), surface)));
-  let fails = dark ? 0.708 : 0.523;
-  let passes = dark ? 0.985 : 0.16;
-  if (worst(passes) < 4.5) throw new Error(`Color scheme has unreadable surfaces: ${scheme.id}`);
-  if (worst(fails) >= 4.5) passes = fails;
-  else for (let i = 0; i < 20; i++) {
-    const middle = (fails + passes) / 2;
-    if (worst(middle) >= 4.51) passes = middle;
-    else fails = middle;
-  }
-  const muted = ink(passes);
+  const muted = readableColor(ink(dark ? 0.708 : 0.523), surfaces, 4.5, dark, `${scheme.id}/muted`);
+  const status = Object.fromEntries(Object.entries({ destructive: palette.red, warning: palette.yellow, success: palette.green, info: palette.blue, emphasis: palette.yellow })
+    .map(([key, color]) => [key, readableColor(color, surfaces, 3, dark, `${scheme.id}/${key}`)]));
+  const uiLine = readableColor(mix(dark ? 0.54 : 0.52), surfaces, 3, dark, `${scheme.id}/ui-line`);
+  const selectionForeground = readableColor(foreground, [palette.selectionBackground], 4.5,
+    contrastRatio("#ffffff", palette.selectionBackground) > contrastRatio("#000000", palette.selectionBackground), `${scheme.id}/selection`);
   const readableOn = (color: string) => contrastRatio("#ffffff", color) >= contrastRatio("#111111", color) ? "#ffffff" : "#111111";
   const border = mix(0.18), strong = mix(0.32);
   const colors: Record<string, string> = {
@@ -72,21 +87,30 @@ export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
     foreground, "card-foreground": foreground, "popover-foreground": foreground,
     primary: foreground, "primary-foreground": palette.background,
     "secondary-foreground": foreground, "muted-foreground": muted, "accent-foreground": foreground,
-    destructive: palette.red, "destructive-foreground": readableOn(palette.red),
-    warning: palette.yellow, "warning-foreground": readableOn(palette.yellow),
-    success: palette.green, "success-foreground": readableOn(palette.green),
-    info: palette.blue, "info-foreground": readableOn(palette.blue),
-    emphasis: palette.yellow, "emphasis-foreground": readableOn(palette.yellow),
-    border, input: border, ring: foreground, "ui-line": mix(dark ? 0.54 : 0.52),
+    destructive: status.destructive!, "destructive-foreground": readableOn(status.destructive!),
+    warning: status.warning!, "warning-foreground": readableOn(status.warning!),
+    success: status.success!, "success-foreground": readableOn(status.success!),
+    info: status.info!, "info-foreground": readableOn(status.info!),
+    emphasis: status.emphasis!, "emphasis-foreground": readableOn(status.emphasis!),
+    border, input: border, ring: foreground, "ui-line": uiLine,
     "message-user-fg": foreground, overlay: "#000000", "hover-overlay": foreground,
     "focus-ring": foreground, "link-fg": foreground,
-    "selection-bg": palette.selectionBackground, "selection-fg": foreground,
+    "selection-bg": palette.selectionBackground, "selection-fg": selectionForeground,
     "scrollbar-thumb": strong, "scrollbar-track": palette.background,
     "kbd-bg": mix(0.065), "kbd-border": border, "code-fg": foreground, "code-border": border,
     "chart-1": palette.blue, "chart-2": palette.green, "chart-3": palette.magenta, "chart-4": palette.yellow, "chart-5": palette.red,
     "action-view": palette.magenta, "action-branch": palette.yellow, "action-compact": palette.blue,
     "border-subtle": mix(0.10), "border-strong": strong,
   };
+  for (const state of ["success", "destructive"]) {
+    for (const surface of surfaces) {
+      const washed = "#" + [1, 3, 5].map((offset) => Math.round(
+        Number.parseInt(colors[state]!.slice(offset, offset + 2), 16) * 0.15
+        + Number.parseInt(surface.slice(offset, offset + 2), 16) * 0.85,
+      ).toString(16).padStart(2, "0")).join("");
+      if (contrastRatio(foreground, washed) < 4.5) throw new Error(`Unreadable diff text: ${scheme.id}/${state}`);
+    }
+  }
   return {
     id: scheme.id, shell: scheme.shell, terminal: palette,
     tokens: Object.fromEntries(THEME_TOKEN_NAMES.map((name) => [name, hexToTriple(colors[name]!)])) as ThemeTokens,
@@ -108,6 +132,7 @@ export function applyAppearance(appearance: AppearanceSettings, doc: Document = 
   root.setAttribute("data-scheme", theme.id);
   root.setAttribute("data-shell", theme.shell);
   root.style.colorScheme = theme.shell;
+  for (const [name, value] of Object.entries(STATIC_DESIGN_TOKENS)) root.style.setProperty(name, value);
   for (const [name, value] of Object.entries({ ...theme.tokens, ...theme.surfaces })) root.style.setProperty(`--${name}`, value);
   const family = appearance.font?.family;
   if (family && family !== "system") root.style.setProperty("--ave-font-family", family);

@@ -44,15 +44,22 @@ function isAppearanceRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Retire released bundle selections once; current settings keep only the curated scheme contract. */
-export function normalizeAppearance(input: unknown): AppearanceSettings {
+export function normalizeAppearance(input: unknown, warn: (field: string) => void = (field) => console.warn(`Invalid appearance setting: ${field}`)): AppearanceSettings {
   const obj = isAppearanceRecord(input) ? input : {};
   const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocaleSetting(obj.language) };
   const font = normalizeAppearanceFont(obj.font);
   if (font) result.font = font;
-  if (obj.schemaVersion !== 3) return result;
+  if (obj.schemaVersion === 2) {
+    if (obj.bundleId === "moonstone" || obj.bundleId === "gallery") result.mode = "light";
+    return result;
+  }
+  if (input !== undefined && obj.schemaVersion !== 3) warn("schemaVersion");
   if (isAppearanceMode(obj.mode)) result.mode = obj.mode;
+  else if ("mode" in obj) warn("mode");
   if (isDarkSchemeId(obj.darkScheme)) result.darkScheme = obj.darkScheme;
+  else if ("darkScheme" in obj) warn("darkScheme");
   if (isLightSchemeId(obj.lightScheme)) result.lightScheme = obj.lightScheme;
+  else if ("lightScheme" in obj) warn("lightScheme");
   const terminalFont = isAppearanceRecord(obj.terminalFont) ? obj.terminalFont : {};
   if (isValidFontFamilyOverride(terminalFont.family)) result.terminalFont.family = terminalFont.family;
   if (isTerminalFontSize(terminalFont.size)) result.terminalFont.size = terminalFont.size;

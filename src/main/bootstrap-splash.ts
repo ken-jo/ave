@@ -92,6 +92,12 @@ export const BOOTSTRAP_SPLASH = `<!DOCTYPE html>
     .version{color:rgba(240,230,255,.5)}
   }
 
+  /* Saved appearance is applied by preload before this document's first paint. */
+  html[data-shell],html[data-shell] body,html[data-shell] .wrap{
+    background:hsl(var(--background));color:hsl(var(--foreground))
+  }
+  html[data-shell] .status,html[data-shell] .version{color:hsl(var(--muted-foreground))}
+
   /* Reduced motion — disable scale, breathing, bounce; keep entrance fade only */
   @media (prefers-reduced-motion: reduce){
     .wrap{animation:ave-splash-enter 150ms ease-out both}
@@ -151,6 +157,8 @@ export const BOOTSTRAP_SPLASH = `<!DOCTYPE html>
     });
   </script>
 </body></html>`;
+
+export const BOOTSTRAP_SPLASH_URL = `data:text/html;charset=utf-8,${encodeURIComponent(BOOTSTRAP_SPLASH)}`;
 
 // Push a status message to the splash window from the main process. Best-effort — silently no-ops if the splash has already navigated away to the real
 // renderer or if executeJavaScript rejects.

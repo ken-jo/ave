@@ -2,8 +2,8 @@
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
   "appearanceTab.fontSaveFailed": "The font setting could not be loaded or saved.",
-  "appearanceTab.schemeTitle": "Colour scheme",
-  "appearanceTab.schemeDescription": "One scheme sets the interface and terminal colours. System mode keeps a selection for each appearance.",
+  "appearanceTab.schemeTitle": "Color scheme",
+  "appearanceTab.schemeDescription": "One scheme sets the interface and terminal colors. System mode keeps a selection for each appearance.",
   "appearanceTab.mode": "Appearance mode",
   "appearanceTab.mode.system": "System",
   "appearanceTab.mode.dark": "Dark",
@@ -16,6 +16,7 @@ export const en = {
   "appearanceTab.terminalLineHeight": "Line height",
   "settingsContent.search": "Search settings",
   "settingsContent.searchEmpty": "No matching settings",
+  "settingsContent.searchCount": "{count} settings found",
   "sidebarPreview.localFile": "Local file",
   "sidebarPreview.running": "Agent responding",
   "ptyTerminal.hostChipApproval": "Host · conversation permissions",

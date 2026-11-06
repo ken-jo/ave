@@ -4,9 +4,7 @@ import { createPortal } from "react-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
-import { useOptionalTheme } from "../theme/ThemeProvider.js";
-import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
-import { resolveAppearanceScheme } from "../theme/resolve-theme.js";
+import { useTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
@@ -122,10 +120,10 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const fitTerminalRef = useRef<(() => void) | null>(null);
   const [anchors, setAnchors] = useState<XtermBlockAnchors | null>(null);
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
-  const themeContext = useOptionalTheme();
-  const appliedRevision = themeContext?.appliedRevision ?? 0;
-  const appearance = themeContext?.appearance ?? DEFAULT_APPEARANCE;
-  const terminalPalette = themeContext?.appliedTheme.terminal ?? resolveAppearanceScheme(DEFAULT_APPEARANCE, false).terminal;
+  const themeContext = useTheme();
+  const appliedRevision = themeContext.appliedRevision;
+  const appearance = themeContext.appearance;
+  const terminalPalette = themeContext.appliedTheme.terminal;
   const terminalFont = appearance.terminalFont;
   const terminalStyleRef = useRef({ terminalPalette, terminalFont });
   terminalStyleRef.current = { terminalPalette, terminalFont };

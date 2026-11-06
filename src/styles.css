@@ -549,21 +549,7 @@
     --p-code-dark-fg:     210 40% 96%;
     --p-code-dark-border: 217 33% 22%;
 
-    /* Shape — does not vary by theme */
-    --radius: 0.6rem;
-
-    /* Motion — product-wide interaction timing. Reference systems converge on
-     * short, purposeful micro-motion; these variables keep durations/easing
-     * consistent without creating another component API. */
-    --type-size-12: 0.75rem;
-    --type-size-14: 0.875rem;
-    --type-size-16: 1rem;
-    --type-leading-16: 1rem;
-    --type-leading-18: 1.125rem;
-    --type-leading-20: 1.25rem;
-    --type-leading-24: 1.5rem;
-    --type-tracking-normal: 0em;
-    --type-tracking-wide: 0.015em;
+    /* Static shape, typography and motion values are applied from theme/design-tokens.ts. */
     --message-user-border: var(--message-user-fg);
     --message-user-muted: var(--message-user-fg);
     --message-user-action: var(--message-user-fg);
@@ -574,14 +560,7 @@
     --input-bar-focus: var(--ring);
     --input-bar-subtle: var(--muted);
     --input-bar-action: var(--foreground);
-    --motion-fast: 120ms;
-    --motion-normal: 180ms;
     --motion-base: var(--motion-normal);
-    --motion-slow: 240ms;
-    --motion-layout: 300ms;
-    --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-    --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-    --motion-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   /* ── Tier B-derived: composite tokens ─────────────────────────────────
@@ -723,10 +702,10 @@
     --surface-overlay: 240.0000 3.7037% 94.7059%;
     --border-subtle: 240.0000 2.0408% 90.3922%;
     --border-strong: 210.0000 2.5974% 69.8039%;
-    --shadow-e1: 0 1px 2px hsl(var(--overlay) / 0.16);
-    --shadow-e2: 0 4px 12px hsl(var(--overlay) / 0.16);
-    --shadow-e3: 0 8px 24px hsl(var(--overlay) / 0.16);
-    --shadow-e4: 0 16px 48px hsl(var(--overlay) / 0.16);
+    --shadow-e1: var(--shadow-sm-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e2: var(--shadow-md-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e3: var(--shadow-lg-offsets) hsl(var(--overlay) / 0.16);
+    --shadow-e4: var(--shadow-xl-offsets) hsl(var(--overlay) / 0.16);
     color-scheme: light;
   }
 
@@ -742,14 +721,14 @@
   @media (prefers-reduced-motion: reduce) {
     :root {
       transition: none;
-      --motion-fast: 1ms;
-      --motion-normal: 1ms;
-      --motion-base: 1ms;
-      --motion-slow: 1ms;
-      --motion-layout: 1ms;
-      --motion-ease-out: linear;
-      --motion-ease-standard: linear;
-      --motion-ease-in-out: linear;
+      --motion-fast: 1ms !important;
+      --motion-normal: 1ms !important;
+      --motion-base: 1ms !important;
+      --motion-slow: 1ms !important;
+      --motion-layout: 1ms !important;
+      --motion-ease-out: linear !important;
+      --motion-ease-standard: linear !important;
+      --motion-ease-in-out: linear !important;
     }
   }
 

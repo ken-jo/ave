@@ -1423,3 +1423,16 @@ describe("the renderer settings snapshot", () => {
     expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
   });
 });
+
+describe("terminal font settings validation", () => {
+  it.each(["bad;value", "", 42, null])("rejects an invalid family without saving or broadcasting", async (family) => {
+    const window = makeWindow();
+    const deps = makeDeps([window]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    await expect(invoke("ave:settings:update", { appearance: { terminalFont: { family } } }))
+      .rejects.toThrow("Invalid terminal font family");
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});

@@ -18,6 +18,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "appearanceTab.terminalLineHeight": "줄 높이",
   "settingsContent.search": "설정 검색",
   "settingsContent.searchEmpty": "일치하는 설정이 없습니다",
+  "settingsContent.searchCount": "설정 {count}개 검색됨",
   "sidebarPreview.localFile": "로컬 파일",
   "sidebarPreview.running": "에이전트 응답",
   "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",

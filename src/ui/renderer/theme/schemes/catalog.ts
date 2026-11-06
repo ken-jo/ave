@@ -1,4 +1,4 @@
-// Generated curated palette data. Source and license: NOTICE and LICENSE-MIT.
+// Attribution and licenses: resources/licenses/appearance/NOTICE.
 import type { ColorScheme } from "../types.js";
 
 export const SCHEMES: readonly ColorScheme[] = [

@@ -1,3 +1,6 @@
+import { SCHEMES, resolveTheme, schemeToHostTokens } from "../../theme/index.js";
+import { AVE_TOKEN_NAMES } from "../../../../shared/plugin-ui-tokens.js";
+import { HOST_FONT_STACK } from "../../../../shared/host-font-stack.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,9 +129,9 @@ describe("buildMcpAppHostContext", () => {
 
     // Status (1:1)
     expect(variables["--color-background-danger"]).toBe(LIGHT_TOKENS["--ave-danger"]);
-    expect(variables["--color-text-danger"]).toBe(LIGHT_TOKENS["--ave-danger-fg"]);
+    expect(variables["--color-text-danger"]).toBe(LIGHT_TOKENS["--ave-danger"]);
     expect(variables["--color-background-success"]).toBe(LIGHT_TOKENS["--ave-success"]);
-    expect(variables["--color-text-success"]).toBe(LIGHT_TOKENS["--ave-success-fg"]);
+    expect(variables["--color-text-success"]).toBe(LIGHT_TOKENS["--ave-success"]);
 
     // Radius + fonts
     expect(variables["--border-radius-md"]).toBe(LIGHT_TOKENS["--ave-radius"]);
@@ -192,7 +195,7 @@ describe("buildMcpAppHostContext", () => {
     expect("--color-background-warning" in variables).toBe(false);
   });
 
-  it("maps --ave-font-family to --font-sans only when the caller threads it in", () => {
+  it("uses the configured sans family or the host font stack", () => {
     const withFamily = buildMcpAppHostContext({
       shell: "light",
       tokens: { ...LIGHT_TOKENS, "--ave-font-family": "Inter, sans-serif" },
@@ -209,7 +212,7 @@ describe("buildMcpAppHostContext", () => {
       timeZone: "UTC",
       displayMode: "inline",
     });
-    expect(withoutFamily.styles?.variables?.["--font-sans"]).toBeUndefined();
+    expect(withoutFamily.styles?.variables?.["--font-sans"]).toBe(HOST_FONT_STACK);
   });
 
   it("omits styles entirely when no tokens are provided", () => {
@@ -275,3 +278,13 @@ describe("McpUiStyleVariableKey twin is pinned to upstream ext-apps", () => {
     }
   });
 });
+
+for (const scheme of SCHEMES) {
+  it(scheme.id + " supplies every declared host token and every standard style variable", () => {
+    const tokens = schemeToHostTokens(resolveTheme(scheme));
+    expect(Object.keys(tokens).sort()).toEqual([...AVE_TOKEN_NAMES].sort());
+    const variables = buildMcpAppHostContext({ shell: scheme.shell, tokens, locale: "en", timeZone: "UTC", displayMode: "inline" }).styles!.variables!;
+    expect(Object.keys(variables).sort()).toEqual(styleVariableKeys(readFileSync(UPSTREAM_SPEC_TYPES, "utf8")).sort());
+    expect(Object.values(variables).every((value) => typeof value === "string" && value.length > 0)).toBe(true);
+  });
+}

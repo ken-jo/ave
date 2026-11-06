@@ -1,6 +1,6 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { SavedToastProvider } from "../context/SavedToastContext.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
@@ -89,4 +89,38 @@ describe("Appearance settings", () => {
       setLocale(originalLocale);
     }
   });
+});
+
+
+it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
+  const { getByRole, getByTestId, container } = renderAppearance();
+  const mode = getByRole("radiogroup", { name: "화면 모드" });
+  expect(within(mode).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
+  const system = getByTestId("appearance-mode-system");
+  system.focus();
+  fireEvent.keyDown(system, { key: "ArrowRight" });
+  expect(getByTestId("appearance-mode-dark")).toHaveFocus();
+  expect(getByTestId("appearance-mode-dark")).toHaveAttribute("aria-checked", "true");
+  expect(getByTestId("appearance-mode-dark")).toHaveAttribute("tabindex", "0");
+  const scheme = container.querySelector('[data-scheme-id="github-dark"]') as HTMLButtonElement;
+  scheme.focus();
+  fireEvent.keyDown(scheme, { key: "End" });
+  const last = container.querySelector('[data-scheme-id="solarized-dark"]');
+  expect(last).toHaveFocus();
+  expect(last).toHaveAttribute("aria-checked", "true");
+  fireEvent.keyDown(last!, { key: "ArrowRight" });
+  expect(scheme).toHaveFocus();
+  const families = getByTestId("font-family-presets");
+  await waitFor(() => expect(within(families).getAllByRole("radio").some((radio) => radio.getAttribute("aria-checked") === "true")).toBe(true));
+  const first = within(families).getAllByRole("radio")[0]!;
+  first.focus();
+  fireEvent.keyDown(first, { key: "ArrowDown" });
+  expect(within(families).getAllByRole("radio")[1]).toHaveFocus();
+  expect(within(families).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
+  const sizes = getByTestId("font-size-scale");
+  const activeSize = within(sizes).getAllByRole("radio").find((radio) => radio.tabIndex === 0)!;
+  activeSize.focus();
+  fireEvent.keyDown(activeSize, { key: "Home" });
+  expect(within(sizes).getAllByRole("radio")[0]).toHaveFocus();
+  expect(within(sizes).getAllByRole("radio")[0]).toHaveAttribute("aria-checked", "true");
 });

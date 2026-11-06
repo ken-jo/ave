@@ -1,3 +1,4 @@
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /** Preload asset URLs must not depend on a splash-phase data: location. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
@@ -7,6 +8,7 @@ import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
+const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE }));
 const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
@@ -24,6 +26,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
+    sendSync: mockSendSync,
     invoke: mockInvoke,
     send: mockSend,
     on: mockOn,
@@ -64,6 +67,7 @@ describe("preload — plugin webview asset URLs", () => {
   beforeEach(() => {
     exposed.clear();
     mockInvoke.mockReset();
+    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE });
     mockSend.mockReset();
     mockOn.mockReset();
     mockRemoveListener.mockReset();
@@ -74,6 +78,20 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV;
     delete process.env.AVE_E2E;
     delete process.env.AVE_DEV_CONSOLE;
+  });
+
+  it("reads fresh main-owned appearance synchronously on every preload start", async () => {
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    expect(readInitialAppearance()).toEqual(DEFAULT_APPEARANCE);
+    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" } });
+    expect(readInitialAppearance().darkScheme).toBe("nord");
+    expect(mockSendSync).toHaveBeenLastCalledWith(CHANNELS.settings.initialAppearance);
+  });
+
+  it("fails clearly when main refuses an appearance read", async () => {
+    mockSendSync.mockReturnValue({ ok: false, error: "unauthorized-frame" } as never);
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    expect(() => readInitialAppearance()).toThrow("Initial appearance unavailable");
   });
 
   it("limits the window surface to isolated previews and publishes the approved worlds", async () => {

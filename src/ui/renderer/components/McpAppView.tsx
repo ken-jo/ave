@@ -15,8 +15,7 @@ import {
   mcpAppCardSeedHeight,
   type McpAppCardSize,
 } from "../../../shared/mcp-app-card-size.js";
-import { useOptionalTheme, requireScheme, resolveTheme, schemeToHostTokens } from "../theme/index.js";
-import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
+import { useTheme, schemeToHostTokens } from "../theme/index.js";
 // The host-side wiring lives in its own React-free module so the real-<webview> e2e gate can import and exercise THE
 // SHIPPING WIRING rather than a look-alike copy.
 import { createMcpAppBridge } from "./mcp-app-bridge.js";
@@ -81,11 +80,10 @@ export function McpAppView({
   locationId?: string;
 }) {
   const { t, locale } = useTranslation();
-  // Translate standard theme context without exposing host tokens; isolated mounts without a theme provider use the light
-  // default.
-  const themeCtx = useOptionalTheme();
-  const appliedTheme = themeCtx?.appliedTheme ?? resolveTheme(requireScheme(DEFAULT_APPEARANCE.lightScheme));
-  const appliedRevision = themeCtx?.appliedRevision ?? 0;
+  // Translate the applied theme without exposing host tokens.
+  const themeCtx = useTheme();
+  const appliedTheme = themeCtx.appliedTheme;
+  const appliedRevision = themeCtx.appliedRevision;
 
   // Latch the card's origin session; stale-card messages must not enter a newly selected conversation. Missing origin never
   // matches a live session.

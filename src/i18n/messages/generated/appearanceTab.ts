@@ -1,7 +1,7 @@
 // i18n fragment. Source: src/ui/renderer/tabs/AppearanceTab.tsx.
 export const en = {
   "appearanceTab.pageTitle": "Appearance",
-  "appearanceTab.pageDescription": "Choose interface and terminal colours and fonts",
+  "appearanceTab.pageDescription": "Choose interface and terminal colors and fonts",
   "appearanceTab.fontSizeSmall": "Small",
   "appearanceTab.fontSizeNormal": "Normal",
   "appearanceTab.fontSizeLarge": "Large",

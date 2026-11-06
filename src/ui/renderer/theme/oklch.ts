@@ -1,4 +1,4 @@
-// Adapted color-space algorithms; attribution and license: NOTICE, LICENSE-APACHE.
+// Attribution and licenses: resources/licenses/appearance/NOTICE.
 export interface Oklch {
 
   l: number;

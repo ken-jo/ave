@@ -477,6 +477,23 @@ describe("SourceSyncer", () => {
     await expect(syncer.withRepository("acme", async () => "read")).resolves.toBe("read");
   });
 
+  it("keeps released retained snapshots readable while skipping only retired entries", async () => {
+    const { syncer } = await emptySource();
+    await syncer.sync("acme");
+    const snapshot = (await syncer.readSnapshot("acme"))!;
+    const retained = { kind: "skill", name: "harbor", path: "skills/harbor", versions: [{ version: "1.0.0", commit: snapshot.commit, minAppVersion: "0.12.0", publishedAt: AT }] };
+    const retired = { ...retained, kind: "theme", name: "harbor-theme", path: "themes/harbor-theme" };
+    const path = join(root, "acme", "snapshots", snapshot.commit + ".json");
+    const text = JSON.stringify({ ...snapshot, packages: [retired, retained] });
+    writeFileSync(path, text);
+    expect((await syncer.readRetainedSnapshot("acme", snapshot.commit))?.packages).toEqual([retained]);
+    expect((await syncer.readSnapshot("acme"))?.packages).toEqual([retained]);
+    expect(readFileSync(path, "utf8")).toBe(text);
+    writeFileSync(path, JSON.stringify({ ...snapshot, packages: [retired, { ...retained, kind: "widget" }] }));
+    expect(await syncer.readRetainedSnapshot("acme", snapshot.commit)).toBeNull();
+    await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED" });
+  });
+
   it("rebuilds legacy snapshots at the same pin and evaluates the retained raw policy", async () => {
     const { repo, name } = fixture();
     const entry = { kind: "plugin", name: "retired-fixture", versions: "*", appVersions: "0.12.0", reason: "Replaced", at: AT,

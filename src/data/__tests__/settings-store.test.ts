@@ -2854,7 +2854,7 @@ describe("SettingsService appearance", () => {
   });
   it("rejects unknown fields and invalid scheme, mode and terminal font patches", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never);
+    await expect(service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never)).rejects.toThrow("Invalid terminal font family");
     expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
   it("replaces a released package selection once while preserving language and font", async () => {

@@ -1,3 +1,4 @@
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /**
  * Preload contextBridge shape lock — Commit C0 safety snapshot.
  *
@@ -34,6 +35,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
+    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE })),
     invoke: mockInvoke,
     on: mockOn,
     removeListener: mockRemoveListener,
@@ -134,7 +136,18 @@ describe("preload contextBridge world shape lock", () => {
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
-        "__aveInitialAppearance": "null",
+        "__aveInitialAppearance": {
+          "darkScheme": "string",
+          "language": "string",
+          "lightScheme": "string",
+          "mode": "string",
+          "schemaVersion": "number",
+          "terminalFont": [
+            "family",
+            "lineHeight",
+            "size",
+          ],
+        },
         "ave": {
           "approval": [
             "listPending",

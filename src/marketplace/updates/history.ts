@@ -1,5 +1,6 @@
 /** History controls timing and attempts, never install authority; unreadable history may reset safely.
  * Failed discovery retries hourly; successful apply checks are due daily. */
+import { createMarketplaceLogger } from "../log.js";
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -72,6 +73,8 @@ export function parseUpdateRecordKey(recordKey: string): { sourceId: string; kin
   return { sourceId, kind: kind as PackageKind, name: name[0] };
 }
 
+const log = createMarketplaceLogger("marketplace-update-history");
+
 const RESULTS = new Set<string>(["ok", "partial", "offline", "error"]);
 const STATES = new Set<string>(UPDATE_PACKAGE_STATES);
 const CODES = new Set<string>([...MARKETPLACE_ERROR_CODES, "unavailable"]);
@@ -99,9 +102,9 @@ function timeOrNull(value: unknown, what: string): string | null {
   return value === null ? null : time(value, what);
 }
 
-function packageKey(key: string): void {
+function packageKey(key: string, allowRetired: boolean): void {
   const [sourceId, kind, name, ...rest] = key.split(":");
-  if (rest.length > 0 || !sourceId || !SOURCE_ID_RE.test(sourceId) || !kind || !KINDS.has(kind) || !name) invalid(`packages key ${key} is not <sourceId>:<kind>:<name>`);
+  if (rest.length > 0 || !sourceId || !SOURCE_ID_RE.test(sourceId) || !kind || !(KINDS.has(kind) || (allowRetired && kind === "theme")) || !name) invalid(`packages key ${key} is not <sourceId>:<kind>:<name>`);
 }
 
 function packageRecord(value: unknown, what: string): PackageUpdateRecord {
@@ -139,7 +142,7 @@ function packageRecord(value: unknown, what: string): PackageUpdateRecord {
   return record;
 }
 
-export function parseUpdateHistory(text: string): UpdateHistory {
+function parseHistory(text: string, allowRetired: boolean): { history: UpdateHistory; retiredCount: number } {
   let value: unknown;
   try {
     value = parseStrictJson(text);
@@ -162,11 +165,18 @@ export function parseUpdateHistory(text: string): UpdateHistory {
   const packages = Object.create(null) as Record<string, PackageUpdateRecord>;
   const entries = file.packages;
   if (typeof entries !== "object" || entries === null || Array.isArray(entries)) invalid("packages is not an object");
+  let retiredCount = 0;
   for (const [key, entry] of Object.entries(entries)) {
-    packageKey(key);
-    packages[key] = packageRecord(entry, `packages[${key}]`);
+    packageKey(key, allowRetired);
+    const record = packageRecord(entry, `packages[${key}]`);
+    if (key.split(":")[1] === "theme") retiredCount += 1;
+    else packages[key] = record;
   }
-  return { version: 1, discovery, applyCheckAt: timeOrNull(file.applyCheckAt, "applyCheckAt"), packages };
+  return { history: { version: 1, discovery, applyCheckAt: timeOrNull(file.applyCheckAt, "applyCheckAt"), packages }, retiredCount };
+}
+
+export function parseUpdateHistory(text: string): UpdateHistory {
+  return parseHistory(text, false).history;
 }
 
 /** Loading reports unreadable history without writing; the running scheduler owns reset and notification. */
@@ -192,7 +202,12 @@ export function updateHistoryStore(path: string): UpdateHistoryStore {
         return { history: emptyUpdateHistory(), reset: true, reason: `cannot be read (${fsErrorCode(error)})` };
       }
       try {
-        return { history: parseUpdateHistory(text), reset: false };
+        const { history, retiredCount } = parseHistory(text, true);
+        if (retiredCount > 0) {
+          await save(history);
+          log.info({ entriesRemoved: retiredCount }, "Retired update records migrated");
+        }
+        return { history, reset: false };
       } catch (error) {
         if (!(error instanceof InvalidHistory)) throw error;
         return { history: emptyUpdateHistory(), reset: true, reason: `is not in the format Ave writes (${error.message})` };

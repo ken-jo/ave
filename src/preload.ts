@@ -16,7 +16,7 @@ import {
   buildAveNamespaceExtras,
   buildAvePlatformWorld,
   buildAveWindowWorld,
-  readInitialAppearanceArg,
+  readInitialAppearance,
 } from "./preload/internal-surface.js";
 import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
 
@@ -36,7 +36,7 @@ const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
 const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
 
 // Apply saved appearance before the renderer mounts.
-const aveInitialAppearance = readInitialAppearanceArg();
+const aveInitialAppearance = readInitialAppearance();
 applyInitialAppearance(aveInitialAppearance);
 
 // ─── Composed host API surface ──────────────────────────────────────────────

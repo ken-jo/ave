@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppView } from "../McpAppView.js";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
@@ -21,6 +20,10 @@ const { createMcpAppBridgeMock } = vi.hoisted(() => ({ createMcpAppBridgeMock: v
 vi.mock("../mcp-app-bridge.js", () => ({
   createMcpAppBridge: createMcpAppBridgeMock,
 }));
+
+it("requires an applied theme provider", () => {
+  expect(() => render(<McpAppView payload={payload("missing-provider")} />)).toThrow("useTheme() must be used inside <ThemeProvider>");
+});
 
 const renderCard = (payload: McpUiPayload) =>
   render(<McpAppView payload={payload} />, { wrapper: ThemeWrapper });
