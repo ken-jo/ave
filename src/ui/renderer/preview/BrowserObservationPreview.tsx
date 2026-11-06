@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } fr
 import { useTranslation } from "../../../i18n/react.js";
 import { useBrowserObservation, useBrowserObservationPreviewStore } from "./browser-observation-bridge.js";
 import { isElementShown, type PreviewBinding } from "./browser-observation-preview.js";
+import { setHiddenWebSurfaceObserved } from "./web-surfaces.js";
 
 const VISIBILITY_POLL_MS = 250;
 const noSubscription = () => () => {};
@@ -38,11 +39,12 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
  * handle and observation target of the latest agent action for this renderer tab, runs only while shown, and keeps
  * no frame after it stops. Without an agent binding it renders `children` unchanged.
  */
-export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true }: {
+export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true, observeHidden = false }: {
   tabId: string;
   sessionId?: string;
   /** The hosting panel's visibility. A hidden panel stops the preview even before its styles settle. */
   active?: boolean;
+  observeHidden?: boolean;
   children?: ReactNode;
   probe?: (element: Element) => boolean;
 }) {
@@ -60,6 +62,11 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
   const painted = useElementShown(binding && store && active ? element : null, probe);
   const shown = active && painted;
   const state = useSyncExternalStore(store?.subscribe ?? noSubscription, () => store?.get(binding), () => undefined);
+  useEffect(() => {
+    if (!observeHidden || !shown || !binding || state?.status !== "live") return undefined;
+    setHiddenWebSurfaceObserved(tabId, true);
+    return () => setHiddenWebSurfaceObserved(tabId, false);
+  }, [observeHidden, shown, binding, state?.status, tabId]);
 
   // Stop when hidden, unmounted, rebound or disconnected; the store drops the frame with the request.
   useEffect(() => {
@@ -78,6 +85,7 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
     {frame ? <img src={frame.src} alt={t("agentBrowser.observationPreview")} draggable={false}
       className="pointer-events-none h-full w-full select-none object-contain"
       onLoad={() => store.rendered(binding, frame.frame)} onError={() => store.rendered(binding, frame.frame)} /> : children}
+    {observeHidden && frame && !state?.updating ? <span className="pointer-events-none absolute right-1 top-1 rounded bg-background px-1 text-xs">{t("agentBrowser.live")}</span> : null}
     {frame && state?.updating ? <span data-testid="browser-observation-preview-updating"
       className="absolute right-2 top-2 rounded bg-background/(--opacity-emphatic) px-1.5 py-0.5 text-[11px] text-muted-foreground">
       {t("agentBrowser.observationPreviewUpdating")}

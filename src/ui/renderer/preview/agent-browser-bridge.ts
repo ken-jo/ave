@@ -281,6 +281,14 @@ export function useBrowserControlState(): BrowserTabControlState {
   return useSyncExternalStore(subscribeControl, () => controlState, () => controlState);
 }
 
+/** Main's `agentDrivesTab` rule on the broadcast state: leased or owned by the session (or its direct child), and not paused.
+ * `agent-active` alone is only the span of one leased action; an owned tab reads `human` between actions. */
+export function agentDrivesBrowserTab(tab: BrowserTabControlState["tabs"][number], sessionId: string): boolean {
+  if (tab.mode === "human-paused") return false;
+  return tab.lease?.actor.sessionId === sessionId || tab.owner?.sessionId === sessionId
+    || tab.owner?.directParentSessionId === sessionId;
+}
+
 export function useBrowserControlUnavailable(): boolean {
   return useSyncExternalStore(subscribeControl, () => controlFailure, () => controlFailure);
 }

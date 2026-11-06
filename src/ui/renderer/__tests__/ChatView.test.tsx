@@ -12,6 +12,8 @@ import {
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
+import type { AgentObservationEvent } from "../../../shared/agent-observation.js";
+import type { AvePreviewApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 
@@ -62,6 +64,73 @@ function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHei
 }
 
 describe("ChatView", () => {
+  it.each(["close-race", "move-race", "session-switch"])("shows one hosted hidden-pane thumbnail, focuses it and clears it on %s", async (ending) => {
+    const tabId = "browser:abc12345-1";
+    const surface = { kind: "browser", tabId, ordinal: 1, url: "https://example.test/", cwd: null, projectRoot: process.cwd() };
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true,
+      sessions: [{ id: MOCK_DEFAULT_SESSION_ID, modifiedAt: new Date().toISOString(), title: "Observed conversation" },
+        { id: "other-session", modifiedAt: new Date().toISOString(), title: "Other conversation" }],
+      historyBySession: { "other-session": { messages: [] } }, workspaceRoots: [{ path: process.cwd(), isDefault: true }], settings: {
+      ...MOCK_DEFAULT_SETTINGS, system: { mainLayout: {
+        version: 2, tree: { kind: "split", axis: "row", sizes: [0.5, 0.5], children: [
+          { kind: "leaf", chatGroupId: "main" }, { kind: "leaf", chatGroupId: "group-2" } ] },
+        focusedId: "main", surfaces: { "group-2": surface }, openSurfaces: [surface], panelOpenIds: [], sideTabs: {},
+      } },
+    } });
+    const controls = api.browserTabs as unknown as { emitBrowserControl(ids: string[]): void; emitBrowserTabOp(request: unknown): void };
+    const preview = window.ave.preview;
+    const emit = vi.mocked(preview.onAgentObservation).mock.calls[0]![0] as Parameters<AvePreviewApi["onAgentObservation"]>[0];
+    const event: AgentObservationEvent = { source: "browser", actor: "agent", sessionId: "fixture-session",
+      target: { id: "hosted-target", path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
+      kind: "action", before: null, after: { action: "click", tabId: `handle-${tabId}`, rendererTabId: tabId,
+        url: "https://example.test/", title: "Example" } };
+    const row = () => container.querySelector('[data-testid="conversation-browser-observation"]');
+    act(() => { controls.emitBrowserControl([tabId]); emit([event]); });
+    expect(row()).toBeNull(); // Visible but unfocused is not hidden.
+    const owner = container.querySelector('[data-testid="pane-cell:main"]')!;
+    await waitFor(() => expect(owner.querySelector('[data-testid="pane-maximize"]')).not.toBeNull());
+    fireEvent.click(owner.querySelector('[data-testid="pane-maximize"]')!);
+    await waitFor(() => expect(row()).not.toBeNull());
+    expect(container.querySelectorAll('[data-testid="browser-observation-preview"]')).toHaveLength(1);
+    expect(row()!.querySelector('[data-testid="browser-observation-slot"]')).not.toBeNull();
+    act(() => controls.emitBrowserControl([]));
+    expect(row()).toBeNull();
+    act(() => controls.emitBrowserControl([tabId]));
+    await waitFor(() => expect(row()).not.toBeNull());
+    fireEvent.click(within(row() as HTMLElement).getByRole("button"));
+    await waitFor(() => expect(row()).toBeNull());
+    expect(container.querySelector('[data-testid="pane-cell:group-2"]')!.getAttribute("data-hidden")).toBeNull();
+    fireEvent.click(owner.querySelector('[data-testid="pane-maximize"]')!);
+    await waitFor(() => expect(row()).not.toBeNull());
+    act(() => emit([{ ...event, seq: 2, ts: 2, kind: "status", after: { code: "observation-error" } }]));
+    expect(row()).toBeNull();
+    act(() => emit([{ ...event, seq: 3, ts: 3 }]));
+    await waitFor(() => expect(row()).not.toBeNull());
+    if (ending === "session-switch") {
+      fireEvent.click(container.querySelector('[data-testid="sidebar-session-other-session"]')!);
+      await waitFor(() => expect(row()).toBeNull());
+      return;
+    }
+    if (ending === "move-race") {
+      fireEvent.click(owner.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
+      await waitFor(() => expect(owner.querySelector('[data-testid="chat-side-panel-tab-strip"]')).not.toBeNull());
+    }
+    const button = within(row() as HTMLElement).getByRole("button");
+    // Change placement after the button was drawn but before its focus handler runs.
+    button.addEventListener("click", () => {
+      if (ending === "move-race") {
+        const strip = owner.querySelector('[data-testid="chat-side-panel-tab-strip"]')!;
+        fireEvent.drop(strip, { dataTransfer: { files: [], types: ["application/x-ave-surface"], getData: () => JSON.stringify({
+          tabId, kind: "browser", from: { pane: "group-2" },
+        }) } });
+      } else controls.emitBrowserTabOp({ op: "close", tabId, requestId: "close-observed" });
+    }, { capture: true, once: true });
+    fireEvent.click(button);
+    await waitFor(() => expect(row()).toBeNull());
+    expect(container.querySelector('[data-testid="pane-cell:group-2"]')!.getAttribute("data-hidden")).toBe("true");
+
+  });
+
   it("mounts without crashing", async () => {
     const { container } = await renderApp();
     expect(container).toBeTruthy();

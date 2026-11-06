@@ -163,8 +163,11 @@ overload emits resynchronization without interrupting the native download or
 throwing through its Save callback. Observation adds no download approval or
 automatic open behavior.
 
-A live preview shows the agent's tab where that tab is open in another panel:
-the second slot of the same web surface, beneath its activity strip. It is bound
+A live preview shows the agent's hidden main browser pane in the owning
+conversation's notices row above the composer: an activity strip beside a
+128x80 thumbnail button with a live badge. Clicking focuses the still-assigned
+original pane; moved or closed tabs do nothing. Only panes hidden by the group
+layout qualify, not merely unfocused panes or side-panel tabs. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
 action for that renderer tab, and never falls back to another tab. Main admits
 only a tab that the acting session leases or owns, or whose owner's direct
@@ -191,8 +194,10 @@ beside the observation stream and never enter the daemon, its queues, event
 history, transcripts or files. The renderer keeps only the newest frame for a
 preview element while that element is shown. A mounted panel that is hidden, has
 no size, is outside the viewport or sits in a hidden document stops the preview
-and drops its frame. A hidden guest paints no frames, so its preview keeps the
-last real frame marked as updating. The agent's typing tools already refuse
+and drops its frame. Only while an agent-driven conversation thumbnail is shown,
+its hidden guest keeps painting with zero opacity, clipping, no pointer events,
+and aria-hidden and inert attributes. Otherwise hidden guests use visibility
+hidden. Revealing the pane or ending observation restores the normal attributes. The agent's typing tools already refuse
 password, card and one-time code fields, so the preview adds no secret-input
 display path.
 

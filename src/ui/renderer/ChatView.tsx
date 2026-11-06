@@ -43,8 +43,10 @@ import { forgetActiveSurface } from "./preview/active-surface.js";
 import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
-import { closeBrowserTab, registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
-import { releaseBrowserObservationSession } from "./preview/browser-observation-bridge.js";
+import { agentDrivesBrowserTab, closeBrowserTab, registerBrowserTabHost, useBrowserControlState, useBrowserControlUnavailable } from "./preview/agent-browser-bridge.js";
+import { releaseBrowserObservationSession, useHostedBrowserObservation } from "./preview/browser-observation-bridge.js";
+import { BrowserObservationLiveStrip } from "./preview/BrowserObservationLiveStrip.js";
+import { BrowserObservationPreview } from "./preview/BrowserObservationPreview.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -78,6 +80,8 @@ import { AppDraftBanner, type AppDraftBannerProps } from "./components/AppDraftB
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
+  hiddenBrowserTabIds?: ReadonlySet<string> | undefined;
+  onFocusObservedBrowser?: ((tabId: string) => void) | undefined;
   api: AveApi;
   appDraftSuggestion?: AppDraftBannerProps;
   onAsk: (
@@ -160,7 +164,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
+export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -183,6 +187,16 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     costEstimate, costBadgeClass, activeVendor,
     llmVendor, llmModel, llmRouteModalities,
   } = useChatContext();
+
+  const observation = useHostedBrowserObservation(currentSessionId ?? "");
+  const browserControl = useBrowserControlState();
+  const browserControlUnavailable = useBrowserControlUnavailable();
+  const observedTabId = observation?.kind === "action" && observation.after.action !== "tab-close"
+    && observation.target.hostSessionId === currentSessionId ? observation.after.rendererTabId : undefined;
+  const showObservedBrowser = !hidden && !!observedTabId && !!onFocusObservedBrowser
+    && hiddenBrowserTabIds?.has(observedTabId) && !browserControlUnavailable
+    && browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === observedTabId
+      && observation?.kind === "action" && tab.tabId === observation.after.tabId && agentDrivesBrowserTab(tab, observation.sessionId));
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
@@ -911,6 +925,15 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         notices={<>
+          {showObservedBrowser && observedTabId ? <div data-testid="conversation-browser-observation" className="mb-2 flex items-center gap-2">
+            <div className="min-w-0 flex-1"><BrowserObservationLiveStrip tabId={observedTabId} sessionId={currentSessionId} /></div>
+            <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => onFocusObservedBrowser?.(observedTabId)}
+              className="relative shrink-0 overflow-hidden rounded border" style={{ width: 128, height: 80 }}>
+              <BrowserObservationPreview tabId={observedTabId} sessionId={currentSessionId} active={!hidden} observeHidden>
+                <span className="text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
+              </BrowserObservationPreview>
+            </button>
+          </div> : null}
           {appDraftSuggestion ? <AppDraftBanner {...appDraftSuggestion}
             onReplace={() => { appDraftSuggestion.onReplace(); composerRef.current?.focus(); }}
             onDismiss={() => { appDraftSuggestion.onDismiss(); composerRef.current?.focus(); }}

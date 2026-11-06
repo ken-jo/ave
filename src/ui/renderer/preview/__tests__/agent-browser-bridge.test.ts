@@ -1,7 +1,8 @@
 /** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
-import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { agentDrivesBrowserTab, bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
+import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
@@ -203,5 +204,19 @@ describe("routeBrowserTabOp", () => {
     const a = host("s1", ["browser:0"]);
     routeBrowserTabOp({ requestId: "r9", op: "restore-focus", tabId: "browser:0" }, [a]);
     expect(a.calls).toEqual([]);
+  });
+});
+
+describe("agentDrivesBrowserTab", () => {
+  it("follows main's rule: owned or leased and not paused, independent of the per-action agent-active span", () => {
+    const [active] = browserControlFixture(["browser:t-1"]).tabs;
+    const [between] = browserControlFixture(["browser:t-1"], "human").tabs;
+    const [paused] = browserControlFixture(["browser:t-1"], "human-paused").tabs;
+    expect(agentDrivesBrowserTab(active!, "fixture-session")).toBe(true);
+    expect(agentDrivesBrowserTab({ ...between!, lease: null }, "fixture-session")).toBe(true);
+    expect(agentDrivesBrowserTab({ ...between!, lease: null, owner: { sessionId: "child", directParentSessionId: "parent" } }, "parent")).toBe(true);
+    expect(agentDrivesBrowserTab({ ...between!, lease: null }, "other-session")).toBe(false);
+    expect(agentDrivesBrowserTab({ ...between!, lease: null, owner: null }, "fixture-session")).toBe(false);
+    expect(agentDrivesBrowserTab(paused!, "fixture-session")).toBe(false);
   });
 });

@@ -633,6 +633,21 @@ export function App() {
     return false;
   }, [activeSurfaceOf]);
 
+  const hiddenBrowserPanes = new Map(mainSurfaces.surfaces.flatMap((surface) => {
+    const assigned = Object.entries(chatGroups.contentById).filter(([, content]) => content?.surface === surface.tabId);
+    const paneId = assigned.length === 1 ? assigned[0]?.[0] : undefined;
+    return surface.kind === "browser" && paneId && chatGroups.groups.some((group) => group.id === paneId && group.hidden)
+      ? [[surface.tabId, paneId] as const] : [];
+  }));
+  const hiddenBrowserTabIds = new Set(hiddenBrowserPanes.keys());
+  const focusObservedBrowser = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const assigned = Object.entries(groups.contentById).filter(([, content]) => content?.surface === tabId);
+    const paneId = hiddenBrowserPanes.get(tabId);
+    if (surfaces.get(tabId)?.kind === "browser" && paneId && assigned.length === 1 && assigned[0]?.[0] === paneId
+      && groups.groups.some((group) => group.id === paneId && group.hidden)) openWorkspaceSurface(tabId);
+  }, [openWorkspaceSurface, hiddenBrowserPanes]);
+
   /** 옆에 분할로 열기 (case 20) for a conversation: a new tile beside the focused one, or the tile already holding it. */
   const openSessionBeside = useCallback((sessionId: string) => {
     if (handleSessionDrop(chatGroupsRef.current.focusedId, sessionId, "right")) return;
@@ -2706,6 +2721,8 @@ export function App() {
                                       that is. `contents` while the conversation draws, so
                                       the wrapper adds no box of its own. */}
                                   <ChatGroupSession
+                                    hiddenBrowserTabIds={hiddenBrowserTabIds}
+                                    onFocusObservedBrowser={focusObservedBrowser}
                                     chatGroupId={group.id}
                                     api={api}
                                     registry={chatGroupSessions}

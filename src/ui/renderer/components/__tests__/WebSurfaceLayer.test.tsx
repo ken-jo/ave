@@ -12,6 +12,7 @@ import { FAVICON_SCHEMES, faviconSource } from "../../preview/favicon-source.js"
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
+  setHiddenWebSurfaceObserved,
   beginSurfaceDrag,
   committedWebSurfaceLocation,
   endSurfaceDrag,
@@ -228,7 +229,7 @@ describe("WebSurfaceLayer", () => {
     expect(guests()).toHaveLength(1);
   });
 
-  it("wraps the notice of a second slot in the agent's live preview, which waits until the slot is laid out", () => {
+  it("keeps a duplicate-slot notice without starting a screencast even during agent activity", () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     let emit!: (events: AgentObservationEvent[]) => void;
     const requestObservationPreview = vi.fn(async () => ({ ok: true }));
@@ -236,7 +237,7 @@ describe("WebSurfaceLayer", () => {
       acknowledgeObservation: async () => ({ ok: true }), onObservationPreview: () => () => {}, requestObservationPreview } as unknown as AvePreviewApi);
     try {
       render(<>
-        <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" sessionId="agent-session" />
+        <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" />
         <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" />
         <WebSurfaceLayer api={layerApi} />
       </>);
@@ -244,13 +245,45 @@ describe("WebSurfaceLayer", () => {
       act(() => emit([{ source: "browser", actor: "agent", sessionId: "agent-session",
         target: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", path: "browser", hostSessionId: "agent-session" }, seq: 1, ts: 1, kind: "action",
         before: null, after: { action: "click", tabId: "tab-1", rendererTabId: "browser:1", url: "https://example.com/", title: "Example" } }]));
-      const preview = screen.getByTestId("browser-observation-preview");
-      expect(preview.contains(screen.getByTestId("web-surface-mounted-elsewhere"))).toBe(true);
+      expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+      expect(screen.getByTestId("web-surface-mounted-elsewhere").getAttribute("data-owner-location")).toBe("side-panel");
       // jsdom lays nothing out, exactly like a panel that is mounted but not shown.
       expect(requestObservationPreview).not.toHaveBeenCalled();
     } finally {
       disconnect();
     }
+  });
+
+  it("paints an observed hidden guest without input or accessibility exposure and restores every attribute", () => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(<Harness where="pane" />);
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    stubBox(screen.getByTestId("pane"), { left: 0, top: 0, width: 1200, height: 800 });
+    const slot = screen.getByTestId("web-surface-slot");
+    stubBox(slot, { left: 10, top: 20, width: 300, height: 200 });
+    act(() => { placeWebSurfaces(); });
+    slot.style.visibility = "hidden";
+    try {
+      setHiddenWebSurfaceObserved("browser:1", true);
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style).toMatchObject({ visibility: "visible", opacity: "0", pointerEvents: "none", overflow: "hidden" });
+      expect(frame("browser:1").getAttribute("aria-hidden")).toBe("true");
+      expect(frame("browser:1").hasAttribute("inert")).toBe(true);
+      expect(document.activeElement).not.toBe(guests()[0]);
+      setHiddenWebSurfaceObserved("browser:1", false);
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style.visibility).toBe("hidden");
+      expect(frame("browser:1").style.opacity).toBe("");
+      expect(frame("browser:1").hasAttribute("inert")).toBe(false);
+      expect(frame("browser:1").hasAttribute("aria-hidden")).toBe(false);
+      setHiddenWebSurfaceObserved("browser:1", true);
+      slot.style.visibility = "visible";
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style.pointerEvents).toBe("auto");
+      expect(frame("browser:1").style.opacity).toBe("");
+      expect(frame("browser:1").hasAttribute("inert")).toBe(false);
+    } finally { setHiddenWebSurfaceObserved("browser:1", false); }
   });
 
   it("places the guest over the visible part of its slot and cuts occluding cards out of it", () => {
