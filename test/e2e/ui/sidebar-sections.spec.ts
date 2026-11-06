@@ -47,26 +47,44 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
         const bounds = card.getBoundingClientRect();
         return {
           cardWidth: bounds.width,
-          labels: Array.from(sections.querySelectorAll("section")).map((section) => section.getAttribute("aria-label")),
+          trees: sections.querySelectorAll('[role="tree"]').length,
+          sectionCount: sections.querySelectorAll("section").length,
           hasTabs: Boolean(sections.querySelector('[role="tablist"]')),
           overflow: sections.scrollWidth - sections.clientWidth,
-          rowsWithinCard: Array.from(sections.querySelectorAll("button")).every((row) => row.getBoundingClientRect().right <= bounds.right + 1),
+          rowsWithinCard: Array.from(sections.querySelectorAll('[role="treeitem"], button')).every((row) => row.getBoundingClientRect().right <= bounds.right + 1),
         };
       });
       expect(metrics.cardWidth).toBe(200);
-      expect(metrics.labels).toEqual(["프로젝트", "일반"]);
+      // Conversations, terminals and pages share one project tree (64ed41100) instead of labelled sections.
+      expect(metrics.trees).toBe(1);
+      expect(metrics.sectionCount).toBe(0);
       expect(metrics.hasTabs).toBe(false);
       expect(metrics.overflow).toBeLessThanOrEqual(1);
       expect(metrics.rowsWithinCard).toBe(true);
       const browserRow = page.getByTestId("sidebar-surface-browser:abc12345-1");
-      const terminalRow = page.getByTestId("sidebar-surface-terminal:abc12345-2");
-      await browserRow.focus();
-      await page.keyboard.press("Tab");
-      await expect(terminalRow).toBeFocused();
+      // The tree has a roving tabindex: arrow keys move between rows and Enter opens the focused one.
+      const browserItem = page.getByTestId("sidebar-surface-tree-browser:abc12345-1");
+      const terminalItem = page.getByTestId("sidebar-surface-tree-terminal:abc12345-2");
+      // Rows run newest use first. Each pass starts with the browser on top: the seed opens it last, and so does every pass.
+      const rowOrder = () => page.getByTestId("sidebar-tree").evaluate((tree) =>
+        Array.from(tree.querySelectorAll('[role="treeitem"]'))
+          .map((item) => item.getAttribute("data-testid"))
+          .filter((id) => id?.startsWith("sidebar-surface-tree-")));
+      await expect.poll(rowOrder).toEqual([
+        "sidebar-surface-tree-browser:abc12345-1", "sidebar-surface-tree-terminal:abc12345-2",
+      ]);
+      await browserItem.focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(terminalItem).toBeFocused();
       await page.keyboard.press("Enter");
-      await terminalRow.focus();
-      await page.keyboard.press("Shift+Tab");
-      await expect(browserRow).toBeFocused();
+      // Opening the terminal moves it to the top, so the browser is now the row below it.
+      await expect.poll(rowOrder).toEqual([
+        "sidebar-surface-tree-terminal:abc12345-2", "sidebar-surface-tree-browser:abc12345-1",
+      ]);
+      await terminalItem.focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(browserItem).toBeFocused();
+      // Space opens the focused row as Enter does.
       await page.keyboard.press("Space");
       await expect(page.getByTestId("chat-side-panel-motion")).toHaveAttribute("data-panel-mode", width === 1100 ? "docked" : "overlay");
       await expect(page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();

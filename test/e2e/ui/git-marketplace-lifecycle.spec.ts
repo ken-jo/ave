@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
@@ -591,7 +591,7 @@ test.describe('git marketplace folder source (design §18.4)', () => {
   };
 
   test.beforeAll(() => {
-    // tmpdir is reached through a link on macOS (/var → /private/var): the preview says where it resolved.
+    // tmpdir may be reached through a link (macOS /var → /private/var): the preview then says where it resolved.
     parent = mkdtempSync(join(tmpdir(), 'ave-e2e-marketplace-folder-'));
     folder = join(parent, 'team-market');
     write({
@@ -624,7 +624,11 @@ test.describe('git marketplace folder source (design §18.4)', () => {
     await expect(settings.getByTestId('git-marketplace:add:error')).toHaveCount(0);
     await expect(settings.getByTestId('git-marketplace:add:folder-pickup')).toHaveText(t('gitMarketplace.add.folderPickup'));
     await expect(settings.getByTestId('git-marketplace:add:badge:local-folder')).toHaveText(t('gitMarketplace.badge.localFolder'));
-    if (process.platform === 'darwin') await expect(settings.getByTestId('git-marketplace:add:resolved-from')).toContainText(folder);
+    // The preview names the chosen path only when it resolved elsewhere (a linked tmpdir such as macOS /var → /private/var);
+    // a run whose TMPDIR is already a real path sees no such line.
+    const resolvedFrom = settings.getByTestId('git-marketplace:add:resolved-from');
+    if (realpathSync(folder) !== folder) await expect(resolvedFrom).toContainText(folder);
+    else await expect(resolvedFrom).toHaveCount(0);
     await settings.getByTestId('git-marketplace:add:id').fill(FOLDER_ID);
     await settings.getByTestId('git-marketplace:add:confirm').click();
     await expect(settings.getByTestId('git-marketplace:add')).toHaveCount(0, { timeout: 30_000 });

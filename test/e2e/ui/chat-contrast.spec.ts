@@ -92,7 +92,11 @@ test.describe('Chat surface contrast — WCAG AA across all shipped schemes', ()
 
         bubble.appendChild(body);
         host.appendChild(bubble);
-        document.body.appendChild(host);
+        // Assistant text renders inside the conversation tile. On macOS the window ground (body) is clear over the window
+        // material (html[data-glass], e7fbaf70d) while the tile stays opaque, so the probe measures against the tile.
+        const tile = document.querySelector('[data-testid="pane"]');
+        if (!tile) throw new Error('conversation tile missing');
+        tile.appendChild(host);
       });
 
       const probe = await mainWindow.evaluate(() => {
