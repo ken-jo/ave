@@ -3266,7 +3266,8 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       }
 
     };
-    if (!isPowerShellStartupPinned()) {
+    const startupPinned = isPowerShellStartupPinned(hostShellPlan.platform, hostShellPlan);
+    if (!startupPinned) {
       try { authorizeHostSpawn(); } catch (error) {
         return { output: `PowerShell spawn failed: ${(error as Error).message}`, isError: true, metadata: { sandboxed: false, isolation: "none" } };
       }
@@ -3275,7 +3276,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     try {
       const parsed = hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc"
         ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds)
-        : await parsePowerShellAst(input.command, isPowerShellStartupPinned() || hostSpawnAuthorization !== undefined);
+        : await parsePowerShellAst(input.command, startupPinned || hostSpawnAuthorization !== undefined);
       if ("failure" in parsed) return parsed.failure;
       commandAst = parsed;
     } catch (error) {
@@ -3308,7 +3309,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     // command/cwd/tool-use tuple and is consumed before spawn.
     // A pinned parser precedes permit consumption. An unpinned host parser may
     // start only after the exact one-shot authority was verified and consumed.
-    if (isPowerShellStartupPinned()) {
+    if (startupPinned) {
       try { authorizeHostSpawn(); } catch (error) {
         return { output: `PowerShell spawn failed: ${(error as Error).message}`, isError: true, metadata: { sandboxed: false, isolation: "none" } };
       }
