@@ -73,7 +73,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       },
       powerMonitor: adaptPowerMonitor(powerMonitor),
       createAudioCaptureSurface: () => new ElectronAudioCaptureSurface(),
-      createFloatingDockSurface: () => new ElectronFloatingDockSurface(hostDockThemeSource),
+      createFloatingDockSurface: (settings) => new ElectronFloatingDockSurface(hostDockThemeSource, settings),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       pickBrowserUploadFiles: async (request) => {
         const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());

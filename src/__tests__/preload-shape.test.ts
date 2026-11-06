@@ -824,18 +824,16 @@ describe("floating dock preload world shape lock", () => {
         "onMount": "function",
         "onResize": "function",
         "onRetitle": "function",
-        "onTerminalFontFamilyChanged": "function",
         "onTheme": "function",
         "onUnmount": "function",
         "readAuthStatus": "function",
-        "readTerminalFontFamily": "function",
         "reportSlotGone": "function",
         "requestClose": "function",
       }
     `);
 
 
-    // The dock exposes only its font read and subscription, with no settings or theme writes.
+    // The dock consumes appearance from main and exposes no settings reads or writes.
     expect(deepShape(exposed.get("aveApi"))).toEqual({
       openExternalUrl: "function",
     });
@@ -844,22 +842,11 @@ describe("floating dock preload world shape lock", () => {
     const dispose = dock.onTheme(handler);
     const listener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:dock:theme")![1];
     const theme = { bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
-    listener({ sender: "not forwarded" }, theme);
-    expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
+    const appearance = { theme, terminalFontFamily: "Dock Mono" };
+    listener({ sender: "not forwarded" }, appearance);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(appearance);
     dispose();
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:dock:theme", listener);
 
-    mockInvoke.mockResolvedValueOnce({ appearance: { terminalFont: { family: "Dock Mono" } }, privateSetting: "not exposed" });
-    await expect(dock.readTerminalFontFamily()).resolves.toBe("Dock Mono");
-    expect(mockInvoke).toHaveBeenLastCalledWith("ave:settings:get");
-    const fontChanged = vi.fn();
-    const disposeFont = dock.onTerminalFontFamilyChanged(fontChanged);
-    const fontListener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:settings:updated")![1];
-    fontListener({}, { appearance: { terminalFont: { family: "Updated Mono" } } });
-    expect(fontChanged).toHaveBeenCalledExactlyOnceWith("Updated Mono");
-    disposeFont();
-    expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:updated", fontListener);
-    mockInvoke.mockResolvedValueOnce({ appearance: {} });
-    await expect(dock.readTerminalFontFamily()).rejects.toThrow("Terminal font family is required");
   });
 });

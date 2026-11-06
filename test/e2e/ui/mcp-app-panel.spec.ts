@@ -87,7 +87,7 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       app.on('web-contents-created', (_, contents) => {
         const send = contents.send.bind(contents);
         contents.send = (channel, ...args) => {
-          if (channel === 'ave:dock:theme') probe.sends.push({ phase: probe.phase, theme: args[0], cache: read() });
+          if (channel === 'ave:dock:theme') probe.sends.push({ phase: probe.phase, theme: args[0].theme, cache: read() });
           send(channel, ...args);
         };
       });
@@ -106,6 +106,21 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       if (!guest) throw new Error('App guest not found');
       return guest.executeJavaScript("document.querySelector('iframe').contentWindow.fixtureHostContexts");
     });
+    const readGuestFont = () => app.evaluate(async ({ webContents }) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
+      if (!guest) throw new Error('App guest not found');
+      return { id: guest.id, ...await guest.executeJavaScript("(() => { const frame = document.querySelector('iframe'); return { contexts: frame.contentWindow.fixtureHostContexts, font: frame.contentWindow.getComputedStyle(frame.contentDocument.documentElement).getPropertyValue('--font-mono') }; })()") };
+    });
+    const fontBefore = await readGuestFont();
+    const initialFont = fontBefore.font;
+    expect(initialFont).toBe(fontBefore.contexts.at(-1).styles.variables['--font-mono']);
+    const changedFont = initialFont === 'Changed Dock Mono' ? 'Other Dock Mono' : 'Changed Dock Mono';
+    await page.evaluate(async (family) => {
+      await window.aveApi.updateSettings({ appearance: { terminalFont: { family } } });
+    }, changedFont);
+    await expect.poll(async () => (await readGuestFont()).font).toBe(changedFont);
+    const fontAfter = await readGuestFont();
+    expect(fontAfter.id).toBe(fontBefore.id);
     const evidence = await app.evaluate(() => {
       const probe = (globalThis as unknown as { dockThemeProbe: Probe }).dockThemeProbe;
       probe.phase = 'after';
@@ -114,7 +129,7 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       return { samples: probe.samples, sends: probe.sends };
     });
     const evidencePath = testInfo.outputPath('dock-theme-ownership.json');
-    writeFileSync(evidencePath, JSON.stringify({ ...evidence, applied, contexts, aveHome, userDataDir }, null, 2));
+    writeFileSync(evidencePath, JSON.stringify({ ...evidence, applied, contexts, fontBefore, fontAfter, aveHome, userDataDir }, null, 2));
     await testInfo.attach('dock-theme-ownership', { path: evidencePath, contentType: 'application/json' });
     expect(new Set(evidence.samples.map((sample) => sample.phase))).toEqual(new Set(['before', 'mounting', 'after']));
     expect(evidence.samples.every((sample) => sample.cache?.bundleId === 'nord')).toBe(true);

@@ -16,20 +16,13 @@ function element(id: string): HTMLElement {
 }
 const roots = new Map<string, Root>();
 const panels = new Map<string, { panelId: string; payload: McpUiPayload; authStatusTool?: string }>();
-let hostTheme: { shell: "light" | "dark"; tokens: Record<string, string> } | undefined;
-let terminalFontFamily: string | undefined;
-let terminalFontRequested = false;
+let appearance: HostAppearance | undefined;
 
 function renderPanels(): void {
-  if (!hostTheme || terminalFontFamily === undefined) return;
-  const appearance = { ...hostTheme, terminalFontFamily };
+  if (!appearance) return;
   for (const [id, root] of roots) root.render(<DockAppContent {...panels.get(id)!} appearance={appearance} />);
 }
 
-dock.onTerminalFontFamilyChanged((family) => {
-  terminalFontFamily = family;
-  renderPanels();
-});
 const slots = element("slots");
 dock.onActivity((value) => {
   const activity = value as DockActivity | null;
@@ -44,8 +37,8 @@ dock.onActivity((value) => {
 });
 element("close").addEventListener("click", () => dock.requestClose());
 dock.onTheme((value) => {
-  const theme = value as { shell: "light" | "dark"; tokens: Record<string, string> };
-  hostTheme = theme;
+  const { theme, terminalFontFamily } = value;
+  appearance = { ...theme, terminalFontFamily };
   renderPanels();
   const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
   for (const [name, key] of Object.entries(pick)) {
@@ -70,15 +63,6 @@ dock.onMount((value) => {
   const root = createRoot(body);
   roots.set(slot.panelId, root);
   panels.set(slot.panelId, { panelId: slot.panelId, payload: slot.payload, authStatusTool: slot.authStatusTool });
-  if (!terminalFontRequested && terminalFontFamily === undefined) {
-    terminalFontRequested = true;
-    void dock.readTerminalFontFamily().then((family) => {
-      // A newer settings event owns the font if it arrived during the initial read.
-      if (terminalFontFamily !== undefined) return;
-      terminalFontFamily = family;
-      renderPanels();
-    }).catch((error: unknown) => console.error("Dock terminal font could not be loaded", error));
-  }
   renderPanels();
 });
 dock.onUnmount((value) => {

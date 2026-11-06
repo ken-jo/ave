@@ -2,10 +2,12 @@
 // The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { SettingsService } from "../../data/settings-store.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { emitEvent } from "../../boot/types.js";
-import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
+import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
   windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[]; attach(prefs: Record<string, unknown>, params: Record<string, string>): boolean; prefs: Record<string, unknown> }>,
@@ -61,6 +63,9 @@ vi.mock("electron", () => {
 });
 vi.mock("../main-paths.js", () => ({ runtimeAssetPath: (name: string) => `/assets/${name}` }));
 
+const settingsHome = useTempDirs("dock-settings-");
+const settings = { get: () => ({ terminalFont: { family: "Dock Mono" } }), onChanged: () => () => {} } as unknown as Pick<SettingsService, "get" | "onChanged">;
+
 const THEME = { bundleId: "harbor", shell: "dark", tokens: { "--ave-fg": "hsl(0, 0%, 100%)", "--ave-bg": "hsl(210, 40%, 12%)", "--ave-border": "hsl(210, 20%, 30%)", "--ave-accent": "hsl(200, 80%, 50%)" } };
 
 afterEach(() => {
@@ -81,12 +86,12 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     const dock = new ElectronFloatingDockSurface({
       onThemeChanged: (next) => { listener = next; return () => {}; },
       currentTheme: () => current,
-    });
+    }, settings);
     // As the host does: the cache holds a theme before the broadcast carries it.
     return { dock, emit: (theme: unknown) => { current = theme; listener!(theme); } };
   }
   const themesSent = (win: (typeof windows)[number]) =>
-    win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).map(([, theme]) => theme);
+    win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).map(([, appearance]) => appearance.theme);
 
   it("sends the theme current when the window opens, then each later one, in order once it is ready", async () => {
     const { dock, emit } = await surface(THEME);
@@ -119,6 +124,30 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     expect(themesSent(second)).toEqual([NEXT]);
   });
 
+  it("sends a real durable terminal font change to the dock and replays it on attach", async () => {
+    const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
+    const service = new SettingsService({ userDataPath: settingsHome(), encryption: {
+      isAsyncEncryptionAvailable: async () => false, getSelectedStorageBackend: () => "gnome_libsecret",
+      encryptStringAsync: vi.fn(), decryptStringAsync: vi.fn(),
+    } });
+    recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, service);
+    dock.show(BOUNDS);
+    const win = windows[0]!;
+    win.fire("ready-to-show");
+    await service.patch({ appearance: { terminalFont: { family: "Changed Mono" } } });
+    expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+    });
+    const sent = win.send.mock.calls.length;
+    await service.patch({ appearance: { terminalFont: { size: 18 } } });
+    expect(win.send).toHaveBeenCalledTimes(sent);
+    dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
+    expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+    }]);
+  });
+
   it("sends no opening theme before the host has published one", async () => {
     const { dock } = await surface(null);
     dock.show(BOUNDS);
@@ -132,7 +161,7 @@ describe("the dock window's preload, sandbox and guests", () => {
     const { ElectronFloatingDockSurface } = await import("../floating-dock-surface.js");
     const { PRELOAD_BUNDLES } = await import("../../shared/preload-bundles.js");
     const { mcpAppPartitionName, MCP_APP_PARTITION_PREFIX } = await import("../../shared/mcp-app-partition.js");
-    new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }).show(BOUNDS);
+    new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }, settings).show(BOUNDS);
     const win = windows[0]!;
     expect(win.prefs).toMatchObject({ preload: `/assets/${PRELOAD_BUNDLES.floatingDockPreload.file}`, sandbox: PRELOAD_BUNDLES.floatingDockPreload.sandbox });
     expect(win.prefs.sandbox).toBe(true);
@@ -168,7 +197,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   it("opens in the theme published before it, repaints for each later one, and asks main for nothing", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
-    const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
     publish({ bundleId: "github-dark", shell: "dark", tokens: THEME.tokens });
 
     dock.show(BOUNDS);
@@ -185,7 +214,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
-    const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
     dock.show(BOUNDS);
     await openWindow(windows[0]!.args);
     windows[0]!.fire("ready-to-show");

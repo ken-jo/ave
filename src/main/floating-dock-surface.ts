@@ -1,4 +1,5 @@
 // The host fixes dock window geometry and privileges; app panels run in per-server sandboxes.
+import type { SettingsService } from "../data/settings-store.js";
 import { BrowserWindow, ipcMain, screen } from "electron";
 import { runtimeAssetPath } from "./main-paths.js";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -41,10 +42,17 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #ready = false;
   readonly #currentTheme: () => unknown;
 
-  constructor(deps: ElectronFloatingDockSurfaceDeps) {
+  constructor(deps: ElectronFloatingDockSurfaceDeps, private readonly settings: Pick<SettingsService, "get" | "onChanged">) {
     this.#currentTheme = deps.currentTheme;
     // The surface lives as long as the app, so this subscription is never undone. No window: nothing to repaint, and the next one is sent the current theme on opening.
-    deps.onThemeChanged((theme) => this.#post(CHANNELS.dock.theme, theme));
+    deps.onThemeChanged((theme) => this.#sendAppearance(theme));
+    let terminalFontFamily = settings.get("appearance").terminalFont.family;
+    settings.onChanged("appearance", () => {
+      const next = settings.get("appearance").terminalFont.family;
+      if (next === terminalFontFamily) return;
+      terminalFontFamily = next;
+      this.#sendAppearance(this.#currentTheme());
+    });
     // Register IPC once per surface instance and validate this dock’s sender so reopen cannot stack handlers or permit cross-window control.
     ipcMain.on(CHANNELS.dock.requestClose, (event) => {
       if (!this.ownsSender(event.sender.id)) return;
@@ -111,7 +119,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     });
     // The theme current now goes first, queued with anything later until the window is ready, so the chrome paints in it from the first frame it shows.
     const opening = this.#currentTheme();
-    if (opening !== null) this.#post(CHANNELS.dock.theme, opening);
+    this.#sendAppearance(opening);
 
     // Above full-screen applications where the platform supports it. The "floating" level is ignored elsewhere and `alwaysOnTop` still applies.
     try {
@@ -164,6 +172,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   }
 
   mountSlot(panelId: string, surface: ResolvedFloatingSurface, height: number): void {
+    this.#sendAppearance(this.#currentTheme());
     this.#post(CHANNELS.dock.mount, {
       panelId,
       pluginId: surface.pluginId,
@@ -194,6 +203,11 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   ownsSender(webContentsId: number): boolean {
     const win = this.#window;
     return !!win && !win.isDestroyed() && win.webContents.id === webContentsId;
+  }
+
+  #sendAppearance(theme: unknown): void {
+    if (theme === null) return;
+    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: this.settings.get("appearance").terminalFont.family });
   }
 
   #post(channel: string, payload: unknown): void {

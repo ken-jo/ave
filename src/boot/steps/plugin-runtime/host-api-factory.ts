@@ -168,10 +168,10 @@ function audioCaptureService(host: BootHost): AudioCaptureService {
 
 /** Create one dock lazily and resolve its surface through the runtime getter after binding. */
 let sharedFloatingDock: FloatingDock | null = null;
-function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): FloatingDock {
+function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime, settings: SettingsService): FloatingDock {
   if (!sharedFloatingDock) {
     const dock = new FloatingDock(
-      requireDesktopHost(host).createFloatingDockSurface(),
+      requireDesktopHost(host).createFloatingDockSurface(settings),
       (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
     );
     // Locale changes rerun full surface lookup, including entry containment checks and refusal audits.
@@ -998,7 +998,7 @@ export function createHostApiFactory(
         audioCaptureService(deps.host).start(request),
       /** The host owns dock placement and flags; plugins may attach only their own declared surface at a clamped height. */
       attachFloatingPanel: async (request: AttachFloatingPanelRequest) =>
-        floatingDock(deps.host, deps.getPluginRuntime).attach(pluginId, request),
+        floatingDock(deps.host, deps.getPluginRuntime, settingsService).attach(pluginId, request),
       openAuthWindow: (async (opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean }) => {
         const safeUrlForLog = (() => {
           try {

@@ -30,7 +30,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   notificationOptions: Partial<NotificationServiceOptions>;
   powerMonitor: PowerMonitorLike;
   createAudioCaptureSurface(): AudioCaptureSurface;
-  createFloatingDockSurface(): FloatingDockSurface;
+  createFloatingDockSurface(settings: import("../data/settings-store.js").SettingsService): FloatingDockSurface;
   pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
   pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
   browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;

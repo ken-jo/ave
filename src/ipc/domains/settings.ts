@@ -770,8 +770,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return legacyAcpActionResult(providerValue, result);
   };
 
-  // read-only; no sender guard needed
-  ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService));
+  ipcMain.handle(CHANNELS.settings.get, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
+    return rendererSettingsSnapshot(settingsService);
+  });
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.

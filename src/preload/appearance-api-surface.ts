@@ -2,7 +2,7 @@ import { ipcRenderer } from "electron";
 import { CHANNELS, SETTINGS } from "../contract/app-contract.js";
 import type { AveApi } from "../ui/renderer/types.js";
 
-/** Shared appearance operations for app and dock renderers, safe to bundle into either sandboxed preload. */
+/** Appearance operations for the main renderer, safe to bundle into its sandboxed preload. */
 export const appearanceApiSurface = {
   getSettings: async () => ipcRenderer.invoke(CHANNELS.settings.get),
   updateSettings: async (partial: Parameters<AveApi["updateSettings"]>[0]) => ipcRenderer.invoke(CHANNELS.settings.update, partial),

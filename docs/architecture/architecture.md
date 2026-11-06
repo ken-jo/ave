@@ -778,8 +778,8 @@ Every surface that copies theme values follows the theme the host renderer has
 applied, including a theme updated in place under the same id. Extension views
 receive standard MCP Apps host-context updates, including theme, locale and
 `styles.variables`; there is no parallel plugin view theme bridge. Main sends
-the floating dock's host chrome the cached theme when its window opens and
-forwards subsequent theme updates on `ave:dock:theme`. MCP app views build their host context
+the floating dock's host chrome a `{ theme, terminalFontFamily }` snapshot on
+mount and forwards theme and terminal font changes on `ave:dock:theme`. MCP app views build their host context
 from the theme already written to `:root` (`appliedTheme` / `appliedRevision`),
 so an app never receives one theme's shell with another theme's tokens. An open
 HTML preview is a snapshot: it keeps the theme it was created with, and the next

@@ -44,6 +44,10 @@ const VIEW_FIXTURE_HTML = `<!doctype html><html><body>
 let nextId = 0;
 const pending = new Map();
 window.fixtureHostContexts = [];
+function applyHostContext(context) {
+  window.fixtureHostContexts.push(context);
+  for (const [name, value] of Object.entries(context.styles?.variables ?? {})) document.documentElement.style.setProperty(name, value);
+}
 function request(method, params) {
   const id = ++nextId;
   parent.postMessage({jsonrpc:'2.0', id, method, params}, '*');
@@ -52,14 +56,14 @@ function request(method, params) {
 addEventListener('message', async (event) => {
   if (event.source !== parent) return;
   const frame = event.data;
-  if (frame.method === 'ui/notifications/host-context-changed') window.fixtureHostContexts.push(frame.params);
+  if (frame.method === 'ui/notifications/host-context-changed') applyHostContext(frame.params);
   if (frame.id && pending.has(frame.id)) {
     const waiter = pending.get(frame.id); pending.delete(frame.id);
     frame.error ? waiter.reject(frame.error) : waiter.resolve(frame.result);
   }
 });
 const result = await request('ui/initialize', {protocolVersion:'2026-01-26', appInfo:{name:'viewfixture', version:'1.0.0'}, appCapabilities:{}});
-window.fixtureHostContexts.push(result.hostContext);
+applyHostContext(result.hostContext);
 parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}}, '*');
 document.getElementById('status').textContent = 'Standard app ready';
 document.getElementById('draft').onclick = async () => {

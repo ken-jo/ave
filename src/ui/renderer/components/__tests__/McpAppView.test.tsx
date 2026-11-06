@@ -283,7 +283,8 @@ describe("McpAppView host theme snapshots", () => {
       tokens: { ...schemeToHostTokens(resolveTheme(requireScheme("nord"))), "not-a-token": "injected" },
     };
     const appearance = { ...hostTheme, terminalFontFamily: "Dock Mono, monospace" };
-    render(<HostAppearanceProvider value={appearance}><McpAppView payload={payload("dock")} /></HostAppearanceProvider>);
+    const dockPayload = payload("dock");
+    const view = render(<HostAppearanceProvider value={appearance}><McpAppView payload={dockPayload} /></HostAppearanceProvider>);
     await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
     const context = createMcpAppBridgeMock.mock.calls[0]![3] as {
       theme: string;
@@ -292,6 +293,12 @@ describe("McpAppView host theme snapshots", () => {
     expect(context.theme).toBe("dark");
     expect(context.styles.variables["--color-background-primary"]).toBe(hostTheme.tokens["--ave-bg"]);
     expect(context.styles.variables["--font-mono"]).toBe("Dock Mono, monospace");
+    view.rerender(<HostAppearanceProvider value={{ ...appearance, terminalFontFamily: "Updated Dock Mono" }}><McpAppView payload={dockPayload} /></HostAppearanceProvider>);
+    const bridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge;
+    await waitFor(() => expect(bridge.setHostContext).toHaveBeenLastCalledWith(expect.objectContaining({
+      styles: expect.objectContaining({ variables: expect.objectContaining({ "--font-mono": "Updated Dock Mono" }) }),
+    })));
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
     expect(Object.keys(context.styles.variables).some((key) => key.startsWith("--ave-") || key === "not-a-token")).toBe(false);
   });
 
