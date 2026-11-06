@@ -443,6 +443,8 @@ export interface ApprovalPolicyMutation {
 }
 
 interface PendingEntry {
+  /** Unattributed cards stay with their recipient until that window leaves. */
+  unattributedOwner?: WebContents;
   exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
@@ -649,12 +651,14 @@ function verifyApprovalIntegrity(
 
 // ApprovalGate
 
-// Resolves explicit host registrations for each session, terminal or unattributed host role. Re-evaluated for delivery, listing and answers; a missing registration has no approval surface.
-export type ApprovalSurfaceResolver = (
+// Resolve registered session/terminal owners and the initial unattributed recipient. Release observation lets a parked unattributed card hand off only when its recipient leaves.
+export type ApprovalSurfaceResolver = ((
   sessionId: string | undefined,
   // Set for a workspace terminal tab's ask: the window that owns the tab, or null.
   terminalTabId?: string,
-) => WebContents | null;
+) => WebContents | null) & {
+  observeOwnerReleased?: (listener: (owner: WebContents) => void) => () => void;
+};
 
 /** Thrown when a Tailnet-controller approval reaches a synchronous answer path; such answers must use the fresh-identity methods. */
 export class ApprovalFreshIdentityRequiredError extends Error {
@@ -1265,11 +1269,17 @@ export class ApprovalGate {
     const waitForHuman = (): Promise<ApprovalDecision> => new Promise((resolve, reject) => {
       // One teardown authority for every way this request can end. `settle` is what the pending entry stores, so the renderer answer, the timeout, host cancellation and the shutdown sweep each detach the abort listener without any of them having to know it exists. Otherwise a turn that asks a hundred times leaves a hundred live listeners on one signal, and `AbortSignal` is an `EventTarget`, which starts warning about exactly that at eleven.
       let detachAbortListener: (() => void) | undefined;
+      let detachOwnerRelease: (() => void) | undefined;
+      let detachOwnerDestroyed: (() => void) | undefined;
       // The renderer the card was sent to; the settle announcement reaches it and whichever renderer shows the session by then.
       let sentTo: WebContents | null = null;
       const settle = (decision: ApprovalDecision): void => {
         detachAbortListener?.();
         detachAbortListener = undefined;
+        detachOwnerRelease?.();
+        detachOwnerRelease = undefined;
+        detachOwnerDestroyed?.();
+        detachOwnerDestroyed = undefined;
         // Every way a PARKED request ends passes through here — desk answer, remote answer, timeout, turn abort, cancel, shutdown sweep — so this is the one place an observer's card — and the renderer's — can be told the request is no longer answerable.
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
@@ -1474,6 +1484,37 @@ export class ApprovalGate {
           throw new Error("no approval surface");
         }
         if (this.lifetime.signal.aborted || !this.pending.has(fullReq.id)) return;
+        if (fullReq.sessionId === undefined && fullReq.egressHost?.terminalTabId === undefined && parked) {
+          const denyUnavailable = (): void => {
+            if (this.pending.get(fullReq.id) !== parked) return;
+            clearTimeout(parked.timer);
+            this.pending.delete(fullReq.id);
+            this.auditLogger?.log({ timestamp: new Date().toISOString(), sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID,
+              type: "approval", output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} no successor approval surface → deny-once` });
+            settle(markHostApprovalRejectedDecision({ requestId: fullReq.id, choice: "deny-once", rememberPattern: NO_APPROVER_MESSAGE }));
+          };
+          const handoff = (previous: WebContents): void => {
+            if (this.pending.get(fullReq.id) !== parked || parked.unattributedOwner !== previous) return;
+            try {
+              const next = this.liveSurfaceFor(undefined);
+              if (!next || next === previous) { denyUnavailable(); return; }
+              bindOwner(next);
+              this.announceSettledToRenderer(fullReq.id, [previous]);
+              sentTo = next;
+              next.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
+            } catch { denyUnavailable(); }
+          };
+          const bindOwner = (owner: WebContents): void => {
+            detachOwnerDestroyed?.();
+            parked.unattributedOwner = owner;
+            // Closed-window registration updates finish before destruction resolves its successor.
+            const onDestroyed = (): void => { queueMicrotask(() => handoff(owner)); };
+            owner.once?.("destroyed", onDestroyed);
+            detachOwnerDestroyed = () => { owner.off?.("destroyed", onDestroyed); };
+          };
+          bindOwner(surface);
+          detachOwnerRelease = this.resolveSurface?.observeOwnerReleased?.(handoff);
+        }
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
@@ -1565,11 +1606,10 @@ export class ApprovalGate {
     return entry.egressTerminalTabId === undefined || this.isRendererOwner(entry, contents);
   }
 
-  // Resolve on every read or answer: a pending card follows its conversation
-  // or terminal when it moves, rather than retaining the original renderer.
+  // Conversation and terminal cards follow their live registration; unattributed cards retain their bound recipient.
   private isRendererOwner(entry: PendingEntry, contents: WebContents | undefined): boolean {
     if (contents === undefined || contents.isDestroyed()) return false;
-    return this.liveSurfaceFor(entry.sessionId, entry.egressTerminalTabId) === contents;
+    return (entry.unattributedOwner ?? this.liveSurfaceFor(entry.sessionId, entry.egressTerminalTabId)) === contents;
   }
 
   // Request-bound renderer operations (answers, remembered choices and scope

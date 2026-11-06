@@ -20,7 +20,7 @@ describe("assembleAppServices rationale shutdown", () => {
       memoryMaintenanceCoordinator: { stop: mark("memory-maintenance") },
       idleScheduler: { stop: mark("idle") },
       routinesScheduler: { stop: mark("routines") },
-      dueSoonTimer: undefined,
+      stopWorkBoardDueSoon: undefined,
       conversationLoop: { abortCurrentTurn: mark("main-abort") },
       sideChatConversationLoop: { abortCurrentTurn: mark("side-abort") },
       paneChatLoops: {

@@ -8,9 +8,7 @@ import { emitEvent, onEvent } from "../../types.js";
 import { revocationRegistry } from "../../../plugins/revocation/revocation-registry.js";
 import type { AlertSettings, RetiredPluginConfigRecord } from "../../../shared/alerts-types.js";
 import { ALERTS, OVERLAY_V1 } from "../../../shared/ipc-channels.js";
-import { scanAndEmitDueSoon, DUE_SOON_EVENT } from "../../../work-board/due-soon.js";
-import { createDirStorage } from "../../../work-board/storage.js";
-import { openFeatureNamespace } from "../../../main/storage/feature-namespace.js";
+import { scanAndRaiseDueSoon } from "../../../work-board/due-soon.js";
 import type { WorkItemResolved } from "../../../shared/work-board-types.js";
 import type { BootContext } from "../../context.js";
 import { withAllPluginInstallLocks, withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
@@ -363,7 +361,7 @@ describe("setupAlerts", () => {
     await ctx.alertsService.flush();
   });
 
-  it("delivers the host deadline through the pipeline with no plugin and still emits the board event", async () => {
+  it("delivers the host deadline through the pipeline with no plugin after the user enables it", async () => {
     const { ctx, send, touchSessionTranscript } = context();
     disposers.push(await setupAlerts(ctx));
     const now = Date.now();
@@ -373,15 +371,11 @@ describe("setupAlerts", () => {
       created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString(), due_at: dueAt,
     };
     const store = { list: async () => ({ status: "ok" as const, items: [item] }) };
-    const storage = createDirStorage(openFeatureNamespace("work-board").dir);
-    const emit = vi.fn();
     const raise = (input: Parameters<typeof ctx.alertsService.raise>[1]) => ctx.alertsService.raise("@host", input);
-    await scanAndEmitDueSoon(store, storage, emit, now, raise);
+    await scanAndRaiseDueSoon(store, now, raise);
     expect(ctx.alertsService.listOpen()).toEqual([]);
-    expect(emit).toHaveBeenCalledWith(DUE_SOON_EVENT, { itemId: 7, title: "Finish report", notifiedAt: new Date(now).toISOString() });
     await ctx.alertsService.setKind("@host:due-soon", { enabled: true });
-    await scanAndEmitDueSoon(store, storage, emit, now + 1, raise);
-    expect(emit).toHaveBeenCalledTimes(1);
+    await scanAndRaiseDueSoon(store, now + 1, raise);
     expect(ctx.alertsService.listOpen()[0]?.source.pluginId).toBe("@host");
     expect(send).toHaveBeenCalledWith(ALERTS.kindsChanged);
     expect(send).toHaveBeenCalledWith(OVERLAY_V1.show, expect.objectContaining({ source: expect.objectContaining({ pluginId: "@host" }) }));

@@ -4069,3 +4069,22 @@ describe("owner-away approval wait settings", () => {
     } finally { await cleanupTmpDir(userDataPath); }
   });
 });
+
+describe("legacy onboarding completion evidence", () => {
+  it("omits completion for fresh settings and preserves legacy evidence across unrelated saves", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "settings-tour-import-"));
+    try {
+      const options = { encryption: mockedElectron.safeStorage, userDataPath };
+      expect(new SettingsService(options).get("features")).not.toHaveProperty("onboardingCompleted");
+      const path = join(userDataPath, "ave-settings.json");
+      writeFileSync(path, currentSettingsJson({ features: { onboardingCompleted: true } }));
+      const service = new SettingsService(options);
+      expect(service.get("features")?.onboardingCompleted).toBe(true);
+      await service.patch({ features: { idleMemoryConsolidation: true } });
+      expect(JSON.parse(readFileSync(path, "utf8")).features.onboardingCompleted).toBe(true);
+      expect(new SettingsService(options).get("features")?.onboardingCompleted).toBe(true);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});

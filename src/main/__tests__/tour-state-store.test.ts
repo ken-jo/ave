@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -48,7 +48,7 @@ describe("tour-state-store", () => {
     expect(state.dismissedAt).toBeNull();
   });
 
-  it("falls back to default on corrupt JSON (read-never-throws)", async () => {
+  it("starts empty after quarantining corrupt JSON", async () => {
     await writeTourState(DEFAULT_TOUR_STATE);
     const path = join(tempDir, "onboarding", "tour-state.json");
     writeFileSync(path, "{ not valid json", "utf-8");
@@ -114,4 +114,55 @@ describe("tour-state-store", () => {
       /invalid-scenario-id/,
     );
   });
+  it("imports legacy completion once while preserving other state", async () => {
+    const previous = tourState({
+      lastSeenScenario: "another-tour",
+      completedScenarios: ["another-tour"],
+      dismissedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await writeTourState(previous);
+    const imported = await readTourState(true);
+    expect(imported).toEqual({
+      ...previous,
+      completedScenarios: ["another-tour", "first-boot-essentials"],
+    });
+    expect(await readTourState()).toEqual(imported);
+    const path = join(tempDir, "onboarding", "tour-state.json");
+    utimesSync(path, new Date(0), new Date(0));
+    const before = statSync(path).mtimeMs;
+    expect(await readTourState(true)).toEqual(imported);
+    expect(statSync(path).mtimeMs).toBe(before);
+  });
+
+  it("does not create completion for a false legacy flag", async () => {
+    expect(await readTourState(false)).toEqual(DEFAULT_TOUR_STATE);
+    expect(() => statSync(join(tempDir, "onboarding", "tour-state.json"))).toThrow();
+  });
+
+  it("rejects failed imports and permits a durable retry", async () => {
+    const blocker = join(tempDir, "onboarding");
+    writeFileSync(blocker, "blocked");
+    await expect(readTourState(true)).rejects.toThrow();
+    expect(readFileSync(blocker, "utf8")).toBe("blocked");
+    // Replace only this test's obstruction; the failed import must not poison the queue.
+    unlinkSync(blocker);
+    expect((await readTourState(true)).completedScenarios).toEqual(["first-boot-essentials"]);
+    expect((await readTourState()).completedScenarios).toEqual(["first-boot-essentials"]);
+  });
+
+  it("serializes import, completions and dismissal without losing updates", async () => {
+    await Promise.all([
+      readTourState(true),
+      markScenarioComplete("a"),
+      markScenarioComplete("b"),
+      dismissScenario("c"),
+      readTourState(true),
+    ]);
+    expect(await readTourState()).toEqual({
+      lastSeenScenario: "c",
+      completedScenarios: ["first-boot-essentials", "a", "b"],
+      dismissedAt: expect.any(String),
+    });
+  });
+
 });

@@ -6738,6 +6738,15 @@
             },
             "type": "object"
           },
+          "annotations": {
+            "additionalProperties": false,
+            "properties": {
+              "readOnlyHint": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
           "description": {
             "type": "string"
           },

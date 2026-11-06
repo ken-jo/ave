@@ -164,9 +164,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     a2aRemoteRouting: false,
     a2aRemoteReceiver: false,
 
-    // Fresh installs may start the optional first-boot tour. Persisting an explicit `false` (instead of relying on `undefined`) keeps the contract obvious: the flag flips to `true` exactly once, from
-    // `markOnboardingCompleted` after the user finishes (or skips) the chain. Any other path that wants to suppress the chain must set this to `true` deliberately; no "missing key === skipped" trap.
-    onboardingCompleted: false,
     // Permission policy host-classifies-risk migration gate. Ships ON; the host derives the effective category from host-owned signals (foreground plugin
     // read-relaxation included) instead of trusting the plugin-declared category. Shadow mode reconciliation completed before this flip; users can still opt out in Settings.
     hostClassifiesRisk: true,

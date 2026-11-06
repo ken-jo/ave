@@ -106,7 +106,7 @@ class HandlerPermissionAskError extends Error {
 }
 
 class HandlerApprovalRequiredError extends Error {
-  constructor(readonly request: ApprovalRequestInput & { sessionId: string }) {
+  constructor(readonly request: ApprovalRequestInput) {
     super("Handler admission requires human approval");
     this.name = "HandlerApprovalRequiredError";
   }
@@ -903,7 +903,7 @@ export async function executeAuthorizedToolInvocation(
 
   const prepareLateApproval = async (
     signal: AbortSignal,
-  ): Promise<ApprovalRequestInput & { sessionId: string }> => {
+  ): Promise<ApprovalRequestInput> => {
     if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.pipelineRequest?.userOwnedSurface || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
       throw new Error("Late approval requires an issued human approval decision");
     }
@@ -955,7 +955,10 @@ export async function executeAuthorizedToolInvocation(
           ...(hostTerminalFacts.sandboxCapability ? { sandboxCapability: hostTerminalFacts.sandboxCapability } : {}),
         }) : undefined;
     return {
-      id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: toolUse.name,
+      id: randomUUID(),
+      ...(invocationPermissionContext.unattributedApproval ? {} : { sessionId }),
+      ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
+      category: "tool", kind: "tool", toolName: toolUse.name,
       toolCategory: invocationCategory, source, trustOrigin: invocationPermissionContext.trustOrigin,
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
@@ -983,7 +986,7 @@ export async function executeAuthorizedToolInvocation(
     };
   };
 
-  const requestLateApproval = async (request: ApprovalRequestInput & { sessionId: string }): Promise<void> => {
+  const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
     abortSignal?.throwIfAborted();
     if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
       throw new Error("Late approval requires an issued human approval decision");
@@ -1057,6 +1060,7 @@ export async function executeAuthorizedToolInvocation(
               abortSignal: signal,
               permissionContext: { admissionDenial: permissionResult?.pipelineRequest?.admissionDenial, floor: permissionResult?.pipelineRequest?.floor, exfiltration: permissionResult?.pipelineRequest?.exfiltration, manualRerun: invocationPermissionContext.manualRerun, ownerUnattended: invocationPermissionContext.ownerUnattended, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, permissionStoreError: invocationPermissionContext.permissionStoreError },
               approvalSurface: invocationPermissionContext.approvalSurface,
+              unattributedApproval: invocationPermissionContext.unattributedApproval,
               toolName: toolUse.name,
               ...(sessionId === undefined ? {} : { sessionId }),
             },

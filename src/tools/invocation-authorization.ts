@@ -386,7 +386,7 @@ export async function authorizeToolInvocation(
             secretRead: context.secretRead,
             shellReadOnlyProven: context.shellReadOnlyProven,
             shellEscalated: context.shellEscalated,
-            mcpReadOnlyHint: tool.mcpReadOnlyHint,
+            mcpReadOnlyHint: tool.mcpReadOnlyHint === true && (source !== "plugin" || invocationCategory === "read"),
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
@@ -941,7 +941,7 @@ export async function authorizeToolInvocation(
           // Attribute the modal and every audit row to the conversation whose
           // turn is blocked on it. Sub-agents and side chats reach this line
           // with their own session id.
-          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(sessionId === undefined || invocationPermissionContext.unattributedApproval ? {} : { sessionId }),
           // Host-only; the gate keeps it out of the renderer payload.
           ...(remoteControllerOrigin === undefined
             ? {}
@@ -965,6 +965,7 @@ export async function authorizeToolInvocation(
           // Preserve the originating principal separately from display text.
           ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
           source: source as ToolSource,
+          ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
           sensitivePathPattern,

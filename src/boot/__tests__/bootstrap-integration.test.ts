@@ -461,7 +461,7 @@ vi.mock("../../work-board/sample-data.js", () => ({
   seedSampleWorkBoard: vi.fn(async () => {}),
 }));
 vi.mock("../../work-board/due-soon.js", () => ({
-  scanAndEmitDueSoon: vi.fn(async () => []),
+  scanAndRaiseDueSoon: vi.fn(async () => {}),
 }));
 vi.mock("../../work-board/storage.js", () => ({
   createDirStorage: vi.fn(() => ({})),

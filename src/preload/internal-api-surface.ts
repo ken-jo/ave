@@ -315,7 +315,7 @@ export function buildInternalApiSurface() {
     },
   },
   // Tutorial-C; SpotlightTour state bridge. Host stores tour completion under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a `ave:tour:start`
-  // event through the host's trusted renderer target set. `getState` is read-never-throws (returns the default shape on any failure) per the project storage contract.
+  // event through the host's trusted renderer target set. `getState` returns `ok: false` when the state cannot be read, so callers never replay a completed tour.
   tour: {
     getState: async () =>
       ipcRenderer.invoke(CHANNELS.tour.getState) as Promise<

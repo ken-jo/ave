@@ -1,5 +1,6 @@
 // Menu builders read live state and rebuild when window or plugin state changes.
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
+import { CHANNELS } from "../contract/app-contract.js";
 import { getLocale, t } from "../i18n/index.js";
 import { getPluginViewLabel } from "../shared/plugin-view-label.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
@@ -11,7 +12,7 @@ import {
 } from "./native-window-coordinator.js";
 
 function activateView(viewKey: string) {
-  getMainWindow()?.webContents.send("ave:view:activate", { viewKey });
+  getMainWindow()?.webContents.send(CHANNELS.view.activate, { viewKey });
 }
 
 // Restore or create the main window, then activate inline settings; defer IPC until did-finish-load if needed.
@@ -22,7 +23,7 @@ export function activateInlineSettings(tabInput: unknown = "llm"): void {
   if (!win || win.isDestroyed()) return;
   const send = () => {
     if (!win.isDestroyed()) {
-      win.webContents.send("ave:view:activate", { viewKey: "settings", settingsTab });
+      win.webContents.send(CHANNELS.view.activate, { viewKey: "settings", settingsTab });
     }
   };
   if (win.webContents.isLoading()) {

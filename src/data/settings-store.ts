@@ -460,6 +460,7 @@ export interface FeatureFlags {
   /** Enables the P4-5 exact-replay receiver profile after restart. Independent of loopback. */
   a2aRemoteReceiver?: boolean;
 
+  /** Legacy import evidence for tour-state; new completion is stored there only. */
   onboardingCompleted?: boolean;
   /** Host risk classification ships on and ignores untrusted declared categories; disabling it restores declared categories (docs/architecture/permission-policy-design.md). */
   hostClassifiesRisk?: boolean;

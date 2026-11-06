@@ -550,7 +550,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("plugin panel user action preserves ordinary permission requests", async () => {
+  it("plugin-emitted writes preserve ordinary permission requests", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
@@ -571,7 +571,6 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
         sessionId: "sess-plugin-panel",
         permissionContext: userPermissionContext({
           additionalDirectories: [dir],
-          pluginPanelUserAction: true,
           trustOrigin: "plugin-emitted",
         }),
       },
@@ -583,7 +582,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(lookupApprovalMock).toHaveBeenCalledOnce();
   });
 
-  it("(h2) plugin panel user action does not suppress layer-2 hard asks", async () => {
+  it("plugin-emitted writes retain strict-mode asks", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
@@ -607,7 +606,6 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
         sessionId: "sess-plugin-panel-hard",
         permissionContext: userPermissionContext({
           additionalDirectories: [dir],
-          pluginPanelUserAction: true,
           trustOrigin: "plugin-emitted",
         }),
       },
@@ -618,7 +616,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(result[0].is_error).toBe(true);
   });
 
-  it("(h3) plugin panel user action does not suppress forceModal asks", async () => {
+  it("plugin-emitted writes retain forced approval for another principal", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy, { source: "plugin", pluginId: "meeting" }));
@@ -642,7 +640,6 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
         sessionId: "sess-plugin-panel-force",
         permissionContext: userPermissionContext({
           additionalDirectories: [dir],
-          pluginPanelUserAction: true,
           otherPrincipal: true,
           trustOrigin: "plugin-emitted",
         }),

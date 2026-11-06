@@ -1,3 +1,5 @@
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 // Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, existsSync, readdirSync } from "node:fs";
@@ -2303,9 +2305,10 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     }
   });
 
-  it("re-inits the tracer on the rebound childSessionId so dev traces key on the addressable id (not the stale constructor UUID)", async () => {
-    const prevTrace = process.env.AVE_TRACE;
-    process.env.AVE_TRACE = "1";
+  it("exports step spans with the rebound addressable child session id", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    trace.setGlobalTracerProvider(provider);
     const subAgentMemoryManager = new MemoryManager({
       aveDir: openFeatureNamespace("subagent").dir,
     });
@@ -2323,22 +2326,14 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     );
     try {
       const result = await run();
-      // Trace filenames must use the rebound child session ID rather than the constructor UUID.
-      const tracesDir = join(tmpHome, "traces");
-      const traceFiles = existsSync(tracesDir)
-        ? readdirSync(tracesDir).filter((f) => f.endsWith(".jsonl"))
-        : [];
-      expect(traceFiles).toContain(`${result.childSessionId}.jsonl`);
-      const uuidNamed = traceFiles.filter((f) =>
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/.test(
-          f,
-        ),
-      );
-      expect(uuidNamed).toEqual([]);
+      const spans = exporter.getFinishedSpans();
+      expect(spans.length).toBeGreaterThan(0);
+      expect(spans.every(span => span.attributes["ave.session_id"] === result.childSessionId)).toBe(true);
+      expect(existsSync(join(tmpHome, "traces"))).toBe(false);
     } finally {
       restore();
-      if (prevTrace === undefined) delete process.env.AVE_TRACE;
-      else process.env.AVE_TRACE = prevTrace;
+      await provider.shutdown();
+      trace.disable();
     }
   });
 });

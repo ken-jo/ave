@@ -292,3 +292,21 @@ describe("ordinary exfiltration guardrail", () => {
       .toMatchObject({ outcome: "ask", reasonCode: "reviewer-human-required" });
   });
 });
+
+
+describe("plugin read declarations at the existing ordinary-read edge", () => {
+  const tool = { name: "panel_status", source: "plugin", kind: "read", readOnlyHint: true } as const;
+  it.each(MODES)("allows plugin reads after earlier gates in %s", (mode) => {
+    const input = request({ tool, mode });
+    expect(decidePermission(input).reasonCode).toBe("ordinary-read");
+    expect(decidePermission({ ...input, admissionDenial: { code: "invalid", reason: "invalid manifest" } }).outcome).toBe("deny");
+    expect(decidePermission({ ...input, rules: { deny: "deny" } }).outcome).toBe("deny");
+    expect(decidePermission({ ...input, floor: { code: "other-principal", reason: "app text" } }).outcome).toBe("ask-forced");
+    expect(decidePermission({ ...input, secretRead: true }).reasonCode).not.toBe("ordinary-read");
+    expect(decidePermission({ ...input, rules: { ask: "ask", allow: "allow" } }).reasonCode).not.toBe("ordinary-read");
+    expect(decidePermission({ ...input, rules: { allow: "allow" } }).reasonCode).toBe("rule-allow");
+  });
+  it.each(["write", "shell", "network"] as const)("never lets a hint bypass effective %s classification", (kind) => {
+    expect(decidePermission(request({ tool: { ...tool, kind }, mode: "strict" })).outcome).toBe("ask");
+  });
+});

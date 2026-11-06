@@ -441,3 +441,18 @@ describe("the command line always reports an outcome", () => {
     expect(result.status).toBe(1);
   }, 120_000);
 });
+
+it.each([
+  [{ readOnlyHint: true }, true],
+  [{ readOnlyHint: false }, true],
+  [{ readOnlyHint: "true" }, false],
+  [{ readOnlyHint: true, destructiveHint: true }, false],
+  [{ idempotentHint: true }, false],
+  [{ openWorldHint: false }, false],
+  [{ title: "Status" }, false],
+])("limits protocol tool annotations %j to the authorable read hint (%s)", (annotations, accepted) => {
+  const errors = violations("Tool annotations", SCHEMA.$defs.types.Tool, {
+    name: "panel_status", inputSchema: { type: "object", properties: {} }, annotations,
+  });
+  expect(errors.length === 0).toBe(accepted);
+});

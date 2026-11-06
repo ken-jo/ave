@@ -35,7 +35,7 @@ flowchart TD
   R -->|allow| ALLOW["허용"]
   R -->|ask| Q
   R -->|없음| K{"도구 종류"}
-  K -->|"읽기 · readOnly MCP"| ALLOW
+  K -->|"읽기 · readOnly MCP (서버·플러그인)"| ALLOW
   K -->|"비밀 파일 읽기 · 그 외 MCP · 네트워크"| Q
   K -->|"파일 쓰기 (비밀 파일 포함)"| W{"프로젝트 안 + 되돌리기 가능?"}
   W -->|예| ALLOW
@@ -76,6 +76,8 @@ flowchart TD
 ```
 
 Notes that are part of the contract:
+- **Plugin read declarations (owner decision 2026-11-06, 읽기 선언만 허용):** the existing `K → readOnly MCP → allow` edge also covers plugin tools declaring `annotations.readOnlyHint: true`. This is the only authorable annotation. Missing/false hints or an operation policy with a write kind or a higher minimum risk retain ordinary approval. Admission, forced floors, rules and remembered decisions keep their existing order. Command/network evidence, path checks, active filesystem-containment requirements for command reads, egress/hostFetch, secret leases and actual host effects retain their own gates; the declaration grants no effect capability. App-written text and app-initiated write/shell/network actions retain their confirmation requirements.
+- **App approval delivery (bug correction, no tree change):** sidebar and floating-dock app calls use the focused main window’s unattributed approval lane, with plugin attribution. Each card stays with its recipient across focus changes; if that window leaves, the host re-sends it to the next main window and retires its old copy. No registered main-window surface means an action requiring a card is denied under Q. An iframe click supplies no user-gesture authority.
 - **Shared surfaces (owner decision 2026-11-02):** one conversation-local choice covers both logged-in browser tabs and host terminal tabs. One shared card selects Allow all, Auto or Ask (default); there is no separate choice per surface, persistence across sessions or child inheritance. Explicit ask rules and the human-only exfiltration guardrail precede this choice; generic allows and remembered grants do not replace it.
 - **Remote user (owner decision 2026-11-02):** an authenticated controller whose account matches the host-owned owner-identity anchor and is bound to the current session enters the same tree as the local user, including rules, remembered grants, mode, reviewer and 질문†. Missing/mismatched owner identity, authentication, session binding or live transport authority is admission-denied, including after asynchronous approval. Remote provenance alone never creates an other-principal floor; genuine external-content guidance still does.
 - **Remote intake and paste parity (owner decision 2026-11-02):** remote input cannot turn a staged, app-message or plugin envelope into raw user intent. The same origin/envelope mismatch is rejected before a turn, request anchor, native quote or terminal eligibility is created. Explicit attachments and recognized pasted-text wrappers retain file-content taint. The paired browser transport supplies image attachments; the provider bridge accepts text only. Neither carries a distinct pasted-text flag, so unmarked remote text is treated like typed text, without a size-based paste heuristic.
@@ -148,7 +150,7 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | sandboxed shell with an unproven/destructive signal | ask | ask | reviewer | allow (unless 질문†) | Codex dangerous heuristic, Claude critical rm |
 | sandbox escalation / host shell (sandbox off) | ask (prefix rule savable) | ask (prefix rule savable) | reviewer | allow (unless 질문†) | Codex escalation + prefix rules; owner "코덱스와 맞춰" |
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |
-| MCP readOnlyHint | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰" |
+| MCP readOnlyHint (server or plugin) | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰"; plugin read declaration: owner decision 2026-11-06 |
 | MCP other | ask (remember per tool) | ask (remember per tool) | reviewer | allow | Claude per-tool rules; owner "클로드에 맞춰" |
 | 질문† targets | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | Claude protected paths, Hermes instruction-file gate |
 | headless (no human), anything that would ask | deny + "do not retry" | same | same (the reviewer still decides first; a fallback to ask → deny) | n/a | Claude -p --permission-prompts none, Codex exec never, OpenCode run, Hermes cron |

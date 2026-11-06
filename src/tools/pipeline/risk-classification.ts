@@ -1,3 +1,4 @@
+import { extractShellCommands } from "../../shared/shell-command-fields.js";
 import type { Tool } from "../base.js";
 import type { ToolCategory } from "../types.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -31,12 +32,15 @@ export function resolveEnforcedCategory(args: {
     (tool.source === "plugin" || tool.source === "mcp") &&
     declaredCategory !== "meta";
 
+  const declaredRead = tool.source === "plugin" && tool.mcpReadOnlyHint === true && declaredCategory === "read";
+  // A declaration cannot supply filesystem containment for a command-bearing tool.
+  const declaredOrdinaryRead = declaredRead && extractShellCommands(finalInput).length === 0;
   // Risk inspection uses source and finalInput; Layer-1 path containment remains separately enforced by isPathAllowed.
   const hostDerivedCategory = eligibleForHostDerivation
-    ? inspectHostRisk({ source: tool.source, finalInput })
+    ? inspectHostRisk({ source: tool.source, finalInput, readOnlyHint: declaredOrdinaryRead })
     : declaredCategory;
 
-  const enforced = hostClassifiesRisk;
+  const enforced = hostClassifiesRisk || declaredRead;
   emitRiskShadowLog(
     {
       toolName: tool.name,
@@ -52,7 +56,7 @@ export function resolveEnforcedCategory(args: {
   );
 
   const inspectedCategory = enforced && eligibleForHostDerivation ? hostDerivedCategory : declaredCategory;
-  const baseline = tool.source === "plugin" && inspectedCategory === "read" && args.sandboxFsContained !== true
+  const baseline = tool.source === "plugin" && inspectedCategory === "read" && args.sandboxFsContained !== true && !declaredOrdinaryRead
     ? "write" : inspectedCategory;
   return operationFloor === undefined
     ? baseline

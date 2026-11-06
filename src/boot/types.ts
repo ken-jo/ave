@@ -209,8 +209,7 @@ export interface AppServices {
   /** L1: deferred RoutinesScheduler.start() handle. main.ts calls this AFTER registerIpcHandlers() so a past-due
    * routine firing immediately on boot has a renderer listener attached. Idempotent; safe to call multiple times. */
   startRoutinesScheduler?: () => void;
-  /** Deferred Work Board due-soon scanner handle. main.ts calls this AFTER registerIpcHandlers() (mirroring startRoutinesScheduler) so the
-   * initial scan + the 60-min tick emit `work_board.work_item.due_soon` onto a fully wired plugin bus. The interval is cleared in `shutdown()`. */
+  /** Start the initial and hourly host alert scans after IPC is ready; shutdown clears the timer. */
   startWorkBoardDueSoon?: () => void;
   /** Deferred alerts expiry sweep. main.ts calls this beside startWorkBoardDueSoon, once IPC and plugins are up; the timer stops in `shutdown()`. */
   startAlerts?: () => void;

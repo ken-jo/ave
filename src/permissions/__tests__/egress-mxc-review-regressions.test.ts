@@ -194,10 +194,12 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
     const listener = await lane(TOKEN_A, "launcher");
     forced.restore();
     expect(forced.bound[0]).toBe(60088);
-    expect(forced.bound).toHaveLength(3);
-    expect(forced.bound.slice(1).every((port) => port < 60080 || port > 60089)).toBe(true);
-    expect(listener.port).toBe(forced.bound[2]);
-    await expectPortClosed(60088);
+    // Windows may hand out further ports in the range; each is discarded, so exactly the relay and frontend binds are kept.
+    const inRange = forced.bound.filter((port) => port >= 60080 && port <= 60089);
+    expect(forced.bound.length - inRange.length).toBe(2);
+    expect(listener.port).toBe(forced.bound.at(-1));
+    expect(listener.port < 60080 || listener.port > 60089).toBe(true);
+    for (const port of inRange) await expectPortClosed(port);
     expect(await exchange(track(net.connect(listener.port, "127.0.0.1")), connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
   });
 

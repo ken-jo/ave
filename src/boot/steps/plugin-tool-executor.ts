@@ -504,6 +504,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             input: toPluginToolInput(payload),
           }],
           {
+            // Keep review and breaker scope independent of card attribution.
             sessionId: invocationSessionId,
             ...(pluginAuthLifecycle ? { pluginAuthLifecycle } : {}),
             permissionContext: pluginSurfacePermissionScope.createPermissionContext(context, {
@@ -511,9 +512,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               // Untrusted app cards may prompt through governed execution but never receive the panel bypass.
               // Bare plugin origin remains a fail-closed headless default for nested producers.
               headless: effectiveOrigin === "plugin",
+              ...(effectiveOrigin === "plugin" ? {} : { unattributedApproval: true as const }),
               trustOrigin: "plugin-emitted",
-              // User-gesture credit belongs only to trusted panels, never app-origin chains.
-              pluginPanelUserAction: effectiveOrigin === "ui" && context.userAction === true,
               ...(pluginOperation ? { pluginOperation } : {}),
               ...(context.expectedMcpServerId
                 ? { expectedMcpServerId: context.expectedMcpServerId }

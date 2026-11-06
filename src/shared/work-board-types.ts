@@ -226,13 +226,6 @@ export type WorkBoardBriefingResult =
   | { status: "empty"; kind: WorkBoardBriefingKind; reason: string }
   | { status: "error"; kind: WorkBoardBriefingKind; reason: string };
 
-/** Emit only a pointer when due_at enters the next 24 hours; do not include item content. */
-export interface WorkItemDueSoonEventPayload {
-  itemId: number;
-  title: string;
-  notifiedAt: string;
-}
-
 export interface WorkItemChangedEventPayload {
   itemId: number;
   change:

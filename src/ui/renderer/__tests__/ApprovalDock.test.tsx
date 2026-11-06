@@ -3,7 +3,7 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
-import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
+import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers, unattributedRequestLabel } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
@@ -1209,4 +1209,22 @@ describe("ApprovalDock", () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+
+describe("unattributed panel approval labels", () => {
+  it("names only an unattributed plugin request as a panel", () => {
+    const label = unattributedRequestLabel({ sourcePluginId: "sample-panel" }, t);
+    expect(label).toBe("익스텐션 패널 요청 · sample-panel");
+    const { getAllByText } = render(<ApprovalLaneCard conversationLabel={label} queue={[makeRequest()]} onDecide={vi.fn()} />);
+    expect(getAllByText(label).length).toBeGreaterThan(0);
+  });
+  it("names session-bound plugin requests without the panel label", () => {
+    expect(unattributedRequestLabel({ sourcePluginId: "sample-panel", sessionId: "background-chat" }, t))
+      .toBe("익스텐션 요청 · sample-panel");
+  });
+  it("retains host and unopened conversation attribution", () => {
+    expect(unattributedRequestLabel({}, t)).toBe(t("approvalAttribution.hostRequest"));
+    expect(unattributedRequestLabel({ sessionId: "closed-chat" }, t)).toBe(t("approvalAttribution.headlessSession"));
+  });
 });

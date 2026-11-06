@@ -8,7 +8,6 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { CHANNELS } from "../../contract/app-contract.js";
 import { createLogger } from "../../lib/logger.js";
 import {
-  DEFAULT_TOUR_STATE,
   readTourState,
   markScenarioComplete,
   dismissScenario,
@@ -199,14 +198,14 @@ export function registerTourHandlers(deps: IpcDeps): void {
         };
       }
       try {
-        const state = await readTourState();
+        const state = await readTourState(deps.settingsService.get("features")?.onboardingCompleted === true);
         return { ok: true, state };
       } catch (err) {
         log.warn(
           { err: errorMessage(err) },
-          "read failed; falling back to default",
+          "read or legacy import failed",
         );
-        return { ok: true, state: DEFAULT_TOUR_STATE };
+        return { ok: false, error: "read-failed", message: "Unable to read tour state" };
       }
     },
   );
