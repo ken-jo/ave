@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { invokeFileIpcHandler } from "./test-helpers.js";
@@ -55,8 +55,9 @@ async function loadModule() {
   return import("../tour.js");
 }
 
-function makeDeps(windows: FakeWindow[]) {
+function makeDeps(windows: FakeWindow[], onboardingCompleted = false) {
   return {
+    settingsService: { get: vi.fn(() => ({ onboardingCompleted })) },
     auditLogger: { log: vi.fn() },
     getMainWindow: () => windows[0] ?? null,
     getAppWindows: () => windows,
@@ -183,4 +184,34 @@ describe("tour IPC handlers (Tutorial-C)", () => {
       error: "unauthorized-frame",
     });
   });
+  it("imports the settings evidence through durable tour-state storage", async () => {
+    const { registerTourHandlers } = await loadModule();
+    const deps = makeDeps([makeFakeWindow()], true);
+    registerTourHandlers(deps as never);
+    await invoke("ave:tour:mark-complete", { scenarioId: "other-tour" });
+    const dismissed = await invoke("ave:tour:dismiss", { scenarioId: "other-tour" }) as { state: { dismissedAt: string } };
+    const result = await invoke("ave:tour:get-state");
+    expect(result).toEqual({
+      ok: true,
+      state: { lastSeenScenario: "other-tour", completedScenarios: ["other-tour", "first-boot-essentials"], dismissedAt: dismissed.state.dismissedAt },
+    });
+    expect(JSON.parse(readFileSync(join(tempDir, "onboarding", "tour-state.json"), "utf8"))).toEqual((result as { state: unknown }).state);
+    expect(deps.settingsService.get).toHaveBeenCalledWith("features");
+  });
+
+  it("reports import failure without erasing legacy evidence and retries durably", async () => {
+    const { registerTourHandlers } = await loadModule();
+    const deps = makeDeps([makeFakeWindow()], true);
+    registerTourHandlers(deps as never);
+    const blocker = join(tempDir, "onboarding");
+    writeFileSync(blocker, "blocked");
+    expect(await invoke("ave:tour:get-state")).toMatchObject({ ok: false, error: "read-failed" });
+    expect(deps.settingsService.get()).toEqual({ onboardingCompleted: true });
+    expect(readFileSync(blocker, "utf8")).toBe("blocked");
+    unlinkSync(blocker);
+    expect(await invoke("ave:tour:get-state")).toMatchObject({
+      ok: true, state: { completedScenarios: ["first-boot-essentials"] },
+    });
+  });
+
 });

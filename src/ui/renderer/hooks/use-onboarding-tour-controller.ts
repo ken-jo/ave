@@ -28,7 +28,7 @@ export function useOnboardingTourController(
   const [proposalGateOpen, setProposalGateOpen] = useState(false);
   const [documentEngineOnboardingOpen, setDocumentEngineOnboardingOpen] = useState(false);
   const firstBootTourStartedRef = useRef(false);
-  const onboardingPersistedRef = useRef(false);
+  const firstBootTourFinishedRef = useRef(false);
   const proposalsRequestedRef = useRef(false);
 
   const checkApiKey = useCallback(async () => {
@@ -37,26 +37,19 @@ export function useOnboardingTourController(
     return hasKey;
   }, [api]);
 
-  const markOnboardingCompleted = useCallback(async () => {
-    try {
-      await api.updateSettings({ features: { onboardingCompleted: true } });
-    } catch {
-      // The tour is optional; a settings-write failure must not interrupt use.
-    }
-  }, [api]);
-
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         await checkApiKey();
-        const [settings, tourState] = await Promise.all([
-          api.getSettings(),
-          api.tour.getState().catch(() => null),
-        ]);
+        const tourState = await api.tour.getState().catch(() => null);
+        // A successful host read includes the durable legacy import. Only consult
+        // the old evidence when that operation failed, so completion cannot replay.
+        const legacyOnboardingCompleted = tourState?.ok !== true &&
+          (await api.getSettings()).features?.onboardingCompleted === true;
         if (cancelled) return;
         if (
-          settings.features?.onboardingCompleted === true ||
+          legacyOnboardingCompleted ||
           hasSeenFirstBootTour(tourState)
         ) {
           // Nothing to tour: the user has been here. Proposals are what is left of onboarding for them, so the gate is open on
@@ -64,6 +57,8 @@ export function useOnboardingTourController(
           setProposalGateOpen(true);
           return;
         }
+
+        if (tourState?.ok !== true) return;
 
         // Preserve the existing-install guard: users who configured a provider before this tour was introduced are not sent
         // through first-run help.
@@ -76,7 +71,7 @@ export function useOnboardingTourController(
         if (cancelled || configuredKeys.some(Boolean)) return;
 
         // The IPC handler broadcasts before its invoke response resolves. Mark this first so a fast dismiss/complete callback
-        // cannot race past the one-time settings persistence below.
+        // cannot race past the one-time completion notification below.
         firstBootTourStartedRef.current = true;
         const started = await api.tour.start("first-boot-essentials");
         if (cancelled || !started.ok) firstBootTourStartedRef.current = false;
@@ -90,16 +85,15 @@ export function useOnboardingTourController(
   }, [api, checkApiKey]);
 
   const finishFirstBootTour = useCallback((completed: boolean) => {
-    if (!firstBootTourStartedRef.current || onboardingPersistedRef.current) return;
-    onboardingPersistedRef.current = true;
+    if (!firstBootTourStartedRef.current || firstBootTourFinishedRef.current) return;
+    firstBootTourFinishedRef.current = true;
     // Only a COMPLETED tour opens the proposal gate. A user who dismissed the tour said they did not want to be walked through
     // the app; the gate opens for them on the next launch, as a returning user.
     if (completed) {
       setProposalGateOpen(true);
       setDocumentEngineOnboardingOpen(true);
     }
-    void markOnboardingCompleted();
-  }, [markOnboardingCompleted]);
+  }, []);
 
   const onTourComplete = useCallback(() => {
     finishFirstBootTour(true);
