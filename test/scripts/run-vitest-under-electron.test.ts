@@ -498,17 +498,19 @@ describe("Electron Node-mode Vitest runner", () => {
   });
 
   describe.each([undefined, null])("real child calls with %s options", (options) => {
-    const command = `"${process.execPath}" -e ""`;
+    // These fixtures exercise argument handling without requiring the desktop runtime.
+    const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    const command = `"${nodeCommand}" -e ""`;
     const argv = ["-e", ""];
     const cases = [
-      { name: "spawn", args: [process.execPath, argv, options] },
-      { name: "spawnSync", args: [process.execPath, argv, options] },
+      { name: "spawn", args: [nodeCommand, argv, options] },
+      { name: "spawnSync", args: [nodeCommand, argv, options] },
       { name: "exec", args: [command, options] },
       { name: "execSync", args: [command, options] },
-      { name: "execFile", args: [process.execPath, argv, options] },
-      { name: "execFileSync", args: [process.execPath, argv, options] },
-      { name: "execFile", args: [process.execPath, undefined, options] },
-      { name: "execFileSync", args: [process.execPath, undefined, options] },
+      { name: "execFile", args: [nodeCommand, argv, options] },
+      { name: "execFileSync", args: [nodeCommand, argv, options] },
+      { name: "execFile", args: [nodeCommand, undefined, options] },
+      { name: "execFileSync", args: [nodeCommand, undefined, options] },
     ] as const;
 
     it.each(cases)("accepts the $name argument list: $args", async ({ name, args }) => {
@@ -549,7 +551,7 @@ describe("Electron Node-mode Vitest runner", () => {
         module,
         sync: () => {},
       });
-      const args = name === "exec" ? [command, options] : [process.execPath, argv, options];
+      const args = name === "exec" ? [command, options] : [nodeCommand, argv, options];
       await expect(Reflect.apply(promisify(module[name]), module, args)).resolves.toMatchObject({ stdout: "", stderr: "" });
     });
   });

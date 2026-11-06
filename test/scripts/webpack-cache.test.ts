@@ -97,8 +97,11 @@ function cached(stats: Stats, file: string) {
     .modules?.find((module) => module.nameForCondition === file)?.cached;
 }
 
+// Bundled output fixtures run under the suite launcher's plain interpreter.
+const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+
 function readOutput(output: string): string {
-  const result = spawnSync(process.execPath, [
+  const result = spawnSync(nodeCommand, [
     "--input-type=module", "-e",
     "const { read } = await import(process.argv[1]); process.stdout.write(await read());",
     pathToFileURL(join(output, "entry.mjs")).href,

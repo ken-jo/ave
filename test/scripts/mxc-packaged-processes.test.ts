@@ -10,6 +10,9 @@ import { TOOL_TIMEOUT_POLICY } from "../../src/shared/tool-timeout-policy.js";
 // @ts-expect-error standalone probe utilities do not emit declarations
 import { packagedMainArguments, writeProbeJson } from "../../tools/mxc-probes/packaged-processes.mjs";
 
+// Plain script fixtures use the interpreter supplied by the suite launcher.
+const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+
 async function readObservation(file: string) {
   const until = Date.now() + TOOL_TIMEOUT_POLICY.mxcRequestTransportMs;
   while (Date.now() < until) {
@@ -38,7 +41,7 @@ describe("probe identity journals", () => {
     const fixture = path.join(root, "fixture.mjs");
     await copyFile("tools/mxc-probes/packaged-fixture.mjs", fixture);
     await copyFile("tools/mxc-probes/packaged-processes.mjs", path.join(root, "packaged-processes.mjs"));
-    const child = spawn(process.execPath, [fixture, "echo", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)], {
+    const child = spawn(nodeCommand, [fixture, "echo", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: ["pipe", "pipe", "pipe"],
     });
     const completion = once(child, "close");
@@ -70,7 +73,7 @@ describe("probe identity journals", () => {
     const fixture = path.join(root, "fixture.mjs");
     await copyFile("tools/mxc-probes/packaged-fixture.mjs", fixture);
     await copyFile("tools/mxc-probes/packaged-processes.mjs", path.join(root, "packaged-processes.mjs"));
-    const child = spawn(process.execPath, [fixture, "cancel", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)], {
+    const child = spawn(nodeCommand, [fixture, "cancel", token, String(TOOL_TIMEOUT_POLICY.processGroupPollMs)], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, stdio: "pipe",
     });
     const completion = once(child, "close");

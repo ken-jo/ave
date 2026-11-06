@@ -13,6 +13,11 @@ import {
 import { t } from "../../src/i18n/runtime.js";
 import { BUILTIN_LABEL_KEYS, type PaneViewKey } from "../../src/ui/renderer/utils/view-location.js";
 
+// Frame ownership is independent of guest internals, which have their own component suite.
+vi.mock("../../src/ui/renderer/components/McpAppView.js", () => ({
+  McpAppView: () => <div data-testid="standard-app-panel" />,
+}));
+
 afterEach(() => vi.restoreAllMocks());
 
 // Identify routed panes by data-view; hidden conversation panes remain mounted too.
@@ -145,12 +150,13 @@ describe("a plugin view is a pane body", () => {
       extension: {
         id: "main",
         slot: "sidebar",
-        kind: "embedded-module",
+        kind: "mcp-app",
         title: PLUGIN_LABEL,
         description: PLUGIN_DESCRIPTION,
-        entry: "dist/ui.js",
+        resourceUri: `ui://${PLUGIN_ID}/main`,
       },
-      entryUrl: "file:///token-plugin/dist/ui.js",
+      payload: { serverId: PLUGIN_ID, generationId: "generation", resourceUri: `ui://${PLUGIN_ID}/main` },
+      runtimeRevision: 1,
     }],
   };
 
@@ -162,7 +168,7 @@ describe("a plugin view is a pane body", () => {
     });
     await waitFor(() => {
       expect(pane(rendered.container)).not.toBeNull();
-      expect(rendered.container.querySelector('[data-testid="plugin-page-shell"]')).not.toBeNull();
+      expect(rendered.container.querySelector('[data-testid="standard-app-panel"]')).not.toBeNull();
     });
     return rendered;
   }
@@ -185,7 +191,7 @@ describe("a plugin view is a pane body", () => {
     const { container } = await openPluginView();
 
     // Plugin bodies sit inside one host frame without a nested page shell.
-    const shell = container.querySelector('[data-testid="plugin-page-shell"]');
+    const shell = container.querySelector('[data-testid="standard-app-panel"]');
     expect(pane(container)?.contains(shell as Node)).toBe(true);
     expect(shell?.querySelector("h2")).toBeNull();
     expect(pane(container)?.querySelectorAll("h2").length).toBe(1);
@@ -202,7 +208,7 @@ describe("a plugin view is a pane body", () => {
 
     await waitFor(() => {
       expect(atHome(container)).toBe(true);
-      expect(container.querySelector('[data-testid="plugin-page-shell"]')).toBeNull();
+      expect(container.querySelector('[data-testid="standard-app-panel"]')).toBeNull();
     });
     expect(pane(container)).toBeNull();
   });
