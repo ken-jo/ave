@@ -1096,6 +1096,7 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   }
   if (typeof obj.a2aRemoteRouting === "boolean") result.a2aRemoteRouting = obj.a2aRemoteRouting;
   if (typeof obj.a2aRemoteReceiver === "boolean") result.a2aRemoteReceiver = obj.a2aRemoteReceiver;
+  // Preserve legacy evidence across unrelated saves until tour-state imports it durably.
   if (typeof obj.onboardingCompleted === "boolean") {
     result.onboardingCompleted = obj.onboardingCompleted;
   }

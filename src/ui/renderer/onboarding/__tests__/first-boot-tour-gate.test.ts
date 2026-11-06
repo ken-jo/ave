@@ -44,4 +44,18 @@ describe("hasSeenFirstBootTour", () => {
       hasSeenFirstBootTour({ ok: false, error: "read-failed", message: "boom" }),
     ).toBe(false);
   });
+  it("recognizes a persisted first-boot dismissal without completion", () => {
+    expect(hasSeenFirstBootTour({
+      ok: true,
+      state: { lastSeenScenario: FIRST_BOOT_SCENARIO_ID, completedScenarios: [], dismissedAt: "2026-01-01T00:00:00.000Z" },
+    })).toBe(true);
+  });
+
+  it("does not mistake a different scenario's dismissal for first-boot", () => {
+    expect(hasSeenFirstBootTour({
+      ok: true,
+      state: { lastSeenScenario: "another-tour", completedScenarios: [], dismissedAt: "2026-01-01T00:00:00.000Z" },
+    })).toBe(false);
+  });
+
 });
