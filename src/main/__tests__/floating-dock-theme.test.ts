@@ -7,6 +7,7 @@ import { SettingsService } from "../../data/settings-store.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { FONT_SIZE_SCALE_DEFAULT } from "../../shared/appearance-font.js";
 import { emitEvent } from "../../boot/types.js";
 import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
@@ -145,7 +146,7 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     win.fire("ready-to-show");
     await service.patch({ appearance: { terminalFont: { family: "Changed Mono" } } });
     expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", locale: getLocale(),
     });
     const sent = win.send.mock.calls.length;
     await service.patch({ appearance: { terminalFont: { size: 18 } } });
@@ -153,11 +154,20 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     // The UI font is the snapshot's other settings-owned part: a family or size-scale change repaints the dock too.
     await service.patch({ appearance: { font: { family: "Dock Sans", sizeScale: 1.125 } } });
     expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 }, locale: getLocale(),
     });
+    // A language change is the snapshot's other settings-derived part: main's resolved locale changes, the dock repaints in it.
+    const language = getLocale();
+    const other = language === "ko" ? "en" : "ko";
+    try {
+      setLocale(other);
+      expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
+        theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 }, locale: other,
+      });
+    } finally { setLocale(language); }
     dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
     expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 }, locale: getLocale(),
     }]);
   });
 
@@ -180,7 +190,7 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
 
     const snapshots = win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme);
     expect(snapshots[0]).toEqual([CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Before Opening Mono",
+      theme: getLastThemePayload(), terminalFontFamily: "Before Opening Mono", locale: getLocale(),
     }]);
     expect(snapshots.every(([, appearance]) => appearance.terminalFontFamily === "Before Opening Mono")).toBe(true);
     expect(win.send.mock.calls[0]).toEqual(snapshots[0]);
@@ -258,7 +268,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     await openWindow([]);
     // What main's dock.theme post delivers to the dock preload (see the surface tests above for the main side).
     const deliver = (bundleId: string, shell: "light" | "dark") =>
-      rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId, shell, tokens: THEME.tokens }, terminalFontFamily: "Dock Mono" }));
+      rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId, shell, tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", locale: "en" }));
     const root = document.documentElement;
     const token = (name: string) => root.style.getPropertyValue(`--${name}`);
 
@@ -274,7 +284,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     const light = resolveTheme(requireScheme("github-light"));
     expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe(String(FONT_SIZE_SCALE_DEFAULT));
     expect(root.style.getPropertyValue("--ave-font-family")).toBe("");
-    rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId: "github-light", shell: "light", tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", font: { family: "Dock Sans", sizeScale: 1.125 } }));
+    rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId: "github-light", shell: "light", tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", font: { family: "Dock Sans", sizeScale: 1.125 }, locale: "en" }));
     // The same font write the main window makes, so the cards' rem utilities and font stack follow the user's choice.
     expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe("1.125");
     expect(root.style.getPropertyValue("--ave-font-family")).toBe("Dock Sans");

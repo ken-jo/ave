@@ -6,6 +6,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
 import { getLastThemePayload } from "../shared/host-theme-replay.js";
+import { getLocale, onLocaleChange } from "../i18n/index.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { configureMcpAppWebviewAttach } from "./webview-attach.js";
 import type {
@@ -52,6 +53,8 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       return JSON.stringify([appearance.terminalFont.family, appearance.font?.family ?? null, appearance.font?.sizeScale ?? null]);
     };
     let fonts = fontKey();
+    // The language is main's own resolved locale (the one that already retitles dock slots), so the dock repaints when it changes.
+    onLocaleChange(() => this.#sendAppearance(this.#currentTheme()));
     settings.onChanged("appearance", () => {
       const next = fontKey();
       if (next === fonts) return;
@@ -213,7 +216,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #sendAppearance(theme: unknown): void {
     if (theme === null) return;
     const appearance = this.settings.get("appearance");
-    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: appearance.terminalFont.family, font: appearance.font });
+    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: appearance.terminalFont.family, font: appearance.font, locale: getLocale() });
   }
 
   #post(channel: string, payload: unknown): void {

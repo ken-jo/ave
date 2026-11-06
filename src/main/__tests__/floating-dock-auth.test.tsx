@@ -3,6 +3,7 @@ import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emitEvent, onEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { translate } from "../../i18n/translate.js";
 
 const { listeners, invoke, lifetime, deniedAudit } = vi.hoisted(() => ({
   listeners: new Map<string, (event: unknown, payload: unknown) => void>(),
@@ -22,10 +23,13 @@ vi.mock("electron", () => ({
 vi.mock("../../ui/renderer/components/McpAppView.js", async () => {
   const { useEffect, createElement } = await import("react");
   const { useHostAppearance } = await import("../../ui/renderer/theme/HostAppearanceProvider.js");
+  const { useTranslation } = await import("../../i18n/react.js");
   return { McpAppView: () => {
     const theme = useHostAppearance();
+    // McpAppView puts this `locale` into the app's host context and renders its badge with this `t`.
+    const { locale, t } = useTranslation();
     useEffect(() => { lifetime.mounts += 1; return () => { lifetime.unmounts += 1; }; }, []);
-    return createElement("div", { "data-testid": "mounted-app", "data-terminal-font": theme.terminalFontFamily, "data-shell": theme.shell });
+    return createElement("div", { "data-testid": "mounted-app", "data-terminal-font": theme.terminalFontFamily, "data-shell": theme.shell, "data-locale": locale }, t("mcpAppView.sandboxBadge"));
   } };
 });
 
@@ -61,7 +65,7 @@ describe("dock host auth observation", () => {
     }));
     expect(lifetime.mounts).toBe(0);
     const theme = { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#123456" } };
-    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Dock Mono, monospace" }));
+    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Dock Mono, monospace", locale: "en" }));
     expect(invoke).toHaveBeenCalledWith(CHANNELS.plugins.call, "fixture_status", undefined, { userAction: false });
     expect(lifetime.mounts).toBe(1);
     expect(lifetime.unmounts).toBe(0);
@@ -69,7 +73,7 @@ describe("dock host auth observation", () => {
     expect(invoke.mock.calls.some(([channel]) => channel === CHANNELS.host.pluginThemeNotify || channel === CHANNELS.settings.update || channel === CHANNELS.settings.get)).toBe(false);
     expect(broadcasts).toEqual([]);
     expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Dock Mono, monospace");
-    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace" }));
+    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "en" }));
     expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Updated Mono, monospace");
     expect(lifetime.mounts).toBe(1);
     status = { authenticated: true, account: "account-a" };
@@ -84,7 +88,7 @@ describe("dock host auth observation", () => {
     const snapshot = () => ({ style: root.getAttribute("style"), scheme: root.getAttribute("data-scheme"), shell: document.querySelector("[data-shell]")?.getAttribute("data-shell"), font: document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font") });
     const before = snapshot();
     expect(before).toMatchObject({ scheme: "nord", shell: "dark", font: "Updated Mono, monospace" });
-    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme: { bundleId: "not-a-scheme", shell: "light", tokens: { "--ave-bg": "#ffffff" } }, terminalFontFamily: "Other Mono" }))
+    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme: { bundleId: "not-a-scheme", shell: "light", tokens: { "--ave-bg": "#ffffff" } }, terminalFontFamily: "Other Mono", locale: "en" }))
       .toThrow("Unknown color scheme: not-a-scheme");
     // A later render (another slot mounting) must still paint the last good appearance, not the refused one.
     await act(async () => listeners.get(CHANNELS.dock.mount)?.({}, {
@@ -96,6 +100,22 @@ describe("dock host auth observation", () => {
     expect(shells.length).toBeGreaterThan(0);
     expect(shells.every((shell) => shell === "dark")).toBe(true);
     await act(async () => listeners.get(CHANNELS.dock.unmount)?.({}, { panelId: "second" }));
+    // Language: the cards render in the snapshot's locale (what McpAppView puts in host context and its badge), not the runtime default.
+    const app = () => document.querySelector("[data-testid=mounted-app]");
+    expect(app()?.getAttribute("data-locale")).toBe("en");
+    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "ko" }));
+    expect(app()?.getAttribute("data-locale")).toBe("ko");
+    expect(app()?.textContent).toBe(translate("ko", "mcpAppView.sandboxBadge"));
+    expect(app()?.textContent).not.toBe(translate("en", "mcpAppView.sandboxBadge"));
+    expect(document.documentElement.lang).toBe("ko");
+    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "en" }));
+    expect(app()?.getAttribute("data-locale")).toBe("en");
+    expect(app()?.textContent).toBe(translate("en", "mcpAppView.sandboxBadge"));
+    // A locale the dock cannot render is a contract violation: it throws and the cards keep the last good language.
+    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "xx-unknown" }))
+      .toThrow('Unknown dock locale: "xx-unknown"');
+    await act(async () => {});
+    expect(app()?.getAttribute("data-locale")).toBe("en");
     await act(async () => listeners.get(CHANNELS.dock.unmount)?.({}, { panelId: "panel" }));
     const calls = invoke.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });

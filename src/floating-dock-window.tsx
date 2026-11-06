@@ -6,6 +6,8 @@ import { HostAppearanceProvider, type HostAppearance } from "./ui/renderer/theme
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
 import { applySchemeColors, applyUiFont } from "./ui/renderer/theme/resolve-theme.js";
 import { requireScheme } from "./ui/renderer/theme/schemes/index.js";
+import { isLocale, isLocaleMessagesLoaded, loadLocaleMessages, type Locale } from "./i18n/index.js";
+import { I18nProvider } from "./i18n/react.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
 import type { DockActivity } from "./main/floating-dock.js";
@@ -19,10 +21,33 @@ function element(id: string): HTMLElement {
 const roots = new Map<string, Root>();
 const panels = new Map<string, { panelId: string; payload: McpUiPayload; authStatusTool?: string }>();
 let appearance: HostAppearance | undefined;
+// Set only once its catalog is loaded, so the first paint is already in the user's language.
+let locale: Locale | undefined;
+let localeRequest = 0;
+
+// The dock shows the host's language; choosing one is the main window's job.
+function refuseLocaleChange(): never {
+  throw new Error("The floating dock follows the host language and cannot change it");
+}
 
 function renderPanels(): void {
-  if (!appearance) return;
-  for (const [id, root] of roots) root.render(<DockAppContent {...panels.get(id)!} appearance={appearance} />);
+  if (!appearance || !locale) return;
+  for (const [id, root] of roots) {
+    root.render(<I18nProvider locale={locale} setLocale={refuseLocaleChange}><DockAppContent {...panels.get(id)!} appearance={appearance} /></I18nProvider>);
+  }
+}
+
+function applyLocale(next: Locale): void {
+  const request = ++localeRequest;
+  const commit = () => {
+    if (request !== localeRequest) return;
+    locale = next;
+    renderPanels();
+  };
+  if (isLocaleMessagesLoaded(next)) return commit();
+  renderPanels();
+  // A catalog that cannot load rejects with its cause; there is no silent English fallback.
+  void loadLocaleMessages(next).then(commit);
 }
 
 const slots = element("slots");
@@ -39,14 +64,15 @@ dock.onActivity((value) => {
 });
 element("close").addEventListener("click", () => dock.requestClose());
 dock.onTheme((value) => {
-  const { theme, terminalFontFamily, font } = value;
-  // Resolved before any state changes: an unknown scheme id is a contract violation and must leave the dock as it was, not half-repainted.
+  const { theme, terminalFontFamily, font, locale: language } = value;
+  // Resolved before any state changes: an unknown scheme id or locale is a contract violation and must leave the dock as it was, not half-repainted.
   const scheme = requireScheme(theme.bundleId);
+  if (!isLocale(language)) throw new Error(`Unknown dock locale: ${JSON.stringify(language)}`);
   appearance = { ...theme, terminalFontFamily };
   // The cards' stylesheet tokens and rem scale follow the same snapshot as the dock chrome and HostAppearance.
   applySchemeColors(scheme, document);
   applyUiFont(font, document);
-  renderPanels();
+  applyLocale(language);
   const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
   for (const [name, key] of Object.entries(pick)) {
     const token = theme.tokens[key] ?? (key === "--ave-bg-elevated" ? theme.tokens["--ave-bg"] : undefined);

@@ -191,6 +191,29 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     expect(lightCard.card).toBe(lightCard.scheme);
     expect(lightCard.card).not.toBe(chrome.cardBackground);
     await dock.screenshot({ path: testInfo.outputPath('dock-light.png') });
+    // Language: the dock follows the saved language — its badge and the app's host context both switch to Korean. Host context
+    // updates carry only the fields that changed, so the latest one naming a locale is the app's current locale.
+    const readLanguage = async () => ({
+      lang: await dock.evaluate(() => document.documentElement.lang),
+      badge: await dock.evaluate(() => document.querySelector('.slot .rounded.border > div')?.lastElementChild?.textContent ?? null),
+      hostLocale: await app.evaluate(async ({ webContents }) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
+        if (!guest) throw new Error('App guest not found');
+        return guest.executeJavaScript("document.querySelector('iframe').contentWindow.fixtureHostContexts.filter((context) => context.locale !== undefined).at(-1)?.locale");
+      }),
+    });
+    const englishLanguage = await readLanguage();
+    expect(englishLanguage).toMatchObject({ lang: 'en', hostLocale: 'en' });
+    await page.evaluate(async () => {
+      await window.aveApi.updateSettings({ appearance: { language: 'ko' } });
+    });
+    await expect.poll(async () => (await readLanguage()).hostLocale).toBe('ko');
+    const koreanLanguage = await readLanguage();
+    writeFileSync(testInfo.outputPath('dock-language.json'), JSON.stringify({ english: englishLanguage, korean: koreanLanguage }, null, 2));
+    expect(koreanLanguage.lang).toBe('ko');
+    expect(koreanLanguage.badge).toMatch(/[\uac00-\ud7a3]/u);
+    expect(koreanLanguage.badge).not.toBe(englishLanguage.badge);
+    await dock.screenshot({ path: testInfo.outputPath('dock-ko.png') });
   } finally { await app.close(); }
 });
 
