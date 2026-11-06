@@ -11,7 +11,7 @@ import {
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
 } from "../host-api-dispatcher.js";
-import { encodeHostFetchInit, FRAME_BYTES_MAX, HOST_PROTOCOL_NOTIFICATIONS, hostApiMethodOf } from "../host-api-wire.js";
+import { encodeHostFetchInit, FRAME_BYTES_MAX, hostApiMethodOf } from "../host-api-wire.js";
 import {
   PluginChildTransport,
   pluginChildRequestMeta,
@@ -82,7 +82,7 @@ function transportOver(link: ChildLink): PluginChildTransport {
   const transport = new PluginChildTransport({
     pluginId: "transportprobe",
     isActive: () => true,
-    log: () => undefined,
+
     reportUnknownField: () => undefined,
     link,
   });
@@ -98,16 +98,14 @@ afterEach(() => {
 describe("the transport is the one producer of MCP request metadata", () => {
   it("refuses new host effects while a closed child is still draining", async () => {
     const rig = recordedLink();
-    const log = vi.fn();
     const transport = new PluginChildTransport({
-      pluginId: "transportprobe", isActive: () => true, log, reportUnknownField: () => {}, link: rig.link,
+      pluginId: "transportprobe", isActive: () => true, reportUnknownField: () => {}, link: rig.link,
     });
     transport.start();
     transport.close("revoked");
-    rig.childToHost.write(frameMessage({ jsonrpc: "2.0", id: "late", method: "ave/host/logEvent",
-      params: { level: "info", message: "late effect" } }));
+    rig.childToHost.write(frameMessage({ jsonrpc: "2.0", id: "late", method: "ave/host/callLlm",
+      params: { prompt: "late effect" } }));
     await settle();
-    expect(log).not.toHaveBeenCalled();
     expect(rig.sent).toEqual([expect.objectContaining({ id: "late", error: expect.objectContaining({
       data: expect.objectContaining({ code: "plugin-inactive" }),
     }) })]);
@@ -328,7 +326,6 @@ interface InvocationRig {
   transport: PluginChildTransport;
   sent: Frame[];
   seen: Array<string | undefined>;
-  logged: Array<string | undefined>;
   /** Deliver frames in link-creation context, matching real pipes. */
   deliver: (frame: Frame) => void;
   fireGone: (reason: string) => void;
@@ -339,12 +336,10 @@ interface InvocationRig {
 function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
   const seen: InvocationRig["seen"] = [];
-  const logged: InvocationRig["logged"] = [];
   return marker.run("spawned-in", () => {
     const transport = new PluginChildTransport({
       pluginId: options.pluginId ?? "transportprobe",
       isActive: () => true,
-      log: () => void logged.push(marker.getStore()),
       reportUnknownField: () => undefined,
       link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
       table: {
@@ -365,7 +360,7 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
     });
     transport.start();
     const deliver = AsyncResource.bind((frame: Frame) => void childToHost.write(frameMessage(frame)));
-    return { transport, sent, seen, logged, deliver, fireGone, fireFault };
+    return { transport, sent, seen, deliver, fireGone, fireFault };
   });
 }
 
@@ -428,17 +423,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     rig.transport.close("case over");
   });
 
-  it("forwards what the child sends unasked outside the context the child was spawned in", async () => {
-    const rig = invocationRig();
-    rig.deliver({
-      jsonrpc: "2.0",
-      method: HOST_PROTOCOL_NOTIFICATIONS.log,
-      params: { message: "hello" },
-    });
-    await vi.waitFor(() => expect(rig.logged).toHaveLength(1));
-    expect(rig.logged).toEqual([undefined]);
-    rig.transport.close("case over");
-  });
+
 
   it("runs a tokenless request outside its own caller's context too, whoever hands it to the dispatcher", async () => {
     const seen: Array<string | undefined> = [];
@@ -446,8 +431,8 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       pluginId: "transportprobe",
       isActive: () => true,
       notifications: { deliver: () => undefined },
-      shutdownChild: async () => undefined,
-      log: () => undefined,
+
+
       reportUnknownField: () => undefined,
       table: {
         ...HOSTAPI_DISPATCH_TABLE,

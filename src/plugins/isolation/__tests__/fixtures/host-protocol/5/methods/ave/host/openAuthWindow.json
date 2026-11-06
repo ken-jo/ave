@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 29,
+    "id": 24,
     "jsonrpc": "2.0",
     "method": "ave/host/openAuthWindow",
     "params": {
@@ -20,7 +20,7 @@
     }
   },
   "response": {
-    "id": 29,
+    "id": 24,
     "jsonrpc": "2.0",
     "result": {
       "cookies": [

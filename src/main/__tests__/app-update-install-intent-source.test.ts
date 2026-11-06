@@ -23,9 +23,31 @@ describe("app update install intent source contract", () => {
     expect(source).toContain("app.quit();");
   });
 
-  it("keeps the boot-time plugin fallback behind the main shutdown lifecycle", () => {
+  it("keeps boot-time plugin cleanup in the ordered shutdown lifecycle", () => {
     const pluginSource = readFileSync(new URL("../../boot/steps/plugin-runtime.ts", import.meta.url), "utf8");
-    expect(pluginSource).toContain("input.host.desktop?.onBootShutdown(");
+    expect(pluginSource).toContain("registerBootPluginShutdown({");
+    expect(pluginSource).toContain("closeAdmission: () => pluginRuntime.beginShutdown()");
+    expect(pluginSource).toContain("stopRuntime: (signal) => pluginRuntime.stopAll({ signal })");
+    const shutdownSource = readFileSync(new URL("../app-shutdown.ts", import.meta.url), "utf8");
+    const incompleteBootStart = shutdownSource.indexOf("export async function runIncompleteBootShutdown");
+    const incompleteBoot = shutdownSource.slice(incompleteBootStart, shutdownSource.indexOf("export async function runAppShutdownCleanup", incompleteBootStart));
+    expect(incompleteBoot).toContain("() => bootPluginShutdown?.closeAdmission()");
+    expect(incompleteBoot.indexOf("bootPluginShutdown?.closeAdmission()")).toBeLessThan(
+      incompleteBoot.indexOf("bootMcpDisconnect?.()"),
+    );
+    expect(incompleteBoot.indexOf("bootMcpDisconnect?.()")).toBeLessThan(
+      incompleteBoot.indexOf("bootPluginShutdown?.stopRuntime(signal)"),
+    );
+    const normalShutdown = shutdownSource.slice(shutdownSource.indexOf("export async function runAppShutdownCleanup"));
+    expect(normalShutdown).toContain("svc.pluginRuntime.beginShutdown();");
+    expect(normalShutdown).toContain("await svc.shutdown?.();");
+    expect(normalShutdown).toContain("await svc.pluginRuntime.stopAll({ signal });");
+    expect(normalShutdown.indexOf("svc.pluginRuntime.beginShutdown()")).toBeLessThan(
+      normalShutdown.indexOf("await svc.shutdown?.()"),
+    );
+    expect(normalShutdown.indexOf("await svc.shutdown?.()")).toBeLessThan(
+      normalShutdown.indexOf("await svc.pluginRuntime.stopAll({ signal })"),
+    );
     const source = readFileSync(new URL("../../boot/desktop-host-runtime.ts", import.meta.url), "utf8");
     const beforeQuitStart = source.indexOf('app.once("before-quit"');
     const beforeQuitHandler = source.slice(

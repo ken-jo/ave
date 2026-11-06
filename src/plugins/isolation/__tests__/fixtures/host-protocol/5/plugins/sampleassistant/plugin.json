@@ -11,62 +11,16 @@
         "host:overlay",
         "lifecycle-observer"
       ],
-      "emittedEvents": [
-        "sampleassistant.alert.mail-action",
-        "sampleassistant.alert.mail-approval",
-        "sampleassistant.alert.mail-meeting",
-        "sampleassistant.alert.mail-reply",
-        "sampleassistant.alert.meeting-summary",
-        "sampleassistant.alert.calendar-event-prep",
-        "sampleassistant.alert.work-item-due-soon",
-        "sampleassistant.alert.video-conference-prep-register",
-        "sampleassistant.alert.calendar-conflict-prep",
-        "sampleassistant.alert.meeting-room-suggest",
-        "sampleassistant.alert.webex-link-missing",
-        "sampleassistant.snapshot.requested",
-        "sampleassistant.calendar.sync.requested",
-        "sampleassistant.meeting.prep.requested",
-        "sampleassistant.meeting.recording.requested"
-      ],
-      "eventSubscriptions": [
-        "email.new",
-        "meeting.summary.created",
-        "meeting.ended",
-        "calendar.event.upcoming",
-        "calendar.event.starting",
-        "calendar.event.added",
-        "calendar.event.conflict.detected",
-        "work_board.work_item.due_soon",
-        "samplemail.auth.changed",
-        "samplemail.snapshot.ready",
-        "sampleportal.video-conference.reserved"
-      ],
       "pluginAccess": {
         "plugins": [
           {
-            "pluginId": "samplemail",
-            "events": [
-              "email.new",
-              "calendar.event.upcoming",
-              "calendar.event.starting",
-              "calendar.event.conflict.detected",
-              "calendar.event.added",
-              "samplemail.auth.changed",
-              "samplemail.snapshot.ready"
-            ]
+            "pluginId": "samplemail"
           },
           {
-            "pluginId": "meeting",
-            "events": [
-              "meeting.summary.created",
-              "meeting.ended"
-            ]
+            "pluginId": "meeting"
           },
           {
-            "pluginId": "sampleportal",
-            "events": [
-              "sampleportal.video-conference.reserved"
-            ]
+            "pluginId": "sampleportal"
           }
         ]
       },

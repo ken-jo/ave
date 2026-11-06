@@ -42,11 +42,9 @@ Three partial mechanisms exist today and do not compose:
   caps the prompt at 4096 (line 82); `visibility` and `priority` are normalised
   (line 451) and then only audited — the card looks the same for every value.
   Nothing links it to an OS notification or a user setting.
-- **`workProposals.kinds` + `proposeWork`** (`public-contract.ts:568-573`,
-  `:1839`; `host-api-factory.ts:1659-1680`): declaration is authorization
-  (`getDeclaredWorkProposalKinds`, `src/plugins/runtime/manifest-validation.ts:136`,
-  fail-closed and all-or-nothing), one open card per declared kind, upsert by
-  `(kind, key)`, and a durable, retractable card on the Work Board.
+- **Host-owned work proposals** persist durable recommended work on the Work
+  Board. Extensions have no proposal-writing HostApi channel; host briefing
+  generation owns those proposals.
 
 `assistant` (`plugins/assistant/source/src/hostPlugin.ts`, 1523 lines)
 built the missing composition in plugin space: per-intent cooldown, a fixed
@@ -125,7 +123,6 @@ Rules the host enforces at manifest load (`getDeclaredAlertKinds`, next to
 ```ts
 // src/plugins/public-contract.ts — PluginHostApi
 raiseAlert(input: AlertInput): Promise<AlertResult>;
-withdrawAlert(kind: string, key: string): Promise<boolean>;
 
 export interface AlertInput {
   kind: string;                                // a declared kind id
@@ -162,7 +159,7 @@ band) and returns `refreshed`; no OS notification, no cooldown or rate charge.
 Refreshes have their own budget: at most 6 per identity per 10 minutes, then
 `rate_limited`, so a plugin cannot keep a card pinned to the top by
 re-raising. An identity that the user dismissed or accepted stays closed for
-the card's TTL and returns `closed` — `proposeWork`'s "stays closed" rule.
+the card’s TTL and returns `closed`; refreshing never reopens it.
 For `summary-only` and `silent` alerts, which draw no card, the identity
 lives for the same clamped `ttlMs` and a re-raise within it returns
 `refreshed` without any delivery. Both open and closed identities are
@@ -176,15 +173,12 @@ the oldest, with `alert.withdrawn` reason `evicted`.
 region, and a `high` toast stays until dismissed; `low` never notifies the OS
 even when the kind allows it. Nothing else reads it.
 
-`withdrawAlert(kind, key)` dismisses the open card for `(caller, kind, key)`
-and resolves `false` when none is open — the same identity scoping as
-`withdrawWorkProposal` (`host-api-factory.ts:1682-1690`).
+The host dismisses alerts through user actions, expiry, eviction, uninstall
+and revocation. Extensions cannot withdraw an alert through HostApi.
 
-Effect classification: `raiseAlert` and `withdrawAlert` are `"write"` in
-`src/permissions/effect-kind.ts` (as `proposeWork`, line 187); the isolation
-wire entries mirror `proposeWork` (`src/plugins/isolation/host-api-wire.ts:1006-1019`,
-`host-api-dispatcher.ts:1297-1305`, `host-api-child.ts:265-266`): plain JSON
-in, plain JSON out, no lifetime.
+Effect classification: `raiseAlert` is `"write"` in
+`src/permissions/effect-kind.ts`. Its isolation wire contract carries plain JSON
+in and plain JSON out, with no lifetime.
 
 ### Host-owned events
 
@@ -193,17 +187,9 @@ in, plain JSON out, no lifetime.
 | `alert.raised` | `{ pluginId, kind, alertId, visibility, priority, raisedAt }` | host emits after the pipeline accepted the alert |
 | `alert.withdrawn` | `{ pluginId, kind, alertId, reason: "withdrawn" \| "expired" \| "accepted" \| "dismissed" \| "evicted" }` | host emits |
 
-`alert` joins `HOST_ONLY_EMIT_NAMESPACES` (`src/plugins/capabilities.ts:112`) —
-a plugin that could emit `alert.raised` could make subscribers react to an
-alert nobody raised. It does **not** join `PUBLIC_EVENT_NAMESPACES`: a
-subscriber receives only the events whose `pluginId` is its own, and another
-plugin's alerts only with a `pluginAccess.plugins[].events` grant naming that
-plugin, the same ownership rule as any plugin event
-(`assertEventSubscribeAccess`, `src/plugins/runtime/index.ts:345-375`). Host
-kinds' `alert.*` events therefore reach no plugin, because no grant can name
-`@host`; that is intended. The
-filter is applied at delivery by the alerts pipeline, since the emitter is
-the host. Payloads carry no slot values.
+These are host-internal lifecycle events. Extensions cannot emit them or
+subscribe to another extension’s alerts. The extension subscription surface
+accepts only the host theme event; alert payloads carry no slot values.
 
 ## Delivery pipeline (host)
 
@@ -603,19 +589,14 @@ export const ALERTS = {
 | --- | --- | --- | --- |
 | `notificationEvents` | Deprecated at the alerts release. Keeps working through the window; the host warns once per plugin at load when a manifest declares both `alerts.kinds` and `notificationEvents`, and the marketplace repository check flags a descriptor that declares `notificationEvents` with `minAppVersion` at or above the alerts release. | ave maintainer | The follow-on release PR adds `notificationEvents` to `RETIRED_EXTENSION_FIELDS` (`manifest-validation.ts:95`), which drops the field with a warning instead of failing the strict vendor block (`manifest-validation.ts:447-493`), and removes `registerPluginNotifications` and the contract type. Prerequisite: `local-indexer` has published a version on the alert contract. |
 | `triggerConversation` | **Survives** for one-time suggestions: a plugin-authored prompt that seeds a conversation once (the local-indexer rescan suggestion, `plugins/local-indexer/source/src/rescanSuggestion.ts:210`). Those carry no third-party content and need arguments a typed slot cannot express (`routine_schedule` calls). Structural limit, not a review rule: a plugin whose manifest declares an `alerts` block also declares its overlay suggestion sources — `alerts.suggestions: ["overlay:<plugin>-routine-setup"]`, at most 4 entries, each a full `triggerConversation` `source` string that validation checks against `OVERLAY_TRIGGER_SOURCE_PATTERN` (`^overlay:[a-z][a-z0-9-]*$`, `staged-origins.ts:108`) and the `--` ban — and for such a plugin `triggerConversation` accepts only a declared source (`ConversationTriggerResult.reason: "source_not_declared"`, a new member of the union at `public-contract.ts:1989-1994`) and at most one acceptance per declared source per 30 days (`reason: "suggestion_limit"`; `trigger-gate.ts`, stored in the `alerts` namespace). The overlay source is distinct from the routine's idempotency marker (`RoutineRecord.source`, `suggestion:<plugin>:<intent>`, checked with `hasRoutineBySource`). Declaring the source is the grant; the fixed list is what stops a plugin from rotating suffixes on the free source string, which the source pattern would otherwise allow. Scoping is fail-closed: a manifest that carries an `alerts` block counts as "declared" even when the block is refused as malformed, so a deliberately broken block cannot evade the limit. So the path can only serve a handful of one-time suggestions. The limit is scoped to plugins on the contract because the plugins that are not yet on it are exactly the ones the transition must not silence: assistant 0.11.3 raises every recurring alert through `triggerConversation` with one fixed `source` per intent (`decide.ts:160,282,362,428,498`, `meeting-summary-detector.ts:140`), and while it is installed its successors' kinds are blocked — an unscoped limit would leave that window, which is indefinite for a policy-locked package, with no alerts at all. Declaring `alerts` is the plugin's statement that its recurring alerts use the contract. Until the scoping is lifted, a plugin without an `alerts` block evades the limit; that is accepted — such a plugin has the unlimited path today and loses it at the follow-on release, when every official plugin is on the contract. `visibility` and `priority` are accepted and ignored. | ave maintainer | `visibility` and `priority` leave `ConversationTriggerSpec` in the follow-on release PR, which also drops the `alerts`-block scoping once `notificationEvents` is retired and every official plugin is on the contract. |
-| `workProposals` / `proposeWork` | Unchanged. A proposal is durable work; an alert is a time-bound nudge. | — | — |
+| Host-owned work proposals | Preserved for host briefing generation. The extension proposal-writing channel is removed; an alert remains a time-bound nudge. | — | — |
 
 ## Plugin-side changes
 
-Signal ownership and grants: an event has exactly one owner, the last plugin
-that registered it (`src/plugins/runtime/index.ts:2199-2201`,
-`inferEventOwner` at `:2982`), and subscribing to another plugin's event needs
-a `pluginAccess.plugins[].events` grant naming that owner
-(`assertEventSubscribeAccess`, `index.ts:345-375`; grant ↔ descriptor lockstep
-`src/marketplace/resolve/manifest-rules.ts:85`). Every subscription below is
-grounded in that: nothing trusts "any mail source". Every grant, capability
-and dependency added below is a `PLUGIN_AUTHORITY_FIELDS` change and lands in
-the plugin's `ave-package.json` descriptor in the same commit.
+The rollout below records the original plugin migration plan. Its
+cross-plugin relays are retired: each extension now emits only to its own UI,
+and another extension cannot subscribe. The owning plugin lanes must redesign
+any remaining coordination around their own tools and host-owned alerts.
 
 ### mail 0.5.3 → 0.6.0 (`requires.minAppVersion`: the alerts release)
 
@@ -669,7 +650,7 @@ Gains:
   first load (`calendarWatcher.ts:141-146`) and `injectEvent` (`:106`) emits
   none, and it sees today only.
 
-Deleted: `eventSubscriptions: ["assistant.snapshot.requested"]`, the
+Deleted: the assistant snapshot-request subscription, the
 `pluginAccess.plugins[assistant]` grant, the `mail.snapshot.ready`
 emit and its handler, and both `notificationEvents` entries. Bus events
 (`email.*`, `calendar.*`) are otherwise unchanged.
@@ -1075,14 +1056,14 @@ the successors without the host naming any plugin.
 
 | Area | File(s) | Change |
 | --- | --- | --- |
-| Contract | `src/plugins/public-contract.ts`, `schemas/plugin-manifest.schema.json` | `alerts` (kinds, `suggestions`) and `configInherits` manifest blocks, `AlertInput`/`AlertResult`, `raiseAlert`/`withdrawAlert`; `ConversationTriggerResult.reason` gains `source_not_declared` and `suggestion_limit`; `notificationEvents` and the two trigger fields marked deprecated in JSDoc |
+| Contract | `src/plugins/public-contract.ts`, `schemas/plugin-manifest.schema.json` | `alerts` (kinds, `suggestions`) and `configInherits` manifest blocks, `AlertInput`/`AlertResult`, `raiseAlert`; `ConversationTriggerResult.reason` gains `source_not_declared` and `suggestion_limit`; `notificationEvents` and the two trigger fields marked deprecated in JSDoc |
 | Validation | `src/plugins/runtime/manifest-validation.ts`, `src/marketplace/repository-check.ts` | `getDeclaredAlertKinds` (all-or-nothing), template/slot/locale checks, `alerts.suggestions` (≤ 4 sources), `configInherits` shape, reserved package id `host` in both, warn on `notificationEvents` + `alerts` and on `inherits` without successor authorisation |
-| HostApi | `src/boot/steps/plugin-runtime/host-api-factory.ts`, `isolation/host-api-wire.ts`, `host-api-dispatcher.ts`, `host-api-child.ts`, `runtime/sandbox.ts`, `src/permissions/effect-kind.ts` | the two methods, wired like `proposeWork`; `triggerConversation` rejects `--` in `source` and, for plugins declaring `alerts`, accepts only declared suggestion sources with the per-source acceptance limit |
+| HostApi | `src/boot/steps/plugin-runtime/host-api-factory.ts`, `isolation/host-api-wire.ts`, `host-api-dispatcher.ts`, `host-api-child.ts`, `runtime/sandbox.ts`, `src/permissions/effect-kind.ts` | the alert-raising method; `triggerConversation` rejects `--` in `source` and, for plugins declaring `alerts`, accepts only declared suggestion sources with the per-source acceptance limit |
 | Pipeline | `src/alerts/*`, `src/boot/steps/alerts-setup.ts`, `src/boot.ts`, `src/boot/types.ts` (`startAlerts`), `src/main.ts` | pipeline, deferred start beside `startWorkBoardDueSoon` |
-| Host protocol | `src/plugins/isolation/host-api-wire.ts` (`HOSTAPI_PATH_CONTRACTS`), `host-api-dispatcher.ts`, `schemas/plugin-host-protocol/1/protocol.schema.json`, `src/plugins/isolation/__tests__/fixtures/host-protocol/1/` | `raiseAlert` / `withdrawAlert` as `ave/host/*` methods with `params`, advertised in the `construct` capabilities, the regenerated schema (the `build` gate fails on drift) and a method/reply golden pair |
+| Host protocol | `src/plugins/isolation/host-api-wire.ts` (`HOSTAPI_PATH_CONTRACTS`), `host-api-dispatcher.ts`, `schemas/plugin-host-protocol/5/protocol.schema.json`, `src/plugins/isolation/__tests__/fixtures/host-protocol/5/` | `raiseAlert` as an `ave/host/*` method with `params`, advertised in the `construct` capabilities, the regenerated schema (the `build` gate fails on drift) and a method/reply golden pair |
 | Overlay | `src/ui/renderer/context/OverlayContext.tsx`, `OverlayCard.tsx`, `use-routine-overlay.ts`, `TranscriptRenderer.tsx` | `alert` source kind, priority ordering, accept → `alert.withdrawn` |
 | Notifications | `src/main/notification-service.ts`, `src/ui/renderer/types.ts:377` | kind `"alert"` in both copies |
-| Events | `src/plugins/capabilities.ts`, `src/plugins/runtime/index.ts`, `src/boot/__tests__/event-namespace-policy.test.ts` | `alert` host-only emit, per-plugin delivery filter with grants |
+| Events | `src/plugins/capabilities.ts`, `src/plugins/runtime/index.ts`, `src/boot/__tests__/event-namespace-policy.test.ts` | host-internal alert lifecycle events; extension subscriptions accept only the host theme event |
 | Work Board | `src/work-board/due-soon.ts`, `work-board-setup.ts` | raise `@host:due-soon` through the pipeline |
 | Settings | `src/data/settings-store.ts`, `settings-defaults.ts` | `alerts` (with `visibility`, `seenByUser`, `repaired`, `escalated`, `absentSinceAppVersion`), `retiredPluginConfigs`; no new section anchor — the Alerts block nests in the selected plugin under `plugin-config-installed` |
 | IPC / preload | `src/shared/ipc-channels.ts`, `src/ipc/domains/alerts.ts`, `src/ipc/index.ts`, `src/preload/internal-api-surface.ts` | `ALERTS` channels |
@@ -1159,7 +1140,7 @@ Contract tests (host):
 - Visibility routing for the three levels and the lower-only rule; boot
   queue when no window exists; OS notification fires only after acceptance,
   never for a refusal, never for `low`, toast when focused, OS when
-  unfocused, `bypassFocusGate` honoured; `withdrawAlert` scoping; cards
+  unfocused, `bypassFocusGate` honoured; host-owned withdrawal scoping; cards
   survive a config-set restart and an update, and go on uninstall and
   revocation.
 - Toggle resolution: declared defaults; `inherits` from a retired record with
@@ -1358,10 +1339,10 @@ ave:
    common + settings-store suites.
 3. **Contract, validation and pipeline** — `public-contract.ts`, schema,
    `getDeclaredAlertKinds`, `configInherits`, `src/alerts/*`, `alerts-setup`,
-   HostApi methods across the isolation wire (`raiseAlert` and `withdrawAlert`
-   become `ave/host/*` methods: a `HOSTAPI_PATH_CONTRACTS` entry with its
+   the HostApi method across the isolation wire (`raiseAlert`
+   becomes an `ave/host/*` method: a `HOSTAPI_PATH_CONTRACTS` entry with its
    `params`, the dispatcher table and therefore the `construct` capabilities,
-   the regenerated `schemas/plugin-host-protocol/1/protocol.schema.json` —
+   the regenerated `schemas/plugin-host-protocol/5/protocol.schema.json` —
    the build gate fails otherwise — and a method/reply golden pair under
    `__tests__/fixtures/host-protocol/1/`), the overlay source guard in
    `use-routine-overlay.ts:190` and the source-dependent handling after it

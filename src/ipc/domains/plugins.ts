@@ -9,10 +9,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
-import { HOST_ONLY_EMIT_NAMESPACES, canEmitEvent } from "../../plugins/capabilities.js";
-import { auditPluginEmitDenial } from "../../plugins/emit-denial-audit.js";
+import { canEmitEvent } from "../../plugins/capabilities.js";
+import { emitPluginUiEvent, subscribePluginUiEvents } from "../../plugins/ui-events.js";
 import { PluginDeploymentDeniedError } from "../../plugins/deployment-guard.js";
-import { getDeclaredEmittedEvents } from "../../plugins/runtime/manifest-validation.js";
 import { stripSecretFields } from "../../plugins/config-schema.js";
 import { shouldBlockPluginSecretRead, validateApiKeyLikeSecretValue } from "../../plugins/secret-shape.js";
 import { emitPluginConfigChange, SECRET_REDACTED_SENTINEL } from "../../plugins/config-change-bus.js";
@@ -212,6 +211,16 @@ interface PluginWebviewBinding {
   runtimeRevision: number;
 }
 const pluginWebviewRegistry = new Map<number, PluginWebviewBinding>();
+
+subscribePluginUiEvents(({ pluginId, type, data }) => {
+  for (const [wcId, binding] of pluginWebviewRegistry) {
+    if (binding.pluginId !== pluginId) continue;
+    try {
+      const wc = webContents.fromId(wcId);
+      if (wc && !wc.isDestroyed()) wc.send(CHANNELS.pluginBridge.event, type, data);
+    } catch { /* A closing webview cannot interrupt other recipients. */ }
+  }
+});
 
 // Publish one host theme event alongside direct webview delivery.
 export function publishHostThemeChanged(safe: SafeThemePayload): void {
@@ -2045,23 +2054,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!manifest) {
       return { ok: false, error: "unknown-plugin-id" };
     }
-    // Use canEmitEvent for both lanes so host namespaces and undeclared events remain forbidden.
-    const declaredEmittedEvents = getDeclaredEmittedEvents(manifest);
-    if (!canEmitEvent(type, declaredEmittedEvents)) {
-      const requiredCap = auditPluginEmitDenial({
-        auditLogger,
-        lane: "ipc-bridge",
-        pluginId: binding.pluginId,
-        eventType: type,
-        declaredEmittedEvents,
-      });
-      const namespacePrefix = type.split(".")[0] ?? "";
-      return {
-        ok: false,
-        error: HOST_ONLY_EMIT_NAMESPACES.has(namespacePrefix)
-          ? `host-only-namespace:${namespacePrefix}`
-          : `missing-capability:${requiredCap}`,
-      };
+    if (!canEmitEvent(type, binding.pluginId)) {
+      return { ok: false, error: "event-target-forbidden" };
     }
     try {
       pluginRuntime.assertPluginEventEmitAccess(binding.pluginId, type);
@@ -2069,7 +2063,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: false, error: (err as Error).message };
     }
     try {
-      emitHostEvent(type, { ...((data as Record<string, unknown>) ?? {}), pluginId: binding.pluginId });
+      emitPluginUiEvent(binding.pluginId, type, data);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };

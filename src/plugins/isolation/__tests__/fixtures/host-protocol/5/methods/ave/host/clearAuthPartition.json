@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 31,
+    "id": 26,
     "jsonrpc": "2.0",
     "method": "ave/host/clearAuthPartition",
     "params": {
@@ -11,7 +11,7 @@
     }
   },
   "response": {
-    "id": 31,
+    "id": 26,
     "jsonrpc": "2.0",
     "result": null
   }

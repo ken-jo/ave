@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { importPluginFactory } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
 import {
@@ -20,7 +21,6 @@ import {
   type PluginConstructParams,
   type PluginConstructResult,
   type PluginLifecycleHookName,
-  type PluginShutdownParams,
 } from "./plugin-instance-wire.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -215,14 +215,6 @@ export function servePluginChild(
       case PLUGIN_INSTANCE_METHODS.stop:
         await instance.stop?.();
         return null;
-      case PLUGIN_INSTANCE_METHODS.shutdown: {
-        const subscriptionId = (params as unknown as PluginShutdownParams | undefined)?.subscriptionId;
-        if (typeof subscriptionId !== "string") {
-          throw new Error("[plugin-child] shutdown requires a string 'subscriptionId'");
-        }
-        await runtime.runShutdownHandler(subscriptionId);
-        return null;
-      }
       default:
         throw new Error(`[plugin-child] unknown instance method '${method}'`);
     }
@@ -310,8 +302,9 @@ function serveOverStdio(): void {
   const service = servePluginChild(process.stdin, claimProtocolStdout());
   const end = (): void => {
     service.hostGone();
-    // Host pipe closure must end the child; no plugin process may remain unwatched.
-    process.exit(0);
+    // Let EOF cleanup finish; a lost host cannot leave plugin-owned handles alive forever.
+    process.exitCode = 0;
+    setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
   };
   process.stdin.on("end", end);
   process.stdin.on("close", end);
@@ -330,7 +323,8 @@ function serveOverLoopback(env: Readonly<Record<string, string>>): void {
       const service = servePluginChild(socket, socket);
       const end = (): void => {
         service.hostGone();
-        process.exit(0);
+        process.exitCode = 0;
+        setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
       };
       socket.on("end", end);
       socket.on("close", end);

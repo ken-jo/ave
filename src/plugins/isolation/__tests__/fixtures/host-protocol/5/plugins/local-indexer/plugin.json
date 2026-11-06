@@ -14,18 +14,6 @@
         "host:overlay",
         "lifecycle-observer"
       ],
-      "emittedEvents": [
-        "index.document.updated",
-        "index.folders.changed",
-        "index.scan.progress",
-        "index.scan.completed",
-        "index.warning"
-      ],
-      "eventSubscriptions": [
-        {
-          "type": "host.theme.changed"
-        }
-      ],
       "hostSecrets": {
         "read": [
           "llm.apiKey.openai",

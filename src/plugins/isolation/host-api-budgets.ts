@@ -7,21 +7,19 @@ export const DISPATCH_SUBSCRIPTIONS_MAX = 256;
 export const DISPATCH_SUBSCRIPTION_KIND_MAX: Partial<Record<HostApiPath, number>> = {
   onEvent: 64,
   "config.onChange": 16,
-  onPluginsChanged: 4,
   spawnWorker: 8,
   startAudioCapture: 2,
   attachFloatingPanel: 1,
   resolveApiKey: 32,
 };
 
-type BucketName = "default" | "hostFetch" | "resolveApiKey" | "emitEvent" | "logEvent";
+type BucketName = "default" | "hostFetch" | "resolveApiKey" | "emitEvent";
 
 const BUCKETS: Record<BucketName, { readonly perSecond: number; readonly burst: number }> = {
   default: { perSecond: 50, burst: 200 },
   hostFetch: { perSecond: 20, burst: 60 },
   resolveApiKey: { perSecond: 10, burst: 30 },
   emitEvent: { perSecond: 50, burst: 200 },
-  logEvent: { perSecond: 100, burst: 500 },
 };
 
 export interface HostApiBudgetAudit {
@@ -55,14 +53,12 @@ export class HostApiBudgets {
     private readonly now: () => number = Date.now,
   ) {}
 
-  take(method: HostApiPath | "notifications/ave/log"): number {
+  take(method: HostApiPath): number {
     const name: BucketName = method === "hostFetch" || method === "resolveApiKey"
       ? method
       : method === "emitEvent" ? "emitEvent"
-      : method === "logEvent" || method === "notifications/ave/log" ? "logEvent"
       : "default";
-    // Log calls share one per-plugin budget; other methods have separate buckets.
-    const key = name === "logEvent" ? "logEvent" : method;
+    const key = method;
     const limit = BUCKETS[name];
     const now = Math.trunc(this.now());
     const capacity = limit.burst * 1000;
@@ -80,7 +76,7 @@ export class HostApiBudgets {
     return 0;
   }
 
-  deny(method: HostApiPath | "<unknown>" | "notifications/ave/log", code: HostApiWireErrorCode, bucket?: string): void {
+  deny(method: HostApiPath | "<unknown>", code: HostApiWireErrorCode, bucket?: string): void {
     const key = `${method}\u0000${code}`;
     const existing = this.audits.get(key);
     if (existing) {

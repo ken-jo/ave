@@ -34,16 +34,9 @@ export const PLUGIN_INSTANCE_METHODS = {
   start: "ave/instance/start",
   onPublished: "ave/instance/onPublished",
   stop: "ave/instance/stop",
-  /**
-   * Run one handler the plugin registered with `hostApi.onShutdown`, and
-   * answer when it has settled. A request rather than a notification because
-   * the host AWAITS a shutdown handler, as it does in-process — and it bounds
-   * the wait, which in-process it cannot enforce.
-   */
-  shutdown: "ave/instance/shutdown",
 } as const;
 
-/** One of the five. */
+/** A child instance method. */
 export type PluginInstanceMethod =
   (typeof PLUGIN_INSTANCE_METHODS)[keyof typeof PLUGIN_INSTANCE_METHODS];
 
@@ -118,8 +111,3 @@ export interface PluginConstructResult {
 
 /** The optional lifecycle hooks a `RuntimePlugin` may implement. */
 export type PluginLifecycleHookName = "start" | "onPublished" | "stop";
-
-/** What `shutdown` carries: which `onShutdown` registration to run. */
-export interface PluginShutdownParams {
-  readonly subscriptionId: string;
-}

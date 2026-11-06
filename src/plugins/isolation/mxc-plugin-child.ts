@@ -9,10 +9,8 @@ import { PluginChildTerminationUnverifiedError, terminationUnverified, type Chil
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { createLogger } from "../../lib/logger.js";
+import { capturePluginStderr } from "./plugin-stderr.js";
 import { errorMessage } from "../../shared/error-message.js";
-
-const log = createLogger("mxc-plugin-child");
 
 /** The backend planner's part of one incarnation's admission, never supplied by a manifest or a child message. The command,
  * arguments, cwd, environment and grants are not here: the adapter derives them from the host's intent and envelope. */
@@ -40,9 +38,9 @@ export interface MxcPluginChild {
 }
 
 /** Adapt owned streams directly; neither the supervisor PID nor stream payloads select the recipient. */
-export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">): MxcPluginChild {
+export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
   // Always take diagnostics, even when protocol construction has not begun.
-  owned.stderr.on("data", (chunk: Buffer) => log.debug(chunk.toString("utf8").trimEnd()));
+  capturePluginStderr(owned.stderr, pluginId);
   let cleanup: Promise<void> | undefined;
   let terminating = false;
   const terminatingHandlers = new Set<() => void>();
@@ -203,7 +201,7 @@ export async function spawnMxcPluginChild(
       await admitted.release();
       await launch.release();
     },
-  });
+  }, intent.pluginId);
   if (onTerminating) child.onTerminating(onTerminating);
   try {
     launch.assertCurrent();

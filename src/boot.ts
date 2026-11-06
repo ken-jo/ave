@@ -285,10 +285,7 @@ export async function bootstrap(
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
   notifyHomeTrustPending(homeTrust, ctx);
 
-  // §F7: ApprovalGate with audit. Constructed BEFORE initPluginRuntime so
-  // the per-plugin HostApi factory can wire `agentApproval` namespace to the
-  // live gate — without this ordering, plugins receive a hostApi missing the
-  // namespace and §8 main-process approval routing silently no-ops.
+  // Construct the audited approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(
     // Resolve the current conversation owner on delivery, listing and response.
     mainWindow === null ? null : approvalSurfaceResolver(),
@@ -616,7 +613,6 @@ export async function bootstrap(
     pluginRuntime,
     deploymentGuard,
     lateBinding,
-    runPluginShutdownHandlers,
     pluginPaths,
     loopbackManager,
     setBundleLifecycleHandler,
@@ -645,9 +641,6 @@ export async function bootstrap(
     permissionManager,
     // Idempotency SOT for `hostApi.hasRoutineBySource` (constructed above).
     routinesStore,
-    // Recommended-work channel target for `hostApi.proposeWork`. Read lazily:
-    // setupWorkBoard() runs below this call, and plugins only start after it.
-    getWorkBoardStore: () => ctx.workBoardStore,
     // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
     // setupAlerts() runs below this call, before plugins start.
     getAlertsService: () => ctx.alertsService,
@@ -664,7 +657,6 @@ export async function bootstrap(
   ctx.pluginRuntime = pluginRuntime;
   ctx.deploymentGuard = deploymentGuard;
   ctx.lateBinding = lateBinding;
-  ctx.runPluginShutdownHandlers = runPluginShutdownHandlers;
   ctx.pluginPaths = pluginPaths;
   ctx.pluginLoopbackManager = loopbackManager;
 

@@ -103,6 +103,16 @@ describe("runtime manifest validation hardening", () => {
     };
   }
 
+  it.each([
+    { field: "events", access: { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] } },
+    { field: "agentApprovalScopes", access: { plugins: [{ pluginId: "samplemail" }], agentApprovalScopes: ["email.send"] } },
+  ])("reports the rejected plugin access field $field", async ({ field, access }) => {
+    await writePlugin("invalid-access", { pluginAccess: access });
+    await expect(parsePluginJson(
+      join(installedDir, "invalid-access", "plugin.json"), await buildManifestValidator(),
+    )).rejects.toThrow(`unknown property: '${field}'`);
+  });
+
   it("rejects the removed keyword-to-tool preload field", async () => {
     await writePlugin("p-kw", {
       tools: ["pkw_hello", "pkw_bad", "pkw_good"],
@@ -154,7 +164,6 @@ describe("runtime manifest validation hardening", () => {
   it("3) retired notification declarations drop with a warning and the plugin still loads", async () => {
     await writePlugin("p-notif", {
       tools: ["pnotif_hello", "pnotif_bad", "pnotif_good"],
-      eventSubscriptions: ["meeting.started"],
       notificationEvents: [{ event: "meeting.ghost" }],
     });
     const runtime = new PluginRuntime({

@@ -44,7 +44,6 @@ describe("HostApiGenerationScope", () => {
     const set = vi.fn(async () => undefined);
     const api = scope.wrapHostApi({
       emitEvent,
-      logEvent: vi.fn(),
       config: { get: vi.fn(), set, onChange: vi.fn() },
     } as never);
 
@@ -88,24 +87,24 @@ describe("HostApiGenerationScope", () => {
     const admitted = vi.mocked(access.isExactAdmitted);
     admitted.mockReturnValue(false);
     const scope = new HostApiGenerationScope("sampleportal");
-    const getInstalledPluginIds = vi.fn(() => ["sampleportal"]);
-    const api = scope.wrapHostApi({ getInstalledPluginIds } as never);
+    const getSecret = vi.fn(() => null);
+    const api = scope.wrapHostApi({ getSecret } as never);
     scope.bindGeneration(access, "g1");
     scope.publish();
     scope.supersede();
 
-    expect(() => api.getInstalledPluginIds()).toThrow(/retired generation/);
-    expect(getInstalledPluginIds).not.toHaveBeenCalled();
+    expect(() => api.getSecret("plugin.sampleportal.token")).toThrow(/retired generation/);
+    expect(getSecret).not.toHaveBeenCalled();
   });
 
   it("discards a failed candidate and rejects its late work", () => {
     const scope = new HostApiGenerationScope("sampleportal");
     const dispose = vi.fn();
-    const api = scope.wrapHostApi({ getInstalledPluginIds: vi.fn(() => []) } as never);
+    const api = scope.wrapHostApi({ getSecret: vi.fn(() => null) } as never);
     scope.registerDisposer(dispose);
     scope.discard();
     expect(dispose).toHaveBeenCalledTimes(1);
-    expect(() => api.getInstalledPluginIds()).toThrow(/retired generation/);
+    expect(() => api.getSecret("plugin.sampleportal.token")).toThrow(/retired generation/);
   });
 
   it("removes and restores generation-owned published effects", () => {
@@ -129,7 +128,7 @@ describe("HostApiGenerationScope", () => {
     // callTool is a UI bridge, not a HostApi member; preparation must not acquire its authority.
     const scope = new HostApiGenerationScope("sampleportal");
     const callTool = vi.fn();
-    const api = scope.wrapHostApi({ callTool, logEvent: vi.fn() } as never);
+    const api = scope.wrapHostApi({ callTool } as never);
 
     expect(() => (api as unknown as { callTool: () => void }).callTool()).toThrow(
       /replacement generation is preparing/,
@@ -141,7 +140,7 @@ describe("HostApiGenerationScope", () => {
     // Every path absent from the effect table must be refused, including unknown members.
     const scope = new HostApiGenerationScope("sampleportal");
     const invented = vi.fn();
-    const api = scope.wrapHostApi({ someFutureMember: invented, logEvent: vi.fn() } as never);
+    const api = scope.wrapHostApi({ someFutureMember: invented } as never);
 
     expect(() => (api as unknown as { someFutureMember: () => void }).someFutureMember()).toThrow(
       /replacement generation is preparing/,

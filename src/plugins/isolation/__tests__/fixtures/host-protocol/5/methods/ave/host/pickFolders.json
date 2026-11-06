@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 35,
+    "id": 30,
     "jsonrpc": "2.0",
     "method": "ave/host/pickFolders",
     "params": {
@@ -10,7 +10,7 @@
     }
   },
   "response": {
-    "id": 35,
+    "id": 30,
     "jsonrpc": "2.0",
     "result": {
       "canceled": false,

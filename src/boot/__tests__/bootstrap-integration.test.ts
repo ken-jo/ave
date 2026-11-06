@@ -206,7 +206,6 @@ vi.mock("../steps/plugin-runtime.js", () => ({
         llmCallerRef: { fn: undefined },
         pluginCallLlmRef: { fn: undefined },
       },
-      runPluginShutdownHandlers: vi.fn(async () => {}),
       pluginPaths: {
         registryPath: "/tmp/ave-boot-test/plugins/registry.json",
         pluginsRoot: "/tmp/ave-boot-test/plugins",
@@ -796,7 +795,6 @@ describe("bootstrap() integration lock", () => {
         "routineEngine",
         "routinesScheduler",
         "routinesStore",
-        "runPluginShutdownHandlers",
         "scriptHookManager",
         "sessionGoalStore",
         "sessionTasksStore",

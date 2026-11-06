@@ -28,7 +28,7 @@ import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, as
 import { isRemoteControllerBoundToSession } from "../../../shared/chat-origin.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
-import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
 import {
   createPluginStorage,
@@ -43,23 +43,20 @@ import {
 import { probePrivateHost } from "../../../plugins/private-host-probe.js";
 import { shouldBlockPluginSecretRead } from "../../../plugins/secret-shape.js";
 import {
-  canEmitEvent,
   CAPABILITY_EXTERNAL_AUTH_CONSUMER,
   CAPABILITY_RAW_API_KEY,
 } from "../../../plugins/capabilities.js";
 import { appVersionSatisfiesMin } from "../../../shared/semver-compare.js";
-import { auditPluginEmitDenial } from "../../../plugins/emit-denial-audit.js";
-import { getDeclaredEmittedEvents, manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
+import { manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
-import { OVERLAY_V1, WORK_BOARD } from "../../../shared/ipc-channels.js";
+import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
 import {
   emitPluginConfigChange,
   subscribePluginConfigChange,
 } from "../../../plugins/config-change-bus.js";
 import type {
-  ApprovalChoice,
   AuthPartitionCookie,
   AuthWindowCookie,
   ConversationTriggerSpec,
@@ -70,11 +67,10 @@ import type {
 } from "../../../plugins/types.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 import type { RoutinesStore } from "../../../main/routines-store.js";
-import type { WorkBoardStore } from "../../../main/work-board-store.js";
-import { emitEvent, onEvent } from "../../types.js";
+import { onEvent } from "../../types.js";
+import { emitPluginUiEvent } from "../../../plugins/ui-events.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
-import { logPluginLifecycle, PluginPhase } from "../../../plugins/lifecycle-log.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
 import { runSecretGate } from "../../../plugins/secret-access/secret-gate.js";
@@ -90,13 +86,8 @@ import {
   type ResolveApiKeyPurpose,
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
-import {
-  verifyApprovalRequestScope,
-  verifyApprovalResponder,
-} from "../../../permissions/agent-action-requester.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
 import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
-import { approvalIssuerRegistry, auditApprovalViolation } from "./approval-gating.js";
 import { routeExternalUrl } from "./external-url.js";
 import {
   deriveOverlaySummaryForDisplay,
@@ -105,30 +96,18 @@ import {
   triggerConversationDedupe,
   triggerConversationRateLimiter,
   triggerDenyAuditThrottle,
-  TriggerConversationRateLimiter,
 } from "./trigger-gate.js";
 import {
   getDeclaredSuggestionSources,
-  getDeclaredWorkProposalKinds,
 } from "../../../plugins/runtime/manifest-validation.js";
 import { suggestionLedger } from "../../../alerts/suggestion-ledger.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 import type { AlertsService } from "../../../alerts/service.js";
-import { alertEventReaches, isAlertEvent } from "../../../alerts/events.js";
-import type {
-  WorkProposalChangedEventPayload,
-  WorkProposalInput,
-  WorkProposalResult,
-} from "../../../shared/work-board-types.js";
 import type { LateBindingRefs } from "../plugin-runtime.js";
-import { proposalId } from "../../../work-board/board-file.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { resolvePluginDisplayName } from "../../../shared/plugin-provenance.js";
 
 const log = createLogger("ave");
-
-/** Proposal churn has its own rate bucket so upserts cannot consume overlay-trigger capacity. */
-const workProposalRateLimiter = new TriggerConversationRateLimiter();
 
 function assertActiveHostApi(
   pluginId: string,
@@ -219,8 +198,6 @@ export interface CreateHostApiFactoryDeps {
   ) => PluginRegistryTrust | undefined;
   /** Re-read the registry into `getRegistryEntry` when the file changed since the last read. */
   refreshRegistryEntryCacheIfChanged: () => Promise<void>;
-  pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void> }>;
-  readAppPreference: (pluginId: string, key: string) => unknown;
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
   leaseDenialAudit?: LeaseDenialAudit;
@@ -252,7 +229,6 @@ export interface CreateHostApiFactoryDeps {
   permissionManager?: import("../../../permissions/permission-manager.js").PermissionManager;
   routinesStore: RoutinesStore;
   /** Resolve Work Board storage late; absence at plugin start is a boot-order error. */
-  getWorkBoardStore: () => WorkBoardStore | undefined;
   /** Minimal hosts may omit alerts; raiseAlert then fails loudly. */
   getAlertsService: () => AlertsService | undefined;
   /** Create and promote the Suggestions conversation before staging its card. */
@@ -273,15 +249,12 @@ export function createHostApiFactory(
   candidateRegistryEntry?: Readonly<
     PluginRegistryTrust
   >,
-  candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => PluginHostApi {
   const {
     getPluginRuntime,
     lateBinding,
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
-    pluginShutdownHandlers,
-    readAppPreference,
     settingsService,
     bootAuditLogger,
     pluginRuntimeAuditLog,
@@ -297,7 +270,6 @@ export function createHostApiFactory(
     approvalGate,
     permissionManager,
     routinesStore,
-    getWorkBoardStore,
     getAlertsService,
     stageInSuggestionsSession,
     grantEvidence,
@@ -325,14 +297,9 @@ export function createHostApiFactory(
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): PluginHostApi => {
     // Resolve the runtime once per plugin incarnation, after assignment.
     const pluginRuntime = getPluginRuntime();
-    const getApprovedPluginAccess = (): PluginAccessSpec | undefined =>
-      candidateApprovedPluginAccess === undefined
-        ? pluginRuntime.getApprovedPluginAccess(pluginId)
-        : candidateApprovedPluginAccess ?? undefined;
     if (installPluginId === undefined) {
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
@@ -391,28 +358,6 @@ export function createHostApiFactory(
       const service = getAlertsService();
       if (!service) throw new Error(`[plugin:${pluginId}] hostApi.${member}: alerts service is not constructed`);
       return service;
-    };
-    /** Missing Work Board storage is a boot-order error, never a silent proposal drop. */
-    const requireWorkBoardStore = (): WorkBoardStore => {
-      const store = getWorkBoardStore();
-      if (!store) {
-        throw new Error(
-          `[plugin:${pluginId}] hostApi.proposeWork: work board store is not constructed`,
-        );
-      }
-      return store;
-    };
-    const notifyProposalChanged = (
-      id: string,
-      change: WorkProposalChangedEventPayload["change"],
-    ): void => {
-      const target = liveMainWindow();
-      if (!target || target.isDestroyed()) return;
-      target.webContents.send(WORK_BOARD.proposalChanged, {
-        proposalId: id,
-        change,
-        changedAt: new Date().toISOString(),
-      } satisfies WorkProposalChangedEventPayload);
     };
     const assertIssuedCapabilityActive = (memberPath: string): void => {
       if (!hostIncarnation.isActive()) {
@@ -630,65 +575,15 @@ export function createHostApiFactory(
         },
       },
       emitEvent: (type, data) => {
-        logPluginLifecycle("debug", { pluginId, phase: PluginPhase.CAPABILITY_CHECK, eventType: type }, "checking emit capability");
-        const declaredEmittedEvents = getDeclaredEmittedEvents(manifest);
-        if (!canEmitEvent(type, declaredEmittedEvents)) {
-          auditPluginEmitDenial({
-            auditLogger: bootAuditLogger,
-            lane: "plugin",
-            pluginId,
-            eventType: type,
-            declaredEmittedEvents,
-          });
-          throw new Error(`Plugin '${pluginId}' is not allowed to emit undeclared event '${type}'`);
-        }
-        pluginRuntime.assertPluginEventEmitAccess(pluginId, type);
-        logPluginLifecycle("debug", { pluginId, phase: PluginPhase.EVENT_EMIT, eventType: type }, "event emitted");
-        emitEvent(type, { ...((data as Record<string, unknown>) ?? {}), pluginId });
+        emitPluginUiEvent(pluginId, type, data);
       },
       onEvent: (type, handler) => {
-        pluginRuntime.assertPluginEventAccess(
-          pluginId,
-          type,
-          candidateApprovedPluginAccess,
-        );
-        // Host alert events are visible only to the owner or explicitly granted named-plugin subscribers.
-        const alertEvent = isAlertEvent(type);
+        pluginRuntime.assertPluginEventAccess(pluginId, type);
         const dispatch = (data: unknown) => {
-          if (!acceptsHostNotification()) return;
-          if (alertEvent && !alertEventReaches(pluginId, type, data, getApprovedPluginAccess())) return;
-          handler(data);
+          if (acceptsHostNotification()) handler(data);
         };
-        // Contain asynchronous event-listener failures just as the bus contains synchronous throws.
-        const guardedHandler = hostEffects ? hostEffects.wrapListener(dispatch) : dispatch;
-        const unsubscribe = onEvent(type, (data) => { guardedHandler(data); });
-        logPluginLifecycle("debug", { pluginId, phase: PluginPhase.EVENT_LISTEN, eventType: type }, "event listener registered");
-        return registerOwnedDisposer(unsubscribe);
-      },
-      getInstalledPluginIds: () => {
-        return pluginRuntime.listPluginIds().filter((id) => id !== pluginId);
-      },
-      onPluginsChanged: (handler) => {
-        const dispatchInstalled = (data: unknown) => {
-          if (!acceptsHostNotification()) return;
-          const payload = data as { pluginId?: string; source?: "marketplace" | "local-dev" } | null | undefined;
-          const subjectId = payload?.pluginId;
-          if (typeof subjectId !== "string" || subjectId === pluginId) return;
-          const source = payload?.source === "local-dev" ? "local-dev" : "marketplace";
-          handler({ type: "installed", pluginId: subjectId, source });
-        };
-        const dispatchUninstalled = (data: unknown) => {
-          if (!acceptsHostNotification()) return;
-          const subjectId = (data as { pluginId?: string } | null | undefined)?.pluginId;
-          if (typeof subjectId !== "string" || subjectId === pluginId) return;
-          handler({ type: "uninstalled", pluginId: subjectId });
-        };
-        const guardedInstalled = hostEffects ? hostEffects.wrapListener(dispatchInstalled) : dispatchInstalled;
-        const guardedUninstalled = hostEffects ? hostEffects.wrapListener(dispatchUninstalled) : dispatchUninstalled;
-        const unsubInstalled = onEvent("plugin.installed", (data) => { guardedInstalled(data); });
-        const unsubUninstalled = onEvent("plugin.uninstalled", (data) => { guardedUninstalled(data); });
-        const unsubscribe = () => { unsubInstalled(); unsubUninstalled(); };
-        return registerOwnedDisposer(unsubscribe);
+        const guarded = hostEffects ? hostEffects.wrapListener(dispatch) : dispatch;
+        return registerOwnedDisposer(onEvent(type, (data) => { guarded(data); }));
       },
       // Return opaque host leases unless raw exposure was explicitly reviewed.
       resolveApiKey: async (opts) => {
@@ -1036,35 +931,6 @@ export function createHostApiFactory(
           throw error;
         }
       },
-      logEvent: (level, message, data) => {
-        try {
-          bootAuditLogger.log({
-            timestamp: new Date().toISOString(),
-            sessionId: "plugin",
-            type: level === "error" ? "error" : "tool_call",
-            input: `[plugin:${pluginId}] [${level.toUpperCase()}] ${message}`,
-            output: data === undefined ? undefined : JSON.stringify(data).slice(0, 500),
-          });
-        } catch (err) {
-          log.warn(`logEvent failed: %s`, (err as Error).message);
-        }
-      },
-      onShutdown: (handler) => {
-        const invoke = async () => {
-          if (!hostIncarnation.isActive()) return;
-          await handler();
-        };
-        const entry = {
-          pluginId,
-          handler: hostEffects ? hostEffects.wrapCallback(invoke) : invoke,
-        };
-        pluginShutdownHandlers.push(entry);
-        const unsubscribe = () => {
-          const index = pluginShutdownHandlers.indexOf(entry);
-          if (index >= 0) pluginShutdownHandlers.splice(index, 1);
-        };
-        registerOwnedDisposer(unsubscribe);
-      },
       // Bind worker identity host-side; a self-claimed worker id cannot authorize host-routed tools.
       spawnWorker: async (workerSpec) => {
         const worker = await spawnWorker({
@@ -1081,8 +947,7 @@ export function createHostApiFactory(
         }
         return bindWorkerHandle(worker);
       },
-      // Read external-link routing live; public preference reads use only the explicit allow-list.
-      // Denied preference keys return undefined and warn once per key and plugin.
+      // Read external-link routing live.
       openExternalUrl: async (url: string): Promise<void> => {
         await routeExternalUrl({
           url,
@@ -1092,9 +957,6 @@ export function createHostApiFactory(
           openLinkWindowService: (opts) => openLinkWindowService(requireMainWindow(), opts),
           shellOpenExternal,
         });
-      },
-      getAppPreference: <T = unknown>(key: string): T | undefined => {
-        return readAppPreference(pluginId, key) as T | undefined;
       },
       // Host DNS probing is a bounded UX hint, not a trust boundary.
       // Audit probe host and outcome here because read effects bypass executor audit; cap names to 64 characters.
@@ -1150,8 +1012,6 @@ export function createHostApiFactory(
       /** The host owns dock placement and flags; plugins may attach only their own declared surface at a clamped height. */
       attachFloatingPanel: async (request: AttachFloatingPanelRequest) =>
         floatingDock(deps.host, deps.getPluginRuntime).attach(pluginId, request),
-      resizeFloatingPanel: async (panelId: string, height: number) =>
-        floatingDock(deps.host, deps.getPluginRuntime).resizeByPanelId(pluginId, panelId, height),
       openAuthWindow: (async (opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean }) => {
         const safeUrlForLog = (() => {
           try {
@@ -1408,67 +1268,6 @@ export function createHostApiFactory(
         return results;
       },
 
-      // The approval gate is required at construction; absence is a boot-order error.
-      // Requests bind approved scope and issuer; responses recheck both ownership and the current grant.
-      agentApproval: {
-        request: async (input: {
-          toolName: string;
-          args: unknown;
-          reason: string;
-          scope: string;
-        }): Promise<ApprovalChoice> => {
-          const approvedAccess = getApprovedPluginAccess();
-          const allowedScopes: string[] =
-            Array.isArray(approvedAccess?.agentApprovalScopes)
-              ? approvedAccess.agentApprovalScopes
-              : [];
-          try {
-            verifyApprovalRequestScope(pluginId, input.scope, allowedScopes);
-          } catch (err) {
-            auditApprovalViolation(err, bootAuditLogger, pluginId, `request:${input.scope}`);
-          }
-          const { requestAgentApproval } = await import(
-            "../../../permissions/agent-action-requester.js"
-          );
-          return requestAgentApproval(
-            approvalGate,
-            {
-              toolName: input.toolName,
-              args: input.args,
-              reason: input.reason,
-              source: "plugin",
-              sourcePluginId: pluginId,
-              scope: input.scope,
-            },
-            approvalIssuerRegistry,
-          );
-        },
-
-        respond: async (
-          requestId: string,
-          choice: ApprovalChoice,
-          nonce?: string,
-          hmac?: string,
-        ): Promise<void> => {
-          const approvedAccess = getApprovedPluginAccess();
-          const allowedScopes: string[] =
-            Array.isArray(approvedAccess?.agentApprovalScopes)
-              ? approvedAccess.agentApprovalScopes
-              : [];
-          try {
-            verifyApprovalResponder(
-              approvalIssuerRegistry,
-              requestId,
-              pluginId,
-              allowedScopes,
-            );
-          } catch (err) {
-            auditApprovalViolation(err, bootAuditLogger, pluginId, requestId);
-          }
-          await approvalGate.resolveWithFreshIdentity(requestId, { requestId, choice, nonce, hmac });
-        },
-      },
-
       // Stage suggestions in their dedicated conversation; confirmation imports the prompt without starting a new loop.
       // Declared suggestion sources are accepted once per 30 days; stage before charging and persist before resolving.
       triggerConversation: async (spec: ConversationTriggerSpec) => {
@@ -1527,43 +1326,9 @@ export function createHostApiFactory(
         return routinesStore.list().some((r) => r.source === source);
       },
 
-      // Proposals carry text and a key; host-owned planning, approval, and execution retain executable authority.
-      // Only installed manifest kinds authorize proposals; undeclared kinds are refused.
-      proposeWork: async (input: WorkProposalInput): Promise<WorkProposalResult> => {
-        if (!input || typeof input !== "object" || typeof input.kind !== "string") {
-          return { status: "invalid", field: "kind" };
-        }
-        if (workProposalRateLimiter.isOverCap(pluginId)) {
-          return { status: "rate_limited" };
-        }
-        const result = await requireWorkBoardStore().upsertProposal(
-          {
-            pluginId,
-            // An omitted authored display name intentionally resolves to its id.
-            pluginLabel: manifest.name ?? pluginId,
-            grantedKinds: getDeclaredWorkProposalKinds(manifest, pluginId),
-          },
-          input,
-        );
-        workProposalRateLimiter.record(pluginId);
-        if (result.status === "ok") notifyProposalChanged(result.proposal.id, "posted");
-        return result;
-      },
-
-      withdrawWorkProposal: async (kind: string, key: string): Promise<boolean> => {
-        if (typeof kind !== "string" || typeof key !== "string") return false;
-        const withdrawn = await requireWorkBoardStore().withdrawProposal(pluginId, kind, key);
-        // Proposal identity includes the bound plugin id, so another plugin’s key cannot address it.
-        if (withdrawn) notifyProposalChanged(proposalId(pluginId, kind, key.trim()), "withdrawn");
-        return withdrawn;
-      },
-
       // Host-rendered alerts accept declared kind slots only; ownership uses the bound plugin id.
       raiseAlert: async (input: AlertInput): Promise<AlertResult> =>
         requireAlertsService("raiseAlert").raise(pluginId, input),
-
-      withdrawAlert: async (kind: string, key: string): Promise<boolean> =>
-        requireAlertsService("withdrawAlert").withdraw(pluginId, kind, key),
         }),
         {
           pluginId,

@@ -392,7 +392,6 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
     const manifestPath = writePlugin(tmp, "manifest-event-owner", {
       name: "Alias Event Fixture",
       tools: ["alias_event_ping"],
-      emittedEvents: ["manifest-event-owner.changed"],
     });
     const registryPath = writeRegistry(tmp, [
       { id: "marketplace-event-slug", manifestPath, enabled: true },
@@ -416,6 +415,6 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
         "unrelated-plugin",
         "manifest-event-owner.changed",
       ),
-    ).toThrow(/owned by plugin 'manifest-event-owner'/);
+    ).toThrow(/only its own UI events/);
   });
 });

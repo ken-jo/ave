@@ -15,10 +15,8 @@ type ScopeState =
 const PREPARED_SUBSCRIPTIONS = new Set([
   "config.onChange",
   "onEvent",
-  "onPluginsChanged",
-  "onShutdown",
 ]);
-const QUEUED_SIGNALS = new Set(["emitEvent", "logEvent"]);
+const QUEUED_SIGNALS = new Set(["emitEvent"]);
 const PREPARED_SIGNAL_LIMIT = 64;
 
 interface GenerationBinding {

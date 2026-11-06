@@ -6,7 +6,6 @@ import { createPluginStorage } from "../storage.js";
 import { createNodeSecretEncryption } from "../../data/node-secret-encryption.js";
 import type { SecretEncryption } from "../../data/secret-document-store.js";
 import { applyConfigDefaults } from "../config-schema.js";
-import { createLogger } from "../../lib/logger.js";
 import { aveHome } from "../../shared/ave-home.js";
 import {
   PLUGIN_DATA_DIR_NAME,
@@ -15,7 +14,6 @@ import {
   resolvePluginSocketDir,
 } from "../plugin-storage-layout.js";
 import { resolvePluginDataRoot } from "../plugin-storage-containment.js";
-const log = createLogger("sandbox");
 
 /** App visibility is an allowlist, not risk classification; model tools still require executor permission and audit. */
 
@@ -129,14 +127,10 @@ export function createNoopHostApi(
     },
     emitEvent: () => {},
     onEvent: () => () => {},
-    getInstalledPluginIds: () => [],
-    onPluginsChanged: () => () => {},
     getSecret: async () => null,
     callLlm: async () => {
       throw new Error("LLM not available in noop context");
     },
-    logEvent: () => {},
-    onShutdown: () => {},
     openExternalUrl: async () => {
       throw new Error("openExternalUrl not available in noop context");
     },
@@ -165,9 +159,6 @@ export function createNoopHostApi(
     attachFloatingPanel: async () => {
       throw new Error("attachFloatingPanel not available in noop context");
     },
-    resizeFloatingPanel: async () => {
-      throw new Error("resizeFloatingPanel not available in noop context");
-    },
     resolveMappedDriveRoot: async () => {
       throw new Error("resolveMappedDriveRoot not available in noop context");
     },
@@ -187,15 +178,7 @@ export function createNoopHostApi(
       source: typeof spec?.source === "string" ? spec.source : "",
     }),
     hasRoutineBySource: async () => false,
-    // Without a board, return the ordinary proposal refusal status rather than throw.
-    proposeWork: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
-    withdrawWorkProposal: async () => false,
     raiseAlert: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
-    withdrawAlert: async () => false,
-    agentApproval: {
-      request: async () => "deny-once" as const,
-      respond: async () => {},
-    },
   };
 }
 
@@ -232,13 +215,6 @@ export function buildPluginContext(opts: {
       ...(opts.configOverrides["*"] ?? {}),
       ...(opts.configOverrides[opts.pluginId] ?? {}),
     }),
-    log: (message: string, meta?: unknown) => {
-      if (meta !== undefined) {
-        log.info({ pluginId: opts.pluginId, meta }, message);
-        return;
-      }
-      log.info({ pluginId: opts.pluginId }, message);
-    },
     hostApi: opts.hostApi,
   };
 }

@@ -104,7 +104,7 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
     // Sanity: enumeration actually found the surface (guards against a refactor that hides methods behind non-enumerable props and silently passes).
     expect(paths.length).toBeGreaterThan(20);
     expect(paths).toContain("storage.writeJson");
-    expect(paths).toContain("agentApproval.request");
+    expect(paths).toContain("config.set");
     expect(paths).toContain("callLlm");
     expect(paths).toContain("openAuthPartitionViewer");
 
@@ -127,7 +127,7 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
       doMutation = (): string => "mutated";
     }
     const fauxHostApi = {
-      getInstalledPluginIds: () => [],
+      getSecret: () => [],
       ns: new CustomProtoNamespace(),
     };
     const paths: string[] = [];
@@ -151,12 +151,12 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
     const ledger: EffectLedger = createEffectLedger("cid-known");
     await runWithEffectLedger(ledger, async () => {
       // A pure read method records read; a write method records write — both via the structural wrapper, no manual recordChokepoint at the call-site.
-      hostApi.getInstalledPluginIds();
+      await hostApi.getSecret("plugin.test.key");
       await hostApi.openExternalUrl("https://example.com");
     });
     const summary = ledger.summary();
     expect(summary.effects.map((e) => e.kind)).toEqual([
-      "getInstalledPluginIds",
+      "getSecret",
       "openExternalUrl",
     ]);
     expect(summary.hasMutatingEffect).toBe(true); // openExternalUrl is a write

@@ -9,7 +9,7 @@ export const PROBE_NAMES = ["node-ui", "loopback", "stdio-lifetime", "kernel-obj
 // Read the numeric entries from the owning policy without loading app code in a standalone probe.
 export async function loadBudgets() {
   const source = await readFile(new URL("../../src/shared/tool-timeout-policy.ts", import.meta.url), "utf8");
-  const entries = ["windowsAclHostStartupMs", "mxcRequestTransportMs", "pluginShutdownHandlerMs", "processGroupPollMs"];
+  const entries = ["windowsAclHostStartupMs", "mxcRequestTransportMs", "pluginRetirementDrainMs", "processGroupPollMs"];
   return Object.fromEntries(entries.map((key) => {
     const value = source.match(new RegExp(`^  ${key}: ([\\d_]+),$`, "m"))?.[1];
     if (!value) throw new Error(`Unsupported timeout policy entry: ${key}`);

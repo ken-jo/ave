@@ -90,10 +90,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     telemetry: ctx.telemetry,
     pluginTelemetry: ctx.pluginTelemetry,
     autoUpdaterStop: ctx.autoUpdaterStop,
-    runPluginShutdownHandlers: async () => {
-      disposeActiveLlmWildcard();
-      await ctx.runPluginShutdownHandlers();
-    },
     pluginPaths: ctx.pluginPaths,
     clearAuthPartitionService: (partition) => requireDesktopHost(ctx.host).clearAuthPartitionService(partition),
     forgetPluginAuthPartitionsService,
@@ -126,7 +122,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
           }
         };
 
-        // Direct callers bypass the app-level plugin-shutdown phase.
         attempt(disposeActiveLlmWildcard);
         attempt(() => ctx.disposePluginEventBridge());
         attempt(() => ctx.autoUpdaterStop?.());

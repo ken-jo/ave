@@ -20,7 +20,6 @@ import { currentInvocationOrigin } from "../runtime/origin-chain.js";
 import {
   PluginStorageEncryptionUnavailableError,
   PluginStorageError,
-  type ApprovalChoice,
   type ConversationTriggerSpec,
   type PluginHostApi,
   type PluginWorkerSpec,
@@ -134,8 +133,6 @@ export interface SubscriptionScope<Event = unknown> {
   deliver(subscriptionId: string, payload: Event): number | undefined;
   /** Host closure releases its registration and tells the child to clear local handle or credential state. */
   release(subscriptionId: string): boolean;
-  /** Await the registered child shutdown handler under the owner request bound. */
-  shutdown(subscriptionId: string): Promise<void>;
   /** Route `notifications/ave/subscription/send` for this registration to `receive` until it closes. */
   accept(subscriptionId: string, receive: (payload: unknown) => void): void;
   /** See {@link ChildNotificationSink.whenDrained}; false where the wire cannot pace. */
@@ -251,20 +248,12 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   "config.set": unimplementedHostApiPath("config.set"),
   "config.onChange": unimplementedHostApiPath("config.onChange"),
   getSecret: unimplementedHostApiPath("getSecret"),
-  getInstalledPluginIds: childLocalHostApiPath("getInstalledPluginIds"),
   hasRoutineBySource: unimplementedHostApiPath("hasRoutineBySource"),
-  proposeWork: unimplementedHostApiPath("proposeWork"),
-  withdrawWorkProposal: unimplementedHostApiPath("withdrawWorkProposal"),
   raiseAlert: unimplementedHostApiPath("raiseAlert"),
-  withdrawAlert: unimplementedHostApiPath("withdrawAlert"),
-  getAppPreference: childLocalHostApiPath("getAppPreference"),
   probePrivateHost: unimplementedHostApiPath("probePrivateHost"),
   resolveApiKey: unimplementedHostApiPath("resolveApiKey"),
   emitEvent: unimplementedHostApiPath("emitEvent"),
   onEvent: unimplementedHostApiPath("onEvent"),
-  onPluginsChanged: unimplementedHostApiPath("onPluginsChanged"),
-  onShutdown: unimplementedHostApiPath("onShutdown"),
-  logEvent: unimplementedHostApiPath("logEvent"),
   callLlm: unimplementedHostApiPath("callLlm"),
   hostFetch: unimplementedHostApiPath("hostFetch"),
   spawnWorker: unimplementedHostApiPath("spawnWorker"),
@@ -272,7 +261,6 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   listAudioInputDevices: unimplementedHostApiPath("listAudioInputDevices"),
   startAudioCapture: unimplementedHostApiPath("startAudioCapture"),
   attachFloatingPanel: unimplementedHostApiPath("attachFloatingPanel"),
-  resizeFloatingPanel: unimplementedHostApiPath("resizeFloatingPanel"),
   openExternalUrl: unimplementedHostApiPath("openExternalUrl"),
   openAuthWindow: unimplementedHostApiPath("openAuthWindow"),
   openAuthPartitionViewer: unimplementedHostApiPath("openAuthPartitionViewer"),
@@ -283,8 +271,6 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   pickFolders: unimplementedHostApiPath("pickFolders"),
   getAuthPartitionCookies: unimplementedHostApiPath("getAuthPartitionCookies"),
   triggerConversation: unimplementedHostApiPath("triggerConversation"),
-  "agentApproval.request": unimplementedHostApiPath("agentApproval.request"),
-  "agentApproval.respond": unimplementedHostApiPath("agentApproval.respond"),
 };
 
 /** Bind user interactions on the host; the child imports only pure wire helpers. */
@@ -298,7 +284,6 @@ export type InteractionHostApi = Pick<
   | "authRedirect"
   | "pickFolders"
   | "triggerConversation"
-  | "agentApproval"
 >;
 
 /** The host decides the auth-window overload; the boundary carries its actual result. */
@@ -346,28 +331,6 @@ export function createInteractionHostApiPaths(
     triggerConversation: defineHostApiPath("triggerConversation", async (call) =>
       hostApi.triggerConversation(call.args[0] as ConversationTriggerSpec),
     ),
-    // Only the host approval gate timeout applies; its denial is a value.
-    "agentApproval.request": defineHostApiPath(
-      "agentApproval.request",
-      async (call) =>
-        hostApi.agentApproval.request(
-          call.args[0] as {
-            toolName: string;
-            args: unknown;
-            reason: string;
-            scope: string;
-          },
-        ),
-    ),
-    // Echo gate-issued nonce/hmac only when present; never invent confused-deputy fields.
-    "agentApproval.respond": defineHostApiPath("agentApproval.respond", (call) =>
-      hostApi.agentApproval.respond(
-        call.args[0] as string,
-        call.args[1] as ApprovalChoice,
-        call.args[2] as string | undefined,
-        call.args[3] as string | undefined,
-      ),
-    ),
   };
 }
 
@@ -378,14 +341,10 @@ export type ServiceHostApi = Pick<
   | "getSecret"
   | "getAuthPartitionCookies"
   | "hasRoutineBySource"
-  | "proposeWork"
-  | "withdrawWorkProposal"
   | "raiseAlert"
-  | "withdrawAlert"
   | "probePrivateHost"
   | "resolveApiKey"
   | "emitEvent"
-  | "logEvent"
   | "callLlm"
   | "hostFetch"
   | "spawnWorker"
@@ -393,7 +352,6 @@ export type ServiceHostApi = Pick<
   | "listAudioInputDevices"
   | "startAudioCapture"
   | "attachFloatingPanel"
-  | "resizeFloatingPanel"
 >;
 
 /** Delegated workers must stay within the exact child envelope, including host-widened roots. */
@@ -411,11 +369,9 @@ const RESOLVE_API_KEY_VENDORS = [
   "vertex",
   "anthropic",
 ] as const;
-const LOG_EVENT_LEVELS = ["info", "warn", "error"] as const;
 
 type ResolveApiKeyPurpose = (typeof RESOLVE_API_KEY_PURPOSES)[number];
 type ResolveApiKeyVendor = (typeof RESOLVE_API_KEY_VENDORS)[number];
-type LogEventLevel = (typeof LOG_EVENT_LEVELS)[number];
 
 function rejectArgument(path: HostApiPath, detail: string): never {
   throw new HostApiBoundaryError(
@@ -639,12 +595,6 @@ function attachFloatingPanelPath(hostApi: ServiceHostApi): HostApiPathHandler {
       height: panel.height,
     } satisfies WireFloatingPanelHandle;
   });
-}
-
-function resizeFloatingPanelPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("resizeFloatingPanel", async (call) =>
-    hostApi.resizeFloatingPanel(String(call.args[0]), Number(call.args[1])),
-  );
 }
 
 function resolveMappedDriveRootPath(hostApi: ServiceHostApi): HostApiPathHandler {
@@ -986,44 +936,10 @@ function emitEventPath(hostApi: ServiceHostApi): HostApiPathHandler {
   );
 }
 
-function logEventPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("logEvent", async (call) => {
-    const level = requireString(call, 0, "level");
-    if (!LOG_EVENT_LEVELS.includes(level as LogEventLevel)) {
-      rejectArgument(call.path, `unknown level '${level}'`);
-    }
-    return hostApi.logEvent(
-      level as LogEventLevel,
-      requireString(call, 1, "message"),
-      call.args[2],
-    );
-  });
-}
-
 /** Caller-specific routine prefixes belong to host policy; do not duplicate them here. */
 function hasRoutineBySourcePath(hostApi: ServiceHostApi): HostApiPathHandler {
   return defineHostApiPath("hasRoutineBySource", async (call) =>
     hostApi.hasRoutineBySource(requireString(call, 0, "source")),
-  );
-}
-
-/** The host owns proposal grants and validation; the boundary checks only shape. */
-function proposeWorkPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("proposeWork", async (call) => {
-    const input = call.args[0];
-    if (!input || typeof input !== "object" || Array.isArray(input)) {
-      rejectArgument(call.path, "input must be an object");
-    }
-    return hostApi.proposeWork(input as Parameters<ServiceHostApi["proposeWork"]>[0]);
-  });
-}
-
-function withdrawWorkProposalPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("withdrawWorkProposal", async (call) =>
-    hostApi.withdrawWorkProposal(
-      requireString(call, 0, "kind"),
-      requireString(call, 1, "key"),
-    ),
   );
 }
 
@@ -1038,15 +954,6 @@ function raiseAlertPath(hostApi: ServiceHostApi): HostApiPathHandler {
   });
 }
 
-function withdrawAlertPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("withdrawAlert", async (call) =>
-    hostApi.withdrawAlert(
-      requireString(call, 0, "kind"),
-      requireString(call, 1, "key"),
-    ),
-  );
-}
-
 /** Bind this incarnation over throwing defaults. */
 export function createServiceHostApiPaths(
   hostApi: ServiceHostApi,
@@ -1058,15 +965,11 @@ export function createServiceHostApiPaths(
     getSecret: getSecretPath(hostApi),
     getAuthPartitionCookies: getAuthPartitionCookiesPath(hostApi),
     hasRoutineBySource: hasRoutineBySourcePath(hostApi),
-    proposeWork: proposeWorkPath(hostApi),
-    withdrawWorkProposal: withdrawWorkProposalPath(hostApi),
     raiseAlert: raiseAlertPath(hostApi),
-    withdrawAlert: withdrawAlertPath(hostApi),
     probePrivateHost: probePrivateHostPath(hostApi),
     resolveApiKey: bindOptional("resolveApiKey", hostApi.resolveApiKey, () =>
       resolveApiKeyPath(hostApi)),
     emitEvent: emitEventPath(hostApi),
-    logEvent: logEventPath(hostApi),
     callLlm: callLlmPath(hostApi),
     hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
       hostFetchPath(hostApi, onMalformedCredentialSelector)),
@@ -1076,7 +979,6 @@ export function createServiceHostApiPaths(
     listAudioInputDevices: listAudioInputDevicesPath(hostApi),
     startAudioCapture: startAudioCapturePath(hostApi),
     attachFloatingPanel: attachFloatingPanelPath(hostApi),
-    resizeFloatingPanel: resizeFloatingPanelPath(hostApi),
   };
 }
 
@@ -1228,7 +1130,7 @@ export function createStorageHostApiPaths(
 
 export type ConfigSubscriptionHostApi = Pick<
   PluginHostApi,
-  "config" | "onEvent" | "onPluginsChanged" | "onShutdown"
+  "config" | "onEvent"
 >;
 
 /** Validate string arguments before config calls can persist a literal "undefined" key. */
@@ -1318,31 +1220,6 @@ export function createConfigSubscriptionHostApiPaths(
       return { handleId: subscriptionId };
     }),
 
-    onPluginsChanged: defineHostApiPath("onPluginsChanged", async (call, scope) => {
-      requireArity(call, 1);
-      const subscriptionId = stringArgument(call, 0, "subscriptionId");
-      const unsubscribe = hostApi.onPluginsChanged((event) => {
-        scope.deliver(subscriptionId, { event });
-      });
-      adoptOrUndo(scope, subscriptionId, unsubscribe);
-      return { handleId: subscriptionId };
-    }),
-
-    /** Shutdown registrations are host-terminated and awaited once; the child cannot unregister a host shutdown list entry. */
-    onShutdown: defineHostApiPath("onShutdown", async (call, scope) => {
-      requireArity(call, 1);
-      const subscriptionId = stringArgument(call, 0, "subscriptionId");
-      let ended = false;
-      // Adopt the ID before registering onShutdown because that API supplies no disposer.
-      scope.adopt(subscriptionId, () => {
-        ended = true;
-      });
-      // Return the host result so void-contract drift cannot be swallowed.
-      return hostApi.onShutdown(async () => {
-        if (ended) return;
-        await scope.shutdown(subscriptionId);
-      });
-    }),
   };
 }
 
@@ -1457,10 +1334,6 @@ export interface HostApiDispatcherOptions {
   /** Keep the host liveness check inside the dispatcher; the child cannot bypass it. */
   readonly isActive: () => boolean;
   readonly notifications: ChildNotificationSink;
-  /** The transport owns shutdown request correlation and timeout; dispatch supplies only the registration ID. */
-  readonly shutdownChild: (subscriptionId: string) => Promise<void>;
-  /** Require a host log sink so forwarded child diagnostics cannot disappear silently. */
-  readonly log: (message: string, meta?: unknown) => void;
   /** Keep host connection diagnostics separate from plugin-authored log text and bound attacker-controlled dedup state. */
   readonly reportUnknownField: (report: UnknownFieldReport) => void;
   /** Host-owned, coalesced diagnostics. The callback must not include caller payloads. */
@@ -1530,7 +1403,7 @@ export class HostApiDispatcher {
         path,
       );
     }
-    if (path === "emitEvent" || path === "logEvent") {
+    if (path === "emitEvent") {
       if (this.budgets.take(path) > 0 || this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
         this.budgets.deny(path, "rate-limited", path);
         return { jsonrpc: "2.0", id, result: null };
@@ -1605,15 +1478,6 @@ export class HostApiDispatcher {
 
   /** Accept only declared child notification kinds; dispatch release, cancellation and logs through their owners. */
   handleNotification(notification: HostApiNotification): void {
-    if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.log) {
-      if (this.budgets.take("notifications/ave/log") > 0) {
-        this.budgets.deny("notifications/ave/log", "rate-limited", "logEvent");
-        return;
-      }
-      // Preserve plugin log content; only host attribution is added.
-      this.options.log(notification.params.message, notification.params.meta);
-      return;
-    }
     if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.subscriptionSend) {
       const { subscriptionId, payload } = notification.params;
       const receive = typeof subscriptionId === "string" ? this.receivers.get(subscriptionId) : undefined;
@@ -1832,7 +1696,6 @@ export class HostApiDispatcher {
         return subscriptionId;
       },
       release: (subscriptionId) => this.subscriptions.close(subscriptionId, "revoked"),
-      shutdown: (subscriptionId) => this.options.shutdownChild(subscriptionId),
       accept: (subscriptionId, receive) => {
         if (!this.subscriptions.get(subscriptionId)) {
           throw new HostApiBoundaryError("subscription-unknown", `[host-api-dispatcher] no open subscription '${subscriptionId}'`);

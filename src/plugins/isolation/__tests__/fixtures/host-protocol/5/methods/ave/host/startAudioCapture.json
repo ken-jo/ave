@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 38,
+    "id": 33,
     "jsonrpc": "2.0",
     "method": "ave/host/startAudioCapture",
     "params": {
@@ -16,7 +16,7 @@
     }
   },
   "response": {
-    "id": 38,
+    "id": 33,
     "jsonrpc": "2.0",
     "result": {
       "captureId": "capture-1",

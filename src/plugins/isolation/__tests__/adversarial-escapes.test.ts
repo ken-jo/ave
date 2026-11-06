@@ -305,7 +305,7 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
       receiptArtifactSha256: async () => null,
     },
   } as never);
-  const api = factory(installed.pluginId, installed.manifest, installed.pluginDataDir, incarnation, null, undefined, null);
+  const api = factory(installed.pluginId, installed.manifest, installed.pluginDataDir, incarnation, null, undefined);
   scope.bindGeneration(admittedGenerationAccess(GENERATION_ID), GENERATION_ID);
   scope.publish();
   return { api, audit, transportCalls };
@@ -342,7 +342,6 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
     userHome: homedir(),
     aveHome: staged.aveHome,
     config,
-    log: () => undefined,
     hostApi: host.api,
   };
 }

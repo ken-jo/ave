@@ -11,36 +11,10 @@
         "meeting-recorder",
         "external-auth-consumer"
       ],
-      "emittedEvents": [
-        "meeting.started",
-        "meeting.ended",
-        "meeting.transcript.updated",
-        "meeting.summary.created",
-        "meeting.summary.degraded",
-        "meeting.error",
-        "meeting.prep.opened",
-        "meeting.prep.registered"
-      ],
-      "eventSubscriptions": [
-        {
-          "type": "sampleassistant.calendar.sync.requested"
-        },
-        {
-          "type": "sampleassistant.meeting.prep.requested"
-        },
-        {
-          "type": "sampleassistant.meeting.recording.requested"
-        }
-      ],
       "pluginAccess": {
         "plugins": [
           {
-            "pluginId": "sampleassistant",
-            "events": [
-              "sampleassistant.calendar.sync.requested",
-              "sampleassistant.meeting.prep.requested",
-              "sampleassistant.meeting.recording.requested"
-            ]
+            "pluginId": "sampleassistant"
           }
         ]
       },

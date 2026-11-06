@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 26,
+    "id": 21,
     "jsonrpc": "2.0",
     "method": "ave/host/hostFetch",
     "params": {
@@ -24,7 +24,7 @@
     }
   },
   "response": {
-    "id": 26,
+    "id": 21,
     "jsonrpc": "2.0",
     "result": {
       "body": {

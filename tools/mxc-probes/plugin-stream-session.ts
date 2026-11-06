@@ -17,8 +17,6 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
   const refusalAudit: Array<{ pluginId?: unknown; method?: unknown; code?: unknown }> = [];
   const unknownFields: Array<{ pluginId: string; method?: string; field?: string }> = [];
   const hostApi = {
-    getInstalledPluginIds: () => ["stream-probe"],
-    onPluginsChanged: () => () => {},
     config: {
       get: () => undefined,
       onChange: (key: string, callback: (value: unknown) => void) => {
@@ -29,15 +27,16 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
     },
     raiseAlert: async () => { effects++; return { status: "raised" }; },
   } as unknown as PluginHostApi;
-  const child = attachMxcPluginChild(owned, {
-    signal: controller.signal, release() { releases++; },
-  });
   const manifest: PluginManifest = { id: "stream-probe", name: "Stream probe", version: "1.0.0", entry: "plugin.mjs",
     requires: { hostProtocol: "5" }, description: "Diagnostic stream fixture",
     tools: ["subscribe", "read", "forge", "overflow"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} } })) };
+  const child = attachMxcPluginChild(owned, {
+    signal: controller.signal, release() { releases++; },
+  }, manifest.id);
+
   const context = { pluginId: manifest.id, pluginRoot: directory, pluginDataDir: directory,
     pluginSocketDir: directory, hostRoot: directory, userHome: directory, aveHome: directory, config: {},
-    log() {}, hostApi } as PluginRuntimeContext;
+    hostApi } as PluginRuntimeContext;
   const session = await openPluginProtocolSession({ pluginId: manifest.id, manifest, context, hostProtocolVersion: "5",
     link: child.link, entryPath: path.join(directory, "plugin.mjs"),
     table: createBoundHostApiDispatchTable(hostApi, { read: [directory], write: [directory] }),

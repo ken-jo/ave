@@ -106,7 +106,7 @@ export interface ProposalsFile {
 
 export const PROPOSALS_VERSION = 1;
 
-/** Hash arbitrary plugin keys and prefix ids by plugin ownership so identifiers are safe and cross-plugin proposals stay unreachable. */
+/** Hash arbitrary keys and prefix ids by source so proposal identities remain safe and stable. */
 export function proposalId(pluginId: string, kind: string, key: string): string {
   const digest = createHash("sha256").update(key, "utf8").digest("hex");
   return `${pluginId}:${kind}:${digest.slice(0, 16)}`;
@@ -127,7 +127,7 @@ function boundedText(value: unknown, max: number): string | null {
   return trimmed.slice(0, max);
 }
 
-/** Reject malformed fields by name; defaults would invent plugin-authored claims. */
+/** Reject malformed fields by name; defaults would invent machine-authored claims. */
 export type NormalizedProposal =
   | {
       ok: true;
@@ -213,7 +213,7 @@ export function normalizeProposalInput(input: WorkProposalInput): NormalizedProp
   };
 }
 
-/** Keep dismissal and accepted-item identity sticky across both plugin reposts and host briefing refreshes. */
+/** Keep dismissal and accepted-item identity sticky across briefing refreshes. */
 export function composeProposal(args: {
   id: string;
   kind: string;

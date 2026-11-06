@@ -128,7 +128,6 @@ type OverlayHostApi = {
     dedupeKey?: string;
   }) => Promise<{ accepted: boolean }>;
   raiseAlert: (input: AlertInput) => Promise<AlertResult>;
-  withdrawAlert: (kind: string, key: string) => Promise<boolean>;
   onEvent: (type: string, handler: (data: unknown) => void) => () => void;
 };
 
@@ -187,7 +186,6 @@ async function overlayHostApi(input: {
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    getWorkBoardStore: () => undefined,
     getAlertsService: () => input.alertsService,
   });
   const createHostApi = (
@@ -419,8 +417,8 @@ describe("hostApi.triggerConversation for a plugin that declares alerts", () => 
   });
 });
 
-/** Alert registration, mutations, and event delivery remain scoped to the calling plugin. */
-describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
+/** Alert registration and mutations remain scoped to the calling plugin. */
+describe("hostApi.raiseAlert and host theme events", () => {
   const kinds = [{
     id: "reply",
     label: { en: "Mail needing a reply" },
@@ -452,14 +450,14 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
     return alerts;
   }
 
-  it("registers the plugin's kinds at start and scopes raise and withdraw to the caller", async () => {
+  it("registers the plugin's kinds at start and scopes alert keys to the caller", async () => {
     const alerts = await service();
     const mail = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail", manifest: manifestOf("fixturemail"), alertsService: alerts });
     const other = await overlayHostApi({ bootWindow: null, pluginId: "otherfixture", manifest: manifestOf("otherfixture"), alertsService: alerts });
 
     await expect(mail.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "raised" });
-    await expect(other.withdrawAlert("reply", "mail-1")).resolves.toBe(false);
-    await expect(mail.withdrawAlert("reply", "mail-1")).resolves.toBe(true);
+    await expect(other.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "raised" });
+    await expect(mail.raiseAlert({ kind: "reply", key: "mail-1" })).resolves.toMatchObject({ status: "refreshed" });
     await alerts.flush();
   });
 
@@ -534,21 +532,15 @@ describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
     await expect(api.raiseAlert({ kind: "reply", key: "mail-1" })).rejects.toThrow(/alerts service is not constructed/);
   });
 
-  it("delivers an alert event to its own plugin, and another's only with a grant", async () => {
+  it("delivers host theme changes without plugin alert bus delivery", async () => {
     const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail" });
     const heard: unknown[] = [];
-    const unsubscribe = api.onEvent("alert.raised", (data) => { heard.push(data); });
+    const unsubscribe = api.onEvent("host.theme.changed", (data) => { heard.push(data); });
     emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "x" });
-    emitEvent("alert.raised", { pluginId: "@host", kind: "due-soon", alertId: "y" });
     emitEvent("alert.raised", { pluginId: "fixturemail", kind: "reply", alertId: "z" });
-    expect(heard).toEqual([{ pluginId: "fixturemail", kind: "reply", alertId: "z" }]);
-
-    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue({
-      plugins: [{ pluginId: "otherfixture", events: ["alert.raised"] }],
-    } as never);
-    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "w" });
-    expect(heard).toHaveLength(2);
-    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue(undefined);
+    expect(heard).toEqual([]);
+    emitEvent("host.theme.changed", { theme: "dark" });
+    expect(heard).toEqual([{ theme: "dark" }]);
     unsubscribe();
   });
 });

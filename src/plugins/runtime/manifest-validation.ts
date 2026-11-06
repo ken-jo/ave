@@ -38,11 +38,6 @@ import {
   HOST_SECRET_READ_MAX_ITEMS,
   findHostSecretReadListViolation,
   isAllowedHostSecretKey } from "../../shared/marketplace-package-assets.js";
-import {
-  MAX_PROPOSAL_KINDS,
-  PROPOSAL_KIND_LABEL_MAX,
-  PROPOSAL_KIND_PATTERN,
-} from "../../shared/work-board-types.js";
 import { resolvePluginContributionDeclarations } from "../plugin-contributions.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
@@ -94,56 +89,6 @@ function dropRetiredExtensionFields(doc: unknown, parsed: PluginManifest, pid: s
   if (retiredFieldsWarned.has(pid)) return;
   retiredFieldsWarned.add(pid);
   log.warn(`[manifest] ${path}: ignoring retired field(s) ${found.join(", ")}; the plugin's next update removes them`);
-}
-
-export function getDeclaredEmittedEvents(manifest: Pick<PluginManifest, "emittedEvents">,
-): string[] {
-  if (!Array.isArray(manifest.emittedEvents)) return [];
-  return [...new Set(
-    manifest.emittedEvents.filter((e): e is string => typeof e === "string" && e.length > 0,
-      ),
-  ),
-  ];
-}
-
-/** Malformed proposal declarations grant nothing, including otherwise-valid entries. */
-export function getDeclaredWorkProposalKinds(
-  manifest: Pick<PluginManifest, "workProposals">,
-  pluginId?: string,
-): string[] {
-  const block = manifest.workProposals;
-  if (block === undefined) return [];
-  const reject = (why: string): string[] => {
-    log.warn(
-      `Plugin manifest '${pluginId ?? "?"}': workProposals declaration rejected (${why}) — the plugin may post no work proposals`,
-    );
-    return [];
-  };
-  if (typeof block !== "object" || block === null) return reject("not an object");
-  if (block.reasoning !== undefined && typeof block.reasoning !== "string") {
-    return reject("reasoning is not a string");
-  }
-  if (!Array.isArray(block.kinds)) return reject("kinds is not an array");
-  if (block.kinds.length === 0) return reject("kinds is empty");
-  if (block.kinds.length > MAX_PROPOSAL_KINDS) {
-    return reject(`more than ${MAX_PROPOSAL_KINDS} kinds`);
-  }
-  const ids: string[] = [];
-  for (const kind of block.kinds) {
-    if (typeof kind?.id !== "string" || !PROPOSAL_KIND_PATTERN.test(kind.id)) {
-      return reject(`kind id '${String(kind?.id)}' does not match ${PROPOSAL_KIND_PATTERN.source}`);
-    }
-    if (
-      typeof kind.label !== "string"
-      || kind.label.trim().length === 0
-      || kind.label.length > PROPOSAL_KIND_LABEL_MAX
-    ) {
-      return reject(`kind '${kind.id}' has no usable label`);
-    }
-    if (ids.includes(kind.id)) return reject(`duplicate kind id '${kind.id}'`);
-    ids.push(kind.id);
-  }
-  return ids;
 }
 
 // Recheck bounds and cross-field references because declarations themselves grant authority.

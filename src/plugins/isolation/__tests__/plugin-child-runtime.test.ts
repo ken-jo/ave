@@ -91,13 +91,9 @@ async function harness(
     { requests, notifications: childNotifications },
   );
 
-  const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     reportUnknownField: () => {},
-    shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => { child.deliver(notification); } },
     table: (options.table ?? HOSTAPI_DISPATCH_TABLE) as typeof HOSTAPI_DISPATCH_TABLE,
@@ -121,7 +117,6 @@ async function harness(
       pluginDataDir: "/plugins/child/data",
       userHome: "/Users/example",
       aveHome: "/Users/example/.ave",
-      installedPluginIds: [],
       config: { enabled: true },
     },
     channel,
@@ -207,7 +202,6 @@ describe("the child serves its plugin over framed stdio", () => {
           pluginDataDir: "/plugins/child/data",
           userHome: "/Users/example",
           aveHome: "/Users/example/.ave",
-          installedPluginIds: [],
             },
         channel: { call: () => Promise.reject(new Error("unused")), notify: () => {} },
         loadFactory: async () => undefined,
@@ -256,9 +250,7 @@ describe("the hostApi stub the child hands the plugin", () => {
     expect(typeof (hostApi.storage as Record<string, unknown>).writeJson).toBe(
       "function",
     );
-    expect(typeof (hostApi.agentApproval as Record<string, unknown>).request).toBe(
-      "function",
-    );
+    expect(typeof (hostApi.authRedirect as Record<string, unknown>).open).toBe("function");
   });
 
   it("throws from an unwired member instead of resolving undefined", async () => {
@@ -286,7 +278,6 @@ describe("the hostApi stub the child hands the plugin", () => {
         pluginDataDir: "/plugins/child/data",
         userHome: "/Users/example",
         aveHome: "/somewhere/else/.ave",
-        installedPluginIds: [],
         },
       channel: {
         call: () => Promise.reject(new Error("unused")),
@@ -311,7 +302,6 @@ describe("the hostApi stub the child hands the plugin", () => {
         pluginDataDir: "/plugins/child/data",
         userHome: "/Users/example",
         aveHome: "/Users/example/.ave",
-        installedPluginIds: [],
         };
       delete (context as Record<string, unknown>)[field];
       let factoryRan = false;
@@ -336,41 +326,15 @@ describe("the hostApi stub the child hands the plugin", () => {
     },
   );
 
-  it("routes context.log to the host as a notification", async () => {
-    const notifications: HostApiNotification[] = [];
-    const child = await startPluginChildRuntime({
-      input: new PassThrough(),
-      output: new PassThrough(),
-      manifest: MANIFEST,
-      context: {
-        pluginId: PLUGIN_ID,
-        pluginRoot: "/plugins/child",
-        hostRoot: "/app",
-        pluginDataDir: "/plugins/child/data",
-        userHome: "/Users/example",
-        aveHome: "/Users/example/.ave",
-        installedPluginIds: [],
-        },
-      channel: {
-        call: () => Promise.reject(new Error("unused")),
-        notify: (notification) => notifications.push(notification),
-      },
-      loadFactory: async () => (context) => {
-        context.log("starting", { attempt: 1 });
-        return { handlers: {} };
-      },
+  it("omits the runtime logging member", async () => {
+    let received: unknown;
+    await startPluginChildRuntime({
+      input: new PassThrough(), output: new PassThrough(), manifest: MANIFEST,
+      context: { pluginId: PLUGIN_ID, pluginRoot: "/plugins/child", hostRoot: "/app", pluginDataDir: "/plugins/child/data", userHome: "/Users/example", aveHome: "/Users/example/.ave" },
+      channel: { call: () => Promise.reject(new Error("unused")), notify: () => {} },
+      loadFactory: async () => (context) => { received = context; return { handlers: {} }; },
     });
-    expect(child.instance.handlers).toEqual({});
-    expect(notifications).toEqual([
-      {
-        jsonrpc: "2.0",
-        method: "notifications/ave/log",
-        params: {
-          message: "starting",
-          meta: { attempt: 1 },
-        },
-      },
-    ]);
+    expect(received).not.toHaveProperty("log");
   });
 });
 
@@ -414,16 +378,16 @@ describe("a hostApi call crosses the reverse channel and settles", () => {
     const { call, requests } = await harness({
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
-        withdrawWorkProposal: defineHostApiPath("withdrawWorkProposal", async () => true),
+        hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
       },
     });
-    await call("withdrawWorkProposal", ["digest", "k1"]);
+    await call("hasRoutineBySource", ["digest"]);
     expect(requests).toEqual([
       {
         jsonrpc: "2.0",
         id: 1,
-        method: "ave/host/withdrawWorkProposal",
-        params: { kind: "digest", key: "k1" },
+        method: "ave/host/hasRoutineBySource",
+        params: { source: "digest" },
       },
     ]);
   });

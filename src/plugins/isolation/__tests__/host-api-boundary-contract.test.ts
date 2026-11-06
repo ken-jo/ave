@@ -81,17 +81,11 @@ function request(
 function dispatcher(
   options: Partial<ConstructorParameters<typeof HostApiDispatcher>[0]> = {},
 ): HostApiDispatcher {
-  const hostLogs: { message: string; meta?: unknown }[] = [];
   return new HostApiDispatcher({
-    // Capture host diagnostics so silently discarded failures cannot pass.
-    log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
-    shutdownChild: async (subscriptionId) => {
-      throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
-    },
     ...options,
   });
 }
@@ -150,7 +144,6 @@ describe("the marshalling contract covers exactly the classified hostApi surface
     const lifetimeValues: DisposerLifetime[] = [
       "none",
       "child-disposable",
-      "host-terminated",
     ];
     const contracts = Object.values(HOSTAPI_PATH_CONTRACTS);
     expect([...new Set(contracts.map((c) => c.arguments))].sort()).toEqual(
@@ -174,9 +167,9 @@ describe("the marshalling contract covers exactly the classified hostApi surface
       ]);
     }
     expect(byStatus.get("implemented")).toBeUndefined();
-    expect(byStatus.get("child-local")).toHaveLength(4);
+    expect(byStatus.get("child-local")).toHaveLength(2);
     expect(byStatus.get("unimplemented")).toHaveLength(
-      Object.keys(HOSTAPI_PATH_CONTRACTS).length - 4,
+      Object.keys(HOSTAPI_PATH_CONTRACTS).length - 2,
     );
   });
 
@@ -227,8 +220,6 @@ describe("the marshalling contract covers exactly the classified hostApi surface
     // These synchronous members must remain round-trip-free.
     expect(contractSaysLocal).toEqual([
       "config.get",
-      "getAppPreference",
-      "getInstalledPluginIds",
       "storage.resolve",
     ]);
   });
@@ -517,13 +508,13 @@ describe("the dispatcher refuses rather than defaults", () => {
   it("refuses a void-declared member that returned a value", async () => {
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
-      logEvent: defineHostApiPath("logEvent", async () =>
+      emitEvent: defineHostApiPath("emitEvent", async () =>
         // A nonvoid host reply must expose signature drift rather than be discarded.
         "surprise" as unknown as void,
       ),
     };
     const reply = await dispatcher({ table }).handle(
-      request({ path: "logEvent", args: ["info", "hi"] }),
+      request({ path: "emitEvent", args: ["sample.update", {}] }),
     );
     if (!("error" in reply)) throw new Error("expected a refusal");
     expect(reply.error.data.code).toBe("result-marshalling-rejected");
@@ -734,41 +725,25 @@ describe("dispatcher resource budgets", () => {
   it("drops and counts notification floods, then emits one aggregate", async () => {
     vi.useFakeTimers();
     try {
-      const logs = vi.fn();
       const emits = vi.fn();
-      const logEvents = vi.fn();
       const audits: HostApiBudgetAudit[] = [];
       const host = dispatcher({
-        log: logs,
         reportBudgetAudit: (entry) => audits.push(entry),
         table: {
           ...HOSTAPI_DISPATCH_TABLE,
           emitEvent: defineHostApiPath("emitEvent", async () => { emits(); }),
-          logEvent: defineHostApiPath("logEvent", async () => { logEvents(); }),
         },
       });
-      for (let index = 0; index < 510; index += 1) {
-        host.handleNotification({
-          jsonrpc: "2.0", method: "notifications/ave/log",
-          params: { message: `line-${index}` },
-        });
-      }
-      expect(logs).toHaveBeenCalledTimes(500);
-      expect(await host.handle(hostApiRequest("logEvent", ["info", "dropped"], "log-overflow")))
-        .toHaveProperty("result", null);
-      expect(logEvents).not.toHaveBeenCalled();
       for (let index = 0; index < 210; index += 1) {
         expect(await host.handle(hostApiRequest("emitEvent", ["demo.event"], index)))
           .toHaveProperty("result", null);
       }
       expect(emits).toHaveBeenCalledTimes(200);
       expect(audits).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: "notifications/ave/log", count: 1, summary: false }),
         expect.objectContaining({ method: "emitEvent", count: 1, summary: false }),
       ]));
       await vi.advanceTimersByTimeAsync(60_000);
       expect(audits).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: "notifications/ave/log", count: 9, summary: true }),
         expect.objectContaining({ method: "emitEvent", count: 9, summary: true }),
       ]));
       host.childGone();
@@ -781,15 +756,12 @@ describe("dispatcher resource budgets", () => {
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       raiseAlert: defineHostApiPath("raiseAlert", async () => ({ status: "rate_limited" })),
-      proposeWork: defineHostApiPath("proposeWork", async () => ({ status: "rate_limited" })),
       triggerConversation: defineHostApiPath("triggerConversation", async () => ({
         accepted: false, reason: "rate_limited", source: "sample",
       })),
     };
     const host = dispatcher({ table });
     expect(await host.handle(hostApiRequest("raiseAlert", [{}], 1)))
-      .toMatchObject({ result: { status: "rate_limited" } });
-    expect(await host.handle(hostApiRequest("proposeWork", [{}], 2)))
       .toMatchObject({ result: { status: "rate_limited" } });
     expect(await host.handle(hostApiRequest("triggerConversation", [{}], 3)))
       .toMatchObject({ result: { accepted: false, reason: "rate_limited" } });
@@ -800,7 +772,6 @@ describe("dispatcher resource budgets", () => {
     expect(DISPATCH_SUBSCRIPTION_KIND_MAX).toEqual({
       onEvent: 64,
       "config.onChange": 16,
-      onPluginsChanged: 4,
       spawnWorker: 8,
       startAudioCapture: 2,
       attachFloatingPanel: 1,
@@ -882,38 +853,16 @@ describe("dispatcher resource budgets", () => {
     expect(stopped).toBe(9);
   });
 
-  it("caps all subscriptions while release and shutdown remain usable", async () => {
-    vi.useFakeTimers();
-    try {
-      let shutdownScope: SubscriptionScope | undefined;
-      const shutdownChild = vi.fn(async () => {});
-      const table = {
-        ...HOSTAPI_DISPATCH_TABLE,
-        onShutdown: defineHostApiPath("onShutdown", async (call, scope) => {
-          shutdownScope = scope;
-          scope.adopt(String(call.args[0]), () => {});
-        }),
-      };
-      const host = dispatcher({ table, shutdownChild });
-      for (let index = 0; index < 256; index += 1) {
-        if (index === 190) await vi.advanceTimersByTimeAsync(2000);
-        const reply = await host.handle(hostApiRequest("onShutdown", [`shutdown-${index}`], index));
-        expect(reply, `registration ${index}`).toHaveProperty("result");
-      }
-      expect(host.openSubscriptionCount).toBe(256);
-      const refused = await host.handle(hostApiRequest("onShutdown", ["overflow"], "overflow"));
-      expect(refused).toMatchObject({ error: { data: { code: "rate-limited" } } });
-      await shutdownScope?.shutdown("shutdown-0");
-      expect(shutdownChild).toHaveBeenCalledWith("shutdown-0");
-      host.handleNotification({
-        jsonrpc: "2.0", method: "notifications/ave/subscription/release",
-        params: { subscriptionId: "shutdown-0" },
-      });
-      expect(await host.handle(hostApiRequest("onShutdown", ["replacement"], "replacement")))
-        .toHaveProperty("result");
-      expect(host.childGone()).toBe(256);
-    } finally {
-      vi.useRealTimers();
-    }
+});
+
+describe("removed members are absent from the protocol", () => {
+  it.each([
+    "getInstalledPluginIds", "onPluginsChanged", "resizeFloatingPanel", "proposeWork",
+    "withdrawWorkProposal", "withdrawAlert", "agentApproval.request", "agentApproval.respond",
+    "logEvent", "onShutdown", "getAppPreference",
+  ])("rejects %s with the standard method-not-found response", async (path) => {
+    expect(isHostApiPath(path)).toBe(false);
+    const reply = await dispatcher().handle(request({ path }));
+    expect(reply).toMatchObject({ error: { code: -32601 } });
   });
 });

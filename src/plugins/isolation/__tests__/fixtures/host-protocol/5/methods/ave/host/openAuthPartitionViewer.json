@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 30,
+    "id": 25,
     "jsonrpc": "2.0",
     "method": "ave/host/openAuthPartitionViewer",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 30,
+    "id": 25,
     "jsonrpc": "2.0",
     "result": null
   }

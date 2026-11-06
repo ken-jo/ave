@@ -13,13 +13,14 @@
         "minAppVersion": "0.14.0",
         "hostProtocol": "5"
       },
-      "eventSubscriptions": [],
-      "emittedEvents": [],
       "tools": [
         {
           "name": "echo",
           "description": "Answer with the arguments it was called with.",
-          "inputSchema": { "type": "object", "properties": {} }
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
         },
         {
           "name": "escape_secrets",
@@ -27,12 +28,25 @@
           "inputSchema": {
             "type": "object",
             "properties": {
-              "ownDataDir": { "type": "string" },
-              "secretsDir": { "type": "string" },
-              "otherDataDir": { "type": "string" },
-              "sentinelName": { "type": "string" }
+              "ownDataDir": {
+                "type": "string"
+              },
+              "secretsDir": {
+                "type": "string"
+              },
+              "otherDataDir": {
+                "type": "string"
+              },
+              "sentinelName": {
+                "type": "string"
+              }
             },
-            "required": ["ownDataDir", "secretsDir", "otherDataDir", "sentinelName"]
+            "required": [
+              "ownDataDir",
+              "secretsDir",
+              "otherDataDir",
+              "sentinelName"
+            ]
           }
         },
         {
@@ -40,8 +54,14 @@
           "description": "Open a raw socket to a loopback listener.",
           "inputSchema": {
             "type": "object",
-            "properties": { "port": { "type": "number" } },
-            "required": ["port"]
+            "properties": {
+              "port": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "port"
+            ]
           }
         }
       ]

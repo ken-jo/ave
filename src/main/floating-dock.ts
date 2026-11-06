@@ -311,7 +311,6 @@ export class FloatingDock {
       get height() {
         return slot.height;
       },
-      resize: async (next: number): Promise<number> => this.#applyResize(slot, next),
       detach: async (): Promise<void> => {
         this.#settle(slot, "requested");
       },

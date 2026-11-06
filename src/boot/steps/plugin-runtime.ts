@@ -6,8 +6,6 @@ import type { BrowserWindow } from "electron";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -38,8 +36,6 @@ import { PluginLoopbackManager } from "../../mcp/plugin-loopback-manager.js";
 import type { PluginBundleLifecycleHandler } from "../../plugins/plugin-bundle-lifecycle.js";
 import { createLogger } from "../../lib/logger.js";
 
-import { approvalIssuerRegistry } from "./plugin-runtime/approval-gating.js";
-import { buildAppPreferenceReader } from "./plugin-runtime/app-preference.js";
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { createHostApiFactory } from "./plugin-runtime/host-api-factory.js";
 import { createLifecycleCallbacks } from "./plugin-runtime/lifecycle.js";
@@ -51,13 +47,6 @@ const log = createLogger("ave");
 
 // Preserve this module’s public export path.
 export { declaresHostManagedPythonRuntime } from "./plugin-runtime/manifest.js";
-export { approvalIssuerRegistry, auditApprovalViolation,
-} from "./plugin-runtime/approval-gating.js";
-export {
-  HOST_PUBLIC_PREFERENCE_KEYS,
-  buildAppPreferenceReader,
-} from "./plugin-runtime/app-preference.js";
-export type { HostPublicPreferenceKey } from "./plugin-runtime/app-preference.js";
 export { EXTERNAL_LINK_PARTITION, routeExternalUrl,
 } from "./plugin-runtime/external-url.js";
 export {
@@ -147,7 +136,6 @@ export interface InitPluginRuntimeInput {
   /** Routine storage must exist before startAll creates plugin HostApi instances. */
   routinesStore: RoutinesStore;
   /** Resolve Work Board storage late; it is built after this step but before plugins start. */
-  getWorkBoardStore: () => import("../../main/work-board-store.js").WorkBoardStore | undefined;
   /** Resolve alerts late; setup runs before any plugin start. */
   getAlertsService: () => import("../../alerts/service.js").AlertsService | undefined;
   /** Production defers activation until Skill/Hook/MCP lifecycle wiring exists. */
@@ -162,9 +150,6 @@ export interface InitPluginRuntimeOutput {
   pluginRuntime: PluginRuntime;
   deploymentGuard: PluginDeploymentGuard;
   lateBinding: LateBindingRefs;
-  pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void>;
-  }>;
-  runPluginShutdownHandlers: () => Promise<void>;
   /** Share the marketplace deployment guard with the update detector. */
   pluginPaths: ReturnType<typeof resolvePluginPaths>;
   /** Try plugin loopback hosts before external MCP clients when resolving UI resources. */
@@ -198,44 +183,8 @@ export async function initPluginRuntime(
     approvalGate,
     permissionManager,
     routinesStore,
-    getWorkBoardStore,
     getAlertsService,
   } = input;
-
-  // Read public preferences live so settings edits take effect without plugin reload.
-  const readAppPreference = buildAppPreferenceReader(settingsService, log);
-
-  const pluginShutdownHandlers: Array<{ pluginId: string; handler: () => void | Promise<void>;
-  }> = [];
-  let pluginShutdownRan = false;
-  let pluginShutdownPromise: Promise<void> | null = null;
-  const runPluginShutdownHandlers = (): Promise<void> => {
-    if (pluginShutdownRan) return pluginShutdownPromise ?? Promise.resolve();
-    if (pluginShutdownHandlers.length === 0) return Promise.resolve();
-    pluginShutdownRan = true;
-    pluginShutdownPromise = (async () => {
-      await Promise.allSettled(
-        pluginShutdownHandlers.map(async ({ pluginId, handler }) => {
-          try {
-            await raceWithTimeout(
-              Promise.resolve().then(() => handler()),
-              TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs,
-              () => new Error(`shutdown handler timeout [plugin:${pluginId}]`),
-            );
-          } catch (err) {
-            log.warn(
-              `shutdown handler error [plugin:${pluginId}]: %s`,
-              (err as Error).message,
-            );
-          }
-        }),
-      );
-    })();
-    return pluginShutdownPromise;
-  };
-  // Before services publish, this listener defers quit for plugin cleanup; ordered shutdown owns later quits.
-  input.host.desktop?.onBootShutdown(runPluginShutdownHandlers,
-    () => pluginShutdownHandlers.length > 0 && !pluginShutdownRan);
 
   const configOverrides = buildPluginConfigOverrides(settingsService);
   if (pythonPath) {
@@ -323,8 +272,6 @@ export async function initPluginRuntime(
     getRegistryEntry,
     refreshRegistryEntryCacheIfChanged,
     grantEvidence: grantEvidenceReader({ paths: pluginPaths, marketplacesRoot: join(aveHome(), "marketplaces") }),
-    pluginShutdownHandlers,
-    readAppPreference,
     settingsService,
     ...(input._onCredentialIssuanceStageForTest
       ? { _onCredentialIssuanceStageForTest: input._onCredentialIssuanceStageForTest }
@@ -344,7 +291,6 @@ export async function initPluginRuntime(
     approvalGate,
     permissionManager,
     routinesStore,
-    getWorkBoardStore,
     getAlertsService,
     stageInSuggestionsSession: () => stageInSuggestionsSession(input.memoryManager),
   });
@@ -381,30 +327,8 @@ export async function initPluginRuntime(
     createHostApi,
   });
   registerBootPluginShutdown({
-    runShutdownHandlers: runPluginShutdownHandlers,
     closeAdmission: () => pluginRuntime.beginShutdown(),
     stopRuntime: (signal) => pluginRuntime.stopAll({ signal }),
-  });
-
-  // Sweep abandoned approval issuers; gate timeouts do not remove them from this registry.
-  const APPROVAL_REGISTRY_PURGE_MAX_AGE_MS = 5 * 60 * 1000;
-  const APPROVAL_REGISTRY_PURGE_INTERVAL_MS = 60 * 1000;
-  const approvalRegistryPurgeTimer = setInterval(() => {
-    try {
-      const purged = approvalIssuerRegistry.purgeStalerThan(
-        APPROVAL_REGISTRY_PURGE_MAX_AGE_MS,
-      );
-      if (purged > 0) {
-        log.info("approval issuer registry purged %d stale entries", purged);
-      }
-    } catch (err) {
-      log.warn("approval registry purge failed: %s", (err as Error).message);
-    }
-  }, APPROVAL_REGISTRY_PURGE_INTERVAL_MS);
-  // Don't keep the event loop alive solely for this housekeeping timer.
-  approvalRegistryPurgeTimer.unref?.();
-  registerShutdownHook("approval-issuer-registry-purge", () => {
-    clearInterval(approvalRegistryPurgeTimer);
   });
 
   // Bind loopback management before startAll fires activation callbacks.
@@ -470,8 +394,6 @@ export async function initPluginRuntime(
     pluginRuntime,
     deploymentGuard,
     lateBinding,
-    pluginShutdownHandlers,
-    runPluginShutdownHandlers,
     pluginPaths,
     loopbackManager,
     setBundleLifecycleHandler: (handler) => {

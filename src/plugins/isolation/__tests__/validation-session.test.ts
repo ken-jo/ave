@@ -101,6 +101,21 @@ function scriptedChild(): { link: ChildLink; sent: Frame[]; send: (frame: Frame)
 }
 
 describe("the validation session's authority", () => {
+  it("keeps scripted subscriptions scoped to host theme notifications", () => {
+    const host = createValidationHost();
+    expect(() => host.api.onEvent("other-plugin.changed", () => {})).toThrow(/host.theme.changed/);
+    const receive = vi.fn();
+    host.api.onEvent("host.theme.changed", receive);
+    host.fireAll();
+    expect(receive).toHaveBeenCalledExactlyOnceWith({ fired: "by the golden host" });
+  });
+
+  it("does not restore a removed floating-panel handle method", async () => {
+    const host = createValidationHost();
+    const panel = await host.api.attachFloatingPanel({ extensionId: "panel" });
+    expect(panel).not.toHaveProperty("resize");
+  });
+
   it("is the base envelope, even where the user's settings approve the declared directory", async () => {
     const approved = join(root, "approved-workspace");
     mkdirSync(approved, { recursive: true });

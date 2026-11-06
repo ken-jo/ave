@@ -153,7 +153,6 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    getWorkBoardStore: () => undefined,
     getAlertsService: () => undefined,
   });
   const createHostApi = (

@@ -1,5 +1,5 @@
 // The work-approvals projection over real stores in a temp dir: which decisions a project sees, the all-project badge total, clear failures for
-// a missing source, and the change signal from every write path (IPC, plugin HostApi, scheduler).
+// a missing source, and the change signal from every write path (IPC, briefing, scheduler).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,7 +44,6 @@ vi.mock("../../../main/project-root-authorization.js", () => ({
   ]),
 }));
 
-const INDEXER = { pluginId: "indexer", pluginLabel: "Indexer", grantedKinds: ["stale-index"] };
 const PROPOSAL = {
   kind: "stale-index",
   key: "folder:reports",
@@ -89,6 +88,15 @@ function wire() {
   } as never);
 }
 
+async function fileProposal(input: import("../../../shared/work-board-types.js").WorkProposalInput) {
+  const result = await workBoardStore.fileBriefingProposals([input]);
+  const listed = await workBoardStore.listProposals();
+  if (listed.status !== "ok") throw new Error("proposal setup failed");
+  const proposal = listed.proposals.find((entry) => entry.id === result.filed[0] || entry.id === result.refreshed[0]);
+  if (!proposal) throw new Error("proposal setup failed");
+  return proposal;
+}
+
 async function list(arg?: unknown, event = hostFrameEvent()): Promise<WorkApprovalListResult> {
   const fn = handlers.get(WORK_APPROVALS.list);
   if (!fn) throw new Error("work-approvals list is not registered");
@@ -117,7 +125,7 @@ afterEach(async () => {
 describe("work approvals list", () => {
   it("returns the unscoped and global items for a project, with a matching total", async () => {
     await register();
-    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    await fileProposal(PROPOSAL);
     const result = await list({ projectRoot: PROJECT_A });
     if (!result.ok) throw new Error(`list failed: ${JSON.stringify(result)}`);
     expect(keys(result.items)).toEqual(["proposal"]);
@@ -127,7 +135,7 @@ describe("work approvals list", () => {
   it("masks secrets in titles and summaries before they reach the renderer", async () => {
     await register();
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-    await workBoardStore.upsertProposal(INDEXER, {
+    await fileProposal({
       ...PROPOSAL,
       title: `Rotate ${secret}`,
       summary: `Leaked ${secret}`,
@@ -143,21 +151,20 @@ describe("work approvals list", () => {
 
   it("projects a proposal field by field, without its task brief", async () => {
     await register();
-    const posted = await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
-    if (posted.status !== "ok") throw new Error("setup failed");
+    const posted = await fileProposal(PROPOSAL);
     const result = await list();
     if (!result.ok) throw new Error("list failed");
     expect(result.items).toEqual([{
       kind: "proposal",
-      key: `proposal:${posted.proposal.id}`,
+      key: `proposal:${posted.id}`,
       scope: { type: "unscoped" },
       title: PROPOSAL.title,
-      arrivedAt: posted.proposal.updatedAt,
-      proposalId: posted.proposal.id,
+      arrivedAt: posted.updatedAt,
+      proposalId: posted.id,
       summary: PROPOSAL.summary,
-      pluginLabel: "Indexer",
+      pluginLabel: "Briefing",
       priority: "medium",
-      expiresAt: posted.proposal.expiresAt,
+      expiresAt: posted.expiresAt,
       state: PROPOSAL.state,
       evidence: [],
       blockers: [],
@@ -167,9 +174,8 @@ describe("work approvals list", () => {
 
   it("drops dismissed and accepted proposals", async () => {
     await register();
-    const posted = await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
-    if (posted.status !== "ok") throw new Error("setup failed");
-    await workBoardStore.dismissProposal(posted.proposal.id);
+    const posted = await fileProposal(PROPOSAL);
+    await workBoardStore.dismissProposal(posted.id);
     const result = await list();
     expect(result.ok && result.items).toEqual([]);
     expect(result.ok && result.total).toBe(0);
@@ -314,9 +320,9 @@ describe("work approvals list", () => {
 });
 
 describe("work approvals changed signal", () => {
-  it("fires for a plugin proposal posted through HostApi, not only through IPC", async () => {
+  it("fires for a briefing proposal filed outside IPC", async () => {
     wire();
-    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    await fileProposal(PROPOSAL);
     expect(changedCount()).toBe(1);
     expect(send).toHaveBeenCalledWith(WORK_APPROVALS.changed, undefined);
   });
@@ -358,7 +364,7 @@ describe("work approvals — plan approvals", () => {
     await pendingPlan("plan in A", PROJECT_A);
     await pendingPlan("plan in default", DEFAULT_ROOT);
     await pendingPlan("plan with no project", undefined);
-    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    await fileProposal(PROPOSAL);
 
     const inA = await list({ projectRoot: PROJECT_A });
     if (!inA.ok) throw new Error(`list failed: ${JSON.stringify(inA)}`);
@@ -417,7 +423,7 @@ describe("work approvals — plan approvals", () => {
     await register();
     await pendingPlan("plan in A", PROJECT_A);
     await pendingPlan("plan in default", DEFAULT_ROOT);
-    await workBoardStore.upsertProposal(INDEXER, PROPOSAL);
+    await fileProposal(PROPOSAL);
     const result = await list({ allProjects: true });
     if (!result.ok) throw new Error("list failed");
     expect(planKeys(result.items)).toEqual(["plan in A", "plan in default"]);

@@ -19,5 +19,5 @@
     "id": "hand-built",
     "jsonrpc": "2.0"
   },
-  "trigger": "a request that arrives after the host stopped the incarnation"
+  "trigger": "the bound host API incarnation retired before the request ran"
 }

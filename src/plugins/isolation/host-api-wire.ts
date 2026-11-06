@@ -42,7 +42,6 @@ import {
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import { WORKER_CONTROL_METHOD } from "../public-contract.js";
 import type {
-  PluginLifecycleEvent,
   PluginWorkerControl,
   PluginWorkerExitReason,
   WorkerControlErrorCode,
@@ -314,10 +313,7 @@ export const HOST_PROTOCOL_NOTIFICATIONS = {
   subscriptionRelease: "notifications/ave/subscription/release",
   subscriptionSend: "notifications/ave/subscription/send",
   cancelled: "notifications/cancelled",
-  log: "notifications/ave/log",
-  installedPluginsSnapshot: "notifications/ave/installedPlugins/snapshot",
   configSnapshot: "notifications/ave/config/snapshot",
-  preferencesSnapshot: "notifications/ave/preferences/snapshot",
 } as const;
 
 /** One notification frame: JSON-RPC with no `id`, never answered. */
@@ -382,24 +378,6 @@ export type HostApiNotification =
       typeof HOST_PROTOCOL_NOTIFICATIONS.cancelled,
       { readonly requestId: JsonRpcRequestId; readonly reason?: string }
     >
-  /** child → host: `context.log`, which is a host closure in-process (§3.4). */
-  | HostProtocolNotification<
-      typeof HOST_PROTOCOL_NOTIFICATIONS.log,
-      { readonly message: string; readonly meta?: unknown }
-    >
-  /**
-   * host → child: the installed-plugin set changed.
-   *
-   * `getInstalledPluginIds` is synchronous and a process boundary is not, so
-   * §3.1 answers it with a host-pushed snapshot rather than a round trip. The
-   * push is a NOTIFICATION and not a subscription because the child holds no
-   * handler for it: the snapshot is read by a member, and the member has to
-   * answer whether or not the plugin ever subscribed to `onPluginsChanged`.
-   */
-  | HostProtocolNotification<
-      typeof HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot,
-      { readonly pluginIds: readonly string[] }
-    >
   /**
    * host → child: the plugin's resolved config changed.
    *
@@ -428,33 +406,6 @@ export type HostApiNotification =
    */
   | HostProtocolNotification<
       typeof HOST_PROTOCOL_NOTIFICATIONS.configSnapshot,
-      { readonly keys: readonly string[]; readonly values: Record<string, unknown> }
-    >
-  /**
-   * host → child: an allow-listed HOST preference now reads differently.
-   *
-   * The sibling of the config snapshot, for the other config value a plugin
-   * reads. `getAppPreference` is synchronous too, so §3.1 answers it from a
-   * host-pushed snapshot as well — and until this notification existed there
-   * was nothing to re-push FROM, which is why the child left that one member
-   * unwired rather than answering with a value frozen at plugin start.
-   * A plugin may read `webView.preferredFlow` at CALL time, so a construction
-   * snapshot with no re-push would answer it wrong by construction.
-   *
-   * TWO FIELDS, NOT ONE OBJECT, for the same reason the config snapshot splits
-   * them: the reader answers `undefined` for an unset preference, and
-   * `undefined` is not a JSON value. A plain record would simply lose the
-   * property and the child would keep the value it was supposed to drop. So
-   * `keys` carries the full allowlist and `values` only the keys that have one
-   * — a key in `keys` and absent from `values` is unset, and the child deletes
-   * it.
-   *
-   * The key set is the HOST's allowlist
-   * (`boot/steps/plugin-runtime/app-preference.ts`); nothing a plugin sends can
-   * widen what it is told.
-   */
-  | HostProtocolNotification<
-      typeof HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot,
       { readonly keys: readonly string[]; readonly values: Record<string, unknown> }
     >;
 
@@ -517,9 +468,8 @@ export type ResultMarshalling =
  * - `none` — the reply settles the call and nothing survives it.
  * - `child-disposable` — the child holds a disposer. The host must ALSO release
  *   when the child dies without calling it.
- * - `host-terminated` — the host decides when it ends and tells the child.
  */
-export type DisposerLifetime = "none" | "child-disposable" | "host-terminated";
+export type DisposerLifetime = "none" | "child-disposable";
 
 /**
  * The complete boundary decision for ONE hostApi member. Every field is
@@ -1034,41 +984,10 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: [],
   },
-  getInstalledPluginIds: {
-    params: [],
-    arguments: "child-local",
-    result: "child-local",
-    lifetime: "none",
-    errors: [],
-  },
   hasRoutineBySource: {
     params: ["source"],
     arguments: "plain-json",
     result: "plain-json",
-    lifetime: "none",
-    errors: [],
-  },
-  // Text and a key out, a discriminated envelope back. Nothing executable
-  // crosses, and nothing outlives the call — the proposal the host stores is
-  // reachable afterwards only through the board, never through a handle.
-  proposeWork: {
-    params: ["input"],
-    arguments: "plain-json",
-    result: "plain-json",
-    lifetime: "none",
-    errors: ["effect-boundary-denied"],
-  },
-  withdrawWorkProposal: {
-    params: ["kind", "key"],
-    arguments: "plain-json",
-    result: "plain-json",
-    lifetime: "none",
-    errors: ["effect-boundary-denied"],
-  },
-  getAppPreference: {
-    params: ["key"],
-    arguments: "child-local",
-    result: "child-local",
     lifetime: "none",
     errors: [],
   },
@@ -1088,11 +1007,8 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "child-disposable",
     errors: [],
   },
-  // Fire-and-forget on the wire, but it throws SYNCHRONOUSLY today on a denied
-  // event. The host pushes the plugin's declared emittable set at construction
-  // so the child stub can preserve that throw; the host re-checks
-  // authoritatively and writes the denial audit. Both run — the host check is
-  // the control, the child check only preserves the contract's timing.
+  // The child preserves synchronous ownership rejection; the host independently
+  // rechecks identity before forwarding an event to this plugin’s own UI.
   emitEvent: {
     params: ["eventType", "data"],
     arguments: "plain-json",
@@ -1105,31 +1021,6 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "handler-registration",
     result: "handle",
     lifetime: "child-disposable",
-    errors: [],
-  },
-  onPluginsChanged: {
-    params: ["handler"],
-    arguments: "handler-registration",
-    result: "handle",
-    lifetime: "child-disposable",
-    errors: [],
-  },
-  // The odd one of the four subscriptions: the HOST ends it. The host sends a
-  // shutdown request and awaits the reply before terminating, bounded by the
-  // lifecycle timeout, then SIGTERM → SIGKILL. That bound is new and is an
-  // improvement — today a plugin can hang shutdown forever.
-  onShutdown: {
-    params: ["handler"],
-    arguments: "handler-registration",
-    result: "void",
-    lifetime: "host-terminated",
-    errors: [],
-  },
-  logEvent: {
-    params: ["level", "message", "data"],
-    arguments: "plain-json",
-    result: "void",
-    lifetime: "none",
     errors: [],
   },
   // `options.signal` is an `AbortSignal`, which cancels the request with
@@ -1292,13 +1183,6 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // Plain JSON both ways: a panel id in, the applied height out. It names an
   // existing handle rather than creating one, so it opens no lifetime of its
   // own.
-  resizeFloatingPanel: {
-    params: ["panelId", "height"],
-    arguments: "plain-json",
-    result: "plain-json",
-    lifetime: "none",
-    errors: ["effect-boundary-denied"],
-  },
   attachFloatingPanel: {
     params: ["request"],
     arguments: "plain-json",
@@ -1331,39 +1215,8 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
-  // ─── agentApproval.* ──────────────────────────────────────────────────────
-  // Blocks on a human. The child waits on a round trip that may take minutes,
-  // so the handler author owns the interaction between a slow approval and the
-  // child's own call timeout — a child timeout must not leave the host gate
-  // pending (§7.5).
-  "agentApproval.request": {
-    params: ["input"],
-    arguments: "plain-json",
-    result: "plain-json",
-    lifetime: "none",
-    errors: ["effect-boundary-denied"],
-  },
-  "agentApproval.respond": {
-    params: ["requestId", "choice", "nonce", "hmac"],
-    arguments: "plain-json",
-    result: "void",
-    lifetime: "none",
-    errors: [],
-  },
-  // ─── Alerts ───────────────────────────────────────────────────────────────
-  // Last in the table so the method ids the goldens already record stay put.
-  // A kind id, a key and typed slot values out, a discriminated envelope back.
-  // The card and its prompt are rendered by the host from the declaration, so
-  // nothing the plugin sends is executable and nothing outlives the call.
   raiseAlert: {
     params: ["input"],
-    arguments: "plain-json",
-    result: "plain-json",
-    lifetime: "none",
-    errors: ["effect-boundary-denied"],
-  },
-  withdrawAlert: {
-    params: ["kind", "key"],
     arguments: "plain-json",
     result: "plain-json",
     lifetime: "none",
@@ -1406,11 +1259,9 @@ export const INTERACTION_HOSTAPI_PATHS = [
   "authRedirect.close",
   "pickFolders",
   "triggerConversation",
-  "agentApproval.request",
-  "agentApproval.respond",
 ] as const satisfies readonly HostApiPath[];
 
-/** One of the eleven. */
+/** One interaction member. */
 export type InteractionHostApiPath = (typeof INTERACTION_HOSTAPI_PATHS)[number];
 
 /** The members the service handler group carries. */
@@ -1418,14 +1269,10 @@ export const SERVICE_HOSTAPI_PATHS = [
   "getSecret",
   "getAuthPartitionCookies",
   "hasRoutineBySource",
-  "proposeWork",
-  "withdrawWorkProposal",
   "raiseAlert",
-  "withdrawAlert",
   "probePrivateHost",
   "resolveApiKey",
   "emitEvent",
-  "logEvent",
   "callLlm",
   "hostFetch",
   "spawnWorker",
@@ -1433,10 +1280,9 @@ export const SERVICE_HOSTAPI_PATHS = [
   "listAudioInputDevices",
   "startAudioCapture",
   "attachFloatingPanel",
-  "resizeFloatingPanel",
 ] as const satisfies readonly HostApiPath[];
 
-/** One of the seventeen. */
+/** One service member. */
 export type ServiceHostApiPath = (typeof SERVICE_HOSTAPI_PATHS)[number];
 
 
@@ -1478,12 +1324,10 @@ export type ConfigSubscriptionPath =
   | "config.get"
   | "config.set"
   | "config.onChange"
-  | "onEvent"
-  | "onPluginsChanged"
-  | "onShutdown";
+  | "onEvent";
 
 /**
- * The five that reach the host. `config.get` is excluded by NAME here and by
+ * The members that reach the host. `config.get` is excluded by NAME here and by
  * its `child-local` contract at the dispatcher; servicing it would make the
  * round-trip-free decision untrue in a way nothing would report.
  */
@@ -1536,11 +1380,6 @@ export interface HostEventDelivery {
   readonly data?: unknown;
 }
 
-/** What `onPluginsChanged` puts on the wire. */
-export interface PluginLifecycleDelivery {
-  readonly event: PluginLifecycleEvent;
-}
-
 /**
  * What `config.onChange` puts on the wire: the new value, or in its place the
  * flag that stands for {@link SECRET_REDACTED_SENTINEL} (see
@@ -1566,8 +1405,6 @@ export interface HostApiEventPayloads {
   readonly "config.onChange": WireConfigChangeEvent;
   /** One per event of the subscribed type. */
   readonly onEvent: HostEventDelivery;
-  /** One per plugin installed, updated, enabled, disabled or removed. */
-  readonly onPluginsChanged: PluginLifecycleDelivery;
   /** Output and control traffic as it arrives, then one `exit`. */
   readonly spawnWorker: WireWorkerEvent;
   /** PCM frames in order, then one `end`. */
@@ -1576,8 +1413,6 @@ export interface HostApiEventPayloads {
   readonly attachFloatingPanel: WireFloatingPanelEvent;
   /** Pushes nothing: a lease is only ever closed, by `notifications/ave/subscription/closed`. */
   readonly resolveApiKey: never;
-  /** Pushes nothing: the host runs the handler with the `ave/instance/shutdown` request. */
-  readonly onShutdown: never;
 }
 
 /**
@@ -1676,23 +1511,6 @@ export function decodeConfigChange(payload: unknown): ConfigChangeEvent {
 /** Take an `onEvent` event off the wire. */
 export function decodeHostEvent(payload: unknown): HostEventDelivery {
   return { data: asEventRecord(payload, "onEvent").data };
-}
-
-/** Take an `onPluginsChanged` event off the wire. */
-export function decodePluginLifecycle(payload: unknown): PluginLifecycleDelivery {
-  const record = asEventRecord(payload, "onPluginsChanged");
-  const event = record.event as PluginLifecycleEvent | undefined;
-  if (
-    event === undefined
-    || typeof event !== "object"
-    || typeof (event as { type?: unknown }).type !== "string"
-  ) {
-    throw new HostApiBoundaryError(
-      "argument-marshalling-rejected",
-      `[host-api-wire] onPluginsChanged: event carries no discriminant`,
-    );
-  }
-  return { event };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
