@@ -2,6 +2,7 @@
  * Folder sync has no history rule and retains the last good snapshot on read failure. */
 import { admitSnapshotPackages, validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
+import { parseStrictJson } from "../catalog/strict-json.js";
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ import { FolderTree, type FolderCapture } from "./folder-tree.js";
 import { folderIdentityState, fsErrorCode, readSourceState, type FolderSource, type SourceDataUse, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { pinnedArtifactSha256s, SnapshotBuilder, type SnapshotSubject, type SourceSnapshot } from "./snapshot.js";
 import { GitTree, rootNameOf } from "./source-tree.js";
+import { errorMessage } from "../../shared/error-message.js";
 
 export interface SourceSyncOptions {
   registry: SourceRegistry;
@@ -480,13 +482,17 @@ async function readPinnedSnapshot(root: string, id: string, use: SourceDataUse =
       ...(cause === undefined ? {} : { cause }),
       detail: { reason: "snapshot-invalid", sourceId: id },
     });
-  const validated = validateCachedSnapshotText(text);
-  if (!validated.ok) throw invalid(`is invalid: ${validated.error}`);
-  const snapshot = validated.value;
-  if (snapshot.sourceId !== id || snapshot.commit !== pinnedCommit) {
-    throw invalid(`names ${String(snapshot.sourceId)}@${String(snapshot.commit)}`);
+  let parsed: unknown;
+  try {
+    parsed = parseStrictJson(text);
+  } catch (error) {
+    throw invalid(`is invalid: ${errorMessage(error)}`, error);
   }
-  return admitSnapshotPackages(snapshot);
+  const named = typeof parsed === "object" && parsed !== null ? (parsed as Partial<SourceSnapshot>) : {};
+  if (named.sourceId !== id || named.commit !== pinnedCommit) {
+    throw invalid(`names ${String(named.sourceId)}@${String(named.commit)}`);
+  }
+  return admitSnapshotPackages(parsed as SourceSnapshot);
 }
 
 /** Missing pinned snapshots throw rather than silently dropping revocations. Revocations only withdraw, so data pending review

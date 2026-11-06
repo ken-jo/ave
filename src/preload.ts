@@ -18,7 +18,7 @@ import {
   buildAveWindowWorld,
   readInitialAppearance,
 } from "./preload/internal-surface.js";
-import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
+import { LINK_WINDOW_SHELL_ARGUMENT, PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
 
 // ─── Deterministic plugin webview asset URLs ────────────────────────────────
 // `__dirname` here resolves to the host preload's bundled location
@@ -35,8 +35,8 @@ function safeResolveFileUrl(relative: string): string {
 const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
 const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
 
-// Apply saved appearance before the renderer mounts.
-const aveInitialAppearance = readInitialAppearance();
+// Only the app renderer and splash consume appearance; link shells use their own titlebar tokens.
+const aveInitialAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ? null : readInitialAppearance();
 applyInitialAppearance(aveInitialAppearance);
 
 // ─── Composed host API surface ──────────────────────────────────────────────

@@ -43,9 +43,10 @@ describe("curated color schemes", () => {
       const backgrounds = ["background", "card", "popover", "muted", "secondary", "accent", "message-user-bg", "input-bar-bg", "code-bg"]
         .map((key) => rgbHex(tokens[key as keyof typeof tokens]))
         .concat(["surface-sunken", "surface", "surface-raised", "surface-overlay"].map((key) => rgbHex(surfaces[key as keyof typeof surfaces])));
-      for (const key of ["destructive", "warning", "success", "info", "emphasis", "ui-line"] as const) {
-        for (const bg of backgrounds) expect(contrastRatio(rgbHex(tokens[key]), bg), `${key} on ${bg}`).toBeGreaterThanOrEqual(3);
+      for (const key of ["destructive", "warning", "success", "info", "emphasis"] as const) {
+        for (const bg of backgrounds) expect(contrastRatio(rgbHex(tokens[key]), bg), `${key} body text on ${bg}`).toBeGreaterThanOrEqual(4.5);
       }
+      for (const bg of backgrounds) expect(contrastRatio(rgbHex(tokens["ui-line"]), bg), `ui-line on ${bg}`).toBeGreaterThanOrEqual(3);
       for (const [bg, fg, minimum] of [
         ["background", "foreground", 4.5], ["card", "card-foreground", 4.5], ["popover", "popover-foreground", 4.5],
         ["muted", "muted-foreground", 4.5], ["message-user-bg", "message-user-fg", 4.5], ["selection-bg", "selection-fg", 4.5],

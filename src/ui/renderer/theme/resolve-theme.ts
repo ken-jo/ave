@@ -76,7 +76,7 @@ export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
   const surfaces = Object.values(surfaceHex);
   const muted = readableColor(ink(dark ? 0.708 : 0.523), surfaces, 4.5, dark, `${scheme.id}/muted`);
   const status = Object.fromEntries(Object.entries({ destructive: palette.red, warning: palette.yellow, success: palette.green, info: palette.blue, emphasis: palette.yellow })
-    .map(([key, color]) => [key, readableColor(color, surfaces, 3, dark, `${scheme.id}/${key}`)]));
+    .map(([key, color]) => [key, readableColor(color, surfaces, 4.5, dark, `${scheme.id}/${key}`)]));
   const uiLine = readableColor(mix(dark ? 0.54 : 0.52), surfaces, 3, dark, `${scheme.id}/ui-line`);
   const selectionForeground = readableColor(foreground, [palette.selectionBackground], 4.5,
     contrastRatio("#ffffff", palette.selectionBackground) > contrastRatio("#000000", palette.selectionBackground), `${scheme.id}/selection`);

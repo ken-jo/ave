@@ -165,6 +165,12 @@ describe("main windows", () => {
     expect(readAppearance(win, "https://example.test/")).toEqual({ ok: false, error: "unauthorized-frame" });
   });
 
+  it("refuses appearance reads from windows outside the app renderer registry", () => {
+    open();
+    const foreignWindow = new electronMock.FakeBrowserWindow({});
+    expect(readAppearance(foreignWindow)).toEqual({ ok: false, error: "unauthorized-frame" });
+  });
+
   it("gives the first window the primary role and every later one the secondary role", () => {
     const first = open();
     const second = open();

@@ -1,6 +1,5 @@
 import { STATIC_DESIGN_TOKENS } from "../theme/design-tokens.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
-import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 /** Translate host theme tokens into standard MCP UI style variables; proprietary tokens must not leak to guests. */
 
 // `McpUiDisplayMode` is the ONE standard type NOT re-declared below: the host's
@@ -218,6 +217,8 @@ export interface McpAppHostContextInput {
   shell: "light" | "dark";
   /** Resolved `--ave-*` token → CSS value map from the resolved scheme. */
   tokens: Record<string, string>;
+  /** The configured terminal font shared with embedded monospace content. */
+  terminalFontFamily: string;
   /** BCP-47 language tag (e.g. "en", "ko"). */
   locale: string;
   /** IANA time zone (e.g. "America/New_York"). */
@@ -234,7 +235,8 @@ export interface McpAppHostContextInput {
 /** Translate Ave host theme + locale + timezone into the standard `McpUiHostContext`. Emits ONLY standard
  * `McpUiStyleVariableKey` style variables — never a `--ave-*` key. */
 export function buildMcpAppHostContext(input: McpAppHostContextInput): McpUiHostContext {
-  const { shell, tokens, locale, timeZone, displayMode } = input;
+  const { shell, tokens, terminalFontFamily, locale, timeZone, displayMode } = input;
+  if (typeof terminalFontFamily !== "string" || terminalFontFamily.trim().length === 0) throw new Error("Terminal font family is required");
 
   const variables: Partial<Record<McpUiStyleVariableKey, string>> = {};
   for (const [source, target] of TOKEN_TO_STYLE_KEY) {
@@ -247,7 +249,7 @@ export function buildMcpAppHostContext(input: McpAppHostContextInput): McpUiHost
   if (Object.keys(tokens).length > 0) {
     for (const [target, source] of Object.entries(STATIC_STYLE_SOURCES)) variables[target as McpUiStyleVariableKey] = STATIC_DESIGN_TOKENS[source];
     variables["--font-sans"] = tokens["--ave-font-family"] || HOST_FONT_STACK;
-    variables["--font-mono"] = DEFAULT_APPEARANCE.terminalFont.family;
+    variables["--font-mono"] = terminalFontFamily;
     const border = tokens["--ave-border"];
     const overlay = tokens["--ave-surface-overlay"];
     if (border && overlay) {

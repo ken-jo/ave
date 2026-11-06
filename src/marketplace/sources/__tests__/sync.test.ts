@@ -491,7 +491,29 @@ describe("SourceSyncer", () => {
     expect(readFileSync(path, "utf8")).toBe(text);
     writeFileSync(path, JSON.stringify({ ...snapshot, packages: [retired, { ...retained, kind: "widget" }] }));
     expect(await syncer.readRetainedSnapshot("acme", snapshot.commit)).toBeNull();
-    await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED" });
+    expect((await syncer.readSnapshot("acme"))?.packages).toEqual([{ ...retained, kind: "widget" }]);
+  });
+
+  it("keeps pinned reads limited to JSON and identity checks plus package admission", async () => {
+    const { syncer } = await emptySource();
+    await syncer.sync("acme");
+    const snapshot = (await syncer.readSnapshot("acme"))!;
+    const retained = { kind: "skill", name: "harbor", path: "skills/harbor", versions: [{ version: "1.0.0" }] };
+    const retired = { ...retained, kind: "theme", name: "harbor-theme" };
+    const legacy = {
+      sourceId: "acme", commit: snapshot.commit, packages: [retired, retained],
+      revocations: [], metadata: { retained: true },
+    };
+    const path = join(root, "acme", "snapshots", snapshot.commit + ".json");
+    const text = JSON.stringify(legacy);
+    writeFileSync(path, text);
+    expect(await syncer.readSnapshot("acme")).toEqual({ ...legacy, packages: [retained] });
+    expect(await syncer.readRetainedSnapshot("acme", snapshot.commit)).toBeNull();
+    expect(readFileSync(path, "utf8")).toBe(text);
+    for (const invalid of ["{", JSON.stringify({ ...legacy, sourceId: "another-source" }), JSON.stringify({ ...legacy, commit: OTHER_COMMIT })]) {
+      writeFileSync(path, invalid);
+      await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED" });
+    }
   });
 
   it("rebuilds legacy snapshots at the same pin and evaluates the retained raw policy", async () => {

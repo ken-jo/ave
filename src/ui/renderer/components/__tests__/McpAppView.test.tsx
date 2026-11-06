@@ -193,6 +193,29 @@ describe("McpAppView — b3 disable-in-place on disconnect", () => {
 });
 
 describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
+  it("seeds and updates monospace styling from the configured terminal family", async () => {
+    const appearance = {
+      ...DEFAULT_APPEARANCE,
+      mode: "light" as const,
+      terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Example Mono, monospace" },
+    };
+    const { api } = makeMockAveApi({ settings: { appearance } });
+    render(<ThemeProvider api={api as never} initialAppearance={appearance}><McpAppView payload={payload("font-config")} /></ThemeProvider>);
+    await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
+    const initialContext = createMcpAppBridgeMock.mock.calls[0]![3] as {
+      styles: { variables: Record<string, string> };
+    };
+    expect(initialContext.styles.variables["--font-mono"]).toBe("Example Mono, monospace");
+    const appBridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge as { setHostContext: ReturnType<typeof vi.fn> };
+    await act(async () => {
+      await api.updateSettings({ appearance: { terminalFont: { ...appearance.terminalFont, family: "Alternate Mono, monospace" } } });
+    });
+    await waitFor(() => expect(appBridge.setHostContext).toHaveBeenLastCalledWith(expect.objectContaining({
+      styles: expect.objectContaining({ variables: expect.objectContaining({ "--font-mono": "Alternate Mono, monospace" }) }),
+    })));
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("seeds createMcpAppBridge with a populated, leak-free hostContext, then pushes updates via bridge.setHostContext on a theme change", async () => {
     const { container, getByTestId } = render(<McpAppView payload={payload("github")} />, {
       wrapper: ({ children }) => (

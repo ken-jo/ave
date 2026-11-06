@@ -66,7 +66,7 @@ test('all schemes keep status, line, selection and diff colors readable in the b
       return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
     };
     for (const surface of surfaceNames) {
-      for (const status of statusNames) expect(ratio(colors[status]!, colors[surface]!), `${scheme.id}: ${status}/${surface}`).toBeGreaterThanOrEqual(3);
+      for (const status of statusNames) expect(ratio(colors[status]!, colors[surface]!), `${scheme.id}: ${status}/${surface}`).toBeGreaterThanOrEqual(4.5);
       expect(ratio(colors['ui-line']!, colors[surface]!), `${scheme.id}: line/${surface}`).toBeGreaterThanOrEqual(3);
       for (const status of ['success', 'destructive']) {
         const wash = colors[status]!.map((channel, index) => channel * 0.15 + colors[surface]![index]! * 0.85);

@@ -1,6 +1,6 @@
 /** Ledger entries bind installed bytes and provenance; unreadable ledgers stop the store.
  * Current installs have unique payload directories; legacy installs use version directories. */
-import { lstat, rm } from "node:fs/promises";
+import { lstat, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { createMarketplaceLogger } from "../log.js";
@@ -52,6 +52,7 @@ const SOURCE_ORIGINS = new Set<SourceOrigin>(["official", "managed", "custom", "
 const ENTRY_KEYS = new Set(["kind", "name", "version", "origin"]);
 const ORIGIN_KEYS = new Set(["sourceId", "sourceOrigin", "commit", "packagePath", "version", "contentSha256", "installedAt", "installId", "payloadDir", "consent"]);
 const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const SAFE_LEGACY_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
 
 export function installPayloadDir(kind: ContentKind, name: string, installId: string): string {
   return `${kind}/${name}/.installs/${installId}`;
@@ -114,31 +115,58 @@ function parse(text: string, path: string): { entries: LedgerEntry[]; retiredPay
     if (entry.kind === "theme") {
       retiredCount += 1;
       if (typeof origin.payloadDir === "string") retiredPayloadDirs.push(origin.payloadDir);
+      else {
+        if (!SAFE_LEGACY_VERSION.test(entry.version as string)) fail(`${at}.version is not a safe payload directory`);
+        retiredPayloadDirs.push(`theme/${entry.name as string}/${entry.version as string}`);
+      }
     } else entries.push(entry as unknown as LedgerEntry);
   });
   return { entries, retiredPayloadDirs, retiredCount };
 }
 
-/** Validate every ancestor before deleting only the retired install directory. */
+/** A missing directory permits an interrupted cleanup to resume; tampered paths fail with their location. */
+async function retiredDirectoryExists(path: string): Promise<boolean> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink()) throw new Error(`Retired package payload is a symbolic link: ${path}`);
+    if (!entry.isDirectory()) throw new Error(`Retired package payload is not a directory: ${path}`);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+/** Every component, including the store root, is inspected without following links. */
+async function retiredPathExists(root: string, relative: string): Promise<boolean> {
+  let path = root;
+  if (!await retiredDirectoryExists(path)) return false;
+  for (const segment of relative.split("/")) {
+    path = join(path, segment);
+    if (!await retiredDirectoryExists(path)) return false;
+  }
+  return true;
+}
+
+/** Validate every target before deleting payloads; prune only empty package-owned parent directories. */
 async function removeRetiredPayloads(root: string, payloadDirs: readonly string[]): Promise<number> {
   const existing: string[] = [];
+  const parents = new Set<string>();
   for (const relative of payloadDirs) {
-    let path = root;
-    let absent = false;
-    for (const segment of relative.split("/")) {
-      path = join(path, segment);
-      try {
-        const entry = await lstat(path);
-        if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Retired package payload is not a directory");
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
-        absent = true;
-        break;
-      }
-    }
-    if (!absent) existing.push(path);
+    if (await retiredPathExists(root, relative)) existing.push(join(root, relative));
+    const parent = dirname(relative);
+    if (parent.endsWith("/.installs")) parents.add(parent);
+    parents.add(relative.split("/").slice(0, 2).join("/"));
   }
   for (const path of existing) await rm(path, { recursive: true, force: true });
+  for (const relative of parents) {
+    if (!await retiredPathExists(root, relative)) continue;
+    try { await rmdir(join(root, relative)); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!isMissingPathError(error) && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+  }
   return existing.length;
 }
 

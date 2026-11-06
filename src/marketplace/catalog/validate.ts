@@ -480,7 +480,8 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
 /** Apply current identifier admission on every cached read, including offline; keep stored files unchanged. */
 export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot {
   const diagnostics: CatalogDiagnostic[] = [];
-  const packages = snapshot.packages.filter((entry, position) => {
+  const currentPackages = omitRetiredThemes(snapshot.packages) as SourceSnapshot["packages"];
+  const packages = currentPackages.filter((entry, position) => {
     const credential = credentialIn(
       entry.name,
       [...(entry.latest !== undefined ? [entry.latest] : []), ...entry.versions.map((version) => version.version)],
@@ -490,7 +491,8 @@ export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot 
     diagnostics.push({ subject: holdsCredential(entry.name) ? `packages[${position}]` : `${entry.kind}/${entry.name}`, message: credential.message });
     return false;
   });
-  return diagnostics.length === 0 ? snapshot : { ...snapshot, packages, diagnostics: [...snapshot.diagnostics, ...diagnostics] };
+  if (diagnostics.length === 0) return packages.length === snapshot.packages.length ? snapshot : { ...snapshot, packages };
+  return { ...snapshot, packages, diagnostics: [...snapshot.diagnostics, ...diagnostics] };
 }
 
 export function validateCachedSnapshotText(text: string): Validation<SourceSnapshot> {

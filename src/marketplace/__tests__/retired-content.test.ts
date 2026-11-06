@@ -51,6 +51,8 @@ describe("retired installed content migration", () => {
     expect(ledger.list()).toEqual(survivingEntries);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ version: 1, packages: survivingEntries });
     expect(existsSync(retired)).toBe(false);
+    expect(existsSync(dirname(retired))).toBe(false);
+    expect(existsSync(dirname(dirname(retired)))).toBe(false);
     expect(existsSync(join(kept, "language.json"))).toBe(true);
     expect(await contentLedgerOrigins(path)()).toHaveLength(survivingEntries.length);
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ entriesRemoved: 1, payloadsRemoved: 1 }, "Retired content migrated");
@@ -90,9 +92,92 @@ describe("retired installed content migration", () => {
     mkdirSync(join(dirname(path), "theme", retiredEntry.name), { recursive: true });
     symlinkSync(outside, join(dirname(path), "theme", retiredEntry.name, ".installs"), "dir");
     const original = write(path, { version: 1, packages: [retiredEntry, ...survivingEntries] });
-    await expect(ContentLedger.open(path)).rejects.toThrow("Retired package payload is not a directory");
+    await expect(ContentLedger.open(path)).rejects.toThrow(`Retired package payload is a symbolic link: ${join(dirname(path), "theme", retiredEntry.name, ".installs")}`);
     expect(readFileSync(path, "utf8")).toBe(original);
     expect(readFileSync(join(outside, "keep"), "utf8")).toBe("keep");
+  });
+
+  it.each([".installs", `.installs/${INSTALL_ID}`])("names a non-directory retired payload path at %s", async (relative) => {
+    const path = join(root, "packages", "ledger.json");
+    const bad = join(dirname(path), "theme", retiredEntry.name, relative);
+    mkdirSync(dirname(bad), { recursive: true });
+    writeFileSync(bad, "keep");
+    const original = write(path, { version: 1, packages: [retiredEntry] });
+    await expect(ContentLedger.open(path)).rejects.toThrow(`Retired package payload is not a directory: ${bad}`);
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(readFileSync(bad, "utf8")).toBe("keep");
+  });
+
+  it("prunes only empty install and package parents", async () => {
+    const path = join(root, "packages", "ledger.json");
+    const payload = join(dirname(path), retiredEntry.origin.payloadDir);
+    const orphan = join(dirname(payload), "unrecorded-install");
+    mkdirSync(payload, { recursive: true });
+    mkdirSync(orphan);
+    writeFileSync(join(orphan, "keep"), "keep");
+    write(path, { version: 1, packages: [retiredEntry] });
+    await ContentLedger.open(path);
+    expect(existsSync(payload)).toBe(false);
+    expect(readFileSync(join(orphan, "keep"), "utf8")).toBe("keep");
+    expect(existsSync(dirname(payload))).toBe(true);
+    expect(existsSync(dirname(dirname(payload)))).toBe(true);
+  });
+
+  it("keeps a nonempty package parent after removing its empty installs directory", async () => {
+    const path = join(root, "packages", "ledger.json");
+    const payload = join(dirname(path), retiredEntry.origin.payloadDir);
+    const packageRoot = dirname(dirname(payload));
+    mkdirSync(payload, { recursive: true });
+    writeFileSync(join(packageRoot, "keep"), "keep");
+    write(path, { version: 1, packages: [retiredEntry] });
+    await ContentLedger.open(path);
+    expect(existsSync(dirname(payload))).toBe(false);
+    expect(readFileSync(join(packageRoot, "keep"), "utf8")).toBe("keep");
+  });
+
+  it.each([false, true])("removes the exact released legacy version, preserving other versions when present: %s", async (keepOtherVersion) => {
+    const path = join(root, "packages", "ledger.json");
+    const { installId: _installId, payloadDir: _payloadDir, ...origin } = retiredEntry.origin;
+    const legacy = { ...retiredEntry, origin };
+    const payload = join(dirname(path), "theme", legacy.name, legacy.version);
+    mkdirSync(payload, { recursive: true });
+    writeFileSync(join(payload, "theme.json"), "{}");
+    const other = join(dirname(payload), "2.0.0");
+    if (keepOtherVersion) { mkdirSync(other); writeFileSync(join(other, "keep"), "keep"); }
+    write(path, { version: 1, packages: [legacy, ...survivingEntries] });
+    expect((await ContentLedger.open(path)).list()).toEqual(survivingEntries);
+    expect(existsSync(payload)).toBe(false);
+    expect(existsSync(dirname(payload))).toBe(keepOtherVersion);
+    if (keepOtherVersion) expect(readFileSync(join(other, "keep"), "utf8")).toBe("keep");
+  });
+
+  it("refuses a symlink at a legacy version and names the offending path", async () => {
+    const path = join(root, "packages", "ledger.json");
+    const { installId: _installId, payloadDir: _payloadDir, ...origin } = retiredEntry.origin;
+    const legacy = { ...retiredEntry, origin };
+    const payload = join(dirname(path), "theme", legacy.name, legacy.version);
+    const outside = join(root, "preserved");
+    mkdirSync(dirname(payload), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep"), "keep");
+    symlinkSync(outside, payload, "dir");
+    const original = write(path, { version: 1, packages: [legacy] });
+    await expect(ContentLedger.open(path)).rejects.toThrow(`Retired package payload is a symbolic link: ${payload}`);
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("keep");
+  });
+
+  it("rejects an unsafe legacy version before deleting any payload", async () => {
+    const path = join(root, "packages", "ledger.json");
+    const { installId: _installId, payloadDir: _payloadDir, ...origin } = retiredEntry.origin;
+    const version = "../preserved";
+    const legacy = { ...retiredEntry, version, origin: { ...origin, version } };
+    const payload = join(dirname(path), retiredEntry.origin.payloadDir);
+    mkdirSync(payload, { recursive: true });
+    const original = write(path, { version: 1, packages: [legacy] });
+    await expect(ContentLedger.open(path)).rejects.toThrow("version is not a safe payload directory");
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(existsSync(payload)).toBe(true);
   });
 });
 

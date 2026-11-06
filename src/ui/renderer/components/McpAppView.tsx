@@ -84,6 +84,7 @@ export function McpAppView({
   const themeCtx = useTheme();
   const appliedTheme = themeCtx.appliedTheme;
   const appliedRevision = themeCtx.appliedRevision;
+  const terminalFontFamily = themeCtx.appearance.terminalFont.family;
 
   // Latch the card's origin session; stale-card messages must not enter a newly selected conversation. Missing origin never
   // matches a live session.
@@ -199,11 +200,12 @@ export function McpAppView({
     return buildMcpAppHostContext({
       shell: appliedTheme.shell,
       tokens,
+      terminalFontFamily,
       locale,
       timeZone,
       displayMode: mountDisplayMode,
     });
-  }, [appliedTheme, locale, timeZone, mountDisplayMode]);
+  }, [appliedTheme, terminalFontFamily, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle (`attachWebview`, keyed only on [payload, bundle])
   // can seed the initial context at mount without re-subscribing on every theme/locale change.
@@ -328,7 +330,7 @@ export function McpAppView({
     const current = bridgeRef.current;
     if (!current) return;
     current.bridge.setHostContext(buildHostContextRef.current());
-  }, [appliedRevision, locale]);
+  }, [appliedRevision, terminalFontFamily, locale]);
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">

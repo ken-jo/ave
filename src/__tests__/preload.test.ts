@@ -1,4 +1,6 @@
 import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
+import { LINK_WINDOW_SHELL_ARGUMENT } from "../shared/preload-bundles.js";
+import { runInNewContext } from "node:vm";
 /** Preload asset URLs must not depend on a splash-phase data: location. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
@@ -94,8 +96,42 @@ describe("preload — plugin webview asset URLs", () => {
     expect(() => readInitialAppearance()).toThrow("Initial appearance unavailable");
   });
 
+  it("starts the link shell preload without appearance and keeps its window controls", async () => {
+    const originalArgv = process.argv;
+    process.argv = [...originalArgv, LINK_WINDOW_SHELL_ARGUMENT];
+    mockSendSync.mockImplementation(() => { throw new Error("Link shells must not request appearance"); });
+    try {
+      await loadAveApi();
+      expect(mockSendSync).not.toHaveBeenCalled();
+      expect(exposed.get("__aveInitialAppearance")).toBeNull();
+      expect(exposed.get("avePlatform")).toBeDefined();
+      const windowApi = exposed.get("aveWindow") as { close: () => Promise<void> };
+      const { buildTitlebarButtonScript } = await import("../main/window-titlebar-shell.js");
+      for (const platform of ["win32", "linux"] as const) {
+        const clicks = new Map<string, () => unknown>();
+        const document = { getElementById: (id: string) => ({
+          addEventListener: (event: string, handler: () => unknown) => { if (event === "click") clicks.set(id, handler); },
+        }) };
+        runInNewContext(buildTitlebarButtonScript({ platform, title: "Link shell" }), { document, window: { aveWindow: windowApi } });
+        expect(clicks.has("close")).toBe(true);
+        await clicks.get("close")!();
+      }
+      expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.window.close);
+      expect(mockInvoke).toHaveBeenCalledTimes(2);
+    } finally { process.argv = originalArgv; }
+  });
+
+  it("still requires appearance before exposing the app renderer bridges", async () => {
+    mockSendSync.mockReturnValue({ ok: false, error: "unauthorized-frame" } as never);
+    await expect(loadAveApi()).rejects.toThrow("Initial appearance unavailable");
+    expect(exposed.size).toBe(0);
+    expect(mockSendSync).toHaveBeenCalledWith(CHANNELS.settings.initialAppearance);
+  });
+
   it("limits the window surface to isolated previews and publishes the approved worlds", async () => {
     const api = await loadAveApi();
+    expect(mockSendSync).toHaveBeenCalledExactlyOnceWith(CHANNELS.settings.initialAppearance);
+    expect(exposed.get("__aveInitialAppearance")).toEqual(DEFAULT_APPEARANCE);
     const windowApi = api.window as Record<string, unknown>;
     expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
     expect(Object.keys(CHANNELS.window)).toEqual([
