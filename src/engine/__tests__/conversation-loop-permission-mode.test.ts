@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -21,8 +19,6 @@ class UnusedProvider implements LLMProvider {
 
 function makeLoop() {
   const toolRegistry = new ToolRegistry();
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   let mode: "default" | "strict" | "auto" | "allow" = "default";
   const permissionManager = {
     getMode: vi.fn(() => mode),
@@ -52,8 +48,6 @@ function makeLoop() {
       build: () => "system",
       setToolScope: () => {},
     },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager: {
       saveSession: () => {},

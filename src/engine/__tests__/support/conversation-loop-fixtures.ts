@@ -1,5 +1,3 @@
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import type { ConversationLoopDeps } from "../../conversation-loop.js";
@@ -55,8 +53,6 @@ export function makeBasicConversationLoopDeps(
   return {
     settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...makeConversationPermissionDeps(),

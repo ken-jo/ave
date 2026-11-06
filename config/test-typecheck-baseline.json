@@ -217,8 +217,6 @@
     "test/renderer/redact-notice.test.tsx": 1,
     "test/renderer/render-app.tsx": 1,
     "test/renderer/star-flow.test.tsx": 1,
-    "test/scripts/check-cluster-scope.test.ts": 4,
-    "test/scripts/check-cluster-sensitive-paths.test.ts": 1,
     "test/scripts/check-test-coverage.test.ts": 2,
     "test/scripts/check-test-duplicates.test.ts": 1,
     "test/scripts/dev-watcher-gate.test.ts": 1,

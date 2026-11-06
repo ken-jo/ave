@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -100,8 +98,6 @@ function buildLoop(memoryManager: MemoryManager, toolRegistry: ToolRegistry, pro
   const loop = new ConversationLoop({
     settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager,
     ...makeConversationPermissionDeps(),
@@ -418,8 +414,6 @@ describe("mid-stream durability", () => {
           build: () => "system",
           createIsolated: () => ({ build: () => "system" }),
         },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
         memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [] },
         ...makeConversationPermissionDeps(),

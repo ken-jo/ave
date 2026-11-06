@@ -170,6 +170,7 @@ describe("readStableRegularFileUtf8", () => {
     const child = `
       const [moduleUrl, fifoPath, privateFlag] = process.argv.slice(1);
       const { readStableRegularFileUtf8 } = await import(moduleUrl);
+      const startedAt = performance.now();
       try {
         readStableRegularFileUtf8(fifoPath, 1024, "fixture", privateFlag === "true");
         process.stderr.write("FIFO was accepted");
@@ -181,7 +182,14 @@ describe("readStableRegularFileUtf8", () => {
           process.exit(3);
         }
       }
+      const elapsedMs = performance.now() - startedAt;
+      if (elapsedMs > 1_000) {
+        process.stderr.write("FIFO rejection took " + Math.round(elapsedMs) + " ms");
+        process.exit(4);
+      }
     `;
+    // The budget covers only the read; the outer timeout bounds a blocking open
+    // without charging Electron and tsx start-up to it.
     const result = spawnSync(process.execPath, [
       "--import", "tsx", "--input-type=module", "-e", child,
       moduleUrl, fifoPath, String(requirePrivateOwnerFile),
@@ -189,10 +197,10 @@ describe("readStableRegularFileUtf8", () => {
       cwd: process.cwd(),
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
       encoding: "utf8",
-      timeout: 2_000,
+      timeout: 20_000,
     });
     expect(result.status, result.error?.message ?? result.stderr).toBe(0);
-  });
+  }, 30_000);
 });
 
 describe("SafeStorageSecretStore", () => {

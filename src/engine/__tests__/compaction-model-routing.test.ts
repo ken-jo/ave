@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -32,8 +30,6 @@ function makeLoop(compactionModel = "") {
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "route-secret" },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);

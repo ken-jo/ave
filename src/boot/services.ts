@@ -12,8 +12,6 @@ import { MemoryManager } from "../memory/memory-manager.js";
 import { registerShutdownHook } from "../main/app-shutdown.js";
 import { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import { execTurnRequested } from "../main/exec-mode.js";
-import { InputClassifier } from "../core/input-classifier.js";
-import { RouteEngine } from "../core/route-engine.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createFileTools } from "../tools/file-tools.js";
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
@@ -57,9 +55,7 @@ export interface CoreServices {
   memoryCaptureService: MemoryCaptureService;
   /** Live save notices and the in-process undo records behind them. */
   memorySaveNotices: MemorySaveNotices;
-  inputClassifier: InputClassifier;
   toolRegistry: ToolRegistry;
-  routeEngine: RouteEngine;
 }
 
 /** Install the live PII-policy reader during service boot so headless runs redact before IPC exists. */
@@ -172,7 +168,6 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     sessionStore: "main",
   });
 
-  const inputClassifier = new InputClassifier();
   const toolRegistry = new ToolRegistry();
   // Register shell tools with canonical permission metadata so approval and AST validation apply.
   toolRegistry.register(new BashTool());
@@ -190,7 +185,6 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   // Background-shell lookups must stay scoped to the caller’s session.
   toolRegistry.register(createBashOutputTool());
   toolRegistry.register(createBashKillTool());
-  const routeEngine = new RouteEngine();
 
   return {
     pythonPath,
@@ -202,8 +196,6 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
     memoryUsageLog,
     memoryCaptureService,
     memorySaveNotices,
-    inputClassifier,
     toolRegistry,
-    routeEngine,
   };
 }

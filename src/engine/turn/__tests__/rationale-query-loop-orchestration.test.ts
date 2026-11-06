@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { createDynamicTool } from "../../../tools/base.js";
 import type { ToolExecutor, ToolResult, ToolUseBlock,
 } from "../../../tools/executor.js";
@@ -64,8 +62,6 @@ function makeLoop(
   const loop = new ConversationLoop({
     settingsService: { get: () => fakeLlmSettings(), getSecret: () => "key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: registry,
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,

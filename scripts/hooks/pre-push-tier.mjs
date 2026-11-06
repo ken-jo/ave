@@ -2,8 +2,8 @@
 //
 // Every pull request's CI runs the build and the test scope scripts/run-ci-suite.mjs
 // picks (the full suite, or affected tests only for a test-only or trusted diff),
-// so the local hook runs the full suite only on request (run-local-checks.mjs
-// lists the cases). Every other push runs a scoped tier, and its log line says
+// so full local checks require the explicit manual stage. Every push runs
+// a scoped tier, and its log line says
 // FULL_SUITE_DEFERRED. pre-push-source-policy.mjs still decides what the
 // fast tier can trace; CI reuses it unchanged, and its "full checks" wording is
 // CI's decision for a non-integration base. This module decides what the hook
@@ -360,5 +360,5 @@ export function selectUnattributedCatalogChecks(entries, { readBlob, trackedFile
 /** The pre-push log line of a scoped tier: it names the tier, what runs and why. */
 export function describeScopedTier({ tier, runs, reason }) {
   return `[checks] tier=${tier} pre-push: running ${runs}; ${FULL_SUITE_DEFERRED} ` +
-    `(${reason}; AVE_PREPUSH_FULL=1 runs the full checks)`;
+    `(${reason})`;
 }

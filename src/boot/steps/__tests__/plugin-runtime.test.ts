@@ -385,9 +385,6 @@ describe("initPluginRuntime HostApi factory", () => {
       projectRoot: "/tmp/ave-test/project",
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -561,9 +558,6 @@ describe("initPluginRuntime HostApi factory", () => {
       projectRoot: "/tmp/ave-test/project",
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
@@ -608,9 +602,6 @@ describe("initPluginRuntime HostApi factory", () => {
       projectRoot: "/tmp/ave-test/project",
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,
@@ -695,9 +686,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -805,9 +793,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -908,9 +893,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -976,9 +958,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -1048,9 +1027,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: bootAuditLogger as never,
@@ -1141,9 +1117,6 @@ describe("initPluginRuntime HostApi factory", () => {
         setPluginConfig: vi.fn(),
       } as never,
       memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
       toolRegistry: createRuntimeToolRegistry() as never,
       pythonPath: undefined,
       bootAuditLogger: { log: vi.fn() } as never,

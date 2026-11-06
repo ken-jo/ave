@@ -4,8 +4,6 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { createDynamicTool } from "../../../tools/base.js";
@@ -128,8 +126,6 @@ describe("directory instructions in the query loop", () => {
       ...makeConversationPermissionDeps(),
       settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
       memoryManager: { saveSession: async () => {}, listSessions: () => [] },
       disableSessionPersistence: true,

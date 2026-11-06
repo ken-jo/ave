@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
@@ -60,8 +58,6 @@ async function makeLoop(llm: ReturnType<typeof fakeLlmSettings> & { activeChatRu
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
@@ -247,8 +243,6 @@ describe("/model", () => {
     const loop = new ConversationLoop({
       settingsService: { get: () => llm, getSecret: () => secret() },
       systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: new ToolRegistry(),
       memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -42,7 +43,7 @@ function mentions(command: string, marker: string): boolean {
 }
 
 /** Every gate that inspects the repository's own bookkeeping — a manifest, a
- *  baseline ledger, the self-test of a gate that reads one. A failure says a
+ *  baseline ledger, or its unit coverage. A failure says a
  *  file is stale, never that the product is broken.
  *
  *  Both spellings for every gate: the package.json script name, and the base
@@ -56,7 +57,6 @@ function mentions(command: string, marker: string): boolean {
  *  A gate genuinely new to the repository still has to be added here by hand. */
 const HYGIENE_GATES: ReadonlyArray<{ script: string; file: string }> = [
   { script: "check:knip", file: "check-knip-baseline" },
-  { script: "check:knip:self-test", file: "check-knip-gate-self-test" },
   { script: "test:knip-gate", file: "knip-baseline.test" },
   { script: "check:test-duplicates", file: "check-test-duplicates" },
   { script: "check:sunset-inventory", file: "check-sunset-inventory" },
@@ -101,10 +101,6 @@ const VERIFICATION_CHECKS: ReadonlyArray<{ script: string; file: string }> = [
   { script: "check:mxc-packaging", file: "check-mxc-packaging" },
   { script: "check:mxc-pins", file: "update-mxc-pins" },
   { script: "check:typecheck-tests", file: "check-test-typecheck-baseline" },
-  {
-    script: "check:typecheck-tests:self-test",
-    file: "check-test-typecheck-gate-self-test",
-  },
   { script: "check:test-coverage", file: "run-test-coverage-gate" },
 ];
 
@@ -460,7 +456,7 @@ describe("installer smoke and packaging discipline", () => {
       const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
       return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
     });
-    expect(reachable).toEqual(["ci.yml", "cluster-detector.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
+    expect(reachable).toEqual(["ci.yml", "codeql.yml", "naming-gate.yml", "report-lint.yml", "web-ci.yml"]);
   });
 
   /** A repository file's content, or undefined when the path is no file. */
@@ -483,90 +479,104 @@ describe("installer smoke and packaging discipline", () => {
       return workflowEvents(on).includes("pull_request_target");
     });
     expect(Object.keys(PULL_REQUEST_TARGET_WORKFLOWS).sort()).toEqual(targets);
-    expect(targets).toEqual(["cluster-detector.yml"]);
-    // The derivation is read, not vacuous: the scope script the workflow runs
-    // from its .cluster-policy checkout, and the module that script imports.
-    expect(pullRequestTargetExecutedFiles(
-      "cluster-detector.yml",
-      readRepoFile(".github/workflows/cluster-detector.yml"),
-      repoFile,
-    ).files).toEqual([
-      ".github/workflows/cluster-detector.yml",
-      "scripts/check-cluster-scope.mjs",
-      "scripts/check-cluster-sensitive-paths.mjs",
-    ]);
   });
 
+  const fixtureWorkflow = [
+    "on:", "  pull_request_target:", "permissions:", "  contents: read", "jobs:", "  check:",
+    "    runs-on: ubuntu-latest", "    steps:",
+    "      - uses: actions/checkout@0123456789012345678901234567890123456789",
+    "        with:", "          path: .trusted-policy", "          ref: main", "          persist-credentials: false",
+    "      - run: |", "          POLICY_LIMIT=3",
+    "          RESULT=$(node .trusted-policy/scripts/policy-check.mjs \\", "            --limit 3)",
+  ].join("\n") + "\n";
+  const fixtureFiles: Record<string, string> = {
+    ".github/workflows/trusted-policy.yml": fixtureWorkflow,
+    "scripts/policy-check.mjs": 'import "./policy-helper.mjs";\nfunction request(endpoint) {\nconst args = ["api", "--method", "GET", endpoint];\nspawnSync("gh", args);\n}\n',
+    "scripts/policy-helper.mjs": "export {};\n",
+  };
+  const fixtureFile = (path: string) => fixtureFiles[path];
+  // Synthetic pins exercise the privileged-workflow guard without authorizing a real workflow.
+  const fixtureViolations = (source: string, name: string, read: (path: string) => string | undefined) => {
+    const pins = PULL_REQUEST_TARGET_WORKFLOWS as Record<string, Record<string, string>>;
+    pins["trusted-policy.yml"] = Object.fromEntries(Object.entries(fixtureFiles)
+      .map(([path, content]) => [path, createHash("sha256").update(content).digest("hex")]));
+    try { return pullRequestTargetAllowListViolations(source, name, read); }
+    finally { delete pins["trusted-policy.yml"]; }
+  };
+
   it("refuses an edited or unlisted pull_request_target workflow until the allow-list is updated", () => {
-    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
-    const edited = cluster.replace("CLUSTER_THRESHOLD=3", "CLUSTER_THRESHOLD=4");
-    expect(edited).not.toBe(cluster);
-    const [changed, ...rest] = pullRequestTargetAllowListViolations(edited, "cluster-detector.yml", repoFile);
+    const fixture = fixtureWorkflow;
+    const edited = fixture.replace("POLICY_LIMIT=3", "POLICY_LIMIT=4");
+    expect(edited).not.toBe(fixture);
+    const [changed, ...rest] = fixtureViolations(edited, "trusted-policy.yml", fixtureFile);
     expect(rest).toEqual([]);
-    expect(changed).toMatch(/^\.github\/workflows\/cluster-detector\.yml changed since its pull_request_target review of cluster-detector\.yml \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
+    expect(changed).toMatch(/^\.github\/workflows\/trusted-policy\.yml changed since its pull_request_target review of trusted-policy\.yml \(sha256 [0-9a-f]{64}, allow-list [0-9a-f]{64}\): /u);
     expect(changed?.endsWith(allowListWhy)).toBe(true);
     // Line endings alone are not an edit: a Windows checkout reads CRLF.
-    expect(pullRequestTargetAllowListViolations(cluster.replace(/\n/gu, "\r\n"), "cluster-detector.yml", repoFile))
+    expect(fixtureViolations(fixture.replace(/\n/gu, "\r\n"), "trusted-policy.yml", fixtureFile))
       .toEqual([]);
-    expect(pullRequestTargetAllowListViolations(cluster, "copy.yml", repoFile))
+    expect(fixtureViolations(fixture, "copy.yml", fixtureFile))
       .toEqual([`copy.yml is not on the pull_request_target allow-list: ${allowListWhy}`]);
-    expect(pullRequestTargetAllowListViolations(cluster.replace("pull_request_target:", "pull_request:"), "copy.yml", repoFile))
+    expect(fixtureViolations(fixture.replace("pull_request_target:", "pull_request:"), "copy.yml", fixtureFile))
       .toEqual([]);
   });
 
   describe("files a pull_request_target workflow executes", () => {
-    const cluster = readRepoFile(".github/workflows/cluster-detector.yml");
+    const fixture = fixtureWorkflow;
     const withFile = (path: string, content: string) => (candidate: string): string | undefined =>
-      (candidate === path ? content : repoFile(candidate));
+      (candidate === path ? content : fixtureFile(candidate));
 
     it.each([
-      ["the scope script it runs", "scripts/check-cluster-scope.mjs"],
-      ["the module that script imports", "scripts/check-cluster-sensitive-paths.mjs"],
+      ["the scope script it runs", "scripts/policy-check.mjs"],
+      ["the module that script imports", "scripts/policy-helper.mjs"],
     ])("refuses an edit to %s without a re-pin", (_label, path) => {
-      const edited = `${repoFile(path) as string}\n// edited\n`;
-      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", withFile(path, edited));
+      const edited = `${fixtureFile(path) as string}\n// edited\n`;
+      const violations = fixtureViolations(fixture, "trusted-policy.yml", withFile(path, edited));
       expect(violations).toHaveLength(1);
-      expect(violations[0]).toMatch(new RegExp(`^${path.replace(/\./gu, "\\.")} changed since its pull_request_target review of cluster-detector\\.yml `, "u"));
+      expect(violations[0]).toMatch(new RegExp(`^${path.replace(/\./gu, "\\.")} changed since its pull_request_target review of trusted-policy\\.yml `, "u"));
       expect(violations[0]?.endsWith(allowListWhy)).toBe(true);
     });
 
     it("refuses a new import that the allow-list does not pin", () => {
-      const path = "scripts/check-cluster-sensitive-paths.mjs";
-      const edited = `import { errorMessage } from "./lib/error-message.mjs";\n${repoFile(path) as string}`;
+      const path = "scripts/policy-helper.mjs";
+      const edited = `import { errorMessage } from "./lib/error-message.mjs";\n${fixtureFile(path) as string}`;
       const read = (candidate: string) => (candidate === "scripts/lib/error-message.mjs" ? "export {};\n" : withFile(path, edited)(candidate));
-      const violations = pullRequestTargetAllowListViolations(cluster, "cluster-detector.yml", read);
+      const violations = fixtureViolations(fixture, "trusted-policy.yml", read);
       expect(violations).toHaveLength(2);
       expect(violations[0])
-        .toBe(`cluster-detector.yml executes files the allow-list does not pin (scripts/lib/error-message.mjs): ${allowListWhy}`);
-      expect(violations[1]).toMatch(/^scripts\/check-cluster-sensitive-paths\.mjs changed since /u);
+        .toBe(`trusted-policy.yml executes files the allow-list does not pin (scripts/lib/error-message.mjs): ${allowListWhy}`);
+      expect(violations[1]).toMatch(/^scripts\/policy-helper\.mjs changed since /u);
     });
 
     it("refuses a run step that starts another repository script, and an import that resolves to nothing", () => {
-      const runsMore = cluster.replace(
-        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
-        "node .cluster-policy/scripts/check-cluster-policy-version.mjs\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs",
+      const runsMore = fixture.replace(
+        "RESULT=$(node .trusted-policy/scripts/policy-check.mjs",
+        "node .trusted-policy/scripts/policy-version.mjs\n          RESULT=$(node .trusted-policy/scripts/policy-check.mjs",
       );
-      expect(runsMore).not.toBe(cluster);
-      const read = withFile("scripts/check-cluster-policy-version.mjs", "export {};\n");
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", runsMore, read).files)
-        .toContain("scripts/check-cluster-policy-version.mjs");
-      const broken = withFile("scripts/check-cluster-scope.mjs", `import "./missing-module.mjs";\n`);
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, broken).problems)
-        .toEqual(["scripts/check-cluster-scope.mjs imports ./missing-module.mjs, which resolves to no file"]);
+      expect(runsMore).not.toBe(fixture);
+      const read = withFile("scripts/policy-version.mjs", "export {};\n");
+      expect(pullRequestTargetExecutedFiles("trusted-policy.yml", runsMore, read).files)
+        .toContain("scripts/policy-version.mjs");
+      const broken = withFile("scripts/policy-check.mjs", `import "./missing-module.mjs";\n`);
+      expect(pullRequestTargetExecutedFiles("trusted-policy.yml", fixture, broken).problems)
+        .toEqual(["scripts/policy-check.mjs imports ./missing-module.mjs, which resolves to no file"]);
     });
 
-    /** The derivation's problems for cluster-detector with its scope step's
+    /** The derivation's problems for trusted-policy with its scope step's
      *  command replaced by `command`. */
-    const problemsWith = (command: string, read: (path: string) => string | undefined = repoFile) => {
-      const original = "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\";
-      expect(cluster).toContain(original);
-      const edited = cluster.replace(original, `${command}\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\`);
-      return pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read).problems;
+    const problemsWith = (command: string, read: (path: string) => string | undefined = fixtureFile) => {
+      const original = "RESULT=$(node .trusted-policy/scripts/policy-check.mjs \\";
+      expect(fixture).toContain(original);
+      const edited = fixture.replace(original, `${command}\n          RESULT=$(node .trusted-policy/scripts/policy-check.mjs \\`);
+      return pullRequestTargetExecutedFiles("trusted-policy.yml", edited, read).problems;
     };
-    const scopeStep = "cluster-detector.yml step 5";
+    const scopeStep = "trusted-policy.yml step 2";
 
-    it("derives cluster-detector without a problem", () => {
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, repoFile).problems).toEqual([]);
+    it("derives trusted-policy without a problem", () => {
+      expect(pullRequestTargetExecutedFiles("trusted-policy.yml", fixture, fixtureFile).files).toEqual([
+        ".github/workflows/trusted-policy.yml", "scripts/policy-check.mjs", "scripts/policy-helper.mjs",
+      ]);
+      expect(pullRequestTargetExecutedFiles("trusted-policy.yml", fixture, fixtureFile).problems).toEqual([]);
     });
 
     it.each([
@@ -578,15 +588,15 @@ describe("installer smoke and packaging discipline", () => {
         on: { pull_request_target: null },
         jobs: { check: { "runs-on": "ubuntu-latest", steps: [{ run: command }] } },
       });
-      expect(pullRequestTargetExecutedFiles("t.yml", step(command), repoFile).problems)
+      expect(pullRequestTargetExecutedFiles("t.yml", step(command), fixtureFile).problems)
         .toContain(`t.yml step 1 runs ${interpreter} on no repository file this check can pin`);
     });
 
     it.each([
-      ["npm run", "npm run check:cluster"],
-      ["bun run", "bun run check:cluster"],
-      ["pnpm run", "pnpm run check:cluster"],
-      ["yarn <script>", "yarn check:cluster"],
+      ["npm run", "npm run check:policy"],
+      ["bun run", "bun run check:policy"],
+      ["pnpm run", "pnpm run check:policy"],
+      ["yarn <script>", "yarn check:policy"],
       ["npx", "npx some-tool"],
       ["an install", "npm ci"],
     ])("refuses package.json indirection through %s", (_label, command) => {
@@ -596,16 +606,16 @@ describe("installer smoke and packaging discipline", () => {
     });
 
     it.each([
-      ["a missing script", "node .cluster-policy/scripts/missing-script.mjs", ".cluster-policy/scripts/missing-script.mjs"],
+      ["a missing script", "node .trusted-policy/scripts/missing-script.mjs", ".trusted-policy/scripts/missing-script.mjs"],
       ["an absolute path", "bash /opt/tools/run.sh", "/opt/tools/run.sh"],
-      ["a variable-built path", "node \"$POLICY_DIR/scripts/check-cluster-scope.mjs\"", "$POLICY_DIR/scripts/check-cluster-scope.mjs"],
+      ["a variable-built path", "node \"$POLICY_DIR/scripts/policy-check.mjs\"", "$POLICY_DIR/scripts/policy-check.mjs"],
     ])("refuses %s with a script extension", (_label, command, token) => {
       expect(problemsWith(command)).toContain(`${scopeStep} names ${token}, which does not resolve to a repository file`);
     });
 
     it.each([
-      ["$GITHUB_WORKSPACE", "node \"$GITHUB_WORKSPACE/scripts/check-cluster-sensitive-paths.mjs\""],
-      ["${{ github.workspace }}", "node ${{ github.workspace }}/scripts/check-cluster-sensitive-paths.mjs"],
+      ["$GITHUB_WORKSPACE", "node \"$GITHUB_WORKSPACE/scripts/policy-helper.mjs\""],
+      ["${{ github.workspace }}", "node ${{ github.workspace }}/scripts/policy-helper.mjs"],
     ])("resolves a path under %s to the repository root", (_label, command) => {
       expect(problemsWith(command)).toEqual([]);
     });
@@ -617,29 +627,29 @@ describe("installer smoke and packaging discipline", () => {
       ["this Node spawned on a script", "execFileSync(process.execPath, [scriptPath]);"],
       ["fork", "fork(scriptPath);"],
     ])("refuses %s inside a pinned module", (_label, code) => {
-      const path = "scripts/check-cluster-sensitive-paths.mjs";
-      const read = withFile(path, `${repoFile(path) as string}\n${code}\n`);
-      expect(pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, read).problems).toContain(
+      const path = "scripts/policy-helper.mjs";
+      const read = withFile(path, `${fixtureFile(path) as string}\n${code}\n`);
+      expect(pullRequestTargetExecutedFiles("trusted-policy.yml", fixture, read).problems).toContain(
         `${path} loads or starts code through a non-literal import or an interpreter, which this check does not follow`,
       );
     });
 
     it.each([
-      ["an extensionless script under ./", "./scripts/cluster-check", "./scripts/cluster-check"],
-      ["an extensionless script under the checkout", ".cluster-policy/bin/check-cluster", ".cluster-policy/bin/check-cluster"],
+      ["an extensionless script under ./", "./scripts/policy-check", "./scripts/policy-check"],
+      ["an extensionless script under the checkout", ".trusted-policy/bin/policy-check", ".trusted-policy/bin/policy-check"],
     ])("refuses %s that resolves to no repository file", (_label, command, token) => {
       expect(problemsWith(command)).toEqual([`${scopeStep} names ${token}, which does not resolve to a repository file`]);
     });
 
     it("pins an extensionless script that resolves", () => {
-      const read = withFile("bin/check-cluster", "#!/bin/sh\nexit 0\n");
-      const edited = cluster.replace(
-        "RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
-        ".cluster-policy/bin/check-cluster\n          RESULT=$(node .cluster-policy/scripts/check-cluster-scope.mjs \\",
+      const read = withFile("bin/policy-check", "#!/bin/sh\nexit 0\n");
+      const edited = fixture.replace(
+        "RESULT=$(node .trusted-policy/scripts/policy-check.mjs \\",
+        ".trusted-policy/bin/policy-check\n          RESULT=$(node .trusted-policy/scripts/policy-check.mjs \\",
       );
-      const derived = pullRequestTargetExecutedFiles("cluster-detector.yml", edited, read);
+      const derived = pullRequestTargetExecutedFiles("trusted-policy.yml", edited, read);
       expect(derived.problems).toEqual([]);
-      expect(derived.files).toContain("bin/check-cluster");
+      expect(derived.files).toContain("bin/policy-check");
     });
 
     it.each([
@@ -666,10 +676,10 @@ describe("installer smoke and packaging discipline", () => {
       expect(problemsWith("gh pr view 7 --json files > files.json && gh pr diff 7 > pr.diff && gh api rate_limit")).toEqual([]);
     });
 
-    const scopePath = "scripts/check-cluster-scope.mjs";
-    const scopeSource = repoFile(scopePath) as string;
+    const scopePath = "scripts/policy-check.mjs";
+    const scopeSource = fixtureFile(scopePath) as string;
     const moduleProblems = (content: string) =>
-      pullRequestTargetExecutedFiles("cluster-detector.yml", cluster, withFile(scopePath, content)).problems;
+      pullRequestTargetExecutedFiles("trusted-policy.yml", fixture, withFile(scopePath, content)).problems;
 
     it.each([
       ["exec with a string command", "exec(`gh pr checkout ${number}`);", "runs a shell command string (exec/execSync)"],
@@ -704,9 +714,9 @@ describe("installer smoke and packaging discipline", () => {
     });
 
     it("refuses a source include inside a pinned shell script", () => {
-      const read = withFile("scripts/cluster-policy.sh", "set -e\nsource \"$HELPERS\"\n");
-      expect(problemsWith("bash .cluster-policy/scripts/cluster-policy.sh", read))
-        .toEqual(["scripts/cluster-policy.sh sources another file, which this check does not follow"]);
+      const read = withFile("scripts/policy.sh", "set -e\nsource \"$HELPERS\"\n");
+      expect(problemsWith("bash .trusted-policy/scripts/policy.sh", read))
+        .toEqual(["scripts/policy.sh sources another file, which this check does not follow"]);
     });
   });
 
@@ -1538,10 +1548,46 @@ describe("installer smoke and packaging discipline", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
-      ...process.env, BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
+      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
       PLATFORM_CHECKS: selected, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
+  });
+
+  // gate-core and mxc-pins are not required status checks (gh api repos/ken-jo/ave/branches/main/protection --jq
+  // .required_status_checks.contexts lists build-and-test, naming-gate and Linux confinement path tests), so the aggregate must reject any result but success.
+  it.each(["GATE_CORE_RESULT", "MXC_PINS_RESULT"])("requires %s success before the docs-only exit", (variable) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const command = workflow.jobs["build-and-test"].steps[0].run as string;
+    for (const docs of ["true", "false"]) {
+      for (const result of ["failure", "cancelled", "skipped", ""]) {
+        const run = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+          ...process.env, BUILD_RESULT: "success", VITEST_RESULT: docs === "true" ? "skipped" : "success",
+          DOCS_ONLY: docs, PLATFORM_CHECKS: "false", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+          GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", [variable]: result,
+        } });
+        expect(run.status, run.stderr + run.stdout).toBe(1);
+      }
+    }
+  });
+
+  it.each(["gate-core", "mxc-pins"])("runs %s independently on every event", (name) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const job = workflow.jobs[name];
+    expect(job.needs).toBeUndefined();
+    expect(job.if).toBeUndefined();
+    expect(job["continue-on-error"]).not.toBe(true);
+    expect(job.steps.some((step: Record<string, unknown>) => String(step.uses).startsWith("actions/checkout@"))).toBe(true);
+    expect(job.steps.some((step: Record<string, unknown>) => step.uses === "./ave/.github/actions/setup-bun")).toBe(true);
+    expect(job.steps.some((step: Record<string, unknown>) => step.run === "bun install --frozen-lockfile")).toBe(true);
+    for (const step of job.steps) {
+      expect(step.if === undefined || (String(step.uses).startsWith("actions/cache@") &&
+        step.if === "steps.node-modules-cache.outputs.cache-hit != 'true'")).toBe(true);
+    }
+    const aggregate = workflow.jobs["build-and-test"];
+    expect(aggregate.needs).toContain(name);
+    expect(aggregate.steps[0].env[name === "gate-core" ? "GATE_CORE_RESULT" : "MXC_PINS_RESULT"])
+      .toBe("${{ needs." + name + ".result }}");
   });
 
   it("runs the native control boundaries in both platform regression jobs", () => {
@@ -1565,14 +1611,14 @@ describe("installer smoke and packaging discipline", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[]; "continue-on-error"?: boolean }>;
     };
-    const job = workflow.jobs["build-and-test"]!;
+    const job = workflow.jobs["mxc-pins"]!;
     expect(job["runs-on"]).toBe("ubuntu-24.04-arm");
     expect(job["continue-on-error"]).not.toBe(true);
     const command = "bun run check:mxc-pins && bun run check:mxc-packaging";
     const step = job.steps.find((entry) => entry.run === command)!;
     expect(step).toBeDefined();
     expect(step["continue-on-error"]).not.toBe(true);
-    expect(step.if).toBe("needs.build.outputs.docs_only != 'true'");
+    expect(step.if).toBeUndefined();
     expect(step["working-directory"]).toBe("ave");
     expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron-win");
     const cache = job.steps.find((entry) => entry.name === "Cache Windows runtime archives")!;
@@ -1601,7 +1647,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(job.steps.indexOf(cache)).toBeLessThan(job.steps.indexOf(step));
   });
 
-  it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
+  it("requires independent gates through the build-and-test aggregate", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
     expect(verification, "ci.yml lost its build-and-test job").toBeDefined();
@@ -1615,10 +1661,9 @@ describe("installer smoke and packaging discipline", () => {
     // both, still runs when one failed or the run was cancelled (a skipped
     // job reports success to branch protection), and its first step, which
     // a cancellation cannot skip either, fails unless both succeeded.
-    // The hygiene gates follow it, so they run after every verification step
-    // has reported, as the ordering scan above requires within one job.
+    // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1636,31 +1681,10 @@ describe("installer smoke and packaging discipline", () => {
       expect(native).toContain("needs: build");
       expect(native).toContain("if: needs.build.outputs.platform_checks == 'true'");
     }
-    expect(matched(commands, VERIFIES_THE_CODE)).toEqual(["check:mxc-packaging", "check:mxc-pins"]);
+    expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
-
-    // `build-and-test` is one of the two required status checks on `main`; the
-    // other is `naming-gate`. Read the current list with
-    //   gh api repos/ken-jo/ave/branches/main/protection \
-    //     --jq .required_status_checks.contexts
-    // A gate moved into a job of its own reports under a check name that list
-    // does not contain, and an unlisted check cannot block a merge. That was
-    // measured, not feared: with these three in a separate `repo-hygiene` job,
-    // a commit carrying a deliberately stale manifest entry had both required
-    // contexts reporting success, and the checks that did go red on it reported
-    // under names the required list does not contain.
-    // Splitting them out is the better shape — it takes a change that adds the
-    // new job's check name to that list at the same time.
-    expect(
-      matched(commands, REPOSITORY_HYGIENE),
-      "ci.yml's build-and-test must run every core hygiene gate: it carries a " +
-        "required check name, and a gate outside it stops blocking merges",
-    ).toEqual([
-      "test:knip-gate",
-      "check:gate-core",
-    ]);
 
     // Sorted, because VERIFIES_THE_CODE is sorted and `matched` returns marker
     // order — this pins the set, not the step order. The step order is pinned
@@ -1672,7 +1696,6 @@ describe("installer smoke and packaging discipline", () => {
       "bun run build",
       "bun run typecheck",
       "check:typecheck-tests",
-      "check:typecheck-tests:self-test",
     ]);
     expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
@@ -1838,13 +1861,13 @@ describe("installer smoke and packaging discipline", () => {
       ).toBe(true);
       expect(HYGIENE_SCRIPTS.has(member), `${member} is not a listed hygiene gate`).toBe(true);
     }
-    // Both callers, by name: a caller that re-lists the members instead is
+    // The manual and CI callers, by name: a caller that re-lists the members instead is
     // the drift the composite exists to end.
     expect(readRepoFile("scripts/hooks/run-local-checks.mjs")).toContain(
       `["${HYGIENE_COMPOSITE.script}"]`,
     );
     const ci = jobRunCommands(
-      workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("build-and-test") as string,
+      workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("gate-core") as string,
     );
     expect(matched(ci, [HYGIENE_COMPOSITE.script])).toEqual([HYGIENE_COMPOSITE.script]);
     expect(matched(ci, [...HYGIENE_COMPOSITE.members])).toEqual([]);
@@ -2114,12 +2137,11 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("packaged-app smoke");
   });
 
-  it("keeps cross-cutting change detection advisory", () => {
+  it("keeps cross-cutting review advisory", () => {
     const agents = readRepoFile("AGENTS.md");
     const claude = readRepoFile("CLAUDE.md");
     const contributing = readRepoFile(".github/CONTRIBUTING.md");
     const pullRequestTemplate = readRepoFile(".github/pull_request_template.md");
-    const clusterWorkflow = readRepoFile(".github/workflows/cluster-detector.yml");
     const clusterStatusOwners = readdirSync(resolve(root, ".github/workflows"))
       .filter((name) => /\.ya?ml$/.test(name))
       .filter((name) => {
@@ -2127,14 +2149,9 @@ describe("installer smoke and packaging discipline", () => {
         return /statuses:\s*write|\/statuses\//.test(source);
       })
       .sort();
-    const clusterScope = readRepoFile("scripts/check-cluster-scope.mjs");
-    const sensitivePathHelper = readRepoFile("scripts/check-cluster-sensitive-paths.mjs");
-
     expect(agents).toContain("## Cross-Cutting Change Advisory");
-    expect(agents).toContain("never requires an external reviewer, collaborator");
+    expect(agents).toMatch(/never\s+requires an external reviewer, collaborator/u);
     expect(agents).toContain("Owner self-review and automated review are valid evidence.");
-    expect(agents).toContain("does not write commit");
-    expect(agents).toContain("never blocks merge.");
     expect(agents).not.toContain("## Cross-Cutting Review Gate");
     expect(agents).not.toContain("cluster-review-passed");
     expect(agents).not.toContain("visible role row and hidden marker");
@@ -2146,48 +2163,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(pullRequestTemplate).not.toContain("cluster-review:");
     expect(pullRequestTemplate).not.toContain("cluster-review-passed");
 
-    expect(clusterWorkflow).toContain("pull_request_target:");
-    expect(clusterWorkflow).toContain("contents: read");
-    expect(clusterWorkflow).toContain("pull-requests: read");
-    expect(clusterWorkflow).toContain("::warning::Sensitive-area cluster advisory");
-    expect(clusterWorkflow).not.toContain("pull-requests: write");
-    expect(clusterWorkflow).not.toContain("statuses: write");
-    expect(clusterWorkflow).not.toContain("cluster-review-passed");
     expect(clusterStatusOwners).toEqual([]);
-    expect(existsSync(resolve(root, "scripts/check-cluster-review-attestation.mjs"))).toBe(false);
-    expect(existsSync(resolve(root, "test/scripts/check-cluster-review-attestation.test.ts"))).toBe(false);
-
-    expect(clusterScope).toContain(
-      'import { hasSensitiveClusterPath } from "./check-cluster-sensitive-paths.mjs"',
-    );
-    expect(clusterScope).toContain("previous_filename");
-    expect(clusterScope).toContain("github-previous-filename-required");
-    // Inverted deliberately, in the file whose job is keeping this gate
-    // advisory. A repeated pull is the documented consequence of paging a
-    // MUTABLE sort key while the repo is being merged into, not corruption,
-    // and hard-failing on it turned an ordinary merge landing mid-scan into
-    // a blocked PR. The scan skips the repeat instead; that behaviour is
-    // pinned in test/scripts/check-cluster-scope.test.ts.
-    expect(clusterScope).not.toContain("pull-request-page-duplicate");
-    // Inverted for the same reason, one layer up. `pull-request-window-changed`
-    // compared two scans of the rolling window and hard-failed on ANY
-    // difference between them — a candidate's `updated_at` advancing, the same
-    // members arriving in another order, or one unrelated pull merging between
-    // the scans. The scans are unioned now, so a late arrival is evaluated
-    // instead of reported as corruption. What survives is a BOUNDED settle
-    // check: a window that never stops moving still fails, loudly and rarely.
-    expect(clusterScope).not.toContain("pull-request-window-changed");
-    expect(clusterScope).toContain("pull-request-window-unsettled");
-    expect(clusterScope).toContain("pull-request-files-incomplete");
-    expect(clusterScope).toContain("pull-request-files-saturated");
-    expect(clusterScope).toContain("pull-request-commits-saturated");
-    expect(clusterScope).toContain("pull-request-pages-saturated");
-    expect(clusterScope).toContain('state: "closed"');
-    expect(clusterScope).not.toContain("--limit 100");
-    expect(sensitivePathHelper).toContain("parseNulDelimitedGitPaths");
-    expect(sensitivePathHelper).toContain(
-      'return !path.startsWith(`${dir}/__tests__/`)',
-    );
     expect(claude).toContain("[`AGENTS.md`](./AGENTS.md)");
     expect(claude).toContain("duplicates no");
 
@@ -2414,32 +2390,49 @@ describe("installer smoke and packaging discipline", () => {
     expect(packageFootprint).not.toContain('"/dist/scripts/uv-targets.mjs",');
   });
 
-  it("keeps electron-builder host runtime resources aligned with the runtime asset inventory", async () => {
+  it("keeps static host runtime resources equal to the runtime asset inventory", async () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as {
-      build?: { extraResources?: Array<{ from?: string; to?: string }> };
+      build: { extraResources: Array<{ from: string; to: string }>; asarUnpack: string[] };
     };
     const runtimeAssets = await import("../../scripts/packaged-runtime-assets.mjs");
-    const extraResources = packageJson.build?.extraResources ?? [];
-    const hostResources = runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS.flatMap(
+    const extraResources: Array<{ from: string; to: string }> = packageJson.build.extraResources;
+    expect(new Set(extraResources.map(({ to }) => to)).size).toBe(extraResources.length);
+    const destinations: string[] = [];
+    const hostResources: Array<{ from: string; to: string }> = runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS.flatMap(
       (asset: {
-        stagedBy?: string;
-        packageResource?: { from: string; to: string };
-        licenseResource?: { from: string; to: string };
-      }) =>
-        // asar-unpacked native binaries (e.g. the better-sqlite3 N-API prebuild)
-        // are packaged via asarUnpack + afterPack, not electron-builder
-        // extraResources, so they are not expected in build.extraResources.
-        asset.packageResource?.to?.startsWith("app.asar.unpacked/")
-          ? []
-          : [asset.packageResource, asset.licenseResource].filter(Boolean),
+        packageResource: { from: string; to: string };
+        licenseResource?: { from: string; to: string; requiredFiles: readonly string[] };
+      }) => {
+        const { packageResource, licenseResource } = asset;
+        destinations.push(packageResource.to);
+        const resources: Array<{ from: string; to: string }> = [];
+        if (packageResource.to.startsWith("app.asar.unpacked/")) {
+          expect(packageResource.to).toBe(`app.asar.unpacked/${packageResource.from}`);
+          const unpackPatterns: string[] = packageJson.build.asarUnpack;
+          expect(unpackPatterns.filter((pattern) =>
+            pattern.endsWith("/**") && packageResource.from.startsWith(pattern.slice(0, -2)),
+          )).toHaveLength(1);
+        } else {
+          resources.push(packageResource);
+        }
+        if (licenseResource) {
+          destinations.push(licenseResource.to);
+          expect(licenseResource.requiredFiles.length).toBeGreaterThan(0);
+          for (const file of licenseResource.requiredFiles) {
+            expect(readRepoFile(`${licenseResource.from}/${file}`).trim()).not.toBe("");
+          }
+          resources.push({ from: licenseResource.from, to: licenseResource.to });
+        }
+        return resources;
+      },
     );
 
-    for (const resource of hostResources) {
-      expect(extraResources).toContainEqual({
-        from: resource.from,
-        to: resource.to,
-      });
-    }
+    expect(hostResources.length).toBeGreaterThan(0);
+    expect(new Set(destinations).size).toBe(destinations.length);
+    const runtimeResources = extraResources.filter((resource) => hostResources.some(
+      ({ from, to }) => resource.from === from || resource.to === to,
+    ));
+    expect(runtimeResources).toEqual(hostResources);
   });
 
   it("ships the palette and color-derivation license notices as resources", () => {

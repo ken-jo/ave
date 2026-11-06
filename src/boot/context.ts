@@ -13,9 +13,7 @@ import type { SettingsService } from "../data/settings-store.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import type { MemorySaveNotices } from "../memory/memory-save-notices.js";
-import type { InputClassifier } from "../core/input-classifier.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { RouteEngine } from "../core/route-engine.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { LLMProvider } from "../engine/llm/types.js";
 import type { NotificationService } from "../main/notification-service.js";
@@ -111,9 +109,7 @@ export class BootContext {
   declare memoryManager: MemoryManager;
   declare memoryCaptureService: MemoryCaptureService;
   declare memorySaveNotices: MemorySaveNotices;
-  declare inputClassifier: InputClassifier;
   declare toolRegistry: ToolRegistry;
-  declare routeEngine: RouteEngine;
 
   // ── Audit + notification (setupAuditAndNotification) ───────────────────────
   declare bootAuditLogger: AuditLogger;
@@ -248,9 +244,7 @@ const BOOT_CONTEXT_FIELDS = [
   "memoryManager",
   "memoryCaptureService",
   "memorySaveNotices",
-  "inputClassifier",
   "toolRegistry",
-  "routeEngine",
   "bootAuditLogger",
   "notificationService",
   "approvalGate",

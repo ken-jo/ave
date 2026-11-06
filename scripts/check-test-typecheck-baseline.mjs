@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const PROJECT = resolve(ROOT, "tsconfig.tests.json");
 const BASELINE = resolve(ROOT, "config/test-typecheck-baseline.json");
-export const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 1;
 
 const SOURCE_FILE_RE = /\.[cm]?tsx?$/;
 const INTENDED_SOURCE_RE = /^(?:src|scripts|test)\//;
@@ -25,7 +25,7 @@ function isExpectedSourcePath(path) {
 }
 
 // Normalize compiler paths to repository-relative POSIX paths.
-export function programSourceFiles(tscOutput) {
+function programSourceFiles(tscOutput) {
   const files = new Set();
   for (const raw of tscOutput.split(/\r?\n/)) {
     const candidate = raw.trim();
@@ -37,7 +37,7 @@ export function programSourceFiles(tscOutput) {
 }
 
 // Omit deleted working-tree paths; still-present sources missing from the program fail.
-export function expectedSourceFilesFromGitOutput(gitOutput, exists = existsSync) {
+function expectedSourceFilesFromGitOutput(gitOutput, exists = existsSync) {
   const files = new Set();
   for (const raw of gitOutput.split("\0")) {
     const path = normalizeRepoRelativePath(raw);
@@ -47,7 +47,7 @@ export function expectedSourceFilesFromGitOutput(gitOutput, exists = existsSync)
   return files;
 }
 
-export function missingExpectedSources(expectedInventory, programFiles) {
+function missingExpectedSources(expectedInventory, programFiles) {
   return [...expectedInventory].filter((file) => !programFiles.has(file)).sort();
 }
 
@@ -55,7 +55,7 @@ export function missingExpectedSources(expectedInventory, programFiles) {
 // Capture the first location lazily so parentheses in paths and quoted spans in messages stay intact.
 const DIAGNOSTIC_RE = /^(?<file>[^\s].*?)\((?<line>\d+),(?<col>\d+)\): error (?<code>TS\d+):/;
 
-export function countErrorsByFile(tscStdout) {
+function countErrorsByFile(tscStdout) {
   const counts = new Map();
   for (const raw of tscStdout.split(/\r?\n/)) {
     const match = DIAGNOSTIC_RE.exec(raw);
@@ -67,7 +67,7 @@ export function countErrorsByFile(tscStdout) {
 }
 
 // Regressions fail; improvements and fixed files require baseline updates.
-export function compareToBaseline(counts, baseline) {
+function compareToBaseline(counts, baseline) {
   const regressed = [];
   const improved = [];
   const fixed = [];
@@ -85,22 +85,22 @@ export function compareToBaseline(counts, baseline) {
 }
 
 // Empty diagnostics need a separate boundary check before the independent source-inventory check.
-export function isEmptyMeasurementAgainstBaseline(counts, baselineFiles) {
+function isEmptyMeasurementAgainstBaseline(counts, baselineFiles) {
   return counts.size === 0 && Object.keys(baselineFiles).length > 0;
 }
 
 // Refuse diagnostics attributed to configuration files before comparison or baseline writes.
 // All supported source extensions remain valid, including declaration modules.
-export function nonSourceMeasurements(counts) {
+function nonSourceMeasurements(counts) {
   return [...counts.keys()].filter((f) => !SOURCE_FILE_RE.test(f));
 }
 
 // Program-level diagnostics enrich empty-measurement failures; they are not a separate refusal.
-export function unattributedDiagnostics(tscStdout) {
+function unattributedDiagnostics(tscStdout) {
   return tscStdout.split(/\r?\n/).filter((line) => /^error TS\d+:/.test(line));
 }
 
-export function runTsc(spawn = spawnSync) {
+function runTsc(spawn = spawnSync) {
   const result = spawn(
     process.execPath,
     [resolve(ROOT, "node_modules", "typescript", "lib", "tsc.js"),
@@ -124,7 +124,7 @@ export function runTsc(spawn = spawnSync) {
 
 // Use an independent inventory: a narrowed compiler config cannot reveal its own omissions.
 // Include local untracked sources.
-export function readExpectedSourceFiles(spawn = spawnSync, exists = existsSync) {
+function readExpectedSourceFiles(spawn = spawnSync, exists = existsSync) {
   // Require tracked sources so a foreign empty index cannot masquerade as this checkout.
   const tracked = spawn(
     "git",
@@ -154,7 +154,7 @@ export function readExpectedSourceFiles(spawn = spawnSync, exists = existsSync) 
 // Imported production files may enter this baseline; preloads have no other typecheck.
 // Generate this note with the baseline so updates preserve it.
 const TEST_FILE_RE = /(^|\/)(__tests__|__probes__|test)\//;
-export function nonTestEntries(files) {
+function nonTestEntries(files) {
   return Object.keys(files).filter((f) => !TEST_FILE_RE.test(f));
 }
 
@@ -197,11 +197,11 @@ function readBaseline(path = BASELINE) {
   return { exists: true, files: validateBaselineFiles(JSON.parse(raw), path) };
 }
 
-export function readBaselineFilesOrEmpty(path = BASELINE) {
+function readBaselineFilesOrEmpty(path = BASELINE) {
   return readBaseline(path).files;
 }
 
-export function decide({ update, measurement, baseline, expectedInventory }) {
+function decide({ update, measurement, baseline, expectedInventory }) {
   const { counts, programFiles, tscStdout } = measurement;
 
   // Reject configuration diagnostics before both comparison and writes.
@@ -327,7 +327,7 @@ function writeBaseline(payload) {
 }
 
 // Keep policy separate from I/O so tests can prove refusals precede baseline writes.
-export function runGate({
+function runGate({
   argv = process.argv.slice(2),
   loadBaseline = readBaseline,
   measure = runTsc,
@@ -356,7 +356,7 @@ export function runGate({
   }
 }
 
-export function main(deps) {
+function main(deps) {
   const exitCode = runGate(deps);
   process.exitCode = exitCode;
   return exitCode;

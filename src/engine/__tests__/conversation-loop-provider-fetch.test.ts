@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
@@ -24,8 +22,6 @@ async function loadProviderLoop(vendor: LLMVendor) {
 function makeLoopDeps(toolRegistry: ToolRegistry) {
   return {
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
   };

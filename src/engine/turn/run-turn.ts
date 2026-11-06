@@ -1,3 +1,4 @@
+import { routeInput } from "../../core/route-input.js";
 import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 import { runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
@@ -260,9 +261,8 @@ async function runTurnInSpan(
     };
 
     try {
-    const classification = self.deps.inputClassifier.classify(turnInput);
-    self.tracer.step("INPUT_CLASSIFY", { type: classification.type });
-    let routeResult = self.deps.routeEngine.route(classification);
+    let routeResult = routeInput(turnInput);
+    const classification = routeResult.route === "command" ? "command" : "general";
     self.tracer.step("ROUTE_RESOLVE", { route: routeResult.route });
 
     if (routeResult.route === "command") {
@@ -306,7 +306,7 @@ async function runTurnInSpan(
               : turnInput,
             inputOrigin,
             route: routeResult.route,
-            classification: classification.type,
+            classification,
           },
           effectiveSessionId,
         ));

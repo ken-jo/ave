@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { NotificationService } from "../../main/notification-service.js";
@@ -12,13 +10,9 @@ import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js"
 
 function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
 
   const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     notificationService,
-    inputClassifier,
-    routeEngine,
     toolRegistry,
   }));
 

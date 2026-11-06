@@ -48,16 +48,19 @@ typecheck, the duplicate-helper scan, the lock suites whose trigger paths
 changed, the changed test files, the recorded readers of a changed test-read
 document, and `vitest related` for the changed modules, narrowed to direct
 importers when a shared module reaches over 150 test files. Each source module
-must have related test files; empty discovery selects full checks and a
-zero-test run fails closed. A new sub-branch is measured from the closest live
-tip of the default or an `integration/*` branch. The full `bun run test` and
-`bun run build` run once before merge on the merged tree. The hook keeps the full gate for pushes to `integration/*`,
-non-fast-forward pushes, deleted modules, documentation consumed by runtime,
+must have related test files; empty discovery selects the global-input tier
+and a zero-test run fails closed. A new sub-branch is measured from the closest live
+tip of the default or an `integration/*` branch. A non-fast-forward push is measured
+the same way, plus the remote commit it replaces. The full `bun run test` and
+`bun run build` run in CI on the merged tree before a category merges to
+`main`, and on every push to `main`. The hook never runs them; it runs the
+global-input tier for pushes to `main` or `integration/*`, deleted modules, documentation consumed by runtime,
 tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
 compiler, Vitest and build configs, Vitest setup files, `scripts/`,
 `.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`
-forces it. Documentation prose with no such
+forces that tier. `node scripts/hooks/run-local-checks.mjs` (manual stage)
+runs the full checks locally. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
@@ -110,11 +113,11 @@ through the `HostApi` interface declared in `src/plugins/types.ts`. Adding
 plugin-specific code to the host is not accepted.
 
 Key sections:
-- §4.2 — Boot sequence (8 steps)
-- §4.5 — Conversation query loop (11-step message lifecycle)
-- §5 — Memory system (`~/.ave/` file-based)
-- §6 — Core engines (keyword, route, tool registry, permissions)
-- §9 — Plugin system (manifest, UI slots, MCP protocol)
+- Main-process composition and boot readiness
+- Conversation Loop (the traced message lifecycle)
+- Memory (`~/.ave/` file-based)
+- Tool Governance (tool registry and permissions)
+- Extension Runtime (plugins, UI slots, MCP)
 
 Plugin development guide: `docs/guides/plugin-development.md`.
 

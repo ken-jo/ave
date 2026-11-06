@@ -1,7 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
@@ -97,8 +95,6 @@ function makeLoop(opts: {
     );
   }
 
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const inactive = opts.inactivePluginIds ?? new Set<string>();
 
   const loop = new ConversationLoop({
@@ -110,8 +106,6 @@ function makeLoop(opts: {
       build: () => "system",
       setToolScope: () => {},
     },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager: {
       saveSession: () => {},

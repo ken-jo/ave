@@ -96,9 +96,7 @@ vi.mock("../services.js", () => ({
       // The capture gateway reviewer is late-bound after the active loop exists.
       memoryCaptureService: { setMemoryReviewer: vi.fn() },
       memorySaveNotices: {},
-      inputClassifier: {},
       toolRegistry: { setDenyRules: vi.fn(), size: 0 },
-      routeEngine: {},
     };
   }),
 }));
@@ -748,7 +746,6 @@ describe("bootstrap() integration lock", () => {
         "getPluginToolInvoker",
         "getSubAgentRunner",
         "idleScheduler",
-        "inputClassifier",
         "listPluginAuthPartitionsService",
         "mcpAppModelContext",
         "mcpManager",
@@ -781,7 +778,6 @@ describe("bootstrap() integration lock", () => {
         "resolveChatGroupLoop",
         "revokePluginOperationSession",
         "rewireReviewerAgent",
-        "routeEngine",
         "routineEngine",
         "routinesScheduler",
         "routinesStore",

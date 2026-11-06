@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { MCP_RESOURCE_FENCE_OPEN } from "../../../shared/mcp-resource-bounds.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type {
   LLMProvider,
@@ -65,8 +63,6 @@ function makeHarness(
       build: () => "system",
       setToolScope: vi.fn(),
     },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager: {
       saveSession: () => Promise.resolve(),

@@ -23,8 +23,6 @@ import type { PermissionReviewEvent } from "../../shared/permission-review-statu
 import type { ToolSource } from "../../tools/types.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { SystemPromptBuilder } from "../../prompts/system-prompt-builder.js";
-import type { InputClassifier } from "../../core/input-classifier.js";
-import type { RouteEngine } from "../../core/route-engine.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import type { MemoryManager } from "../../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../../memory/memory-capture-service.js";
@@ -238,8 +236,6 @@ export interface ConversationLoopDeps {
     fallbackSelection?: SubscriptionChatRuntimeSelection,
   ) => LLMProvider | null;
   systemPromptBuilder: SystemPromptBuilder;
-  inputClassifier: InputClassifier;
-  routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;
   // Enable rationale orchestration only with a concrete host runtime; otherwise preserve legacy approval flow.
   rationaleCoordinatorFactory?: RationaleCoordinatorFactory;

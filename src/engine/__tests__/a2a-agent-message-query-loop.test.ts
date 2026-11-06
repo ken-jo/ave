@@ -1,6 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { A2ATaskState } from "../../shared/a2a.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createDynamicTool } from "../../tools/base.js";
@@ -41,8 +39,6 @@ function createLoop(
   approvalSurface?: "interactive" | "unavailable",
   headless = false,
 ): ConversationLoop {
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const permissions = makeConversationPermissionDeps(approvalChoice);
   const requestAndWait = vi.spyOn(permissions.approvalGate!, "requestAndWait");
   const approvalGate = withApprovalGate ? permissions.approvalGate : undefined;
@@ -57,8 +53,6 @@ function createLoop(
       setOriginSource: () => undefined,
       setActiveSessionId: () => undefined,
     },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     permissionManager: permissions.permissionManager,
     approvalGate,

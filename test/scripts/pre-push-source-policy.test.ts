@@ -55,7 +55,7 @@ describe("pre-push source parsing", () => {
 
 describe("test-only diff policy", () => {
   it.each([
-    "src/core/__tests__/route-engine.test.ts", "test/scripts/run-ci-suite.test.ts",
+    "src/core/__tests__/route-input.test.ts", "test/scripts/run-ci-suite.test.ts",
     "test/fixtures/example/data.json", "src/core/__tests__/fixtures/data.json",
   ])("accepts collected tests and fixture assets: %s", (path) => {
     expect(isTestOnlyDiff([modified(path)])).toBe(true);
@@ -65,14 +65,14 @@ describe("test-only diff policy", () => {
 
   it.each([
     ...FULL_CHECK_GLOBAL_INPUT_FILES, "config/ci-must-run-tests.json", "config/vitest.globalSetup.ts",
-    "scripts/run-ci-suite.mjs", ".github/workflows/ci.yml", "src/core/route-engine.ts",
+    "scripts/run-ci-suite.mjs", ".github/workflows/ci.yml", "src/core/route-input.ts",
     "test/e2e/example.test.ts", "test/screenshots/example.test.ts", "test/ordinary-helper.ts",
     "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
     "src/core/__mocks__/client.ts", "scripts/hooks/pre-push-source-policy.mjs",
     "src/main/fixtures/defaults.json", "src/core/fixtures/data.json",
   ])("refuses global inputs, test helpers and non-test inputs: %s", (path) => {
     expect(isTestOnlyDiff([modified(path)])).toBe(false);
-    expect(isTestOnlyDiff([modified("src/core/__tests__/route-engine.test.ts"), modified(path)])).toBe(false);
+    expect(isTestOnlyDiff([modified("src/core/__tests__/route-input.test.ts"), modified(path)])).toBe(false);
   });
 
   it("names every importable non-collected test-tree file a test helper module", () => {
@@ -82,7 +82,7 @@ describe("test-only diff policy", () => {
       "src/__tests__/vitest-ave-home.ts",
     ]) expect(isTestHelperModule(path), path).toBe(true);
     for (const path of [
-      "src/core/__tests__/route-engine.test.ts", "test/fixtures/example/data.json", "src/core/route-engine.ts",
+      "src/core/__tests__/route-input.test.ts", "test/fixtures/example/data.json", "src/core/route-input.ts",
       "scripts/run-ci-suite.mjs", "src/../test/ordinary-helper.ts", "src/main/fixtures/defaults.ts",
     ]) expect(isTestHelperModule(path), path).toBe(false);
     expect(isTestSupportFile("src/main/fixtures/defaults.json")).toBe(false);
@@ -91,7 +91,7 @@ describe("test-only diff policy", () => {
   });
 
   it("refuses mixed diffs, unsafe paths, mode changes and unresolved changes", () => {
-    expect(isTestOnlyDiff([modified("test/example.test.ts"), modified("src/core/route-engine.ts")])).toBe(false);
+    expect(isTestOnlyDiff([modified("test/example.test.ts"), modified("src/core/route-input.ts")])).toBe(false);
     expect(isTestOnlyDiff([{ ...modified("test/example.test.ts"), newMode: "100755" }])).toBe(false);
     expect(isTestOnlyDiff([modified("src/../test/example.test.ts")])).toBe(false);
     expect(isTestOnlyDiff([])).toBe(false);
@@ -238,9 +238,11 @@ describe("pre-push fast source tier", () => {
   });
 
 
-  it("wires the fast tier, its opt-out and its log line into the hook", () => {
+  it("wires the fast tier, manual full checks and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
+    expect(hook).toContain("AVE_PREPUSH_FULL=1 requested global-input checks");
+    expect(hook).toContain('} else if (stage === "manual") {');
     expect(hook).toContain("console.log(describeScopedTier({");
     expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");
