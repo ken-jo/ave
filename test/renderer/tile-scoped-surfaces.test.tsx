@@ -1733,15 +1733,20 @@ describe("opening a conversation while another is mid-turn", () => {
 
     await act(async () => { requestNewChatDraft("Migrate the Ave extension."); });
 
-    await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
-    const adopted = collectTiles(container).find((tile) => tile.chatGroupId !== MAIN_CHAT_GROUP_ID)!;
+    // Like New Chat, the draft adopts a tile shown on its own; the busy one stays mounted out of view, never released.
+    await waitFor(() => expect(collectTiles(container).map((tile) => tile.chatGroupId)).not.toContain(MAIN_CHAT_GROUP_ID));
+    expect(collectTiles(container)).toHaveLength(1);
+    expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
+    const adopted = collectTiles(container)[0]!;
     const composer = (element: HTMLElement) =>
       element.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement | null;
     await waitFor(() => expect(composer(adopted.element)?.value).toBe("Migrate the Ave extension."));
     // The draft arrives through a started new conversation, not a write into whatever the tile holds.
     expect(api.chatNew).toHaveBeenCalled();
-    const busy = collectTiles(container).find((tile) => tile.chatGroupId === MAIN_CHAT_GROUP_ID)!;
-    expect(composer(busy.element)?.value ?? "").not.toContain("Migrate the Ave extension.");
+    const busy = container.querySelector<HTMLElement>(`[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`)!;
+    expect(busy.getAttribute("data-hidden")).toBe("true");
+    expect(composer(busy)).not.toBeNull();
+    expect(composer(busy)!.value).not.toContain("Migrate the Ave extension.");
     expect(releasedGroupIds()).toEqual([]);
 
     await act(async () => {
