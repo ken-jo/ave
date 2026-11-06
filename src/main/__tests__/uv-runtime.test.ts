@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +6,7 @@ import { gzipSync } from "node:zlib";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { currentUvTarget, resolveBundledUvBinaryPath } from "../uv-runtime.js";
+import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
 
 describe("resolveBundledUvBinaryPath", () => {
   it("uses the canonical project resources directory for a split main chunk in development", () => {
@@ -36,6 +37,10 @@ describe("resolveBundledUvBinaryPath", () => {
 });
 
 describe("materializing the packaged uv binary into the runtime boundary", () => {
+  beforeEach(async () => {
+    protectAveHomeFixture(aveHome());
+    await initializeAveHomeFixture(aveHome());
+  });
   function packagedResources(): { resourcesPath: string; target: ReturnType<typeof currentUvTarget> } {
     const target = currentUvTarget();
     const resourcesPath = mkdtempSync(join(tmpdir(), "ave-uv-boundary-resources-"));
@@ -58,7 +63,6 @@ describe("materializing the packaged uv binary into the runtime boundary", () =>
 
   it("materializes uv inside the runtime boundary boot created", () => {
     const { resourcesPath, target } = packagedResources();
-    mkdirSync(join(aveHome(), "runtime"), { recursive: true, mode: 0o700 });
     try {
       const binary = resolveBundledUvBinaryPath({ resourcesPath });
       expect(binary.startsWith(join(aveHome(), "runtime", "uv", target.dir))).toBe(true);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, rmdirSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, rmdirSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { aveHome } from "./ave-home.js";
@@ -75,6 +75,8 @@ export function removeAveScratchDirIfEmpty(path = aveScratchDir()): AveScratchRe
     return { status: "removed" };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    // Windows reports ENOENT for rmdir on a file; a path that is still there was not removed.
+    if (code === "ENOENT" && existsSync(path)) return { status: "failed", code };
     if (code === "ENOTEMPTY" || code === "EEXIST" || code === "ENOENT") return { status: "kept" };
     return { status: "failed", code: code ?? "unknown" };
   }
