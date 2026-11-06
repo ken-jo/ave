@@ -57,13 +57,13 @@ async function setWindowSize(
   }, { w, h });
 }
 
-for (const bundleId of ['moonstone', 'gallery'] as const) {
+for (const mode of ['dark', 'light'] as const) {
   for (const { name: sizeName, width } of [
     { name: 'wide', width: 1200 },
     { name: 'narrow', width: 620 },
   ]) {
-    const locale = bundleId === 'moonstone' ? 'en' : 'ko';
-    test(`model dropdown is trigger-aligned and uses the available height (${bundleId}, ${sizeName}, ${locale})`, async ({
+    const locale = mode === 'dark' ? 'en' : 'ko';
+    test(`model dropdown is trigger-aligned and uses the available height (${mode}, ${sizeName}, ${locale})`, async ({
       app,
       mainWindow,
     }, testInfo) => {
@@ -76,19 +76,19 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         }));
       }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
       await mainWindow.evaluate(
-        async ({ cache, bundle, language, imageInput }) => {
+        async ({ cache, mode, language, imageInput }) => {
           const api = (window as unknown as {
             aveApi: { updateSettings: (patch: unknown) => Promise<unknown> };
           }).aveApi;
           await api.updateSettings({
-            appearance: { schemaVersion: 2, bundleId: bundle, language },
+            appearance: { mode, language },
             llm: {
               provider: 'openai-compatible', modelListCache: cache,
               vendors: { 'openai-compatible': { model: cache['openai-compatible\n\n'].models[0], catalogModel: 'openai/gpt-3.5-turbo', imageInput } },
             },
           });
         },
-        { cache: seededModelListCache(), bundle: bundleId, language: locale,
+        { cache: seededModelListCache(), mode, language: locale,
           imageInput: Object.fromEntries(MODEL_IDS.map((model) => [llmImageInputKey(model), true])),
         },
       );

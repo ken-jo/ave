@@ -62,7 +62,7 @@ const electronMock = vi.hoisted(() => {
       return true;
     }
   }
-  return { FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  return { savedAppearance: undefined as unknown, FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
@@ -74,10 +74,17 @@ vi.mock("electron", () => ({
   nativeImage: {},
   Tray: class {},
 }));
-vi.mock("node:fs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:fs")>()),
-  existsSync: () => true,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...original,
+    existsSync: () => true,
+    readFileSync: (path: Parameters<typeof original.readFileSync>[0], options: Parameters<typeof original.readFileSync>[1]) =>
+      path === "/tmp/ave-test/ave-settings.json"
+        ? JSON.stringify({ appearance: electronMock.savedAppearance })
+        : original.readFileSync(path, options),
+  };
+});
 vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
 const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
@@ -103,17 +110,25 @@ describe("main windows", () => {
     appState.resetMainWindowsForTests();
     appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
+    electronMock.savedAppearance = undefined;
     electronMock.app.quit.mockClear();
   });
 
-  it("opens a centered responsive window with theme-only boot arguments", () => {
+  it("opens a centered responsive window with saved appearance boot arguments", () => {
     const win = open();
     expect(win.options).toMatchObject({
       x: 339, y: 156, width: 1243, height: 768, minWidth: 360,
       webPreferences: { contextIsolation: true, nodeIntegration: false },
     });
     const options = win.options as { webPreferences: { additionalArguments: string[] } };
-    expect(options.webPreferences.additionalArguments.every((arg) => arg.startsWith("--ave-initial-theme="))).toBe(true);
+    expect(options.webPreferences.additionalArguments.every((arg) => arg.startsWith("--ave-initial-appearance="))).toBe(true);
+  });
+
+  it("primes a saved scheme before services exist without a plugin theme cache", () => {
+    electronMock.savedAppearance = { schemaVersion: 3, mode: "dark", darkScheme: "nord", lightScheme: "one-light", terminalFont: { family: "Menlo", size: 15, lineHeight: 1.4 } };
+    const options = open().options as { webPreferences: { additionalArguments: string[] } };
+    const appearance = JSON.parse(options.webPreferences.additionalArguments[0]!.slice("--ave-initial-appearance=".length));
+    expect(appearance).toMatchObject(electronMock.savedAppearance as object);
   });
 
   it("gives the first window the primary role and every later one the secondary role", () => {

@@ -41,20 +41,9 @@ import {
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
 } from "../shared/llm-vendor-defaults.js";
-import {
-  DEFAULT_BUNDLE_ID,
-  isBundleId,
-  isThemeId,
-} from "../shared/theme-bundles.js";
-import {
-  FONT_SIZE_SCALE_VALUES,
-  type FontSizeScale,
-  type AppearanceFontSettings,
-  isValidFontFamilyOverride,
-} from "../shared/appearance-font.js";
+export { normalizeAppearance } from "../shared/appearance-settings.js";
 import {
   isOfficialPackageLocale,
-  normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
@@ -114,11 +103,7 @@ import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import type {
   A2ARemoteSettings,
   AutoUpdateSwitch,
-  AppearanceSettings,
-  AppearanceSettingsV1,
   ChatSettings,
-  ChatThemePreference,
-  CodeThemePreference,
   DiagnosticsSettings,
   FeatureFlags,
   HomeDocsSettings,
@@ -128,7 +113,6 @@ import type {
   SystemCloseBehavior,
   SystemSettings,
   TelemetrySettings,
-  ThemePreference,
   WebViewPreferredFlow,
   WebViewSettings,
 } from "./settings-store.js";
@@ -761,10 +745,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   merged.installedProviderPresets = uniqueValidProviderPresets(
     raw.installedProviderPresets,
   );
-  merged.installedThemeBundleIds = uniqueValidList(
-    raw.installedThemeBundleIds,
-    (id: unknown): id is string => isThemeId(id) && !isBundleId(id),
-  );
+  delete (merged as { installedThemeBundleIds?: unknown }).installedThemeBundleIds;
   merged.installedMessagingConnections = uniqueValidMessagingConnections(
     raw.installedMessagingConnections,
   );
@@ -802,99 +783,6 @@ function autoUpdateSwitches(
     if (key !== null && (value === "on" || value === "off")) switches[key] = value;
   }
   return switches;
-}
-
-/** Migrate old appearance shapes and validate current ones; malformed UI settings must never crash boot. */
-
-const VALID_THEMES_V1: readonly ThemePreference[] = ["system", "light", "dark", "high-contrast"];
-const VALID_CHAT_THEMES_V1: readonly ChatThemePreference[] = ["default", "lg", "purple", "orange", "blue"];
-
-
-/** Do not resolve system appearance in main, where window is unavailable; the renderer tracks the OS scheme. */
-function migrateAppearanceV1ToV2(
-  legacy: AppearanceSettingsV1,
-): AppearanceSettings {
-  const theme = VALID_THEMES_V1.includes(legacy.theme) ? legacy.theme : "system";
-  const chatTheme = VALID_CHAT_THEMES_V1.includes(legacy.chatTheme) ? legacy.chatTheme : "default";
-
-  if (theme === "high-contrast") {
-    return { schemaVersion: 2, bundleId: "high-contrast" };
-  }
-
-  if (chatTheme === "purple" || chatTheme === "orange" || chatTheme === "blue") {
-    return { schemaVersion: 2, bundleId: "midnight" };
-  }
-
-  if (chatTheme === "lg") {
-    if (theme === "light") return { schemaVersion: 2, bundleId: "violet-light" };
-    if (theme === "dark")  return { schemaVersion: 2, bundleId: "violet-dark" };
-    return { schemaVersion: 2, bundleId: "violet-dark", followSystem: true };
-  }
-
-  if (theme === "light") return { schemaVersion: 2, bundleId: "forest" };
-  if (theme === "dark")  return { schemaVersion: 2, bundleId: "tokyo-night" };
-
-  return { schemaVersion: 2, bundleId: DEFAULT_BUNDLE_ID };
-}
-
-export const appearanceMigration = Object.freeze({
-  migrateV1ToV2: migrateAppearanceV1ToV2,
-});
-
-export function normalizeAppearance(input: unknown): AppearanceSettings {
-  if (!input || typeof input !== "object") {
-    return { ...DEFAULT_SETTINGS.appearance };
-  }
-  const obj = input as Record<string, unknown>;
-
-  if (obj.schemaVersion === 2) {
-    // Accept compiled or package theme ids here; installation is checked later after the ledger loads.
-    const bundleId = isThemeId(obj.bundleId) ? obj.bundleId : DEFAULT_BUNDLE_ID;
-    const followSystem = typeof obj.followSystem === "boolean" ? obj.followSystem : undefined;
-    const result: AppearanceSettings = {
-      schemaVersion: 2,
-      bundleId,
-      language: normalizeLocaleSetting(obj.language),
-    };
-    if (followSystem !== undefined) result.followSystem = followSystem;
-    const font = normalizeAppearanceFont(obj.font);
-    if (font) result.font = font;
-    return result;
-  }
-
-  if (typeof obj.theme === "string" || typeof obj.chatTheme === "string" || typeof obj.codeTheme === "string") {
-    const legacy: AppearanceSettingsV1 = {
-      theme: (typeof obj.theme === "string" && (VALID_THEMES_V1 as readonly string[]).includes(obj.theme)
-        ? obj.theme : "system") as ThemePreference,
-      chatTheme: (typeof obj.chatTheme === "string" && (VALID_CHAT_THEMES_V1 as readonly string[]).includes(obj.chatTheme)
-        ? obj.chatTheme : "default") as ChatThemePreference,
-      codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
-    };
-    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
-  }
-
-  return { ...DEFAULT_SETTINGS.appearance };
-}
-
-function normalizeAppearanceFont(input: unknown): AppearanceFontSettings | undefined {
-  if (!isRecord(input)) return undefined;
-  const o = input;
-  const out: AppearanceFontSettings = {};
-  if (typeof o.family === "string") {
-    if (o.family === "system") {
-      out.family = "system";
-    } else if (isValidFontFamilyOverride(o.family)) {
-      out.family = o.family;
-    }
-  }
-  if (typeof o.sizeScale === "number"
-    && (FONT_SIZE_SCALE_VALUES as readonly number[]).includes(o.sizeScale)) {
-    out.sizeScale = o.sizeScale as FontSizeScale;
-  } else if (o.sizeScale === 1.25) {
-    // Map the former largest font step to the new largest step rather than silently resetting it.
-    out.sizeScale = FONT_SIZE_SCALE_VALUES[FONT_SIZE_SCALE_VALUES.length - 1]!;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Replace only malformed web-view fields with defaults and warn once per load. */

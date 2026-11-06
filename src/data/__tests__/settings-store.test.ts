@@ -36,7 +36,7 @@ import {
   LOG_RETENTION_MIN_DAYS,
   LOG_RETENTION_MAX_DAYS,
 } from "../../shared/log-retention.js";
-import { BUNDLE_IDS, DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
+import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -279,7 +279,6 @@ describe("SettingsService marketplace defaults", () => {
       offlineCacheEnabled: DEFAULT_SETTINGS.marketplace.offlineCacheEnabled,
       installedProviderIds: [],
       installedProviderPresets: [],
-      installedThemeBundleIds: [],
       installedLanguagePacks: [],
       installedMessagingConnections: [],
     });
@@ -457,8 +456,6 @@ describe("SettingsService marketplace defaults", () => {
         modelOptions: ["future/free", "future/pro"],
         requiresApiKey: false,
       }],
-      // Legacy input of the first-boot migration: any theme package name, never a compiled id.
-      installedThemeBundleIds: ["tokyo-night", "missing-theme"],
       installedLanguagePacks: ["ko"],
     });
 
@@ -475,7 +472,6 @@ describe("SettingsService marketplace defaults", () => {
           },
           { providerId: "bad router", label: "Bad", baseUrl: "http://localhost:8000/v1", defaultModel: "x" },
         ],
-        installedThemeBundleIds: ["high-contrast", "moonstone", "No Theme"] as never,
         installedLanguagePacks: ["ko", "en", "nope"] as never,
       },
     });
@@ -490,7 +486,6 @@ describe("SettingsService marketplace defaults", () => {
         modelOptions: ["local/free"],
         requiresApiKey: false,
       }],
-      installedThemeBundleIds: ["high-contrast"],
       installedLanguagePacks: ["ko"],
     });
   });
@@ -2844,136 +2839,31 @@ describe("SettingsService system — workspace preferences", () => {
   });
 });
 
-describe("SettingsService appearance v2 — fresh install defaults", () => {
+describe("SettingsService appearance", () => {
   let userDataPath: string;
-
-  beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-v2-fresh-"));
-    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
+  beforeEach(() => { userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-")); });
+  afterEach(async () => { await cleanupTmpDir(userDataPath); });
+  it("starts with independent light and dark scheme selections", () => {
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
-
-  afterEach(async () => {
-    vi.clearAllMocks();
-    await cleanupTmpDir(userDataPath);
-  });
-
-  it("fresh install returns schemaVersion:2 with DEFAULT_BUNDLE_ID", () => {
+  it("persists mode, scheme and partial terminal font changes across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
+    await service.patch({ appearance: { mode: "light", lightScheme: "one-light", terminalFont: { size: 16 } } });
+    await service.patch({ appearance: { terminalFont: { lineHeight: 1.5 } } });
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toMatchObject({ mode: "light", lightScheme: "one-light", terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, size: 16, lineHeight: 1.5 } });
   });
-
-  it("v2 appearance round-trips across restart", async () => {
+  it("rejects unknown fields and invalid scheme, mode and terminal font patches", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "midnight" } });
-    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
+    await service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never);
+    expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
-
-  it("v2 with followSystem=true round-trips", async () => {
+  it("replaces a released package selection once while preserving language and font", async () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { schemaVersion: 2, bundleId: "package-theme", followSystem: true, language: "ko", font: { family: "Menlo", sizeScale: 1 } } }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "violet-light", followSystem: true } });
-    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-light", followSystem: true });
-  });
-
-  it("malformed bundleId coerces to DEFAULT_BUNDLE_ID", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "Not A Bundle!" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-  });
-
-  // The content ledger is read after settings: an installed theme or language the user selected must survive the settings load.
-  it("keeps a well-formed installed theme id and language tag it cannot resolve yet", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ appearance: { schemaVersion: 2, language: "fr", bundleId: "harbor-night" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toMatchObject({ language: "fr", bundleId: "harbor-night" });
-  });
-
-  // `CHANNELS.settings.update` hands the renderer payload to `patch()` unchecked, so patch() is the trust boundary. `language` and `font`
-  // are already validated there; `bundleId`, `schemaVersion` and `followSystem` used to ride the plain outer spread straight onto disk.
-
-  it("ignores a malformed bundleId patch and keeps the stored theme", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ appearance: { schemaVersion: 2, bundleId: "midnight" } });
-
-    await service.patch({ appearance: { schemaVersion: 2, bundleId: "../nonexistent bundle" } });
-
-    expect(service.get("appearance").bundleId).toBe("midnight");
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
-      appearance: { bundleId: string };
-    };
-    expect(onDisk.appearance.bundleId).toBe("midnight");
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").bundleId).toBe("midnight");
-  });
-
-  // The sharpest consequence: a non-2 schemaVersion on disk sends the next load down the v1 branch, which finds no legacy
-  // `theme`/`chatTheme`/`codeTheme` keys and therefore returns DEFAULT_SETTINGS.appearance; silently discarding the user's bundle, language AND font in one go.
-  it.each([
-    ["v1", 1],
-    ["string", "2"],
-    ["null", null],
-  ])("ignores a non-2 schemaVersion patch (%s) so appearance is not wiped on next load", async (_label, badVersion) => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({
-      appearance: {
-        schemaVersion: 2,
-        bundleId: "midnight",
-        language: "ko",
-        font: { sizeScale: 1.125 },
-      },
-    });
-
-    await service.patch({
-      appearance: { schemaVersion: badVersion as never, bundleId: "midnight" },
-    });
-
-    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("appearance")).toEqual({
-      schemaVersion: 2,
-      bundleId: "midnight",
-      language: "ko",
-      font: { sizeScale: 1.125 },
-    });
-  });
-
-  it("ignores a non-boolean followSystem patch and keeps the stored value", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ appearance: { schemaVersion: 2, bundleId: "violet-light", followSystem: true } });
-
-    await service.patch({
-      appearance: { schemaVersion: 2, bundleId: "violet-light", followSystem: "yes" as never },
-    });
-
-    expect(service.get("appearance").followSystem).toBe(true);
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").followSystem).toBe(true);
-  });
-
-  it("still accepts every valid bundleId through patch", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    for (const bundleId of BUNDLE_IDS) {
-      await service.patch({ appearance: { schemaVersion: 2, bundleId } });
-      expect(service.get("appearance").bundleId).toBe(bundleId);
-    }
-  });
-
-  it("appearance block absent (pre-theme system install) → DEFAULT_BUNDLE_ID", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ chat: { systemPrompt: "preserved", autoCompact: false } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-    // Unrelated section preserved
-    expect(service.get("chat").systemPrompt).toBe("preserved");
+    const expected = { ...DEFAULT_APPEARANCE, language: "ko", font: { family: "Menlo", sizeScale: 1 } };
+    expect(service.get("appearance")).toEqual(expected);
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf8")).appearance).toEqual(expected));
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toEqual(expected);
   });
 });
 
@@ -3027,7 +2917,7 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE } }),
       "utf-8",
     );
     // Even if OS is Korean, the stored "en" is the user's explicit choice; respect it.
@@ -3038,7 +2928,7 @@ describe("SettingsService system locale detection", () => {
   it("existing settings file with language='ko' is preserved regardless of systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ appearance: { schemaVersion: 2, language: "ko", bundleId: DEFAULT_BUNDLE_ID } }),
+      currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, language: "ko" } }),
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "en-US" });
@@ -3049,205 +2939,6 @@ describe("SettingsService system locale detection", () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({}), "utf-8");
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "ko-KR" });
     expect(service.get("appearance").language).toBe("en");
-  });
-});
-
-describe("SettingsService appearance v1 → v2 migration", () => {
-  let userDataPath: string;
-  let migrationWrites: Array<{ promise: Promise<void>; settled: boolean }>;
-  let restoreWriteObserver: () => void;
-
-  async function waitForV2WriteBack(): Promise<void> {
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        Promise.all(migrationWrites.map((writing) => writing.promise)),
-        new Promise<never>((_resolve, reject) => {
-          deadline = setTimeout(() => reject(new Error("Settings migration write-back did not settle before teardown")), 1_000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(deadline);
-    }
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-      appearance?: { schemaVersion?: unknown };
-    };
-    expect(onDisk.appearance?.schemaVersion).toBe(2);
-  }
-
-  beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-migration-"));
-    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
-    migrationWrites = [];
-    type SettingsWriter = { saveSettings(settings: unknown): Promise<void> };
-    const prototype = SettingsService.prototype as unknown as SettingsWriter;
-    const realSave = prototype.saveSettings;
-    const observer = vi.spyOn(prototype, "saveSettings").mockImplementation(function (this: SettingsWriter, settings) {
-      const writing = realSave.call(this, settings);
-      const tracked = { promise: writing, settled: false };
-      migrationWrites.push(tracked);
-      const markSettled = () => { tracked.settled = true; };
-      void writing.then(markSettled, markSettled);
-      return writing;
-    });
-    restoreWriteObserver = () => observer.mockRestore();
-  });
-
-  afterEach(async () => {
-    try {
-      await waitForV2WriteBack();
-    } finally {
-      restoreWriteObserver();
-      vi.clearAllMocks();
-      if (migrationWrites.every((writing) => writing.settled)) {
-        await cleanupTmpDir(userDataPath);
-      } else {
-        // A timed-out write still owns this root until its real I/O settles.
-        console.warn("Settings migration writes are pending; retained temporary directory: %s", userDataPath);
-      }
-    }
-  });
-
-  function writeV1(appearance: Record<string, unknown>): void {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance }),
-      "utf-8",
-    );
-  }
-
-  it("dark + default → tokyo-night", () => {
-    writeV1({ theme: "dark", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "tokyo-night" });
-  });
-
-  it("dark + lg → violet-dark", () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("light + default → forest", () => {
-    writeV1({ theme: "light", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  it("light + lg → violet-light", () => {
-    writeV1({ theme: "light", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-light" });
-  });
-
-  it("dark + lg + dark (code override) → violet-dark (code override ignored)", () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("light + default + dark (code override) → forest (code override ignored)", () => {
-    writeV1({ theme: "light", chatTheme: "default", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  it("* + purple → midnight (closest accent coercion)", () => {
-    writeV1({ theme: "dark", chatTheme: "purple", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("* + orange → midnight", () => {
-    writeV1({ theme: "light", chatTheme: "orange", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("* + blue → midnight", () => {
-    writeV1({ theme: "dark", chatTheme: "blue", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("high-contrast + * → high-contrast (HC always wins)", () => {
-    writeV1({ theme: "high-contrast", chatTheme: "purple", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "high-contrast" });
-  });
-
-  it("invalid theme string → DEFAULT_BUNDLE_ID", () => {
-    writeV1({ theme: "sepia", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-  });
-
-  it("v1 write-back: migrated appearance is written to disk as v2", async () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // Await the constructor's actual atomic write, including lock release.
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-    expect(onDisk.appearance).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-    // No legacy keys remain after write-back
-    expect(onDisk.appearance.theme).toBeUndefined();
-    expect(onDisk.appearance.chatTheme).toBeUndefined();
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("persists migrations and normalized fields from an unmarked legacy file", async () => {
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    writeFileSync(settingsPath, JSON.stringify({
-      appearance: { theme: "dark", chatTheme: "lg", codeTheme: "auto" },
-      features: { subAgentAutonomousWake: false },
-      shortcuts: { toggleWindow: 42, enabled: "nope" },
-    }), "utf-8");
-    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("appliedMigrations");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
-    expect(service.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
-
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-    expect(onDisk.appearance).toEqual(service.get("appearance"));
-    expect(onDisk.features).toMatchObject({ subAgentAutonomousWake: true });
-    expect(onDisk.shortcuts).toEqual({ toggleWindow: null, enabled: false });
-    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
-  });
-
-  it("v2 file loads without re-migration", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "forest" } }),
-      "utf-8",
-    );
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  // Main process has no window.matchMedia; system theme must not crash and must produce a deterministic DEFAULT_BUNDLE_ID result (no silent OS-scheme access).
-  it("system + default → DEFAULT_BUNDLE_ID (main process: no matchMedia needed)", () => {
-    writeV1({ theme: "system", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-  });
-
-  it("system + lg → violet-dark + followSystem:true (main process: renderer will track OS)", () => {
-    writeV1({ theme: "system", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark", followSystem: true });
-  });
-
-  it("codeTheme-only v1 triggers write-back (needsV2WriteBack includes codeTheme)", async () => {
-    writeV1({ codeTheme: "light" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-    expect((onDisk.appearance as Record<string, unknown>).codeTheme).toBeUndefined();
-    expect(service.get("appearance")).toMatchObject({ schemaVersion: 2 });
   });
 });
 
@@ -3264,7 +2955,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
   function writeAppearance(font: unknown): void {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font } }),
+      currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, font } }),
     );
   }
 
@@ -3296,7 +2987,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
   it("reads the pre-ladder top step 1.25 as the current top step", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: 1.25 } } }),
+      JSON.stringify({ appearance: { ...DEFAULT_APPEARANCE, font: { sizeScale: 1.25 } } }),
       "utf-8",
     );
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").font?.sizeScale).toBe(1.125);
@@ -3308,7 +2999,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
       try {
         writeFileSync(
           join(dir, "ave-settings.json"),
-          currentSettingsJson({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: value } } }),
+          currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, font: { sizeScale: value } } }),
         );
         const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath: dir });
         expect(s.get("appearance")).toMatchObject({ font: { sizeScale: value } });
@@ -3332,8 +3023,8 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
 
   it("patch family-only preserves a previously patched sizeScale (PR #672 review HIGH#1)", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: 1.125 } } });
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { family: "Pretendard, system-ui, sans-serif" } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: { sizeScale: 1.125 } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: { family: "Pretendard, system-ui, sans-serif" } } });
     expect(s.get("appearance").font).toEqual({
       sizeScale: 1.125,
       family: "Pretendard, system-ui, sans-serif",
@@ -3342,8 +3033,8 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
 
   it("patch sizeScale-only preserves a previously patched family (PR #672 review HIGH#1, reverse order)", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { family: "Pretendard, sans-serif" } } });
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: 1.125 } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: { family: "Pretendard, sans-serif" } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: { sizeScale: 1.125 } } });
     expect(s.get("appearance").font).toEqual({
       family: "Pretendard, sans-serif",
       sizeScale: 1.125,
@@ -3354,8 +3045,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({
       appearance: {
-        schemaVersion: 2,
-        bundleId: "tokyo-night",
+        ...DEFAULT_APPEARANCE,
         font: { family: 'Arial; color: red; url(http://evil)' },
       },
     });
@@ -3366,8 +3056,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({
       appearance: {
-        schemaVersion: 2,
-        bundleId: "tokyo-night",
+        ...DEFAULT_APPEARANCE,
         font: { family: "맑은 고딕, sans-serif" },
       },
     });
@@ -3378,8 +3067,7 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await s.patch({
       appearance: {
-        schemaVersion: 2,
-        bundleId: "tokyo-night",
+        ...DEFAULT_APPEARANCE,
         font: { family: "Arial\nevil" },
       },
     });
@@ -3388,10 +3076,10 @@ describe("SettingsService appearance.font — Track A user-configurable font", (
 
   it("patch with `font: null` is a no-op — does not crash on null deref (PR #672 2차 critic N3)", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: { sizeScale: 1.125 } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: { sizeScale: 1.125 } } });
     // Caller deliberately sends `font: null` (some defensive call sites do this to "clear"
     // without specifying subfields). Must not throw, must preserve the previously-patched font block.
-    await s.patch({ appearance: { schemaVersion: 2, language: "en", bundleId: "tokyo-night", font: null as unknown as { sizeScale: 1 | 1.125 } } });
+    await s.patch({ appearance: { ...DEFAULT_APPEARANCE, font: null as unknown as { sizeScale: 1 | 1.125 } } });
     expect(s.get("appearance").font?.sizeScale).toBe(1.125);
   });
 });

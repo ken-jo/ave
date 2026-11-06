@@ -1,3 +1,4 @@
+import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "../appearance-settings.js";
 import { describe, it, expect } from "vitest";
 import { isAveThemeBundleId, AVE_THEME_BUNDLE_IDS, AVE_TOKEN_NAMES } from "../plugin-ui-tokens.js";
 
@@ -76,16 +77,16 @@ describe("AVE_TOKEN_NAMES — complete public token contract", () => {
 });
 
 describe("isAveThemeBundleId", () => {
-  it("lists the compiled bundles, and accepts each", () => {
-    expect(AVE_THEME_BUNDLE_IDS).toEqual(["moonstone", "gallery"]);
+  it("lists the curated schemes and accepts each", () => {
+    expect(AVE_THEME_BUNDLE_IDS).toEqual([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
     for (const id of AVE_THEME_BUNDLE_IDS) {
       expect(isAveThemeBundleId(id)).toBe(true);
     }
   });
 
-  it("accepts a theme package name, and rejects strings that cannot be one", () => {
+  it("accepts a curated identifier and rejects package names", () => {
     expect(isAveThemeBundleId("tokyo-night")).toBe(true);
-    expect(isAveThemeBundleId("Tokyo Night")).toBe(false);
+    expect(isAveThemeBundleId("custom-theme")).toBe(false);
     expect(isAveThemeBundleId("a")).toBe(false);
     expect(isAveThemeBundleId("")).toBe(false);
   });

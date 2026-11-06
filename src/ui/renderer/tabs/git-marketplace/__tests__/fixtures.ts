@@ -94,7 +94,7 @@ export function entry(sourceId: string | null, kind: PackageKind, name: string, 
 }
 
 function catalog(entries: CatalogEntryView[], sourceCount: number): CatalogView {
-  const counts = { "agent-plugin": 0, plugin: 0, mcp: 0, skill: 0, agent: 0, theme: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 } satisfies Record<PackageKind, number>;
+  const counts = { "agent-plugin": 0, plugin: 0, mcp: 0, skill: 0, agent: 0, font: 0, language: 0, provider: 0, "messaging-connection": 0 } satisfies Record<PackageKind, number>;
   for (const item of entries) counts[item.key.kind] += 1;
   return { entries, counts, sourceCount, syncedAt: "2026-09-24T00:00:00.000Z" };
 }

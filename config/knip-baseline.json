@@ -109,11 +109,6 @@
     },
     {
       "type": "exports",
-      "file": "src/data/settings-store.ts",
-      "name": "migrateAppearanceV1ToV2"
-    },
-    {
-      "type": "exports",
       "file": "src/i18n/index.ts",
       "name": "interpolate"
     },
@@ -291,11 +286,6 @@
       "type": "exports",
       "file": "src/ui/renderer/hooks/status-bar/vendor-label.ts",
       "name": "vendorEmoji"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/resolve-theme.ts",
-      "name": "bundleShell"
     },
     {
       "type": "files",
@@ -931,16 +921,6 @@
       "type": "types",
       "file": "src/shared/marketplace-package-assets.ts",
       "name": "MarketplaceProviderPackageTrustMetadata"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/marketplace-package-assets.ts",
-      "name": "MarketplaceThemePackageAsset"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/marketplace-package-assets.ts",
-      "name": "MarketplaceThemeShellMode"
     },
     {
       "type": "types",

@@ -3,7 +3,7 @@
 import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 
-export const CONTENT_KINDS = ["agent-plugin", "skill", "agent", "theme", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
+export const CONTENT_KINDS = ["agent-plugin", "skill", "agent", "font", "language", "provider", "messaging-connection"] as const satisfies readonly PackageKind[];
 export type ContentKind = (typeof CONTENT_KINDS)[number];
 
 export function isContentKind(kind: PackageKind): kind is ContentKind {
@@ -59,13 +59,6 @@ export const CONTENT_RULES: Readonly<Record<ContentKind, ContentRule>> = Object.
     extensions: [".md"],
     layout: (path) => path === "AGENTS.md",
     describe: "AGENTS.md",
-  },
-  theme: {
-    maxBytes: 256 * KB,
-    maxFiles: 4,
-    extensions: [".json", ...IMAGE],
-    layout: (path) => path === "theme.json" || (!path.includes("/") && IMAGE.some((ext) => path.toLowerCase().endsWith(ext))),
-    describe: "theme.json and a preview image",
   },
   font: {
     maxBytes: 20 * MB,

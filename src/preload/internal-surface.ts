@@ -12,15 +12,10 @@ import {
   CHANNELS,
   UI,
 } from "../contract/app-contract.js";
-import {
-  INITIAL_THEME_ARG_PREFIX,
-  INITIAL_THEME_ARG_MAX_BYTES,
-  type InitialThemePrime,
-} from "../shared/initial-theme.js";
-import {
-  FONT_SIZE_SCALE_VALUES,
-  isValidFontFamilyOverride,
-} from "../shared/appearance-font.js";
+import { INITIAL_APPEARANCE_ARG_PREFIX, type InitialAppearance } from "../shared/initial-appearance.js";
+import { isAppearanceMode, isDarkSchemeId, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, normalizeAppearance } from "../shared/appearance-settings.js";
+import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride } from "../shared/appearance-font.js";
+import { applyAppearance } from "../ui/renderer/theme/resolve-theme.js";
 import type {
   NativeContextMenuAction,
   DynamicNativeMenuAction,
@@ -33,85 +28,38 @@ import {
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
-export type AveInitialThemePayload = Readonly<InitialThemePrime>;
-
-export function readInitialThemeArg(): AveInitialThemePayload | null {
-  try {
-    // `findLast` (vs `find`) defends against accidental duplicate arg
-    // injection: if anyone ever passes the prefix twice, the later one wins
-    // — matching the convention that "last write wins" in argv-style flags.
-    const arg = process.argv.findLast(
-      (a): a is string => typeof a === "string" && a.startsWith(INITIAL_THEME_ARG_PREFIX),
-    );
-    if (!arg) return null;
-    const json = arg.slice(INITIAL_THEME_ARG_PREFIX.length);
-    // Size guard mirrors `main.ts:initialThemeArgs` — keeps a malformed or
-    // attacker-influenced argv from blocking the renderer on a giant parse.
-    if (json.length > INITIAL_THEME_ARG_MAX_BYTES) return null;
-    const parsed: unknown = JSON.parse(json);
-    if (!parsed || typeof parsed !== "object") return null;
-    const p = parsed as {
-      bundleId?: unknown;
-      shell?: unknown;
-      tokens?: unknown;
-      fontSizeScale?: unknown;
-      fontFamily?: unknown;
-    };
-    if (typeof p.bundleId !== "string") return null;
-    if (p.shell !== "light" && p.shell !== "dark") return null;
-    const tokens: Record<string, string> = {};
-    if (p.tokens && typeof p.tokens === "object" && !Array.isArray(p.tokens)) {
-      for (const [k, v] of Object.entries(p.tokens as Record<string, unknown>)) {
-        if (typeof k === "string" && k.startsWith("--ave-") && typeof v === "string") {
-          tokens[k] = v;
-        }
-      }
-    }
-    // Font overrides are validated against the same SoT guards the settings
-    // store enforces at write time (`FONT_SIZE_SCALE_VALUES`,
-    // `isValidFontFamilyOverride`) so a tampered argv cannot inject an arbitrary
-    // scale or a CSS-injection font-family. Invalid → field stays undefined and
-    // the renderer's hydrate applies the persisted value.
-    const out: InitialThemePrime = { bundleId: p.bundleId, shell: p.shell, tokens: Object.freeze(tokens) };
-    if (
-      typeof p.fontSizeScale === "number" &&
-      (FONT_SIZE_SCALE_VALUES as readonly number[]).includes(p.fontSizeScale)
-    ) {
-      out.fontSizeScale = p.fontSizeScale;
-    }
-    if (isValidFontFamilyOverride(p.fontFamily)) {
-      out.fontFamily = p.fontFamily;
-    }
-    return Object.freeze(out);
-  } catch {
-    return null;
+export function readInitialAppearanceArg(): InitialAppearance | null {
+  const arg = process.argv.find((value) => value.startsWith(INITIAL_APPEARANCE_ARG_PREFIX));
+  if (!arg) return null;
+  const parsed: unknown = JSON.parse(arg.slice(INITIAL_APPEARANCE_ARG_PREFIX.length));
+  if (!parsed || typeof parsed !== "object" || (parsed as { schemaVersion?: unknown }).schemaVersion !== 3) {
+    throw new Error("Invalid initial appearance");
   }
+  const appearance = parsed as Record<string, unknown>;
+  const font = appearance.terminalFont as Record<string, unknown> | undefined;
+  if (!isAppearanceMode(appearance.mode) || !isDarkSchemeId(appearance.darkScheme) || !isLightSchemeId(appearance.lightScheme)
+    || !font || !isValidFontFamilyOverride(font.family) || !isTerminalFontSize(font.size) || !isTerminalLineHeight(font.lineHeight)) {
+    throw new Error("Invalid initial appearance");
+  }
+  const uiFont = appearance.font as Record<string, unknown> | undefined;
+  if (uiFont !== undefined && (!uiFont || typeof uiFont !== "object" || Array.isArray(uiFont)
+    || (uiFont.family !== undefined && !isValidFontFamilyOverride(uiFont.family))
+    || (uiFont.sizeScale !== undefined && !(FONT_SIZE_SCALE_VALUES as readonly unknown[]).includes(uiFont.sizeScale)))) {
+    throw new Error("Invalid initial appearance font");
+  }
+  return normalizeAppearance(parsed);
 }
 
-export function applyInitialThemePrime(payload: AveInitialThemePayload | null): void {
-  if (!payload || typeof document === "undefined") return;
-  // Apply attributes + tokens immediately. Preload's mutations to
-  // documentElement are visible to the renderer's first paint because both
-  // share the same DOM (contextIsolation isolates JS objects, not DOM).
-  try {
-    const root = document.documentElement;
-    root.setAttribute("data-theme-bundle", payload.bundleId);
-    root.setAttribute("data-shell", payload.shell);
-    if (payload.tokens) {
-      for (const [k, v] of Object.entries(payload.tokens)) {
-        root.style.setProperty(k, v);
-      }
-    }
-    // User font overrides — same documentElement CSS-var hooks ThemeProvider's
-    // `applySettingsAppearance` sets after hydrate.
-    if (typeof payload.fontSizeScale === "number") {
-      root.style.setProperty("--ave-font-size-scale", String(payload.fontSizeScale));
-    }
-    if (typeof payload.fontFamily === "string") {
-      root.style.setProperty("--ave-font-family", payload.fontFamily);
-    }
-  } catch {
-    // Non-fatal: ThemeProvider's async hydrate still runs as a fallback.
+export function applyInitialAppearance(appearance: InitialAppearance | null): void {
+  if (!appearance || typeof document === "undefined") return;
+  if (document.documentElement) applyAppearance(appearance);
+  else {
+    const observer = new MutationObserver(() => {
+      if (!document.documentElement) return;
+      observer.disconnect();
+      applyAppearance(appearance);
+    });
+    observer.observe(document, { childList: true });
   }
 }
 

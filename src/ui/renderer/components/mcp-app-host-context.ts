@@ -170,7 +170,7 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
 export interface McpAppHostContextInput {
   /** Active shell scheme (maps 1:1 to the standard `McpUiTheme`). */
   shell: "light" | "dark";
-  /** Resolved `--ave-*` token → CSS value map (from `bundleToPluginTokens`). */
+  /** Resolved `--ave-*` token → CSS value map from the resolved scheme. */
   tokens: Record<string, string>;
   /** BCP-47 language tag (e.g. "en", "ko"). */
   locale: string;

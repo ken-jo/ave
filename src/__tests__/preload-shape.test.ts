@@ -115,7 +115,7 @@ describe("preload contextBridge world shape lock", () => {
     expect([...exposed.keys()].sort()).toMatchInlineSnapshot(`
       [
         "__aveDevMode",
-        "__aveInitialTheme",
+        "__aveInitialAppearance",
         "ave",
         "aveApi",
         "aveDrop",
@@ -134,7 +134,7 @@ describe("preload contextBridge world shape lock", () => {
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
-        "__aveInitialTheme": "null",
+        "__aveInitialAppearance": "null",
         "ave": {
           "approval": [
             "listPending",
@@ -841,7 +841,7 @@ describe("floating dock preload world shape lock", () => {
     const handler = vi.fn();
     const dispose = dock.onTheme(handler);
     const listener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:dock:theme")![1];
-    const theme = { bundleId: "moonstone", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
+    const theme = { bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
     listener({ sender: "not forwarded" }, theme);
     expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
     dispose();

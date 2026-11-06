@@ -8,7 +8,7 @@ import type { LegacyPluginReport } from "../legacy-plugins.js";
 import { officialPluginsFrom, runLegacyMigration } from "../run.js";
 
 const CLEAN: LegacyPluginReport = { bound: ["meeting"], unmanaged: [], lostGrants: [], failed: [] };
-const ADOPTED: LegacyContentReport = { adopted: [{ source: "ave", kind: "theme", name: "aurora" }], failed: [] };
+const ADOPTED: LegacyContentReport = { adopted: [{ source: "ave", kind: "language", name: "aurora" }], failed: [] };
 
 const snapshot = {
   sourceId: "ave",
@@ -26,7 +26,7 @@ const snapshot = {
       ],
     },
     { kind: "skill", name: "review", path: "skills/review", versions: [] },
-    { kind: "theme", name: "aurora", path: "themes/aurora", versions: [] },
+    { kind: "language", name: "aurora", path: "languages/aurora", versions: [] },
   ],
   revocations: [],
   diagnostics: [],
@@ -81,14 +81,14 @@ describe("runLegacyMigration", () => {
       content: async (lookup) => ((listed = lookup), ADOPTED),
       now,
     });
-    expect(listed!("theme", "aurora")).toBe(true);
+    expect(listed!("language", "aurora")).toBe(true);
     expect(listed!("provider", "aurora")).toBe(false);
-    expect(listed!("theme", "review")).toBe(false);
+    expect(listed!("language", "review")).toBe(false);
   });
 
   it.each([
     ["a plugin entry could not be read", { ...CLEAN, failed: [{ plugin: "calendar", message: "unreadable" }] }, ADOPTED],
-    ["a content install failed", CLEAN, { adopted: [], failed: [{ key: { source: "ave", kind: "theme" as const, name: "aurora" }, message: "offline" }] }],
+    ["a content install failed", CLEAN, { adopted: [], failed: [{ key: { source: "ave", kind: "language" as const, name: "aurora" }, message: "offline" }] }],
   ])("runs again while %s", async (_what, firstPlugins, firstContent) => {
     const plugins = vi.fn().mockResolvedValueOnce(firstPlugins).mockResolvedValue(CLEAN);
     const content = vi.fn().mockResolvedValueOnce(firstContent).mockResolvedValue(ADOPTED);
@@ -100,7 +100,7 @@ describe("runLegacyMigration", () => {
   });
 
   it("names an unlisted plugin once, though a failure makes the migration run again", async () => {
-    const failing = { adopted: [], failed: [{ key: { source: "ave", kind: "theme" as const, name: "aurora" }, message: "offline" }] };
+    const failing = { adopted: [], failed: [{ key: { source: "ave", kind: "language" as const, name: "aurora" }, message: "offline" }] };
     const plugins = vi.fn()
       .mockResolvedValueOnce({ ...CLEAN, unmanaged: ["calendar"] })
       .mockResolvedValue({ bound: [], unmanaged: ["calendar", "notes"], lostGrants: [], failed: [] });

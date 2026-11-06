@@ -10,13 +10,13 @@ import { buildPublicSurface } from "./preload/public-surface.js";
 import type { AveApi } from "./ui/renderer/types.js";
 import { prepareFileDrop, resolveDroppedPaths } from "./preload/webutils-bridge.js";
 import {
-  applyInitialThemePrime,
+  applyInitialAppearance,
   buildInternalApiSurface,
   buildAveHostWorld,
   buildAveNamespaceExtras,
   buildAvePlatformWorld,
   buildAveWindowWorld,
-  readInitialThemeArg,
+  readInitialAppearanceArg,
 } from "./preload/internal-surface.js";
 import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
 
@@ -35,11 +35,9 @@ function safeResolveFileUrl(relative: string): string {
 const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
 const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
 
-// ─── Initial theme prime ───────────────────────────────────────────────────
-// Read the argv-injected primes and paint the theme onto documentElement before
-// React mounts (frame-0 correct paint). See internal-surface.ts for the SoT.
-const aveInitialTheme = readInitialThemeArg();
-applyInitialThemePrime(aveInitialTheme);
+// Apply saved appearance before the renderer mounts.
+const aveInitialAppearance = readInitialAppearanceArg();
+applyInitialAppearance(aveInitialAppearance);
 
 // ─── Composed host API surface ──────────────────────────────────────────────
 // The public + internal builders partition the methods; the exposed
@@ -57,10 +55,8 @@ const api = {
   pluginShellUrl,
 } satisfies AveApi;
 
-// Expose the theme prime payload so ThemeProvider (renderer) can read it
-// synchronously on mount and skip its async settings.json hydrate. `null`
-// when main has nothing cached yet (cold-boot first window).
-contextBridge.exposeInMainWorld("__aveInitialTheme", aveInitialTheme);
+// Seed the provider with the appearance already painted by preload.
+contextBridge.exposeInMainWorld("__aveInitialAppearance", aveInitialAppearance);
 
 contextBridge.exposeInMainWorld("aveApi", api);
 // Dev mode runtime flag — main process sets NODE_ENV=development in

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, screen, shell } from "electron";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createLogger } from "../lib/logger.js";
@@ -9,13 +9,10 @@ import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
-import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
-import {
-  INITIAL_THEME_ARG_PREFIX,
-  INITIAL_THEME_ARG_MAX_BYTES,
-  type InitialThemePrime,
-} from "../shared/initial-theme.js";
+import { INITIAL_APPEARANCE_ARG_PREFIX } from "../shared/initial-appearance.js";
+import { normalizeAppearance } from "../shared/appearance-settings.js";
+import { settingsFilePath } from "../data/settings-store.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import { computeInitialMainWindowBounds } from "./main-window-bounds.js";
 import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-geometry.js";
@@ -57,30 +54,19 @@ function initialMainWindowBounds(): { x: number; y: number; width: number; heigh
   return computeInitialMainWindowBounds(workArea);
 }
 
-// Prime frame-zero theme through preload arguments; missing or oversized payloads defer to asynchronous hydration.
-export function initialThemeArgs(): string[] {
-  const payload = getLastThemePayload();
-  if (!payload) return [];
-  // Prime only initial paint fields; read validated user font overrides from live settings, not cached plugin theme.
-  // Omit default font values and leave renderer-only fields to normal hydration.
-  const font = getServices()?.settingsService.getAll().appearance?.font;
-  const fontSizeScale = typeof font?.sizeScale === "number" ? font.sizeScale : undefined;
-  const fontFamily = font?.family && font.family !== "system" ? font.family : undefined;
-  const prime: InitialThemePrime = {
-    bundleId: payload.bundleId,
-    shell: payload.shell,
-    ...(payload.tokens ? { tokens: payload.tokens } : {}),
-    ...(fontSizeScale !== undefined ? { fontSizeScale } : {}),
-    ...(fontFamily !== undefined ? { fontFamily } : {}),
-  };
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(prime);
-  } catch {
-    return [];
+/** Read the same validated appearance before services exist so preload can paint the saved scheme. */
+export function initialAppearanceArgs(): string[] {
+  let stored: unknown;
+  const live = getServices();
+  if (live) stored = live.settingsService.getAll().appearance;
+  else {
+    const path = settingsFilePath(app.getPath("userData"));
+    if (existsSync(path)) {
+      try { stored = (JSON.parse(readFileSync(path, "utf8")) as { appearance?: unknown }).appearance; }
+      catch (error) { log.warn({ err: error }, "Could not read initial appearance"); }
+    }
   }
-  if (serialized.length > INITIAL_THEME_ARG_MAX_BYTES) return [];
-  return [`${INITIAL_THEME_ARG_PREFIX}${serialized}`];
+  return [INITIAL_APPEARANCE_ARG_PREFIX + JSON.stringify(normalizeAppearance(stored))];
 }
 
 // Open one main app window. Several may be open at once; the first live one owns the primary conversation (see `app-state.ts`). Returns the window, or
@@ -113,8 +99,8 @@ export function createWindow(
       // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
       // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      // Apply the cached theme before the renderer mounts.
-      additionalArguments: initialThemeArgs(),
+      // Apply saved appearance before the renderer mounts.
+      additionalArguments: initialAppearanceArgs(),
     },
   });
   registerMainWindow(win, nextMainWindowRole());

@@ -184,24 +184,6 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "theme"
-              }
-            },
-            "type": "object"
-          },
-          "then": {
-            "properties": {
-              "payload": {
-                "$ref": "#/definitions/themePayload"
-              }
-            },
-            "type": "object"
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
                 "const": "font"
               }
             },
@@ -279,7 +261,6 @@
         "mcp",
         "skill",
         "agent",
-        "theme",
         "font",
         "language",
         "provider",
@@ -663,18 +644,6 @@
       "properties": {
         "entry": {
           "const": "AGENTS.md"
-        }
-      }
-    },
-    "themePayload": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "entry"
-      ],
-      "properties": {
-        "entry": {
-          "const": "theme.json"
         }
       }
     },

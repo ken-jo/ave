@@ -20,7 +20,7 @@ describe("PluginUpdatesPill", () => {
       updates: [
         update("plugin", "meeting", "Meeting", "2.0.0"),
         update("skill", "calendar", "Calendar", "1.4.0"),
-        update("theme", "dusk", "Dusk", "3.1.0"),
+        update("font", "dusk", "Dusk", "3.1.0"),
       ],
     });
 

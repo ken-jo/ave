@@ -1,9 +1,16 @@
 import { test, expect } from './fixtures';
-import { BUNDLE_IDS } from '../../../src/shared/theme-bundles.js';
-import type { BundleId } from '../../../src/shared/theme-bundles.js';
+import type { Page } from '@playwright/test';
+import { SCHEMES } from '../../../src/ui/renderer/theme/schemes/index.js';
 import { relativeLuminance } from '../../contrast-helpers.js';
 
-// Measure computed contrast for every shipped theme bundle, not legacy theme attributes.
+// Measure the committed setting after the provider applies each shipped scheme.
+async function selectScheme(page: Page, scheme: (typeof SCHEMES)[number]): Promise<void> {
+  await page.evaluate(async ({ id, shell }) => {
+    const api = (window as unknown as { aveApi: { updateSettings: (patch: unknown) => Promise<unknown> } }).aveApi;
+    await api.updateSettings({ appearance: { mode: shell, [shell === 'dark' ? 'darkScheme' : 'lightScheme']: id } });
+  }, scheme);
+  await expect(page.locator('html')).toHaveAttribute('data-scheme', scheme.id);
+}
 
 function rgbToTuple(input: string): [number, number, number, number] {
   const m = input.match(
@@ -32,12 +39,12 @@ function contrastRatio(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-test.describe('Chat surface contrast — WCAG AA across all shipped theme bundles', () => {
-  test('every bundle passes contrast >= 4.5:1 for body text and inline code', async ({
+test.describe('Chat surface contrast — WCAG AA across all shipped schemes', () => {
+  test('every scheme passes contrast >= 4.5:1 for body text and inline code', async ({
     mainWindow,
   }) => {
     type RowResult = {
-      bundle: BundleId;
+      schemeId: string;
       bodyColor: string;
       bodyBg: string;
       bodyRatio: number;
@@ -57,13 +64,9 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     const failures: RowResult[] = [];
     const rows: RowResult[] = [];
 
-    for (const bundle of BUNDLE_IDS) {
-      await mainWindow.evaluate(
-        ({ bundleId }: { bundleId: string }) => {
-          document.documentElement.setAttribute('data-theme-bundle', bundleId);
-        },
-        { bundleId: bundle },
-      );
+    for (const scheme of SCHEMES) {
+      const schemeId = scheme.id;
+      await selectScheme(mainWindow, scheme);
 
       await mainWindow.evaluate(() => {
         const PROBE_HOST_ID = '__ave_contrast_probe__';
@@ -137,7 +140,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
       const tdRatio = contrastRatio(probe.tdColor, probe.tdBg);
 
       const row: RowResult = {
-        bundle,
+        schemeId,
         bodyColor: probe.bodyColor,
         bodyBg: probe.bodyBg,
         bodyRatio,
@@ -168,7 +171,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     if (failures.length > 0) {
       const lines = failures.map(
         (f) =>
-          `  bundle=${f.bundle}: ` +
+          `  schemeId=${f.schemeId}: ` +
           `body=${f.bodyRatio.toFixed(2)} ` +
           `code=${f.codeRatio.toFixed(2)} ` +
           `strong=${f.strongRatio.toFixed(2)} (color=${f.strongColor} bg=${f.strongBg}) ` +
@@ -176,12 +179,12 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
           `td=${f.tdRatio.toFixed(2)} (color=${f.tdColor})`,
       );
       throw new Error(
-        `Contrast regression — ${failures.length}/${rows.length} bundles below threshold:\n${lines.join('\n')}`,
+        `Contrast regression — ${failures.length}/${rows.length} schemes below threshold:\n${lines.join('\n')}`,
       );
     }
 
-    expect(failures, 'all bundles must clear WCAG AA body-text contrast').toHaveLength(0);
-    expect(rows).toHaveLength(BUNDLE_IDS.length);
+    expect(failures, 'all schemes must clear WCAG AA body-text contrast').toHaveLength(0);
+    expect(rows).toHaveLength(SCHEMES.length);
   });
 
   test('user bubble and composer semantic classes resolve and keep text contrast >= 4.5:1', async ({
@@ -203,7 +206,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     ] as const;
 
     type SemanticRow = {
-      bundle: BundleId;
+      schemeId: string;
       missingTokens: string[];
       userColor: string;
       userBg: string;
@@ -219,13 +222,9 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     const rows: SemanticRow[] = [];
     const failures: SemanticRow[] = [];
 
-    for (const bundle of BUNDLE_IDS) {
-      await mainWindow.evaluate(
-        ({ bundleId }: { bundleId: string }) => {
-          document.documentElement.setAttribute('data-theme-bundle', bundleId);
-        },
-        { bundleId: bundle },
-      );
+    for (const scheme of SCHEMES) {
+      const schemeId = scheme.id;
+      await selectScheme(mainWindow, scheme);
 
       // Use production class chains so missing compiled utilities cannot pass token-only checks.
       await mainWindow.evaluate(() => {
@@ -300,7 +299,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
       );
 
       const row: SemanticRow = {
-        bundle,
+        schemeId,
         missingTokens: REQUIRED_SEMANTIC_TOKENS.filter((name) => !probe.tokenValues[name]),
         userColor: probe.userColor,
         userBg: probe.userBg,
@@ -331,7 +330,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     if (failures.length > 0) {
       const lines = failures.map(
         (failure) =>
-          `  bundle=${failure.bundle}: ` +
+          `  schemeId=${failure.schemeId}: ` +
           `missing=[${failure.missingTokens.join(', ')}] ` +
           `user=${failure.userRatio.toFixed(2)} (color=${failure.userColor} bg=${failure.userBg}) ` +
           `composer=${failure.composerRatio.toFixed(2)} (color=${failure.composerColor} bg=${failure.composerBg}) ` +
@@ -339,11 +338,11 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
           `(color=${failure.placeholderColor} bg=${failure.placeholderBg})`,
       );
       throw new Error(
-        `Semantic chat contrast regression — ${failures.length}/${rows.length} bundles failed:\n${lines.join('\n')}`,
+        `Semantic chat contrast regression — ${failures.length}/${rows.length} schemes failed:\n${lines.join('\n')}`,
       );
     }
 
     expect(failures, 'semantic chat text must clear WCAG AA and all required tokens must resolve').toHaveLength(0);
-    expect(rows).toHaveLength(BUNDLE_IDS.length);
+    expect(rows).toHaveLength(SCHEMES.length);
   });
 });

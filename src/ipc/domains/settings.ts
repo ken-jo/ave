@@ -790,13 +790,12 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
     }
-    // The server marketplace's theme and language lists are read and emptied only by the first-boot migration
-    // (design §16.3); themes and languages are installed as packages now, so a patch naming either is refused whole.
+    // Legacy language activations are main-owned until package migration releases them.
     const marketplacePatch = (partial as Record<string, unknown> | null | undefined)?.marketplace;
     if (
       marketplacePatch
       && typeof marketplacePatch === "object"
-      && ["installedThemeBundleIds", "installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
+      && ["installedLanguagePacks"].some((field) => Object.prototype.hasOwnProperty.call(marketplacePatch, field))
     ) {
       return { ok: false, error: "legacy-marketplace-lists-main-owned" };
     }

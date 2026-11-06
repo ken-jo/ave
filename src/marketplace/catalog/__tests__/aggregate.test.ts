@@ -118,7 +118,7 @@ describe("chooseVersion (design §6.1)", () => {
     const revocations = [revocation(">=1.2.0 <1.4.0"), revocation("*", { name: "beta" })];
     expect(chooseVersion("acme", pkg(versions), revocations, context())).toMatchObject({ version: { version: "1.1.0" } });
     expect(chooseVersion("acme", pkg(versions), [revocation("*")], context())).toEqual({ state: "unavailable", reason: "revoked" });
-    expect(chooseVersion("acme", pkg(versions), [revocation("*", { kind: "theme" })], context())).toMatchObject({ version: { version: "1.3.0" } });
+    expect(chooseVersion("acme", pkg(versions), [revocation("*", { kind: "font" })], context())).toMatchObject({ version: { version: "1.3.0" } });
   });
 
   it("reports upgrade_required with the newest held-back version's minAppVersion", () => {
@@ -170,14 +170,14 @@ describe("aggregateCatalog", () => {
     const rows = aggregateCatalog(
       [
         { sourceId: "zeta", sourceOrigin: "custom", snapshot: snapshot("zeta", [pkg([version("1.0.0")])], [revocation("*")]) },
-        { sourceId: "ave", sourceOrigin: "official", snapshot: snapshot("ave", [pkg([version("2.0.0")]), { ...pkg([version("1.0.0")]), kind: "theme" }]) },
+        { sourceId: "ave", sourceOrigin: "official", snapshot: snapshot("ave", [pkg([version("2.0.0")]), { ...pkg([version("1.0.0")]), kind: "font" }]) },
       ],
       context(),
     );
     expect(rows.map((row) => [row.kind, row.name, row.sourceId, row.choice.state])).toEqual([
+      ["font", "alpha", "ave", "candidate"],
       ["skill", "alpha", "ave", "candidate"],
       ["skill", "alpha", "zeta", "unavailable"],
-      ["theme", "alpha", "ave", "candidate"],
     ]);
     expect(rows[0]).toMatchObject({ sourceOrigin: "official", snapshotCommit: snapshot("ave", []).commit });
   });

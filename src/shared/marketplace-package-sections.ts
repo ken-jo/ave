@@ -7,7 +7,6 @@ import {
 
 export const MARKETPLACE_ASSET_PACKAGE_TYPES = [
   "provider",
-  "theme",
   "language-pack",
   "messaging-connection",
 ] as const satisfies readonly MarketplacePackageType[];
@@ -41,7 +40,6 @@ const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, s
     agent: "Agents",
     skill: "Skills",
     provider: "Providers",
-    theme: "Themes",
     "language-pack": "Languages",
     "messaging-connection": "Messaging",
   });
@@ -61,10 +59,6 @@ const MARKETPLACE_ASSET_PACKAGE_TRUST_LABEL_KEYS: Readonly<
   provider: Object.freeze([
     "marketplaceTab.trustProviderCredentials",
     "marketplaceTab.trustProviderNetwork",
-  ]),
-  theme: Object.freeze([
-    "marketplaceTab.trustNoCode",
-    "marketplaceTab.trustThemeTokens",
   ]),
   "language-pack": Object.freeze([
     "marketplaceTab.trustNoCode",

@@ -11,8 +11,6 @@ import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
 import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { isBundleId, isThemeId } from "../../shared/theme-bundles.js";
-import { themeSurfaceProblems, themeTokenProblems, type ThemeSurfaces, type ThemeTokens } from "../../shared/theme-tokens.js";
 import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
 import { parseFrontmatter } from "../../main/skill-store.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
@@ -26,18 +24,6 @@ export interface ContentFile {
   path: string;
   data: Buffer;
   executable?: boolean;
-}
-
-interface ThemeContent {
-  kind: "theme";
-  name: string;
-  description: string;
-  shell: "light" | "dark";
-  highContrast: boolean;
-  tokens: ThemeTokens;
-  surfaces: ThemeSurfaces;
-  preview?: string;
-  pair?: string;
 }
 
 interface LanguageContent {
@@ -77,14 +63,13 @@ interface AgentPluginContent {
   files: readonly ContentFile[];
 }
 
-export type ParsedContent = ThemeContent | LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
+export type ParsedContent = LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
 
 export type DataContentKind = ParsedContent["kind"];
 
 export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
   return (
     kind === "agent-plugin" ||
-    kind === "theme" ||
     kind === "language" ||
     kind === "font" ||
     kind === "provider" ||
@@ -153,78 +138,6 @@ function text(record: Record<string, unknown>, path: string, key: string, max: n
     throw new ContentFailure(path, `${key} must be a single-line string of at most ${max} characters`);
   }
   return value;
-}
-
-function imageSize(bytes: Buffer): { format: string; width: number; height: number } | null {
-  if (bytes.length >= 24 && bytes.readUInt32BE(0) === 0x89504e47 && bytes.readUInt32BE(4) === 0x0d0a1a0a && bytes.subarray(12, 16).toString("latin1") === "IHDR") {
-    return { format: "png", width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-  }
-  if (bytes.length >= 30 && bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP") {
-    const chunk = bytes.subarray(12, 16).toString("latin1");
-    if (chunk === "VP8X") return { format: "webp", width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3) };
-    if (chunk === "VP8 ") return { format: "webp", width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
-    if (chunk === "VP8L" && bytes[20] === 0x2f) {
-      const bits = bytes.readUInt32LE(21);
-      return { format: "webp", width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
-    }
-    return null;
-  }
-  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let at = 2;
-    while (at + 9 < bytes.length) {
-      if (bytes[at] !== 0xff) return null;
-      const marker = bytes[at + 1]!;
-      const length = bytes.readUInt16BE(at + 2);
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-        return { format: "jpeg", width: bytes.readUInt16BE(at + 7), height: bytes.readUInt16BE(at + 5) };
-      }
-      at += 2 + length;
-    }
-  }
-  return null;
-}
-
-const PREVIEW_EXTENSIONS: Readonly<Record<string, string>> = { ".png": "png", ".jpg": "jpeg", ".webp": "webp" };
-const PREVIEW_MAX_SIDE = 2048;
-
-function theme(files: Map<string, Buffer>, context: ContentContext): ThemeContent {
-  const path = "theme.json";
-  // Bundled themes retain their ids; other themes are packages.
-  if (isBundleId(context.name)) throw new ContentFailure(path, `${context.name} is a built-in theme`);
-  const record = readJson(files, path);
-  closed(record, path, ["name", "description", "shell", "highContrast", "tokens", "surfaces", "preview", "pair"]);
-  if (record.shell !== "light" && record.shell !== "dark") throw new ContentFailure(path, 'shell must be "light" or "dark"');
-  if (typeof record.highContrast !== "boolean") throw new ContentFailure(path, "highContrast must be true or false");
-  if (record.pair !== undefined && (typeof record.pair !== "string" || !isThemeId(record.pair) || record.pair === context.name)) {
-    throw new ContentFailure(path, "pair must name another theme");
-  }
-  const problems = [...themeTokenProblems(record.tokens), ...themeSurfaceProblems(record.surfaces)];
-  if (problems.length > 0) throw new ContentFailure(path, problems.join("; "));
-  let preview: string | undefined;
-  if (record.preview !== undefined) {
-    const bytes = typeof record.preview === "string" && record.preview !== path ? files.get(record.preview) : undefined;
-    if (typeof record.preview !== "string" || !bytes) {
-      throw new ContentFailure(path, "preview must name an image file of the package");
-    }
-    const expected = PREVIEW_EXTENSIONS[record.preview.slice(record.preview.lastIndexOf(".")).toLowerCase()];
-    const size = imageSize(bytes);
-    if (!size || size.format !== expected) throw new ContentFailure(record.preview, "is not an image of the format its extension names");
-    if (size.width < 1 || size.height < 1 || size.width > PREVIEW_MAX_SIDE || size.height > PREVIEW_MAX_SIDE) {
-      throw new ContentFailure(record.preview, `must be at most ${PREVIEW_MAX_SIDE}×${PREVIEW_MAX_SIDE} pixels`);
-    }
-    preview = record.preview;
-  }
-  return {
-    kind: "theme",
-    name: text(record, path, "name", 64),
-    description: text(record, path, "description", 240),
-    shell: record.shell,
-    highContrast: record.highContrast,
-    tokens: record.tokens as ThemeTokens,
-    surfaces: record.surfaces as ThemeSurfaces,
-    ...(preview ? { preview } : {}),
-    ...(record.pair !== undefined ? { pair: record.pair } : {}),
-  };
 }
 
 const MESSAGE_MAX = 4000;
@@ -425,8 +338,6 @@ export function parseContent(kind: DataContentKind, files: readonly ContentFile[
     case "skill":
     case "agent":
       return instruction(kind, map, context);
-    case "theme":
-      return theme(map, context);
     case "language":
       return language(map, context);
     case "font":

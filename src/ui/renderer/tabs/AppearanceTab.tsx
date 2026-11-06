@@ -1,11 +1,10 @@
-/** Offer system-following only for themes with an installed opposite-shell pair; apply chosen bundles immediately. */
+/** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState } from "react";
 import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTheme } from "../theme/index.js";
-import { visibleBundles as listVisibleBundles } from "../theme/index.js";
-import type { ThemeBundle } from "../theme/index.js";
-import type { CSSProperties } from "react";
+import { SCHEMES } from "../theme/index.js";
+import { isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
 import { getApi } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
@@ -18,110 +17,7 @@ import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
 
-type AppearanceMarketplaceFilter = "theme" | "language";
-
-/* ─── Bundle card mini-mock helpers ─────────────────────────────────────── */
-
-/** Derive the two dominant colors for a bundle mini-mock from its tokens. `bg` is the card background; `accent` is the
- * primary color pill. */
-function bundleMockColors(bundle: ThemeBundle): { bg: string; accent: string; text: string } {
-  const t = bundle.tokens;
-  return {
-    bg:     `hsl(${t.background})`,
-    accent: `hsl(${t.primary})`,
-    text:   `hsl(${t.foreground})`,
-  };
-}
-
-/** Mini chat-shell mock for a bundle card. Shows background, a user bubble (accent color) and an assistant bubble (muted
- * tone). */
-function BundleMock({ bundle }: { bundle: ThemeBundle }) {
-  const { bg, accent, text } = bundleMockColors(bundle);
-  const userBubble = `hsl(${bundle.tokens["message-user-bg"]})`;
-  const mutedBubble = `hsl(${bundle.tokens.muted})`;
-
-  // All mock geometry lives in the `.ave-theme-card-mock-*` classes in styles.css. The only thing that varies per bundle is
-  // the color set, so those flow in as `--mock-*` custom properties the classes consume.
-  const previewVars = {
-    "--mock-bg": bg,
-    "--mock-text": text,
-    "--mock-accent": accent,
-    "--mock-bubble-self": userBubble,
-    "--mock-bubble-other": mutedBubble,
-  } as CSSProperties;
-
-  return (
-    <div className="ave-theme-card-mock-inner" style={previewVars}>
-      {/* title bar mock */}
-      <div className="ave-theme-card-mock-bar" />
-      {/* assistant bubble row */}
-      <div className="ave-theme-card-mock-row">
-        <span className="ave-theme-card-mock-dot" />
-        <span className="ave-theme-card-mock-bubble" />
-      </div>
-      {/* user bubble row */}
-      <div className="ave-theme-card-mock-row">
-        <span className="ave-theme-card-mock-bubble is-self" />
-      </div>
-      {/* assistant bubble row */}
-      <div className="ave-theme-card-mock-row">
-        <span className="ave-theme-card-mock-dot" />
-        <span className="ave-theme-card-mock-bubble" />
-      </div>
-    </div>
-  );
-}
-
-/* ─── Single swatch card (ARIA radio with bundle mini-mock) ──────────────── */
-interface BundleCardProps {
-  bundle: ThemeBundle;
-  selected: boolean;
-  marketplaceInstalled?: boolean;
-  onSelect: () => void;
-}
-
-function BundleCard({
-  bundle,
-  selected,
-  marketplaceInstalled = false,
-  onSelect,
-}: BundleCardProps) {
-  const { t } = useTranslation();
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      aria-label={t("appearanceTab.bundleCardAriaLabel", { name: bundle.name })}
-      data-selected={selected ? "true" : "false"}
-      data-bundle-id={bundle.id}
-      className="ave-theme-card"
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === " " || e.key === "Enter") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-    >
-      <div className="ave-theme-card-mock" aria-hidden="true">
-        <BundleMock bundle={bundle} />
-      </div>
-      <div className="ave-theme-card-label">
-        <span className="min-w-0 truncate">{bundle.name}</span>
-        {marketplaceInstalled && (
-          <span
-            className="inline-flex h-5 shrink-0 items-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-secondary-foreground"
-            data-testid={`appearance-tab:theme-marketplace-badge:${bundle.id}`}
-          >
-            {t("appearanceTab.marketplaceInstalledBadge")}
-          </span>
-        )}
-        <span className="ave-theme-card-checkmark" aria-hidden="true">✓</span>
-      </div>
-    </button>
-  );
-}
+type AppearanceMarketplaceFilter = "language";
 
 /* ─── Font family + size presets ─────────────────────────────────────────── */
 
@@ -397,21 +293,10 @@ function LanguageSection({
 
 export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filter: AppearanceMarketplaceFilter) => void } = {}) {
   const { t } = useTranslation();
-  const { bundleId, setBundle, followSystem, canFollowSystem, setFollowSystem } = useTheme();
+  const { mode, setMode, darkScheme, lightScheme, setScheme } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
   const notifySaved = useNotifySaved();
-  // useTheme persists bundle + followSystem through its own ThemeProvider
-  // (api.updateSettings inside ThemeProvider.tsx). The provider is a
-  // generic surface that can be mounted outside settings, so it does not
-  // notify the dialog itself. We wrap the setters at this consumer to
-  // surface the dialog-wide "저장되었습니다" toast on selection.
-  const selectBundle = (id: typeof bundleId) => { setBundle(id); notifySaved(); };
-  const selectFollowSystem = (next: boolean) => { setFollowSystem(next); notifySaved(); };
-
-  // The installed themes are module state; this re-renders when they change.
   const installedContent = useInstalledContent();
-  const visibleBundles = listVisibleBundles();
-  const installedThemeIds = new Set(installedContent.themes.map((theme) => theme.id));
   const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
     ...FONT_FAMILY_PRESETS.map((preset) => ({ value: preset.value, text: t(preset.label), stack: preset.stack })),
     ...installedContent.fonts.map((font) => ({ value: `installed-${font.name}`, text: font.family, stack: font.stack })),
@@ -429,69 +314,43 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
       {/* ── Language ──────────────────────────────────── */}
       <LanguageSection onOpenMarketplace={onOpenMarketplace} />
 
-      {/* ── 테마 선택 ─────────────────────────────────── */}
       <SettingsSection
         data-settings-section="appearance-theme"
-        title={t("appearanceTab.themeSectionTitle")}
-        description={t("appearanceTab.themeSectionDescription")}
-        actions={onOpenMarketplace ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 text-xs"
-            data-testid="appearance-tab:marketplace-themes"
-            onClick={() => onOpenMarketplace("theme")}
-          >
-            <Store className="size-3.5" aria-hidden={true} />
-            {t("appearanceTab.moreThemesInMarketplace")}
-          </Button>
-        ) : null}
+        title={t("appearanceTab.schemeTitle")}
+        description={t("appearanceTab.schemeDescription")}
       >
-        <div
-          role="radiogroup"
-          aria-label={t("appearanceTab.themeRadioGroupLabel")}
-          className="grid grid-cols-2 gap-3 sm:grid-cols-3"
-        >
-          {visibleBundles.map((bundle) => (
-            <BundleCard
-              key={bundle.id}
-              bundle={bundle}
-              selected={bundleId === bundle.id}
-              marketplaceInstalled={installedThemeIds.has(bundle.id)}
-              onSelect={() => selectBundle(bundle.id)}
-            />
+        <div role="radiogroup" aria-label={t("appearanceTab.mode")} className="flex gap-2">
+          {(["system", "dark", "light"] as const).map((value) => (
+            <button key={value} type="button" role="radio" aria-checked={mode === value}
+              data-testid={`appearance-mode-${value}`}
+              className={`rounded-md border px-4 py-2 text-sm ${mode === value ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}
+              onClick={() => { setMode(value); notifySaved(); }}>
+              {t(`appearanceTab.mode.${value}`)}
+            </button>
           ))}
         </div>
-
-        {/* followSystem toggle — only for a theme with a pair */}
-        {canFollowSystem && (
-          <div className="flex items-center justify-between pt-2 border-t border-border">
-            <div>
-              <p className="text-sm font-medium">{t("appearanceTab.followSystemLabel")}</p>
-              <p className="text-[11px] text-muted-foreground">
-                {t("appearanceTab.followSystemDescription")}
-              </p>
+        {(["dark", "light"] as const).filter((shell) => mode === "system" || mode === shell).map((shell) => (
+          <div key={shell} className="space-y-2">
+            <h3 className="text-sm font-medium">{t(`appearanceTab.scheme.${shell}`)}</h3>
+            <div role="radiogroup" aria-label={t(`appearanceTab.scheme.${shell}`)} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {SCHEMES.filter((scheme) => scheme.shell === shell).map((scheme) => {
+                const selected = scheme.id === (shell === "dark" ? darkScheme : lightScheme);
+                return <button key={scheme.id} type="button" role="radio" aria-checked={selected}
+                  data-scheme-id={scheme.id}
+                  className={`flex min-w-0 items-center gap-2 rounded-lg border p-2 text-left ${selected ? "border-primary ring-1 ring-primary" : "border-border"}`}
+                  onClick={() => { setScheme(shell, scheme.id); notifySaved(); }}>
+                  <span aria-hidden="true" className="flex h-12 w-16 shrink-0 flex-col justify-center gap-2 rounded px-2"
+                    style={{ background: scheme.terminal.background, color: scheme.terminal.foreground }}>
+                    <span className="font-mono text-base leading-none">Aa</span>
+                    <span className="flex gap-1">{(["red", "yellow", "green", "cyan", "blue", "magenta"] as const).map((key) =>
+                      <span key={key} className="size-1 rounded-full" style={{ background: scheme.terminal[key] }} />)}</span>
+                  </span>
+                  <span className="min-w-0 text-xs">{scheme.name}</span>
+                </button>;
+              })}
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={followSystem}
-              aria-label={t("appearanceTab.followSystemAriaLabel")}
-              data-testid="follow-system-toggle"
-              onClick={() => selectFollowSystem(!followSystem)}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                followSystem ? "bg-primary" : "bg-muted"
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-primary-foreground transition-transform ${
-                  followSystem ? "translate-x-4" : "translate-x-1"
-                }`}
-              />
-            </button>
           </div>
-        )}
+        ))}
       </SettingsSection>
 
       {/* ── 폰트 ────────────────────────────────────── */}
@@ -578,6 +437,85 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
         </div>
       </SettingsSection>
 
+      <TerminalFontSection />
+
     </div>
   );
+}
+
+function TerminalFontSection() {
+  const { t } = useTranslation();
+  const notifySaved = useNotifySaved();
+  const { appearance } = useTheme();
+  const [font, setFont] = useState(appearance.terminalFont);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFont(appearance.terminalFont); }, [appearance.terminalFont]);
+  const updateFont = (patch: Partial<typeof font>) => {
+    const next = { ...font, ...patch };
+    setFont(next);
+    setFailed(false);
+    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => setFailed(true));
+  };
+  return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
+    {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
+    <div className="grid gap-3 sm:grid-cols-3">
+      <label className="space-y-1 text-xs">{t("appearanceTab.terminalFamily")}
+        <input className="w-full rounded border border-input bg-background p-2" value={font.family} maxLength={256}
+          onChange={(event) => setFont({ ...font, family: event.target.value })}
+          onBlur={() => { if (font.family.trim()) updateFont({ family: font.family.trim() }); }} />
+      </label>
+      <label className="space-y-1 text-xs">{t("appearanceTab.terminalSize")}
+        <TerminalNumberInput value={font.size} validate={isTerminalFontSize} inputMode="numeric"
+          onPreview={(size) => setFont({ ...font, size })} onCommit={(size) => updateFont({ size })}
+          onInvalid={() => setFont({ ...font, size: appearance.terminalFont.size })} />
+      </label>
+      <label className="space-y-1 text-xs">{t("appearanceTab.terminalLineHeight")}
+        <TerminalNumberInput value={font.lineHeight} validate={isTerminalLineHeight} inputMode="decimal"
+          onPreview={(lineHeight) => setFont({ ...font, lineHeight })} onCommit={(lineHeight) => updateFont({ lineHeight })}
+          onInvalid={() => setFont({ ...font, lineHeight: appearance.terminalFont.lineHeight })} />
+      </label>
+    </div>
+    <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded border border-border p-4"
+      style={{ fontFamily: font.family, fontSize: font.size, lineHeight: font.lineHeight }}>
+      {"$ printf 'Hello, Ave\\n'\nHello, Ave\n0123456789  Aa Bb 가나"}
+    </pre>
+  </SettingsSection>;
+}
+
+
+/** Preserve incomplete numeric drafts while previewing only valid values. */
+function TerminalNumberInput({ value, validate, inputMode, onPreview, onCommit, onInvalid }: {
+  value: number;
+  validate: (value: unknown) => boolean;
+  inputMode: "numeric" | "decimal";
+  onPreview: (value: number) => void;
+  onCommit: (value: number) => void;
+  onInvalid: () => void;
+}) {
+  const [raw, setRaw] = useState(String(value));
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!focusedRef.current) setRaw(String(value));
+  }, [value]);
+  const validNumber = (draft: string): number | null => {
+    if (!/^\d+(?:\.\d+)?$/.test(draft.trim())) return null;
+    const parsed = Number(draft);
+    return validate(parsed) ? parsed : null;
+  };
+  return <input className="w-full rounded border border-input bg-background p-2" type="text" inputMode={inputMode} value={raw}
+    onFocus={() => { focusedRef.current = true; }}
+    onChange={(event) => {
+      const draft = event.target.value;
+      setRaw(draft);
+      const parsed = validNumber(draft);
+      if (parsed !== null) onPreview(parsed);
+    }}
+    onBlur={() => {
+      focusedRef.current = false;
+      const parsed = validNumber(raw);
+      setRaw(String(parsed ?? value));
+      if (parsed !== null) onCommit(parsed);
+      else onInvalid();
+    }}
+    onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />;
 }

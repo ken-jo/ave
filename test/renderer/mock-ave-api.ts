@@ -1,3 +1,4 @@
+import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import type { MemorySummariesResult } from "../../src/shared/memory-detail.js";
@@ -146,13 +147,13 @@ type ApiOverrides = {
 /** The settings a mock app boots with. Exported so a test that needs to vary ONE field can start from a
  * complete, bootable object instead of a partial one; App reads `llm.provider` during mount and throws on a bare stub. */
 export const MOCK_DEFAULT_SETTINGS = {
+  appearance: DEFAULT_APPEARANCE,
   llm: fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
   chat: { systemPrompt: "", autoCompact: true },
   workBoard: { toolApprovalSurface: "chat" },
   webSearch: { provider: "none" },
   marketplace: {
     installedProviderIds: [],
-    installedThemeBundleIds: [],
     installedLanguagePacks: [],
   },
   routine: {},

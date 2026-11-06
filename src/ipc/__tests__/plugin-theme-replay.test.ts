@@ -31,15 +31,6 @@ import { onEvent } from "../../boot/types.js";
 import { HOST_ONLY_EMIT_NAMESPACES } from "../../plugins/capabilities.js";
 import type { IpcDeps } from "../types.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
-
-beforeEach(() => {
-  setInstalledThemeIds(["tokyo-night", "midnight", "forest", "violet-light", "violet-dark"]);
-});
-
-afterEach(() => {
-  setInstalledThemeIds([]);
-});
 
 type IpcHandler = (...args: unknown[]) => unknown;
 const pluginFixtureRoots: string[] = [];
@@ -184,13 +175,13 @@ describe("plugin theme replay cache", () => {
 
   it("records a valid payload", () => {
     const result = recordValidatedTheme({
-      bundleId: "midnight",
+      bundleId: "nord",
       shell: "dark",
       tokens: { "--ave-bg": "#000" },
     });
     expect(result.ok).toBe(true);
     expect(getLastThemePayload()).toEqual({
-      bundleId: "midnight",
+      bundleId: "nord",
       shell: "dark",
       tokens: { "--ave-bg": "#000" },
     });
@@ -200,13 +191,13 @@ describe("plugin theme replay cache", () => {
 
   it("returns cloned cache snapshots so callers cannot poison the replay cache", () => {
     recordValidatedTheme({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
     const cached = getLastThemePayload();
     expect(cached).toEqual({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
@@ -220,7 +211,7 @@ describe("plugin theme replay cache", () => {
     }
 
     expect(getLastThemePayload()).toEqual({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
@@ -228,7 +219,7 @@ describe("plugin theme replay cache", () => {
 
   it("invalid payload leaves the existing cache untouched", () => {
     recordValidatedTheme({
-      bundleId: "violet-light",
+      bundleId: "github-light",
       shell: "light",
       tokens: { "--ave-bg": "#fff" },
     });
@@ -242,18 +233,18 @@ describe("plugin theme replay cache", () => {
 
   it("overwrites earlier payload on each new valid call", () => {
     recordValidatedTheme({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
     recordValidatedTheme({
-      bundleId: "forest",
+      bundleId: "one-light",
       shell: "light",
       tokens: { "--ave-bg": "#eee" },
     });
 
     expect(getLastThemePayload()).toEqual({
-      bundleId: "forest",
+      bundleId: "one-light",
       shell: "light",
       tokens: { "--ave-bg": "#eee" },
     });
@@ -261,13 +252,13 @@ describe("plugin theme replay cache", () => {
 
   it("preserves filtered tokens in the cached payload", () => {
     recordValidatedTheme({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111", "--evil-key": "red" },
     });
 
     expect(getLastThemePayload()).toEqual({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
@@ -275,13 +266,13 @@ describe("plugin theme replay cache", () => {
 
   it("records bundleId and shell correctly", () => {
     recordValidatedTheme({
-      bundleId: "forest",
+      bundleId: "one-light",
       shell: "light",
       tokens: { "--ave-bg": "#eee" },
     });
 
     const cached = getLastThemePayload();
-    expect(cached?.bundleId).toBe("forest");
+    expect(cached?.bundleId).toBe("one-light");
     expect(cached?.shell).toBe("light");
   });
 
@@ -344,7 +335,7 @@ describe("replayThemeToWebview", () => {
   it("does not send when wc.fromId returns undefined (already-destroyed wcId)", () => {
     fromIdSpy.mockReturnValue(undefined);
     recordValidatedTheme({
-      bundleId: "violet-light",
+      bundleId: "github-light",
       shell: "light",
       tokens: { "--ave-bg": "#fff" },
     });
@@ -358,7 +349,7 @@ describe("replayThemeToWebview", () => {
   it("does not send when wc.isDestroyed() is true", () => {
     fromIdSpy.mockReturnValue({ send: sendSpy, isDestroyed: () => true });
     recordValidatedTheme({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
@@ -377,7 +368,7 @@ describe("replayThemeToWebview", () => {
       isDestroyed: () => false,
     });
     recordValidatedTheme({
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark",
       tokens: { "--ave-bg": "#111" },
     });
@@ -457,9 +448,9 @@ describe("plugin theme IPC handlers", () => {
 
   it("keeps the plugin getTheme query to plugin frames: the floating dock is refused and is sent its theme by main instead", () => {
     registerHandlersWithPlugin(1701);
-    recordValidatedTheme({ bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } });
+    recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } });
     const getTheme = getRegisteredHandler("ave:plugin:get-theme");
-    expect(getTheme(pluginEvent(1701))).toEqual({ ok: true, theme: { bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } } });
+    expect(getTheme(pluginEvent(1701))).toEqual({ ok: true, theme: { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } } });
     expect(getTheme({ sender: { id: 77 }, senderFrame: { url: "file:///tmp/ave/floating-dock-window.html" } })).toBe(UNAUTHORIZED_FRAME);
   });
 
@@ -506,7 +497,7 @@ describe("plugin theme IPC handlers", () => {
       getType: () => "webview",
     });
     const cached = {
-      bundleId: "violet-dark",
+      bundleId: "github-dark",
       shell: "dark" as const,
       tokens: { "--ave-bg": "#111" },
     };

@@ -2,34 +2,27 @@
  * holding the typed draft. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
-import { useState } from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { AppearanceTab } from "../AppearanceTab.js";
 
-vi.mock("../../api-client.js", () => ({
-  getApi: () => ({
+const { api, theme } = vi.hoisted(() => ({
+  api: {
     getSettings: vi.fn().mockResolvedValue({
-      appearance: { schemaVersion: 2, bundleId: "tokyo-night", font: { family: "system", sizeScale: 1 } },
-      webView: { preferredFlow: "in-app" },
+      appearance: { schemaVersion: 3, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", font: { family: "system", sizeScale: 1 }, terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 } },
     }),
     updateSettings: vi.fn().mockResolvedValue({}),
     onSettingsUpdated: vi.fn(() => () => {}),
-  }),
+  },
+  theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(), setScheme: vi.fn() },
+}));
+vi.mock("../../api-client.js", () => ({ getApi: () => api }));
+vi.mock("../../theme/index.js", async () => ({
+  ...await vi.importActual<typeof import("../../theme/index.js")>("../../theme/index.js"),
+  useTheme: () => theme,
 }));
 
-vi.mock("../../theme/index.js", async () => {
-  const actual = await vi.importActual<typeof import("../../theme/index.js")>("../../theme/index.js");
-  return {
-    ...actual,
-    useTheme: () => {
-      const [bundleId] = useState("tokyo-night");
-      return { bundleId, setBundle: vi.fn(), followSystem: false, setFollowSystem: vi.fn(), canFollowSystem: false };
-    },
-    BUNDLES: actual.BUNDLES ?? [],
-  };
-});
-
-describe("FontFamilyCustomInput — Escape semantics (PR #672 3차 critic M1)", () => {
+describe("Custom font input Escape semantics", () => {
   it("Escape after typing does NOT commit the typed text", async () => {
     const { container, findByLabelText } = render(<AppearanceTab />);
 
@@ -52,4 +45,55 @@ describe("FontFamilyCustomInput — Escape semantics (PR #672 3차 critic M1)", 
     expect(updateCalls, "Escape must NOT commit the typed text via cascading onBlur").toHaveLength(0);
     expect(container).toBeTruthy();
   });
+});
+
+
+describe("appearance choices", () => {
+  it("offers both scheme slots in system mode and applies selections", () => {
+    const { container } = render(<AppearanceTab />);
+    expect(container.querySelectorAll("[data-scheme-id]")).toHaveLength(12);
+    fireEvent.click(screen.getByTestId("appearance-mode-light"));
+    expect(theme.setMode).toHaveBeenCalledWith("light");
+    fireEvent.click(container.querySelector('[data-scheme-id="github-dark"]')!);
+    expect(theme.setScheme).toHaveBeenCalledWith("dark", "github-dark");
+  });
+
+  it("updates the terminal preview and persists its size", async () => {
+    render(<AppearanceTab />);
+    await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace" }));
+    fireEvent.change(screen.getByLabelText("크기 (px)"), { target: { value: "18" } });
+    expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "18px" });
+    fireEvent.blur(screen.getByLabelText("크기 (px)"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.2 } } });
+  });
+});
+
+
+it("keeps intermediate keyboard drafts and commits valid terminal metrics", async () => {
+  const user = userEvent.setup();
+  render(<AppearanceTab />);
+  await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace" }));
+  api.updateSettings.mockClear();
+  const size = screen.getByLabelText("크기 (px)");
+  await user.clear(size);
+  await user.type(size, "1");
+  expect(size).toHaveValue("1");
+  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "12px" });
+  await user.type(size, "8");
+  expect(size).toHaveValue("18");
+  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "18px" });
+  expect(api.updateSettings).not.toHaveBeenCalled();
+  await user.tab();
+  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.2 } } });
+  const lineHeight = screen.getByLabelText("줄 높이");
+  api.updateSettings.mockClear();
+  await user.clear(lineHeight);
+  await user.type(lineHeight, "1.");
+  expect(lineHeight).toHaveValue("1.");
+  await user.type(lineHeight, "5");
+  expect(lineHeight).toHaveValue("1.5");
+  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ lineHeight: "1.5" });
+  expect(api.updateSettings).not.toHaveBeenCalled();
+  await user.keyboard("{Enter}");
+  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.5 } } });
 });

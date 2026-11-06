@@ -519,7 +519,7 @@ export type AveApi = {
   /** Git marketplace: sources, catalog, install plans and execution (design §13). */
   gitMarketplace: GitMarketplaceApi;
   pluginStudio: PluginStudioApi;
-  /** Installed content packages: themes, languages and fonts, and installed language catalogs. */
+  /** Installed content packages: languages and fonts, and installed language catalogs. */
   installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
   /**

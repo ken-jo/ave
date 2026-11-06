@@ -84,7 +84,7 @@ describe("preload — plugin webview asset URLs", () => {
       "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
     ]);
     expect([...exposed.keys()].sort()).toEqual([
-      "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
+      "__aveDevMode", "__aveInitialAppearance", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
     ]);
     expect(windowApi.openHtmlPreview).toBeTypeOf("function");
   });

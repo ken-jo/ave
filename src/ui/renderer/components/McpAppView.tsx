@@ -15,7 +15,8 @@ import {
   mcpAppCardSeedHeight,
   type McpAppCardSize,
 } from "../../../shared/mcp-app-card-size.js";
-import { useOptionalTheme, findBundle, bundleToPluginTokens, DEFAULT_BUNDLE_ID } from "../theme/index.js";
+import { useOptionalTheme, requireScheme, resolveTheme, schemeToHostTokens } from "../theme/index.js";
+import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 // The host-side wiring lives in its own React-free module so the real-<webview> e2e gate can import and exercise THE
 // SHIPPING WIRING rather than a look-alike copy.
 import { createMcpAppBridge } from "./mcp-app-bridge.js";
@@ -83,11 +84,7 @@ export function McpAppView({
   // Translate standard theme context without exposing host tokens; isolated mounts without a theme provider use the light
   // default.
   const themeCtx = useOptionalTheme();
-  // The theme `:root` holds and its revision: shell and tokens both come from
-  // it, and only once it is written. `resolved` and `effectiveBundleId` change
-  // before the write, so a context built from them would pair the old shell
-  // with the new tokens (or the new with :root's old values) for a render.
-  const appliedBundle = themeCtx?.appliedBundle ?? findBundle(DEFAULT_BUNDLE_ID);
+  const appliedTheme = themeCtx?.appliedTheme ?? resolveTheme(requireScheme(DEFAULT_APPEARANCE.lightScheme));
   const appliedRevision = themeCtx?.appliedRevision ?? 0;
 
   // Latch the card's origin session; stale-card messages must not enter a newly selected conversation. Missing origin never
@@ -188,12 +185,8 @@ export function McpAppView({
   // Host IANA time zone — stable for the app's lifetime; read once.
   const timeZone = useMemo(() => hostTimeZone(), []);
 
-  // Build the STANDARD `McpUiHostContext` from the current host theme + locale +
-  // time zone. `findBundle` may return undefined mid lazy-load — fall back to the
-  // always-resident default bundle, and if even that is missing (never in practice)
-  // emit no style variables rather than throw.
   const buildHostContext = useCallback(() => {
-    const tokens: Record<string, string> = appliedBundle ? { ...bundleToPluginTokens(appliedBundle) } : {};
+    const tokens = schemeToHostTokens(appliedTheme);
 
     // Read the live custom-font override from root styles; absent an override, guests keep their own default font.
     if (typeof document !== "undefined") {
@@ -206,13 +199,13 @@ export function McpAppView({
     // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a presentation it is not in (a mode
     // change moves the card to the other mount instead).
     return buildMcpAppHostContext({
-      shell: appliedBundle?.shell ?? "light",
+      shell: appliedTheme.shell,
       tokens,
       locale,
       timeZone,
       displayMode: mountDisplayMode,
     });
-  }, [appliedBundle, locale, timeZone, mountDisplayMode]);
+  }, [appliedTheme, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle (`attachWebview`, keyed only on [payload, bundle])
   // can seed the initial context at mount without re-subscribing on every theme/locale change.
