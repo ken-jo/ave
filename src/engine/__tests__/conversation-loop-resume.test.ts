@@ -428,6 +428,18 @@ describe("ConversationLoop.resetAndResume", () => {
     expect(result.text).toContain("비키보드 출처의 slash command는 실행하지 않습니다.",
     );
   });
+
+  it("sends a non-keyboard slash turn to the model instead of compacting", async () => {
+    const loop = new ConversationLoop(resumeDeps());
+    const manualCompact = vi.spyOn(loop, "manualCompact");
+    const handleCommand = vi.spyOn(loop, "handleCommand");
+    (loop as unknown as { provider: unknown }).provider = { vendor: "openai", streamTurn: async function* () {} };
+
+    await loop.runTurn("/compact", undefined, undefined, { inputOrigin: "plugin-emitted" });
+
+    expect(handleCommand).not.toHaveBeenCalled();
+    expect(manualCompact).not.toHaveBeenCalled();
+  });
 });
 
 describe("/compact <focus>", () => {

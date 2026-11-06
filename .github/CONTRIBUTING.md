@@ -111,7 +111,7 @@ plugin-specific code to the host is not accepted.
 
 Key sections:
 - §4.2 — Boot sequence (8 steps)
-- §4.5 — Conversation query loop (11-step message lifecycle)
+- §4.5 — Conversation query loop (10-step message lifecycle)
 - §5 — Memory system (`~/.ave/` file-based)
 - §6 — Core engines (keyword, route, tool registry, permissions)
 - §9 — Plugin system (manifest, UI slots, MCP protocol)

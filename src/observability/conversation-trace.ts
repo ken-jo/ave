@@ -9,17 +9,17 @@ import { aveHome } from "../shared/ave-home.js";
 
 export type TraceStepName =
   | "REQUEST_ENTRY"         // 1. renderer → main IPC
-  | "ROUTE_RESOLVE"         // 3. Resolve the input route
-  | "TURN_ORCHESTRATE"      // 4. Enter runTurn()
-  | "HISTORY_APPEND"        // 5. Append user message
-  | "PROMPT_ASSEMBLE"       // 6. Assemble system prompt
-  | "LLM_STREAM"            // 7. Start provider.streamTurn
-  | "LLM_STREAM_ERROR"      // 7b. Structure provider.streamTurn error
-  | "TOOL_SCHEMA_REJECTED"  // 7c. provider 400(invalid_function_parameters) -> drop tool and retry round
-  | "REASONING_ACCUMULATE"  // 8. Finish accumulating reasoning_delta for the round
-  | "TOOL_EXECUTE"          // 9. ToolExecutor.executeAll
-  | "ROUND_COMMIT"          // 10. Commit assistant_round
-  | "POST_TURN"             // 11. PostTurnHookChain.run
+  | "ROUTE_RESOLVE"         // 2. Resolve the input route
+  | "TURN_ORCHESTRATE"      // 3. Enter runTurn()
+  | "HISTORY_APPEND"        // 4. Append user message
+  | "PROMPT_ASSEMBLE"       // 5. Assemble system prompt
+  | "LLM_STREAM"            // 6. Start provider.streamTurn
+  | "LLM_STREAM_ERROR"      // 6b. Structure provider.streamTurn error
+  | "TOOL_SCHEMA_REJECTED"  // 6c. provider 400(invalid_function_parameters) -> drop tool and retry round
+  | "REASONING_ACCUMULATE"  // 7. Finish accumulating reasoning_delta for the round
+  | "TOOL_EXECUTE"          // 8. ToolExecutor.executeAll
+  | "ROUND_COMMIT"          // 9. Commit assistant_round
+  | "POST_TURN"             // 10. PostTurnHookChain.run
   | "GUIDANCE_INJECTED"     // out-of-band — mid-stream "guide" utterance consumed at round boundary
   | "LENGTH_CONTINUATION"   // out-of-band — finish_reason=length truncation -> continue partial answer verbatim (vLLM continue_final_message)
   | "REASONING_ONLY_CONTINUATION" // out-of-band — end_turn round with reasoning but no answer and no tool call -> re-prompt for the action the reasoning named
