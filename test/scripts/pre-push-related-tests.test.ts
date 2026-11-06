@@ -64,7 +64,7 @@ describe("pre-push related test coverage", () => {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
       join, tmpdir, mkdtempSync, rmSync, splitArgumentsWithinBudget,
       runAppTypecheckGate: () => { calls.push("typecheck"); }, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
-      MESSAGE_CATALOG_CHECK_SCRIPTS: ["check:i18n-catalog", "check:i18n-barrels"],
+      MESSAGE_CATALOG_CHECK_SCRIPTS: ["check:i18n-catalog"],
       runPackageScripts: (_dir: string, scripts: string[]) => { calls.push(scripts.join(" ")); },
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 3 }),
       withHostLock: (options: object, callback: () => unknown) => { lockOptions.push(options); return callback(); },
@@ -74,10 +74,10 @@ describe("pre-push related test coverage", () => {
     });
     runFastChecks("/fixture", [], ["src/i18n/__tests__/i18n.test.ts"], {
       tests: ["src/ui/__tests__/panel.test.tsx"], narrowed: [], sources: ["src/ui/panel.tsx"],
-    }, { files: ["src/i18n/messages/generated/panel.ts"], namespaces: ["panel"], consumerModules: ["src/ui/panel.tsx"] });
+    }, { files: ["src/i18n/messages/en.ts"], namespaces: ["panel"], consumerModules: ["src/ui/panel.tsx"] });
     expect(calls).toEqual([
       "typecheck",
-      "check:i18n-catalog check:i18n-barrels",
+      "check:i18n-catalog",
       "run check:test-duplicates",
       "run test:vitest run ./src/i18n/__tests__/i18n.test.ts",
       "run test:vitest related ./src/ui/panel.tsx",

@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { searchSettings } from "../settings-search.js";
 import { SETTINGS_SECTIONS } from "../../../shared/settings-tabs.js";
-import { en as seedEn } from "../../../i18n/messages/en.js";
-import { ko as seedKo } from "../../../i18n/messages/ko.js";
-import { generatedEn } from "../../../i18n/messages/generated/index.js";
-import { koMessages as generatedKo } from "../../../i18n/messages/generated-locales/ko.js";
+import { en as englishMessages } from "../../../i18n/messages/en.js";
+import { ko as koreanMessages } from "../../../i18n/messages/ko.js";
 
-const en: Record<string, string> = { ...seedEn, ...generatedEn };
-const ko: Record<string, string> = { ...seedKo, ...generatedKo };
+const en: Record<string, string> = englishMessages;
+const ko: Record<string, string> = koreanMessages;
 const translate = (messages: Record<string, string>) => (key: string) => messages[key] ?? key;
 
 describe("settings search", () => {

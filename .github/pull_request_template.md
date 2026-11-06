@@ -23,7 +23,7 @@
 ## UI / Localization Impact
 
 - [ ] No user-facing UI text changed.
-- [ ] New or changed UI text is reflected in the i18n catalog and generated locales.
+- [ ] New or changed UI text is added to both src/i18n/messages/en.ts and ko.ts.
 - [ ] Desktop layout was checked for the affected viewport(s).
 - [ ] Screenshots, trace links, or E2E evidence are included below when UI changed.
 

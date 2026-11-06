@@ -139,7 +139,7 @@ Serif face after a cold boot.
 | 4.4 | Git runtime card and the blocking step inside the Add dialog, including `Not found`, `too old`, `smoke-testing` and `failed` (§15.7) |
 | 4.5 | Direct install: Git URL, MCP form (existing), `server.json` paste, client-config import (design §8) |
 | 4.6 | Deep links `ave://install/<kind>/<name>@<source>`, `ave://uninstall/<kind>/<name>@<source>` and `ave://marketplace/add?url=…`, all opening the confirming UI, never acting directly |
-| 4.7 | i18n for all new copy through the generator; key-existence gate |
+| 4.7 | i18n for all new copy in both locale catalogs; key-existence gate |
 
 **Exit:** CDP-driven checks on a packaged dev build for each screen state in
 the mockup, including layout measurements at the narrow width tier.

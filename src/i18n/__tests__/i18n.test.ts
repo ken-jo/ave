@@ -250,20 +250,9 @@ describe("translate", () => {
     }
   });
 
-  it("lets generated surface text override the seed on a key collision", async () => {
-    const restore = __setLocaleLoaderForTest("ko", async () => {
-      const [{ ko }, { koMessages }] = await Promise.all([
-        import("../messages/ko.js"),
-        import("../messages/generated-locales/ko.js"),
-      ]);
-      return { ...ko, ...koMessages, "common.cancel": "generated wins" };
-    });
-    try {
-      await loadLocaleMessages("ko");
-      expect(translate("ko", "common.cancel")).toBe("generated wins");
-    } finally {
-      restore();
-    }
+  it("loads the complete Korean catalog from its locale module", async () => {
+    const { ko } = await import("../messages/ko.js");
+    expect(await loadLocaleMessages("ko")).toEqual(ko);
   });
 });
 

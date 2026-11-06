@@ -20,7 +20,8 @@ import {
   getTourScenario,
 } from "../../onboarding/default-tour-scenarios.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
-import { en as tourEn, ko as tourKo } from "../../../../i18n/messages/generated/defaultTourScenarios.js";
+import { en as tourEn } from "../../../../i18n/messages/en.js";
+import { ko as tourKo } from "../../../../i18n/messages/ko.js";
 import { retiredPluginIdsIn } from "../../../../../scripts/lib/retired-plugin-ids.mjs";
 
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "" };
@@ -373,8 +374,10 @@ describe("host tour registry holds host tours only", () => {
 
   it("the tour catalog has no strings the scenarios do not use", () => {
     const scenarioSource = readFileSync(join(rendererRoot, "onboarding", "default-tour-scenarios.ts"), "utf8");
-    const unused = Object.keys(tourEn).filter((key) => !scenarioSource.includes(`"${key}"`));
+    const tourKeys = Object.keys(tourEn).filter((key) => key.startsWith("defaultTourScenarios."));
+    expect(tourKeys.length).toBeGreaterThan(0);
+    const unused = tourKeys.filter((key) => !scenarioSource.includes(`"${key}"`));
     expect(unused).toEqual([]);
-    expect(Object.keys(tourKo).sort()).toEqual(Object.keys(tourEn).sort());
+    expect(Object.keys(tourKo).filter((key) => key.startsWith("defaultTourScenarios.")).sort()).toEqual(tourKeys.sort());
   });
 });

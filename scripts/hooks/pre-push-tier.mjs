@@ -38,8 +38,8 @@
 // it reported as having no local test; the push continues either way.
 //
 // A message catalog change selectMessageCatalogChecks cannot attribute
-// (structural edits, barrels, a dynamic consumer, a namespace no file names)
-// runs the i18n suites, the catalog and barrel checks, and every file that
+// (structural edits, a dynamic consumer, a namespace no file names) runs the
+// i18n suites, the catalog checks, and every file that
 // names a touched namespace as a string prefix (selectUnattributedCatalogChecks).
 
 import { classifyDocumentationChanges, isCanonicalGitPath } from "./pre-push-markdown-policy.mjs";
@@ -267,8 +267,6 @@ export function selectUntestedModuleTests(module, namedTests, mustRunDocument, t
 }
 
 const messageCatalogDirectory = "src/i18n/messages/";
-const messageCatalogBarrel = /^src\/i18n\/messages\/(?:generated\/index|generated-locales\/[^/]+)\.ts$/;
-const messageCatalogFragment = /^src\/i18n\/messages\/generated\/([A-Za-z0-9_]+)\.ts$/;
 const scannedModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const deniedTestTreeSegments = new Set(["e2e", "screenshots"]);
 
@@ -293,10 +291,9 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
  * The checks for message catalog changes selectMessageCatalogChecks cannot
  * attribute. Same inputs as selectMessageCatalogChecks. A file's touched
  * namespaces are those of the keys whose values differ between its two
- * versions; a fragment whose versions do not parse, or that differ only in
- * structure, touches its own namespace (generated/<namespace>.ts). A barrel,
- * or a seed catalog that does not parse, touches no namespace this reader can
- * name and runs the i18n suites and the catalog checks only.
+ * versions; when one version does not parse, every namespace of the other.
+ * A catalog with neither version readable runs the i18n suites and the
+ * catalog checks only.
  *
  * The consumers are every Vitest file and module under src/ or test/ that
  * names a touched namespace as a string prefix (`"ns.`, `'ns.`, or a template
@@ -311,17 +308,16 @@ export function selectUnattributedCatalogChecks(entries, { readBlob, trackedFile
   const unattributedFiles = [];
   for (const entry of entries) {
     const path = entry?.path;
-    if (!isMessageCatalogPath(path) || messageCatalogBarrel.test(path)) {
+    if (!isMessageCatalogPath(path)) {
       unattributedFiles.push(path);
       continue;
     }
     const after = entry.status === "D" ? new Map() : readMessageCatalogEntries(readBlob(entry.localSha, path), path);
     const before = entry.status === "A" ? null : readMessageCatalogEntries(readBlob(entry.baseSha, path), path) ?? undefined;
-    const keys = changedCatalogKeys(before, after);
-    const fragment = messageCatalogFragment.exec(path)?.[1];
-    const touched = [...(keys ?? [])].map(namespaceOf).filter((namespace) => namespace !== null);
+    // One side unreadable: every namespace the readable side holds is touched.
+    const keys = changedCatalogKeys(before, after) ?? (after ?? before)?.keys() ?? [];
+    const touched = [...keys].map(namespaceOf).filter((namespace) => namespace !== null);
     if (touched.length > 0) for (const namespace of touched) namespaces.add(namespace);
-    else if (fragment) namespaces.add(fragment);
     else unattributedFiles.push(path);
   }
 

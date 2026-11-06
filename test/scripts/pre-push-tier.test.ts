@@ -273,9 +273,8 @@ describe("pre-push global-input tier", () => {
 });
 
 describe("pre-push unattributed message catalog changes", () => {
-  const fragment = (title: string) =>
-    `export const en = {\n  "panel.title": ${JSON.stringify(title)},\n} as const;\n` +
-    'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n};\n';
+  const catalog = (title: string) =>
+    `export const en = {\n  "panel.title": ${JSON.stringify(title)},\n} as const;\n`;
   const tree = new Map([
     ["src/i18n/__tests__/i18n.test.ts", "export {};"],
     ["src/ui/panel.tsx", 'export const title = t("panel.title");'],
@@ -288,18 +287,27 @@ describe("pre-push unattributed message catalog changes", () => {
     { readBlob: (sha) => (sha === "base" ? before : after), trackedFiles: [...tree.keys()], readTrackedFile: (file) => tree.get(file) ?? null },
   );
 
-  it("runs the i18n suites and the namespace consumers of a structural fragment edit", () => {
-    expect(select("src/i18n/messages/generated/panel.ts", fragment("Panel"), `// note\n${fragment("Panel")}`)).toEqual({
-      namespaces: ["panel"],
-      unattributedFiles: [],
-      testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel.test.tsx"],
-      consumerModules: ["src/ui/panel.tsx"],
+  it("runs the i18n suites for a structural locale catalog edit", () => {
+    expect(select("src/i18n/messages/en.ts", catalog("Panel"), `// note\n${catalog("Panel")}`)).toEqual({
+      namespaces: [],
+      unattributedFiles: ["src/i18n/messages/en.ts"],
+      testFiles: ["src/i18n/__tests__/i18n.test.ts"],
+      consumerModules: [],
       skippedConsumers: [],
     });
   });
 
-  it("runs the i18n suites for a barrel it cannot attribute to a namespace", () => {
-    expect(select("src/i18n/messages/generated/index.ts", 'export { en } from "./panel.js";', '// note\nexport { en } from "./panel.js";'))
-      .toMatchObject({ namespaces: [], unattributedFiles: ["src/i18n/messages/generated/index.ts"], testFiles: ["src/i18n/__tests__/i18n.test.ts"] });
+  it("touches every namespace of the readable side when the other does not parse", () => {
+    expect(select("src/i18n/messages/en.ts", catalog("Panel"), "export const en = { ...base };\n")).toMatchObject({
+      namespaces: ["panel"],
+      unattributedFiles: [],
+      testFiles: expect.arrayContaining(["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel.test.tsx"]),
+      consumerModules: ["src/ui/panel.tsx"],
+    });
+  });
+
+  it("runs the i18n suites for a module it cannot attribute to a namespace", () => {
+    expect(select("src/i18n/messages/ko.ts", 'export { en } from "./panel.js";', '// note\nexport { en } from "./panel.js";'))
+      .toMatchObject({ namespaces: [], unattributedFiles: ["src/i18n/messages/ko.ts"], testFiles: ["src/i18n/__tests__/i18n.test.ts"] });
   });
 });

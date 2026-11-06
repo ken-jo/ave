@@ -165,9 +165,6 @@ describe("pre-push classification precedence", () => {
   it.each([
     "src/i18n/messages/en.ts",
     "src/i18n/messages/ko.ts",
-    "src/i18n/messages/generated/panel.ts",
-    "src/i18n/messages/generated/index.ts",
-    "src/i18n/messages/generated-locales/ko.ts",
   ])("keeps catalog attribution ahead of the comment-only tier: %s", (path) => {
     const result = classify([modified(path)], {
       commentOnly: true,
@@ -393,7 +390,7 @@ describe("pre-push classification precedence", () => {
   });
 
   it("takes a message-only push on the fast tier with its consumers instead of the full suite", () => {
-    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts")], {
+    const result = classify([modified("src/i18n/messages/en.ts")], {
       update: { localRef: "refs/heads/feat/copy", remoteRef: "refs/heads/feat/copy", remoteSha: "0".repeat(40) },
       messageCatalog: {
         namespaces: ["shellExecution"],
@@ -406,7 +403,7 @@ describe("pre-push classification precedence", () => {
       relatedFiles: [],
       testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/shared/__tests__/shell-execution-environment.test.ts"],
       messageCatalog: {
-        files: ["src/i18n/messages/generated/shellExecution.ts"],
+        files: ["src/i18n/messages/en.ts"],
         namespaces: ["shellExecution"],
         consumerModules: ["src/shared/shell-execution-environment.ts"],
       },
@@ -415,19 +412,19 @@ describe("pre-push classification precedence", () => {
   });
 
   it("keeps a message change with a test change off the test-only tier, so the catalog checks still run", () => {
-    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts"), modified("test/example.test.ts")], {
+    const result = classify([modified("src/i18n/messages/en.ts"), modified("test/example.test.ts")], {
       messageCatalog: { namespaces: ["shellExecution"], testFiles: ["src/i18n/__tests__/i18n.test.ts"], consumerModules: [] },
     });
     expect(result.testOnly).not.toBe(true);
     expect(result).toMatchObject({
       fastSource: true,
       testFiles: ["src/i18n/__tests__/i18n.test.ts", "test/example.test.ts"],
-      messageCatalog: { files: ["src/i18n/messages/generated/shellExecution.ts"] },
+      messageCatalog: { files: ["src/i18n/messages/en.ts"] },
     });
   });
 
   it("does not hand a changed consumer to discovery twice", () => {
-    const result = classify([modified("src/shared/shell-execution-environment.ts"), modified("src/i18n/messages/generated/shellExecution.ts")], {
+    const result = classify([modified("src/shared/shell-execution-environment.ts"), modified("src/i18n/messages/en.ts")], {
       messageCatalog: { namespaces: ["shellExecution"], testFiles: [], consumerModules: ["src/shared/shell-execution-environment.ts", "src/ui/panel.tsx"] },
     });
     expect(result.relatedFiles).toEqual(["src/shared/shell-execution-environment.ts"]);
@@ -435,7 +432,7 @@ describe("pre-push classification precedence", () => {
   });
 
   it("keeps the catalog checks, not the full suite, when the message selection cannot be made", () => {
-    const result = classify([modified("src/i18n/messages/generated/shellExecution.ts")], {
+    const result = classify([modified("src/i18n/messages/en.ts")], {
       messageCatalog: { reason: "no source file names message namespace shellExecution; a computed key may reach it, full checks required" },
       unattributedCatalog: { namespaces: ["shellExecution"], testFiles: ["src/i18n/__tests__/i18n.test.ts"], consumerModules: [] },
     });
@@ -463,11 +460,10 @@ describe("pre-push classification precedence", () => {
       git(["init", "-q"]);
       git(["config", "user.name", "Fixture"]);
       git(["config", "user.email", "fixture@example.invalid"]);
-      const fragment = "src/i18n/messages/generated/panel.ts";
+      const catalogPath = "src/i18n/messages/en.ts";
       const catalog = (english: string) =>
-        `export const en = {\n  "panel.title": ${JSON.stringify(english)},\n  "other.label": "Other",\n} as const;\n` +
-        'export const ko: Record<keyof typeof en, string> = {\n  "panel.title": "패널",\n  "other.label": "기타",\n};\n';
-      write(fragment, catalog("Panel"));
+        `export const en = {\n  "panel.title": ${JSON.stringify(english)},\n  "other.label": "Other",\n} as const;\n`;
+      write(catalogPath, catalog("Panel"));
       write("src/i18n/runtime.ts", 'export function t(key: string, vars?: unknown) { return key; }\n');
       write("src/ui/panel.tsx", 'import { t } from "../i18n/runtime.js"; export const title = () => t("panel.title");\n');
       write("src/ui/other.tsx", 'import { t } from "../i18n/runtime.js"; export const label = () => t("other.label");\n');
@@ -477,7 +473,7 @@ describe("pre-push classification precedence", () => {
       git(["add", "."]);
       git(["commit", "-qm", "initial fixture"]);
       const base = git(["rev-parse", "HEAD"]);
-      write(fragment, catalog("Panel heading"));
+      write(catalogPath, catalog("Panel heading"));
       git(["commit", "-qam", "reword the panel title"]);
       const local = git(["rev-parse", "HEAD"]);
       const start = source.indexOf("function decodeUtf8Strict(");
@@ -486,7 +482,7 @@ describe("pre-push classification precedence", () => {
         commands: { git: "git" }, TextDecoder, Buffer, join, readFileSync, selectMessageCatalogChecks,
         spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
       });
-      expect(select(repo, [{ ...modified(fragment), baseSha: base, localSha: local }])).toEqual({
+      expect(select(repo, [{ ...modified(catalogPath), baseSha: base, localSha: local }])).toEqual({
         namespaces: ["panel"],
         testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
         consumerModules: ["src/ui/panel.tsx"],
@@ -495,8 +491,8 @@ describe("pre-push classification precedence", () => {
       write("src/ui/dynamic.ts", 'export const title = (ns: string) => t(`${ns}.title`);\n');
       git(["add", "src/ui/dynamic.ts"]);
       git(["commit", "-qm", "add computed consumer"]);
-      const messageCatalog = select(repo, [{ ...modified(fragment), baseSha: base, localSha: git(["rev-parse", "HEAD"]) }]);
-      const result = classify([modified(fragment)], { messageCatalog });
+      const messageCatalog = select(repo, [{ ...modified(catalogPath), baseSha: base, localSha: git(["rev-parse", "HEAD"]) }]);
+      const result = classify([modified(catalogPath)], { messageCatalog });
       expect(result).toMatchObject({
         fastSource: true,
         tier: "fast",

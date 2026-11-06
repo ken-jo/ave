@@ -54,7 +54,7 @@
 5. Token-first implementation.
    - New colors, shadows, focus rings, and motion values must enter through shared tokens when they represent reusable UI language.
 6. Localization is a product requirement.
-   - New user-facing strings must include generated catalog coverage and generated locale entries for supported languages.
+   - New user-facing strings must be added to both src/i18n/messages/en.ts and ko.ts.
 
 ## Visual language
 - Color:
