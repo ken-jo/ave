@@ -25,11 +25,12 @@ const log = createLogger("floating-dock");
  *
  * Main's locale can be a language that exists only as an installed marketplace language pack. The dock renderer registers no
  * installed languages and has no pack catalog loader, so it can render only the built-in catalogs, and it rejects anything else
- * as a contract violation. For a pack-only language the cards fall back to English for every key the pack does not carry, so
- * English is the built-in language they render.
+ * as a contract violation. For such a pack-only language the dock therefore deliberately shows English, while the main window
+ * registers the pack and shows its strings (English only for keys the pack lacks). That mismatch is accepted until the
+ * marketplace language-pack retirement (lane 4, I2) removes installed packs.
  *
- * Deprecation owner: the marketplace language-pack retirement (lane 4, I2). It deletes the installed-locale path; once main's
- * locale can only be a built-in one, this mapping goes away and the dock is sent `getLocale()` directly.
+ * Deprecation owner: lane 4, I2. Once it deletes the installed-locale path, main's locale can only be a built-in one; this
+ * mapping is removed then and the dock is sent `getLocale()` directly.
  */
 function dockLocale(locale: Locale): Locale {
   return isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
