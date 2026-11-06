@@ -504,7 +504,9 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             input: toPluginToolInput(payload),
           }],
           {
-            sessionId: invocationSessionId,
+            // App surfaces use the main window’s unattributed approval lane.
+            // Operation identity remains bound to appSessionId above.
+            sessionId: effectiveOrigin === "plugin" ? invocationSessionId : undefined,
             ...(pluginAuthLifecycle ? { pluginAuthLifecycle } : {}),
             permissionContext: pluginSurfacePermissionScope.createPermissionContext(context, {
               // Effective origin selects approval handling: foreground may prompt; headless directory access fails closed.
@@ -512,8 +514,6 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               // Bare plugin origin remains a fail-closed headless default for nested producers.
               headless: effectiveOrigin === "plugin",
               trustOrigin: "plugin-emitted",
-              // User-gesture credit belongs only to trusted panels, never app-origin chains.
-              pluginPanelUserAction: effectiveOrigin === "ui" && context.userAction === true,
               ...(pluginOperation ? { pluginOperation } : {}),
               ...(context.expectedMcpServerId
                 ? { expectedMcpServerId: context.expectedMcpServerId }

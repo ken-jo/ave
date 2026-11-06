@@ -64,6 +64,36 @@ a panel does not need a synthetic tool call merely to load its HTML.
 
 The `csp` stays in the *manifest* on purpose. If it came back from your `readUiResource` hook, a plugin could present a narrow policy at review and widen it at runtime.
 
+### Declare a read-only tool
+
+A tool that only reads can declare the standard annotation in its top-level tool object:
+
+```json
+{
+  "name": "report_status",
+  "inputSchema": { "type": "object", "properties": {} },
+  "annotations": { "readOnlyHint": true },
+  "_meta": { "ui": { "visibility": ["app"] } }
+}
+```
+
+Only `readOnlyHint` is authorable; other annotations are rejected. Omission or
+`false` keeps ordinary approval. Use it for passive status snapshots or a read-only
+wait. Omit it if any operation mutates state, sends a message or starts a process.
+Remote reads still use governed network capabilities and can require their own
+network card; a declaration never exempts that effect.
+An `ai.agent-connector.ave/operationPolicy` with a write operation or a
+`minimumRisk` above `read` keeps the tool on the approval path.
+
+A read declaration skips only the ordinary tool card. Explicit ask/deny rules,
+protected or secret paths, containment, secret leases, governed network access
+and each actual host effect still pass their existing checks. It cannot authorize
+writes, shell execution or network access. Text inserted into the conversation by an app retains its untrusted
+provenance. A qualifying panel read also runs without a card. Other panel approval
+cards appear in the focused main window,
+including calls from the floating dock; without a main-window surface, calls that
+need approval fail closed. An iframe click never proves a trusted user gesture.
+
 ## 2. Serve the HTML
 
 ```ts

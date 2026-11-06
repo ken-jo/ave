@@ -168,3 +168,24 @@ describe("resolveEnforcedCategory — producer → inspectHostRisk → enforced 
     expect(records[0]).toMatchObject({ hostDerivedCategory: "network", diverged: true });
   });
 });
+
+
+describe("declared plugin reads preserve host risk and containment", () => {
+  it.each([true, false])("honors read declarations without relaxing commands or network; enforcement=%s", (hostClassifiesRisk) => {
+    const { logger } = shadowSink();
+    const tool = mcpToolToPluginTool("sample-panel", {
+      name: "panel_status", inputSchema: { type: "object", properties: {} },
+      annotations: { readOnlyHint: true }, _meta: { ui: { visibility: ["app"] } },
+    }, async () => ({ text: "ok" }));
+    const classify = (finalInput: Record<string, unknown>, operationFloor?: "write" | "shell" | "network") => resolveEnforcedCategory({
+      tool, declaredCategory: tool.category, finalInput, correlationId: randomUUID(), hostClassifiesRisk,
+      sandboxFsContained: false, auditLogger: logger, operationFloor,
+    });
+    expect(classify({})).toBe("read");
+    expect(classify({ path: "/outside/report.txt" })).toBe("read");
+    expect(classify({ command: "git status" })).toBe("write");
+    expect(classify({ command: "touch report.txt" })).toBe("shell");
+    expect(classify({ url: "https://example.com" })).toBe("network");
+    for (const risk of ["write", "shell", "network"] as const) expect(classify({}, risk)).toBe(risk);
+  });
+});

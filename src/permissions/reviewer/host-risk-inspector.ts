@@ -1,4 +1,4 @@
-// Derive risk solely from host-owned evidence; unknown or path-bearing calls stay write-equivalent and only positive read-only proof can downgrade them. Do not trust plugin hints, perform I/O/global mutation or duplicate containment; isPathAllowed owns containment and the caller owns final permission (docs/architecture/architecture.md).
+// Derive command/network risk from host evidence. A validated read declaration supplies only the ordinary fallback; containment and actual effects retain their own gates. Keep this pass free of I/O/global mutation (docs/architecture/architecture.md).
 import type { ToolCategory } from "../../tools/types.js";
 import type { PreparedShellAnalysis } from "../../shared/shell-analysis.js";
 import { stripCommandPath, tokenizeShell, type ShellLeaf } from "../../shared/shell-tokenizer.js";
@@ -208,9 +208,11 @@ export interface HostRiskSignals {
   source: ToolSource;
   // The actual, post-hook tool-call arguments.
   finalInput: Record<string, unknown>;
+  /** Validated plugin read declaration; command and network evidence still take precedence. */
+  readOnlyHint?: boolean;
 }
 
-// Classify command-bearing args first: every leaf must prove read-only or the call stays shell. Then detect network endpoints; otherwise default to write. Paths never prove reads, and containment belongs to isPathAllowed.
+// Commands and network endpoints precede the validated ordinary-read declaration; absence of either proof or declaration defaults to write. Containment belongs to isPathAllowed.
 export function inspectHostRisk(signals: HostRiskSignals): ToolCategory {
   // External MCP tools are foreign peers — the host assigns them `"network"` when adapting them (mcp-tool-adapter). Argument heuristics must never classify such a tool DOWN below network on the strength of its args, so a foreign-peer call is host-owned default-strict `"network"` regardless of what its arguments look like.
   if (signals.source === "mcp") return "network";
@@ -224,8 +226,8 @@ export function inspectHostRisk(signals: HostRiskSignals): ToolCategory {
   // (2) Network — a URL-shaped argument on a non-shell tool.
   if (hasNetworkTarget(signals.finalInput)) return "network";
 
-  // (3) No host-owned signal proved read-only → default-strict write-equivalent. Filesystem arguments land here on purpose: contained and escaping paths are both write-equivalent, so inspecting them cannot change this answer.
-  return "write";
+  // (3) Only the validated declaration may lower the fallback. A path itself never proves a read.
+  return signals.readOnlyHint === true ? "read" : "write";
 }
 
 // Every leaf must have a known read-only verb/form and no mutating flags; use the shared tokenizer. Parse failures, substitutions and all redirects fail closed, including input redirects whose paths argv checks cannot contain. Scan supported sed file/exec forms; exclude awk rather than pretend to parse its language.

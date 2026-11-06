@@ -3,7 +3,7 @@
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
-import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
+import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers, unattributedRequestLabel } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
@@ -1209,4 +1209,21 @@ describe("ApprovalDock", () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+
+describe("unattributed panel approval labels", () => {
+  it("names the plugin panel, including requests with a synthetic session", () => {
+    for (const sessionId of [undefined, "plugin-mcp-app-sample-panel"]) {
+      const label = unattributedRequestLabel({ sourcePluginId: "sample-panel", sessionId }, t);
+      expect(label).toBe("익스텐션 패널 요청 · sample-panel");
+      const { getAllByText, unmount } = render(<ApprovalLaneCard conversationLabel={label} queue={[makeRequest()]} onDecide={vi.fn()} />);
+      expect(getAllByText(label).length).toBeGreaterThan(0);
+      unmount();
+    }
+  });
+  it("retains host and unopened conversation attribution", () => {
+    expect(unattributedRequestLabel({}, t)).toBe(t("approvalAttribution.hostRequest"));
+    expect(unattributedRequestLabel({ sessionId: "closed-chat" }, t)).toBe(t("approvalAttribution.headlessSession"));
+  });
 });

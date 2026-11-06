@@ -1,5 +1,4 @@
-/** Register all plugin tools with natural identity and the strict host risk baseline.
- * Wire sandbox, worker and risk claims never authorize review relaxation. */
+/** Register plugin identity and validated read declarations; restriction metadata can only raise risk. */
 import { createDynamicTool, type Tool } from "../tools/base.js";
 import {
   FAIL_CLOSED_SURFACE,
@@ -21,6 +20,7 @@ export interface DiscoveredMcpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
   _meta?: Record<string, unknown>;
 }
 
@@ -70,7 +70,11 @@ export function mcpToolToPluginTool(
     );
   }
   // Ignore wire category; effective risk is derived by the host for each invocation.
-  const category = "write";
+  const readOnly = tool.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true
+    && Object.values(operationPolicy?.operations ?? {}).every(
+      (rule) => rule.kind === "read" && rule.minimumRisk === "read",
+    );
+  const category = readOnly ? "read" : "write";
 
   return createDynamicTool({
     name: tool.name,
@@ -84,7 +88,8 @@ export function mcpToolToPluginTool(
     // Register app-only tools but hide them from the model; callFromApp alone enforces app visibility.
     modelVisible: readToolSurfaces(tool.name, meta).includes("model"),
     jsonSchema: tool.inputSchema,
-    isReadOnly: () => false,
+    mcpReadOnlyHint: readOnly,
+    isReadOnly: () => readOnly,
     execute: async (rawInput, ctx) => {
       let parsed: unknown = rawInput ?? {};
       if (typeof parsed === "string") {

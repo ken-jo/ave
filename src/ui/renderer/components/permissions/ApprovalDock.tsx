@@ -414,14 +414,15 @@ export function ApprovalLaneCard({
   );
 }
 
-/** What the lane card calls the origin of a request that names no conversation: the plugin that issued it when the request says so, the
- * host otherwise. A request that names a session no surface holds and no row lists keeps the existing "not open in any tile" wording. */
+/** Prefer plugin-panel attribution; otherwise distinguish host requests from unopened conversations. */
 export function unattributedRequestLabel(
   request: Pick<ApprovalRequest, "sessionId" | "sourcePluginId">,
   t: (key: string, params?: Record<string, string | number>) => string,
 ): string {
-  if (request.sessionId !== undefined) return t("approvalAttribution.headlessSession");
-  return request.sourcePluginId !== undefined
-    ? t("approvalAttribution.pluginRequest", { plugin: request.sourcePluginId })
+  if (request.sourcePluginId !== undefined) {
+    return t("approvalAttribution.pluginRequest", { plugin: request.sourcePluginId });
+  }
+  return request.sessionId !== undefined
+    ? t("approvalAttribution.headlessSession")
     : t("approvalAttribution.hostRequest");
 }

@@ -184,3 +184,32 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     expect(tool.pathFields).toEqual(["new"]);
   });
 });
+
+
+describe("plugin read declaration", () => {
+  it("round-trips the sole authorable annotation into host read classification", () => {
+    const manifest = structuredClone(MANIFEST);
+    manifest.tools[0].annotations = { readOnlyHint: true };
+    const wire = manifestToolsToMcpTools(manifest)[0];
+    expect(wire.annotations).toEqual({ readOnlyHint: true });
+    const tool = mcpToolToPluginTool(PLUGIN_ID, wire, async () => ({ text: "read" }));
+    expect(tool.category).toBe("read");
+    expect(tool.mcpReadOnlyHint).toBe(true);
+    expect(tool.isReadOnly({})).toBe(true);
+    expect(tool.pathFields).toEqual(["path"]);
+  });
+  it.each([undefined, false, "true", 1])("does not accept a missing or non-true declaration: %s", (readOnlyHint) => {
+    const tool = mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint } as { readOnlyHint?: boolean },
+    }, async () => ({ text: "read" }));
+    expect(tool.category).toBe("write");
+    expect(tool.isReadOnly({})).toBe(false);
+  });
+  it("defensively rejects a conflicting destructive wire hint", () => {
+    const tool = mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint: true, destructiveHint: true },
+    }, async () => ({ text: "read" }));
+    expect(tool.category).toBe("write");
+    expect(tool.mcpReadOnlyHint).toBe(false);
+  });
+});

@@ -1,5 +1,5 @@
 /** Project every normalized tool with explicit visibility and whitelisted metadata.
- * Host-derived annotations and risk never come from plugin self-claims. */
+ * Read declarations classify tools; restriction metadata and actual effects remain governed. */
 import type {
   PluginManifest,
   PluginToolOperationPolicy,
@@ -17,7 +17,7 @@ export const PLUGIN_RESULT_CACHE = {
   cacheScope: "private",
 } as const satisfies { ttlMs: number; cacheScope: "public" | "private" };
 
-/** Projection excludes plugin annotations and carries only explicit visibility and signed restriction keys. */
+/** Projection carries the sole authorable read annotation and explicit restriction metadata. */
 export interface McpToolProjection {
   name: string;
   title?: string;
@@ -29,6 +29,7 @@ export interface McpToolProjection {
     required?: string[];
     additionalProperties?: boolean;
   };
+  annotations?: McpTool["annotations"];
   outputSchema?: McpTool["outputSchema"];
   icons?: McpTool["icons"];
   _meta: {
@@ -65,6 +66,8 @@ function toWireTool(tool: McpTool): McpToolProjection {
   }
   return {
     name: tool.name,
+    ...(tool.annotations?.readOnlyHint !== undefined
+      ? { annotations: { readOnlyHint: tool.annotations.readOnlyHint } } : {}),
     ...(tool.title !== undefined ? { title: tool.title } : {}),
     description: tool.description ?? tool.name,
     inputSchema: { ...tool.inputSchema, $schema: JSON_SCHEMA_2020_12 },

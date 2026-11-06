@@ -1216,3 +1216,19 @@ describe("colocated operation policy cross-field contract", () => {
     );
   });
 });
+
+
+describe("authorable tool annotations", () => {
+  it.each([
+    [{ readOnlyHint: true }, true], [{ readOnlyHint: false }, true], [{}, true],
+    [{ readOnlyHint: "true" }, false], [{ readOnlyHint: true, destructiveHint: true }, false],
+    [{ destructiveHint: false }, false], [{ idempotentHint: true }, false],
+    [{ openWorldHint: false }, false], [{ title: "status" }, false],
+  ])("validates annotations %j as %s", async (annotations, accepted) => {
+    const validator = await buildManifestValidator();
+    expect(validator(agentPluginsDocument({
+      id: "sample-panel", name: "Sample panel", version: "1.0.0", entry: "index.js", description: "Read annotation schema fixture",
+      tools: [{ name: "panel_status", inputSchema: { type: "object", properties: {} }, annotations }],
+    }))).toBe(accepted);
+  });
+});

@@ -386,7 +386,7 @@ export async function authorizeToolInvocation(
             secretRead: context.secretRead,
             shellReadOnlyProven: context.shellReadOnlyProven,
             shellEscalated: context.shellEscalated,
-            mcpReadOnlyHint: tool.mcpReadOnlyHint,
+            mcpReadOnlyHint: tool.mcpReadOnlyHint === true && (source !== "plugin" || invocationCategory === "read"),
             ...(shellRuleSubject ? { ruleSubject: shellRuleSubject } : {}),
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
             ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
@@ -965,6 +965,7 @@ export async function authorizeToolInvocation(
           // Preserve the originating principal separately from display text.
           ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
           source: source as ToolSource,
+          ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
           sensitivePathPattern,
