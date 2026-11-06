@@ -72,7 +72,7 @@
     if (typeof window.avePlugin.getTheme === "function") {
       const theme = await window.avePlugin.getTheme();
       if (theme && typeof theme === "object") {
-        // The payload is `SafeThemePayload` (src/shared/plugin-theme-cache.ts):
+        // The payload is `SafeThemePayload` (src/shared/host-theme-replay.ts):
         // bundleId, shell, optional colorScheme and reducedMotion, and tokens.
         // Mirror the attributes the host renderer sets on its own root
         // (`applyBundleToDocument`) so plugin CSS keyed on them paints right

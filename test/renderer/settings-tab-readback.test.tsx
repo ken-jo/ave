@@ -1,3 +1,5 @@
+import { ThemeProvider } from "../../src/ui/renderer/theme/ThemeProvider.js";
+import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 // Panel tab changes must report to the embedding consumer without an unstable feedback loop.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -25,7 +27,7 @@ async function renderWithConsumer(embedder: Embedder) {
   function Consumer() {
     const [settingsTab, setSettingsTab] = useState("llm");
     return (
-      <TooltipProvider>
+      <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider>
         <div data-testid="consumer-tab">{settingsTab}</div>
         {embedder === "content" ? (
           <SettingsContent
@@ -44,7 +46,7 @@ async function renderWithConsumer(embedder: Embedder) {
             onTabChange={setSettingsTab}
           />
         )}
-      </TooltipProvider>
+      </TooltipProvider></ThemeProvider>
     );
   }
 
@@ -107,4 +109,17 @@ describe.each<Embedder>(["content", "inline"])("settings tab read-back (%s)", (e
     await waitFor(() => expect(consumerTab(container)).toBe("marketplace"));
     expect(activeSettingsTab(container)).toBe("marketplace");
   });
+});
+
+
+it("exposes search results as list buttons and announces their count", async () => {
+  const { container, getByRole } = await renderWithConsumer("content");
+  fireEvent.change(getByRole("searchbox"), { target: { value: "터미널" } });
+  const results = getByRole("list", { name: "설정 검색" }).querySelectorAll("li > button");
+  expect(results.length).toBeGreaterThan(0);
+  expect(container.querySelector('[role="listitem"]')).toBeNull();
+  const announcement = container.querySelector('[role="status"][aria-live="polite"][aria-atomic="true"]');
+  expect(announcement?.textContent).toBe(`설정 ${results.length}개 검색됨`);
+  fireEvent.change(getByRole("searchbox"), { target: { value: "unmatchable search phrase" } });
+  expect(announcement?.textContent).toBe("설정 0개 검색됨");
 });

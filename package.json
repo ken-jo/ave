@@ -326,6 +326,10 @@
     ],
     "extraResources": [
       {
+        "from": "resources/licenses/appearance",
+        "to": "licenses/appearance"
+      },
+      {
         "from": "resources/licenses/document-preview",
         "to": "licenses/document-preview"
       },

@@ -1,10 +1,10 @@
 /** One host shell per tab. Unmount detaches the view; tab close owns the PTY. */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
-import { useOptionalTheme } from "../theme/ThemeProvider.js";
+import { useTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
@@ -29,20 +29,6 @@ const INTEGRATION_UNAVAILABLE_KEYS = {
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
 function diagnostic(text: string): string {
   return `\r\n\x1b[33m${text}\x1b[0m\r\n`;
-}
-
-/** Resolve concrete terminal colors from root tokens; canvas cannot resolve CSS variables and inherited lookups on deep
- * hosts are expensive. */
-function terminalTheme(host: HTMLElement): ITheme {
-  const style = getComputedStyle(host.ownerDocument.documentElement);
-  const readToken = (name: string, fallbackTriple: string): string => {
-    const raw = style.getPropertyValue(name).trim();
-    return `hsl(${raw || fallbackTriple})`;
-  };
-  return {
-    background: readToken("--background", "222.2 84% 4.9%"),
-    foreground: readToken("--foreground", "210 40% 98%"),
-  };
 }
 
 interface PtyTerminalViewProps {
@@ -131,9 +117,16 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const hasBoxRef = useRef(false);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
+  const fitTerminalRef = useRef<(() => void) | null>(null);
   const [anchors, setAnchors] = useState<XtermBlockAnchors | null>(null);
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
-  const appliedRevision = useOptionalTheme()?.appliedRevision ?? 0;
+  const themeContext = useTheme();
+  const appliedRevision = themeContext.appliedRevision;
+  const appearance = themeContext.appearance;
+  const terminalPalette = themeContext.appliedTheme.terminal;
+  const terminalFont = appearance.terminalFont;
+  const terminalStyleRef = useRef({ terminalPalette, terminalFont });
+  terminalStyleRef.current = { terminalPalette, terminalFont };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -148,10 +141,10 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     setSession(null);
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 12,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      theme: terminalTheme(host),
+      fontSize: terminalStyleRef.current.terminalFont.size,
+      fontFamily: terminalStyleRef.current.terminalFont.family,
+      lineHeight: terminalStyleRef.current.terminalFont.lineHeight,
+      theme: terminalStyleRef.current.terminalPalette,
       scrollback: 5000,
       allowProposedApi: true,
     });
@@ -171,6 +164,10 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       return { cols: term.cols, rows: term.rows };
     };
 
+    fitTerminalRef.current = () => {
+      const dims = safeFit();
+      if (liveRef) void terminalApi.resize(liveRef, dims.cols, dims.rows);
+    };
     const { cols, rows } = safeFit();
 
     const bumpBlocks = (): void => {
@@ -293,6 +290,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       disposed = true;
       setTerminalAttended(tabId, false);
       resizeObserver.disconnect();
+      fitTerminalRef.current = null;
       if (enterTimer !== null) clearTimeout(enterTimer);
       markerSub.dispose();
       inputSub.dispose();
@@ -348,8 +346,12 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const term = termRef.current;
     const host = hostRef.current;
     if (!term || !host) return;
-    term.options.theme = terminalTheme(host);
-  }, [appliedRevision]);
+    term.options.theme = terminalPalette;
+    term.options.fontFamily = terminalFont.family;
+    term.options.fontSize = terminalFont.size;
+    term.options.lineHeight = terminalFont.lineHeight;
+    fitTerminalRef.current?.();
+  }, [appliedRevision, terminalPalette, terminalFont]);
 
   // Only a directory the shell reported is the current one; the launch directory is not evidence of it.
   const reportedCwd = session?.currentCwd ?? null;

@@ -83,16 +83,16 @@ export type AveTokenMap = { readonly [K in AveTokenName]: string };
 /** @deprecated Use AveTokenMap instead. */
 export type AveThemeTokens = AveTokenMap;
 
-import { BUNDLE_IDS, isThemeId } from "./theme-bundles.js";
+import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "./appearance-settings.js";
 
-/** A compiled bundle ID or an installed theme package name. */
+/** A curated scheme identifier. */
 export type AveThemeBundleId = string;
 
-/** Freeze a copy so consumers cannot mutate the canonical bundle list; installed packages add IDs outside this list. */
-export const AVE_THEME_BUNDLE_IDS: readonly AveThemeBundleId[] = Object.freeze([...BUNDLE_IDS]);
+/** Freeze a copy so consumers cannot mutate the curated scheme list. */
+export const AVE_THEME_BUNDLE_IDS: readonly AveThemeBundleId[] = Object.freeze([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
 
 export function isAveThemeBundleId(id: unknown): id is AveThemeBundleId {
-  return isThemeId(id);
+  return typeof id === "string" && AVE_THEME_BUNDLE_IDS.includes(id);
 }
 
 /** Broadcast on host.theme.changed; bundleId and shell carry theme identity and mode. */

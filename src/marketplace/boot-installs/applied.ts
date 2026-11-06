@@ -1,4 +1,5 @@
 /** Recorded defaults never reinstall; unreadable records stop boot installs rather than resurrect removals. */
+import { createMarketplaceLogger } from "../log.js";
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
@@ -20,10 +21,12 @@ interface AppliedFile {
   applied: AppliedDefault[];
 }
 
+const log = createMarketplaceLogger("marketplace-applied-defaults");
+
 const RESULTS = new Set<AppliedResult>(["installed", "skipped", "migrated"]);
 const ENTRY_KEYS = new Set(["kind", "name", "source", "result", "reason", "at"]);
 
-function parse(text: string, path: string): AppliedDefault[] {
+function parse(text: string, path: string): { entries: AppliedDefault[]; retiredCount: number } {
   const fail = (why: string): never => {
     throw new Error(`${path}: ${why}`);
   };
@@ -33,19 +36,22 @@ function parse(text: string, path: string): AppliedDefault[] {
   if (value!.version !== 1) fail("version must be 1");
   if (!Array.isArray(value!.applied)) fail("applied must be a list");
   const seen = new Set<string>();
-  return value!.applied!.map((entry, index) => {
+  let retiredCount = 0;
+  const entries = value!.applied!.filter((entry, index) => {
     const at = `applied[${index}]`;
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) fail(`${at} is not an object`);
     if (Object.keys(entry).some((key) => !ENTRY_KEYS.has(key))) fail(`${at} has an unknown field`);
-    if (!PACKAGE_KINDS.includes(entry.kind as PackageKind)) fail(`${at}.kind is not a package kind`);
+    if ((entry.kind as string) !== "theme" && !PACKAGE_KINDS.includes(entry.kind as PackageKind)) fail(`${at}.kind is not a package kind`);
     if (typeof entry.name !== "string" || typeof entry.source !== "string") fail(`${at} needs a name and a source`);
     if (!RESULTS.has(entry.result)) fail(`${at}.result is invalid`);
     if (typeof entry.at !== "string" || (entry.reason !== undefined && typeof entry.reason !== "string")) fail(`${at} is malformed`);
     const id = packageKeyId(entry);
     if (seen.has(id)) fail(`${id} is recorded twice`);
     seen.add(id);
-    return entry;
+    if ((entry.kind as string) === "theme") { retiredCount += 1; return false; }
+    return true;
   });
+  return { entries, retiredCount };
 }
 
 export class AppliedDefaults {
@@ -61,7 +67,11 @@ export class AppliedDefaults {
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
     }
-    const entries = text === null ? [] : parse(text, path);
+    const { entries, retiredCount } = text === null ? { entries: [], retiredCount: 0 } : parse(text, path);
+    if (retiredCount > 0) {
+      await writeFileAtomicAtPath(path, `${JSON.stringify({ version: 1, applied: entries }, null, 2)}\n`);
+      log.info({ entriesRemoved: retiredCount }, "Retired default install records migrated");
+    }
     return new AppliedDefaults(path, new Map(entries.map((entry) => [packageKeyId(entry), entry])));
   }
 

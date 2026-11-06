@@ -538,6 +538,7 @@ export const CHANNELS = {
     toast: "ave:notification:toast",
   },
   settings: {
+    initialAppearance: "ave:settings:initial-appearance",
     get: "ave:settings:get",
     update: "ave:settings:update",
     setApiKey: "ave:settings:set-api-key",

@@ -108,9 +108,10 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
   if (settings.audit) out.audit = settings.audit;
   if (settings.appearance) {
     out.appearance = {
-      bundleId: settings.appearance.bundleId,
+      mode: settings.appearance.mode,
+      darkScheme: settings.appearance.darkScheme,
+      lightScheme: settings.appearance.lightScheme,
       language: settings.appearance.language,
-      followSystem: settings.appearance.followSystem,
     };
   }
   if (settings.webView) out.webView = settings.webView;

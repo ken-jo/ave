@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Script, createContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import type { SafeThemePayload } from "../shared/plugin-theme-cache.js";
+import type { SafeThemePayload } from "../shared/host-theme-replay.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shellSource = readFileSync(resolve(here, "..", "plugin-ui-shell.js"), "utf8");
@@ -53,12 +53,12 @@ async function runShell(theme: unknown): Promise<FakeRoot> {
 describe("plugin UI shell theme pre-paint", () => {
   it("applies bundle, shell, color scheme and tokens from the host payload", async () => {
     const payload: SafeThemePayload = {
-      bundleId: "moonstone",
+      bundleId: "github-light",
       shell: "light",
       tokens: { "--ave-background": "hsl(220 20% 98%)", "not-a-token": "x" },
     };
     const root = await runShell(payload);
-    expect(root.attributes.get("data-theme-bundle")).toBe("moonstone");
+    expect(root.attributes.get("data-theme-bundle")).toBe("github-light");
     expect(root.attributes.get("data-shell")).toBe("light");
     expect(root.colorScheme).toBe("light");
     expect(root.properties.get("--ave-background")).toBe("hsl(220 20% 98%)");
@@ -66,7 +66,7 @@ describe("plugin UI shell theme pre-paint", () => {
   });
 
   it("prefers an explicit colorScheme over the shell", async () => {
-    const root = await runShell({ bundleId: "moonstone", shell: "light", colorScheme: "dark", tokens: {} });
+    const root = await runShell({ bundleId: "github-light", shell: "light", colorScheme: "dark", tokens: {} });
     expect(root.colorScheme).toBe("dark");
   });
 

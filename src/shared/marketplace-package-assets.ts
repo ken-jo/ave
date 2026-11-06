@@ -12,7 +12,6 @@ import {
   isMarketplaceEligibleLLMVendor,
   isLLMVendor,
 } from "./llm-vendor-defaults.js";
-import { isBundleId, isThemeId } from "./theme-bundles.js";
 import { isLoopbackHttpUrl } from "./loopback-url.js";
 import { normalizeAllowedHosts } from "../main/host-allow-list.js";
 
@@ -113,18 +112,6 @@ export interface MarketplaceProviderPackageTrustMetadata {
   dataPolicy?: "local-only" | "provider-policy" | "router-policy";
 }
 
-export type MarketplaceThemeShellMode = "light" | "dark" | "system";
-
-export interface MarketplaceThemePackageAsset {
-  type: "theme";
-  bundleId: string;
-  displayName?: string;
-  description?: string;
-  shellMode?: MarketplaceThemeShellMode;
-  compatibilityVersion?: string;
-  tokens?: Record<string, string>;
-}
-
 export interface MarketplaceLanguagePackPackageAsset {
   type: "language-pack";
   locale: OfficialPackageLocale;
@@ -164,7 +151,6 @@ interface MarketplaceMessagingConnectionPackageAsset {
 
 export type MarketplacePackageAsset =
   | MarketplaceProviderPackageAsset
-  | MarketplaceThemePackageAsset
   | MarketplaceLanguagePackPackageAsset
   | MarketplaceMessagingConnectionPackageAsset;
 
@@ -184,7 +170,6 @@ const MAX_PROVIDER_MODEL_LENGTH = 256;
 const MAX_PROVIDER_MODEL_OPTIONS = 100;
 const MAX_PACKAGE_METADATA_LENGTH = 256;
 const MAX_PACKAGE_METADATA_VALUE_LENGTH = 4_000;
-const MAX_THEME_TOKENS = 500;
 const MAX_MESSAGING_CONNECTION_ID_LENGTH = 64;
 const MAX_MESSAGING_CONNECTION_SUMMARY_LENGTH = 400;
 const MAX_MESSAGING_CONNECTION_CREDENTIALS = 8;
@@ -539,7 +524,6 @@ export function marketplacePackageSpecForAsset(
   asset: MarketplacePackageAsset,
 ): string {
   if (asset.type === "provider") return `provider:${asset.providerId}`;
-  if (asset.type === "theme") return `theme:${asset.bundleId}`;
   if (asset.type === "messaging-connection") {
     return `messaging-connection:${asset.connectionId}`;
   }
@@ -563,42 +547,6 @@ function providerAsset(
   if (!metadata) return undefined;
   const fields = providerPackageFieldsFromRecord(id, metadata);
   return fields ? { type: "provider", providerId: id, ...fields } : undefined;
-}
-
-function themeAsset(
-  bundleId: unknown,
-  metadata?: Record<string, unknown>,
-): MarketplaceThemePackageAsset | undefined {
-  if (!isThemeId(bundleId) || isBundleId(bundleId)) return undefined;
-  if (!metadata) return { type: "theme", bundleId };
-  const displayName = cleanString(
-    metadata.displayName ?? metadata.display_name ?? metadata.name,
-    MAX_PROVIDER_LABEL_LENGTH,
-  );
-  const description = cleanString(metadata.description, MAX_PACKAGE_METADATA_LENGTH);
-  const shellMode = cleanEnum(metadata.shellMode ?? metadata.shell_mode, [
-    "light",
-    "dark",
-    "system",
-  ] as const);
-  const compatibilityVersion = cleanString(
-    metadata.compatibilityVersion ?? metadata.compatibility_version,
-    MAX_PACKAGE_METADATA_LENGTH,
-  );
-  const tokens = cleanStringRecord(
-    metadata.tokens ?? metadata.tokenMap ?? metadata.token_map,
-    MAX_THEME_TOKENS,
-    MAX_PACKAGE_METADATA_LENGTH,
-  );
-  return {
-    type: "theme",
-    bundleId,
-    ...(displayName ? { displayName } : {}),
-    ...(description ? { description } : {}),
-    ...(shellMode ? { shellMode } : {}),
-    ...(compatibilityVersion ? { compatibilityVersion } : {}),
-    ...(tokens ? { tokens } : {}),
-  };
 }
 
 function languagePackAsset(
@@ -783,7 +731,6 @@ export function assetFromMarketplacePackageSpec(
 
   if (!type || prefix !== type) return undefined;
   if (type === "provider") return providerAsset(value, metadata);
-  if (type === "theme") return themeAsset(value, metadata);
   if (type === "messaging-connection") {
     return messagingConnectionAsset(value, metadata);
   }
@@ -843,20 +790,6 @@ export function parseMarketplacePackageAsset(
       ? providerAssetFromMarketplacePackageSpec(type, packageSpec, record)
       : undefined);
   }
-  if (type === "theme") {
-    return themeAsset(
-      stringField(record, [
-        "bundleId",
-        "bundle_id",
-        "themeBundleId",
-        "theme_bundle_id",
-        "id",
-      ]),
-      record,
-    ) ?? (packageSpec
-      ? assetFromMarketplacePackageSpec(type, packageSpec, record)
-      : undefined);
-  }
   if (type === "messaging-connection") {
     return messagingConnectionAsset(
       stringField(record, ["connectionId", "connection_id", "id"]),
@@ -904,17 +837,6 @@ export function assetFromMarketplaceCatalogFields(
           "vendor_id",
           "llmVendorId",
           "llm_vendor_id",
-        ]),
-        fields,
-      );
-      if (fromFields) return fromFields;
-    } else if (type === "theme") {
-      const fromFields = themeAsset(
-        stringField(fields, [
-          "bundleId",
-          "bundle_id",
-          "themeBundleId",
-          "theme_bundle_id",
         ]),
         fields,
       );

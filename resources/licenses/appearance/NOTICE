@@ -1,0 +1,15 @@
+Appearance color schemes and color-space derivation
+
+Dure (including Hmux)
+Copyright 2026 Hebbian AI
+https://github.com/hebbianai/dure
+Licensed under the Apache License, Version 2.0; see LICENSE-APACHE.
+Palette catalog curated from src/lib/theme/bundledThemes.ts at 4d4fbfd.
+OKLCH conversion, interpolation and contrast-bisection algorithms adapted from the same revision.
+Changes: selected twelve palettes, adapted interfaces and derivation to host semantic tokens and surfaces.
+
+iTerm2-Color-Schemes
+https://github.com/mbadolato/iTerm2-Color-Schemes
+Revision 171945cb5f1f
+Licensed under the MIT License; see LICENSE-MIT for the upstream copyright and permission notice.
+Palette data was obtained through the catalog above.

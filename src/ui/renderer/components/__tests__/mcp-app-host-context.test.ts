@@ -1,3 +1,6 @@
+import { SCHEMES, resolveTheme, schemeToHostTokens } from "../../theme/index.js";
+import { AVE_TOKEN_NAMES } from "../../../../shared/plugin-ui-tokens.js";
+import { HOST_FONT_STACK } from "../../../../shared/host-font-stack.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +9,8 @@ import { buildMcpAppHostContext } from "../mcp-app-host-context.js";
 import { MCP_APP_AVAILABLE_DISPLAY_MODES } from "../../../../shared/mcp-app-display-mode.js";
 // Compare shipped declaration text because extensionless package imports fail member resolution under NodeNext; omit
 // fixture tokens to test partial maps.
+const TERMINAL_FONT_FAMILY = "Example Mono, monospace";
+
 const LIGHT_TOKENS: Record<string, string> = {
   "--ave-bg": "hsl(0, 0%, 100%)",
   "--ave-surface": "hsl(0, 0%, 98%)",
@@ -36,8 +41,25 @@ const DARK_TOKENS: Record<string, string> = {
 };
 
 describe("buildMcpAppHostContext", () => {
+  it("uses the configured terminal family for monospace content", () => {
+    for (const terminalFontFamily of ["Example Mono, monospace", "Alternate Mono, monospace"]) {
+      const context = buildMcpAppHostContext({
+        shell: "light", tokens: LIGHT_TOKENS, terminalFontFamily,
+        locale: "en", timeZone: "UTC", displayMode: "inline",
+      });
+      expect(context.styles?.variables?.["--font-mono"]).toBe(terminalFontFamily);
+    }
+  });
+
+  it("rejects a missing configured terminal family", () => {
+    expect(() => buildMcpAppHostContext({
+      shell: "light", tokens: LIGHT_TOKENS, terminalFontFamily: "",
+      locale: "en", timeZone: "UTC", displayMode: "inline",
+    })).toThrow("Terminal font family is required");
+  });
+
   it("maps the light shell + locale/timeZone/platform to standard fields", () => {
-    const ctx = buildMcpAppHostContext({
+    const ctx = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
@@ -53,7 +75,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("maps the dark shell to theme=dark", () => {
-    const ctx = buildMcpAppHostContext({
+    const ctx = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "dark",
       tokens: DARK_TOKENS,
       locale: "ko",
@@ -69,7 +91,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("advertises exactly the display modes the host can apply — the handler's SoT", () => {
-    const ctx = buildMcpAppHostContext({
+    const ctx = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
@@ -84,7 +106,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("hands out a COPY of the advertised set, never the host's own constant", () => {
-    const ctx = buildMcpAppHostContext({
+    const ctx = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: {},
       locale: "en",
@@ -102,7 +124,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("translates Ave tokens to the standard style-variable vocabulary", () => {
-    const { styles } = buildMcpAppHostContext({
+    const { styles } = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
@@ -126,9 +148,9 @@ describe("buildMcpAppHostContext", () => {
 
     // Status (1:1)
     expect(variables["--color-background-danger"]).toBe(LIGHT_TOKENS["--ave-danger"]);
-    expect(variables["--color-text-danger"]).toBe(LIGHT_TOKENS["--ave-danger-fg"]);
+    expect(variables["--color-text-danger"]).toBe(LIGHT_TOKENS["--ave-danger"]);
     expect(variables["--color-background-success"]).toBe(LIGHT_TOKENS["--ave-success"]);
-    expect(variables["--color-text-success"]).toBe(LIGHT_TOKENS["--ave-success-fg"]);
+    expect(variables["--color-text-success"]).toBe(LIGHT_TOKENS["--ave-success"]);
 
     // Radius + fonts
     expect(variables["--border-radius-md"]).toBe(LIGHT_TOKENS["--ave-radius"]);
@@ -139,7 +161,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("fans the focus ring out to BOTH the primary and info standard ring keys", () => {
-    const { styles } = buildMcpAppHostContext({
+    const { styles } = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "dark",
       tokens: DARK_TOKENS,
       locale: "en",
@@ -153,7 +175,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("emits ONLY standard keys — never a proprietary --ave-* name", () => {
-    const { styles } = buildMcpAppHostContext({
+    const { styles } = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
@@ -178,7 +200,7 @@ describe("buildMcpAppHostContext", () => {
   });
 
   it("emits only keys whose source token is present", () => {
-    const { styles } = buildMcpAppHostContext({
+    const { styles } = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
@@ -192,8 +214,8 @@ describe("buildMcpAppHostContext", () => {
     expect("--color-background-warning" in variables).toBe(false);
   });
 
-  it("maps --ave-font-family to --font-sans only when the caller threads it in", () => {
-    const withFamily = buildMcpAppHostContext({
+  it("uses the configured sans family or the host font stack", () => {
+    const withFamily = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: { ...LIGHT_TOKENS, "--ave-font-family": "Inter, sans-serif" },
       locale: "en",
@@ -202,18 +224,18 @@ describe("buildMcpAppHostContext", () => {
     });
     expect(withFamily.styles?.variables?.["--font-sans"]).toBe("Inter, sans-serif");
 
-    const withoutFamily = buildMcpAppHostContext({
+    const withoutFamily = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: LIGHT_TOKENS,
       locale: "en",
       timeZone: "UTC",
       displayMode: "inline",
     });
-    expect(withoutFamily.styles?.variables?.["--font-sans"]).toBeUndefined();
+    expect(withoutFamily.styles?.variables?.["--font-sans"]).toBe(HOST_FONT_STACK);
   });
 
   it("omits styles entirely when no tokens are provided", () => {
-    const ctx = buildMcpAppHostContext({
+    const ctx = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
       shell: "light",
       tokens: {},
       locale: "en",
@@ -260,7 +282,7 @@ describe("McpUiStyleVariableKey twin is pinned to upstream ext-apps", () => {
   it("only ever maps Ave tokens onto keys that exist upstream", () => {
     const upstream = new Set(styleVariableKeys(readFileSync(UPSTREAM_SPEC_TYPES, "utf8")));
     const emitted = Object.keys(
-      buildMcpAppHostContext({
+      buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY,
         shell: "light",
         tokens: { ...LIGHT_TOKENS, "--ave-font-family": "Inter, sans-serif" },
         locale: "en",
@@ -275,3 +297,13 @@ describe("McpUiStyleVariableKey twin is pinned to upstream ext-apps", () => {
     }
   });
 });
+
+for (const scheme of SCHEMES) {
+  it(scheme.id + " supplies every declared host token and every standard style variable", () => {
+    const tokens = schemeToHostTokens(resolveTheme(scheme));
+    expect(Object.keys(tokens).sort()).toEqual([...AVE_TOKEN_NAMES].sort());
+    const variables = buildMcpAppHostContext({ terminalFontFamily: TERMINAL_FONT_FAMILY, shell: scheme.shell, tokens, locale: "en", timeZone: "UTC", displayMode: "inline" }).styles!.variables!;
+    expect(Object.keys(variables).sort()).toEqual(styleVariableKeys(readFileSync(UPSTREAM_SPEC_TYPES, "utf8")).sort());
+    expect(Object.values(variables).every((value) => typeof value === "string" && value.length > 0)).toBe(true);
+  });
+}

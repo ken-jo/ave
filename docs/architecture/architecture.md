@@ -780,7 +780,7 @@ receive `host.theme.changed` and can query the replay cache through the plugin-o
 `getTheme`, whose guard admits plugin frames only. The floating dock never asks.
 Main sends it the cached theme when its window opens and forwards each later
 `host.theme.changed` on `ave:dock:theme`. MCP app cards build their host context
-from the theme already written to `:root` (`appliedBundle` / `appliedRevision`),
+from the theme already written to `:root` (`appliedTheme` / `appliedRevision`),
 so an app never receives one theme's shell with another theme's tokens. An open
 HTML preview is a snapshot: it keeps the theme it was created with, and the next
 preview uses the current theme. Its LLM HTML runs in an opaque-origin sandboxed

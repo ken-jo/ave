@@ -1,9 +1,4 @@
-export { ThemeProvider, useTheme, useOptionalTheme } from "./ThemeProvider.js";
-export { bundleToPluginTokens } from "./plugin-token-map.js";
-export {
-  BUNDLES,
-  DEFAULT_BUNDLE_ID,
-  findBundle,
-  visibleBundles,
-} from "./bundles/index.js";
-export type { ThemeBundle } from "./bundles/index.js";
+export { ThemeProvider, useTheme } from "./ThemeProvider.js";
+export { SCHEMES, requireScheme } from "./schemes/index.js";
+export { resolveTheme } from "./resolve-theme.js";
+export { schemeToHostTokens } from "./host-theme-tokens.js";

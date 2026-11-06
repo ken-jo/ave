@@ -14,7 +14,6 @@ export const PACKAGE_KINDS = [
   "mcp",
   "skill",
   "agent",
-  "theme",
   "font",
   "language",
   "provider",

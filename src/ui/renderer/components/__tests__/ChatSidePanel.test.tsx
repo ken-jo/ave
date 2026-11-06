@@ -1,3 +1,4 @@
+import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -89,14 +90,14 @@ const layerApi = api();
 
 function withPanelProviders(ui: ReactElement) {
   return (
-    <TooltipProvider>
+    <ThemeWrapper><TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         {ui}
         {/* The window's browser guests live in this layer (portaled to body),
             not inside the panel — as in the app. */}
         <WebSurfaceLayer api={layerApi} />
       </ApprovalSurfaceProvider>
-    </TooltipProvider>
+    </TooltipProvider></ThemeWrapper>
   );
 }
 

@@ -14,7 +14,6 @@ export {
   isOfficialPackageLocale,
   localeInfo,
   normalizeLocale,
-  normalizeLocaleSetting,
   registerInstalledLocales,
   visibleLocalesFor,
   type Locale,

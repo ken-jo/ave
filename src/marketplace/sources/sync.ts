@@ -2,24 +2,24 @@
  * Folder sync has no history rule and retains the last good snapshot on read failure. */
 import { admitSnapshotPackages, validateCachedSnapshotText } from "../catalog/validate.js";
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
+import { parseStrictJson } from "../catalog/strict-json.js";
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetAveHomeInputSync, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
-import { parseStrictJson } from "../catalog/strict-json.js";
 import { MarketplaceError, isMarketplaceError, scrubMarketplaceErrorDetail, type MarketplaceErrorCode, type MarketplaceErrorDetail } from "../errors.js";
 import { BareRepo, type ExportLimits } from "../git/repo.js";
 import { LocalRepositoryDamagedError, type GitCommands, type GitRemote } from "../git/run-git.js";
 import type { NetworkGate } from "../net/network-gate.js";
 import { classifyFolder, folderMoved, resolveFolderRoot, type FolderRoot } from "../net/source-input.js";
-import { errorMessage } from "../../shared/error-message.js";
 import type { PackageKind } from "../catalog/types.js";
 import type { FolderFs } from "./folder-fs.js";
 import { FolderTree, type FolderCapture } from "./folder-tree.js";
 import { folderIdentityState, fsErrorCode, readSourceState, type FolderSource, type SourceDataUse, type GitSource, type ResolvedSource, type SourceRegistry, type SourceState } from "./registry.js";
 import { pinnedArtifactSha256s, SnapshotBuilder, type SnapshotSubject, type SourceSnapshot } from "./snapshot.js";
 import { GitTree, rootNameOf } from "./source-tree.js";
+import { errorMessage } from "../../shared/error-message.js";
 
 export interface SourceSyncOptions {
   registry: SourceRegistry;
