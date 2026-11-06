@@ -405,6 +405,11 @@ jobs:
 
   build-and-test:
     # Reject upstream failures and cancellations even when shards are skipped.
+    # `build-and-test` and `naming-gate` are the required status checks on
+    # `main` (gh api repos/ken-jo/ave/branches/main/protection --jq
+    # .required_status_checks.contexts). gate-core and mxc-pins report under
+    # names that list does not contain, so only this job's explicit result
+    # check below lets them block a merge; skipped or cancelled fails too.
     needs: [build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
