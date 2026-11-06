@@ -1080,11 +1080,13 @@ export function BrowserWorkspace({
         className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
         onBlur={(event) => {
           // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
-          // from either of them, drops it.
+          // from either of them, drops it. Switching away from the whole window is not leaving the edit: focus comes back to
+          // the field when the window does, so the draft stays, as in Chrome.
           const left: EventTarget = event.target;
           const next: EventTarget | null = event.relatedTarget;
           if (left !== addressInputRef.current && left !== goButtonRef.current) return;
           if (next === addressInputRef.current || next === goButtonRef.current) return;
+          if (next === null && !document.hasFocus()) return;
           discardDraft();
         }}
         onSubmit={(event) => {
@@ -1120,7 +1122,6 @@ export function BrowserWorkspace({
           onKeyDown={(event) => {
             if (event.key === "Escape") discardDraft();
           }}
-
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-8 min-w-0 flex-1 text-xs"
         />

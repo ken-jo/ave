@@ -653,6 +653,8 @@ describe("ChatSidePanel", () => {
 
     // Typed, then left without submitting: the page then moves elsewhere and the row must say where it really is.
     fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    // Focus moves to the page body while the window keeps focus.
+    expect(document.hasFocus()).toBe(true);
     fireEvent.blur(addressInput, { relatedTarget: null });
     expect(addressInput.value).toBe("https://example.com/docs");
     guestUrl = "https://evil.example/";
@@ -672,6 +674,18 @@ describe("ChatSidePanel", () => {
     await waitFor(() => expect(goBack).toHaveBeenCalled());
     guestUrl = "https://example.com/docs";
     act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://example.com/docs");
+
+    // Switching to another window is not leaving the edit: focus returns to the field with the window, so the draft stays.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      fireEvent.blur(addressInput, { relatedTarget: null });
+    } finally {
+      hasFocus.mockRestore();
+    }
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.keyDown(addressInput, { key: "Escape" });
     expect(addressInput.value).toBe("https://example.com/docs");
 
     // Focus that reaches Go and then leaves it (pressed and dragged off, then clicked elsewhere) drops the draft too.
