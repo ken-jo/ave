@@ -25,7 +25,7 @@ export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, cr
   if (created !== undefined) facts.push([t("folderView.infoCreated"), created]);
   if (location !== undefined) facts.push([t("folderView.infoLocation"), location]);
   return (
-    <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-6" data-testid="folder-file-info">
+    <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-6" data-testid="file-info">
       <div className="w-full max-w-sm rounded-xl border bg-card p-5 text-card-foreground">
         <div className="flex flex-col items-center gap-1 text-center">
           {icon ? <span className="mb-2 flex h-14 w-14 items-center justify-center rounded-xl bg-muted">
@@ -34,7 +34,7 @@ export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, cr
           <div className="max-w-full truncate text-base font-semibold" title={name}>{name}</div>
           {kindLabel ? <div className="text-xs text-muted-foreground">{kindLabel}</div> : null}
         </div>
-        {reason ? <div role="note" data-testid="folder-file-info-reason" data-reason={reason}
+        {reason ? <div role="note" data-testid="file-info-reason" data-reason={reason}
           className={cn("mt-4 flex gap-2 rounded-lg border px-3 py-2 text-xs leading-5",
             reason === "unsupported" ? "bg-muted/(--opacity-muted)" : "border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) text-warning")}>
           <Info aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />

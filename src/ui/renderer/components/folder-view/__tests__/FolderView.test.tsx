@@ -130,9 +130,9 @@ describe("FolderView", () => {
     fireEvent.click(row(`${ROOT}/data`));
     await waitFor(() => expect(row(`${ROOT}/data/settlement.sqlite`)).toBeDefined());
     fireEvent.click(row(`${ROOT}/data/settlement.sqlite`));
-    const card = await screen.findByTestId("folder-file-info");
+    const card = await screen.findByTestId("file-info");
     expect(readFile).not.toHaveBeenCalled();
-    expect(within(card).getByTestId("folder-file-info-reason").getAttribute("data-reason")).toBe("unsupported");
+    expect(within(card).getByTestId("file-info-reason").getAttribute("data-reason")).toBe("unsupported");
     expect(card.textContent).toContain("3,984,384");
     expect(card.textContent).toContain("checkout-service/data/settlement.sqlite");
     const button = within(card).getByTestId("folder-open-external");
@@ -146,7 +146,7 @@ describe("FolderView", () => {
     fireEvent.click(row(`${ROOT}/data`));
     await waitFor(() => expect(row(`${ROOT}/data/mock.psd`)).toBeDefined());
     fireEvent.click(row(`${ROOT}/data/mock.psd`));
-    const card = await screen.findByTestId("folder-file-info");
+    const card = await screen.findByTestId("file-info");
     expect(within(card).queryByTestId("folder-open-external")).toBeNull();
     expect(within(card).getByTestId("folder-open-external-unavailable")).toBeDefined();
     await waitFor(() => expect(document.activeElement).toBe(within(card).getByTestId("folder-reveal")));
@@ -202,7 +202,7 @@ describe("FolderView", () => {
     await waitFor(() => expect(row(`${ROOT}/data/big.log`)).toBeDefined());
     expect(row(`${ROOT}/data/big.log`).textContent).toContain("148.0 MB");
     fireEvent.click(row(`${ROOT}/data/big.log`));
-    const reason = await screen.findByTestId("folder-file-info-reason");
+    const reason = await screen.findByTestId("file-info-reason");
     expect(reason.getAttribute("data-reason")).toBe("too-large");
   });
 
@@ -258,14 +258,14 @@ describe("FolderView", () => {
     fireEvent.click(row(`${ROOT}/src/payments`));
     await waitFor(() => expect(row(`${ROOT}/src/payments/README.md`)).toBeDefined());
     fireEvent.click(row(`${ROOT}/src/payments/README.md`));
-    const rendered = await screen.findByTestId("folder-markdown-rendered");
+    const rendered = await screen.findByTestId("markdown-rendered");
     expect(rendered.querySelector("h1")?.textContent).toBe("Title");
-    fireEvent.click(screen.getByTestId("folder-markdown-source"));
-    expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull();
+    fireEvent.click(screen.getByTestId("markdown-mode-source"));
+    expect(screen.queryByTestId("markdown-rendered")).toBeNull();
     expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Title");
 
-    fireEvent.click(screen.getByTestId("folder-markdown-view"));
-    expect(screen.getByTestId("folder-markdown-rendered").querySelector("h1")?.textContent).toBe("Title");
+    fireEvent.click(screen.getByTestId("markdown-mode-view"));
+    expect(screen.getByTestId("markdown-rendered").querySelector("h1")?.textContent).toBe("Title");
 
     fireEvent.click(row(`${ROOT}/src/payments/flow.png`));
     const image = await screen.findByTestId("folder-image-viewer");

@@ -17,29 +17,29 @@ describe("shared passive file preview", () => {
       : <TextDocumentPreview observe={false} target={{ kind: "file", id: path, path, title: path, canOpenExternal: false, sourceLabel: "file", createdOrder: 0 }} />;
     const view = render(preview("/workspace/first.md"));
     await screen.findByRole("heading", { name: "Shared heading" });
-    fireEvent.click(screen.getByTestId("folder-markdown-source"));
+    fireEvent.click(screen.getByTestId("markdown-mode-source"));
     expect(screen.queryByRole("heading", { name: "Shared heading" })).toBeNull();
     expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Shared heading");
-    expect(screen.getByTestId("folder-markdown-source").getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByTestId("folder-markdown-view"));
+    expect(screen.getByTestId("markdown-mode-source").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("markdown-mode-view"));
     expect(screen.getByRole("heading", { name: "Shared heading" })).toBeDefined();
-    fireEvent.click(screen.getByTestId("folder-markdown-source"));
+    fireEvent.click(screen.getByTestId("markdown-mode-source"));
     view.rerender(preview("/workspace/second.md"));
     await screen.findByRole("heading", { name: "Shared heading" });
-    expect(screen.getByTestId("folder-markdown-view").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("markdown-mode-view").getAttribute("aria-pressed")).toBe("true");
     expect(readFile).toHaveBeenCalledTimes(2);
   });
 
   it("omits absent file facts and retains an explicitly supplied zero size", () => {
     const view = render(<FileInfoCard name="archive.bin" reason="binary-file" location="/workspace/archive.bin" />);
-    const card = screen.getByTestId("folder-file-info");
+    const card = screen.getByTestId("file-info");
     expect(card.querySelectorAll("dt")).toHaveLength(1);
     expect(card.querySelector("dd")?.textContent).toBe("/workspace/archive.bin");
     expect(within(card).queryByRole("button")).toBeNull();
     view.rerender(<FileInfoCard name="empty.bin" size={0} />);
     expect(card.querySelectorAll("dt")).toHaveLength(1);
     expect(card.querySelector("dd")?.textContent).toContain("0");
-    expect(screen.queryByTestId("folder-file-info-reason")).toBeNull();
+    expect(screen.queryByTestId("file-info-reason")).toBeNull();
   });
 
   it("uses the same passive body for inline Markdown without reading the disk", () => {
@@ -47,7 +47,7 @@ describe("shared passive file preview", () => {
     vi.stubGlobal("ave", { preview: { readFile } });
     render(<TextDocumentPreview observe={false} target={{ kind: "file", id: "snippet", path: "notes.md", title: "notes.md",
       canOpenExternal: false, sourceLabel: "file", createdOrder: 0, inlineText: "# Inline heading" }} />);
-    fireEvent.click(screen.getByTestId("folder-markdown-source"));
+    fireEvent.click(screen.getByTestId("markdown-mode-source"));
     expect(screen.queryByRole("heading", { name: "Inline heading" })).toBeNull();
     expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Inline heading");
     expect(readFile).not.toHaveBeenCalled();

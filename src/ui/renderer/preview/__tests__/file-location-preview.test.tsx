@@ -75,8 +75,8 @@ describe("file location preview", () => {
     vi.stubGlobal("ave", { preview: { readFile } });
     render(<PreviewBody observe={false} api={{} as never} target={{ ...target, startLine: undefined, endLine: undefined,
       title: "a reference label", path: "/workspace/project/src/example.md", workspaceRoot: "/workspace/project" }} />);
-    const card = await screen.findByTestId("folder-file-info");
-    expect(screen.getByTestId("folder-file-info-reason").getAttribute("data-reason")).toBe(error);
+    const card = await screen.findByTestId("file-info");
+    expect(screen.getByTestId("file-info-reason").getAttribute("data-reason")).toBe(error);
     expect(card.querySelectorAll("dt")).toHaveLength(1);
     // The same workspace-relative label the header shows, never the absolute (home) path; the name is the file's own.
     expect(card.querySelector("dd")?.textContent).toBe("src/example.md");
