@@ -484,6 +484,25 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     } finally { restore(); }
   });
 
+  it("accepts a re-captured home DACL whose account names alone resolve differently", () => {
+    // Only SIDs certify a DACL: a SID-to-name lookup that changes between captures must not fail the read.
+    const { home, path } = fixture();
+    const restore = beforePin(1, () => mkdirSync(join(home, "sibling")));
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    let walks = 0;
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
+      const output = Reflect.apply(execute, undefined, args);
+      if (!Array.isArray(args[1]) || args[1][0] !== "--dacl" || ++walks !== 2) return output;
+      expect(String(output)).toContain('"account":"');
+      return String(output).replaceAll('"account":"', '"account":"RENAMED-');
+    });
+    try {
+      vi.clearAllMocks();
+      expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+      expect(walks).toBe(2);
+    } finally { vi.mocked(childProcess.execFileSync).mockImplementation(execute); restore(); }
+  });
+
   it("refuses a config/ DACL weakened during cold verification", () => {
     const { home, path } = fixture();
     const directory = join(home, "config");

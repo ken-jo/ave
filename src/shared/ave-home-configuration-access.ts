@@ -196,8 +196,14 @@ function windowsBoundarySnapshot(boundary: Pick<WindowsReadBoundary, "protectedD
   };
 }
 
+/** A DACL as its SIDs alone: owner and group already are, and an ACE's resolved account name can change without the DACL changing (an
+ * unreachable domain controller, a renamed account). */
+function windowsDaclDigest(dacl: WindowsDaclFacts["dacl"]): string {
+  return JSON.stringify(dacl === null ? null : { ...dacl, aces: dacl.aces.map(({ account: _account, ...ace }) => ace) });
+}
+
 function verifiedDacls(rows: readonly WindowsDaclFacts[], verifyHome: boolean, protectedDirectory: boolean): [string | null, string | null] {
-  return [verifyHome ? JSON.stringify(rows[0]!.dacl) : null, protectedDirectory ? JSON.stringify(rows[1]!.dacl) : null];
+  return [verifyHome ? windowsDaclDigest(rows[0]!.dacl) : null, protectedDirectory ? windowsDaclDigest(rows[1]!.dacl) : null];
 }
 
 /**
@@ -215,7 +221,7 @@ function windowsBoundaryHolds(boundary: WindowsReadBoundary, rows: readonly Wind
   if (!moved) return true;
   // The DACL walk holds each component's handle through capture, so its rows name the objects these DACLs belong to.
   const fresh = readWindowsDacls([boundary.root, boundary.directory]);
-  if (!sameObjects(fresh) || !boundary.verifiedDacls.every((dacl, index) => dacl === null || dacl === JSON.stringify(fresh[index]!.dacl))) return false;
+  if (!sameObjects(fresh) || !boundary.verifiedDacls.every((dacl, index) => dacl === null || dacl === windowsDaclDigest(fresh[index]!.dacl))) return false;
   // The same objects with the same DACLs: these facts are the new baseline the certificate's handles compare against.
   boundary.directories = fresh.slice(0, 2);
   boundary.identity = windowsBoundarySnapshot(boundary, fresh).identity;
