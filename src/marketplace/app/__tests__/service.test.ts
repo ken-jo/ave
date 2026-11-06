@@ -350,7 +350,7 @@ describe("MarketplaceService", () => {
     await cleanupTmpDir(root);
   });
 
-  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { font?: boolean } = {}) {
+  function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { font?: boolean; language?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
     const files = (version: string) => ({
@@ -362,6 +362,7 @@ describe("MarketplaceService", () => {
           { kind: "skill", name: "review", path: "skills/review" },
           { kind: "mcp", name: "notes", path: "mcp/notes" },
           ...(options.font ? [{ kind: "font", name: "harbor", path: "fonts/harbor" }] : []),
+          ...(options.language ? [{ kind: "language", name: "korean", path: "languages/korean" }] : []),
         ],
       }),
       ...(options.font
@@ -372,11 +373,18 @@ describe("MarketplaceService", () => {
             "fonts/harbor/files/HarborSans.woff2": Buffer.concat([Buffer.from("wOF2"), Buffer.alloc(60)]),
           }
         : {}),
+      ...(options.language
+        ? {
+            "languages/korean/ave-package.json": descriptor("language", "korean", "1.0.0", { locale: "ko", entry: "language.json", messages: "messages.json" }),
+            "languages/korean/language.json": text({ locale: "ko", nativeName: "한국어", englishName: "Korean" }),
+            "languages/korean/messages.json": text({}),
+          }
+        : {}),
       "skills/review/ave-package.json": descriptor("skill", "review", version, { entry: "SKILL.md" }),
       "skills/review/SKILL.md": skill("review", `Review the change (${version}).`),
       "mcp/notes/ave-package.json": descriptor("mcp", "notes", "2.0.0", { server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@2.0.0", "--db", "$DATA_DIR/notes.db"] } }),
     });
-    const key = JSON.stringify([skillVersion, indexName, options.font ?? false]);
+    const key = JSON.stringify([skillVersion, indexName, options.font ?? false, options.language ?? false]);
     let seed = marketSeeds.get(key);
     if (!seed) {
       seed = copyFixtureRepo(serverRoot, `seed-${counter}`, emptyRepo, { publishByCopy: true });
@@ -705,6 +713,29 @@ describe("MarketplaceService", () => {
     }
   });
 
+
+  it("adopts a legacy locale from the official source once its snapshot exists, once, and drops it from the legacy list", async () => {
+    const { url } = market("1.0.0", "ave", { language: true });
+    service.close();
+    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    legacyActivations = { locales: ["ko", "retired"], providers: [] };
+
+    const before = await service.applyBootInstalls([], applied);
+    expect(contentReports).toEqual([]);
+    expect(before.notice).toBeNull();
+
+    await service.refresh();
+    const first = await service.applyBootInstalls([], applied);
+    expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "language", name: "korean" }], failed: [] }]);
+    expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["language:korean@ave"]);
+    expect(adopting).toEqual([true]);
+    expect(released).toEqual([{ locales: ["ko"] }]);
+    expect(first.notice).toBeNull();
+
+    await service.applyBootInstalls([], applied);
+    expect(contentReports).toHaveLength(1);
+  });
 
   it.each([false, true])("captures retirement before a failed uninstall or policy lock (locked=%s)", async (locked) => {
     if (locked) await build(policyLoad({ requiredInstalls: [{ kind: "plugin", name: "retired-fixture", source: "acme-tools" }] }));

@@ -52,7 +52,8 @@ afterEach(() => {
 
 describe("browser IPC", () => {
   it("refuses a non-host frame on every invoke", () => {
-    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState]) {
+    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
+      CHANNELS.browser.getSessionBindings, CHANNELS.surface.setActive]) {
       expect(invoke(channel, isolatedAppFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
   });
