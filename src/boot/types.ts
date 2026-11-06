@@ -8,8 +8,6 @@ import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { MemoryCaptureService } from "../memory/memory-capture-service.js";
 import type { MemorySaveNotices } from "../memory/memory-save-notices.js";
-import type { InputClassifier } from "../core/input-classifier.js";
-import type { RouteEngine } from "../core/route-engine.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import type { McpAppModelContextStore } from "../mcp/mcp-app-model-context.js";
@@ -88,8 +86,6 @@ export interface AppServices {
   memoryCaptureService?: MemoryCaptureService;
   /** Live memory save notices and the undo records the memory IPC redeems. */
   memorySaveNotices: MemorySaveNotices;
-  inputClassifier: InputClassifier;
-  routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;
   systemPromptBuilder: SystemPromptBuilder;
   /** MCP-app `ui/update-model-context` slots; ONE instance shared by its only two consumers: the gated IPC (`mcp.uiModelContext`) writes a card's slot, and the SystemPromptBuilder's

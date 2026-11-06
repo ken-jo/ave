@@ -3,8 +3,6 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -56,16 +54,12 @@ function makeLoop(provider: LLMProvider) {
     }),
   );
 
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
       get: () => fakeLlmSettings(),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager: {
       saveSession: () => {},
@@ -76,7 +70,7 @@ function makeLoop(provider: LLMProvider) {
   return loop;
 }
 
-describe("ConversationTracer — §4.5 11-step", () => {
+describe("ConversationTracer — §4.5 canonical steps", () => {
   it("writes transport exit facts to the error trace without copying user input", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-transport-trace-"));
     try {
@@ -100,7 +94,7 @@ describe("ConversationTracer — §4.5 11-step", () => {
     }
   });
 
-  it("emits all 11 canonical steps across a tool-use turn", async () => {
+  it("emits all 10 canonical steps across a tool-use turn", async () => {
     const provider = new FakeProvider([
       [
         { type: "reasoning_delta", text: "생각 중" },
@@ -126,7 +120,6 @@ describe("ConversationTracer — §4.5 11-step", () => {
     const names = new Set(rec.steps.map((s) => s.name));
     const expected: TraceStepName[] = [
       "REQUEST_ENTRY",
-      "INPUT_CLASSIFY",
       "ROUTE_RESOLVE",
       "TURN_ORCHESTRATE",
       "HISTORY_APPEND",
@@ -140,7 +133,7 @@ describe("ConversationTracer — §4.5 11-step", () => {
     for (const step of expected) {
       expect(names.has(step), `missing step: ${step}`).toBe(true);
     }
-    expect(expected.length).toBe(11);
+    expect(expected.length).toBe(10);
     const postTurn = rec.steps.find((s) => s.name === "POST_TURN");
     expect(postTurn?.meta).toMatchObject({
       loadedToolSourceCounts: { builtin: 1, plugin: 0, mcp: 0 },

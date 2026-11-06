@@ -1,6 +1,4 @@
 import { vi } from "vitest";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import type { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop, type ConversationLoopDeps } from "../../conversation-loop.js";
@@ -28,8 +26,6 @@ export function makeSubagentLoopDeps(
         setActiveSessionId: () => undefined,
       }),
     },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry,
     memoryManager: {
       saveSession: () => Promise.resolve(),

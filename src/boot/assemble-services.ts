@@ -33,8 +33,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     memoryManager: ctx.memoryManager,
     memoryCaptureService: ctx.memoryCaptureService,
     memorySaveNotices: ctx.memorySaveNotices,
-    inputClassifier: ctx.inputClassifier,
-    routeEngine: ctx.routeEngine,
     toolRegistry: ctx.toolRegistry,
     systemPromptBuilder: ctx.systemPromptBuilder,
     // Share the prompt builder’s context store; IPC is its only writer.

@@ -70,7 +70,7 @@ function readText(path: string): string | null {
 /** The modules the real-graph cases change. Their `vitest related` coverage is discovered once, in one process, before the cases run: discovery
  * builds the whole suite's module graph, and on the 3-CPU CI slice one discovery per case took the file past two minutes (). The cases read the result. */
 const GRAPH_SOURCES = [
-  "src/core/route-engine.ts",
+  "src/core/route-input.ts",
   "src/shared/escape-html.ts",
   "src/plugins/runtime/index.ts",
   "src/core/model-catalog/refresh.ts",
@@ -114,9 +114,9 @@ function select(changes: ReturnType<typeof modified>[], discover = discoverRelat
 
 describe("CI test selection over the real import graph", () => {
   it("selects a leaf module's own tests, plus the must-run set", () => {
-    const plan = select([modified("src/core/route-engine.ts")]);
+    const plan = select([modified("src/core/route-input.ts")]);
     expect(plan.mode).toBe("affected");
-    expect(plan.tests).toContain("src/core/__tests__/route-engine.test.ts");
+    expect(plan.tests).toContain("src/core/__tests__/route-input.test.ts");
     expect(plan.tests).toEqual(expect.arrayContaining(mustRunTests));
     // A leaf change does not drag in the rest of the suite.
     expect(plan.tests.length).toBeLessThan(trackedTests.length / 2);
@@ -193,7 +193,7 @@ describe("CI test selection over the real import graph", () => {
     "src/i18n/testing/vitest-ambient-intl.ts",
     "src/preload.ts",
   ])("falls back to the full suite when %s changes", (path) => {
-    const plan = select([modified("src/core/route-engine.ts"), modified(path)], () => {
+    const plan = select([modified("src/core/route-input.ts"), modified(path)], () => {
       throw new Error("a global input must be decided before any discovery");
     });
     expect(plan).toEqual({ mode: "full", reason: `${path} is a global test or build input`, tests: [] });
@@ -216,20 +216,20 @@ describe("CI test selection fallbacks", () => {
   });
 
   it("runs the full suite for a deleted or renamed module", () => {
-    expect(select([{ status: "D", oldMode: "100644", newMode: "000000", path: "src/core/route-engine.ts" }], noDiscovery).mode)
+    expect(select([{ status: "D", oldMode: "100644", newMode: "000000", path: "src/core/route-input.ts" }], noDiscovery).mode)
       .toBe("full");
   });
 
   it("runs the full suite when discovery fails or a module has no test", () => {
-    expect(select([modified("src/core/route-engine.ts")], () => null))
+    expect(select([modified("src/core/route-input.ts")], () => null))
       .toMatchObject({ mode: "full", reason: "related test discovery failed" });
-    expect(select([modified("src/core/route-engine.ts")], (paths) => paths.map((source) => ({ source, tests: [] }))))
-      .toMatchObject({ mode: "full", reason: "src/core/route-engine.ts has no related test files" });
+    expect(select([modified("src/core/route-input.ts")], (paths) => paths.map((source) => ({ source, tests: [] }))))
+      .toMatchObject({ mode: "full", reason: "src/core/route-input.ts has no related test files" });
   });
 
   it("runs the full suite when the selection is most of the suite", () => {
     const wide = trackedTests.slice(0, AFFECTED_TEST_LIMIT + 1);
-    expect(select([modified("src/core/route-engine.ts")], (paths) => paths.map((source) => ({ source, tests: wide }))))
+    expect(select([modified("src/core/route-input.ts")], (paths) => paths.map((source) => ({ source, tests: wide }))))
       .toMatchObject({ mode: "full", reason: expect.stringMatching(new RegExp(`^\\d+ changed and related test files exceed ${AFFECTED_TEST_LIMIT}$`)) });
   });
 
@@ -303,8 +303,8 @@ describe("CI test selection fallbacks", () => {
   });
 
   it("uses affected tests for a traceable category merge", () => {
-    const source = "src/core/route-engine.ts";
-    const test = "src/core/__tests__/route-engine.test.ts";
+    const source = "src/core/route-input.ts";
+    const test = "src/core/__tests__/route-input.test.ts";
     withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify([{ source, tests: [test] }])], () => {
       const plan = planCiSuite("pull_request", { headRef: "integration/core", baseRef: "main" });
       expect(plan.mode).toBe("affected");
@@ -330,7 +330,7 @@ describe("CI test selection fallbacks", () => {
 });
 
 describe("event rules over the pull request merge and the whole push", () => {
-  const changedTest = "src/core/__tests__/route-engine.test.ts";
+  const changedTest = "src/core/__tests__/route-input.test.ts";
   const before = "b".repeat(40);
   const mainPush = { ref: "refs/heads/main", before };
   const isAncestor = { stdout: "", status: 0 };
@@ -341,7 +341,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("test-only category merge");
       expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-input.ts"])]));
       expect(vi.mocked(spawnSync).mock.calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", "first", "HEAD", "--"]);
     });
   });
@@ -352,7 +352,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
       expect(plan.reason).toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-input.ts"])]));
       const calls = vi.mocked(spawnSync).mock.calls;
       expect(calls[0][1]).toEqual(["merge-base", "--is-ancestor", before, "HEAD"]);
       expect(calls[1][1]).toEqual(["diff", "--no-renames", "--raw", "-z", before, "HEAD", "--"]);
@@ -375,14 +375,14 @@ describe("event rules over the pull request merge and the whole push", () => {
   });
 
   it("uses trusted selection for a code push to main", () => {
-    const source = "src/core/route-engine.ts";
+    const source = "src/core/route-input.ts";
     const coverage = [{ source, tests: [changedTest] }];
     withGitOutputs([isAncestor, `:100644 100644 aaaa bbbb M\0${source}\0`, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
       const plan = planCiSuite("push", mainPush);
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
       expect(plan.reason).not.toContain("test-only diff");
-      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-engine.ts"])]));
+      expect(plan.tests).toEqual(expect.arrayContaining([changedTest, ...expandMustRunTests(mustRunDocument, trackedTests, [changedTest, "src/core/route-input.ts"])]));
     });
   });
 
@@ -695,7 +695,7 @@ describe("the must-run set", () => {
       "test/scripts/repository-identity.test.ts", "test/scripts/pre-push-markdown-policy.test.ts",
     ]));
     expect(mustRunTests).toEqual(expect.arrayContaining(treeScanners));
-    const added = "src/core/__tests__/route-engine.test.ts";
+    const added = "src/core/__tests__/route-input.test.ts";
     const plan = select([{ ...modified(added), status: "A", oldMode: "000000" }]);
     expect(plan.reason).toContain("test-only diff");
     expect(plan.tests).toEqual(expect.arrayContaining(treeScanners));

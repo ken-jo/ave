@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { createRoutineConversationLoop } from "../conversation.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../../engine/llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -38,8 +36,6 @@ describe("createRoutineConversationLoop — tool-level deferral", () => {
     }),
     );
 
-    const inputClassifier = new InputClassifier();
-    const routeEngine = new RouteEngine();
     const provider = new RecordingProvider();
     const loop = createRoutineConversationLoop(
       {
@@ -47,8 +43,6 @@ describe("createRoutineConversationLoop — tool-level deferral", () => {
         get: () => fakeLlmSettings(),
         getSecret: () => "test-key",
       },
-        inputClassifier,
-      routeEngine,
       toolRegistry,
       memoryManager: makeConversationLoopMemoryManager(),
       // The routine builder takes the main builder's memory use recorder.

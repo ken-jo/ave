@@ -1,6 +1,4 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { isModelAvailableForVendor } from "../../../shared/llm-vendor-defaults.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -37,8 +35,6 @@ async function childLoop(catalogModel?: string) {
     modelOverride: "  gpt-5.4-mini  ",
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,

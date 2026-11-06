@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
@@ -726,12 +724,8 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const inputClassifier = new InputClassifier();
-    const routeEngine = new RouteEngine();
 
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
-      inputClassifier,
-      routeEngine,
       toolRegistry,
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;
@@ -846,11 +840,7 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const inputClassifier = new InputClassifier();
-    const routeEngine = new RouteEngine();
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
-      inputClassifier,
-      routeEngine,
       toolRegistry,
     }));
     (loop as { provider: LLMProvider | null }).provider = provider;

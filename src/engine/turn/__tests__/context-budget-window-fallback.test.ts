@@ -33,8 +33,6 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => {
 });
 
 import { ConversationLoop } from "../../conversation-loop.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { forbidAmbientFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 import { queryLoop } from "../query-loop.js";
@@ -206,8 +204,6 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
     const loop = new ConversationLoop({
       settingsService: { get: (key: string) => key === "marketplace" ? { installedProviderPresets: [] } : llm, getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: new ToolRegistry(),
       memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,

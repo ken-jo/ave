@@ -178,8 +178,6 @@ export async function wireConversation(
   const {
     settingsService,
     systemPromptBuilder,
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager,
     memoryCaptureService,
@@ -222,8 +220,6 @@ export async function wireConversation(
     settingsService,
     systemPromptBuilder,
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager,
     memoryReviewer,
@@ -286,8 +282,6 @@ export async function wireConversation(
   conversationLoop = createConversationLoop({
     settingsService,
     systemPromptBuilder,
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     supportsA2AParentDelivery: true,
     memoryManager,
@@ -339,8 +333,6 @@ export async function wireConversation(
   const sideChatLoopDeps = {
     settingsService,
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     permissionManager,
     memoryReviewer,
@@ -434,8 +426,6 @@ export async function wireConversation(
     groupLoop = createConversationLoop({
       settingsService,
       systemPromptBuilder,
-      inputClassifier,
-      routeEngine,
       toolRegistry,
       supportsA2AParentDelivery: true,
       memoryManager,
@@ -583,8 +573,6 @@ export async function wireConversation(
     parentDeps: {
       settingsService,
       systemPromptBuilder,
-      inputClassifier,
-      routeEngine,
       toolRegistry,
       memoryManager,
       memoryReviewer,

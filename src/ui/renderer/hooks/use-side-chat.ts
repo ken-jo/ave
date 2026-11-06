@@ -459,7 +459,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     if (!viewMountedRef.current || !isStreamingRef.current || terminalStreamClosedRef.current
       || payload.streamId !== activeStreamIdRef.current) return;
     onProviderFallbackRef.current?.(t("useChatState.fallbackToast", { from: payload.from, to: payload.to }));
-  }), [api.sideChat]);
+  }), [runtime, api.sideChat]);
 
   const abandonTurn = useCallback(() => {
     // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial

@@ -262,9 +262,7 @@ export async function bootstrap(
     memoryUsageLog,
     memoryCaptureService,
     memorySaveNotices,
-    inputClassifier,
     toolRegistry,
-    routeEngine,
   } = core;
   ctx.pythonPath = pythonPath;
   ctx.pythonRuntime = pythonRuntime;
@@ -274,9 +272,7 @@ export async function bootstrap(
   ctx.memoryManager = memoryManager;
   ctx.memoryCaptureService = memoryCaptureService;
   ctx.memorySaveNotices = memorySaveNotices;
-  ctx.inputClassifier = inputClassifier;
   ctx.toolRegistry = toolRegistry;
-  ctx.routeEngine = routeEngine;
 
   // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
   await setupAuditAndNotification(ctx);

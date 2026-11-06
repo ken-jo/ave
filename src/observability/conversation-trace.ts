@@ -9,8 +9,7 @@ import { aveHome } from "../shared/ave-home.js";
 
 export type TraceStepName =
   | "REQUEST_ENTRY"         // 1. renderer → main IPC
-  | "INPUT_CLASSIFY" // 2. InputClassifier.classify()
-  | "ROUTE_RESOLVE"         // 3. RouteEngine.route()
+  | "ROUTE_RESOLVE"         // 3. Resolve the input route
   | "TURN_ORCHESTRATE"      // 4. Enter runTurn()
   | "HISTORY_APPEND"        // 5. Append user message
   | "PROMPT_ASSEMBLE"       // 6. Assemble system prompt

@@ -130,8 +130,6 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "memoryConsolidationService",
   "memoryMaintenanceCoordinator",
   "memoryManager",
-  "inputClassifier",
-  "routeEngine",
   "toolRegistry",
   "systemPromptBuilder",
   "conversationLoop",

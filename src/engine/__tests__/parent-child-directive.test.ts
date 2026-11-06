@@ -10,8 +10,6 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import {
   SubAgentRunner,
   exactToolScope,
@@ -409,8 +407,6 @@ describe("parent directive delivery into a live sub-agent run", () => {
           setActiveSessionId: () => undefined,
         }),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
       auditLogger,
       memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [] },

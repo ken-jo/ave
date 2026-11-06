@@ -3121,42 +3121,12 @@ catalogs through the generator; no raw keys.
 
 On first boot of the new version:
 
-- Registry entries whose id exists in the official snapshot are bound to
-  `ave` with `rung: "legacy"` and `artifactSha256: null`; the next update
-  installs through the ladder and fills the origin. Nothing is reinstalled by
-  the migration, and it works offline. Their installed manifests still carry
-  `installPolicy`; the loader ignores it with one warning (§5.3).
-- Grant continuity: a `legacy` entry keeps its host-secret grant when its
-  install receipt's `artifactSha256` equals the official index's
-  `artifact.release.sha256` for the installed version (§10.3 condition 2).
-  The official index therefore carries `versions[]` entries for every version
-  of a granted plugin that is still installed in the field; for each, the zip
-  the current server serves is uploaded unchanged as that version's release
-  asset and pinned by its sha256 when the official repository is seeded. "Every version" means
-  every version the app can load: a release from before the Agent Plugins
-  manifest (the lines below `minAppVersion` 0.7.0, whose `plugin.json` has
-  no `extensions["ai.agent-connector.ave"]`) fails `parsePluginJson` before and after the
-  switch, so it has no working grant to keep and is not pinned. An entry
-  with no matching pin loses the grant until it updates, and the boot notice
-  says which plugin lost which key.
-- A pin whose version was never published from the repository's history is
-  listed at the all-zero commit (`0000…0000`): digest evidence, not a commit.
-  The index admits it only as a yanked plugin version whose artifact is a
-  release `sha256` and nothing else (no tag, asset, url, archive or tree). Such
-  a version never reaches git: the detail shows it as a grant record with no
-  tree and no delivery rungs, a plan for it is refused (`PACKAGE_YANKED`), and
-  the git layer refuses the all-zero id outright. With no candidate, the detail
-  describes the newest listed version that has a tree, else the newest pin.
+- Plugin entries without an origin remain unmanaged. The migration does not
+  bind them to the official source, adopt them through required installs, or
+  grant them host secrets.
 - `installSource: "admin"` becomes `user`; the keys of those packages are
   written to `packages/default-installs.json` as already applied, so nothing
   is reinstalled or removed.
-- Entries that match no official package
-  keep running as "source unknown — no updates", receive no grants, and are
-  no longer locked. They stay that way until the organization registers its
-  internal marketplace (`additional`) and lists them in `requiredInstalls`;
-  the next boot then binds them to that source. The boot notice names these
-  entries once: "<name> is no longer managed by Ave. Your organization can
-  keep it up to date by registering its marketplace."
 - Installed provider presets and theme/language activations become ledger
   entries.
 
@@ -3207,9 +3177,8 @@ Where the sections above and the shipped code differ, the code wins:
   environment like the other retired variables.
 - **First-boot migration (§16.3)** runs once the official source has a
   snapshot, and records itself in `packages/legacy-migration.json`: `{
-  version: 1, completedAt }` when every entry migrated, otherwise `{ version:
-  1, reportedUnmanaged }`, and the next run tries again without naming an
-  unmanaged entry a second time.
+  version: 1, completedAt }` when all content adoption succeeds, otherwise
+  `{ version: 1 }`, and the next run retries failed content adoption.
 - **Language keys across app versions.** The upgrade run found every
   installed language breaking on the first boot of a build whose catalog
   had lost keys (the switch removes 157). A key outside the interface set is

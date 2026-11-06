@@ -1,7 +1,5 @@
 /** Permission broadcasts use curated app windows and reach every loop that can mutate permission state. */
 import { describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import {
   makeConversationLoopMemoryManager,
@@ -48,8 +46,6 @@ type LoopBroadcastCallback =
 function sharedLoopDeps() {
   return {
     settingsService: makeConversationLoopSettings(),
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: makeConversationLoopMemoryManager(),
     memoryReviewer: { review: async () => "recap" },
