@@ -37,7 +37,9 @@ surface is the §4 table and the generated protocol-5 schema.
 **Owner decision, 2026-11-06.** The unreleased protocol web mirror, retired
 schema copies, typed protocol client generator, signed contract bundle, and
 first-app-version machinery are removed. All five mirror entries had
-`publishedTag: null`; neither v0.14.1 nor v0.14.2 existed as a release tag.
+`publishedTag: null`, but the v0.14.0 protocol-3 schema was released and stays
+frozen at its original public URL. Neither v0.14.1 nor v0.14.2 existed as a
+release tag.
 The v5 JSON schema, generator, and parity test remain. Section 6.1 describes the
 current schema policy; the older publication plans below are historical.
 Publish protocol-5 plugin replacements with the coordinated app release and
@@ -1679,9 +1681,11 @@ bump and checked against the current sources.
 The unreleased version-pinning infrastructure was removed by owner decision on
 2026-11-06: retired protocol copies, the protocol web mirror and its publication
 manifest, the generated TypeScript client, the first-app-release table, and the
-signed contract bundle. No mirror entry was published. The earlier promise that
-a protocol schema's `$id` is never reassigned is withdrawn with that mirror;
-the retained schema's identifier is metadata, not a promised hosted URL.
+signed contract bundle publisher. The released v0.14.0 protocol-3 schema stays
+frozen at its original public URL, preserving its `$id`. The unreleased
+`5/v0.14.2` copy is removed. Future schema generation has no web publication
+promise. The v0.14.0 contract bundle stays on object storage. Plugin tooling
+must switch to copying public types from an Ave git ref before protocol 5 ships.
 Historical publication plans later in this document are superseded by this decision.
 
 ### 6.2 Typed clients

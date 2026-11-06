@@ -3,12 +3,13 @@
 Plugin names such as `mail`, `portal` and `assistant` in this
 record are generic stand-ins for plugins that are no longer part of this project.
 
-**Current contract.** The app is Ave and serves host protocol `"3"` only, the `ave/*`
-wire (`HOST_PROTOCOL_VERSIONS_SERVED`, `src/plugins/isolation/host-api-wire.ts:56`).
+**Released contract.** App 0.14.0 serves host protocol `"3"` on the `ave/*`
+wire. The development build serves `"5"`, defined by `HOST_PROTOCOL_VERSION` in
+`src/plugins/isolation/host-api-wire.ts`.
 An extension for app 0.14.0 or later declares
 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
 `requires.minAppVersion: "0.14.0"`, vendors
-`schemas/plugin-host-protocol/3/protocol.schema.json`, and a package is published
+`schemas/plugin-host-protocol/3/protocol.schema.json` from that release tag, and a package is published
 with an `ave-package.json` descriptor; the user data folder is `~/.ave`. A protocol `2`
 package (the protocol-2 wire of apps 0.12–0.13) is refused before activation. The
 `ai.agent-connector.ave` manifest key and package directory (Ave's domain reversed) are the

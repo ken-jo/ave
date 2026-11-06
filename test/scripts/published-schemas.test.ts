@@ -1,9 +1,9 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
-import { PUBLISHED_SCHEMAS, checkPublishedSchemas, syncPublishedSchemas } from "../../scripts/lib/published-schemas.mjs";
+import { PUBLISHED_SCHEMAS, checkPublishedSchemas } from "../../scripts/lib/published-schemas.mjs";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(root); });
@@ -19,29 +19,41 @@ describe("published contract schemas", () => {
   function contractFixture() {
     const root = mkdtempSync(join(tmpdir(), "contract-schemas-"));
     roots.push(root);
-    for (const { source, id } of PUBLISHED_SCHEMAS) put(root, source, `${JSON.stringify({ $id: id })}\n`);
-    mkdirSync(join(root, "web/public/schemas"), { recursive: true });
-    syncPublishedSchemas(root);
+    for (const { source, path, id } of PUBLISHED_SCHEMAS) {
+      const text = `${JSON.stringify({ $id: id })}\n`;
+      put(root, source, text);
+      put(root, `web/public/schemas/${path}`, text);
+    }
     return root;
   }
 
   it("serves every contract schema in this repository at its $id", () => {
     expect(checkPublishedSchemas(repoRoot)).toBe(`${PUBLISHED_SCHEMAS.length} contract schemas`);
-    for (const { id } of PUBLISHED_SCHEMAS) {
-      expect(id).toMatch(/^https:\/\/ave\.agent-connector\.ai\/schemas\/[a-z-]+\/\d+\/[a-z-]+\.schema\.json$/u);
+    for (const { path, id } of PUBLISHED_SCHEMAS) {
+      expect(id).toBe(`https://ave.agent-connector.ai/schemas/${path}`);
     }
+  });
+
+  it("keeps the released protocol schema at its original identity URL", () => {
+    const path = "plugin-host-protocol/3/v0.14.0/protocol.schema.json";
+    const file = join(repoRoot, "web/public/schemas", path);
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf8")).$id)
+      .toBe(`https://ave.agent-connector.ai/schemas/${path}`);
   });
 
   it("rejects a served copy that drifted from its canonical schema", () => {
     const root = contractFixture();
-    const [{ path, id }] = PUBLISHED_SCHEMAS;
+    const { source, path, id } = PUBLISHED_SCHEMAS.find(({ source }) => source.startsWith("schemas/"))!;
     put(root, `web/public/schemas/${path}`, `${JSON.stringify({ $id: id, edited: true })}\n`);
-    expect(() => checkPublishedSchemas(root)).toThrow(`web/public/schemas/${path} differs`);
+    expect(() => checkPublishedSchemas(root)).toThrow(
+      `web/public/schemas/${path} differs from ${source}; run cp ${source} web/public/schemas/${path}`,
+    );
   });
 
   it("rejects a canonical schema whose $id is not its served URL", () => {
     const root = contractFixture();
-    const [{ source }] = PUBLISHED_SCHEMAS;
+    const { source } = PUBLISHED_SCHEMAS.find(({ source }) => source.startsWith("schemas/"))!;
     put(root, source, `${JSON.stringify({ $id: "https://example.invalid/plugin.schema.json" })}\n`);
     expect(() => checkPublishedSchemas(root)).toThrow(`${source} must have $id`);
   });

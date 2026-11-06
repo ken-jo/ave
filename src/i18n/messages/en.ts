@@ -387,7 +387,6 @@ export const en = {
   "pluginConfigTab.protocolUpdateRepository": "Update required: get a compatible release from {source}",
   "pluginConfigTab.protocolUpdateUnavailable": "Update required: contact the extension publisher for a compatible release.",
   "pluginConfigTab.protocolUpdateButton": "Update to {version}",
-  "pluginConfigTab.doctorMigrateButton": "Migrate with AI",
   "pluginConfigTab.installFromFolder": "Install from folder…",
   "pluginConfigTab.installUnreviewedDev": "Install unreviewed (dev)",
   "pluginConfigTab.runtimeArmLabel": "Runs as",

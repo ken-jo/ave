@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const AVE_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
 const PUBLIC_SCHEMAS = "web/public/schemas";
@@ -19,6 +19,8 @@ function aveSchemaId(relative) {
  * only when the format does. A format change is a new path beside the old one.
  */
 export const PUBLISHED_SCHEMAS = Object.freeze([
+  // Released protocol schema stays frozen at its original public URL.
+  ["web/public/schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json", "plugin-host-protocol/3/v0.14.0/protocol.schema.json"],
   ["schemas/plugin-manifest.schema.json", "plugin/3/plugin.schema.json"],
   ["schemas/skill-package.schema.json", "skill/1/skill.schema.json"],
   ["schemas/worker-stdio-control/1/worker-control.schema.json", "worker-stdio-control/1/worker-control.schema.json"],
@@ -47,7 +49,7 @@ export function checkPublishedSchemas(root) {
     if (JSON.parse(bytes.toString("utf8")).$id !== id) fail(`${source} must have $id ${id}`);
     const served = join(root, PUBLIC_SCHEMAS, path);
     if (!existsSync(served) || !bytes.equals(readFileSync(served))) {
-      fail(`${PUBLIC_SCHEMAS}/${path} differs from ${source}; run copy the canonical schema to its public path`);
+      fail(`${PUBLIC_SCHEMAS}/${path} differs from ${source}; run cp ${source} ${PUBLIC_SCHEMAS}/${path}`);
     }
     expected.add(path);
   }
@@ -58,13 +60,6 @@ export function checkPublishedSchemas(root) {
   return `${PUBLISHED_SCHEMAS.length} contract schemas`;
 }
 
-/** Copy each contract schema to the path it is served at. */
-export function syncPublishedSchemas(root) {
-  for (const { source, path } of PUBLISHED_SCHEMAS) {
-    const target = join(root, PUBLIC_SCHEMAS, path);
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(join(root, source), target);
-  }
+function fail(message) {
+  throw new Error(`published schemas: ${message}`);
 }
-
-function fail(message) { throw new Error(`published schemas: ${message}`); }

@@ -37,9 +37,10 @@ host-issued loopback OAuth state and a declared worker control mode. Protocol 4 
 never released; released hosts move from 3 straight to 5. Do not publish protocol-5
 packages for released protocol-3 hosts: the host-protocol declaration, independently
 of `minAppVersion`, refuses an unserved contract. No first published app version
-exists for protocol 5; the release PR selects it and records the numeric floor. The
-untagged `5/v0.14.2` schema candidate, like the superseded `4/v0.14.1` and
-`4/v0.14.2` candidates, is not a compatibility promise.
+exists for protocol 5. Release preparation selects the actual minimum app version.
+The current schema lives at `schemas/plugin-host-protocol/5/protocol.schema.json`
+in the repository. The released protocol-3 schema stays frozen at
+`web/public/schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`.
 See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth),
 [§3.3.2](../design/plugin-hostapi-protocol.md#332-worker-stdio-control-v1),
 the [upcoming OAuth migration](./plugin-development.md#loopback-oauth-with-pkce)
@@ -65,17 +66,16 @@ something, publish a higher version.
 
 There is no separate SDK package; the contract version is the app version
 ([design §5.6](../design/multi-source-git-marketplace.md#56-plugin-contract-for-authors)).
-An extension repository copies these files unchanged from an app release tag
-into `contract/`:
+An extension repository copies the public types from an Ave git ref into
+`contract/`. The repository also provides these authoring files:
 
 - `src/plugins/public-contract.ts`
 - `schemas/plugin-manifest.schema.json`
-- `schemas/plugin-host-protocol/3/protocol.schema.json`
+- `schemas/plugin-host-protocol/5/protocol.schema.json`
 
-`contract/sources.json` records the repository, the tag and each file's
-sha256. CI fails when the copy no longer matches those hashes, or when the
-file at the recorded tag differs. Refresh by syncing from a newer tag; never
-edit the copy.
+The public-type copy requires no signature or sha256 pin. Before protocol 5
+ships, marketplace vendoring must switch from the release bundle to a git ref.
+The v0.14.0 bundle remains available for existing consumers.
 
 ## Releasing In The Official Marketplace
 

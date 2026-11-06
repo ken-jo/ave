@@ -17,10 +17,10 @@ host APIs or tool execution.
 
 Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
-authoring contract in `src/plugins/public-contract.ts`. Vendor those two files
-and the released host protocol schema `schemas/plugin-host-protocol/5/protocol.schema.json`
-unchanged into `contract/` at an app release tag, and record their hashes in
-`contract/sources.json`. Published extensions for currently released hosts declare
+authoring contract in `src/plugins/public-contract.ts`. Copy the public types
+from an Ave git ref into `contract/`. The current protocol-5 schema is in the repository at
+`schemas/plugin-host-protocol/5/protocol.schema.json`. Published extensions for
+currently released hosts declare
 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
 `requires.minAppVersion: "0.14.0"`. The retired `@ave/plugin-sdk` package is not a
 contract source.
@@ -54,9 +54,8 @@ The manifest should include:
 Every extension, JavaScript or `process`, declares `requires.hostProtocol`
 (a positive integer written as a string). The host refuses an absent or unserved
 version with `incompatible-host-protocol` before activation. A declared minimum
-app version cannot make a protocol-3 host serve protocol 5. Known first-release
-app floors remain enforced; an unreleased protocol has no numeric floor until
-release preparation records the actual first supporting release.
+app version cannot make a protocol-3 host serve protocol 5. The extension declares
+its actual minimum app version independently of protocol negotiation.
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
@@ -91,7 +90,7 @@ A manifest with both, or with neither, is rejected.
 ```
 
 A `process` extension is a program in any language. It reads and writes the
-JSON-RPC channel that `schemas/plugin-host-protocol/3/protocol.schema.json`
+JSON-RPC channel that `schemas/plugin-host-protocol/5/protocol.schema.json`
 describes on its own stdin and stdout, starting with `ave/instance/construct`,
 whose `entryPath` is the resolved absolute path of `command`. Its rules:
 
@@ -160,7 +159,7 @@ or spoof another extension id.
 
 A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
 handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
-extension's own stdio, and `schemas/plugin-host-protocol/3/protocol.schema.json`
+extension's own stdio, and `schemas/plugin-host-protocol/5/protocol.schema.json`
 (protocol `5`, the current build contract) describes every method, notification
 and error code of that channel. The file is generated from the host's own sources
 at each app release, so it describes what the host actually serves. To validate a frame, compile a method's `params`,
@@ -222,7 +221,7 @@ rejects on timeout or close. An error response must be handled before any code
 exchange. A later `wait()` reads the same validated result, never a new callback.
 
 When protocol 5 ships, re-vendor the public types, manifest schema, protocol
-schema/client and worker control schema from that app release tag. Set the manifest and package descriptor
+schema and worker control schema from that app release tag. Set the manifest and package descriptor
 to `hostProtocol: "5"` and the actual first supporting app version, and update each
 OAuth library adapter to use the host's state. If a library owns state, use its
 supported state option, or exchange the host-validated code directly with the
