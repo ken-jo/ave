@@ -597,10 +597,13 @@ records their presence and retains its full visible-floor pass; it does not
 enumerate directive names or treat an unknown directive as inert. Quoted `#`
 text remains literal argument data.
 
-A protected executable is necessary but does not establish Windows startup
-proof. Both the protected System32 Windows PowerShell 5.1 path and modern
-Windows PowerShell remain unproven. The legacy console's user-registry session
-configuration has not been proven ignored under the launch flags; this is an
+A protected executable alone does not establish Windows startup proof. The
+sandboxed MXC tool launch pins System32 Windows PowerShell startup with
+`-NoProfile` and `-NonInteractive`; static in-project writes use the tree's
+sandbox-auto lane in Allow writes. Host, sandbox-off, partial sandbox and unknown
+launch paths remain unproven, as do modern Windows installations. The legacy
+console's user-registry session configuration has not been proven ignored on
+unpinned paths; this is an
 evidence gap, not an assertion of a verified exploit on that edition. Modern
 Windows user JSON can select an endpoint before the prelude. Ordinary
 CurrentUser execution policy alone is not the reason for refusal. No exact

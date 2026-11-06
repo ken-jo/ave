@@ -1493,7 +1493,7 @@ export class PermissionManager {
       ? bound && "syntax" in bound ? bound : parsePowerShellCommand(command) : undefined;
     analysisLimited ||= parsed !== undefined && !parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason) || parsedPowerShell?.analysisLimited === true;
     const shellSignals = !analysisLimited && parsed ? inspectShellCommand(parsed, ruleSubject?.cwd)
-      : !analysisLimited && parsedPowerShell ? inspectPowerShellCommand(parsedPowerShell, ruleSubject?.cwd) : undefined;
+      : !analysisLimited && parsedPowerShell ? inspectPowerShellCommand(parsedPowerShell, ruleSubject?.cwd, undefined, context.hostShellExecutionPlan) : undefined;
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
     if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };

@@ -20,6 +20,7 @@ import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
+import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import {
   classifyPowerShellArchiveTraversal,
   isDefinitePowerShellRecursion,
@@ -1162,10 +1163,10 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined,
     !work.unresolvedPath && program.literalEvaluation !== null && program.encodedReason === null), { readsPath, network });
 }
 
-function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
+function applyStartupPolicy(signals: ShellFloorSignals, executionPlan?: HostShellExecutionPlan): ShellFloorSignals {
   if (signals.outcome === "visible-floor" || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
-  if (isPowerShellStartupPinned()) return signals;
+  if (isPowerShellStartupPinned(executionPlan?.platform, executionPlan)) return signals;
   const result: ShellFloorSignals = { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
   const flow = literalShellFlow(signals);
   return flow ? recordLiteralShellFlow(result, flow) : result;
@@ -1424,7 +1425,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   return { paths, unproven, credentialStore, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(evidenceLimitExceeded ? { evidenceLimitExceeded: true as const } : {}) };
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget)); }
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget), executionPlan); }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }

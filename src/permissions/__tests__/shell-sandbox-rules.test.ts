@@ -241,7 +241,7 @@ describe("shell confinement and escape rules", () => {
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       const result = checkPowerShell(command);
       const staticGrammar = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2", "Copy-Item src out -Recurse"].includes(command);
-      const staticConfined = staticGrammar && process.platform !== "win32";
+      const staticConfined = staticGrammar;
       const readOnlyListing = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2"].includes(command);
       expect(result).toMatchObject(readOnlyListing ? { decision: "allow", reasonCode: "read-only-shell" } : staticConfined
         ? { decision: "allow", reasonCode: "sandboxed-shell" }
