@@ -18,11 +18,19 @@ import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
-import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan as buildPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { recordIssuedHostShellExecutionPlan } from "../host-shell-execution-plan-issuance.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+
+// Plans as the host provider issues them; startup proof trusts only issued plans.
+function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
+  const plan = buildPlan(input);
+  recordIssuedHostShellExecutionPlan(plan, "fixture");
+  return plan;
+}
 
 let root: string;
 let dir: string;
