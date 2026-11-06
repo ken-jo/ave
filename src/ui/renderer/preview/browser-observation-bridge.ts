@@ -80,7 +80,19 @@ export class BrowserObservationStore {
       const status = history.events.at(-1);
       const candidate = status?.kind === "status" && (sameSession || action) && status.seq >= (action?.seq ?? 0) ? status : action;
       if (!candidate) continue;
-      if (!latest || candidate.ts > latest.ts || (candidate.ts === latest.ts && candidate.seq > latest.seq)) latest = candidate;
+      if (!latest || candidate.ts > latest.ts || (candidate.ts === latest.ts
+        && (candidate.seq > latest.seq || (candidate.seq === latest.seq && candidate.target.id > latest.target.id)))) latest = candidate;
+    }
+    return latest;
+  }
+
+  latestHosted(sessionId: string): BrowserObservationEvent | undefined {
+    if (!sessionId) return undefined;
+    let latest: BrowserObservationEvent | undefined;
+    for (const history of this.histories.values()) {
+      const candidate = history.hostSessionId === sessionId ? history.events.at(-1) : undefined;
+      if (candidate && (!latest || candidate.ts > latest.ts || (candidate.ts === latest.ts
+        && (candidate.seq > latest.seq || (candidate.seq === latest.seq && candidate.target.id > latest.target.id))))) latest = candidate;
     }
     return latest;
   }
@@ -173,4 +185,8 @@ export function useBrowserObservationPreviewStore(): BrowserObservationPreviewSt
 
 export function useBrowserObservation(tabId: string, sessionId?: string): BrowserObservationEvent | undefined {
   return useSyncExternalStore(subscribe, () => store?.latest(tabId, sessionId), () => undefined);
+}
+
+export function useHostedBrowserObservation(sessionId: string): BrowserObservationEvent | undefined {
+  return useSyncExternalStore(subscribe, () => store?.latestHosted(sessionId), () => undefined);
 }

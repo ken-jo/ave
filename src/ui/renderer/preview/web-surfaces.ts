@@ -19,6 +19,17 @@ const webviews = new Map<string, HTMLElement>();
 const liveSources = new Map<symbol, ReadonlySet<string>>();
 const occluders = new Set<HTMLElement>();
 let dragActive = false;
+const observedHiddenTabs = new Set<string>();
+
+/** Only a shown conversation preview may keep its hidden guest painting. */
+export function setHiddenWebSurfaceObserved(tabId: string, observed: boolean): void {
+  if (observedHiddenTabs.has(tabId) === observed) return;
+  if (observed) observedHiddenTabs.add(tabId);
+  else observedHiddenTabs.delete(tabId);
+  requestWebSurfaceLayout();
+}
+
+export function isHiddenWebSurfaceObserved(tabId: string): boolean { return observedHiddenTabs.has(tabId); }
 
 /** React-facing listeners: the entry list and the element map changed. */
 const listeners = new Set<() => void>();
