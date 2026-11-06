@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: report-lint-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   biome:
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
