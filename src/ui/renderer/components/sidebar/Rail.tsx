@@ -66,7 +66,7 @@ export function Rail({ project, launchers, views, footer }: RailProps) {
     <nav
       aria-label={t("sidebar.railAriaLabel")}
       data-testid="sidebar-rail"
-      className="ave-surface-raised flex min-h-0 w-(--shell-collapsed-rail-width) shrink-0 flex-col items-center overflow-hidden rounded-2xl bg-card py-2"
+      className="ave-surface-raised flex min-h-0 w-(--shell-collapsed-rail-width) shrink-0 flex-col items-center overflow-hidden rounded-(--shell-card-radius) bg-card py-2"
     >
       <div className="flex flex-col items-center gap-1">{project}</div>
       <div className="mt-2 flex flex-col items-center gap-1" data-testid="sidebar-rail-launchers">{launchers}</div>

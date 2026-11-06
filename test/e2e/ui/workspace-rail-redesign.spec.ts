@@ -69,6 +69,39 @@ test.describe("workspace rail redesign", () => {
     await expect(page.getByTestId("chat-side-panel-tab-browser")).toBeVisible();
   });
 
+  // The sidebar card and the chat tile are siblings in one shell, so their top edges, their corners and their first rows'
+  // text centres must read as one line. Measured at two real window sizes because the band is px and the type is rem.
+  test("the sidebar card and the chat tile share a top line, a corner and a header centre line", async () => {
+    test.skip(process.platform !== "darwin", "the shared top line is the darwin title band's");
+    for (const [width, height] of [[1440, 900], [1100, 750]] as const) {
+      await setWindowSize(app, width, height);
+      const geometry = await page.evaluate(() => {
+        const textMid = (root: Element) => {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (node) => node.textContent?.trim() ? 1 : 3 });
+          const node = walker.nextNode();
+          if (!node) return Number.NaN;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const rect = range.getBoundingClientRect();
+          return (rect.top + rect.bottom) / 2;
+        };
+        const card = document.querySelector('[data-testid="sidebar-card"]')!;
+        const pane = document.querySelector('[data-testid="pane"]')!;
+        return {
+          cardTop: card.getBoundingClientRect().top,
+          paneTop: pane.getBoundingClientRect().top,
+          cardRadius: getComputedStyle(card).borderTopLeftRadius,
+          paneRadius: getComputedStyle(pane).borderTopLeftRadius,
+          cardText: textMid(document.querySelector('[data-testid="sidebar-list-header"]')!),
+          paneText: textMid(document.querySelector('[data-testid="pane-header"]')!),
+        };
+      });
+      expect(geometry.cardTop, `${width}x${height}`).toBe(geometry.paneTop);
+      expect(geometry.cardRadius).toBe(geometry.paneRadius);
+      expect(Math.abs(geometry.cardText - geometry.paneText), `${width}x${height}`).toBeLessThanOrEqual(1);
+    }
+  });
+
   test("a canvas with space for the transcript and side panel docks", async () => {
     await setWindowSize(app, 1243, 768);
     const originalBounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBounds());
