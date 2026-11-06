@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 } from "../../../src/shared/llm-vendor-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
+import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -154,6 +155,9 @@ export function buildLlmSettings(
 
   return {
     ...buildE2eBaseSettings(true),
+    // A profile seeded here names its model as a current build would save it. Without the marker, the one-time migration that
+    // clears stored copies of removed built-in defaults (settings-store.ts) treats e.g. openai/gpt-5.4-mini as one and drops it.
+    appliedMigrations: ["built-in-default-models-cleared"],
     llm: {
       provider: vendor,
       vendors,
@@ -330,11 +334,13 @@ export async function sendRendererStreamEvent(
   app: ElectronApplication,
   event: JsonObject,
 ): Promise<void> {
+  // Every chat stream frame names its group; the preload drops unlabelled frames (public-surface.ts subscribeForChatGroup).
+  const labelled = { chatGroupId: MAIN_CHAT_GROUP_ID, ...event };
   await app.evaluate(({ BrowserWindow }, ev) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
     if (!win) return;
     win.webContents.send("ave:chat:stream", ev);
-  }, event);
+  }, labelled);
 }
 
 /** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a

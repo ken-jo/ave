@@ -2,23 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
+import { writePermissionSettingsFixture } from '../../../src/__tests__/support/permission-settings-fixture.js';
 
 for (const [storedMode, locale] of [['strict', 'ko'], ['turbo', 'en']] as const) {
   test.describe(`unsupported reviewer ${storedMode}`, () => {
-    test.use({
-      seedLocale: locale,
-      aveHome: async ({ tempHome }, use) => {
-        const home = path.join(tempHome, '.ave');
-        fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-        // Seed the supported legacy source; boot commits it into protected configuration.
-        fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({
-          permissions: { reviewer: { mode: storedMode } },
-        }), { mode: 0o600 });
-        await use(home);
-      },
-    });
+    test.use({ seedLocale: locale });
 
     test('keeps the evaluation selector unselected until explicit reviewer repair', async ({ app, mainWindow, aveHome, t }, testInfo) => {
+      // Boot's one-time migration carries only restriction fields from a legacy root settings.json (ave-home-configuration.ts
+      // carriedConfiguration), so a stored reviewer mode lives in the committed configuration; write it there.
+      writePermissionSettingsFixture(aveHome, JSON.stringify({ permissions: { reviewer: { mode: storedMode } } }));
       const settingsPage = await openInlineSettings(app, mainWindow, 'permissions');
       const mode = settingsPage.locator('#permission-judge-mode');
       await expect(settingsPage.getByTestId('reviewer-mode-fault')).toBeVisible();

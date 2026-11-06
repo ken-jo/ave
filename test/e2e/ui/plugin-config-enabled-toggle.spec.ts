@@ -1,10 +1,13 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
+import { admitFixturePlugins } from './admit-fixture-plugins.js';
 
 test.use({ seedTogglePlugin: true, seedViewFixturePlugin: false });
 
 // Toggle a loaded plugin and verify its own status and tool visibility, not another row's badge.
-test('plugin-config Switch toggles a loaded plugin active/inactive and back', async ({ app, mainWindow, t }) => {
+test('plugin-config Switch toggles a loaded plugin active/inactive and back', async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, t }) => {
+  // Seeded fixture files wait for the home trust review; admit them the way a user does before the plugin loads.
+  const { app, mainWindow } = await admitFixturePlugins({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome });
   const settings = await openInlineSettings(app, mainWindow, 'plugin-config');
   try {
     const anyToggle = settings.locator('[data-testid^="plugin-config:enabled-toggle:"]').first();
@@ -35,5 +38,6 @@ test('plugin-config Switch toggles a loaded plugin active/inactive and back', as
     await expect(hiddenNote).toHaveCount(0);
   } finally {
     await closeInlineSettings(app, settings).catch(() => {});
+    await app.close();
   }
 });

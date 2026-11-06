@@ -45,6 +45,7 @@ test("command button stays inside the action bar at narrow width", async ({ app,
     const barRect = bar.getBoundingClientRect();
     const trailRect = trail.getBoundingClientRect();
     const statusRect = status.getBoundingClientRect();
+    const statusParentRect = (status.parentElement ?? document.body).getBoundingClientRect();
     const permissionRect = permissionCell.getBoundingClientRect();
     const trailStyle = getComputedStyle(trail);
     const permissionStyle = getComputedStyle(permissionCell);
@@ -58,6 +59,8 @@ test("command button stays inside the action bar at narrow width", async ({ app,
       barRight: barRect.right,
       trailingRight: trailRect.right,
       statusRight: statusRect.right,
+      statusParentRight: statusParentRect.right,
+      statusOverflow: status.scrollWidth - status.clientWidth,
       permissionWidth: permissionRect.width,
       trailingOverflowX: trailStyle.overflowX,
       permissionOverflowX: permissionStyle.overflowX,
@@ -78,7 +81,10 @@ test("command button stays inside the action bar at narrow width", async ({ app,
   expect(geometry.buttonRight).toBeLessThanOrEqual(geometry.barRight);
   expect(geometry.buttonRight).toBeLessThanOrEqual(geometry.vw);
   expect(geometry.trailingRight).toBeLessThanOrEqual(geometry.barRight);
-  expect(geometry.statusRight).toBeLessThanOrEqual(geometry.barRight);
+  // The status row sits below the bordered input box, not inside its action bar: it must fit its own container.
+  expect(geometry.statusRight).toBeLessThanOrEqual(geometry.statusParentRight);
+  expect(geometry.statusRight).toBeLessThanOrEqual(geometry.vw);
+  expect(geometry.statusOverflow).toBeLessThanOrEqual(0);
   expect(geometry.permissionWidth).toBeGreaterThan(0);
   expect(geometry.trailingOverflowX).toBe("hidden");
   expect(geometry.permissionOverflowX).toBe("hidden");

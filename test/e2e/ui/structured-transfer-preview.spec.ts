@@ -7,7 +7,7 @@ import {
 } from "./seeded-electron.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
-test("session files distinguish completed and cancelled transfer destinations", async () => {
+test("changed files distinguish completed and cancelled transfer destinations", async () => {
   expect(builtMainExists(), "Build the app before checking the transfer UI").toBe(true);
   const now = Date.now() - 10_000;
   const ctx = await launchSeededElectron({
@@ -48,14 +48,17 @@ test("session files distinguish completed and cancelled transfer destinations", 
     await expect(toggle).toBeVisible({ timeout: 20_000 });
     await toggle.click();
     await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
-    await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
+    // The one project tree (315307c02) files transfer destinations under "Changed"; "Session" lists only files the session read.
+    const changedFilter = ctx.page.getByTestId("chat-side-panel-file-filter-changed");
+    await changedFilter.click();
+    await expect(changedFilter).toHaveAttribute("aria-pressed", "true");
     const files = ctx.page.getByTestId("chat-side-panel-file-tree");
     await expect(files).toBeVisible();
     await expect(files).toContainText("copied-assets");
     await expect(files).toContainText("unpacked-assets");
     await expect(files).not.toContainText("original-assets");
-    const cancelledRow = files.getByTestId("chat-side-panel-file-tree-file").filter({ hasText: "cancelled-assets" });
-    await expect(cancelledRow.getByTestId("chat-side-panel-file-tree-operation")).toHaveText("중단됨");
+    const cancelledRow = files.getByRole("treeitem").filter({ hasText: "cancelled-assets" });
+    await expect(cancelledRow.getByTestId("chat-side-panel-file-state")).toHaveText("중단됨");
     const screenshotPath = test.info().outputPath("structured-transfer-destinations.png");
     await ctx.page.screenshot({ path: screenshotPath });
     await test.info().attach("structured-transfer-destinations.png", {

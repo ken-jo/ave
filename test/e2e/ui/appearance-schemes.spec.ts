@@ -15,10 +15,16 @@ test('appearance mode and schemes update painted UI', async ({ app, mainWindow }
     for (const scheme of SCHEMES.filter((candidate) => candidate.shell === mode)) {
       await page.locator(`[data-scheme-id="${scheme.id}"]`).click();
       await expect(page.locator('html')).toHaveAttribute('data-scheme', scheme.id);
+      // The scheme paints the opaque card surfaces. On macOS the window ground (body) is deliberately clear over the window
+      // material (html[data-glass], e7fbaf70d); elsewhere the body itself is painted.
       const colors = await page.evaluate(() => {
-        const style = getComputedStyle(document.body);
-        return { background: style.backgroundColor, foreground: style.color };
+        const glass = document.documentElement.hasAttribute('data-glass');
+        const ground = glass ? document.querySelector('[data-testid="pane"]') : document.body;
+        if (!ground) throw new Error('painted surface missing');
+        const style = getComputedStyle(ground);
+        return { glass, bodyBackground: getComputedStyle(document.body).backgroundColor, background: style.backgroundColor, foreground: style.color };
       });
+      if (colors.glass) expect(colors.bodyBackground).toBe('rgba(0, 0, 0, 0)');
       expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
       expect(colors.foreground).not.toBe(colors.background);
     }

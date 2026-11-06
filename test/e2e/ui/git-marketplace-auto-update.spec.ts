@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
+import { admitFixturePlugins } from './admit-fixture-plugins.js';
 import {
   createFixtureRepo,
   removeFixtureRepo,
@@ -13,6 +14,8 @@ import {
 } from '../../../src/marketplace/__tests__/fixtures/git-http-server.js';
 import { jsonText } from '../../../src/marketplace/__tests__/fixtures/package-files.js';
 import { agentPluginsDocument } from '../../../src/plugins/__tests__/test-helpers.js';
+// Packages for another host protocol are not offered to this installation (PACKAGE_INCOMPATIBLE); publish for the current one.
+import { HOST_PROTOCOL_VERSION } from '../../../src/plugins/isolation/host-api-wire.js';
 import type {
   CatalogView,
   GitMarketplaceResult,
@@ -35,7 +38,7 @@ function marketplaceTree(version: string): Entry[] {
   const authority = {
     capabilities: [],
     ...(version === '1.0.0' ? {} : { networkAccess: { allowedDomains: ['upload.example.com'], reasoning: 'Uploads drafts.' } }),
-    requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: '2' },
+    requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: HOST_PROTOCOL_VERSION },
   };
   const plugin = agentPluginsDocument({
     id: 'harbor-panel',
@@ -57,7 +60,7 @@ function marketplaceTree(version: string): Entry[] {
       ],
     })),
     file('plugins/harbor-panel/ave-package.json', jsonText({
-      schemaVersion: 2, kind: 'plugin', name: 'harbor-panel', version, minAppVersion: MIN_APP_VERSION, hostProtocol: '2',
+      schemaVersion: 2, kind: 'plugin', name: 'harbor-panel', version, minAppVersion: MIN_APP_VERSION, hostProtocol: HOST_PROTOCOL_VERSION,
       payload: { authority, artifact: { tree: 'plugins/harbor-panel' } },
     })),
     file('plugins/harbor-panel/plugin.json', jsonText(plugin)),
@@ -101,51 +104,55 @@ test.describe('git marketplace automatic updates', () => {
     if (served) rmSync(served, { recursive: true, force: true });
   });
 
-  test('applies a consent-free update by itself and holds one that asks for more for review', async ({ app, mainWindow, t }) => {
-    const preview = await call<SourcePreviewResultView>(mainWindow, 'previewSource', { input: server.url(SOURCE_ID), auth: 'none' });
-    if (preview.type !== 'marketplace') throw new Error(`expected a marketplace preview, got ${preview.type}`);
-    await call<SourceView>(mainWindow, 'addSource', { previewId: preview.previewId, id: SOURCE_ID });
-    for (const [kind, name] of [['plugin', 'harbor-panel'], ['skill', 'harbor-review']] as const) {
-      const plan = await call<InstallPlanView>(mainWindow, 'planInstall', { sourceId: SOURCE_ID, kind, name });
-      await call(mainWindow, 'executeInstall', plan.planId);
-    }
+  test('applies a consent-free update by itself and holds one that asks for more for review', async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, launchEnv, t }) => {
+    // The seeded plugin registry waits for the home trust review; admit it the way a user does, keeping the scheduler env.
+    const { app, mainWindow } = await admitFixturePlugins({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome }, launchEnv);
+    try {
+      const preview = await call<SourcePreviewResultView>(mainWindow, 'previewSource', { input: server.url(SOURCE_ID), auth: 'none' });
+      if (preview.type !== 'marketplace') throw new Error(`expected a marketplace preview, got ${preview.type}`);
+      await call<SourceView>(mainWindow, 'addSource', { previewId: preview.previewId, id: SOURCE_ID });
+      for (const [kind, name] of [['plugin', 'harbor-panel'], ['skill', 'harbor-review']] as const) {
+        const plan = await call<InstallPlanView>(mainWindow, 'planInstall', { sourceId: SOURCE_ID, kind, name });
+        await call(mainWindow, 'executeInstall', plan.planId);
+      }
 
-    // Enable custom HTTP sources only after accepting unencrypted updates.
-    const settings = await openInlineSettings(app, mainWindow, 'marketplace');
-    const sourceRow = settings.getByTestId(`git-marketplace:updates:source:${SOURCE_ID}`);
-    await expect(sourceRow).toBeVisible({ timeout: 30_000 });
-    await sourceRow.getByTestId(`git-marketplace:updates:source-switch:${SOURCE_ID}`).selectOption('on');
-    await expect(sourceRow.getByTestId('git-marketplace:updates:unencrypted')).toContainText(t('gitMarketplace.warning.unencryptedUpdates', { source: 'Harbor Tools' }));
-    await sourceRow.getByTestId('git-marketplace:updates:unencrypted:continue').click();
-    await expect(sourceRow.getByTestId(`git-marketplace:updates:source-switch:${SOURCE_ID}`)).toHaveValue('on', { timeout: 30_000 });
+      // Enable custom HTTP sources only after accepting unencrypted updates.
+      const settings = await openInlineSettings(app, mainWindow, 'marketplace');
+      const sourceRow = settings.getByTestId(`git-marketplace:updates:source:${SOURCE_ID}`);
+      await expect(sourceRow).toBeVisible({ timeout: 30_000 });
+      await sourceRow.getByTestId(`git-marketplace:updates:source-switch:${SOURCE_ID}`).selectOption('on');
+      await expect(sourceRow.getByTestId('git-marketplace:updates:unencrypted')).toContainText(t('gitMarketplace.warning.unencryptedUpdates', { source: 'Harbor Tools' }));
+      await sourceRow.getByTestId('git-marketplace:updates:unencrypted:continue').click();
+      await expect(sourceRow.getByTestId(`git-marketplace:updates:source-switch:${SOURCE_ID}`)).toHaveValue('on', { timeout: 30_000 });
 
-    repo.commitEntries(marketplaceTree('1.0.1'), 'publish 1.0.1');
-    await settings.getByTestId('git-marketplace:updates:check').click();
-    await expect.poll(async () => (await call<UpdateStatusView>(mainWindow, 'updateStatus')).packages
-      .map((update) => `${update.key.kind}/${update.key.name}:${update.state}`).sort(), { timeout: 60_000 })
-      .toEqual(['plugin/harbor-panel:needs-review', 'skill/harbor-review:applied']);
-    const status = await call<UpdateStatusView>(mainWindow, 'updateStatus');
-    expect(status.packages.find((update) => update.key.kind === 'plugin')?.reasons).toEqual(['consent-changed']);
+      repo.commitEntries(marketplaceTree('1.0.1'), 'publish 1.0.1');
+      await settings.getByTestId('git-marketplace:updates:check').click();
+      await expect.poll(async () => (await call<UpdateStatusView>(mainWindow, 'updateStatus')).packages
+        .map((update) => `${update.key.kind}/${update.key.name}:${update.state}`).sort(), { timeout: 60_000 })
+        .toEqual(['plugin/harbor-panel:needs-review', 'skill/harbor-review:applied']);
+      const status = await call<UpdateStatusView>(mainWindow, 'updateStatus');
+      expect(status.packages.find((update) => update.key.kind === 'plugin')?.reasons).toEqual(['consent-changed']);
 
-    const installed = await call<CatalogView>(mainWindow, 'listCatalog', { installedOnly: true });
-    expect(installed.entries.map((entry) => `${entry.key.kind}/${entry.key.name}@${JSON.stringify(entry.state)}`).sort()).toEqual([
-      `plugin/harbor-panel@${JSON.stringify({ state: 'update', from: '1.0.0', to: '1.0.1' })}`,
-      `skill/harbor-review@${JSON.stringify({ state: 'installed', version: '1.0.1' })}`,
-    ]);
+      const installed = await call<CatalogView>(mainWindow, 'listCatalog', { installedOnly: true });
+      expect(installed.entries.map((entry) => `${entry.key.kind}/${entry.key.name}@${JSON.stringify(entry.state)}`).sort()).toEqual([
+        `plugin/harbor-panel@${JSON.stringify({ state: 'update', from: '1.0.0', to: '1.0.1' })}`,
+        `skill/harbor-review@${JSON.stringify({ state: 'installed', version: '1.0.1' })}`,
+      ]);
 
-    await expect(settings.getByTestId(`git-marketplace:updates:recent:${SOURCE_ID}:skill:harbor-review`)).toContainText('1.0.0 → 1.0.1');
-    const held = settings.getByTestId(`git-marketplace:updates:row:${SOURCE_ID}:plugin:harbor-panel`);
-    await expect(held.getByTestId('git-marketplace:updates:state')).toHaveText(t('gitMarketplace.updates.state.needsReview'));
-    await expect(held.getByTestId('git-marketplace:updates:reasons')).toHaveText(t('gitMarketplace.updates.reason.consentChanged'));
-    await expect(settings.getByTestId(`git-marketplace:boot-notice:auto-updated:${SOURCE_ID}:skill:harbor-review`)).toBeVisible();
-    await test.info().attach('auto-update-card', { body: await settings.getByTestId('git-marketplace:updates').screenshot(), contentType: 'image/png' });
+      await expect(settings.getByTestId(`git-marketplace:updates:recent:${SOURCE_ID}:skill:harbor-review`)).toContainText('1.0.0 → 1.0.1');
+      const held = settings.getByTestId(`git-marketplace:updates:row:${SOURCE_ID}:plugin:harbor-panel`);
+      await expect(held.getByTestId('git-marketplace:updates:state')).toHaveText(t('gitMarketplace.updates.state.needsReview'));
+      await expect(held.getByTestId('git-marketplace:updates:reasons')).toHaveText(t('gitMarketplace.updates.reason.consentChanged'));
+      await expect(settings.getByTestId(`git-marketplace:boot-notice:auto-updated:${SOURCE_ID}:skill:harbor-review`)).toBeVisible();
+      await test.info().attach('auto-update-card', { body: await settings.getByTestId('git-marketplace:updates').screenshot(), contentType: 'image/png' });
 
-    await held.getByTestId('git-marketplace:updates:review').click();
-    const sheet = mainWindow.getByTestId('git-marketplace:sheet');
-    await expect(sheet.getByTestId('git-marketplace:consent-row:authority.networkAccess')).toContainText('upload.example.com');
-    await sheet.getByTestId('git-marketplace:confirm').click();
-    await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
-    await sheet.getByTestId('git-marketplace:sheet:close').click();
-    await closeInlineSettings(app, settings);
+      await held.getByTestId('git-marketplace:updates:review').click();
+      const sheet = mainWindow.getByTestId('git-marketplace:sheet');
+      await expect(sheet.getByTestId('git-marketplace:consent-row:authority.networkAccess')).toContainText('upload.example.com');
+      await sheet.getByTestId('git-marketplace:confirm').click();
+      await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
+      await sheet.getByTestId('git-marketplace:sheet:close').click();
+      await closeInlineSettings(app, settings);
+    } finally { await app.close(); }
   });
 });

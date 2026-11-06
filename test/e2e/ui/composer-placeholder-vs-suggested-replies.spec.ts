@@ -11,7 +11,8 @@ test('composer placeholder renders one of the known hints at rest', async ({ mai
   const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const knownHints = new RegExp(
     [
-      t('composerPlaceholder.defaultHint'),
+      // The renderer fills in the platform's paste modifier (utils/composer-placeholder.ts).
+      t('composerPlaceholder.defaultHint', { pasteModifier: process.platform === 'darwin' ? '⌘' : 'Ctrl' }),
       t('composerPlaceholder.apiKeyMissing'),
       t('composerPlaceholder.streamingHint'),
     ]
