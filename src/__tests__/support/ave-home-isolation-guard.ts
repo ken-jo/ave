@@ -2,19 +2,22 @@
 import { createRequire } from "node:module";
 import { homedir, userInfo } from "node:os";
 import { inject } from "vitest";
-import { configuredTestTmpRoot } from "./test-tmp-root.js";
+import { canonicalPath } from "./test-tmp-root.js";
+
+export { canonicalPath };
 
 declare module "vitest" {
   export interface ProvidedContext {
     realProgramData: string | null;
     realAccountHome: string;
+    /** The AVE_TEST_TMP_ROOT global setup validated, or null when the run uses the default roots. */
+    explicitTestTmpRoot: string | null;
   }
 }
 
 // Use real filesystem functions despite suite mocks; allow account-home mocks for guard tests.
 const nodeRequire = createRequire(import.meta.url);
-const { lstatSync, readlinkSync, realpathSync } = nodeRequire("node:fs") as typeof import("node:fs");
-const { basename, dirname, join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
+const { join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
 
 export const AVE_HOME_ISOLATION_GUARD_ACTIVE: boolean = true;
 
@@ -84,14 +87,14 @@ function accountAveHome(): string {
   return resolve(join(accountHome, ".ave"));
 }
 
-/** The caller's explicit scratch root is the run's own, validated as global setup did against the real account home
- * captured before any suite mocked it; nothing wider is sanctioned. */
+/** The caller's explicit scratch root, as global setup validated it against the real account home; nothing wider is
+ * sanctioned. It is read only from the provided context, so a test that changes AVE_TEST_TMP_ROOT cannot widen the guard. */
 function explicitTestTmpRoot(): string[] {
-  if (process.env.AVE_TEST_TMP_ROOT === undefined) return [];
-  const realAccountHome = inject("realAccountHome");
-  if (!realAccountHome) throw new Error("AVE_TEST_TMP_ROOT isolation requires realAccountHome captured by vitest.globalSetup.ts");
-  const root = configuredTestTmpRoot(realAccountHome);
-  return root === undefined ? [] : [root];
+  const root = inject("explicitTestTmpRoot");
+  if (root === undefined) {
+    throw new Error("Ave home isolation requires explicitTestTmpRoot provided by vitest.globalSetup.ts");
+  }
+  return root === null ? [] : [root];
 }
 
 function refuseUnder(path: string, action: string, realHomes: readonly string[], allowTestTmp = true, caseInsensitive = process.platform !== "linux", testTmpRoots?: readonly string[]): void {
@@ -110,41 +113,6 @@ function refuseUnder(path: string, action: string, realHomes: readonly string[],
         throw new Error(`refusing to ${action} ${path} from a test process; it is under the real ${real}`);
       }
     }
-  }
-}
-
-/** Resolve existing ancestors and dangling links so missing paths cannot hide a real-home target. */
-export function canonicalPath(path: string): string {
-  const missing: string[] = [];
-  let current = resolve(path);
-  for (let hops = 0; ; ) {
-    try {
-      return join(realpathSync.native(current), ...missing);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") {
-        if (/^\\\\(?:\?\\UNC\\|[^?.\\])/i.test(current)) return resolve(path);
-        throw error;
-      }
-    }
-    let link: string | undefined;
-    try {
-      if (lstatSync(current).isSymbolicLink()) link = readlinkSync(current);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") {
-        throw error;
-      }
-    }
-    if (link !== undefined) {
-      // Linux allows 40 links in one resolution; past that the path is a loop.
-      if (++hops > 40) throw new Error(`too many links resolving ${path}`);
-      current = resolve(dirname(current), link);
-      continue;
-    }
-    const parent = dirname(current);
-    if (parent === current) return join(current, ...missing);
-    missing.unshift(basename(current));
-    current = parent;
   }
 }
 

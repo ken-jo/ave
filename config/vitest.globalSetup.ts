@@ -50,6 +50,7 @@ interface RunDirs {
   aveHomeBase: string;
   tmpBase: string;
   pluginChildEntryPath: string;
+  explicitTestTmpRoot: string | null;
   users: number;
 }
 
@@ -74,6 +75,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     project.provide("pluginChildEntryPath", existing.pluginChildEntryPath);
     project.provide("realProgramData", REAL_PROGRAM_DATA);
     project.provide("realAccountHome", REAL_ACCOUNT_HOME);
+    project.provide("explicitTestTmpRoot", existing.explicitTestTmpRoot);
     return () => releaseRunDirs(holder);
   }
 
@@ -149,7 +151,9 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   project.provide("pluginChildEntryPath", pluginChildEntryPath);
   project.provide("realProgramData", REAL_PROGRAM_DATA);
   project.provide("realAccountHome", REAL_ACCOUNT_HOME);
-  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, tmpBase, pluginChildEntryPath, users: 1 };
+  // Workers trust only this validated root; re-reading AVE_TEST_TMP_ROOT there would let a test widen the guard.
+  project.provide("explicitTestTmpRoot", configuredRoot ?? null);
+  holder[RUN_DIRS] = { sandboxBase, aveHomeBase, tmpBase, pluginChildEntryPath, explicitTestTmpRoot: configuredRoot ?? null, users: 1 };
   return () => releaseRunDirs(holder);
 }
 

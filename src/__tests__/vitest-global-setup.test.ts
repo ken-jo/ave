@@ -131,8 +131,11 @@ describe("vitest global setup", () => {
     const home = homedir();
     const root = join(scratch(), "test-tmp");
     process.env.AVE_TEST_TMP_ROOT = root;
-    const teardown = await setup(project());
+    const provided: Provided = new Map();
+    const teardown = await setup(project(true, "forks", provided));
     try {
+      // Workers read this validated root, never AVE_TEST_TMP_ROOT itself.
+      expect(provided.get("explicitTestTmpRoot")).toBe(root);
       expect(homedir()).toBe(home);
       expect(dirname(process.env.AVE_TEST_RUN_HOME!)).toBe(root);
       // The run temp directory lives under the explicit root too, not under the account home or the shared default.
@@ -173,6 +176,9 @@ describe("vitest global setup", () => {
     expect(jsdomProvided.get("realProgramData")).toBe(nodeProvided.get("realProgramData"));
     expect(nodeProvided.get("realAccountHome")).toBeTypeOf("string");
     expect(jsdomProvided.get("realAccountHome")).toBe(nodeProvided.get("realAccountHome"));
+    // No AVE_TEST_TMP_ROOT: every project is told so, and the second reuses the first's answer.
+    expect(nodeProvided.get("explicitTestTmpRoot")).toBeNull();
+    expect(jsdomProvided.get("explicitTestTmpRoot")).toBeNull();
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {
