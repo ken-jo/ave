@@ -289,6 +289,7 @@ describe("pre-push fast source tier", () => {
       "src/data/__tests__/settings-store.test.ts": [
         "src/data/secret-document-store.ts",
         "src/data/settings-",
+        "src/shared/ipc-channels.ts",
         "src/shared/settings",
       ],
       "src/ipc/__tests__/channel-inventory.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
@@ -362,6 +363,7 @@ describe("pre-push fast source tier", () => {
       "src/__tests__/packaging-discipline-source.test.ts",
       "src/__tests__/preload-shape.test.ts",
       "src/__tests__/preload.test.ts",
+      "src/data/__tests__/settings-store.test.ts",
       "src/ipc/__tests__/channel-inventory.test.ts",
       "src/ipc/__tests__/domain-exports.test.ts",
       "src/ipc/__tests__/host-renderer-only-channels.test.ts",
