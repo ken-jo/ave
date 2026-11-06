@@ -1012,7 +1012,12 @@ export function BrowserWorkspace({
     [targets],
   );
 
+  // The tab whose address row holds text the user typed and has not submitted. A page that reports a new address while
+  // the user types (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
+  const draftEditedForTab = useRef<string | null>(null);
   useEffect(() => {
+    if (draftEditedForTab.current === tabId) return;
+    draftEditedForTab.current = null;
     setAddressDraft(navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
     setAddressError(null);
   }, [navigation.url, manualUrl, latestTarget, tabId]);
@@ -1045,6 +1050,7 @@ export function BrowserWorkspace({
       setAddressError(t("chatPreviewRail.browserInvalidUrl"));
       return;
     }
+    draftEditedForTab.current = null;
     setAddressDraft(normalized);
     setAddressError(null);
     void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
@@ -1084,6 +1090,7 @@ export function BrowserWorkspace({
           data-testid="chat-side-panel-browser-address"
           value={addressDraft}
           onChange={(event) => {
+            draftEditedForTab.current = tabId;
             setAddressDraft(event.target.value);
             if (addressError) setAddressError(null);
           }}

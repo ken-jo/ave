@@ -609,6 +609,31 @@ describe("ChatSidePanel", () => {
     expect(screen.getAllByText("metrics.json").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("keeps an address the user is typing when the page reports a new address, until it is submitted", async () => {
+    const targets: ChatPreviewTarget[] = [{
+      id: "url-1", kind: "url", title: "example.com/docs", subtitle: "web_fetch", sourceLabel: "builtin",
+      createdOrder: 1, url: "https://example.com/docs", origin: "result",
+    }];
+    renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
+    addTabViaMenu("browser");
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]') as HTMLElement
+      & { getURL?: () => string; getTitle?: () => string; canGoBack?: () => boolean; canGoForward?: () => boolean };
+    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
+    expect(addressInput.value).toBe("https://example.com/docs");
+    fireEvent.change(addressInput, { target: { value: "google.com" } });
+    // The first page finishes loading (or fails) while the user types: the page's report must not erase the draft.
+    let guestUrl = "https://example.com/docs/redirected";
+    Object.assign(webview, { getURL: () => guestUrl, getTitle: () => "", canGoBack: () => false, canGoForward: () => false });
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("google.com");
+    await act(async () => { fireEvent.click(screen.getByTestId("chat-side-panel-browser-go")); });
+    expect(webview.getAttribute("src")).toBe("https://google.com/");
+    // Once submitted, the address follows the page again.
+    guestUrl = "https://www.google.com/";
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://www.google.com/");
+  });
+
   it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", () => {
     const targets: ChatPreviewTarget[] = [
       {
