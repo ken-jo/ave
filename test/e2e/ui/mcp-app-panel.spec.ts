@@ -196,6 +196,7 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     const readLanguage = async () => ({
       lang: await dock.evaluate(() => document.documentElement.lang),
       badge: await dock.evaluate(() => document.querySelector('.slot .rounded.border > div')?.lastElementChild?.textContent ?? null),
+      title: await dock.evaluate(() => document.querySelector('.slot .rounded.border > div')?.firstElementChild?.textContent ?? null),
       hostLocale: await app.evaluate(async ({ webContents }) => {
         const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
         if (!guest) throw new Error('App guest not found');
@@ -213,6 +214,9 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     expect(koreanLanguage.lang).toBe('ko');
     expect(koreanLanguage.badge).toMatch(/[\uac00-\ud7a3]/u);
     expect(koreanLanguage.badge).not.toBe(englishLanguage.badge);
+    // The fixture names no title, so the card shows the localized fallback.
+    expect(englishLanguage.title).toBe('MCP App');
+    expect(koreanLanguage.title).toBe('MCP 앱');
     await dock.screenshot({ path: testInfo.outputPath('dock-ko.png') });
   } finally { await app.close(); }
 });
