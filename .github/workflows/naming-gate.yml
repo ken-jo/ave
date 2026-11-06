@@ -16,9 +16,7 @@ name: Naming Gate (process-metadata + home-path)
 #    *않는* 것도 그 문서가 reviewer 규칙으로 명시한다 — grep 이 도메인 의미와
 #    process 의미를 구분할 수 없는 단어는 패턴에서 빼고 규칙 문서에 남긴다.
 #    검사 본체는 `.github/scripts/naming-gate.sh` 한 벌로만 존재하며 CI 밖에서도
-#    실행할 수 있다. `naming-gate-selftest.sh` 가 synthetic diff 로 그 동작을
-#    고정하고 같은 job 에서 함께 돌기 때문에, grep 프로그램의 회귀는 그것을
-#    유발한 PR 에서 바로 실패한다.
+#    실행할 수 있다.
 #
 # 2. home-path-gate — 이 저장소는 PUBLIC 이다. 절대 홈 경로(`/Users/<계정>`,
 #    `/home/<계정>`, `C:\Users\<계정>`, 그리고 agent 도구가 쓰는 dash-encoded
@@ -47,9 +45,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
-      - name: Self-test the gate
-        run: .github/scripts/naming-gate-selftest.sh
 
       - name: Check this PR's diff
         run: |

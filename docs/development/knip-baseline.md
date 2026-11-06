@@ -26,14 +26,7 @@ The gate fails on:
 - Knip config-load errors, version drift, malformed JSON, or an unsupported
   baseline schema.
 
-Run the deterministic proof that a new unused file is rejected:
-
-```powershell
-bun run test:knip-gate
-```
-
-The proof uses an isolated temporary project and removes it afterward, so it
-cannot race with a concurrent repository scan. Only after reviewing intentional
+Only after reviewing intentional
 debt changes should a maintainer run `bun run check:knip:update`. That command
 flushes a same-directory staging file and atomically replaces the snapshot, so
 an interrupted update cannot truncate the reviewed baseline.

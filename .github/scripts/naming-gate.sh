@@ -13,8 +13,6 @@
 # Diff-based on purpose: existing violations are grandfathered and removed by
 # separate sweep PRs. The job here is to stop new call sites.
 #
-# `.github/scripts/naming-gate-selftest.sh` pins every behavior below against
-# synthetic diffs and runs in the same workflow. Change one, change the other.
 
 set -uo pipefail
 

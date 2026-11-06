@@ -238,9 +238,11 @@ describe("pre-push fast source tier", () => {
   });
 
 
-  it("wires the fast tier, its opt-out and its log line into the hook", () => {
+  it("wires the fast tier, manual full checks and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
+    expect(hook).toContain("AVE_PREPUSH_FULL=1 requested global-input checks");
+    expect(hook).toContain('} else if (stage === "manual") {');
     expect(hook).toContain("console.log(describeScopedTier({");
     expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");

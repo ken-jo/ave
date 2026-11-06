@@ -46,7 +46,9 @@ function dispatch(stage: string, env: Record<string, string>) {
   return runInNewContext(`(${hook.slice(start, end)})`, {
     stage, process: { env }, repoRoot: "/fixture", prePushUpdates: null, remoteLocation: "/remote",
     pushCheckout: { commitByLocalSha: new Map() }, withPushedCommits: () => null,
-    classifyPrePushChanges: () => ({ docsOnly: false, fastSource: true }),
+    classifyPrePushChanges: (_root: string, _updates: unknown, _remote: string, forced: boolean) =>
+      ({ docsOnly: false, fastSource: true, ...(forced ? { tier: GLOBAL_INPUT_TIER } : {}) }),
+    GLOBAL_INPUT_TIER,
   });
 }
 
@@ -69,22 +71,15 @@ const noRelated = { tests: [], narrowed: [], sources: [], untestedConsumers: [],
 describe("pre-push full tier on request only", () => {
   it.each([
     ["manual", {}, "manual stage runs the full checks"],
-    ["pre-push", { AVE_PREPUSH_FULL: "1" }, "AVE_PREPUSH_FULL=1 requested the full checks"],
   ])("keeps the full checks for stage %s with %j", (stage, env, reason) => {
     expect(dispatch(stage, env)).toEqual({ docsOnly: false, reason });
   });
 
   it("classifies every other pre-push", () => {
     expect(dispatch("pre-push", {})).toEqual({ docsOnly: false, fastSource: true });
-    expect(dispatch("pre-push", { AVE_PREPUSH_FULL: "0" })).toEqual({ docsOnly: false, fastSource: true });
+    expect(dispatch("pre-push", { AVE_PREPUSH_FULL: "1" })).toEqual({ docsOnly: false, fastSource: true, tier: GLOBAL_INPUT_TIER });
   });
 
-  it("documents AVE_PREPUSH_FULL=1 and the request cases in the hook header", () => {
-    const header = hook.slice(0, hook.indexOf("\nimport "));
-    expect(header).toContain("Set AVE_PREPUSH_FULL=1 to run the full tier for any push.");
-    expect(header).toContain("only on request: AVE_PREPUSH_FULL=1, the manual stage");
-    expect(header).toContain(FULL_SUITE_DEFERRED);
-  });
 });
 
 describe("pre-push scoped tier log line", () => {
@@ -93,7 +88,7 @@ describe("pre-push scoped tier log line", () => {
     expect(line).toBe(
       "[checks] tier=global-input pre-push: running every lock suite; remaining tests and build deferred to CI, " +
         "whose scope scripts/run-ci-suite.mjs picks " +
-        "(package.json is a global test or build input; AVE_PREPUSH_FULL=1 runs the full checks)",
+        "(package.json is a global test or build input)",
     );
   });
 

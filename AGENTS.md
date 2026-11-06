@@ -165,7 +165,7 @@ from a shipped specification may remain; review-round labels, work-plan coordina
 PR-derived identifiers, and orphaned version suffixes do not belong there.
 Commit messages, PR descriptions, and issues may record process history.
 
-`.github/scripts/naming-gate.sh` and its self-test own automated matching, paths,
+`.github/scripts/naming-gate.sh` owns automated matching, paths,
 and exceptions. Check added lines and renamed paths, including manually checking
 areas the gate does not cover. Do not treat excluded paths as permission to add
 process metadata. When changing the rule, keep its enforcement and tests aligned.
@@ -240,22 +240,14 @@ Keep task-specific inventories in issues rather than in this instruction file.
 
 ## Cross-Cutting Change Advisory
 
-- Sensitive cross-cutting work identified by `.github/workflows/cluster-detector.yml`
-  or task scope is advisory. It never requires an external reviewer, collaborator,
-  label, attestation, or additional merge approval.
+- Sensitive cross-cutting work identified by task scope is advisory. It never
+  requires an external reviewer, collaborator, label, attestation, or additional
+  merge approval.
 - The owner chooses proportionate architecture, critique, and security review and
   records material decisions, findings, and residual risk in the PR when useful.
   Parallel review, fixed roles, round counts, and cluster labels are optional,
   never prerequisites for implementation or merge.
   Owner self-review and automated review are valid evidence.
-- The detector evaluates only the trusted `main` base of this repository through
-  read-only repository and pull-request data access and never checks out or
-  executes pull-request content.
-  It uses only `contents: read` and `pull-requests: read`; it does not write commit
-  statuses, labels, or pull-request metadata.
-- Detector process failures (API, checkout, or schema validation) remain failures
-  to investigate. A sensitive-area or cluster finding emits a warning and step
-  summary only, and never blocks merge.
 
 ## Validation: proportional during work, complete once at publish
 
@@ -298,21 +290,13 @@ Pre-push picks one tier and logs it with the reason
   closest live tip of the default or an `integration/*` branch, so only its
   own commits count. Fast runs share `AVE_PREPUSH_FAST_SLOTS` (default 4)
   host slots.
-- full: `bun run typecheck`, full `bun run test`, `bun run build`, and
-  `check:gate-core`, for non-fast-forward updates, the default branch and
-  `integration/*` branches, noncanonical paths, consumed documentation
-  without a recorded reader set, deletions of modules,
-  non-module assets, mode changes, declaration files, message namespaces no
-  source file names literally, unresolved message consumers or catalog module
-  shapes, runtime entry files, modules with no related test files, and global
-  inputs (`package.json`, `bun.lock`, compiler, Vitest
-  and build configs, Vitest setup files, the message loader
-  `src/i18n/messages/index.ts`, `scripts/`, `.github/`), including earlier
-  commits in the push. A full run holds one host-wide lock (in `/tmp`, or
-  `AVE_PREPUSH_LOCK_DIR`), so two never run at once; a waiting push names the
-  holder's PID and fails after `AVE_PREPUSH_LOCK_TIMEOUT_S` (default 3600).
-  `AVE_PREPUSH_FULL=1`
-  forces it for one push; `AVE_HOOKS_SKIP=1` still skips the hook.
+- global-input: the fast checks, every lock suite, and a frozen-lockfile install
+  dry run for global inputs, untraceable changes, integration branches and tags.
+  `AVE_PREPUSH_FULL=1` also selects global-input checks.
+  Runs share the fast host slots. There is no automatic full tier; CI owns
+  the build and full-suite backstop through `scripts/run-ci-suite.mjs`.
+  The explicit manual stage retains full checks under an exclusive host lock.
+  `AVE_HOOKS_SKIP=1` still skips the hook.
 
 Every non-deletion ref update must name the checked-out `HEAD`. The tracked
 working tree and index must be clean before and after checks; otherwise the

@@ -42,8 +42,7 @@
 
 ## Sensitive-Area Advisory
 
-If `cluster-detector` emits a sensitive-area advisory, record any material owner
-review below. Cover architecture, critique, and security impacts in proportion to
+For sensitive-area changes, record any material owner review below. Cover architecture, critique, and security impacts in proportion to
 risk. This is not a merge gate: it never requires an external reviewer,
 collaborator, label, attestation, or additional approval.
 

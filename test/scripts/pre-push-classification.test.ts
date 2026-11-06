@@ -29,6 +29,7 @@ interface ClassificationOptions {
   update?: Partial<typeof update>;
   updates?: typeof update[];
   fastForward?: boolean;
+  forceGlobalInput?: boolean;
   replacedRemoteAvailable?: boolean;
   commentOnly?: boolean;
   historyReason?: string;
@@ -73,7 +74,7 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
     getUnattributedCatalogSelection: () =>
       options.unattributedCatalog ?? { namespaces: [], unattributedFiles: [], testFiles: [], consumerModules: [], skippedConsumers: [] },
   });
-  return classifyChanges("/fixture", { complete: true, updates: options.updates ?? [{ ...update, ...options.update }] }, "origin", "/remote");
+  return classifyChanges("/fixture", { complete: true, updates: options.updates ?? [{ ...update, ...options.update }] }, "origin", options.forceGlobalInput);
 }
 
 describe("pre-push classification precedence", () => {
@@ -117,19 +118,19 @@ describe("pre-push classification precedence", () => {
 
   it.each([
     { update: { remoteRef: "refs/tags/example" } },
-  ])("keeps full checks ahead of unconsumed documentation for %j", (options) => {
+  ])("keeps global-input checks ahead of unconsumed documentation for %j", (options) => {
     expect(classify([modified("docs/notes/example.md")], options).docsOnly).toBe(false);
   });
 
   it.each([
     { remoteSha: baseSha },
     { remoteSha: "0".repeat(40) },
-  ])("keeps a direct push to an integration branch on the full checks (%j)", (options) => {
+  ])("keeps a direct push to an integration branch on global-input checks (%j)", (options) => {
     const result = classify([modified("src/lib/example.ts")], {
       update: { remoteRef: "refs/heads/integration/permissions", ...options },
     });
-    expect(result.fastSource).not.toBe(true);
-    expect(result.reason).toBe("push to integration branch refs/heads/integration/permissions requires full checks");
+    expect(result).toMatchObject({ fastSource: true, tier: GLOBAL_INPUT_TIER });
+    expect(result.reason).toBe("push to integration branch refs/heads/integration/permissions requires global-input checks");
   });
 
   it("checks nothing for a new branch whose commit the remote already contains", () => {
@@ -507,15 +508,20 @@ describe("pre-push classification precedence", () => {
   });
 });
 
-describe("pre-push full checks on request only", () => {
+describe("pre-push global-input requests", () => {
   it.each([
-    [{ localSha: "0".repeat(40) }, "deleted ref refs/heads/topic requires full checks"],
-    [{ remoteRef: "refs/heads/main" }, "push to default branch refs/heads/main requires full checks"],
-    [{ remoteRef: "refs/heads/integration/permissions" }, "push to integration branch refs/heads/integration/permissions requires full checks"],
-    [{ remoteRef: "refs/tags/v1.0.0" }, "non-branch updates require full checks"],
-    [{ localRef: "refs/tags/v1.0.0" }, "non-branch updates require full checks"],
-  ])("keeps the full checks for %j", (updateOptions, reason) => {
-    expect(classify([modified("src/lib/example.ts")], { update: updateOptions })).toEqual({ docsOnly: false, reason });
+    [{ localSha: "0".repeat(40) }, "deleted ref refs/heads/topic requires global-input checks"],
+    [{ remoteRef: "refs/heads/main" }, "push to default branch refs/heads/main requires global-input checks"],
+    [{ remoteRef: "refs/heads/integration/permissions" }, "push to integration branch refs/heads/integration/permissions requires global-input checks"],
+    [{ remoteRef: "refs/tags/v1.0.0" }, "non-branch updates require global-input checks"],
+    [{ localRef: "refs/tags/v1.0.0" }, "non-branch updates require global-input checks"],
+  ])("keeps global-input checks for %j", (updateOptions, reason) => {
+    expect(classify([modified("src/lib/example.ts")], { update: updateOptions })).toMatchObject({ docsOnly: false, fastSource: true, tier: GLOBAL_INPUT_TIER, reason });
+  });
+
+  it("maps the explicit full switch to global-input checks", () => {
+    expect(classify([modified("docs/notes/example.md")], { forceGlobalInput: true }))
+      .toMatchObject({ docsOnly: false, fastSource: true, tier: GLOBAL_INPUT_TIER });
   });
 
   it.each([
