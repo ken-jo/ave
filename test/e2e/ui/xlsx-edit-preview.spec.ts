@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { test, expect } from "@playwright/test";
 import type { WebContents } from "electron";
 import { createServer, type ServerResponse } from "node:http";
@@ -40,7 +41,7 @@ test("edited workbook shows a recalculation badge through the real viewer", asyn
     ],
   });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
     await setWindowSize(ctx.app, 1280, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.locator('[data-testid^="tool-activity-item-"]').filter({ hasText: "budget.xlsx" }).click();
@@ -55,7 +56,7 @@ test("edited workbook shows a recalculation badge through the real viewer", asyn
   }
 });
 
-test("plugin webview asset navigation cannot reach workbook reads or observation acknowledgements", async () => {
+test("plugin webview asset navigation is refused and cannot reach workbook reads or observation acknowledgements", async () => {
   test.setTimeout(120_000);
   expect(builtMainExists()).toBe(true);
   mkdirSync(join(process.cwd(), ".cache"), { recursive: true });
@@ -79,7 +80,7 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
       permissions: { additionalDirectories: [directory] } },
   });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ ...settings,
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ ...settings,
       features: { ...(settings.features as Record<string, unknown>), osToolSandbox: true },
       permissions: { additionalDirectories: [directory] } }));
     const preview = await ctx.page.evaluate((path) => window.ave.preview.readDocument(path, 0, "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"), workbookPath);
@@ -120,16 +121,18 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
         const html = { url: guest.getURL(), type: guest.getType(),
           read: await invoke(input.readChannel, input.workbookPath, 0), ack: await invoke(input.ackChannel, rawAck),
           open: await invoke(input.openChannel, input.workbookPath) };
-        const navigated = new Promise<void>((resolve, reject) => {
-          deadline = setTimeout(() => reject(new Error("Guest script navigation did not finish")), 15_000);
-          guest.once("did-finish-load", () => { clearTimeout(deadline); resolve(); });
-          guest.once("did-fail-load", (_event, code, description, _url, mainFrame) => {
-            if (mainFrame) { clearTimeout(deadline); reject(new Error(`Guest script load failed: ${code} ${description}`)); }
-          });
+        // The global webview guard (main.ts web-contents-created) refuses every guest navigation that is not data:, about:
+        // or the host proxy scheme, so the asset never loads; a completed load would be the failure.
+        let navigationRequested = false;
+        guest.once("will-navigate", () => { navigationRequested = true; });
+        const refused = new Promise<void>((resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("Guest script navigation was neither refused nor completed")), 15_000);
+          guest.once("did-finish-load", () => { clearTimeout(deadline); reject(new Error("Guest navigated to a file asset")); });
+          guest.once("did-stop-loading", () => { clearTimeout(deadline); resolve(); });
         });
         await guest.executeJavaScript(`setTimeout(() => location.assign(${JSON.stringify(input.scriptUrl)}), 0); true`);
-        await navigated;
-        const script = { url: guest.getURL(), type: guest.getType(),
+        await refused;
+        const script = { requested: navigationRequested, url: guest.getURL(), type: guest.getType(),
           read: await invoke(input.readChannel, input.workbookPath, 0), ack: await invoke(input.ackChannel, rawAck),
           readFile: await invoke(input.readFileChannel, input.workbookPath), open: await invoke(input.openChannel, input.workbookPath) };
         return { html, script, partition: input.partition, guestUsesPluginSession: guest.session === pluginSession,
@@ -145,7 +148,7 @@ contextBridge.exposeInMainWorld("workbookIpcProbe", {
       openChannel: CHANNELS.attach.openExternal });
     expect(proof.html).toMatchObject({ url: htmlUrl, type: "webview", read: { ok: false, error: "unauthorized" },
       ack: { ok: false, error: "unauthorized" }, open: { ok: false, error: "unauthorized" } });
-    expect(proof.script).toMatchObject({ url: scriptUrl, type: "webview", read: { ok: false, error: "unauthorized" },
+    expect(proof.script).toMatchObject({ requested: true, url: htmlUrl, type: "webview", read: { ok: false, error: "unauthorized" },
       ack: { ok: false, error: "unauthorized" }, readFile: { ok: false, error: "unauthorized" }, open: { ok: false, error: "unauthorized" } });
     expect(proof).toMatchObject({ guestUsesPluginSession: true, guestUsesDefaultSession: false, guestFrameIsMain: true,
       hostType: "window", hostUsesDefaultSession: true });
@@ -225,7 +228,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   settings.features = { ...(settings.features as Record<string, unknown>), osToolSandbox: true };
   const ctx = await launchSeededElectron({ sessionTitle: "Agent document observation", settings, historyRows: [] });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory],
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     const runtime = await ctx.app.evaluate(() => process.execPath);
     const argv = [runtime, join(process.cwd(), "dist/skill-scripts/edit-xlsx.cjs"), path, requestPath];
@@ -254,7 +257,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     await ctx.page.evaluate(() => {
       const proofWindow = window as unknown as {
         captureProvisionalDocumentFrame: (frame: { values: string[]; visible: boolean; snapshotReceived: boolean; frameTime: number }) => Promise<void>;
-        observedDocumentEvents: Array<{ kind: string }>;
+        observedDocumentEvents: Array<{ kind: string; source?: string }>;
       };
       let scheduled = false;
       const capture = () => {
@@ -275,7 +278,8 @@ test("approved agent edits stream into the read-only workbook panel", async () =
           });
           void proofWindow.captureProvisionalDocumentFrame({ values: cells.map((cell) =>
             cell.querySelector('[data-testid="document-cell-value"]')?.textContent?.trim() ?? ""),
-            visible, frameTime, snapshotReceived: proofWindow.observedDocumentEvents.some((event) => event.kind === "snapshot") });
+            // The agent's shell command is observed too (source "terminal"); only the workbook's own snapshot publishes the edit.
+            visible, frameTime, snapshotReceived: proofWindow.observedDocumentEvents.some((event) => event.kind === "snapshot" && event.source === "document") });
         });
       };
       const observer = new MutationObserver(capture);
@@ -286,9 +290,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     const composer = ctx.page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
     await composer.fill("Observe agent workbook edits.");
     await composer.press("Enter");
-    const openApproval = ctx.page.getByTestId(TEST_IDS.approvalDock).first();
-    await expect(openApproval).toContainText("open_document", { timeout: 20_000 });
-    await openApproval.getByTestId(TEST_IDS.approveButton).click();
+    // Ordinary reads are allowed without a card (permission-decision-tree.md, "ordinary-read"); only the edit asks.
     const grid = ctx.page.getByTestId("chat-side-panel-table-grid");
     await expect(grid).toContainText("12", { timeout: 30_000 });
     await expect(ctx.page.getByTestId("chat-side-panel-table-preview")
@@ -326,10 +328,10 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     expect(actual.B10002!.v).toBe(84);
     expect(readFileSync(`${path}.ave-bak`)).toEqual(originalBytes);
     const events = await ctx.page.evaluate(() =>
-      (window as unknown as { observedDocumentEvents: Array<{ actor: string; kind: string; advisory?: boolean; seq: number }> }).observedDocumentEvents);
+      (window as unknown as { observedDocumentEvents: Array<{ actor: string; kind: string; source: string; advisory?: boolean; seq: number }> }).observedDocumentEvents);
     expect(events.every((event) => event.actor === "agent")).toBe(true);
     expect(events.filter((event) => event.kind === "element" && event.advisory).length).toBeGreaterThanOrEqual(2);
-    const snapshot = events.find((event) => event.kind === "snapshot");
+    const snapshot = events.find((event) => event.kind === "snapshot" && event.source === "document");
     expect(snapshot).toBeDefined();
     expect(events.some((event) => event.kind === "element" && event.advisory && event.seq < snapshot!.seq)).toBe(true);
     const evidence = test.info().outputPath("agent-document-events.json");
@@ -426,7 +428,7 @@ test("approved native edits highlight lines in the read-only code viewer", async
       { role: "assistant", content: "The code is ready to inspect.", createdAt: now + 3 },
     ] });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory],
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
     await setWindowSize(ctx.app, 960, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
@@ -434,7 +436,8 @@ test("approved native edits highlight lines in the read-only code viewer", async
     const preview = ctx.page.getByTestId("chat-side-panel-file-preview");
     await expect(preview).toContainText("export const value11 = 11;");
     await expect(preview.getByTestId("document-preview-header")).toHaveCount(1);
-    await expect(preview.getByRole("button", { name: "Open in default app", exact: true })).toBeVisible();
+    // Main hands only documents, media and plain data to the default app (shared/preview-external-open.ts); a .ts file is not offered.
+    await expect(preview.getByRole("button", { name: "Open in default app", exact: true })).toHaveCount(0);
     await expect(preview.getByTestId("document-preview-live-strip")).toHaveCount(0);
     await ctx.page.evaluate(async () => {
       await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-text");
@@ -447,9 +450,7 @@ test("approved native edits highlight lines in the read-only code viewer", async
     const composer = ctx.page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
     await composer.fill("Update the two constants and show the agent changes.");
     await composer.press("Enter");
-    const readApproval = ctx.page.getByTestId(TEST_IDS.approvalDock).first();
-    await expect(readApproval).toContainText("read_file", { timeout: 20_000 });
-    await readApproval.getByTestId(TEST_IDS.approveButton).click();
+    // Ordinary reads are allowed without a card (permission-decision-tree.md, "ordinary-read"); only the edit asks.
     const editApproval = ctx.page.getByTestId(TEST_IDS.approvalDock).first();
     await expect(editApproval).toContainText("edit_file", { timeout: 20_000 });
     expect(readFileSync(path, "utf8")).toBe(original);

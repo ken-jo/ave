@@ -102,6 +102,8 @@ export type ElectronOptions = {
   seedApiKey: boolean;
   /** Raw persisted provider id, including an id a newer build has retired. */
   seedLlmProvider: string;
+  /** Per-vendor blocks to seed. Built-in vendors no longer pick a model, so a route has one only when a profile saved it. */
+  seedLlmVendors: Record<string, { model: string }> | undefined;
   seedLocale: "ko" | "en";
   /** Explicit saved sandbox preference; undefined exercises production defaults. */
   seedOsToolSandbox: boolean | undefined;
@@ -120,6 +122,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
   // Seed a usable LLM key so the composer is enabled (see buildE2eSecrets). Specs that assert the no-key / key-toggle state override with `test.use({ seedApiKey: false })`.
   seedApiKey: [true, { option: true }],
   seedLlmProvider: ["", { option: true }],
+  seedLlmVendors: [undefined, { option: true }],
   // UI locale to seed. Defaults to 'en'; the production default; so ./fixtures specs exercise the English render path; their assertions go through the `t` fixture so they resolve
   // whatever is seeded. Specs that need Korean override with `test.use({ seedLocale: 'ko' })`; specs with their own harness pin their locale via a module-scoped `makeTestT(...)`.
   seedLocale: ["en", { option: true }],
@@ -162,6 +165,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
       seedPermissionMode,
       seedApiKey,
       seedLlmProvider,
+      seedLlmVendors,
       seedLocale,
       seedOsToolSandbox,
       devFlag,
@@ -194,8 +198,8 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
     if (seedOsToolSandbox !== undefined) {
       baseSettings.features = { ...(baseSettings.features as object), osToolSandbox: seedOsToolSandbox };
     }
-    const initialSettings = seedLlmProvider
-      ? { ...baseSettings, llm: { provider: seedLlmProvider } }
+    const initialSettings = seedLlmProvider || seedLlmVendors
+      ? { ...baseSettings, llm: { ...(seedLlmProvider ? { provider: seedLlmProvider } : {}), ...(seedLlmVendors ? { vendors: seedLlmVendors } : {}) } }
       : baseSettings;
     fs.writeFileSync(
       path.join(userDataDir, "ave-settings.json"),
