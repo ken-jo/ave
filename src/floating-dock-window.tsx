@@ -6,7 +6,7 @@ import { HostAppearanceProvider, type HostAppearance } from "./ui/renderer/theme
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
 import { applySchemeColors, applyUiFont } from "./ui/renderer/theme/resolve-theme.js";
 import { requireScheme } from "./ui/renderer/theme/schemes/index.js";
-import { isLocale, isLocaleMessagesLoaded, loadLocaleMessages, type Locale } from "./i18n/index.js";
+import { isLocale, isLocaleMessagesLoaded, loadLocaleMessages, t, type Locale } from "./i18n/index.js";
 import { I18nProvider } from "./i18n/react.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
@@ -42,12 +42,19 @@ function applyLocale(next: Locale): void {
   const commit = () => {
     if (request !== localeRequest) return;
     locale = next;
+    element("empty").hidden = true;
     renderPanels();
   };
   if (isLocaleMessagesLoaded(next)) return commit();
   renderPanels();
-  // A catalog that cannot load rejects with its cause; there is no silent English fallback.
-  void loadLocaleMessages(next).then(commit);
+  // A catalog that cannot load is reported, in the console with its cause and in the dock itself; there is no silent English fallback.
+  void loadLocaleMessages(next).then(commit, (error: unknown) => {
+    if (request !== localeRequest) return;
+    console.error(`[floating-dock] the ${next} language catalog failed to load`, error);
+    const empty = element("empty");
+    empty.textContent = t("floatingDock.languageUnavailable", { locale: next });
+    empty.hidden = false;
+  });
 }
 
 const slots = element("slots");

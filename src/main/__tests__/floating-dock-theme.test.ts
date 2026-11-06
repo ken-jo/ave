@@ -293,6 +293,56 @@ describe("the dock window paints the host theme main sends (real preload, host t
     expect(token("background")).not.toBe(nord.tokens.background);
   });
 
+  it("is sent a built-in language when main's is an installed-only pack, and paints in it", async () => {
+    await openWindow([]);
+    // The modules the dock window just loaded: main's side of this test must share their i18n and theme registries.
+    const i18n = await import("../../i18n/index.js");
+    const replay = await import("../../shared/host-theme-replay.js");
+    const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
+    const previous = i18n.getLocale();
+    try {
+      i18n.registerInstalledLocales([{ locale: "ja", nativeName: "日本語", englishName: "Japanese" }]);
+      i18n.setLocale("ja");
+      expect(i18n.getLocale()).toBe("ja");
+      replay.recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
+      const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
+      dock.show(BOUNDS);
+      const win = windows.at(-1)!;
+      win.fire("ready-to-show");
+      const sent = win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).at(-1)?.[1] as { locale: string };
+      expect(sent.locale).toBe("en");
+      // The dock accepted the snapshot: its root carries the scheme it names.
+      expect(document.documentElement.getAttribute("data-scheme")).toBe("nord");
+      expect(bg()).toBe(THEME.tokens["--ave-bg"]);
+    } finally {
+      i18n.setLocale(previous);
+      i18n.registerInstalledLocales([]);
+    }
+  });
+
+  it("reports a language catalog that fails to load, in the console and in the dock, without falling back", async () => {
+    await openWindow([]);
+    const catalogs = await import("../../i18n/messages/index.js");
+    const runtime = await import("../../i18n/runtime.js");
+    const previous = runtime.getLocale();
+    runtime.setLocale("en");
+    const cause = new Error("chunk missing");
+    const restore = catalogs.__setLocaleLoaderForTest("ko", () => Promise.reject(cause));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId: "nord", shell: "dark", tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", locale: "ko" }));
+      await vi.waitFor(() => expect(document.getElementById("empty")?.hidden).toBe(false));
+      expect(document.getElementById("empty")?.textContent).toBe("The ko interface language could not be loaded.");
+      expect(consoleError).toHaveBeenCalledWith("[floating-dock] the ko language catalog failed to load", cause);
+      expect(catalogs.isLocaleMessagesLoaded("ko")).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+      restore();
+      await catalogs.loadLocaleMessages("ko");
+      runtime.setLocale(previous);
+    }
+  });
+
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);

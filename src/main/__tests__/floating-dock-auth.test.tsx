@@ -55,7 +55,7 @@ describe("dock host auth observation", () => {
       deniedAudit(channel);
       throw new Error("Unexpected app tool call");
     });
-    document.body.innerHTML = '<div id="slots"></div><div id="activity"></div><div id="bar"><i></i></div><div id="conversation"></div><div id="summary"></div><div id="detail"></div><button id="close"></button>';
+    document.body.innerHTML = '<div id="slots"></div><div id="activity"></div><div id="bar"><i></i></div><div id="conversation"></div><div id="summary"></div><div id="detail"></div><button id="close"></button><div id="empty" hidden></div>';
     vi.resetModules();
     await import("../../floating-dock-preload.js");
     await import("../../floating-dock-window.js");
@@ -111,9 +111,9 @@ describe("dock host auth observation", () => {
     await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "en" }));
     expect(app()?.getAttribute("data-locale")).toBe("en");
     expect(app()?.textContent).toBe(translate("en", "mcpAppView.sandboxBadge"));
-    // A locale the dock cannot render is a contract violation: it throws and the cards keep the last good language.
-    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: "xx-unknown" }))
-      .toThrow('Unknown dock locale: "xx-unknown"');
+    // A payload whose locale is not one at all is a contract violation: it throws and the cards keep the last good language.
+    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme, terminalFontFamily: "Updated Mono, monospace", locale: 42 }))
+      .toThrow("Unknown dock locale: 42");
     await act(async () => {});
     expect(app()?.getAttribute("data-locale")).toBe("en");
     await act(async () => listeners.get(CHANNELS.dock.unmount)?.({}, { panelId: "panel" }));
@@ -130,7 +130,7 @@ describe("dock host auth observation", () => {
 
 describe("dock slot chrome", () => {
   it("draws each slot's host title inside the .slot-head drag band and retitles it in place", async () => {
-    document.body.innerHTML = '<div id="slots"></div><div id="activity"></div><div id="bar"><i></i></div><div id="conversation"></div><div id="summary"></div><div id="detail"></div><button id="close"></button>';
+    document.body.innerHTML = '<div id="slots"></div><div id="activity"></div><div id="bar"><i></i></div><div id="conversation"></div><div id="summary"></div><div id="detail"></div><button id="close"></button><div id="empty" hidden></div>';
     vi.resetModules();
     await import("../../floating-dock-preload.js");
     await import("../../floating-dock-window.js");
