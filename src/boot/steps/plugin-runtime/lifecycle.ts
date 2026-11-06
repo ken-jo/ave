@@ -1,5 +1,6 @@
 /** Read runtime and loopback bindings through getters; both are assigned after callback construction. */
 import type { BrowserWindow } from "electron";
+import { CHANNELS } from "../../../contract/app-contract.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { fanOutToAllWindows } from "../../../ipc/window-fanout.js";
@@ -90,7 +91,7 @@ export function createLifecycleCallbacks(
       reconcileAlerts();
       // All plugin tool registration goes through loopback discovery.
       // Renderer refresh is best-effort; closed windows must not fail runtime reload.
-      fanOutToAllWindows(deps.getAppWindows(), "ave:plugins:runtime-updated", { pluginId }, { logger: log });
+      fanOutToAllWindows(deps.getAppWindows(), CHANNELS.plugins.runtimeUpdated, { pluginId }, { logger: log });
     },
   };
 }

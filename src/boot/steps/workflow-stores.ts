@@ -1,5 +1,6 @@
 /** Construct workflow stores, register builtin tools, and late-bind the sub-agent runner. */
 import { SessionTasksStore } from "../../main/session-tasks-store.js";
+import { CHANNELS } from "../../contract/app-contract.js";
 import { join } from "node:path";
 import { SessionGoalStore } from "../../main/session-goal-store.js";
 import { AskUserQuestionGate } from "../../main/ask-user-question-gate.js";
@@ -164,14 +165,14 @@ export async function setupWorkflowStores(
     },
     emitAgentSpawn: (event: AgentSpawnEvent) => {
       try {
-        fanOutToAllWindows(appWindows(), "ave:agent-spawn:event", event);
+        fanOutToAllWindows(appWindows(), CHANNELS.agentSpawn.event, event);
       } catch (err) {
         log.warn("agent_spawn emit failed: %s", (err as Error).message);
       }
     },
     emitSkillLoad: (event: SkillLoadEvent) => {
       try {
-        fanOutToAllWindows(appWindows(), "ave:skill-load:event", event);
+        fanOutToAllWindows(appWindows(), CHANNELS.skillLoad.event, event);
       } catch (err) {
         log.warn("skill_load emit failed: %s", (err as Error).message);
       }
