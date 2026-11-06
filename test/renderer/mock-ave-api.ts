@@ -104,6 +104,7 @@ type ApiOverrides = {
   /** Give the double the agent browser surface (`api.browserTabs`) and the active-surface report
    * (`api.setActiveSurface`). A test drives main's side with `emitBrowserTabOp` / `emitBrowserControl` below. */
   browserTabs?: boolean;
+  /** Partial settings sections are overlaid onto the bootable defaults. */
   settings?: unknown;
   /** Override the settings RPC itself when a renderer test needs to control its timing. */
   getSettings?: () => Promise<unknown>;
@@ -165,6 +166,19 @@ export const MOCK_DEFAULT_SETTINGS = {
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
 };
+
+function seedSettings(defaults: unknown, override: unknown): unknown {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (override === undefined) return defaults;
+  if (!isRecord(defaults) || !isRecord(override)) return override;
+  return Object.fromEntries(
+    [...new Set([...Object.keys(defaults), ...Object.keys(override)])].map((key) => [
+      key,
+      seedSettings(defaults[key], override[key]),
+    ]),
+  );
+}
 
 /** The session id the mock hands the main tile when a test names none. */
 export const MOCK_DEFAULT_SESSION_ID = "sess-default";
@@ -300,7 +314,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   let mintedPaneChats = 0;
   let paneChatStreams = 1000;
   const sideStreamHandlers = new Set<(event: ChatStreamEvent) => void>();
-  let settings = overrides.settings ?? MOCK_DEFAULT_SETTINGS;
+  let settings = seedSettings(MOCK_DEFAULT_SETTINGS, overrides.settings);
   let personaPrompts = overrides.personaPrompts ?? [];
   const sessions = (overrides.sessions ?? []).map(sessionRow);
   const currentSession = overrides.currentSession ?? MOCK_DEFAULT_SESSION_ID;

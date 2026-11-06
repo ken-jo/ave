@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CHANNELS } from "../contract/app-contract.js";
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
+const mockSendSync = vi.fn((channel: string) => {
+  if (channel !== CHANNELS.settings.initialAppearance) throw new Error(`Unexpected sync channel: ${channel}`);
+  return { ok: true, appearance: DEFAULT_APPEARANCE };
+});
 
 vi.mock("electron", () => ({
   contextBridge: {
@@ -12,6 +18,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
+    sendSync: mockSendSync,
     invoke: mockInvoke,
     on: mockOn,
     removeListener: mockRemoveListener,
@@ -26,6 +33,7 @@ type ExposedApi = {
 
 async function loadExposedApi(): Promise<ExposedApi> {
   await import("../preload.js");
+  expect(mockSendSync).toHaveBeenCalledExactlyOnceWith(CHANNELS.settings.initialAppearance);
   const api = exposed.get("aveHost");
   if (!api || typeof api !== "object") {
     throw new Error("aveHost was not exposed");
@@ -37,6 +45,7 @@ describe("preload plugin action normalization", () => {
   beforeEach(() => {
     exposed.clear();
     mockInvoke.mockReset();
+    mockSendSync.mockClear();
     mockOn.mockReset();
     mockRemoveListener.mockReset();
     vi.resetModules();
