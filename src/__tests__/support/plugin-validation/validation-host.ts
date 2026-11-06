@@ -8,9 +8,9 @@ import type {
   PluginWorkerControl,
   PluginWorkerExitInfo,
   WorkerControlRequestHandler,
-} from "../public-contract.js";
-import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
-import { derivePluginChildEnvelope } from "../isolation/out-of-process-plugin.js";
+} from "../../../plugins/public-contract.js";
+import type { DelegatedWorkerConfinement } from "../../../plugins/isolation/host-api-dispatcher.js";
+import { derivePluginChildEnvelope } from "../../../plugins/isolation/out-of-process-plugin.js";
 
 /** Override by dotted path; undefined represents an unavailable optional member. */
 export type ValidationHostOverrides = Readonly<

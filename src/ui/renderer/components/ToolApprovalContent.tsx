@@ -493,6 +493,7 @@ export function ToolApprovalContent({
     return {
       deny: options.find((scope) => scope.choice === "deny-once") ?? null,
       always: options.find((scope) => scope.choice === "allow-always") ?? null,
+      session: options.find((scope) => scope.choice === "allow-session") ?? null,
       once: options.find((scope) => scope.choice === "allow-once") ?? null,
     };
   }, [
@@ -551,7 +552,8 @@ export function ToolApprovalContent({
   // stays visible for layout/decision consistency but is disabled with an explicit explanation.
   const isHostConstrainedToOneShot =
     request?.allowedChoices !== undefined &&
-    !request.allowedChoices.includes("allow-always");
+    !request.allowedChoices.includes("allow-always") &&
+    (!isOutOfDir || !request.allowedChoices.includes("allow-session"));
   const approvalIsOneShot =
     isMcpElicitation ||
     isAgentAction ||
@@ -583,11 +585,13 @@ export function ToolApprovalContent({
         outOfDirSuggestedParent ? "toolApprovalDialog.persistentUnavailableOneShot" : "toolApprovalDialog.persistentUnavailableNoParent",
         settingsEditing,
         exactDenyRefusal,
+        outOfDirScopes.session?.path ?? null,
       );
     }
     return exactDecisionModel({ sessionOnly: rememberIsSessionOnly, hasSession, allowRefusalKey: exactAllowRefusal, denyRefusalKey: exactDenyRefusal, settingsEditing });
   }, [shellRule, outOfDirScopes, outOfDirSuggestedParent, settingsEditing, approvalIsOneShot, finalVerdict, rememberIsSessionOnly, hasSession, exactAllowRefusal, exactDenyRefusal]);
   const decision = useApprovalDecisionState(request?.id ?? null);
+  const selectedFolderScope = decision.selected === "allow-session" ? outOfDirScopes?.session : outOfDirScopes?.always;
   const slotsDisabled = decisionSlotsDisabled(decisionModel, decision, {
     locked: recordingDecision || interactionLocked,
     denyUnavailable: outOfDirScopes !== null && outOfDirScopes.deny === null,
@@ -620,15 +624,16 @@ export function ToolApprovalContent({
   // this request does not offer is ignored rather than approximated.
   const proposedDecisionIndex = proposedChoice === "deny-once"
     ? 0
-    : proposedChoice === "allow-always"
+    : proposedChoice === "allow-always" || proposedChoice === "allow-session"
       ? 1
       : proposedChoice === "allow-once"
         ? 2
         : null;
   const selectDecision = decision.select;
   useEffect(() => {
-    if (proposedChoice !== "allow-always") return;
-    const lasting = decisionModel.variant === "path-grant" ? "allow-everywhere" : "allow-project";
+    if (proposedChoice !== "allow-always" && proposedChoice !== "allow-session") return;
+    const lasting = proposedChoice === "allow-session" ? "allow-session"
+      : decisionModel.variant === "path-grant" ? "allow-everywhere" : "allow-project";
     if (decisionModel.options[lasting].offered) selectDecision(lasting);
   }, [proposedChoice, decisionModel, selectDecision, request?.id]);
   useEffect(() => {
@@ -742,7 +747,7 @@ export function ToolApprovalContent({
   );
 
   // What each choice of the row means for this card's approval type. A shell card saves a `Bash(...)`/`PowerShell(...)` rule and answers once;
-  // an exact tool approval is saved for the conversation or the project; a folder card allows its parent folder for good. Always deny never reaches
+  // an exact tool approval is saved for the conversation or the project; a folder card allows its parent folder for the selected lifetime. Always deny never reaches
   // the gate's tool-wide deny-always: it is saved as a rule or an exact deny, and the request is denied once.
   const handleCardChoice = useCallback((choice: ApprovalCardChoice, editedRule?: string) => {
     if (recordingRequestIdRef.current !== null) return;
@@ -775,6 +780,11 @@ export function ToolApprovalContent({
         }
         if (decisionModel.variant === "path-grant") {
           // The folder grant itself is the host's to save, from the parent path the scope authority resolved.
+          if (choice === "allow-session" && outOfDirScopes?.session?.path !== undefined) {
+            const parent = outOfDirScopes.session.path;
+            void recordThenRespond(null, () => onDecide("allow-session", parent));
+            return;
+          }
           const parent = outOfDirScopes?.always?.path;
           if (choice === "allow-everywhere" && parent !== undefined) {
             // A refused home folder cannot keep a folder grant: answer once, for the exact target, and say why.
@@ -911,7 +921,9 @@ export function ToolApprovalContent({
   const specificHostReason = request.reason.trim();
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
   const reviewedImpact = isOutOfDir
-    ? tHook("dockedApprovalCard.headline", { toolName: request.toolName })
+    ? category === "read"
+      ? tHook("dockedApprovalCard.headline", { toolName: request.toolName })
+      : tHook("dockedApprovalCard.headlineWrite", { toolName: request.toolName })
     : !isBoilerplateApprovalReason(specificReviewerReason)
       ? specificReviewerReason
       : !isBoilerplateApprovalReason(specificHostReason)
@@ -1006,9 +1018,9 @@ export function ToolApprovalContent({
                     >
                       {decisionIndex === 0
                         ? tHook("dockedApprovalCard.denySummary")
-                        : decisionIndex === 1 && outOfDirScopes?.always
+                        : decisionIndex === 1 && selectedFolderScope
                           ? tHook("dockedApprovalCard.targetParent", {
-                              path: outOfDirScopes.always.path ?? "",
+                              path: selectedFolderScope.path ?? "",
                             })
                           : outOfDirCandidatePath}
                     </p>

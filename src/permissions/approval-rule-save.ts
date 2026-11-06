@@ -98,6 +98,7 @@ export async function saveApprovalCardRule(
   answer: { readonly decision: unknown; readonly scope: unknown; readonly displayedVerdictAtApproval: unknown },
   permissionManager: PermissionManager | undefined,
   authority?: ApprovalPersistenceGuard,
+  beforePersist?: (saved: Extract<ApprovalRuleSaveResult, { ok: true }>) => Promise<void>,
 ): Promise<ApprovalRuleSaveResult> {
   const { action, scope, pattern: edited } = rule;
   if (Object.keys(rule).some((key) => key !== "action" && key !== "scope" && key !== "pattern")) {
@@ -142,7 +143,15 @@ export async function saveApprovalCardRule(
   }
   if (answer.displayedVerdictAtApproval !== snapshot.verdictAtApproval) return fail("verdict-mismatch");
   if (!permissionManager) return fail("no-permission-manager");
+  const warning = action === "allow" && isWildcardAllow(target, pattern)
+    ? target.kind === "shell" ? WILDCARD_ALLOW_BROADER_SCOPE : WILDCARD_ALLOW_SANDBOXED_ONLY
+    : undefined;
+  const saved = { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) } as const;
+  if (scope === "session" && snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+  if (scope === "project" && target.context.projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
   try {
+    await refreshApprovalPersistence(authority);
+    await beforePersist?.(saved);
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
@@ -160,8 +169,5 @@ export async function saveApprovalCardRule(
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
     return fail("rule-save-failed", errorMessage(error));
   }
-  const warning = action === "allow" && isWildcardAllow(target, pattern)
-    ? target.kind === "shell" ? WILDCARD_ALLOW_BROADER_SCOPE : WILDCARD_ALLOW_SANDBOXED_ONLY
-    : undefined;
-  return { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) };
+  return saved;
 }

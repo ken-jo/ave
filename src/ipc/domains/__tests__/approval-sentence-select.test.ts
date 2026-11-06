@@ -112,8 +112,14 @@ beforeEach(() => {
 });
 
 describe("approval-sentence-select — it proposes, it does not decide", () => {
-  it("resolves a sentence onto a scope while leaving the request pending", async () => {
+  it("proposes the session scope without settling or disclosing its parent", async () => {
     const { invoke, gate } = await harness({ providerText: selected("o2") });
+    expect(await invoke({ requestId: "req-allow-1", input: "/allow 이번 세션 동안 허용", intent: USER_INTENT }))
+      .toEqual({ ok: true, requestId: "req-allow-1", choice: "allow-session" });
+    expect(gate.pendingCount).toBe(1);
+  });
+  it("resolves a sentence onto a scope while leaving the request pending", async () => {
+    const { invoke, gate } = await harness({ providerText: selected("o3") });
 
     const result = await invoke({
       requestId: "req-allow-1",
@@ -131,7 +137,7 @@ describe("approval-sentence-select — it proposes, it does not decide", () => {
   });
 
   it("returns no path, so nothing here can widen what the card already knows", async () => {
-    const { invoke } = await harness({ providerText: selected("o2") });
+    const { invoke } = await harness({ providerText: selected("o3") });
     const result = await invoke({
       requestId: "req-allow-1",
       input: "/allow 계속 허용",
@@ -187,7 +193,8 @@ describe("approval-sentence-select — the model never sees the request's own wo
 
     const prompt = sentPrompt(provider);
     const options = sentEnvelope(provider).options as Array<Record<string, unknown>>;
-    expect(options.map((o) => o.id)).toEqual(["o1", "o2", "o3"]);
+    expect(options.map((o) => o.id)).toEqual(["o1", "o2", "o3", "o4"]);
+    expect(options.map((o) => o.choice)).toEqual(["allow-once", "allow-session", "allow-always", "deny-once"]);
     for (const option of options) {
       expect(Object.keys(option).sort()).toEqual(["choice", "id"]);
     }
@@ -337,7 +344,7 @@ describe("approval-sentence-select — the table is the host's, not the renderer
 
   it("ignores paths the renderer supplies and uses the ones it resolved itself", async () => {
     // Derive scope from the pending request; renderer-supplied paths must never choose a grant target.
-    const { invoke, provider } = await harness({ providerText: selected("o2") });
+    const { invoke, provider } = await harness({ providerText: selected("o3") });
     const result = await invoke({
       requestId: "req-allow-1",
       input: "/allow 계속 허용",

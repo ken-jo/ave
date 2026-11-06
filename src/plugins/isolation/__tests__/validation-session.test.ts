@@ -21,14 +21,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginManifest } from "../../types.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
-import { FRAME_BYTES_MAX } from "../../isolation/host-api-wire.js";
-import { PLUGIN_INSTANCE_METHODS } from "../../isolation/plugin-instance-wire.js";
-import type { ChildLink } from "../../isolation/plugin-child-transport.js";
+import { FRAME_BYTES_MAX } from "../host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
+import type { ChildLink } from "../plugin-child-transport.js";
 import {
   resolvePluginSocketDir,
 } from "../../plugin-storage-layout.js";
-import { createValidationHost } from "../validation-host.js";
-import { openValidationSession } from "../validation-session.js";
+import { createValidationHost } from "../../../__tests__/support/plugin-validation/validation-host.js";
+import { openValidationSession } from "../../../__tests__/support/plugin-validation/validation-session.js";
 
 type Frame = Record<string, unknown>;
 

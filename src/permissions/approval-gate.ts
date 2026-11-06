@@ -739,7 +739,7 @@ export class ApprovalGate {
     return token;
   }
 
-  /** Complete only a successful, validated allow save; any other mutation breaks the chain. */
+  /** Complete only a successful, validated rule save; any other mutation breaks the chain. */
   completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "project" | "always"): void {
     if (!token) return;
     const saved = this.ruleSaveTokens.get(token);
@@ -1742,7 +1742,7 @@ export class ApprovalGate {
       });
     }
     if (nativeRenderer && transition?.valid && !transition.saving && transition.from !== transition.to &&
-      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always")) {
+      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always" || resolvedDecision.choice === "deny-once" || resolvedDecision.choice === "deny-always")) {
       this.approvedPolicyTransitions.set(resolvedDecision, { from: transition.from, to: transition.to });
     }
     if (

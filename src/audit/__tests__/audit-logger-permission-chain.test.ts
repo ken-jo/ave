@@ -69,6 +69,39 @@ function createAuditLogger(...args: ConstructorParameters<typeof AuditLogger>): 
 }
 
 describe("AuditLogger permission audit chain", () => {
+  it("allows same-epoch preflight during an unrelated append and preserves the chain", async () => {
+    const logger = createAuditLogger();
+    await logger.setupPermissionAuditChain(SECRET, new MemorySecretStore());
+    const pending = logger.appendPermissionAuditEntry({
+      decision: "allow", auditId: "unrelated", ts: new Date().toISOString(),
+      trustOrigin: "user-keyboard", tool: "mode-change", source: "builtin", category: "meta",
+    });
+    try {
+      expect(() => logger.assertPermissionAuditWritable()).not.toThrow();
+    } finally {
+      await pending;
+    }
+    expect(() => logger.assertPermissionAuditWritable()).not.toThrow();
+    const lines = readPermissionAuditLines(logger.getPermissionAuditLogFile());
+    expect(verifyChain(SECRET, lines).ok).toBe(true);
+  });
+
+  it("refuses a preflight rollover while an append is in flight", async () => {
+    let now = new Date("2026-07-23T23:59:59.000Z");
+    const logger = createAuditLogger(undefined, { now: () => now });
+    await logger.setupPermissionAuditChain(SECRET);
+    const pending = logger.appendPermissionAuditEntry({
+      decision: "allow", auditId: "rollover-collision", ts: now.toISOString(),
+      trustOrigin: "user-keyboard", tool: "fs_read", source: "builtin", category: "read",
+    });
+    now = new Date("2026-07-24T00:00:01.000Z");
+    try {
+      expect(() => logger.assertPermissionAuditWritable()).toThrow("permission audit append is already in progress");
+    } finally {
+      await pending;
+    }
+    expect(() => logger.assertPermissionAuditWritable()).not.toThrow();
+  });
   it("close drains accepted permission appends and rejects late appends", async () => {
     const logger = createAuditLogger();
     await logger.setupPermissionAuditChain(SECRET);

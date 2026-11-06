@@ -163,17 +163,21 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
 
 function manualGate() {
   const cards: ApprovalRequest[] = [];
+  const parkedAt = new Map<string, number>();
   const nativeWebContents = {
     isDestroyed: () => false,
     send(channel: string, request: ApprovalRequest) {
-      if (channel === "ave:approval:request") cards.push(request);
+      if (channel === "ave:approval:request") {
+        parkedAt.set(request.id, Date.now());
+        cards.push(request);
+      }
     },
   };
   const gate = new ApprovalGate(nativeWebContents as never);
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
   }, nativeWebContents as never);
-  return { gate, cards, approve };
+  return { gate, cards, approve, parkedAt };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -475,7 +479,7 @@ describe("executor automated approval pause", () => {
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(execute));
     const { hooks, reached, release } = heldPreToolUse();
-    const { gate, cards, approve } = manualGate();
+    const { gate, cards, approve, parkedAt } = manualGate();
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
     const pending = executor.executeAll([{ id: "long-wait-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
@@ -484,6 +488,11 @@ describe("executor automated approval pause", () => {
     await reached;
     await f.pause();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const requestAndWait = gate.requestAndWait.bind(gate);
+    vi.spyOn(gate, "requestAndWait").mockImplementation(request => {
+      vi.setSystemTime(Date.now() + 10);
+      return requestAndWait(request);
+    });
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     let settled = false;
@@ -491,7 +500,8 @@ describe("executor automated approval pause", () => {
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
     expect(settled).toBe(false);
     expect(execute).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(cards[0].createdAt + TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs - Date.now() - 1);
+    // The wait starts when the card parks, after request preparation.
+    await vi.advanceTimersByTimeAsync(parkedAt.get(cards[0].id)! + TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs - Date.now() - 1);
     expect(settled).toBe(false);
     if (settlement === "approved") approve(cards[0]);
     else await vi.advanceTimersByTimeAsync(1);
