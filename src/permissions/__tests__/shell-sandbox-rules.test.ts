@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, getSandboxGeneration, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { approvalCacheKeyIdentity, canonicalStringify, captureApprovalWorkingDirectory, lookupApproval, recordApproval, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { ToolExecutor } from "../../tools/executor.js";
@@ -18,19 +18,12 @@ import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
-import { buildHostShellExecutionPlan as buildPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
-import { recordIssuedHostShellExecutionPlan } from "../host-shell-execution-plan-issuance.js";
+import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from "../../__tests__/support/issued-host-shell-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 
-// Plans as the host provider issues them; startup proof trusts only issued plans.
-function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
-  const plan = buildPlan(input);
-  recordIssuedHostShellExecutionPlan(plan, getSandboxGeneration());
-  return plan;
-}
 
 let root: string;
 let dir: string;

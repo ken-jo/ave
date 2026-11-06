@@ -5,17 +5,17 @@ import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 const issuedPlans = new WeakMap<HostShellExecutionPlan, string>();
 let currentGeneration: (() => string) | undefined;
 
-export function recordIssuedHostShellExecutionPlan(plan: HostShellExecutionPlan, generation: string): void {
-  issuedPlans.set(plan, generation);
+// sandbox-capability claims the only recorder when it loads and binds its generation counter; nothing else can issue.
+export function claimHostShellExecutionPlanIssuer(
+  generation: () => string,
+): (plan: HostShellExecutionPlan, issuedGeneration: string) => void {
+  if (currentGeneration !== undefined) throw new Error("The host shell execution plan issuer is already claimed.");
+  currentGeneration = generation;
+  return (plan, issuedGeneration) => { issuedPlans.set(plan, issuedGeneration); };
 }
 
 export function issuedHostShellExecutionPlanGeneration(plan: unknown): string | undefined {
   return typeof plan === "object" && plan !== null ? issuedPlans.get(plan as HostShellExecutionPlan) : undefined;
-}
-
-// sandbox-capability owns the generation counter and binds it here when it loads.
-export function bindCurrentSandboxGeneration(source: () => string): void {
-  currentGeneration = source;
 }
 
 // Issued under the capability generation that is live now; a stale plan proves nothing.

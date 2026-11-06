@@ -16,7 +16,7 @@ import {
   type HostShellExecutionRequest,
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
-import { bindCurrentSandboxGeneration, issuedHostShellExecutionPlanGeneration, recordIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
+import { claimHostShellExecutionPlanIssuer, issuedHostShellExecutionPlanGeneration } from "./host-shell-execution-plan-issuance.js";
 
 // RENDERER-SAFETY: this module is imported by the renderer (ToolApprovalContent uses isWeakSandbox / the types), so it MUST NOT statically import `asrt-sandbox.js` — that package (`@anthropic-ai/sandbox-runtime`) pulls Node built-ins (`fs`/`child_process`/`net`) into the renderer webpack bundle. The "is a server genuinely wrapped" signal therefore comes from the MAIN-process wrapped registry below (only StdioTransport, main-only, populates it) plus the active capability snapshot — never a direct gate call into asrt-sandbox.
 
@@ -103,7 +103,13 @@ function notifySandboxStatusChanged(): void {
 export function getSandboxGeneration(): string {
   return String(_sandboxGeneration);
 }
-bindCurrentSandboxGeneration(getSandboxGeneration);
+const recordIssuedHostShellExecutionPlan = claimHostShellExecutionPlanIssuer(getSandboxGeneration);
+
+// Issue a fixture plan under the live generation, or a given one. @internal — tests only.
+export function __issueHostShellExecutionPlanForTest(plan: HostShellExecutionPlan, generation = getSandboxGeneration()): HostShellExecutionPlan {
+  recordIssuedHostShellExecutionPlan(plan, generation);
+  return plan;
+}
 
 // Store the active sandbox capability after the ASRT sandbox is initialized at boot. Subsequent calls to detectSandboxCapability return this value. @internal — only the boot-time ASRT init path and tests should call this.
 export function setActiveSandboxCapability(cap: SandboxCapability): void {

@@ -13,17 +13,11 @@ import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-r
 import { PermissionManager } from "../permission-manager.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { buildHostShellExecutionPlan as buildPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
-import { recordIssuedHostShellExecutionPlan } from "../host-shell-execution-plan-issuance.js";
-import { getSandboxGeneration } from "../sandbox-capability.js";
+import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from "../../__tests__/support/issued-host-shell-plan.js";
+import { __issueHostShellExecutionPlanForTest, getSandboxGeneration } from "../sandbox-capability.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
 
-// Plans as the host provider issues them; startup proof trusts only issued plans.
-function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
-  const plan = buildPlan(input);
-  recordIssuedHostShellExecutionPlan(plan, getSandboxGeneration());
-  return plan;
-}
 const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture",
   confines: { filesystem: true, process: true, network: true } } as const;
 const MXC_PLAN = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true,
@@ -108,7 +102,7 @@ describe("confined native shell startup decisions", () => {
 
   it("does not pin a plan issued under a stale capability generation", () => {
     const stale = buildPlan({ platform: "win32", requestedSandbox: true, shellSubstrate: "mxc", activeCapability: CAPABILITY });
-    recordIssuedHostShellExecutionPlan(stale, `${getSandboxGeneration()}-stale`);
+    __issueHostShellExecutionPlanForTest(stale, `${getSandboxGeneration()}-stale`);
     expect(isPowerShellStartupPinned("win32", stale)).toBe(false);
     expect(check(WRITES[0], stale)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
   });

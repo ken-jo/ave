@@ -1294,14 +1294,16 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   const stageEnvironment = stages.length === 1 ? environment : {};
   let currentDirectory: string | null = cwd;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
-    let value = binding.value;
+    // The FileSystem provider qualifier names the same file, so the remainder gets the ordinary floor checks.
+    let value = binding.value.replace(/^(?:(?:Microsoft\.PowerShell\.Core\\)?FileSystem::)+/i, "");
     if (effect === "write" && (binding.dynamic || !literalPath && /[*?\[\]]/.test(value))) {
       unknownProtectedWrite ??= "The shell write target may resolve to a protected path.";
     }
     if (!isPowerShellFilesystemSyntax(value)) {
       unproven = true;
-      // A drive- or provider-qualified target names no project file; a colon after a separator still gets the floor checks.
-      if (/^[^\\/]{2,}:/.test(value) || value.includes("::")) return;
+      // Only a drive or provider qualifier before any separator names no project file; every other colon keeps the floor checks.
+      if (/^[^\\/]{2,}:/.test(value)
+        || /^[A-Za-z][\w.]*\\(?:Alias|Certificate|Environment|Function|Registry|Variable|WSMan)::/i.test(value)) return;
     }
     unproven ||= binding.dynamic;
     value = value.replace(/^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i, homedir());
