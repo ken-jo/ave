@@ -1,7 +1,6 @@
 /** Narrow host chrome API for standard app panels in the floating dock. */
 import { contextBridge, ipcRenderer } from "electron";
-import { CHANNELS } from "./contract/app-contract.js";
-import { appearanceApiSurface } from "./preload/appearance-api-surface.js";
+import { CHANNELS, SETTINGS } from "./contract/app-contract.js";
 import { mcpApiSurface } from "./preload/mcp-api-surface.js";
 
 /** One main-to-dock subscription, returning its own unsubscribe. */
@@ -11,9 +10,18 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
+function settingsTerminalFontFamily(settings: unknown): string {
+  const family = (settings as { appearance?: { terminalFont?: { family?: unknown } } } | null)?.appearance?.terminalFont?.family;
+  if (typeof family !== "string" || family.trim().length === 0) throw new Error("Terminal font family is required");
+  return family;
+}
+
 const mountedAuthTools = new Map<string, string>();
 
 const dockBridge = {
+  readTerminalFontFamily: async (): Promise<string> => settingsTerminalFontFamily(await ipcRenderer.invoke(CHANNELS.settings.get)),
+  onTerminalFontFamilyChanged: (handler: (family: string) => void) =>
+    subscribe(SETTINGS.updated, (settings) => handler(settingsTerminalFontFamily(settings))),
   onActivity: (handler: (activity: unknown) => void) =>
     subscribe(CHANNELS.dock.activity, handler),
   onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, (slot) => {
@@ -71,6 +79,5 @@ const appMcp = {
 };
 contextBridge.exposeInMainWorld("ave", { mcp: appMcp });
 contextBridge.exposeInMainWorld("aveApi", {
-  ...appearanceApiSurface,
   openExternalUrl: (url: string) => ipcRenderer.invoke(CHANNELS.shell.openExternal, url),
 });

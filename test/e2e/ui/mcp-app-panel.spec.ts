@@ -4,7 +4,9 @@ import { admitFixturePlugins } from './admit-fixture-plugins.js';
 import type { ElectronApplication, Page } from 'playwright';
 import { createServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 type FixtureContext = Pick<ElectronFixtures, 'app' | 'mainWindow' | 'aveHome' | 'userDataDir' | 'tempHome'>;
 async function admittedApp(context: FixtureContext) {
@@ -46,6 +48,88 @@ async function clickHostTool(page: Page, method: string, payload: unknown) {
   await expect(button).toHaveAttribute('data-result', 'ok');
   await button.evaluate((node) => node.remove());
 }
+
+test('mounting a dock panel preserves the main renderer theme throughout initialization', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }, testInfo) => {
+  test.setTimeout(120_000);
+  const { app, page } = await admittedApp({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome });
+  type ThemeSnapshot = { bundleId: string; shell: string; tokens: Record<string, string> };
+  type Probe = {
+    phase: string;
+    samples: Array<{ phase: string; cache: ThemeSnapshot | null }>;
+    sends: Array<{ phase: string; theme: ThemeSnapshot; cache: ThemeSnapshot | null }>;
+    timer: ReturnType<typeof setInterval>;
+    read: () => ThemeSnapshot | null;
+  };
+  try {
+    // Import the already-loaded cache module, so the measurement observes its live singleton.
+    const chunks = resolve('dist/src/main/chunks');
+    const cacheModules = readdirSync(chunks).filter((name) => name.endsWith('.js') && readFileSync(resolve(chunks, name), 'utf8').includes('"getLastThemePayload"'));
+    expect(cacheModules).toHaveLength(1);
+    const cacheModule = pathToFileURL(resolve(chunks, cacheModules[0])).href;
+    await page.evaluate(async () => {
+      await window.aveApi.updateSettings({ appearance: { mode: 'dark', darkScheme: 'nord' } });
+    });
+    await expect.poll(() => app.evaluate(async (_, moduleUrl) => {
+      const vm = process.getBuiltinModule("node:vm");
+      const module = await vm.compileFunction("return import(url)", ["url"], { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER })(moduleUrl);
+      const read = Object.values(module).find((value) => typeof value === 'function' && value.name === 'getLastThemePayload') as () => ThemeSnapshot | null;
+      return read()?.bundleId;
+    }, cacheModule)).toBe('nord');
+    await app.evaluate(async ({ app }, moduleUrl) => {
+      const vm = process.getBuiltinModule("node:vm");
+      const module = await vm.compileFunction("return import(url)", ["url"], { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER })(moduleUrl);
+      const read = Object.values(module).find((value) => typeof value === 'function' && value.name === 'getLastThemePayload') as () => ThemeSnapshot | null;
+      const probe: Probe = { phase: 'before', samples: [], sends: [], read, timer: undefined! };
+      const sample = () => probe.samples.push({ phase: probe.phase, cache: read() });
+      sample();
+      probe.timer = setInterval(sample, 1);
+      (globalThis as unknown as { dockThemeProbe: Probe }).dockThemeProbe = probe;
+      app.on('web-contents-created', (_, contents) => {
+        const send = contents.send.bind(contents);
+        contents.send = (channel, ...args) => {
+          if (channel === 'ave:dock:theme') probe.sends.push({ phase: probe.phase, theme: args[0], cache: read() });
+          send(channel, ...args);
+        };
+      });
+      probe.phase = 'mounting';
+    }, cacheModule);
+    await clickHostTool(page, 'viewfixture_open_dock', {});
+    await expect.poll(() => app.evaluate(async ({ webContents }) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
+      return guest?.executeJavaScript("document.querySelector('iframe')?.contentDocument?.getElementById('status')?.textContent");
+    })).toBe('Standard app ready');
+    const dock = app.windows().find((window) => window.url().includes('floating-dock-window.html'));
+    if (!dock) throw new Error('Dock window not found');
+    const applied = await dock.evaluate(() => ({ background: document.documentElement.style.getPropertyValue('--dock-bg') }));
+    const contexts = await app.evaluate(async ({ webContents }) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
+      if (!guest) throw new Error('App guest not found');
+      return guest.executeJavaScript("document.querySelector('iframe').contentWindow.fixtureHostContexts");
+    });
+    const evidence = await app.evaluate(() => {
+      const probe = (globalThis as unknown as { dockThemeProbe: Probe }).dockThemeProbe;
+      probe.phase = 'after';
+      probe.samples.push({ phase: probe.phase, cache: probe.read() });
+      clearInterval(probe.timer);
+      return { samples: probe.samples, sends: probe.sends };
+    });
+    const evidencePath = testInfo.outputPath('dock-theme-ownership.json');
+    writeFileSync(evidencePath, JSON.stringify({ ...evidence, applied, contexts, aveHome, userDataDir }, null, 2));
+    await testInfo.attach('dock-theme-ownership', { path: evidencePath, contentType: 'application/json' });
+    expect(new Set(evidence.samples.map((sample) => sample.phase))).toEqual(new Set(['before', 'mounting', 'after']));
+    expect(evidence.samples.every((sample) => sample.cache?.bundleId === 'nord')).toBe(true);
+    expect(evidence.sends.length).toBeGreaterThan(0);
+    expect(evidence.sends.every((send) => send.theme.bundleId === 'nord' && send.cache?.bundleId === 'nord')).toBe(true);
+    const tokens = evidence.samples[0].cache!.tokens;
+    expect(applied.background).toBe(tokens['--ave-bg']);
+    expect(contexts.length).toBeGreaterThan(0);
+    for (const context of contexts) {
+      expect(context.theme).toBe('dark');
+      expect(context.styles.variables['--color-background-primary']).toBe(tokens['--ave-bg']);
+    }
+    await dock.screenshot({ path: testInfo.outputPath('dock-nord.png') });
+  } finally { await app.close(); }
+});
 
 test('sidebar app messages fill the composer without sending a turn', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }, testInfo) => {
   test.setTimeout(120_000);

@@ -4,6 +4,7 @@ import { render, screen, waitFor, act, fireEvent } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppView } from "../McpAppView.js";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
+import { HostAppearanceProvider } from "../../theme/HostAppearanceProvider.js";
 import { ThemeProvider, useTheme } from "../../theme/index.js";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme, resolveTheme, schemeToHostTokens } from "../../theme/index.js";
@@ -22,7 +23,7 @@ vi.mock("../mcp-app-bridge.js", () => ({
 }));
 
 it("requires an applied theme provider", () => {
-  expect(() => render(<McpAppView payload={payload("missing-provider")} />)).toThrow("useTheme() must be used inside <ThemeProvider>");
+  expect(() => render(<McpAppView payload={payload("missing-provider")} />)).toThrow("useHostAppearance() must be used inside <HostAppearanceProvider>");
 });
 
 const renderCard = (payload: McpUiPayload) =>
@@ -281,12 +282,8 @@ describe("McpAppView host theme snapshots", () => {
       shell: "dark" as const,
       tokens: { ...schemeToHostTokens(resolveTheme(requireScheme("nord"))), "not-a-token": "injected" },
     };
-    const appearance = {
-      ...DEFAULT_APPEARANCE,
-      mode: "light" as const,
-      terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Dock Mono, monospace" },
-    };
-    render(<ThemeProvider initialAppearance={appearance}><McpAppView payload={payload("dock")} hostTheme={hostTheme} /></ThemeProvider>);
+    const appearance = { ...hostTheme, terminalFontFamily: "Dock Mono, monospace" };
+    render(<HostAppearanceProvider value={appearance}><McpAppView payload={payload("dock")} /></HostAppearanceProvider>);
     await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
     const context = createMcpAppBridgeMock.mock.calls[0]![3] as {
       theme: string;

@@ -2,8 +2,7 @@
 import { useEffect, useState } from "react";
 import { parsePluginAuthStatus, usePluginAuthRevision, type PluginAuthState } from "./ui/renderer/hooks/use-plugin-auth-status.js";
 import { createRoot, type Root } from "react-dom/client";
-import { ThemeProvider } from "./ui/renderer/theme/ThemeProvider.js";
-import { getApi } from "./ui/renderer/api-client.js";
+import { HostAppearanceProvider, type HostAppearance } from "./ui/renderer/theme/HostAppearanceProvider.js";
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
@@ -18,6 +17,19 @@ function element(id: string): HTMLElement {
 const roots = new Map<string, Root>();
 const panels = new Map<string, { panelId: string; payload: McpUiPayload; authStatusTool?: string }>();
 let hostTheme: { shell: "light" | "dark"; tokens: Record<string, string> } | undefined;
+let terminalFontFamily: string | undefined;
+let terminalFontRequested = false;
+
+function renderPanels(): void {
+  if (!hostTheme || terminalFontFamily === undefined) return;
+  const appearance = { ...hostTheme, terminalFontFamily };
+  for (const [id, root] of roots) root.render(<DockAppContent {...panels.get(id)!} appearance={appearance} />);
+}
+
+dock.onTerminalFontFamilyChanged((family) => {
+  terminalFontFamily = family;
+  renderPanels();
+});
 const slots = element("slots");
 dock.onActivity((value) => {
   const activity = value as DockActivity | null;
@@ -34,7 +46,7 @@ element("close").addEventListener("click", () => dock.requestClose());
 dock.onTheme((value) => {
   const theme = value as { shell: "light" | "dark"; tokens: Record<string, string> };
   hostTheme = theme;
-  for (const [id, root] of roots) root.render(<DockAppContent {...panels.get(id)!} hostTheme={hostTheme} />);
+  renderPanels();
   const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
   for (const [name, key] of Object.entries(pick)) {
     const token = theme.tokens[key] ?? (key === "--ave-bg-elevated" ? theme.tokens["--ave-bg"] : undefined);
@@ -58,7 +70,16 @@ dock.onMount((value) => {
   const root = createRoot(body);
   roots.set(slot.panelId, root);
   panels.set(slot.panelId, { panelId: slot.panelId, payload: slot.payload, authStatusTool: slot.authStatusTool });
-  root.render(<DockAppContent panelId={slot.panelId} payload={slot.payload} authStatusTool={slot.authStatusTool} hostTheme={hostTheme} />);
+  if (!terminalFontRequested && terminalFontFamily === undefined) {
+    terminalFontRequested = true;
+    void dock.readTerminalFontFamily().then((family) => {
+      // A newer settings event owns the font if it arrived during the initial read.
+      if (terminalFontFamily !== undefined) return;
+      terminalFontFamily = family;
+      renderPanels();
+    }).catch((error: unknown) => console.error("Dock terminal font could not be loaded", error));
+  }
+  renderPanels();
 });
 dock.onUnmount((value) => {
   const { panelId } = value as { panelId: string };
@@ -81,11 +102,11 @@ dock.onRetitle((value) => {
 const AUTH_STATUS_REFRESH_INTERVAL_MS = 5_000;
 
 /** Host chrome observes its trusted-panel auth source; changed identity retires the app bridge. */
-function DockAppContent({ panelId, payload, authStatusTool, hostTheme: theme }: {
+function DockAppContent({ panelId, payload, authStatusTool, appearance }: {
   panelId: string;
   payload: McpUiPayload;
   authStatusTool?: string;
-  hostTheme?: { shell: "light" | "dark"; tokens: Record<string, string> };
+  appearance: HostAppearance;
 }) {
   const [authStatus, setAuthStatus] = useState<PluginAuthState | undefined>();
   const authRevision = usePluginAuthRevision(authStatus);
@@ -110,5 +131,5 @@ function DockAppContent({ panelId, payload, authStatusTool, hostTheme: theme }: 
     window.addEventListener("focus", handleRefresh);
     return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", handleRefresh); };
   }, [panelId, authStatusTool]);
-  return <ThemeProvider api={getApi()}><McpAppView key={authRevision} payload={payload} hostTheme={theme} /></ThemeProvider>;
+  return <HostAppearanceProvider value={appearance}><McpAppView key={authRevision} payload={payload} /></HostAppearanceProvider>;
 }

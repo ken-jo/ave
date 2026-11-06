@@ -3,6 +3,7 @@ import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
 import { SETTINGS } from "../../shared/ipc-channels.js";
+import { emitEvent, onEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 
 const { listeners, invoke, lifetime, deniedAudit } = vi.hoisted(() => ({
@@ -22,11 +23,11 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../../ui/renderer/components/McpAppView.js", async () => {
   const { useEffect, createElement } = await import("react");
-  const { useTheme } = await import("../../ui/renderer/theme/ThemeProvider.js");
+  const { useHostAppearance } = await import("../../ui/renderer/theme/HostAppearanceProvider.js");
   return { McpAppView: () => {
-    const theme = useTheme();
+    const theme = useHostAppearance();
     useEffect(() => { lifetime.mounts += 1; return () => { lifetime.unmounts += 1; }; }, []);
-    return createElement("div", { "data-testid": "mounted-app", "data-terminal-font": theme.appearance.terminalFont.family });
+    return createElement("div", { "data-testid": "mounted-app", "data-terminal-font": theme.terminalFontFamily, "data-shell": theme.shell });
   } };
 });
 
@@ -43,11 +44,14 @@ afterEach(async () => {
 describe("dock host auth observation", () => {
   it("reads status through trusted host dispatch, remounts after an identity change, and produces no app-call audit denial", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const broadcasts: unknown[] = [];
+    const unsubscribe = onEvent("host.theme.changed", (value) => broadcasts.push(value));
     let status: unknown = { authenticated: false };
-    invoke.mockImplementation(async (channel: string) => {
+    let resolveFont!: (settings: unknown) => void;
+    invoke.mockImplementation(async (channel: string, payload: unknown) => {
       if (channel === CHANNELS.plugins.call) return status;
-      if (channel === CHANNELS.settings.get) return { appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Dock Mono, monospace" } } };
-      if (channel === CHANNELS.host.pluginThemeNotify) return { ok: true };
+      if (channel === CHANNELS.settings.get) return new Promise((resolve) => { resolveFont = resolve; });
+      if (channel === CHANNELS.host.pluginThemeNotify) { emitEvent("host.theme.changed", payload); return { ok: true }; }
       deniedAudit(channel);
       throw new Error("Unexpected app tool call");
     });
@@ -55,13 +59,20 @@ describe("dock host auth observation", () => {
     vi.resetModules();
     await import("../../floating-dock-preload.js");
     await import("../../floating-dock-window.js");
+    await act(async () => listeners.get(CHANNELS.dock.theme)?.({}, { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#123456" } }));
     await act(async () => listeners.get(CHANNELS.dock.mount)?.({}, {
       panelId: "panel", title: "Auth panel", height: 200, authStatusTool: "fixture_status",
       payload: { serverId: "fixture", generationId: "generation", resourceUri: "ui://fixture/panel" },
     }));
+    expect(lifetime.mounts).toBe(0);
+    await act(async () => listeners.get(SETTINGS.updated)?.({}, { appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Dock Mono, monospace" } } }));
+    await act(async () => resolveFont({ appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Stale Mono, monospace" } } }));
     expect(invoke).toHaveBeenCalledWith(CHANNELS.plugins.call, "fixture_status", undefined, { userAction: false });
     expect(lifetime.mounts).toBe(1);
     expect(lifetime.unmounts).toBe(0);
+    expect(document.querySelector("[data-shell]")?.getAttribute("data-shell")).toBe("dark");
+    expect(invoke.mock.calls.some(([channel]) => channel === CHANNELS.host.pluginThemeNotify || channel === CHANNELS.settings.update)).toBe(false);
+    expect(broadcasts).toEqual([]);
     expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Dock Mono, monospace");
     await act(async () => listeners.get(SETTINGS.updated)?.({}, { appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Updated Mono, monospace" } } }));
     expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Updated Mono, monospace");
@@ -79,5 +90,8 @@ describe("dock host auth observation", () => {
     expect(invoke).toHaveBeenCalledTimes(calls);
     const bridge = (window as unknown as { aveDock: { readAuthStatus: (id: string) => Promise<unknown> } }).aveDock;
     expect(() => bridge.readAuthStatus("panel")).toThrow("no auth status source");
+    expect(invoke.mock.calls.some(([channel]) => channel === CHANNELS.host.pluginThemeNotify || channel === CHANNELS.settings.update)).toBe(false);
+    expect(broadcasts).toEqual([]);
+    unsubscribe();
   });
 });

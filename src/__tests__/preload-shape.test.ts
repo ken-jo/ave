@@ -815,7 +815,7 @@ describe("floating dock preload world shape lock", () => {
     await import("../floating-dock-preload.js");
     const added = [...exposed.keys()].filter((key) => !before.has(key));
     expect(added).toEqual(["aveDock"]);
-    const dock = exposed.get("aveDock") as Record<string, unknown> & { onTheme(handler: (theme: unknown) => void): () => void };
+    const dock = exposed.get("aveDock") as import("../floating-dock-preload.js").AveDockBridge;
     exposed.delete("aveDock");
     // Dock chrome observes mounted-panel auth to remount views without making auth tools app-callable.
     expect(deepShape(dock)).toMatchInlineSnapshot(`
@@ -824,19 +824,20 @@ describe("floating dock preload world shape lock", () => {
         "onMount": "function",
         "onResize": "function",
         "onRetitle": "function",
+        "onTerminalFontFamilyChanged": "function",
         "onTheme": "function",
         "onUnmount": "function",
         "readAuthStatus": "function",
+        "readTerminalFontFamily": "function",
         "reportSlotGone": "function",
         "requestClose": "function",
       }
     `);
 
 
-    // Dock app roots consume the same appearance settings as the main renderer.
+    // The dock exposes only its font read and subscription, with no settings or theme writes.
     expect(deepShape(exposed.get("aveApi"))).toEqual({
-      getSettings: "function", updateSettings: "function", onSettingsUpdated: "function",
-      notifyPluginTheme: "function", openExternalUrl: "function",
+      openExternalUrl: "function",
     });
 
     const handler = vi.fn();
@@ -847,5 +848,18 @@ describe("floating dock preload world shape lock", () => {
     expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
     dispose();
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:dock:theme", listener);
+
+    mockInvoke.mockResolvedValueOnce({ appearance: { terminalFont: { family: "Dock Mono" } }, privateSetting: "not exposed" });
+    await expect(dock.readTerminalFontFamily()).resolves.toBe("Dock Mono");
+    expect(mockInvoke).toHaveBeenLastCalledWith("ave:settings:get");
+    const fontChanged = vi.fn();
+    const disposeFont = dock.onTerminalFontFamilyChanged(fontChanged);
+    const fontListener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:settings:updated")![1];
+    fontListener({}, { appearance: { terminalFont: { family: "Updated Mono" } } });
+    expect(fontChanged).toHaveBeenCalledExactlyOnceWith("Updated Mono");
+    disposeFont();
+    expect(mockRemoveListener).toHaveBeenCalledWith("ave:settings:updated", fontListener);
+    mockInvoke.mockResolvedValueOnce({ appearance: {} });
+    await expect(dock.readTerminalFontFamily()).rejects.toThrow("Terminal font family is required");
   });
 });
