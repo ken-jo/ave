@@ -1,22 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { InputClassifier } from "../input-classifier.js";
+import { routeInput } from "../route-input.js";
 
-describe("InputClassifier", () => {
+describe("routeInput", () => {
   it("parses host slash commands and trims their arguments", () => {
-    const result = new InputClassifier().classify("  /compact   now please  ");
+    const result = routeInput("  /compact   now please  ");
 
     expect(result).toEqual({
-      type: "command",
+      route: "command",
       command: "compact",
       args: "now please",
     });
   });
 
   it("treats natural-language Skill and Tool names as general model input", () => {
-    const result = new InputClassifier().classify("회의록을 읽고 이메일을 보내줘");
+    const result = routeInput("회의록을 읽고 이메일을 보내줘");
 
     expect(result).toEqual({
-      type: "general",
+      route: "llm",
       input: "회의록을 읽고 이메일을 보내줘",
     });
   });
@@ -27,8 +27,8 @@ describe("InputClassifier", () => {
       `/compact 회의 요청 이메일이 도착했습니다.\n` +
       `</imported-from-proactive>`;
 
-    expect(new InputClassifier().classify(envelope)).toEqual({
-      type: "general",
+    expect(routeInput(envelope)).toEqual({
+      route: "llm",
       input: envelope,
     });
   });
@@ -36,8 +36,8 @@ describe("InputClassifier", () => {
   it("does not interpret command-looking text inside MCP app envelopes", () => {
     const envelope = `<app-message source="app:acme-cards">/compact now</app-message>`;
 
-    expect(new InputClassifier().classify(envelope)).toEqual({
-      type: "general",
+    expect(routeInput(envelope)).toEqual({
+      route: "llm",
       input: envelope,
     });
   });
@@ -48,13 +48,20 @@ describe("InputClassifier", () => {
     const embedded =
       `prefix <imported-from-proactive source="overlay:x">/compact now</imported-from-proactive>`;
 
-    expect(new InputClassifier().classify(malformed)).toEqual({
-      type: "general",
+    expect(routeInput(malformed)).toEqual({
+      route: "llm",
       input: malformed,
     });
-    expect(new InputClassifier().classify(embedded)).toEqual({
-      type: "general",
+    expect(routeInput(embedded)).toEqual({
+      route: "llm",
       input: embedded,
     });
+  });
+  it("routes general input through the llm route", () => {
+    expect(routeInput("상태 알려줘")).toEqual({ route: "llm", input: "상태 알려줘" });
+  });
+
+  it("routes host commands without consulting Tool state", () => {
+    expect(routeInput("/compact now")).toEqual({ route: "command", command: "compact", args: "now" });
   });
 });

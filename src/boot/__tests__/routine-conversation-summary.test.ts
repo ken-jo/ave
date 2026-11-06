@@ -2,8 +2,6 @@
 // (a connected chat, or the routine's own) stores and shows the answer without the tag.
 import { describe, expect, it } from "vitest";
 import { createRoutineConversationLoop } from "../conversation.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import type { LLMProvider, StreamEvent } from "../../engine/llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
@@ -25,8 +23,6 @@ describe("routine summary tag", () => {
     const memoryManager = makeConversationLoopMemoryManager();
     const loop = createRoutineConversationLoop({
       settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: new ToolRegistry(),
       memoryManager,
       systemPromptBuilder: makeSystemPromptBuilder(),

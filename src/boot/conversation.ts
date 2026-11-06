@@ -7,8 +7,6 @@ import type {
 } from "../memory/memory-capture-service.js";
 import type { MemoryReviewerService } from "../memory/memory-reviewer-service.js";
 import type { SkillCatalogEntry } from "../main/skill-store.js";
-import type { InputClassifier } from "../core/input-classifier.js";
-import type { RouteEngine } from "../core/route-engine.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { RoutineEngine } from "../routines/routine-engine.js";
 import type { IdleSchedulerService } from "../main/idle-scheduler.js";
@@ -144,8 +142,6 @@ export function createHookRunner(): HookRunner {
 export interface ConversationDeps {
   settingsService: SettingsService;
   systemPromptBuilder: SystemPromptBuilder;
-  inputClassifier: InputClassifier;
-  routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;
   /** Query-loop activates the guarded rationale path only when its factory is ready. */
   rationaleCoordinatorFactory?: RationaleCoordinatorFactory;
@@ -207,8 +203,6 @@ export type RoutineConversationLoopDeps = Pick<
   ConversationDeps,
   | "settingsService"
   | "systemPromptBuilder"
-  | "inputClassifier"
-  | "routeEngine"
   | "toolRegistry"
   | "memoryManager"
   | "memoryReviewer"
@@ -271,8 +265,6 @@ export function createRoutineConversationLoop(
   return new ConversationLoop({
     settingsService: deps.settingsService,
     systemPromptBuilder: routineSystemPromptBuilder,
-    inputClassifier: deps.inputClassifier,
-    routeEngine: deps.routeEngine,
     toolRegistry: deps.toolRegistry,
     memoryManager: deps.memoryManager,
     memoryReviewer: deps.memoryReviewer,
@@ -311,8 +303,6 @@ export function createRoutineConversationLoop(
 export type SideChatConversationLoopDeps = Pick<
   ConversationDeps,
   | "settingsService"
-  | "inputClassifier"
-  | "routeEngine"
   | "toolRegistry"
   | "permissionManager"
   | "approvalGate"
@@ -366,8 +356,6 @@ export function createSideChatConversationLoop(
   return new ConversationLoop({
     settingsService: deps.settingsService,
     systemPromptBuilder: sideChatSystemPromptBuilder,
-    inputClassifier: deps.inputClassifier,
-    routeEngine: deps.routeEngine,
     toolRegistry: deps.toolRegistry,
     memoryManager: deps.sideChatMemoryManager,
     memoryReviewer: deps.memoryReviewer,
@@ -409,8 +397,6 @@ export function createConversationLoop(deps: ConversationDeps,
   const loop = new ConversationLoop({
     settingsService: deps.settingsService,
     systemPromptBuilder: deps.systemPromptBuilder,
-    inputClassifier: deps.inputClassifier,
-    routeEngine: deps.routeEngine,
     toolRegistry: deps.toolRegistry,
     supportsA2AParentDelivery: deps.supportsA2AParentDelivery === true,
     approvalSurface: deps.approvalSurface,

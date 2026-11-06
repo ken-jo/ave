@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
@@ -19,16 +17,12 @@ class ThrowingProvider implements LLMProvider {
 
 function buildLoop(provider: LLMProvider | null): ConversationLoop {
   const toolRegistry = new ToolRegistry();
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
       get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);

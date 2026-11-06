@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../../engine/llm/types.js";
 import type { SubscriptionRuntimeAuditEvent } from "../../main/subscription-runtime-service.js";
 import type { SubscriptionChatRuntimeSelection } from "../../shared/subscription-runtime.js";
@@ -60,8 +58,6 @@ function sharedLoopDeps() {
       },
       getSecret: () => undefined,
     },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: makeConversationLoopMemoryManager(),
     pluginRuntime: { listPluginCards: () => [] },

@@ -84,12 +84,6 @@ export function makeConversationLoopDeps(
       setActiveSessionId: vi.fn(),
       setActiveRolePrompt: vi.fn(),
     } as unknown as ConversationLoopDeps["systemPromptBuilder"],
-    inputClassifier: {
-      classify: vi.fn().mockReturnValue({ type: "chat" }),
-    } as unknown as ConversationLoopDeps["inputClassifier"],
-    routeEngine: {
-      route: vi.fn().mockReturnValue({ route: "llm" }),
-    } as unknown as ConversationLoopDeps["routeEngine"],
     toolRegistry: {
       listAll: () => [],
       getToolCatalogForScope: () => [],

@@ -4,8 +4,6 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
@@ -36,8 +34,6 @@ function makeLoop(): ConversationLoop {
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,

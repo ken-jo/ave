@@ -10,8 +10,6 @@ import { describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { MemorySecretStore } from "../../../audit/hmac-chain.js";
 import type { RationaleAuditSink } from "../../../audit/rationale-audit-adapter.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import {
   ApprovalGate,
   IPC_APPROVAL_REQUEST,
@@ -308,8 +306,6 @@ describe("foreground rationale real-stack integration", () => {
         build: () => "system",
         setToolScope: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: registry,
       permissionManager,
       hookRunner,
@@ -535,8 +531,6 @@ describe("foreground rationale real-stack integration", () => {
         build: () => "system",
         setToolScope: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: registry,
       permissionManager,
       approvalGate,
@@ -703,8 +697,6 @@ describe("foreground rationale real-stack integration", () => {
         build: () => "system",
         setToolScope: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: registry,
       permissionManager: createPermissionManager(directory),
       approvalGate,

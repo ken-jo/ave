@@ -30,24 +30,18 @@ const resumeDeps = (overrides: Partial<ConversationLoopDeps> = {}) =>
 
 type CaptureExplicit = NonNullable<ConversationLoopDeps["memoryCaptureService"]>["captureExplicit"];
 
-function createRememberCommandLoop(captureExplicit: CaptureExplicit, args = "retain this rollout preference") {
+function createRememberCommandLoop(captureExplicit: CaptureExplicit) {
   const saveMemory = vi.fn();
   const memoryManager = {
     ...resumeMemory(),
     saveMemory,
   } as unknown as ConversationLoopDeps["memoryManager"];
-  const routeEngine = {
-    route: vi.fn().mockReturnValue({ route: "command", command: "remember", args }),
-  } as unknown as ConversationLoopDeps["routeEngine"];
-  const inputClassifier = {
-    classify: vi.fn().mockReturnValue({ type: "command" }),
-  } as unknown as ConversationLoopDeps["inputClassifier"];
   const memoryCaptureService: NonNullable<ConversationLoopDeps["memoryCaptureService"]> = { captureExplicit };
   const provider = {
     vendor: "openai" as const,
     streamTurn: async function* () {  },
   };
-  const loop = new ConversationLoop(resumeDeps({ memoryManager, memoryCaptureService, routeEngine, inputClassifier }));
+  const loop = new ConversationLoop(resumeDeps({ memoryManager, memoryCaptureService }));
   (loop as unknown as { provider: typeof provider }).provider = provider;
   return {
     loop,
@@ -399,16 +393,8 @@ describe("ConversationLoop.resetAndResume", () => {
       { role: "assistant", content: "old answer" },
     ];
     const mem = resumeMemory(history);
-    const routeEngine = {
-      route: vi.fn().mockReturnValue({ route: "llm" }),
-    } as unknown as ConversationLoopDeps["routeEngine"];
-    const inputClassifier = {
-      classify: vi.fn().mockReturnValue({ type: "chat" }),
-    } as unknown as ConversationLoopDeps["inputClassifier"];
     const loop = new ConversationLoop(resumeDeps({
       memoryManager: mem,
-      routeEngine,
-        inputClassifier,
       settingsService: makeConversationLoopSettings(false, "gpt-4o", "openai",
         ),
     }),
@@ -436,30 +422,25 @@ describe("ConversationLoop.resetAndResume", () => {
   });
 
   it("does not dispatch slash commands from non-keyboard origin", async () => {
-    const routeEngine = {
-      route: vi.fn().mockReturnValue({
-        route: "command",
-        command: "compact",
-        args: "",
-      }),
-    } as unknown as ConversationLoopDeps["routeEngine"];
-    const inputClassifier = {
-      classify: vi.fn().mockReturnValue({ type: "command" }),
-    } as unknown as ConversationLoopDeps["inputClassifier"];
-    const loop = new ConversationLoop(resumeDeps({ routeEngine, inputClassifier }),
-    );
-    const fakeProvider = {
-      vendor: "openai" as const,
-      streamTurn: async function* () {  },
-    };
-    (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
-
-    const result = await loop.runTurn("/compact", undefined, undefined, {
-      inputOrigin: "plugin-emitted",
-    });
+    const loop = new ConversationLoop(resumeDeps());
+    const result = await loop.handleCommand("compact", "", "plugin-emitted");
 
     expect(result.text).toContain("비키보드 출처의 slash command는 실행하지 않습니다.",
     );
+  });
+
+  it("sends a non-keyboard slash turn to the model instead of compacting", async () => {
+    const loop = new ConversationLoop(resumeDeps());
+    const manualCompact = vi.spyOn(loop, "manualCompact");
+    const handleCommand = vi.spyOn(loop, "handleCommand");
+    const streamTurn = vi.fn(async function* () {});
+    (loop as unknown as { provider: unknown }).provider = { vendor: "openai", streamTurn };
+
+    await loop.runTurn("/compact", undefined, undefined, { inputOrigin: "plugin-emitted" });
+
+    expect(streamTurn).toHaveBeenCalled();
+    expect(handleCommand).not.toHaveBeenCalled();
+    expect(manualCompact).not.toHaveBeenCalled();
   });
 });
 
@@ -542,17 +523,11 @@ describe("ConversationLoop command routing", () => {
       ...resumeMemory(),
       listMemoryEntries,
     } as unknown as ConversationLoopDeps["memoryManager"];
-    const routeEngine = {
-      route: vi.fn().mockReturnValue({ route: "command", command: "memory", args: "" }),
-    } as unknown as ConversationLoopDeps["routeEngine"];
-    const inputClassifier = {
-      classify: vi.fn().mockReturnValue({ type: "command" }),
-    } as unknown as ConversationLoopDeps["inputClassifier"];
     const fakeProvider = {
       vendor: "openai" as const,
       streamTurn: async function* () {  },
     };
-    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, routeEngine, inputClassifier }),
+    const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }),
     );
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
@@ -637,20 +612,7 @@ describe("ConversationLoop command routing", () => {
       });
       expect(boot.manager.size()).toBe(0);
       expect(existsSync(join(disabledDir, "pre-demo.sh"))).toBe(true);
-
-      const routeEngine = {
-        route: vi.fn().mockReturnValue({
-          route: "command",
-          command: "permission",
-          args: "hooks accept pre-demo.sh",
-        }),
-      } as unknown as ConversationLoopDeps["routeEngine"];
-      const inputClassifier = {
-        classify: vi.fn().mockReturnValue({ type: "command" }),
-      } as unknown as ConversationLoopDeps["inputClassifier"];
       const loop = new ConversationLoop(resumeDeps({
-        routeEngine,
-          inputClassifier,
         scriptHookManager: boot.manager,
         hookTrustCommandOptions: { hooksDir, disabledDir, lockfilePath },
       }),

@@ -3,8 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams, ToolSchema, TurnSummary,
 } from "../llm/types.js";
@@ -87,16 +85,12 @@ function createLoopWithRegistry(
   toolRegistry: ToolRegistry,
   overrides: Partial<ConstructorParameters<typeof ConversationLoop>[0]> = {},
 ): ConversationLoop {
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
       get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },
-    inputClassifier,
-    routeEngine,
     toolRegistry,
     memoryManager: {
       saveSession: () => {},

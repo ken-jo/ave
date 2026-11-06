@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { forbidAmbientFetch } from "../../../__tests__/support/network-fetch-stubs.js";
-import { InputClassifier } from "../../../core/input-classifier.js";
-import { RouteEngine } from "../../../core/route-engine.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { isModelAvailableForVendor } from "../../../shared/llm-vendor-defaults.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -48,8 +46,6 @@ async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", e
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
@@ -125,8 +121,6 @@ it("records reasoning independently of a dormant endpoint on an SDK-managed rout
   const loop = new ConversationLoop({
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
     toolRegistry: new ToolRegistry(),
     memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
