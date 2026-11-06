@@ -4,6 +4,9 @@ import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
+// Main names the owning conversation on every agent tab it opens; the renderer refuses an unowned one.
+const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
+
 test("keeps a requested blank tab mounted through its first navigation", async () => {
   let requests = 0;
   let pageRequests = 0;
@@ -23,14 +26,15 @@ test("keeps a requested blank tab mounted through its first navigation", async (
       settings: buildLlmSettings(),
       historyRows: [{ role: "user", content: "Browser tab fixture", createdAt: Date.now() }],
       sessionTitle: "Browser tab fixture",
+      sessionId: SESSION_ID,
       launchArgs: ["--remote-debugging-port=9245", "--disable-gpu"],
     });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
-    await ctx.app.evaluate(({ BrowserWindow }, channel) => {
+    await ctx.app.evaluate(({ BrowserWindow }, { channel, sessionId }) => {
       const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Main window unavailable");
-      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank", active: true });
-    }, CHANNELS.browser.tabOp);
+      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank", active: true, sessionId });
+    }, { channel: CHANNELS.browser.tabOp, sessionId: SESSION_ID });
     const view = ctx.page.getByTestId("chat-side-panel-browser-webview");
     await expect(view).toHaveAttribute("src", "about:blank");
     const guestId = await view.evaluate((element) => (element as unknown as { getWebContentsId(): number }).getWebContentsId());

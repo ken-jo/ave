@@ -14,6 +14,19 @@ export async function openDocumentSessionFiles(page: Page, directory: string): P
   await expect(session).toHaveAttribute("aria-pressed", "true");
 }
 
+/** Files shows tree and detail side by side only from FILE_WORKSPACE_COLUMNS_MIN_WIDTH; the default side panel is narrower, so a
+ * column spec widens the panel through its own resize separator the way a keyboard user does (ArrowLeft widens a start-edge bar). */
+export async function showFileColumns(page: Page): Promise<void> {
+  const browser = page.getByTestId("chat-side-panel-file-browser");
+  await expect(browser).toBeVisible();
+  const panelSplitter = page.getByTestId("chat-side-panel-width-splitter");
+  for (let step = 0; step < 40 && await browser.getAttribute("data-file-layout") !== "columns"; step++) {
+    await panelSplitter.focus();
+    await page.keyboard.press("ArrowLeft");
+  }
+  await expect(browser).toHaveAttribute("data-file-layout", "columns");
+}
+
 export async function openDocumentSessionFile(page: Page, name: string): Promise<void> {
   const back = page.getByTestId("chat-side-panel-file-back");
   if (await back.isVisible()) await back.click();
