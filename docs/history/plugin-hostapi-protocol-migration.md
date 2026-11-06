@@ -1,3 +1,8 @@
+# Plugin HostApi protocol migration history
+
+Moved from the design doc on 2026-11-06.
+§N references outside 9.x point to `../design/plugin-hostapi-protocol.md`.
+
 ## 9. Migration
 
 ### 9.1 Steps

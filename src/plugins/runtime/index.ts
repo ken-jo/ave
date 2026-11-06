@@ -4997,11 +4997,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return { createPlugin, arm: "child" };
   }
 
-  /** Loaded generation records, rather than plugin-id lists, determine which factory arms are running. */
-  listLoadedPluginArms(): Array<{ pluginId: string; arm: PluginLoadArm }> {
-    return [...this.plugins.values()].map((plugin) => ({ pluginId: plugin.manifest.id, arm: plugin.arm }));
-  }
-
   protected async preflightBootLoadPlan(
     loadPlan: ManifestLoadPlan[],
   ): Promise<BootPreflightOutcome[]> {
