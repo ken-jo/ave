@@ -17,7 +17,7 @@ const COLOR =
   "primary|primary-foreground|secondary|secondary-foreground|muted|" +
   "muted-foreground|accent|accent-foreground|destructive|" +
   "destructive-foreground|warning|warning-foreground|success|" +
-  "success-foreground|info|info-foreground|emphasis|emphasis-foreground|" +
+  "success-foreground|info|info-foreground|emphasis|" +
   "border|input|ring|ui-line|action-view|action-branch|action-compact|" +
   "message-user|message-user-foreground|current|white|black)";
 
