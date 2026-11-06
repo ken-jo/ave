@@ -1085,14 +1085,14 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   if (relatedSelection.narrowed.length === 0) {
     const relatedArgs = relatedSelection.sources.map((file) => `./${file}`);
     runVitestWithReport(bun, dir, ["related", "--run", ...relatedArgs],
-      "related tests ran zero tests; rerun with AVE_PREPUSH_FULL=1");
+      "related tests ran zero tests; rerun the full checks with `node scripts/hooks/run-local-checks.mjs` (manual stage)");
     return;
   }
   const alreadyRun = new Set(direct);
   const boundedArgs = relatedSelection.tests.filter((file) => !alreadyRun.has(file)).map((file) => `./${file}`);
   if (boundedArgs.length > 0) {
     runVitestWithReport(bun, dir, ["run", ...boundedArgs],
-      "bounded related tests ran zero tests; rerun with AVE_PREPUSH_FULL=1");
+      "bounded related tests ran zero tests; rerun the full checks with `node scripts/hooks/run-local-checks.mjs` (manual stage)");
   }
 }
 // Per-module related-test discovery, then the bound of pre-push-source-policy.

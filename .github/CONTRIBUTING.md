@@ -51,13 +51,15 @@ importers when a shared module reaches over 150 test files. Each source module
 must have related test files; empty discovery selects full checks and a
 zero-test run fails closed. A new sub-branch is measured from the closest live
 tip of the default or an `integration/*` branch. The full `bun run test` and
-`bun run build` run once before merge on the merged tree. The hook keeps the full gate for pushes to `integration/*`,
-non-fast-forward pushes, deleted modules, documentation consumed by runtime,
+`bun run build` run once before merge on the merged tree, and on every push to
+`main` or `integration/*`. The hook never runs them; it runs the global-input
+tier for pushes to `integration/*`, non-fast-forward pushes, deleted modules, documentation consumed by runtime,
 tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
 entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
 compiler, Vitest and build configs, Vitest setup files, `scripts/`,
 `.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`
-forces it. Documentation prose with no such
+forces that tier. `node scripts/hooks/run-local-checks.mjs` (manual stage)
+runs the full checks locally. Documentation prose with no such
 consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in

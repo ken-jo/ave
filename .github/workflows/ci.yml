@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [main, "integration/**"]
   push:
-    branches: [main]
+    branches: [main, "integration/**"]
     tags: ["v*"]
   schedule:
     # 18:00 UTC is 03:00 KST, outside the owner's working hours.
@@ -424,10 +424,6 @@ jobs:
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
     runs-on: ubuntu-24.04-arm
-    env:
-      # Parallel runners may share a home; each workspace owns its Bun cache.
-      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron-win
     steps:
       - name: Require the build and every Vitest shard
         if: always()
@@ -481,8 +477,8 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         with:
           path: ave
-          # Packaging and hygiene inspect this tree and tracked-file inventory;
-          # diff/ancestry planning stays in the build job with full history.
+          # Only the CI budget report reads this tree; diff/ancestry planning
+          # stays in the build job with full history.
           fetch-depth: 1
           # No later step pushes or fetches with the job token.
           persist-credentials: false
