@@ -80,35 +80,9 @@ export type AveTokenName = typeof AVE_TOKEN_NAMES[number];
 
 export type AveTokenMap = { readonly [K in AveTokenName]: string };
 
-/** @deprecated Use AveTokenMap instead. */
-export type AveThemeTokens = AveTokenMap;
-
-import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "./appearance-settings.js";
-
-/** A curated scheme identifier. */
-export type AveThemeBundleId = string;
-
-/** Freeze a copy so consumers cannot mutate the curated scheme list. */
-export const AVE_THEME_BUNDLE_IDS: readonly AveThemeBundleId[] = Object.freeze([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
-
-export function isAveThemeBundleId(id: unknown): id is AveThemeBundleId {
-  return typeof id === "string" && AVE_THEME_BUNDLE_IDS.includes(id);
-}
-
-/** Broadcast on host.theme.changed; bundleId and shell carry theme identity and mode. */
+/** Broadcast on host.theme.changed; bundleId (a curated scheme id) and shell carry theme identity and mode. */
 export interface AveHostThemeEvent {
-  bundleId: AveThemeBundleId;
+  bundleId: string;
   shell: "light" | "dark";
   tokens: AveTokenMap;
-}
-
-/** @deprecated Use AveHostThemeEvent. This standalone legacy type retains only bundleId, colorScheme, reducedMotion, and fonts. */
-export interface AveThemePayload {
-  bundleId: string;
-  /** @deprecated No longer emitted. Legacy colorScheme accepts light or dark; system is rejected. */
-  colorScheme?: "light" | "dark";
-  /** @deprecated No longer emitted by the host. */
-  reducedMotion?: boolean;
-  /** @deprecated No longer emitted by the host. */
-  fonts?: { family: string };
 }

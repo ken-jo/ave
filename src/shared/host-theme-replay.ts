@@ -4,8 +4,6 @@ import { AVE_TOKEN_NAMES } from "./plugin-ui-tokens.js";
 export type SafeThemePayload = {
   bundleId: string;
   shell: "light" | "dark";
-  colorScheme?: "light" | "dark";
-  reducedMotion?: boolean;
   tokens?: Record<string, string>;
 };
 
@@ -38,8 +36,6 @@ export function cloneThemePayload(payload: SafeThemePayload): SafeThemePayload {
     bundleId: payload.bundleId,
     shell: payload.shell,
   };
-  if (payload.colorScheme) clone.colorScheme = payload.colorScheme;
-  if (typeof payload.reducedMotion === "boolean") clone.reducedMotion = payload.reducedMotion;
   if (payload.tokens) clone.tokens = Object.freeze({ ...payload.tokens }) as Record<string, string>;
   return Object.freeze(clone);
 }
@@ -76,10 +72,6 @@ export function validateThemePayload(payload: unknown):
   }
   safe.tokens = safeTokens;
   // Fonts are host-owned and do not belong in the replay payload.
-  if (candidate.colorScheme === "light" || candidate.colorScheme === "dark") {
-    safe.colorScheme = candidate.colorScheme;
-  }
-  if (typeof candidate.reducedMotion === "boolean") safe.reducedMotion = candidate.reducedMotion;
   return { ok: true, safe };
 }
 
