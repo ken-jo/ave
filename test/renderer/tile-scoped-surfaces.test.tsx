@@ -44,14 +44,14 @@ async function advanceAnimationFrame(): Promise<void> {
   await act(async () => { vi.advanceTimersToNextFrame(); });
 }
 
-function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
-  return (api.permission as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]!;
+function permissionSubscription(name: string): ReturnType<typeof vi.fn> {
+  return (window.ave.permission as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]!;
 }
 
 describe("permission disclosure toasts with two tiles", () => {
   it("subscribes and renders once for the window, not once per tile", async () => {
-    const { container, api } = await renderApp({ hasApiKey: true });
-    const onHit = permissionSubscription(api, "onUserApprovalHit");
+    const { container } = await renderApp({ hasApiKey: true });
+    const onHit = permissionSubscription("onUserApprovalHit");
     await waitFor(() => expect(onHit).toHaveBeenCalled());
 
     await splitIntoTwoTiles(container);
@@ -76,8 +76,8 @@ describe("permission disclosure toasts with two tiles", () => {
   });
 
   it("subscribes the reviewer suggestion once however many conversations are open", async () => {
-    const { container, api } = await renderApp({ hasApiKey: true });
-    const onSuggestion = permissionSubscription(api, "onReviewSuggestion");
+    const { container } = await renderApp({ hasApiKey: true });
+    const onSuggestion = permissionSubscription("onReviewSuggestion");
     await waitFor(() => expect(onSuggestion).toHaveBeenCalled());
 
     await splitIntoTwoTiles(container);
@@ -1428,7 +1428,7 @@ describe("three tiles, every kind of surface at once", () => {
     const { container, api, emitApproval, emitAskUserQuestion, emitSkillLoaded, emitRoutineFired } =
       await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [first, middle, third] = await splitIntoThreeTiles(container);
-    const onHit = permissionSubscription(api, "onUserApprovalHit");
+    const onHit = permissionSubscription("onUserApprovalHit");
     const middleSession = `session-${middle!.chatGroupId}`;
     const count = (root: HTMLElement, testId: string) =>
       root.querySelectorAll(`[data-testid="${testId}"]`).length;

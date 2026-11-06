@@ -10,7 +10,7 @@ import {
 import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { detectMentionQuery } from "../utils/slash-trigger.js";
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
-import type { AveApi, AveWorkspaceApi } from "../types.js";
+import type { AveMcpApi, AveWorkspaceApi } from "../types.js";
 import {
   ATTACH_MAX_COUNT,
   type FileAttachment,
@@ -66,7 +66,7 @@ export interface UseResourceMentionArgs {
   caret: number;
   enabled: boolean;
   isComposing: boolean;
-  mcp: AveApi["mcp"] | undefined;
+  mcp: AveMcpApi | undefined;
   /** Resource attachments already in the composer — the cap is per turn. */
   resourceCount: number;
   /** `@file` source: the main-side workspace search. Omitted on surfaces without the workspace bridge, and then no file rows

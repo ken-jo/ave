@@ -17,7 +17,7 @@ import type { SerializedHistoryMessage } from "../shared/chat-history.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { SessionFamily, SessionListKindFilter, SessionListRow } from "../shared/session-lookup.js";
 import type { ChatStreamEvent } from "../lib/chat-stream-state.js";
-import type { AveApi } from "../ui/renderer/types.js";
+import type { AvePreloadApi } from "../ui/renderer/types.js";
 
 /** Every per-conversation channel names its group; see docs/design/tiled-chat-groups.md. */
 /** Forward only exactly matching group labels and drop unlabelled frames; broadcasting would leak one tile's conversation into others. */
@@ -229,5 +229,5 @@ export function buildPublicSurface() {
     ...surface,
     /** Bind each tile's surface once so downstream calls cannot address another conversation. */
     chatGroup: (chatGroupId: string) => buildSurfaceForChatGroup(chatGroupId),
-  } satisfies Partial<AveApi>;
+  } satisfies Partial<AvePreloadApi>;
 }

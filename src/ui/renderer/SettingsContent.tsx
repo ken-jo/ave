@@ -258,14 +258,14 @@ export function SettingsContent({
     let alive = true;
     const refreshPending = async () => {
       try {
-        const result = await api.permission.recentlyDeniedList();
+        const result = await window.ave.permission.recentlyDeniedList();
         if (alive && result.ok) setPendingPermissions(result.entries.length);
       } catch {
         if (alive) setPendingPermissions(0);
       }
     };
     void refreshPending();
-    const unsubscribe = api.permission.onRecentlyDeniedChanged((summary) => {
+    const unsubscribe = window.ave.permission.onRecentlyDeniedChanged((summary) => {
       setPendingPermissions(summary.total);
     });
     return () => {

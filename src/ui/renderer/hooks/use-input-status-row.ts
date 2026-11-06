@@ -38,7 +38,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   const [permissionMode, setPermissionMode] = useState<ExecutionModeDisplay>("unknown");
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxStatus } =
-    useSandboxCapability(api.permission, api.onSettingsUpdated);
+    useSandboxCapability(window.ave.permission, api.onSettingsUpdated);
 
   // Vendor + model; mirrors use-status-bar-vendor.
   useEffect(() => {
@@ -100,7 +100,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
 
   // Permission mode + pending approvals; mirrors use-status-bar-permission.
   useEffect(() => {
-    const perm = api.permission;
+    const perm = window.ave.permission;
     if (!perm) return;
     let cancelled = false;
 

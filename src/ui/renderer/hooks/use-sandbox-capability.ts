@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SandboxCapabilityInfo } from "../../../shared/sandbox-capability-info.js";
-import type { AveApi } from "../types.js";
+import type { AveApi, AvePermissionApi } from "../types.js";
 
 const CAPABILITY_QUERY_ATTEMPTS = 3;
 const CAPABILITY_QUERY_RETRY_MS = 1_000;
@@ -8,7 +8,7 @@ const CAPABILITY_QUERY_RETRY_MS = 1_000;
 /** Read the host snapshot; a failed query is uncertainty, never an execution plan. The snapshot is re-read when settings change and
  * when main reports a sandbox status change, since the Windows MXC check can settle seconds after the first read. */
 export function useSandboxCapability(
-  permission: (Pick<AveApi["permission"], "sandboxCapability"> & Partial<Pick<AveApi["permission"], "onSandboxCapabilityChanged">>) | undefined,
+  permission: (Pick<AvePermissionApi, "sandboxCapability"> & Partial<Pick<AvePermissionApi, "onSandboxCapabilityChanged">>) | undefined,
   subscribeToSettings?: AveApi["onSettingsUpdated"],
 ) {
   const [capability, setCapability] = useState<SandboxCapabilityInfo | null>(null);

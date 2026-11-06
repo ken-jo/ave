@@ -186,14 +186,13 @@ async function setup() {
     ...(fixtureApi as unknown as AveApi),
     ...publicApi.chatGroup(TILE_GROUP),
     sideChat: internalApi.sideChat,
-    approval: internalApi.approval,
     onAgentSpawnEvent: internalApi.onAgentSpawnEvent,
     onAskUserQuestion: internalApi.onAskUserQuestion,
     onAskUserQuestionTimeout: internalApi.onAskUserQuestionTimeout,
   };
   // The composer captures its gesture token through the window's API, as in the app; the token is the real preload's.
   Object.defineProperty(window, "aveApi", { value: api, configurable: true, writable: true });
-  return { api, deps, runner, read, sideLoop, tileLoop };
+  return { api, approval: internalApi.approval, deps, runner, read, sideLoop, tileLoop };
 }
 
 /** Runs `act` inside a user gesture, so the real preload mints the keyboard token the send carries to main. */
@@ -314,7 +313,7 @@ describe("side-chat child transcript across host and renderer", () => {
   it.each(["spawn", "question", "approval"] as const)(
     "binds the first pending send without an open request before its %s events",
     async (eventKind) => {
-      const { api, read, sideLoop } = await setup();
+      const { api, approval, read, sideLoop } = await setup();
       const pending = deferred<{ route: string }>();
       const surface = approvalSurfaceStub();
       const live: { surface: ApprovalSurfaceContextValue | null } = { surface: null };
@@ -344,7 +343,7 @@ describe("side-chat child transcript across host and renderer", () => {
         return pending.promise;
       });
       if (eventKind === "approval") {
-        Object.defineProperty(window, "ave", { value: { preview: makeMockAveNamespace().ns.preview, approval: api.approval }, configurable: true, writable: true });
+        Object.defineProperty(window, "ave", { value: { preview: makeMockAveNamespace().ns.preview, approval }, configurable: true, writable: true });
         render(<ApprovalPanel api={api} onSurface={(next) => { live.surface = next; }} />);
       } else {
         render(<Panel api={api} openStoredSession={false} surface={surface} />);

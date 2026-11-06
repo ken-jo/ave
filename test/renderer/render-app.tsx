@@ -77,6 +77,11 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
     env: aveEnv, pendingApprovals, workspaceRoots, workspaceListRootsResult, workspaceRemovalCounts, nativeContextMenu,
   });
 
+  Object.assign(ns.permission, api.permission);
+  Object.assign(ns, { policy: api.policy });
+  for (const namespace of ["permission", "approval", "userApproval", "policy", "mcp"]) {
+    Reflect.deleteProperty(api, namespace);
+  }
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);
   (window as unknown as { aveApi: MockAveApi }).aveApi = api;

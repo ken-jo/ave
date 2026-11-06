@@ -1,11 +1,15 @@
 import "../../../../../test/renderer/setup.js";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { useInputStatusRow } from "../use-input-status-row.js";
 import { t } from "../../../../i18n/runtime.js";
 import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.js";
-import type { AppSettings, AveApi } from "../../types.js";
+import type { AppSettings, AveApi, AvePermissionApi } from "../../types.js";
+
+beforeEach(() => {
+  Object.defineProperty(window, "ave", { configurable: true, writable: true, value: { permission: undefined } });
+});
 
 function apiWith(settings: AppSettings) {
   return {
@@ -48,11 +52,11 @@ describe("useInputStatusRow", () => {
     const broadcasts: Array<() => void> = [];
     const unsubscribe = vi.fn();
     const api = apiWith(settings);
-    api.permission = {
+    window.ave.permission = {
       getMode: vi.fn(async () => ({ mode: "strict" })),
       recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
       onRecentlyDeniedChanged: vi.fn(() => () => {}),
-      sandboxCapability: vi.fn().mockResolvedValueOnce(inactive).mockResolvedValueOnce(active) } as unknown as AveApi["permission"];
+      sandboxCapability: vi.fn().mockResolvedValueOnce(inactive).mockResolvedValueOnce(active) } as unknown as AvePermissionApi;
     api.onSettingsUpdated = vi.fn((callback) => { broadcasts.push(() => callback(settings)); return unsubscribe; });
     const { result, unmount } = renderHook(() => useInputStatusRow(api));
     await waitFor(() => expect(result.current.sandboxCapability).toEqual(inactive));

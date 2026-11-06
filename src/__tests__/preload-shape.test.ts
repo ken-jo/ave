@@ -1,17 +1,16 @@
 import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /**
- * Preload contextBridge shape lock — Commit C0 safety snapshot.
+ * Preload contextBridge shape lock.
  *
  * Mocks electron's `contextBridge.exposeInMainWorld` to record every exposed
  * world `(worldName, apiObject)`, imports `src/preload.ts`, and snapshots a
  * DEEP shape of each world: the sorted top-level keys plus, for each nested
  * object value, one level of sorted keys. This locks the `window.*` world
- * names and their exposed API surface byte-identical before the refactor that
- * follows moves them.
+ * names and their exposed API members, including canonical namespace ownership.
  *
  * Values are intentionally NOT captured (only `typeof` / nested key lists) so
  * env-dependent values (e.g. `__aveDevMode`, platform flags) stay
- * deterministic across machines. MUST pass against the current (unchanged) code.
+ * deterministic across machines.
  *
  * Mock scaffolding mirrors `src/__tests__/preload.test.ts` (which already
  * imports preload successfully).
@@ -125,6 +124,11 @@ describe("preload contextBridge world shape lock", () => {
         "aveWindow",
       ]
     `);
+  });
+
+  it.each(["permission", "approval", "userApproval", "policy", "mcp"])("exposes %s only in the canonical world", (namespace) => {
+    expect(exposed.get("aveApi")).not.toHaveProperty(namespace);
+    expect(exposed.get("ave")).toHaveProperty(namespace, expect.any(Object));
   });
 
   it("locks each exposed world's deep shape", () => {
@@ -298,13 +302,6 @@ describe("preload contextBridge world shape lock", () => {
             "setOsNotificationsEnabled",
           ],
           "applyClaudeDesktopMcpImport": "function",
-          "approval": [
-            "listPending",
-            "onRequest",
-            "onSettled",
-            "respond",
-            "selectSentence",
-          ],
           "audit": [
             "getStats",
             "search",
@@ -481,28 +478,6 @@ describe("preload contextBridge world shape lock", () => {
           "logs": [
             "tail",
           ],
-          "mcp": [
-            "addConfig",
-            "attachResource",
-            "attachResourceTemplate",
-            "authenticate",
-            "callTool",
-            "disposeUiSession",
-            "downloadFile",
-            "getConfigPath",
-            "getConfigs",
-            "getPrompt",
-            "kill",
-            "listResourceTemplates",
-            "listResources",
-            "onServerDisconnected",
-            "postUiMessage",
-            "postUiModelContext",
-            "readUiResource",
-            "removeConfig",
-            "servers",
-            "setApiKey",
-          ],
           "memoryDeleteEntry": "function",
           "memoryGetAgentsMd": "function",
           "memoryGetDetail": "function",
@@ -563,43 +538,6 @@ describe("preload contextBridge world shape lock", () => {
           "openExternalUrl": "function",
           "pauseRoutine": "function",
           "pauseSessionGoal": "function",
-          "permission": [
-            "addRule",
-            "approveExtensionsWithoutIsolation",
-            "auditShow",
-            "auditVerify",
-            "dirDispatch",
-            "egressDenialsRecent",
-            "egressGrantRevoke",
-            "egressGrantsList",
-            "getMode",
-            "homeTrustApprove",
-            "homeTrustRemove",
-            "homeTrustReview",
-            "hookTrustList",
-            "judgeGet",
-            "judgeSet",
-            "listRules",
-            "listScopedRules",
-            "onConfigChanged",
-            "onManifestViolation",
-            "onModeChanged",
-            "onRecentlyDeniedChanged",
-            "onReviewSuggestion",
-            "onSandboxCapabilityChanged",
-            "onUserApprovalHit",
-            "recentlyDeniedList",
-            "recentlyDeniedRerun",
-            "removeRule",
-            "removeScopedRule",
-            "reviewerDispatch",
-            "sandboxCapability",
-            "sandboxWindowsInstall",
-            "sandboxWindowsStatus",
-            "setMode",
-            "upstreamProxyGet",
-            "upstreamProxySet",
-          ],
           "pluginStudio": [
             "availableParts",
             "confirmConnectorCopy",
@@ -619,10 +557,6 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "plugins": [
             "getPerfStats",
-          ],
-          "policy": [
-            "get",
-            "set",
           ],
           "previewClaudeDesktopMcpImport": "function",
           "relaunchApp": "function",
@@ -736,12 +670,6 @@ describe("preload contextBridge world shape lock", () => {
           "updateRoutine": "function",
           "updateSettings": "function",
           "updateWorkBoardItem": "function",
-          "userApproval": [
-            "list",
-            "listSession",
-            "record",
-            "revokeByKey",
-          ],
           "window": [
             "openHtmlPreview",
           ],

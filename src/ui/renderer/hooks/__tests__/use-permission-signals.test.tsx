@@ -27,7 +27,7 @@ function permissionApi(overrides: {
     reviewerDispatch: overrides.reviewerDispatch ?? vi.fn(async () => ({ ok: true })),
     setMode: overrides.setMode ?? vi.fn(async () => ({ ok: true, mode: "auto" })),
   };
-  window.aveApi = { permission } as unknown as typeof window.aveApi;
+  window.ave = { permission } as unknown as typeof window.ave;
   return {
     permission,
     fire: (payload: Partial<PermissionReviewSuggestionPayload> = {}) => {
