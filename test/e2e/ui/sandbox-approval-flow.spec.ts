@@ -54,7 +54,6 @@ test.describe("Sandbox approval flow", () => {
       settings: buildE2eBaseSettings(true),
       userDataPrefix: "ave-sandbox-approval-",
       homePrefix: "ave-sandbox-home-",
-      launchEnv: { AVE_SANDBOX_ENABLED: "0" },
     });
     app = context.app;
     page = context.page;
