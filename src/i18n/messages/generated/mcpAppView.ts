@@ -1,5 +1,6 @@
 // i18n fragment. Source: src/ui/renderer/components/McpAppView.tsx.
 export const en = {
+  "mcpAppView.titleFallback": "MCP App",
   "mcpAppView.sandboxBadge": "MCP · Isolated Process · Restricted Network",
   "mcpAppView.loading": "Loading MCP App...",
   "mcpAppView.serverDisconnected": "MCP server disconnected",
@@ -7,8 +8,9 @@ export const en = {
   "mcpAppView.openInPip": "Open in the picture-in-picture panel",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "mcpAppView.titleFallback": "MCP 앱",
   "mcpAppView.sandboxBadge": "MCP · 격리된 프로세스 · 제한된 네트워크",
-  "mcpAppView.loading": "MCP App 로드 중...",
+  "mcpAppView.loading": "MCP 앱 로드 중...",
   "mcpAppView.serverDisconnected": "MCP 서버 연결이 끊겼습니다",
   "mcpAppView.openInFullscreen": "전체 화면 패널에서 열려 있습니다",
   "mcpAppView.openInPip": "PIP 패널에서 열려 있습니다",

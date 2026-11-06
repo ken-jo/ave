@@ -115,16 +115,6 @@
     {
       "type": "exports",
       "file": "src/i18n/index.ts",
-      "name": "isDefaultVisibleLocale"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
-      "name": "isLocaleMessagesLoaded"
-    },
-    {
-      "type": "exports",
-      "file": "src/i18n/index.ts",
       "name": "loadAllLocaleMessages"
     },
     {

@@ -1,4 +1,5 @@
 import type { AppearanceSettings } from "./appearance-settings.js";
+import type { Locale } from "../i18n/locale.js";
 
 /** Main-owned appearance snapshot for dock chrome and its app views. */
 export interface DockAppearance {
@@ -7,4 +8,6 @@ export interface DockAppearance {
   terminalFontFamily: string;
   /** The user's UI font (family and size scale), applied to the dock root exactly as the main window applies it. */
   font: AppearanceSettings["font"];
+  /** The user's language as main resolved it, limited to a built-in catalog the dock can render (see `dockLocale` in floating-dock-surface.ts). */
+  locale: Locale;
 }
