@@ -462,8 +462,6 @@ export function AppearanceTab({ onOpenMarketplace }: { onOpenMarketplace?: (filt
 }
 
 const REDUCED_TRANSPARENCY_QUERY = "(prefers-reduced-transparency: reduce)";
-// The keys a range input moves on; any other key (Tab, Escape) must not save or toast.
-const RANGE_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
 
 /** The OS reduce-transparency switch, followed live. */
 function useReducedTransparency(): boolean {
@@ -488,10 +486,18 @@ function GlassTintControl() {
   const notifySaved = useNotifySaved();
   const { appearance, setGlassTint } = useTheme();
   const reducedNow = useReducedTransparency();
+  // A previewed value not yet saved. Every way a gesture can end (release, cancel, lost capture, key up, blur) commits it once;
+  // the later ones of the same gesture find nothing pending, and a key that moved nothing (Tab) saves nothing.
+  const pendingRef = useRef(false);
   if (!isDarwin()) return null;
   const available = !reducedNow && document.documentElement.hasAttribute("data-glass");
   const tint = appearance.glassTint ?? DEFAULT_GLASS_TINT;
-  const commit = (value: number) => { setGlassTint(value, true); notifySaved(); };
+  const commit = (event: { currentTarget: HTMLInputElement }) => {
+    if (!pendingRef.current) return;
+    pendingRef.current = false;
+    setGlassTint(Number(event.currentTarget.value), true);
+    notifySaved();
+  };
   return (
     <div className="space-y-2" data-testid="appearance-glass-tint">
       <div className="flex items-center justify-between gap-2">
@@ -509,9 +515,12 @@ function GlassTintControl() {
         aria-describedby="appearance-glass-tint-hint"
         aria-valuetext={`${tint}%`}
         className="w-full accent-primary disabled:opacity-(--opacity-half)"
-        onChange={(event) => setGlassTint(Number(event.currentTarget.value), false)}
-        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
-        onKeyUp={(event) => { if (RANGE_KEYS.has(event.key)) commit(Number(event.currentTarget.value)); }}
+        onChange={(event) => { pendingRef.current = true; setGlassTint(Number(event.currentTarget.value), false); }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onLostPointerCapture={commit}
+        onKeyUp={commit}
+        onBlur={commit}
       />
       <div className="flex justify-between text-[11px] text-muted-foreground" aria-hidden="true">
         <span>{t("appearanceTab.glassTintMin")}</span>

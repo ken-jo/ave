@@ -42,20 +42,20 @@ describe("appearance persistence normalization", () => {
 
 describe("glass tint", () => {
   it("accepts whole numbers 0-100 only", () => {
-    expect([0, 33, 100].every(isGlassTint)).toBe(true);
+    expect([0, 50, 100].every(isGlassTint)).toBe(true);
     expect([-1, 101, 0.5, Number.NaN, "10", undefined].some(isGlassTint)).toBe(false);
   });
-  it("maps one value onto each shell's range, opaque at the top and the owner's defaults in between", () => {
+  it("maps one value from each shell's legible floor (the owner's default) to opaque", () => {
+    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "light")).toBe(0.75);
+    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "dark")).toBe(0.6);
+    expect(glassTintAlpha(50, "light")).toBe(0.875);
+    expect(glassTintAlpha(50, "dark")).toBe(0.8);
     expect(glassTintAlpha(100, "light")).toBe(1);
     expect(glassTintAlpha(100, "dark")).toBe(1);
-    expect(glassTintAlpha(0, "light")).toBe(0.625);
-    expect(glassTintAlpha(0, "dark")).toBe(0.4);
-    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "light")).toBeCloseTo(0.75, 2);
-    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "dark")).toBeCloseTo(0.6, 2);
   });
   it("clamps out-of-range input to the legible floor and to opaque", () => {
-    expect(glassTintAlpha(-50, "light")).toBe(0.625);
-    expect(glassTintAlpha(-50, "dark")).toBe(0.4);
+    expect(glassTintAlpha(-50, "light")).toBe(0.75);
+    expect(glassTintAlpha(-50, "dark")).toBe(0.6);
     expect(glassTintAlpha(250, "light")).toBe(1);
     expect(glassTintAlpha(250, "dark")).toBe(1);
   });

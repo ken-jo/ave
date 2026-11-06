@@ -76,13 +76,13 @@ describe("glass tint token", () => {
   it("writes --glass-tint-alpha for the painted shell from the one setting", () => {
     const root = document.documentElement;
     applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light" });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.749");
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.75");
     applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark" });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.598");
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.6");
     applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark", glassTint: 100 });
     expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("1");
-    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light", glassTint: 0 });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.625");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light", glassTint: 50 });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.875");
   });
 
   it("previews a tint without saving and saves it on commit", () => {
@@ -96,7 +96,7 @@ describe("glass tint token", () => {
     }
     render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "dark" }}><Tint /></ThemeProvider>);
     fireEvent.click(screen.getByText("Preview"));
-    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.88");
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.92");
     expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 80 } });
     fireEvent.click(screen.getByText("Commit"));
     expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 80 } });

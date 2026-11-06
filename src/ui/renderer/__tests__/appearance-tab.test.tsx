@@ -154,12 +154,35 @@ describe("Window glass tint", () => {
     const { api, view } = renderOnMac({ ...DEFAULT_APPEARANCE, mode: "light" }, true);
     const slider = view.getByRole("slider", { name: "창 유리 틴트" }) as HTMLInputElement;
     expect(slider.disabled).toBe(false);
-    expect(slider.value).toBe("33");
+    expect(slider.value).toBe("0");
     fireEvent.change(slider, { target: { value: "90" } });
-    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.963");
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.975");
     expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 90 } });
     fireEvent.pointerUp(slider);
-    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 90 } });
+    // The same gesture's lost capture finds nothing pending: one save, not two.
+    fireEvent.lostPointerCapture(slider);
+    expect(api.updateSettings.mock.calls.filter(([patch]) => (patch as { appearance?: { glassTint?: number } }).appearance?.glassTint === 90)).toHaveLength(1);
+  });
+
+  it.each([
+    ["pointercancel", (el: HTMLElement) => fireEvent.pointerCancel(el)],
+    ["lostpointercapture", (el: HTMLElement) => fireEvent.lostPointerCapture(el)],
+    ["keyup", (el: HTMLElement) => fireEvent.keyUp(el, { key: "ArrowRight" })],
+    ["blur", (el: HTMLElement) => fireEvent.blur(el)],
+  ])("saves a previewed tint when the gesture ends in %s", (_name, end) => {
+    stubReducedTransparency(false);
+    const { api, view } = renderOnMac({ ...DEFAULT_APPEARANCE, mode: "dark" }, true);
+    const slider = view.getByRole("slider", { name: "창 유리 틴트" });
+    fireEvent.change(slider, { target: { value: "40" } });
+    end(slider);
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 40 } });
+  });
+
+  it("saves nothing for a key that moved nothing", () => {
+    stubReducedTransparency(false);
+    const { api, view } = renderOnMac(DEFAULT_APPEARANCE, true);
+    fireEvent.keyUp(view.getByRole("slider", { name: "창 유리 틴트" }), { key: "Tab" });
+    expect(api.updateSettings).not.toHaveBeenCalledWith(expect.objectContaining({ appearance: expect.objectContaining({ glassTint: expect.anything() }) }));
   });
 
   it("is disabled with the reason when reduce transparency is on", () => {

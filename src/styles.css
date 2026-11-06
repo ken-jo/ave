@@ -145,7 +145,11 @@
   --radius-sm: calc(var(--radius) - 4px);
 
   /* Every `transition-*` utility without its own duration runs on the one
-   * fast motion step (120ms), so hover, focus and surface swaps share a pace. */
+   * fast motion step (120ms), so hover, focus and surface swaps share a pace.
+   * Reduced motion is already covered: the global
+   * `@media (prefers-reduced-motion: reduce)` block pins `--motion-fast` to
+   * 1ms with `!important` (beating the inline design-token value), and
+   * `@theme inline` emits this default as `var(--motion-fast)`. */
   --default-transition-duration: var(--motion-fast);
 }
 
@@ -1226,9 +1230,11 @@ html[data-glass] .ave-glass-tint ::-webkit-scrollbar-thumb {
   border-color: transparent;
   background-clip: padding-box;
 }
-/* The OS reduce-transparency switch, followed live. Main drops the material
- * at the same moment (`applyMainWindowGlass`); a window created with the
- * switch already on never gets `data-glass` at all. */
+/* The OS reduce-transparency switch, followed live — by these rules alone.
+ * Main reads the switch only when it creates the window (a window created
+ * with it on gets no material and no `data-glass`); Electron documents no
+ * event for a later change, so here the shell is painted opaque over the
+ * material, which then shows nowhere. */
 @media (prefers-reduced-transparency: reduce) {
   html[data-glass] body,
   html[data-glass] .ave-glass-clear {

@@ -8,7 +8,7 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
-import { applyMainWindowGlass, getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, syncNativeThemeSource } from "./window-chrome.js";
+import { getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, syncNativeThemeSource } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -68,25 +68,17 @@ function readCurrentAppearance() {
   return normalizeAppearance(stored);
 }
 
-// Main windows created with the macOS material, by renderer. Read once at creation: the renderer's `data-glass` is decided from
-// it, and a live change to the OS reduce-transparency switch is followed by the material (below) and the renderer's own
-// `prefers-reduced-transparency` rule rather than by re-creating the window.
+// Main windows created with the macOS material, by renderer. Main reads the OS reduce-transparency switch ONCE, at creation, and
+// the renderer's `data-glass` follows that reading. Main does not follow the switch afterwards: the v45.2.1 docs list no
+// `nativeTheme` event for `prefersReducedTransparency` (https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#event-updated
+// names only the dark-colours, high-contrast and inverted-scheme values). A live change is honoured by the renderer alone:
+// `@media (prefers-reduced-transparency: reduce)` in styles.css paints the whole shell opaque over the material. Turning the
+// switch back off restores glass in that window; a window created with it on stays opaque until a new window is opened.
 const glassContents = new WeakSet<WebContents>();
 
 let initialAppearanceRegistered = false;
 function registerInitialAppearance(): void {
   if (initialAppearanceRegistered) return;
-  // Follow the OS reduce-transparency switch (and the light/dark flip of the opaque fallback colour) on every glass window.
-  // `updated` also fires for every themeSource change; re-applying an unchanged material would rebuild the effect view.
-  let lastGlass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
-  nativeTheme.on("updated", () => {
-    const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
-    if (glass && lastGlass) return;
-    lastGlass = glass;
-    for (const win of getMainWindows()) {
-      if (!win.isDestroyed() && glassContents.has(win.webContents)) applyMainWindowGlass(win, glass, nativeTheme.shouldUseDarkColors);
-    }
-  });
   ipcMain.on(CHANNELS.settings.initialAppearance, (event: IpcMainEvent) => {
     const frame = event.senderFrame;
     const owned = getMainWindows().some((win) => !win.isDestroyed() && win.webContents === event.sender);
