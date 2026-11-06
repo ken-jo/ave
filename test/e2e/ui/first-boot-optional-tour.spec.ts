@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { test, expect } from "./fixtures";
-import { buildIsolatedElectronEnv, launchElectron, MAIN_ENTRY, setWindowSize } from "./seeded-electron";
+import { test, expect } from "./fixtures.js";
+import { buildIsolatedElectronEnv, launchElectron, MAIN_ENTRY, setWindowSize } from "./seeded-electron.js";
 
 function readTourState(aveHome: string): { completedScenarios?: string[]; dismissedAt?: string | null } | null {
   const tourStatePath = path.join(aveHome, "onboarding", "tour-state.json");
