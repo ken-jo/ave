@@ -106,6 +106,7 @@ describe("validateThemePayload", () => {
 
   it("rejects a shell that does not match the scheme", () => {
     expect(validateThemePayload({ bundleId: "github-dark", shell: "light", tokens: {} })).toEqual({ ok: false, error: "invalid-shell" });
+    expect(validateThemePayload({ bundleId: "github-light", shell: "dark", tokens: {} })).toEqual({ ok: false, error: "invalid-shell" });
   });
 
   it("rejects missing shell", () => {

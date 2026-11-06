@@ -58,11 +58,13 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
     return () => { cancelled = true; unsubscribe(); };
   }, [api]);
 
+  // One projection per applied theme feeds both the plugin broadcast and the in-window app panels.
+  const hostTokens = useMemo(() => schemeToHostTokens(applied.theme), [applied]);
   useEffect(() => {
     if (!api) return;
-    void api.notifyPluginTheme({ bundleId: applied.theme.id, shell: applied.theme.shell, tokens: schemeToHostTokens(applied.theme) })
+    void api.notifyPluginTheme({ bundleId: applied.theme.id, shell: applied.theme.shell, tokens: hostTokens })
       .catch((error: unknown) => console.error("Theme notification failed", error));
-  }, [api, applied]);
+  }, [api, applied, hostTokens]);
 
   const update = useCallback((patch: Partial<AppearanceSettings>, persist = true) => {
     touchedRef.current = true;
@@ -88,9 +90,9 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
   }), [appearance, setMode, setScheme, setGlassTint, scheme, applied]);
   const hostAppearance = useMemo(() => ({
     shell: applied.theme.shell,
-    tokens: schemeToHostTokens(applied.theme),
+    tokens: hostTokens,
     terminalFontFamily: appearance.terminalFont.family,
-  }), [applied, appearance.terminalFont.family]);
+  }), [applied, hostTokens, appearance.terminalFont.family]);
   return <ThemeContext.Provider value={value}><HostAppearanceProvider value={hostAppearance}>{children}</HostAppearanceProvider></ThemeContext.Provider>;
 }
 

@@ -1,6 +1,5 @@
-import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "../appearance-settings.js";
 import { describe, it, expect } from "vitest";
-import { isAveThemeBundleId, AVE_THEME_BUNDLE_IDS, AVE_TOKEN_NAMES } from "../plugin-ui-tokens.js";
+import { AVE_TOKEN_NAMES } from "../plugin-ui-tokens.js";
 
 const DERIVED_TOKENS = [
   "--ave-primary-bg-subtle",
@@ -73,29 +72,5 @@ describe("AVE_TOKEN_NAMES — complete public token contract", () => {
       expect(seen.has(name), `duplicate token: ${name}`).toBe(false);
       seen.add(name);
     }
-  });
-});
-
-describe("isAveThemeBundleId", () => {
-  it("lists the curated schemes and accepts each", () => {
-    expect(AVE_THEME_BUNDLE_IDS).toEqual([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
-    for (const id of AVE_THEME_BUNDLE_IDS) {
-      expect(isAveThemeBundleId(id)).toBe(true);
-    }
-  });
-
-  it("accepts a curated identifier and rejects package names", () => {
-    expect(isAveThemeBundleId("tokyo-night")).toBe(true);
-    expect(isAveThemeBundleId("custom-theme")).toBe(false);
-    expect(isAveThemeBundleId("a")).toBe(false);
-    expect(isAveThemeBundleId("")).toBe(false);
-  });
-
-  it("rejects non-strings (boundary safety)", () => {
-    expect(isAveThemeBundleId(null)).toBe(false);
-    expect(isAveThemeBundleId(undefined)).toBe(false);
-    expect(isAveThemeBundleId(42)).toBe(false);
-    expect(isAveThemeBundleId({})).toBe(false);
-    expect(isAveThemeBundleId([])).toBe(false);
   });
 });

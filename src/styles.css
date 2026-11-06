@@ -60,17 +60,13 @@
   --color-info: hsl(var(--info));
   --color-info-foreground: hsl(var(--info-foreground));
   --color-emphasis: hsl(var(--emphasis));
-  --color-emphasis-foreground: hsl(var(--emphasis-foreground));
   --color-agent: hsl(var(--agent));
   --color-action-view: hsl(var(--action-view));
-  --color-action-branch: hsl(var(--action-branch));
-  --color-action-compact: hsl(var(--action-compact));
   --color-message-user: hsl(var(--message-user-bg));
   --color-message-user-foreground: hsl(var(--message-user-fg));
   --color-message-user-border: hsl(var(--message-user-border));
   --color-message-user-muted: hsl(var(--message-user-muted));
   --color-message-user-action: hsl(var(--message-user-action));
-  --color-message-user-emphasis: hsl(var(--message-user-emphasis));
   --color-input-bar: hsl(var(--input-bar-bg));
   --color-input-bar-foreground: hsl(var(--input-bar-fg));
   --color-input-bar-placeholder: var(--input-bar-placeholder);
@@ -154,19 +150,13 @@
 }
 
 /* ─── Action color tokens ─────────────────────────────────────────────────
-   Semantic action color tokens used by CheckpointDivider buttons and
-   ViewModeBanner — single SoT for both surfaces.
-
-   --action-view:    "view this point" — violet (reading / passive)
-   --action-branch:  "restart from here" — orange (destructive-adjacent / active)
-   --action-compact: "compact now" — blue (neutral, matches default checkpoint trigger)
+   --action-view / --action-branch / --action-compact come from the active
+   scheme (theme/resolve-theme.ts) like every other semantic color; the agent
+   accent follows the "view" action.
 ─────────────────────────────────────────────────────────────────────────────── */
 @layer base {
   :root {
     --agent: var(--action-view);
-    --action-view:    262 83% 58%;   /* violet-500 */
-    --action-branch:  25  95% 53%;   /* orange-500 */
-    --action-compact: 217 91% 60%;   /* blue-400 */
 
     /* ─── Semantic opacity scale ──────────────────────────────────────────
        Named alpha tokens for color-mix opacity modifiers. Use them through
@@ -500,42 +490,11 @@
    *  syntax keeps working (e.g. `bg-primary/30`).
    */
   :root {
-    /* Brand / accent — blue (default accent in dark) */
-    --p-blue-400: 217.2 91.2% 67%;
+    /* Fixed accents behind the reasoning ramp, the brand gradients and the
+       sidebar terminal preview. */
     --p-blue-500: 217.2 91.2% 59.8%;
-    --p-blue-600: 224.3 76.3% 48%;
-    --p-blue-700: 224.3 76.3% 38%;
-
-    /* Chat-theme accents — purple */
-    --p-purple-400: 270 95% 75%;
     --p-purple-500: 262 83% 58%;
-    --p-purple-600: 263 70% 50%;
-    --p-purple-700: 263 69% 42%;
-
-    /* Chat-theme accents — orange */
-    --p-orange-400: 27 96% 61%;
     --p-orange-500: 25 95% 53%;
-    --p-orange-600: 21 90% 48%;
-    --p-orange-700: 17 88% 40%;
-
-    /* Neutral grays */
-    --p-slate-0:   0 0% 100%;
-    --p-slate-50:  210 40% 98%;
-    --p-slate-100: 210 40% 96%;
-    --p-slate-200: 214 32% 91%;
-    --p-slate-300: 213 27% 84%;
-    --p-slate-400: 215 20% 65%;
-    --p-slate-500: 215 16% 47%;
-    --p-slate-600: 215 19% 35%;
-    --p-slate-700: 215 25% 27%;
-    --p-slate-800: 217 33% 17%;
-    --p-slate-900: 222 47% 11%;
-    --p-slate-950: 222.2 84% 4.9%;
-    --p-slate-card-dark: 222.2 84% 7%;
-
-    /* Status colors */
-    --p-red-500:    0 84% 60%;
-    --p-red-700:    0 62.8% 30.6%;
     --p-yellow-100: 48 96% 89%;
     --p-yellow-200: 48 97% 77%;
     /* The middle and deep ends of the same ramp. Hue drifts only 48 → 42, so
@@ -544,24 +503,13 @@
     --p-yellow-400: 45 96% 58%;
     --p-yellow-600: 42 96% 45%;
     --p-yellow-700: 42 96% 33%;
-    --p-yellow-800: 30 80% 25%;
-    --p-green-500: 142 71% 45%;
-
-    /* Code-surface palette — light variant */
-    --p-code-light-bg:     210 40% 98%;
-    --p-code-light-fg:     222 47% 11%;
-    --p-code-light-border: 214 32% 88%;
-
-    /* Code-surface palette — dark variant */
-    --p-code-dark-bg:     222 47% 9%;
-    --p-code-dark-fg:     210 40% 96%;
-    --p-code-dark-border: 217 33% 22%;
+    --p-code-dark-bg: 222 47% 9%;
+    --p-code-dark-fg: 210 40% 96%;
 
     /* Static shape, typography and motion values are applied from theme/design-tokens.ts. */
     --message-user-border: var(--message-user-fg);
     --message-user-muted: var(--message-user-fg);
     --message-user-action: var(--message-user-fg);
-    --message-user-emphasis: var(--message-user-fg);
     --input-bar-fg: var(--foreground);
     --input-bar-placeholder: hsl(var(--input-bar-fg) / 82%);
     --input-bar-border: var(--ui-line);
@@ -687,7 +635,6 @@
     --info: 212.4402 92.0705% 44.5098%;
     --info-foreground: 0.0000 0.0000% 100.0000%;
     --emphasis: 35.0649 100.0000% 15.0980%;
-    --emphasis-foreground: 0.0000 0.0000% 100.0000%;
     --border: 210.0000 2.2727% 82.7451%;
     --input: 210.0000 2.2727% 82.7451%;
     --ring: 210.0000 28.5714% 5.4902%;
@@ -696,7 +643,6 @@
     --message-user-fg: 210.0000 28.5714% 5.4902%;
     --input-bar-bg: 0.0000 0.0000% 97.6471%;
     --overlay: 0.0000 0.0000% 0.0000%;
-    --hover-overlay: 210.0000 28.5714% 5.4902%;
     --focus-ring: 210.0000 28.5714% 5.4902%;
     --link-fg: 210.0000 28.5714% 5.4902%;
     --selection-bg: 216.0000 2.2831% 57.0588%;

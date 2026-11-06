@@ -233,7 +233,13 @@ describe("the dock window paints the host theme main sends (real preload, host t
     if (!recorded.ok) throw new Error(recorded.error);
     emitEvent("host.theme.changed", recorded.safe);
   }
-  const bg = () => document.documentElement.style.getPropertyValue("--dock-bg");
+  // The dock chrome and the cards both paint from the scheme's tokens on the root.
+  const bg = () => document.documentElement.style.getPropertyValue("--background");
+  const schemeBackground = async (id: string) => {
+    const { resolveTheme } = await import("../../ui/renderer/theme/resolve-theme.js");
+    const { requireScheme } = await import("../../ui/renderer/theme/schemes/index.js");
+    return resolveTheme(requireScheme(id)).tokens.background;
+  };
 
   it("opens in the theme published before it, repaints for each later one, and asks main for nothing", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
@@ -244,10 +250,10 @@ describe("the dock window paints the host theme main sends (real preload, host t
     await openWindow(windows[0]!.args);
     expect(bg()).toBe(""); // the stylesheet's fallback until the window is ready
     windows[0]!.fire("ready-to-show");
-    expect(bg()).toBe("hsl(210, 40%, 12%)");
+    expect(bg()).toBe(await schemeBackground("github-dark"));
 
-    publish({ bundleId: "github-dark", shell: "dark", tokens: NEXT.tokens });
-    expect(bg()).toBe("hsl(210, 40%, 18%)");
+    publish({ bundleId: "nord", shell: "dark", tokens: NEXT.tokens });
+    expect(bg()).toBe(await schemeBackground("nord"));
     expect(invoke).not.toHaveBeenCalled();
 
   });
@@ -268,7 +274,6 @@ describe("the dock window paints the host theme main sends (real preload, host t
     expect(root.getAttribute("data-shell")).toBe("dark");
     expect(root.style.colorScheme).toBe("dark");
     for (const name of ["background", "foreground", "muted", "muted-foreground", "border"] as const) expect(token(name)).toBe(nord.tokens[name]);
-    expect(bg()).toBe(THEME.tokens["--ave-bg"]);
 
     deliver("github-light", "light");
     const light = resolveTheme(requireScheme("github-light"));
@@ -320,6 +325,14 @@ describe("the dock window ships with the app stylesheet its panel cards are writ
     const excluded = pkg.build.files.filter((pattern) => pattern.startsWith("!")).map((pattern) => pattern.slice(1));
     expect(included.some((pattern) => matchesGlob(packaged, pattern))).toBe(true);
     expect(excluded.filter((pattern) => matchesGlob(packaged, pattern))).toEqual([]);
+  });
+
+  it("paints its own chrome from the scheme tokens the cards use, with no private copy", () => {
+    const inline = head.slice(head.indexOf("<style>"), head.indexOf("</style>"));
+    expect(inline).not.toMatch(/--dock-/u);
+    expect(inline).toMatch(/#dock\s*\{[^}]*background:\s*hsl\(var\(--background\)\);/u);
+    expect(inline).toMatch(/#dock\s*\{[^}]*border:\s*1px solid hsl\(var\(--border\)\);/u);
+    expect(inline).toMatch(/body\s*\{[^}]*color:\s*hsl\(var\(--foreground\)\);/u);
   });
 
   it("leaves the box reset to the stylesheet's preflight so card utility spacing survives", () => {

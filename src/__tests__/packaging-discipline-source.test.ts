@@ -1975,7 +1975,6 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
-      "node scripts/check-opacity-tokens.mjs",
       "node scripts/check-color-tokens.mjs",
       "node scripts/check-shell-geometry-tokens.mjs",
       "node scripts/check-no-inline-channels.mjs",
@@ -1983,7 +1982,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those twelve, the five that a later command in the same composite
+    // Of those eleven, the five that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
