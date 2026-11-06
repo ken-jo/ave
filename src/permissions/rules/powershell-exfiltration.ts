@@ -31,7 +31,7 @@ import {
 } from "../../shared/powershell-recursive-traversal.js";
 
 import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
-import { modelShellPath } from "../../shared/shell-native-path.js";
+import { isPowerShellProviderPath, modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -1036,12 +1036,12 @@ export function powerShellRuleShape(input: PowerShellCommandInput, options?: { r
   return shape;
 }
 
-export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven: true; commands: readonly (readonly string[])[] } | { proven: false; reason: string } {
+export function proveLiteralPowerShell(input: PowerShellCommandInput, plan?: HostShellExecutionPlan): { proven: true; commands: readonly (readonly string[])[] } | { proven: false; reason: string } {
   const shape = powerShellRuleShape(input);
   if (!shape.ok) return { proven: false, reason: shape.reason };
   if (shape.opaque !== null) return { proven: false, reason: shape.opaque };
   if (shape.commands.length === 0) return { proven: false, reason: "no command" };
-  if (!isPowerShellStartupPinned()) return { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
+  if (!isPowerShellStartupPinned(process.platform, plan)) return { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
   return { proven: true, commands: shape.commands as readonly (readonly string[])[] };
 }
 
@@ -1295,6 +1295,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   let currentDirectory: string | null = cwd;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
     let value = binding.value;
+    if (isPowerShellProviderPath(value)) { unproven = true; return; }
     if (effect === "write" && (binding.dynamic || !literalPath && /[*?\[\]]/.test(value))) {
       unknownProtectedWrite ??= "The shell write target may resolve to a protected path.";
     }

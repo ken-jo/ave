@@ -1,9 +1,15 @@
+import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
+import { saveApprovalCardRule } from "../approval-rule-save.js";
+import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { isPowerShellStartupPinned } from "../../shared/powershell-startup-policy.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { PermissionManager } from "../permission-manager.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { buildHostShellExecutionPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
@@ -15,6 +21,7 @@ const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", re
 const MXC_PLAN = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true,
   shellSubstrate: "mxc", activeCapability: CAPABILITY });
 const WRITES = ["Set-Content -Path x.txt -Value y", "mkdir d", "New-Item -ItemType Directory -Path d"];
+const originalPlatform = process.platform;
 let root: string;
 let project: string;
 beforeEach(() => {
@@ -23,7 +30,7 @@ beforeEach(() => {
   mkdirSync(project);
   vi.stubEnv("AVE_HOME", join(project, "profile"));
 });
-afterEach(async () => { vi.unstubAllEnvs(); await cleanupTmpDir(root); });
+afterEach(async () => { setProcessPlatform(originalPlatform); vi.unstubAllEnvs(); await cleanupTmpDir(root); });
 
 function check(command: string, plan?: HostShellExecutionPlan) {
   const manager = new PermissionManager(join(root, "permissions.json"));
@@ -88,4 +95,79 @@ describe("confined native shell startup decisions", () => {
     expect(result.decision).toBe("ask");
     expect(result.pipelineRequest?.floor?.code).toBe("protected-path");
   });
+});
+
+const PROVIDER_TARGETS = [String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`,
+  String.raw`Cert:\CurrentUser\My\fixture`, String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`,
+  "Env:fixture", "Function:fixture", "Variable:fixture"];
+describe("provider targets stay outside filesystem authority", () => {
+  it.each(["win32", "darwin"] as const)("asks for provider writes on %s", platform => {
+    setProcessPlatform(platform);
+    for (const target of PROVIDER_TARGETS) for (const command of [
+      `Remove-Item -Path ${target}`, `Move-Item ${target} ${target}Destination`,
+      `New-Item -ItemType Directory -Path ${target}`, `Set-Content -Path ${target} -Value y`,
+      `Set-ItemProperty -Path ${target} -Name fixture -Value y`,
+    ]) {
+      const result = check(command, MXC_PLAN);
+      expect(result, command).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
+      expect(result.pipelineRequest?.floor, command).toBeUndefined();
+      expect(decidePermission(result.pipelineRequest!).outcome, command).toBe("ask");
+      expect(result.pipelineRequest?.shell?.unproven, command).toBe(true);
+      expect(inspectPowerShellPermissionPaths(command, project).unproven, command).toBe(true);
+    }
+  });
+});
+
+describe("pinned reusable exact authority", () => {
+  it("offers, validates and replays the full-text literal-evaluation rule only on the pinned route", () => {
+    setProcessPlatform("win32");
+    const command = "Invoke-Expression 'Get-Date'";
+    const pattern = `PowerShell(${command})`;
+    const card = buildShellRuleApproval("powershell", command, project, { allow: true, deny: true }, "fixture", undefined, MXC_PLAN);
+    expect(card).toMatchObject({ exactRule: pattern, persistentAllowed: true, sessionAllowed: true });
+    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, project, undefined, MXC_PLAN)).toBe(true);
+    const manager = new PermissionManager(join(root, "saved-permissions.json"));
+    manager.setMode("default");
+    manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
+    const run = (plan?: HostShellExecutionPlan) => manager.checkDetailed("powershell", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: project },
+      hostShellExecutionPlan: plan, shellExecution: { runsSandboxed: true, environmentSnapshot: {} },
+    });
+    expect(run(MXC_PLAN)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(run()).toMatchObject({ decision: "ask" });
+    expect(buildShellRuleApproval("powershell", command, project, { allow: true, deny: true }).exactRule).toBeNull();
+    manager.setRules([withCurrentShellRuleVersion({ pattern: "PowerShell(Invoke-Expression *)", action: "allow" })]);
+    expect(run(MXC_PLAN).decision).toBe("ask");
+  });
+});
+
+it("keeps the plan host-only through the card and saved-rule validation", async () => {
+  setProcessPlatform("win32");
+  const command = "Invoke-Expression 'Get-Date'";
+  const wc = { isDestroyed: () => false, send: vi.fn<(channel: string, payload: unknown) => void>() };
+  const gate = new ApprovalGate(wc as never);
+  const controller = new AbortController();
+  const pending = gate.requestAndWait({
+    id: "pinned-rule", category: "tool", toolName: "powershell", toolCategory: "shell", source: "builtin",
+    args: { command }, reason: "Shell approval", createdAt: Date.now(), sessionId: "pinned-session",
+    hostShellExecutionPlan: MXC_PLAN, abortSignal: controller.signal,
+    evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false,
+      source: "builtin", category: "shell", trustOrigin: "llm-tool-arg", executionCwd: project,
+      allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
+  });
+  try {
+    const sent = wc.send.mock.calls.find(call => call[0] === "ave:approval:request")?.[1] as ApprovalRequest;
+    expect(sent.shellRule?.exactRule).toBe(`PowerShell(${command})`);
+    expect(sent).not.toHaveProperty("hostShellExecutionPlan");
+    const snapshot = gate.getRequestSnapshot("pinned-rule")!;
+    expect(snapshot.hostShellExecutionPlan).toBe(MXC_PLAN);
+    const manager = new PermissionManager(join(root, "card-permissions.json"));
+    expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" }, {
+      decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval,
+    }, manager)).toMatchObject({ ok: true, pattern: `PowerShell(${command})` });
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, {
+      sessionId: "pinned-session", ruleSubject: { kind: "shell", dialect: "powershell", command, cwd: project },
+      hostShellExecutionPlan: MXC_PLAN, shellExecution: { runsSandboxed: true },
+    })).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+  } finally { controller.abort(); gate.disposeAll(); await pending; }
 });

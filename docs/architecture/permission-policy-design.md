@@ -602,10 +602,10 @@ sandboxed MXC tool launch pins System32 Windows PowerShell startup with
 `-NoProfile` and `-NonInteractive`; static in-project writes use the tree's
 sandbox-auto lane in Allow writes. Host, sandbox-off, partial sandbox and unknown
 launch paths remain unproven, as do modern Windows installations. The legacy
-console's user-registry session configuration has not been proven ignored on
-unpinned paths; this is an
-evidence gap, not an assertion of a verified exploit on that edition. Modern
-Windows user JSON can select an endpoint before the prelude. Ordinary
+console's user-registry session-configuration gap is accepted by owner decision
+(2026-11-06), treating its `-NoProfile` launch as equivalent to the reference
+host launch, including the pinned MXC path. The gap is not proven closed; it is
+accepted uncertainty, not a verified exploit. Modern Windows user JSON can select an endpoint before the prelude. Ordinary
 CurrentUser execution policy alone is not the reason for refusal. No exact
 rule, saved grant or broad allow upgrades an unproven startup path into proof.
 The permission tree routes unproven execution separately from that proof. Executable admission remains

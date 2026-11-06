@@ -77,3 +77,10 @@ describe("native PowerShell AST facts", () => {
     expect(normalizePowerShellAstSummary(raw).commands[0]!.arguments[1]).toEqual(raw.commands[0]!.arguments[1]);
   });
 });
+
+// Summaries are synthetic: provider commands must never reach a real shell.
+it.each([String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`, String.raw`Cert:\CurrentUser\My\fixture`,
+  String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`,
+  "Env:fixture", "Function:fixture", "Variable:fixture"])("rejects provider target before filesystem resolution: %s", path => {
+  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
+});

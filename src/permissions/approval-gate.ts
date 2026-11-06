@@ -212,6 +212,7 @@ export type ApprovalRequestInput = Omit<
   "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
+  readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-owned assessment provenance; never inferred from the displayed reason.
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
@@ -493,6 +494,7 @@ interface PendingEntry {
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
   shellRule?: ShellRuleApproval;
+  hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
@@ -943,6 +945,7 @@ export class ApprovalGate {
       reviewerApprovalBasis,
       approvalRuleBasis,
       verifiedShellCommand,
+      hostShellExecutionPlan,
       ...request
     } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
@@ -1126,7 +1129,7 @@ export class ApprovalGate {
         allow: shellRuleSaveAllowed,
         // A forced one-shot card cannot create remembered authority.
         deny: !forceExplicit,
-      }, req.sessionId, verifiedShellCommand)
+      }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,
@@ -1383,6 +1386,7 @@ export class ApprovalGate {
         persistentAllowAllowed,
         shellRule,
         verifiedShellCommand,
+        hostShellExecutionPlan,
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
@@ -1802,6 +1806,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
     egress: (NonNullable<PendingEntry["egressRule"]> & { scopes: readonly EgressGrantScope[]; terminalTabId?: string }) | undefined;
     workingDirectoryIdentity: string | undefined;
@@ -1823,6 +1828,7 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      ...(entry.hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan: entry.hostShellExecutionPlan }),
       ...(entry.verifiedShellCommand === undefined ? {} : { verifiedShellCommand: entry.verifiedShellCommand }),
       egress: entry.egressRule === undefined ? undefined : {
         ...entry.egressRule,

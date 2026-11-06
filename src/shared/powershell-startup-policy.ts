@@ -1,7 +1,8 @@
 import { resolveTrustedPowerShellExecutable } from "./powershell-executable.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 
-export const MXC_POWERSHELL_STARTUP_ARGS = Object.freeze(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]);
+export const POWERSHELL_STARTUP_ARGS = Object.freeze(["-NoLogo", "-NoProfile", "-NonInteractive"]);
+export const MXC_POWERSHELL_STARTUP_ARGS = Object.freeze([...POWERSHELL_STARTUP_ARGS, "-ExecutionPolicy", "RemoteSigned"]);
 
 // The container route uses the fixed startup argv above. Other Windows paths
 // remain unproven; supported POSIX hosts also isolate configuration at startup.

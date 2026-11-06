@@ -1,3 +1,4 @@
+import { MXC_POWERSHELL_STARTUP_ARGS, POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -40,7 +41,7 @@ export function preparePowerShellLaunch(
   profile?: SandboxProcessHome,
 ): PowerShellLaunch {
   const env = Object.fromEntries(Object.entries(baseEnv).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
-  const args = ["-NoLogo", "-NoProfile", "-NonInteractive"];
+  const args = [...(process.platform === "win32" ? MXC_POWERSHELL_STARTUP_ARGS : POWERSHELL_STARTUP_ARGS)];
   let ownedProfile: SandboxProcessHome | undefined;
   let cleaned = false;
   const cleanup = (): void => {
@@ -50,10 +51,10 @@ export function preparePowerShellLaunch(
   };
   try {
     if (process.platform === "win32") {
-      // These guards do not prove registry-selected startup is absent.
+      // Owner decision (2026-11-06) accepts the legacy registry session-configuration
+      // gap as equivalent to the reference no-profile launch; absence is not proven.
       // Windows host execution independently requires per-invocation consent;
       // installation admission still supplies image and module integrity.
-      args.push("-ExecutionPolicy", "RemoteSigned");
       env.PSModulePath = "";
     } else {
       const configurationProfile = profile ?? (ownedProfile = createSandboxProcessHome());

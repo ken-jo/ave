@@ -53,7 +53,16 @@ function windowsVolumeRoot(path: string): string {
   return win32.parse(path).root;
 }
 
+// Provider drives are not filesystem confinement. Env/Function/Variable stay
+// unresolved too; no provider is granted filesystem authority.
+export function isPowerShellProviderPath(path: string): boolean {
+  return /^[a-z][a-z0-9_-]+:|^[a-z][a-z0-9_-]*::/i.test(path);
+}
+
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {
+  if (model.dialect === "powershell" && isPowerShellProviderPath(path)) {
+    return { nativePath: undefined, normalizedPath: path, volumeRoot: "", floorPaths: [] };
+  }
   if (sep !== "\\") {
     // Host path operations, so a simulated drive keeps its win32 spelling.
     const absolute = isAbsolute(path) ? path : resolve(model.location ?? "/", path);

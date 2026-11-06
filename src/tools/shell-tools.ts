@@ -1,3 +1,4 @@
+import { isPowerShellProviderPath } from "../shared/shell-native-path.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { attachSandboxBlock, sandboxBlockForResult, issueFilesystemSandboxBlock } from "../shared/sandbox-block.js";
 import { captureToolApprovalWait } from "./executor-ceiling.js";
@@ -3464,7 +3465,7 @@ export function findPowerShellAstPathViolation(
     if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath) : null;
     if (argument.kind !== "literal") return { kind: "dynamic-path", reason: "PowerShell path argument is unresolved", candidate: argument.text };
     const path = argument.value;
-    if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || /^[a-z][a-z0-9_-]*:(?![\\/])/i.test(path)) {
+    if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || isPowerShellProviderPath(path) || /^[a-z]:(?![\\/])/i.test(path)) {
       return { kind: "dynamic-path", reason: "PowerShell provider, home or wildcard path requires an explicit ordinary path", candidate: argument.text };
     }
     let absolute: string;
