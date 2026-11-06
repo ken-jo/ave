@@ -703,6 +703,10 @@ jobs:
         working-directory: ave
         run: >
           bun run test --
+          src/permissions/__tests__/allowed-directories-nfd-root.test.ts
+          src/permissions/__tests__/mxc-extension-admission.test.ts
+          src/permissions/__tests__/mxc-sdk-packaging.test.ts
+          src/permissions/__tests__/asrt-linux-runtime-probe.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/git-readonly-argv.test.ts
           src/permissions/__tests__/git-readonly-controls.test.ts
@@ -722,6 +726,7 @@ jobs:
           src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           src/permissions/__tests__/windows-deny-acl.test.ts
           src/main/terminal/__tests__/host-shell-integration.test.ts
+          src/permissions/__tests__/host-shell-execution-permit.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/shell-exfiltration.test.ts
           src/permissions/__tests__/runner-decisions.test.ts

@@ -150,7 +150,6 @@ function repositoryReferences(source: string): Array<{ named: string; index: num
   return found;
 }
 
-const DEPRECATION_OWNER = /(?:organization\s+)?owner[\s*/#]+role\s+of\s+`([^`]+)`/gu;
 
 function lineOf(source: string, index: number): number {
   return source.slice(0, index).split("\n").length;
@@ -287,22 +286,6 @@ describe("repository identity source of truth", () => {
     expect(comparisons).toBeGreaterThanOrEqual(2);
   });
 
-  it("names this repository's owner as the deprecation owner", () => {
-    const mismatches: string[] = [];
-    const sites = new Set<string>();
-    for (const [path, source] of checkedTexts()) {
-      for (const match of source.matchAll(DEPRECATION_OWNER)) {
-        sites.add(path);
-        if (match[1] !== identity.owner) {
-          mismatches.push(`${path}:${lineOf(source, match.index ?? 0)} names ${match[1]}`);
-        }
-      }
-    }
-    expect(mismatches).toEqual([]);
-    expect([...sites]).toEqual(
-      expect.arrayContaining(["src/plugins/runtime/plugin-loader.ts", "docs/development/knip-baseline.md"]),
-    );
-  });
 
   it("points the packaged agent contract's gh commands at this repository's owner", () => {
     const owners = [...read("resources/AGENTS.md").matchAll(/gh -R ([^/\s`]+)\//gu)].map((match) => match[1]);

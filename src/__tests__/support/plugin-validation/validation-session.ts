@@ -1,17 +1,17 @@
 /** Validation-only session binds real dispatch to scripted host answers and remains unreachable from app runtime. */
-import type { PluginManifest, PluginRuntimeContext } from "../types.js";
-import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
-import type { ChildLink } from "../isolation/plugin-child-transport.js";
+import type { PluginManifest, PluginRuntimeContext } from "../../../plugins/types.js";
+import type { DelegatedWorkerConfinement } from "../../../plugins/isolation/host-api-dispatcher.js";
+import type { ChildLink } from "../../../plugins/isolation/plugin-child-transport.js";
 import {
   createBoundHostApiDispatchTable,
   type DispatchableHostApi,
-} from "../isolation/bound-host-api-table.js";
-import { connectionHostProtocol } from "../isolation/out-of-process-plugin.js";
+} from "../../../plugins/isolation/bound-host-api-table.js";
+import { connectionHostProtocol } from "../../../plugins/isolation/out-of-process-plugin.js";
 import {
   openPluginProtocolSession,
   type PluginProtocolSession,
-} from "../isolation/plugin-protocol-session.js";
-import { resolvePluginSocketDir } from "../plugin-storage-layout.js";
+} from "../../../plugins/isolation/plugin-protocol-session.js";
+import { resolvePluginSocketDir } from "../../../plugins/plugin-storage-layout.js";
 import { validationConfinement, type ValidationHost } from "./validation-host.js";
 
 export interface ValidationSessionInput {

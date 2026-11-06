@@ -82,23 +82,14 @@
         // BY PATH, which imports them through `importPluginFactory` as it imports
         // an installed plugin's entry — nothing names them in an import.
         "src/plugins/isolation/__tests__/fixtures/host-protocol/*/**/*.mjs",
-        // Child processes the validator's raw cases spawn BY PATH, as
-        // `node <script>`, and the protocol script the process fixture's
-        // launcher execs — nothing names them in an import.
-        "src/plugins/validate/__tests__/fixtures/raw/*.mjs",
-        "src/plugins/validate/__tests__/fixtures/process/*.mjs",
-        // Admission's adversarial fixture (plugin-hostapi-protocol.md §9.8 A2):
+        // Admission's adversarial fixture (plugin-hostapi-protocol-migration.md §9.8 A2):
         // its entry is handed to the child runtime BY PATH; the planted
         // `electron` entry is loaded by that entry through an explicit path;
         // the Electron control is a main-process script spawned BY PATH.
         "src/plugins/isolation/__tests__/fixtures/adversarial/entry.mjs",
         "src/plugins/isolation/__tests__/fixtures/adversarial/vendored-electron/index.js",
         "src/plugins/isolation/__tests__/fixtures/adversarial/control-electron-main.cjs",
-        // The validate CLI: bundled by the plugin repositories as
-        // `tools/vendor/ave-plugin-validate.js` and run as `plugin:validate`;
-        // nothing imports it.
-        "src/plugins/validate/cli.ts",
-        // Loaded by `plugin:validate` with `--import`, in the CLI and its child;
+        // Loaded with --import by the hook matcher benchmark;
         // nothing imports it.
         "scripts/lib/stub-app-logger-hook.mjs",
         // The test runner's Ave home guard: vitest.analysis.config.ts resolves

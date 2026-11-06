@@ -1,20 +1,20 @@
 /** The validator owns one child termination sequence; session close and finalizer must not duplicate it. */
 import type { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import type { ChildLink } from "../isolation/plugin-child-transport.js";
-import { FRAME_BYTES_MAX } from "../isolation/host-api-wire.js";
-import { StdioFrameDecoder } from "../../mcp/stdio-framing.js";
-import { terminateChildProcess } from "../../tools/terminate-child-process.js";
+import type { ChildLink } from "../../../plugins/isolation/plugin-child-transport.js";
+import { FRAME_BYTES_MAX } from "../../../plugins/isolation/host-api-wire.js";
+import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
+import { terminateChildProcess } from "../../../tools/terminate-child-process.js";
 
 /** Use the production signal grace so validator termination matches the app. */
-export const VALIDATION_KILL_GRACE_MS = 3_000;
+const VALIDATION_KILL_GRACE_MS = 3_000;
 
 interface ValidationTimelineEntry {
   readonly at: number;
   readonly event: string;
 }
 
-export interface ValidationChildRecord {
+interface ValidationChildRecord {
   readonly stdout: Buffer[];
   readonly hostFrames: Array<Record<string, unknown>>;
   readonly signalsSent: NodeJS.Signals[];

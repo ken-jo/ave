@@ -71,7 +71,7 @@ import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
 import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
-import { createValidationHost } from "../../validate/validation-host.js";
+import { createValidationHost } from "../../../__tests__/support/plugin-validation/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
 import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
@@ -79,8 +79,6 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
-import { FRAME_BYTES_MAX } from "../host-api-wire.js";
-import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import {
   buildGitInstallReceipt,
   listFilesRecursive,
@@ -1535,7 +1533,7 @@ export const createPlugin = async (context) => ({
   );
 });
 
-/** The host protocol's process rules, and one golden conversation, against a REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4). `host-protocol-golden.test.ts` pins the frames over paired streams, which proves nothing about the
+/** The host protocol's process rules, and one golden conversation, against a REAL confined child (plugin-hostapi-protocol.md §2.5; plugin-hostapi-protocol-migration.md §9.4). `host-protocol-golden.test.ts` pins the frames over paired streams, which proves nothing about the
  * process: that the child leaves when the host does, that nothing but protocol reaches its stdout, and that the bundle which ships speaks the same conversation the in-memory runtime recorded. Those three need the bundled entry running in its sandbox. */
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
@@ -2804,7 +2802,7 @@ export default async function createPlugin(context) {
   );
 });
 
-/** A `process` entry under the real wrap (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
+/** A `process` entry under the real wrap (docs/history/plugin-hostapi-protocol-migration.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
  * the wrapper ASRT spawns; `/bin/bash -c`; sees only the safe host environment and the sandbox HOME. So a variable that would make the wrapper itself run code is set too late to do so, and anything it makes the plugin's own process run is confined. The context the lifecycle hands a process plugin's factory, over the validation host. */
 function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
   return {
@@ -3421,14 +3419,16 @@ describe("the python smoke, confined by the production factory", () => {
   }
 
   /** The child's own `ru_maxrss` from its stop log, in bytes: darwin reports bytes, linux KiB. */
-  function childRuMaxrssBytes(stdout: Buffer): number {
-    const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
-    const stopLog = decoder.push(stdout).find(
-      (frame) => frame.method === "notifications/ave/log"
-        && typeof (frame.params as { meta?: { ruMaxrss?: unknown } }).meta?.ruMaxrss === "number",
+  function childRuMaxrssBytes(records: readonly (readonly unknown[])[]): number {
+    const stopLog = records.find(([line, fields]) =>
+      typeof line === "string" && line.includes("[python-smoke] python-smoke stopping ")
+        && (fields as { pluginId?: string } | undefined)?.pluginId === PYTHON_SMOKE_ID,
     );
-    const value = (stopLog!.params as { meta: { ruMaxrss: number } }).meta.ruMaxrss;
-    return process.platform === "darwin" ? value : value * 1024;
+    expect(stopLog, "the child reports its own memory on attributed stderr").toBeDefined();
+    const metadata = / stopping (\{.*\})$/.exec(String(stopLog![0]));
+    const value: unknown = JSON.parse(metadata![1]!).ruMaxrss;
+    expect(value).toEqual(expect.any(Number));
+    return process.platform === "darwin" ? value as number : (value as number) * 1024;
   }
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
@@ -3436,22 +3436,25 @@ describe("the python smoke, confined by the production factory", () => {
     async () => {
       if (!(await sandboxCasesRun())) return;
       const { fx, plugin, manifest } = await installPinnedPythonSmoke();
-      const run = await runObserved(fx, plugin, manifest);
-      expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
-      expect(run.child.pid).toEqual(expect.any(Number));
-      await driveLifecycle(run);
-      const tree = await run.tree;
-      const stdout = Buffer.concat(run.stdout);
-      expect(rawStdoutViolations(stdout)).toEqual([]);
-      reportSmoke("confined measurement", {
-        platform: process.platform,
-        fixture: PYTHON_SMOKE_ID,
-        spawnToConstructMs: run.spawnToConstructMs,
-        treePeakRssBytes: tree.peakRssBytes,
-        treeSamples: tree.samples,
-        childRuMaxrssBytes: childRuMaxrssBytes(stdout),
-      });
-      expect(tree.samples).toBeGreaterThan(0);
+      const diagnostics = vi.spyOn(console, "log");
+      try {
+        const run = await runObserved(fx, plugin, manifest);
+        expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
+        expect(run.child.pid).toEqual(expect.any(Number));
+        await driveLifecycle(run);
+        const tree = await run.tree;
+        const stdout = Buffer.concat(run.stdout);
+        expect(rawStdoutViolations(stdout)).toEqual([]);
+        reportSmoke("confined measurement", {
+          platform: process.platform,
+          fixture: PYTHON_SMOKE_ID,
+          spawnToConstructMs: run.spawnToConstructMs,
+          treePeakRssBytes: tree.peakRssBytes,
+          treeSamples: tree.samples,
+          childRuMaxrssBytes: childRuMaxrssBytes(diagnostics.mock.calls),
+        });
+        expect(tree.samples).toBeGreaterThan(0);
+      } finally { diagnostics.mockRestore(); }
     },
     600_000,
   );

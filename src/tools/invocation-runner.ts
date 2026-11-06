@@ -1515,7 +1515,7 @@ export async function runToolInvocation(
             }
             if (resolution.approvalDecision === undefined) throw new Error("Directory approval did not produce an authenticated decision");
             if (resolution.allowed && resolution.scope !== "turn") {
-              propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+              await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
               if (canonicalStringify([...new Set(beforeDirectories)].sort()) !== canonicalStringify([...new Set(afterDirectories)].sort())) {
                 const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
@@ -1722,6 +1722,16 @@ export async function runToolInvocation(
               : suggestedParent ?? outOfAllowedTarget.filePath)
           : outOfAllowedTarget.filePath;
         if (decision.choice === "allow-always" && !persistRefused) {
+          // Persist no folder rule unless its grant audit is durable.
+          await services.auditWriter.auditPermissionGrant({
+            toolName: toolUse.name,
+            source,
+            category: invocationCategory,
+            directory: approvedDirectory,
+            grantLifetime: "always",
+            permissionContext: invocationPermissionContext,
+            audit: currentAuditMetadata(),
+          });
           let lifecycle: PermissionDirectoryLifecycle | undefined;
           try {
             lifecycle = services.workspaceRootLifecycleProvider();
@@ -1808,12 +1818,10 @@ export async function runToolInvocation(
     // dropping a grant is exactly the bug class this refactor eliminates,
     // so we log and degrade conservatively (session → turn) rather than
     // pretending the propagation succeeded.
-    const propagateGrantScope = (approvedDirectory: string, scope: "turn" | "session" | "always"): void => {
-      const emitGrantAudit = (lifetime: "turn" | "session" | "always" | "degraded-to-turn"): void => {
-        // Fire-and-forget: audit append errors are logged inside the
-        // helper (or thrown only when requirePermissionAuditChain), so we
-        // don't block tool execution on audit I/O.
-        void services.auditWriter.auditPermissionGrant({
+    const propagateGrantScope = async (approvedDirectory: string, scope: "turn" | "session" | "always"): Promise<void> => {
+      const emitGrantAudit = (lifetime: "turn" | "session" | "always" | "degraded-to-turn"): Promise<void> => {
+        // Finish the grant audit before execution checks chain writability.
+        return services.auditWriter.auditPermissionGrant({
           toolName: toolUse.name,
           source,
           category: invocationCategory,
@@ -1829,7 +1837,7 @@ export async function runToolInvocation(
           return;
         }
         invocationPermissionContext.onTurnDirectoryGrant(approvedDirectory);
-        emitGrantAudit("turn");
+        await emitGrantAudit("turn");
         return;
       }
       if (scope === "session") {
@@ -1840,18 +1848,14 @@ export async function runToolInvocation(
           }
           log.error(`[permission-scope] onSessionDirectoryGrant unwired — degrading session-scope grant for ${approvedDirectory} to turn-scope`);
           invocationPermissionContext.onTurnDirectoryGrant(approvedDirectory);
-          emitGrantAudit("degraded-to-turn");
+          await emitGrantAudit("degraded-to-turn");
           return;
         }
         invocationPermissionContext.onSessionDirectoryGrant(approvedDirectory);
-        emitGrantAudit("session");
+        await emitGrantAudit("session");
         return;
       }
-      // "always" — dispatchPermissionDirCommand already persisted the rule
-      // inside requestOutOfAllowedDirectoryAccess; emit the audit row here
-      // so forensic replay sees a unified grant timeline across all three
-      // lifetimes.
-      emitGrantAudit("always");
+      // Persistent grants were audited before the folder rule was saved.
     };
 
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
@@ -1974,7 +1978,7 @@ export async function runToolInvocation(
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
           applyApprovedDirectory(resolution.approvedDirectory);
-          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
           for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
           continue;
         }
@@ -2293,7 +2297,7 @@ export async function runToolInvocation(
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
         applyApprovedDirectory(resolution.approvedDirectory);
-        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
         for (const target of canonicalTargets) applyApprovedDirectory(target.canonicalPath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;

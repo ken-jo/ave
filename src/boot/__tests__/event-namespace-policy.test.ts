@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { canEmitEvent, PUBLIC_EVENT_NAMESPACES, PUBLIC_HOST_EVENT_TYPES } from "../../plugins/capabilities.js";
+import { canEmitEvent, classifySubscription, PUBLIC_EVENT_NAMESPACES } from "../../plugins/capabilities.js";
 
 describe("plugin UI event ownership", () => {
   it("has no public cross-plugin namespaces", () => {
     expect(PUBLIC_EVENT_NAMESPACES.size).toBe(0);
-    expect([...PUBLIC_HOST_EVENT_TYPES]).toEqual(["host.theme.changed"]);
+    expect(classifySubscription("host.theme.changed")).toBe("public");
+    expect(classifySubscription("host.other.changed")).toBe("neutral");
   });
 
   it("accepts only the emitting plugin's own event names", () => {

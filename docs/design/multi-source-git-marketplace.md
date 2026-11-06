@@ -5136,7 +5136,7 @@ Then D1 after C, and D2 after D1; F after D1 and E; G last.
 - D1 and D2 are each independently mergeable. D1 accepts folder input through
   the existing preview channel, with its consent, policy and refusals
   complete. D2 only adds the dialogs and presentation.
-- The Publication plan (`plugin-hostapi-protocol.md` §9.7; P3 and P4 unbuilt; §18.4.9) touches `errors.ts`,
+- The Publication plan (`plugin-hostapi-protocol-migration.md` §9.7; P3 and P4 unbuilt; §18.4.9) touches `errors.ts`,
   `labels.ts`, `plugin-ladder.ts`, `direct-package.ts` and
   `plugins/marketplace.ts`:
   - whichever of B and P3 merges second makes `failureText` cover the

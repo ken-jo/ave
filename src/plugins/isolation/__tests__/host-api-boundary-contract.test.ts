@@ -49,18 +49,11 @@ import {
   type HostApiRequest,
   type ResultMarshalling,
 } from "../host-api-wire.js";
-import { allPluginsAreOutOfProcess } from "../out-of-process-plugins.js";
 import {
-  isProductionSourceModule,
-  makeTestPluginEntrySource,
-  makeTestPluginRuntime,
-  makeTestPluginRuntimeFixture,
   SOURCE_ROOT,
   sourceDisplayPath,
-  writeTestPlugin,
-  writeTestPluginRegistry,
 } from "../../__tests__/test-helpers.js";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildRuntimeImportGraph } from "../../../../scripts/check-import-cycles.mjs";
 import { hostApiRequest } from "../../../__tests__/support/host-protocol-wire.js";
@@ -269,48 +262,6 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 });
 
-describe("the in-process loader's removal predicate is fed from the registry", () => {
-  // Read execution arms recorded by loaded generations, never a plugin-ID census.
-  it("is true over a runtime whose loaded plugins are children, and false once an in-process one is registered", async () => {
-    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-removal-predicate-" });
-    const pluginId = "removalpredicatefixture";
-    const written = await writeTestPlugin(fixture, {
-      id: pluginId,
-      tools: ["predicate_ping"],
-      entrySource: makeTestPluginEntrySource({ predicate_ping: JSON.stringify("pong") }),
-    });
-    await writeTestPluginRegistry(fixture, [{ id: pluginId, manifestPath: written.manifestPath }]);
-    const runtime = makeTestPluginRuntime(fixture);
-    try {
-      await runtime.startAll();
-      await expect(runtime.call("predicate_ping")).resolves.toBe("pong");
-      const loaded = runtime.listLoadedPluginArms();
-      expect(loaded).toEqual([{ pluginId, arm: "child" }]);
-      expect(allPluginsAreOutOfProcess(loaded)).toBe(true);
-      // Repair diagnostics must expose the actual arm and confinement reported by spawn.
-      expect(runtime.listPluginCards().find((card) => card.id === pluginId)).toMatchObject({
-        loadStatus: "loaded",
-        arm: "child",
-        confinement: "unconfined",
-      });
-      // An in-process generation must report false through the same registry-based predicate.
-      runtime._testInjectPlugin("inprocessregistryfixture", "inprocess_ping", async () => "in-process");
-      const mixed = runtime.listLoadedPluginArms();
-      expect(mixed).toContainEqual({ pluginId: "inprocessregistryfixture", arm: "in-process" });
-      expect(allPluginsAreOutOfProcess(mixed)).toBe(false);
-    } finally {
-      await runtime.stopAll();
-      rmSync(fixture.rootDir, { recursive: true, force: true });
-    }
-  });
-
-  it("is false with nothing loaded, which is no evidence either way", () => {
-    expect(allPluginsAreOutOfProcess([])).toBe(false);
-    expect(allPluginsAreOutOfProcess([{ pluginId: "a", arm: "child" }, { pluginId: "b", arm: "in-process" }])).toBe(false);
-    expect(allPluginsAreOutOfProcess([{ pluginId: "a", arm: "child" }, { pluginId: "b", arm: "child" }])).toBe(true);
-  });
-});
-
 /** Only the child may import plugin entry code; static, namespace and dynamic imports all count. */
 const SRC = SOURCE_ROOT;
 const PLUGIN_LOADER = join(SRC, "plugins", "runtime", "plugin-loader.ts");
@@ -318,7 +269,6 @@ const PLUGIN_CHILD_MAIN = join(SRC, "plugins", "isolation", "plugin-child-main.t
 const importGraph = buildRuntimeImportGraph(SRC);
 
 const display = sourceDisplayPath;
-const isProductionModule = isProductionSourceModule;
 
 function namesPluginLoader(from: string, specifier: string): boolean {
   if (!specifier.startsWith(".")) return false;
@@ -370,10 +320,6 @@ describe("main imports no plugin code", () => {
     expect(existsSync(PLUGIN_CHILD_MAIN)).toBe(true);
   });
 
-  it("gives the retained in-process factory no production importer", () => {
-    expect(importersOf("importInProcessPluginFactory", isProductionModule)).toEqual([]);
-    expect(importersOf("runPluginImportWithTimeout", isProductionModule)).toEqual([]);
-  });
 
   it("sees the imports that do exist, so a green run is not an empty walk", () => {
     // Positive graph controls prevent vacuous importer assertions.

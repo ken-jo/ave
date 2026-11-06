@@ -593,7 +593,7 @@ the owner made it on 2026-10-10 (§7 item 4): third-party plugins run on Windows
 are plugins isolated from each other there: every confined process runs as the one
 `srt-sandbox` account, so the inter-plugin filesystem isolation Stage 9 proves is a
 macOS and Linux property, and on Windows the sandbox confines plugins against the
-host only (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
+host only (`plugin-hostapi-protocol-migration.md` §9.8 A2, decision 64).
 
 ---
 
@@ -735,7 +735,7 @@ Named rather than hidden, because each one can move a stage estimate.
    restriction. On Windows all plugins, third-party ones included, run in the shared
    `srt-sandbox` identity — sandboxed from the host as configured, not isolated from
    each other — an accepted risk pending an ASRT per-plugin identity
-   (`plugin-hostapi-protocol.md` §9.8 A2, decision 64).
+   (`plugin-hostapi-protocol-migration.md` §9.8 A2, decision 64).
 5. **Does the effect-enforcement gate's approval modal (`gateMutatingEffect`)
    interact badly with an async boundary?** The gate awaits a user response inside
    a hostApi call. That already works because the gated paths are already async — but

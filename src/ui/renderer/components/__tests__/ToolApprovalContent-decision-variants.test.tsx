@@ -113,14 +113,15 @@ describe("exact tool approval: the shared decision row", () => {
 });
 
 describe("folder-access card: the shared decision row", () => {
-  it("allows the parent folder for good from the middle button and refuses session and project", async () => {
+  it("allows the parent folder for good from the middle button and offers session", async () => {
     const { onDecide, record } = renderCard(folderRequest());
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "path-grant");
     const middle = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(middle).toHaveTextContent(t("toolApprovalDialog.decisionAllowFolder"));
     expect(screen.getByTestId("approval-path-grant-evidence")).toHaveTextContent(t("toolApprovalDialog.decisionAllowFolder"));
     openDecisionMenu("allow-session");
-    for (const choice of ["allow-session", "allow-project"]) {
+    expect(screen.getByTestId("approval-choice-allow-session")).not.toHaveAttribute("data-disabled");
+    for (const choice of ["allow-project"]) {
       expect(screen.getByTestId(`approval-choice-${choice}`)).toHaveAttribute("data-disabled");
       expect(screen.getByTestId(`approval-choice-${choice}-reason`)).toHaveTextContent(t("toolApprovalDialog.pathGrantOnlyFolder"));
     }
@@ -128,6 +129,14 @@ describe("folder-access card: the shared decision row", () => {
     expect(screen.getByTestId("approval-rule-pattern")).toHaveTextContent("/Users/me/project");
     fireEvent.click(middle);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", "/Users/me/project"));
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("answers a session folder grant with the host parent and no persistent record", async () => {
+    const { onDecide, record } = renderCard(folderRequest());
+    selectDecision("allow-session");
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", "/Users/me/project"));
     expect(record).not.toHaveBeenCalled();
   });
 

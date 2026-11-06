@@ -2381,7 +2381,7 @@ folded into `data/` (decision 66). A hard link the sandbox account could
 already write attributes of inherits a grant on `data/`; one to a file it can
 only read cannot be created (measured, decision 66). By owner decision (2026-10-10) third-party plugins run on Windows on those
 terms, an accepted risk pending an ASRT per-plugin identity
-(`docs/design/plugin-hostapi-protocol.md` §9.8 A2, decision 64). Because
+(`docs/history/plugin-hostapi-protocol-migration.md` §9.8 A2, decision 64). Because
 srt-win relays no stdin and delivers none of the spawn's environment, an `entry`
 plugin child there runs under `cmd.exe` with `ELECTRON_RUN_AS_NODE` on the
 command line, its environment in one argument and Node's symlink-preserving

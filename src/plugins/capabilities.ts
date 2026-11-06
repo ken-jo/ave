@@ -31,7 +31,7 @@ export const HOST_ONLY_EMIT_NAMESPACES: ReadonlySet<string> = new Set([
 export const PUBLIC_EVENT_NAMESPACES: ReadonlySet<string> = new Set();
 
 /** Exact host event exceptions must not make the whole host.* namespace subscribable or emittable. */
-export const PUBLIC_HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
+const PUBLIC_HOST_EVENT_TYPES: ReadonlySet<string> = new Set([
   "host.theme.changed",
 ]);
 

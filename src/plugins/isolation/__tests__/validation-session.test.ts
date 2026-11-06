@@ -21,14 +21,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginManifest } from "../../types.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
-import { FRAME_BYTES_MAX } from "../../isolation/host-api-wire.js";
-import { PLUGIN_INSTANCE_METHODS } from "../../isolation/plugin-instance-wire.js";
-import type { ChildLink } from "../../isolation/plugin-child-transport.js";
+import { FRAME_BYTES_MAX } from "../host-api-wire.js";
+import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
+import type { ChildLink } from "../plugin-child-transport.js";
 import {
   resolvePluginSocketDir,
 } from "../../plugin-storage-layout.js";
-import { createValidationHost } from "../validation-host.js";
-import { openValidationSession } from "../validation-session.js";
+import { createValidationHost } from "../../../__tests__/support/plugin-validation/validation-host.js";
+import { openValidationSession } from "../../../__tests__/support/plugin-validation/validation-session.js";
 
 type Frame = Record<string, unknown>;
 
@@ -101,6 +101,21 @@ function scriptedChild(): { link: ChildLink; sent: Frame[]; send: (frame: Frame)
 }
 
 describe("the validation session's authority", () => {
+  it("keeps scripted subscriptions scoped to host theme notifications", () => {
+    const host = createValidationHost();
+    expect(() => host.api.onEvent("other-plugin.changed", () => {})).toThrow(/host.theme.changed/);
+    const receive = vi.fn();
+    host.api.onEvent("host.theme.changed", receive);
+    host.fireAll();
+    expect(receive).toHaveBeenCalledExactlyOnceWith({ fired: "by the golden host" });
+  });
+
+  it("does not restore a removed floating-panel handle method", async () => {
+    const host = createValidationHost();
+    const panel = await host.api.attachFloatingPanel({ extensionId: "panel" });
+    expect(panel).not.toHaveProperty("resize");
+  });
+
   it("is the base envelope, even where the user's settings approve the declared directory", async () => {
     const approved = join(root, "approved-workspace");
     mkdirSync(approved, { recursive: true });

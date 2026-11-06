@@ -13,6 +13,8 @@ import {
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import {
+  buildHostShellExecutionPermitBinding,
+  resolveHostShellWorkingDirectory,
   consumeHostShellExecutionPermit,
   consumeHostShellExecutionPermitForSpawn,
   mintHostShellExecutionPermit,
@@ -84,6 +86,9 @@ async function issueHostApprovedDecision(
       command: binding.command,
       cwd: binding.requestedCwd,
       timeoutSeconds: binding.timeoutSeconds,
+      executionMode: binding.executionMode,
+      justification: binding.justification,
+      run_in_background: binding.runInBackground,
     },
     reason: "Windows partial shell needs an explicit one-shot approval",
     source: "builtin",
@@ -96,12 +101,12 @@ async function issueHostApprovedDecision(
   if (!request?.nonce || !request.hmac) {
     throw new Error("ApprovalGate did not publish an HMAC-sealed request");
   }
-  gate.resolve(id, {
+  gate.resolveFromDesktopRenderer(id, {
     requestId: id,
     choice: "allow-once",
     nonce: request.nonce,
     hmac: request.hmac,
-  });
+  }, wc as never);
   return pending;
 }
 
@@ -626,5 +631,45 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       toolName: "bash", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd,
     }, pm)).toBeUndefined();
     expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("host permits on a sandbox-capable Windows host", () => {
+  it.each(["approval", "project rule"] as const)("consumes the %s permit with the invocation's forward-slash cwd", async (authority) => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-host-permit-cwd-"));
+    try {
+      mkdirSync(join(directory, ".git"));
+      const executionCwd = directory.replaceAll("\\", "/").replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+      const planInput = {
+        platform: "win32" as const, requestedSandbox: true, shellSubstrate: "mxc" as const,
+        activeCapability: { kind: "asrt" as const, confidence: "verified" as const, platform: "win32" as const,
+          reason: "Full shell confinement", confines: { filesystem: true, process: true, network: true } },
+      };
+      expect(buildHostShellExecutionPlan(planInput)).toMatchObject({ sandboxed: true, substrate: "mxc" });
+      const plan = buildHostShellExecutionPlan({ ...planInput, executionMode: "host" });
+      const rawInput = { command: "echo sbon-c2", executionMode: "host", justification: "approval UI verification" };
+      const binding = buildHostShellExecutionPermitBinding({ plan, toolName: "bash", toolUseId: "host-cwd",
+        rawInput, executionCwd, extraAllowedDirectories: [] })!;
+      const manager = new PermissionManager(join(directory, "permissions.json"));
+      let approvalDecision: ApprovalDecision | undefined;
+      let allowRuleDecision: PermissionCheckResult | undefined;
+      if (authority === "approval") approvalDecision = await issueHostApprovedDecision(binding);
+      else {
+        await manager.addRulePersist({ pattern: "Bash(echo *)", action: "allow" }, { kind: "project", projectCwd: executionCwd });
+        allowRuleDecision = manager.checkDetailed("bash", "builtin", "shell", null, {
+          hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, projectRulesCwd: executionCwd,
+          ruleSubject: { kind: "shell", dialect: "bash", command: rawInput.command, cwd: binding.resolvedCwd },
+        });
+        expect(isIssuedShellAllowRuleDecision(allowRuleDecision, manager)).toBe(true);
+      }
+      const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision, allowRuleDecision, permissionManager: manager });
+      expect(permit).toBeDefined();
+      const spawnInput = { ...permitInput(binding, permit), executionCwd,
+        resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, undefined) };
+      expect(consumeHostShellExecutionPermitForSpawn(spawnInput)).toBeDefined();
+      expect(consumeHostShellExecutionPermitForSpawn(spawnInput)).toBeUndefined();
+    } finally {
+      cleanupTmpDir(directory);
+    }
   });
 });

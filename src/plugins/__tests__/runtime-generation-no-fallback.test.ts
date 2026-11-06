@@ -79,9 +79,8 @@ describe("PluginRuntime generation isolation", () => {
       hostRoot: "/tmp/ave-runtime-unbound-test",
       createHostApi: createNoopHostApiForTests,
     });
-    runtime._testInjectPlugin("unbound", "unbound_read", async () => "must-not-run");
 
-    await expect(runtime.call("unbound_read")).rejects.toThrow(
+    await expect(runtime.callForPlugin("unbound", "unbound_read")).rejects.toThrow(
       /generation access is not bound before plugin operation/,
     );
   });

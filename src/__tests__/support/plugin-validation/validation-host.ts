@@ -7,9 +7,9 @@ import type {
   PluginWorkerControl,
   PluginWorkerExitInfo,
   WorkerControlRequestHandler,
-} from "../public-contract.js";
-import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
-import { derivePluginChildEnvelope } from "../isolation/out-of-process-plugin.js";
+} from "../../../plugins/public-contract.js";
+import type { DelegatedWorkerConfinement } from "../../../plugins/isolation/host-api-dispatcher.js";
+import { derivePluginChildEnvelope } from "../../../plugins/isolation/out-of-process-plugin.js";
 
 /** Override by dotted path; undefined represents an unavailable optional member. */
 export type ValidationHostOverrides = Readonly<
@@ -144,8 +144,12 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       },
     },
     emitEvent: (type: string, data?: unknown) => void emitted.push([type, data]),
-    onEvent: (_type: string, handler: Listener<unknown>) =>
-      register(eventListeners, handler, () => handler(FIRED_EVENT_DATA)),
+    onEvent: (type: string, handler: Listener<unknown>) => {
+      if (type !== "host.theme.changed") {
+        throw new Error("Validation plugins may subscribe only to host.theme.changed");
+      }
+      return register(eventListeners, handler, () => handler(FIRED_EVENT_DATA));
+    },
     getSecret: async () => "the-stored-secret",
     resolveApiKey: async () => ({
       ok: true as const,
@@ -205,7 +209,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       return {
         panelId: "panel-1",
         height: Math.min(request.height ?? 180, 300),
-        resize: async (height: number) => Math.min(height, 300),
         detach: async () => undefined,
         onDetached: (listener: Listener<string>) => void detached.push(listener),
       };

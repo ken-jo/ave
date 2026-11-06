@@ -11,7 +11,6 @@ import type {
   PluginChildTransport,
   PluginMcpRequestMethod,
 } from "../../src/plugins/isolation/plugin-child-transport.js";
-import type { ValidationSessionInput } from "../../src/plugins/validate/validation-session.js";
 import type { PluginInstanceMethod } from "../../src/plugins/isolation/plugin-instance-wire.js";
 
 type Equal<A, B> =
@@ -63,12 +62,5 @@ export type ProbeReplyIsResultOrError = Expect<
           readonly data?: { readonly code?: unknown };
         };
       }
-  >
->;
-
-export type ValidationSessionInputKeysAreExact = Expect<
-  Equal<
-    keyof ValidationSessionInput,
-    "manifest" | "host" | "link" | "entryPath" | "pluginRoot" | "pluginDataDir" | "signal"
   >
 >;

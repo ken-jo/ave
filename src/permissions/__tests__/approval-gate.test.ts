@@ -37,6 +37,8 @@ import {
   auditRowStartingWith,
 } from "./test-helpers.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { setLocale } from "../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../i18n/messages/index.js";
 
 // Mock WebContents
 
@@ -105,6 +107,25 @@ function makeAuditingGate(): {
 }
 
 describe("ApprovalGate", () => {
+  it.each(["ko", "en"] as const)("notifies an outside write with write wording in %s", async (locale) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const fire = vi.fn();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 1_000, undefined, { fire } as never);
+    const pending = gate.requestAndWait(makeRequest({
+      kind: "out-of-allowed-dir", toolName: "write_file", toolCategory: "write",
+      outOfAllowedDir: { candidatePath: "/outside/result.txt", suggestedParent: "/outside", currentAllowed: ["/project"], adjacencyWarnings: [] },
+    }));
+    try {
+      expect(fire).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.stringMatching(locale === "ko" ? /허용 범위 밖의 .* 쓰기/ : /Write .* outside scope/),
+      }));
+    } finally {
+      gate.disposeAll();
+      await pending;
+      setLocale("ko");
+    }
+  });
   it.each(["timeout", "shutdown", "abort"] as const)("settles %s even when the live owner lookup fails after parking", async (termination) => {
     vi.useFakeTimers();
     const wc = makeMockWebContents();

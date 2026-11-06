@@ -28,6 +28,7 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { buildApprovalScopeOptions } from "../../permissions/approval-scope-options.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -116,6 +117,110 @@ function reviewer() {
 }
 
 describe("native invocation permission evidence", () => {
+  it("offers a session folder grant that covers siblings only in that session", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("default");
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const firstPath = join(outside, "first.txt");
+    const siblingPath = join(outside, "sibling.txt");
+    let directories: string[] = [];
+    const allowDirectory = vi.fn(async (directory: string) => [directory]);
+    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+      requests.push(request);
+      if (!request.outOfAllowedDir) return { requestId: request.id, choice: "allow-once" };
+      const scopes = buildApprovalScopeOptions(request.outOfAllowedDir!);
+      expect(scopes.map(scope => scope.choice)).toContain("allow-session");
+      return { requestId: request.id, choice: "allow-session" };
+    } };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined,
+      () => ({ allowDirectory, denyDirectory: async () => [] }));
+    const permissionContext = { trustOrigin: "llm-tool-arg" as const, additionalDirectories: [],
+      getAdditionalDirectories: () => directories, onSessionDirectoryGrant: (directory: string) => { directories.push(directory); } };
+    const invoke = (path: string) => withCodeCheckpoint({ sessionId, messageId: randomUUID() }, () => subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path, content: "session" } }], {
+      sessionId, executionCwd: project, permissionContext,
+    }));
+    const [first] = await invoke(firstPath);
+    expect(first.is_error, first.content).not.toBe(true);
+    expect(directories.map(directoryIdentity)).toContain(directoryIdentity(outside));
+    const [sibling] = await invoke(siblingPath);
+    expect(sibling.is_error, sibling.content).not.toBe(true);
+    expect(requests.filter(request => request.kind === "out-of-allowed-dir")).toHaveLength(1);
+    expect(allowDirectory).not.toHaveBeenCalled();
+    directories = [];
+    sessionId = randomUUID();
+    const [denied] = await run(executor(), "write_file", { path: siblingPath, content: "new session" });
+    expect(denied.is_error).toBe(true);
+    expect(await readFile(siblingPath, "utf8")).toBe("session");
+  });
+  it("does not persist a folder rule when its grant audit fails", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const append = audit.appendPermissionAuditEntry.bind(audit);
+    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(entry => {
+      if ("grantLifetime" in entry) return Promise.reject(new Error("grant audit append failed"));
+      return append(entry);
+    });
+    const allowDirectory = vi.fn(async (directory: string) => [directory]);
+    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined,
+      () => ({ allowDirectory, denyDirectory: async () => [] }));
+    const execute = vi.spyOn(writeTool, "execute");
+    await expect(run(subject, "write_file", { path: join(outside, "result.txt"), content: "must not write" }))
+      .rejects.toThrow("grant audit append failed");
+    expect(allowDirectory).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it.each(["allow-once", "allow-session", "allow-always"] as const)("persists the directory grant audit before executing an outside write with %s", async (choice) => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const path = join(outside, "result.txt");
+    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+      requests.push(request);
+      return { requestId: request.id, choice };
+    } };
+    const lifecycle = {
+      allowDirectory: async (directory: string) => [directory],
+      denyDirectory: async () => { throw new Error("No directory removal was requested"); },
+    };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined, () => lifecycle);
+    const execute = vi.spyOn(writeTool, "execute");
+    const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path, content: "approved write" } }], {
+      sessionId, executionCwd: project,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [], onTurnDirectoryGrant: vi.fn(), onSessionDirectoryGrant: vi.fn() },
+    });
+    expect(result.content).not.toContain("permission audit append is already in progress");
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(await readFile(path, "utf8")).toBe("approved write");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].kind).toBe("out-of-allowed-dir");
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.find(row => row.grantLifetime !== undefined)).toMatchObject({
+      tool: "write_file", decision: "allow", grantLifetime: choice === "allow-once" ? "turn" : choice === "allow-session" ? "session" : "always",
+    });
+  });
+
+  it("does not execute an approved outside write when its grant audit append fails", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const path = join(outside, "result.txt");
+    const append = audit.appendPermissionAuditEntry.bind(audit);
+    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(entry => {
+      if ("grantLifetime" in entry && entry.grantLifetime !== undefined) return Promise.reject(new Error("grant audit append failed"));
+      return append(entry);
+    });
+    const execute = vi.spyOn(writeTool, "execute");
+    await expect(run(executor(undefined, "allow-once"), "write_file", { path, content: "must not write" }, {
+      onDirectoryGrant: vi.fn(),
+    })).rejects.toThrow("grant audit append failed");
+    expect(execute).not.toHaveBeenCalled();
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([false, true])("uses the prepared child environment for a deterministic write target, sandboxed=%s", async (sandboxed) => {
     manager.setMode("allow");
     vi.stubEnv("PWD", join(root, "state"));

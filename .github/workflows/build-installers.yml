@@ -333,7 +333,7 @@ jobs:
           else
             node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
           fi
-      # Admission's packaged gate for escape 3 (plugin-hostapi-protocol.md §9.8
+      # Admission's packaged gate for escape 3 (docs/history/plugin-hostapi-protocol-migration.md
       # A2, Gates (ii)): the plugin child's Electron view measured under the
       # packaged runtime, beside the packaged application's own main process as
       # the control. Same launch condition and Linux session as the smoke above.
