@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +27,7 @@ const survivingEntries = ["language", "font", "skill", "agent", "agent-plugin"].
 }));
 
 let root: string;
-beforeEach(() => { root = mkdtempSync(join(tmpdir(), "ave-retired-content-")); vi.clearAllMocks(); });
+beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), "ave-retired-content-"))); vi.clearAllMocks(); });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 function write(path: string, value: unknown): string {
@@ -84,15 +84,41 @@ describe("retired installed content migration", () => {
     expect(readFileSync(path, "utf8")).toBe(original);
   });
 
-  it("does not follow a retired payload ancestor symlink", async () => {
+  it("migrates retired content through a symlinked packages root", async () => {
+    const storeRoot = join(root, "mounted-packages");
+    const alias = join(root, "packages");
+    mkdirSync(storeRoot);
+    symlinkSync(storeRoot, alias, "dir");
+    const path = join(alias, "ledger.json");
+    const payload = join(storeRoot, retiredEntry.origin.payloadDir);
+    const kept = join(storeRoot, survivingEntries[0]!.origin.payloadDir);
+    mkdirSync(payload, { recursive: true });
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(kept, "keep"), "keep");
+    write(path, { version: 1, packages: [retiredEntry, ...survivingEntries] });
+    expect((await ContentLedger.open(path)).list()).toEqual(survivingEntries);
+    expect(JSON.parse(readFileSync(join(storeRoot, "ledger.json"), "utf8"))).toEqual({ version: 1, packages: survivingEntries });
+    expect(existsSync(payload)).toBe(false);
+    expect(readFileSync(join(kept, "keep"), "utf8")).toBe("keep");
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+    await ContentLedger.open(path);
+    expect(log.info).toHaveBeenCalledExactlyOnceWith({ entriesRemoved: 1, payloadsRemoved: 1 }, "Retired content migrated");
+  });
+
+  it.each([false, true])("does not follow a retired payload ancestor symlink with a linked root: %s", async (linkedRoot) => {
     const path = join(root, "packages", "ledger.json");
+    if (linkedRoot) {
+      const storeRoot = join(root, "mounted-packages");
+      mkdirSync(storeRoot);
+      symlinkSync(storeRoot, dirname(path), "dir");
+    }
     const outside = join(root, "retained-payload");
     mkdirSync(outside, { recursive: true });
     writeFileSync(join(outside, "keep"), "keep");
     mkdirSync(join(dirname(path), "theme", retiredEntry.name), { recursive: true });
     symlinkSync(outside, join(dirname(path), "theme", retiredEntry.name, ".installs"), "dir");
     const original = write(path, { version: 1, packages: [retiredEntry, ...survivingEntries] });
-    await expect(ContentLedger.open(path)).rejects.toThrow(`Retired package payload is a symbolic link: ${join(dirname(path), "theme", retiredEntry.name, ".installs")}`);
+    await expect(ContentLedger.open(path)).rejects.toThrow(`Retired package payload is a symbolic link: ${join(realpathSync(dirname(path)), "theme", retiredEntry.name, ".installs")}`);
     expect(readFileSync(path, "utf8")).toBe(original);
     expect(readFileSync(join(outside, "keep"), "utf8")).toBe("keep");
   });

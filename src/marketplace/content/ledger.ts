@@ -1,6 +1,6 @@
 /** Ledger entries bind installed bytes and provenance; unreadable ledgers stop the store.
  * Current installs have unique payload directories; legacy installs use version directories. */
-import { lstat, rm, rmdir } from "node:fs/promises";
+import { lstat, realpath, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { createMarketplaceLogger } from "../log.js";
@@ -137,7 +137,7 @@ async function retiredDirectoryExists(path: string): Promise<boolean> {
   }
 }
 
-/** Every component, including the store root, is inspected without following links. */
+/** The canonical store root and every component below it are inspected without following links. */
 async function retiredPathExists(root: string, relative: string): Promise<boolean> {
   let path = root;
   if (!await retiredDirectoryExists(path)) return false;
@@ -189,7 +189,7 @@ export class ContentLedger {
     const parsed = input.status === "absent" ? { entries: [], retiredPayloadDirs: [], retiredCount: 0 } : parse(input.bytes.toString("utf8"), path);
     if (parsed.retiredCount > 0) {
       await withInstalledStateMutation(async () => {
-        const payloadsRemoved = await removeRetiredPayloads(dirname(path), parsed.retiredPayloadDirs);
+        const payloadsRemoved = await removeRetiredPayloads(await realpath(dirname(path)), parsed.retiredPayloadDirs);
         await writeFileAtomicAtPath(path, `${JSON.stringify({ version: 1, packages: parsed.entries }, null, 2)}\n`);
         log.info({ entriesRemoved: parsed.retiredCount, payloadsRemoved }, "Retired content migrated");
       });
