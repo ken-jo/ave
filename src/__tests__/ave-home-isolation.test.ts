@@ -14,6 +14,7 @@ import { defaultAveHome, aveHome } from "../shared/ave-home.js";
 import { checkSandboxSweepRoot, AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { AVE_HOME_AT_IMPORT } from "./fixtures/import-time-ave-home.js";
 import { canonicalPath } from "./support/ave-home-isolation-guard.js";
+import { withProvidedContext } from "./support/provided-context.js";
 import { configuredTestTmpRoot } from "./support/test-tmp-root.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 
@@ -299,5 +300,21 @@ describe("an explicit AVE_TEST_TMP_ROOT", () => {
     mkdirSync(join(ave, "test-tmp"), { recursive: true });
     const intoTestTmp = link(join(ave, "test-tmp"), join(scratch(), "into-test-tmp"));
     expect(configuredTestTmpRoot(home, intoTestTmp)).toBe(intoTestTmp);
+  });
+});
+
+describe("withProvidedContext", () => {
+  it("refuses a body that returns a promise, and still puts the provided value back", async () => {
+    const before = inject("explicitTestTmpRoot");
+    const pending = Promise.resolve();
+    // @ts-expect-error A Promise-returning body is rejected at the type level as well.
+    const typed = () => withProvidedContext("explicitTestTmpRoot", "/scratch/async", async () => {});
+    void typed;
+    expect(() => withProvidedContext("explicitTestTmpRoot", "/scratch/async", (() => pending) as () => void))
+      .toThrow(/body returned a promise/);
+    await pending;
+    expect(inject("explicitTestTmpRoot")).toBe(before);
+    expect(withProvidedContext("explicitTestTmpRoot", "/scratch/sync", () => inject("explicitTestTmpRoot"))).toBe("/scratch/sync");
+    expect(inject("explicitTestTmpRoot")).toBe(before);
   });
 });
