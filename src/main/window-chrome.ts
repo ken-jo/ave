@@ -27,7 +27,7 @@ export function getCommonChromeOptions(): CommonChromeOptions {
 // (https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#nativethemeprefersreducedtransparency-readonly).
 type GlassOptions = Pick<BrowserWindowConstructorOptions, "vibrancy" | "visualEffectState" | "backgroundColor">;
 
-export const MAIN_WINDOW_VIBRANCY = "under-window" as const;
+const MAIN_WINDOW_VIBRANCY = "under-window" as const;
 // The opaque window colour under reduced transparency, before the renderer paints (and between resize frames).
 const OPAQUE_WINDOW_BACKGROUND = { light: "#FFFFFF", dark: "#1E1E1E" } as const;
 
@@ -58,12 +58,13 @@ export function applyMainWindowGlass(
 }
 
 /**
- * The native appearance (NSAppearance) follows the app's own light/dark choice, not the OS, so the material under the tint and
- * the traffic lights match the scheme the renderer paints. darwin only: elsewhere the window is opaque and draws its own chrome.
- * `nativeTheme.themeSource` also drives `prefers-color-scheme`, which the renderer reads only in "system" mode — where it is
- * "system" here too, so the two never disagree.
+ * Electron's native theme follows the app's own appearance mode, as the v45.2.1 docs prescribe for a three-way dark-mode
+ * setting ("Follow OS" -> `system`, "Dark Mode" -> `dark`, "Light Mode" -> `light`;
+ * https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#nativethemethemesource). That one value drives the
+ * macOS material and window frame, Electron-drawn menus on Windows/Linux, and `prefers-color-scheme` in every web contents — so
+ * plugin views, MCP app frames, the splash and the auth window's chrome all see the scheme the user chose instead of the OS's.
  */
-export function syncNativeThemeSource(mode: AppearanceMode | undefined, platform: NodeJS.Platform = process.platform): void {
-  if (platform !== "darwin" || mode === undefined) return;
+export function syncNativeThemeSource(mode: AppearanceMode | undefined): void {
+  if (mode === undefined) return;
   if (nativeTheme.themeSource !== mode) nativeTheme.themeSource = mode;
 }

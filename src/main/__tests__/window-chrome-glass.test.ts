@@ -31,14 +31,14 @@ describe("main-window glass", () => {
     expect(win.setBackgroundColor).toHaveBeenLastCalledWith("#00000000");
   });
 
-  it("makes the native appearance follow the app's mode on darwin only", () => {
-    syncNativeThemeSource("dark", "darwin");
+  it("makes the native theme follow the app's mode on every platform", () => {
+    syncNativeThemeSource("dark");
     expect(nativeTheme.themeSource).toBe("dark");
-    syncNativeThemeSource("light", "win32");
-    expect(nativeTheme.themeSource).toBe("dark");
-    syncNativeThemeSource(undefined, "darwin");
-    expect(nativeTheme.themeSource).toBe("dark");
-    syncNativeThemeSource("system", "darwin");
+    syncNativeThemeSource("light");
+    expect(nativeTheme.themeSource).toBe("light");
+    syncNativeThemeSource(undefined);
+    expect(nativeTheme.themeSource).toBe("light");
+    syncNativeThemeSource("system");
     expect(nativeTheme.themeSource).toBe("system");
   });
 });
