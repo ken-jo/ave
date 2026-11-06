@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { CHANNELS } from "../contract/app-contract.js";
 import { createRequire } from "node:module";
 import { app, shell } from "electron";
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from "electron";
@@ -132,7 +133,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     for (const win of deps.getWindows()) {
       try {
         if (win.isDestroyed()) continue;
-        win.webContents.send("ave:update:state", state);
+        win.webContents.send(CHANNELS.update.state, state);
       } catch (err) {
         log.warn("state broadcast failed: %s", (err as Error).message);
       }
@@ -238,7 +239,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
 
   // Remove IPC handlers on stop to avoid duplicate registration after restart; commands are inert when the updater is unavailable.
   const rejectUnauthorizedIpc = (
-    channel: "ave:update:download-now" | "ave:update:install-now" | "ave:update:skip-version",
+    channel: typeof CHANNELS.update.downloadNow | typeof CHANNELS.update.installNow | typeof CHANNELS.update.skipVersion,
     event: IpcMainInvokeEvent,
   ): { ok: false; reason: "unauthorized-frame" } => {
     auditUnauthorized(deps.auditLogger, channel, event);
@@ -331,7 +332,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     event: IpcMainInvokeEvent,
   ): Promise<{ ok: boolean; reason?: string }> => {
     if (!isAuthorizedHostRenderer(event)) {
-      return rejectUnauthorizedIpc("ave:update:download-now", event);
+      return rejectUnauthorizedIpc(CHANNELS.update.downloadNow, event);
     }
     return downloadAvailableUpdate();
   };
@@ -372,7 +373,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     event: IpcMainInvokeEvent,
   ): Promise<{ ok: boolean; reason?: string }> => {
     if (!isAuthorizedHostRenderer(event)) {
-      return rejectUnauthorizedIpc("ave:update:install-now", event);
+      return rejectUnauthorizedIpc(CHANNELS.update.installNow, event);
     }
     if (lastState.kind !== "downloaded") {
       return { ok: false, reason: `not-downloaded (state=${lastState.kind})` };
@@ -406,7 +407,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     event: IpcMainInvokeEvent,
   ): Promise<{ ok: boolean; reason?: string }> => {
     if (!isAuthorizedHostRenderer(event)) {
-      return rejectUnauthorizedIpc("ave:update:skip-version", event);
+      return rejectUnauthorizedIpc(CHANNELS.update.skipVersion, event);
     }
     return skipCurrentVersion();
   };
@@ -428,10 +429,10 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     const ipc = loadIpcMain();
     if (!ipc) return;
     ipcRegistered = true;
-    ipc.handle("ave:update:download-now", onDownloadNow);
-    ipc.handle("ave:update:install-now", onInstallNow);
-    ipc.handle("ave:update:skip-version", onSkipVersion);
-    ipc.handle("ave:update:get-state", onGetState);
+    ipc.handle(CHANNELS.update.downloadNow, onDownloadNow);
+    ipc.handle(CHANNELS.update.installNow, onInstallNow);
+    ipc.handle(CHANNELS.update.skipVersion, onSkipVersion);
+    ipc.handle(CHANNELS.update.getState, onGetState);
   };
   const unregisterIpc = () => {
     // Always clear the flag, even if loadIpcMain returns null — otherwise a future start() would skip re-registration because the gate would stay stuck on `true`.
@@ -439,10 +440,10 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     ipcRegistered = false;
     const ipc = loadIpcMain();
     if (!ipc) return;
-    ipc.removeHandler("ave:update:download-now");
-    ipc.removeHandler("ave:update:install-now");
-    ipc.removeHandler("ave:update:skip-version");
-    ipc.removeHandler("ave:update:get-state");
+    ipc.removeHandler(CHANNELS.update.downloadNow);
+    ipc.removeHandler(CHANNELS.update.installNow);
+    ipc.removeHandler(CHANNELS.update.skipVersion);
+    ipc.removeHandler(CHANNELS.update.getState);
   };
 
   return {

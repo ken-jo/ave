@@ -1,5 +1,6 @@
 // FIFO questions appear in the composer dock; this broker does not enforce permission policy.
 import { randomUUID } from "node:crypto";
+import { CHANNELS } from "../contract/app-contract.js";
 import type { WebContents } from "electron";
 import type { NotificationService } from "./notification-service.js";
 import { createLogger } from "../lib/logger.js";
@@ -61,8 +62,8 @@ export interface AskUserQuestionResponse {
 // 1–4 questions per card. Cap is shared between tool input validation and gate.
 export const MAX_QUESTIONS_PER_CARD = 4;
 
-export const IPC_ASK_USER_QUESTION_REQUEST = "ave:ask-user-question:request";
-export const IPC_ASK_USER_QUESTION_RESPOND = "ave:ask-user-question:respond";
+export const IPC_ASK_USER_QUESTION_REQUEST = CHANNELS.askUserQuestion.request;
+export const IPC_ASK_USER_QUESTION_RESPOND = CHANNELS.askUserQuestion.respond;
 
 interface PendingEntry {
   request: AskUserQuestionRequest;
@@ -191,7 +192,7 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 // the renderer in cards. 5 is generous for legitimate workflows (decision tree branches) and tight enough that abuse is obvious.
 const MAX_CONCURRENT_PENDING = 5;
 // Notify every renderer when a question ends so copies in other windows cannot remain answerable.
-export const IPC_ASK_USER_QUESTION_TIMEOUT = "ave:ask-user-question:timeout";
+export const IPC_ASK_USER_QUESTION_TIMEOUT = CHANNELS.askUserQuestion.timeout;
 
 // Resolve live webContents for each send, preferring the asking session’s window, then primary or last-focused main window.
 export type WebContentsResolver = (sessionId: string) => WebContents | null;

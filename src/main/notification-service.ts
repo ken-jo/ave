@@ -1,6 +1,7 @@
 // Host lifecycle events trigger notifications; foreground turn completion is suppressed and other events choose toast or OS delivery. Audit metadata
 // only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, BrowserWindow } from "electron";
+import { CHANNELS } from "../contract/app-contract.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { stripMarkdown } from "../shared/strip-markdown.js";
@@ -51,10 +52,10 @@ export interface FireOptions {
 }
 
 // Host notification delivery belongs only to trusted window chrome.
-export const IPC_NOTIFICATION_TOAST = "ave:notification:toast";
+export const IPC_NOTIFICATION_TOAST = CHANNELS.notification.toast;
 // IPC channel — renderer → main; fired when the user clicks an in-app toast (via the renderer's status-bar bridge) or when an OS notification's click
 // handler triggers focus.
-export const IPC_NOTIFICATION_CLICKED = "ave:notification:clicked";
+export const IPC_NOTIFICATION_CLICKED = CHANNELS.notification.clicked;
 
 // Output cap — applied to BOTH body (toast / OS / audit) and title (audit). Body and title share the same 80-char limit; the constant name is retained
 // for API stability but is now a single output cap rather than a body-only cap.
