@@ -18,8 +18,9 @@ import {
 import { LINK_WINDOW_SHELL_ARGUMENT } from "./shared/preload-bundles.js";
 
 // Only the app renderer and splash consume appearance; link shells use their own titlebar tokens.
-const aveInitialAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ? null : readInitialAppearance();
-applyInitialAppearance(aveInitialAppearance);
+const aveInitialWindowAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ? null : readInitialAppearance();
+applyInitialAppearance(aveInitialWindowAppearance);
+const aveInitialAppearance = aveInitialWindowAppearance?.appearance ?? null;
 
 // ─── Composed host API surface ──────────────────────────────────────────────
 // The public + internal builders partition the methods; their full union

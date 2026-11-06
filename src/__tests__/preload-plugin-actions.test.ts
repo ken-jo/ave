@@ -8,7 +8,7 @@ const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockSendSync = vi.fn((channel: string) => {
   if (channel !== CHANNELS.settings.initialAppearance) throw new Error(`Unexpected sync channel: ${channel}`);
-  return { ok: true, appearance: DEFAULT_APPEARANCE };
+  return { ok: true, appearance: DEFAULT_APPEARANCE, glass: false };
 });
 
 vi.mock("electron", () => ({

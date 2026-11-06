@@ -1171,3 +1171,59 @@
 .ave-observed-current {
   box-shadow: inset 0 0 0 2px hsl(var(--agent));
 }
+
+/* ── Window glass (macOS) ───────────────────────────────────────────────────
+ * `html[data-glass]` is set by preload when main created the window with the
+ * system material behind it (`window-chrome.ts`: darwin, reduce-transparency
+ * off). The window ground — body, the main column, the title band — goes
+ * clear so the material shows; the sidebar rail and list paint the card
+ * colour over it at `--glass-tint-alpha`; the chat tiles stay opaque (their
+ * own `bg-card`), as do headers, the terminal and every popover.
+ *
+ * Alpha never goes on `--background` / `--card` themselves: the contrast
+ * solver in resolve-theme.ts derives text against those as opaque grounds,
+ * and the material under a tint is close to that ground in both shells.
+ *
+ * The rules sit outside every cascade layer so they outrank the `bg-*`
+ * utilities on the same elements without `!important`.
+ *
+ * `--glass-tint-alpha` is the one value to choose per shell: how much of the
+ * card colour covers the material. */
+:root {
+  --glass-tint-alpha: 0.75;
+}
+:root[data-shell="dark"] {
+  --glass-tint-alpha: 0.6;
+}
+html[data-glass],
+html[data-glass] body,
+html[data-glass] .ave-glass-clear {
+  background-color: transparent;
+}
+html[data-glass] .ave-glass-tint {
+  background-color: hsl(var(--card) / var(--glass-tint-alpha));
+}
+/* An overlaying sidebar floats over a conversation, not over the material:
+ * a see-through card there would print the transcript under the list. */
+html[data-glass] [data-sidebar-overlay="true"] .ave-glass-tint {
+  background-color: hsl(var(--card));
+}
+html[data-glass] .ave-glass-tint ::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+html[data-glass] .ave-glass-tint ::-webkit-scrollbar-thumb {
+  border-color: transparent;
+  background-clip: padding-box;
+}
+/* The OS reduce-transparency switch, followed live. Main drops the material
+ * at the same moment (`applyMainWindowGlass`); a window created with the
+ * switch already on never gets `data-glass` at all. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-glass] body,
+  html[data-glass] .ave-glass-clear {
+    background-color: hsl(var(--background));
+  }
+  html[data-glass] .ave-glass-tint {
+    background-color: hsl(var(--card));
+  }
+}

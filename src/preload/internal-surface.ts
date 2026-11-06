@@ -28,9 +28,16 @@ import {
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
-export function readInitialAppearance(): InitialAppearance {
+export interface InitialWindowAppearance {
+  appearance: InitialAppearance;
+  /** Main created this window with the macOS material behind it; the renderer paints its tint instead of an opaque ground. */
+  glass: boolean;
+}
+
+export function readInitialAppearance(): InitialWindowAppearance {
   const response = ipcRenderer.sendSync(CHANNELS.settings.initialAppearance) as InitialAppearanceResult;
   if (!response || !response.ok) throw new Error("Initial appearance unavailable");
+  if (typeof response.glass !== "boolean") throw new Error("Invalid initial appearance glass flag");
   const parsed: unknown = response.appearance;
   if (!parsed || typeof parsed !== "object" || (parsed as { schemaVersion?: unknown }).schemaVersion !== 3) {
     throw new Error("Invalid initial appearance");
@@ -47,17 +54,22 @@ export function readInitialAppearance(): InitialAppearance {
     || (uiFont.sizeScale !== undefined && !(FONT_SIZE_SCALE_VALUES as readonly unknown[]).includes(uiFont.sizeScale)))) {
     throw new Error("Invalid initial appearance font");
   }
-  return normalizeAppearance(parsed);
+  return { appearance: normalizeAppearance(parsed), glass: response.glass };
 }
 
-export function applyInitialAppearance(appearance: InitialAppearance | null): void {
-  if (!appearance || typeof document === "undefined") return;
-  if (document.documentElement) applyAppearance(appearance);
+export function applyInitialAppearance(initial: InitialWindowAppearance | null): void {
+  if (!initial || typeof document === "undefined") return;
+  const apply = () => {
+    applyAppearance(initial.appearance);
+    // `data-glass` is set once, here, and never by applyAppearance: a scheme switch must not clear it.
+    if (initial.glass) document.documentElement.setAttribute("data-glass", "");
+  };
+  if (document.documentElement) apply();
   else {
     const observer = new MutationObserver(() => {
       if (!document.documentElement) return;
       observer.disconnect();
-      applyAppearance(appearance);
+      apply();
     });
     observer.observe(document, { childList: true });
   }

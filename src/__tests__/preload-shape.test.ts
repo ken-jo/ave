@@ -33,7 +33,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
-    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE })),
+    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false })),
     invoke: mockInvoke,
     on: mockOn,
     removeListener: mockRemoveListener,

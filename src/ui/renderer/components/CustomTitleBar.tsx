@@ -148,7 +148,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
+        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
