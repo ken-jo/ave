@@ -187,13 +187,13 @@ describe("PaneFrame", () => {
   it("swaps the border on focus without changing the frame's size", () => {
     const view = render(pane());
     const frame = () => view.container.querySelector('[data-testid="pane"]')!;
-    expect(frame().className).toContain("border-border");
+    expect(frame().className).toContain("border-(--hairline)");
     expect(frame().className).not.toContain("border-primary");
     expect(frame().getAttribute("data-focused")).toBeNull();
 
     view.rerender(pane({ focused: true }));
     expect(frame().className).toContain("border-primary");
-    expect(frame().className).not.toMatch(/\bborder-border\b/);
+    expect(frame().className).not.toContain("border-(--hairline)");
     expect(frame().getAttribute("data-focused")).toBe("true");
   });
 
