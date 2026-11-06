@@ -108,7 +108,7 @@ export function buildHostShellExecutionPermitBinding(input: {
     toolUseId: input.toolUseId,
     command: parsed.command,
     requestedCwd: parsed.cwd,
-    executionCwd,
+    executionCwd: input.executionCwd,
     resolvedCwd: resolveHostShellWorkingDirectory(executionCwd, parsed.cwd),
     timeoutSeconds: parsed.timeoutSeconds,
     executionMode: parsed.executionMode,

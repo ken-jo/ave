@@ -200,6 +200,7 @@ function makeDeps(options: {
     },
     auditLogger: {
       log: vi.fn(),
+      append: vi.fn(async () => undefined),
       isPermissionAuditChainReady: vi.fn(() => options.auditReady ?? true),
       appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => {
         if (options.auditAppendError) throw options.auditAppendError;
@@ -1123,10 +1124,20 @@ describe("rules recorded from live approval cards", () => {
     expect(result).toEqual({ ok: true });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
     expect(recordApprovalMock).not.toHaveBeenCalled();
-    expect(deps.auditLogger.log).toHaveBeenCalledWith({
+    expect(deps.auditLogger.append).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
       output: `[approval:remembered] store=rules decision=allow scope=project rule=${JSON.stringify(exactRule)} edited=false toolName="bash_run" source="user-keyboard"`,
     });
+  });
+
+  it("does not persist a card rule when the audit append fails and completes its save token", async () => {
+    const { deps } = await setup(live);
+    deps.auditLogger.append.mockRejectedValueOnce(new Error("Audit disk is unavailable"));
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "rule-save-failed" });
+    expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    expect(deps.approvalGate.completeApprovalRuleSave).toHaveBeenCalledWith(
+      deps.approvalGate.beginApprovalRuleSave.mock.results[0].value, "0:0:default", undefined,
+    );
   });
 
   it("writes the exact rule to the user-global rules for Always allow everywhere", async () => {
@@ -1154,7 +1165,7 @@ describe("rules recorded from live approval cards", () => {
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Bash(printf %s *)" } }))
       .toEqual({ ok: true, warning: "wildcard-allow-broader-scope" });
     expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(printf %s *)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" }, expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
+    expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("edited=true") }));
   });
 
   it.each([

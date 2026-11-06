@@ -621,6 +621,11 @@ export class AuditLogger {
     }
   }
 
+  /** Await a durable telemetry row before committing the state it records. */
+  async append(entry: AuditEntry): Promise<void> {
+    await this.enqueuePlainWrite(this.telemetryPath(), JSON.stringify(entry) + "\n", true);
+  }
+
   /** Shadow reconciliation uses a separate plain-JSONL channel with mode 0o600; failures must never break tool calls. */
   logShadow(entry: AuditEntry): void {
     try {
@@ -679,10 +684,11 @@ export class AuditLogger {
     };
   }
 
-  private enqueuePlainWrite(filePath: string, line: string): void {
+  private enqueuePlainWrite(filePath: string, line: string, durable = false): Promise<void> | void {
     const bytes = Buffer.byteLength(line, "utf-8");
     if (!this.acceptingPlainWrites) {
       this.droppedPlainWrites += 1;
+      if (durable) return Promise.reject(new Error("Audit writer is unavailable"));
       return;
     }
     let writer = this.plainWriters.get(filePath);
@@ -695,12 +701,13 @@ export class AuditLogger {
       bytes > this.maxPendingBytes - writer.pendingBytes
     ) {
       this.droppedPlainWrites += 1;
+      if (durable) return Promise.reject(new Error("Audit writer queue is full"));
       return;
     }
 
     writer.pendingWrites += 1;
     writer.pendingBytes += bytes;
-    const write = writer.tail.then(() => this.appendPlainLine(filePath, line));
+    const write = writer.tail.then(() => this.appendPlainLine(filePath, line, durable));
     writer.tail = write
       .catch(() => {
         this.droppedPlainWrites += 1;
@@ -709,9 +716,10 @@ export class AuditLogger {
         writer.pendingWrites -= 1;
         writer.pendingBytes -= bytes;
       });
+    if (durable) return write;
   }
 
-  private async appendPlainLine(filePath: string, line: string): Promise<void> {
+  private async appendPlainLine(filePath: string, line: string, durable = false): Promise<void> {
     await withFileLock(filePath, async () => {
       const handle = await openFile(
         filePath,
@@ -728,6 +736,7 @@ export class AuditLogger {
           }
         }
         await handle.writeFile(line, { encoding: "utf-8" });
+        if (durable) await handle.sync();
       } finally {
         await handle.close();
       }

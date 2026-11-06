@@ -1126,19 +1126,23 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       const manager = conversationLoop.permissionManager;
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
-      const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority);
-      if (manager !== undefined) {
-        approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), saved.ok && saved.action === "allow" ? saved.scope : undefined);
+      let savedScope: "session" | "project" | "always" | undefined;
+      try {
+        const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
+          await auditLogger.append({
+            timestamp: new Date().toISOString(),
+            sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+            type: "approval",
+            output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+          });
+        });
+        if (!saved.ok) return saved;
+        savedScope = saved.scope;
+        broadcastPermissionConfigChanged(deps);
+        return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };
+      } finally {
+        if (manager !== undefined) approvalGate.completeApprovalRuleSave(saveToken, manager.getPolicyEpoch(), savedScope);
       }
-      if (!saved.ok) return saved;
-      auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:remembered] store=rules decision=${saved.action} scope=${saved.scope} rule=${JSON.stringify(saved.pattern)} edited=${saved.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
-      });
-      broadcastPermissionConfigChanged(deps);
-      return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };
     }
     // A bash card remembers an allow only as its exact command rule, at any scope.
     if (decision === "allow" && snapshot.shellRule) {
