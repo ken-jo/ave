@@ -373,6 +373,7 @@ const throwing = (error: () => Error) => () => {
 
 const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-version-mismatch">, ErrorTrigger>> = {
   "plugin-inactive": {
+    // Stop closes the transport; the real inactive-incarnation path is covered by host-api-boundary-contract.test.ts:529.
     trigger: "the bound host API incarnation retired before the request ran",
     overrides: {
       getSecret: throwing(() => new HostApiBoundaryError("plugin-inactive", inactiveHostApiMessage("golden-invoker", "hostApi.getSecret"))),

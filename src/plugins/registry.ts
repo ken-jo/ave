@@ -12,7 +12,7 @@ import { assertSafeArtifactSlug } from "./plugin-id.js";
 import { resolveTrustedRegistryManifestPath } from "./registry-manifest-trust.js";
 import { isRecord, isStringArray } from "../shared/is-record.js";
 
-/** Normalize legacy install-source fields and remove unsupported tool grants without weakening receipt checks. */
+/** Normalize legacy install-source fields and remove retired grants without weakening receipt checks. */
 interface LegacyRegistryEntry extends Omit<PluginRegistryEntry, "installSource"> {
   installedBy?: "admin" | "user";
   _devLinked?: boolean;
@@ -20,43 +20,58 @@ interface LegacyRegistryEntry extends Omit<PluginRegistryEntry, "installSource">
   installSource?: PluginRegistryEntryInstallSource | "dev-link";
 }
 
-/** Remove retired tool grants while preserving supported event and approval data; persisted JSON is untrusted. */
+/** Remove retired tool, event and approval grants; persisted JSON is untrusted. */
 export function stripLegacyPluginToolGrants(
   access: PluginAccessSpec | undefined,
-): { access: PluginAccessSpec | undefined; changed: boolean } {
-  if (!access || !Array.isArray(access.plugins)) return { access, changed: false };
-  let changed = false;
+): { access: PluginAccessSpec | undefined; changed: boolean; toolGrantsRemoved: boolean; eventOrApprovalGrantsRemoved: boolean } {
+  if (!access || !Array.isArray(access.plugins)) {
+    return { access, changed: false, toolGrantsRemoved: false, eventOrApprovalGrantsRemoved: false };
+  }
+  const accessRecord = access as unknown as Record<string, unknown>;
+  const approvalScopesRemoved = Object.prototype.hasOwnProperty.call(accessRecord, "agentApprovalScopes");
+  let changed = approvalScopesRemoved;
+  let toolGrantsRemoved = false;
+  let eventOrApprovalGrantsRemoved = approvalScopesRemoved;
   const plugins = access.plugins.flatMap((target) => {
     if (!target || typeof target !== "object" || Array.isArray(target)) {
       changed = true;
       return [];
     }
-
     const record = target as unknown as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(record, "tools")) return [target];
+    const hasTools = Object.prototype.hasOwnProperty.call(record, "tools");
+    const hasEvents = Object.prototype.hasOwnProperty.call(record, "events");
+    if (!hasTools && !hasEvents) return [target];
     changed = true;
-    const eventOnlyTarget = Object.fromEntries(
-      Object.entries(record).filter(([key]) => key !== "tools"),
+    toolGrantsRemoved ||= hasTools;
+    eventOrApprovalGrantsRemoved ||= hasEvents;
+    const retainedTarget = Object.fromEntries(
+      Object.entries(record).filter(([key]) => key !== "tools" && key !== "events"),
     );
-    return [eventOnlyTarget as unknown as typeof target];
+    return [retainedTarget as unknown as typeof target];
   });
+  const retainedAccess = Object.fromEntries(
+    Object.entries(accessRecord).filter(([key]) => key !== "agentApprovalScopes"),
+  );
   return {
-    access: changed ? { ...access, plugins } : access,
+    access: changed ? { ...retainedAccess, plugins } as unknown as PluginAccessSpec : access,
     changed,
+    toolGrantsRemoved,
+    eventOrApprovalGrantsRemoved,
   };
 }
 
 /** Return null when conformant; report legacy install-source rewrites once rather than silently changing trust. */
 function migrateLegacyEntry(
   entry: LegacyRegistryEntry,
-  out: { devLinkRewritten: boolean; legacyToolGrantsRemoved: boolean },
+  out: { devLinkRewritten: boolean; legacyToolGrantsRemoved: boolean; legacyEventOrApprovalGrantsRemoved: boolean },
 ): PluginRegistryEntry | null {
   const hasLegacy = entry.installedBy !== undefined || entry._devLinked !== undefined;
   const hasDevLinkInstallSource = entry.installSource === "dev-link";
   const cleanedAccess = stripLegacyPluginToolGrants(entry.approvedPluginAccess);
   // Conformant entries need no migration, including entries with no derivable installSource.
   if (!hasLegacy && !hasDevLinkInstallSource && !cleanedAccess.changed) return null;
-  if (cleanedAccess.changed) out.legacyToolGrantsRemoved = true;
+  if (cleanedAccess.toolGrantsRemoved) out.legacyToolGrantsRemoved = true;
+  if (cleanedAccess.eventOrApprovalGrantsRemoved) out.legacyEventOrApprovalGrantsRemoved = true;
   let installSource: PluginRegistryEntryInstallSource | undefined;
   if (hasDevLinkInstallSource || entry._devLinked === true) {
     installSource = "local-dev";
@@ -123,7 +138,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
   }
   // Migrate in memory; only explicit transactions may persist without overwriting concurrent writers.
   let migratedCount = 0;
-  const out = { devLinkRewritten: false, legacyToolGrantsRemoved: false };
+  const out = { devLinkRewritten: false, legacyToolGrantsRemoved: false, legacyEventOrApprovalGrantsRemoved: false };
   validateRawPluginRegistry(parsed, registryPath);
   const plugins: PluginRegistryEntry[] = parsed.plugins.map((entry) => {
     const migrated = migrateLegacyEntry(entry, out);
@@ -163,7 +178,20 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
           reason: "legacy_plugin_tool_grants_removed",
           registryPath,
         },
-        "registry contained retired pluginAccess.tools grants — removed them and retained event grants",
+        "registry contained retired pluginAccess.tools grants — removed them",
+      );
+    }
+
+    if (out.legacyEventOrApprovalGrantsRemoved) {
+      logPluginLifecycle(
+        "info",
+        {
+          pluginId: "<registry>",
+          phase: PluginPhase.DISCOVERY_START,
+          reason: "legacy_plugin_event_approval_grants_removed",
+          registryPath,
+        },
+        "registry contained retired event or approval grants — removed them",
       );
     }
 
@@ -238,7 +266,7 @@ function validateRegistryEntry(
       throw new Error(`Invalid plugin registry install source: ${value.id}`);
     }
   }
-  if (value.approvedPluginAccess !== undefined) validatePluginAccess(value.approvedPluginAccess, value.id);
+  if (value.approvedPluginAccess !== undefined) validatePluginAccess(value.approvedPluginAccess, value.id, allowLegacy);
   if (value.origin !== undefined) validateOrigin(value.origin, value.id);
   if (value.pendingUpdate !== undefined) validatePendingUpdate(value.pendingUpdate, value.id);
   if (value.pendingCleanup !== undefined) validatePendingCleanup(value.pendingCleanup, value.id);
@@ -322,17 +350,23 @@ function validatePendingUpdate(value: unknown, pluginId: string): void {
   }
 }
 
-function validatePluginAccess(value: unknown, pluginId: string): void {
+function validatePluginAccess(value: unknown, pluginId: string, allowLegacy: boolean): void {
   if (!isRecord(value)) throw new Error(`Invalid plugin registry access grant: ${pluginId}`);
-  assertOnlyKeys(value, new Set(["plugins"]), `plugin access for '${pluginId}'`);
+  assertOnlyKeys(value, new Set(allowLegacy ? ["plugins", "agentApprovalScopes"] : ["plugins"]), `plugin access for '${pluginId}'`);
+  if (value.agentApprovalScopes !== undefined && !isStringArray(value.agentApprovalScopes)) {
+    throw new Error(`Invalid legacy plugin approval scopes: ${pluginId}`);
+  }
   if (!Array.isArray(value.plugins)) throw new Error(`Invalid plugin access targets: ${pluginId}`);
   for (const target of value.plugins) {
-    // Allow only the specific historical null target and retired tools shape during migration.
-    if (target === null) continue;
+    // Accept only known historical grants during migration, then validate the stripped shape.
+    if (allowLegacy && target === null) continue;
     if (!isRecord(target) || typeof target.pluginId !== "string" || target.pluginId.length === 0) {
       throw new Error(`Invalid plugin access target: ${pluginId}`);
     }
-    assertOnlyKeys(target, new Set(["pluginId", "tools"]), `plugin access target for '${pluginId}'`);
+    assertOnlyKeys(target, new Set(allowLegacy ? ["pluginId", "tools", "events"] : ["pluginId"]), `plugin access target for '${pluginId}'`);
+    if (target.events !== undefined && !isStringArray(target.events)) {
+      throw new Error(`Invalid legacy plugin access events: ${pluginId}`);
+    }
     if (target.tools !== undefined && !isStringArray(target.tools)) {
       throw new Error(`Invalid legacy plugin access tools: ${pluginId}`);
     }

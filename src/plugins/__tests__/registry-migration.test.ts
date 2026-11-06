@@ -1,11 +1,12 @@
 /** Registry reads normalize legacy fields without writing; only explicit migration persists changes. */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { migratePluginRegistry, readPluginRegistry } from "../registry.js";
+import * as lifecycleLog from "../lifecycle-log.js";
 
 describe("readPluginRegistry — legacy installedBy/_devLinked migration", () => {
   let tmpDir: string;
@@ -201,7 +202,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("preserves bundleRefs and approvedPluginAccess across migration", async () => {
-    const accessSpec = { plugins: [{ pluginId: "samplemail", events: ["email.new"] }] };
+    const accessSpec = { plugins: [{ pluginId: "samplemail" }] };
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -261,7 +262,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
   });
 
   it("does not rewrite a registry entry under a former plugin id to local-indexer", async () => {
-    const approvedPluginAccess = { plugins: [{ pluginId: "samplehub", events: ["agent.ready"] }] };
+    const approvedPluginAccess = { plugins: [{ pluginId: "samplehub" }] };
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -303,7 +304,7 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
     await expect(readFile(missingPath, "utf-8")).rejects.toThrow();
   });
 
-  it("removes legacy pluginAccess tools grants while preserving event grants", async () => {
+  it("removes legacy plugin access tool and event grants", async () => {
     await writeFile(
       registryPath,
       JSON.stringify({
@@ -327,14 +328,51 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
 
     const registry = await readPluginRegistry(registryPath);
     expect(registry.plugins[0]?.approvedPluginAccess).toEqual({
-      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail" }],
     });
 
     await migratePluginRegistry(registryPath);
     const persisted = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(persisted.plugins[0]?.approvedPluginAccess).toEqual({
-      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail" }],
     });
+  });
+
+  it("loads released registry grants by removing retired event and approval authority", async () => {
+    const audit = vi.spyOn(lifecycleLog, "logPluginLifecycle");
+    // The released registry format stored both event and approval grants.
+    const legacy = {
+      version: 1,
+      plugins: [{
+        id: "sampleassistant",
+        manifestPath: "sampleassistant/plugin.json",
+        installSource: "user",
+        enabled: true,
+        approvedPluginAccess: {
+          plugins: [{ pluginId: "samplemail", events: ["calendar.event.added"], tools: ["list_calendar"] }],
+          agentApprovalScopes: ["calendar.create"],
+        },
+      }],
+    };
+    const bytes = JSON.stringify(legacy);
+    await writeFile(registryPath, bytes);
+    try {
+      const registry = await readPluginRegistry(registryPath);
+      expect(registry.plugins[0]?.approvedPluginAccess).toEqual({ plugins: [{ pluginId: "samplemail" }] });
+      expect(await readFile(registryPath, "utf-8")).toBe(bytes);
+      expect(audit).toHaveBeenCalledWith("info", expect.objectContaining({
+        reason: "legacy_plugin_event_approval_grants_removed",
+        registryPath,
+      }), expect.any(String));
+      await migratePluginRegistry(registryPath);
+      const persisted = JSON.parse(await readFile(registryPath, "utf-8"));
+      expect(persisted.plugins[0].approvedPluginAccess).toEqual({ plugins: [{ pluginId: "samplemail" }] });
+      audit.mockClear();
+      expect((await readPluginRegistry(registryPath)).plugins[0]?.approvedPluginAccess).toEqual({ plugins: [{ pluginId: "samplemail" }] });
+      expect(audit.mock.calls.some(([, fields]) => fields.reason === "legacy_plugin_event_approval_grants_removed")).toBe(false);
+    } finally {
+      audit.mockRestore();
+    }
   });
 
   it("accepts the strict pending-update recovery shape without migrating it", async () => {

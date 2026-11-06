@@ -376,11 +376,9 @@ describe("prepared artifact install identity", () => {
     const prepared = await writePreparedPlugin(root, canonicalId, installId);
     const observedInstallIds: Array<string | null> = [];
     const observedRegistryEntries: unknown[] = [];
-    const observedAccessGrants: unknown[] = [];
     const approvedPluginAccess = {
       plugins: [{
         pluginId: "sampleassistant",
-        events: ["sampleassistant.snapshot.requested"],
       }],
     };
     const createHostApi: PluginRuntimeOptions["createHostApi"] = (
@@ -390,11 +388,9 @@ describe("prepared artifact install identity", () => {
       _incarnation,
       candidateInstallId,
       candidateRegistryEntry,
-      candidateApprovedPluginAccess,
     ) => {
       observedInstallIds.push(candidateInstallId);
       observedRegistryEntries.push(candidateRegistryEntry);
-      observedAccessGrants.push(candidateApprovedPluginAccess);
       return createNoopHostApiForTests(pluginId, manifest, dataDir);
     };
     const runtime = makeTestPluginRuntime(
@@ -422,7 +418,7 @@ describe("prepared artifact install identity", () => {
     expect(durableCommit).toHaveBeenCalledOnce();
     expect(observedInstallIds).toEqual([installId]);
     expect(observedRegistryEntries).toEqual([prepared.registryEntry]);
-    expect(observedAccessGrants).toEqual([approvedPluginAccess]);
+    expect(runtime.getApprovedPluginAccess(canonicalId)).toEqual(approvedPluginAccess);
     expect(runtime.resolvePluginInstallId(canonicalId)).toBe(installId);
     await expect(runtime.call("manifest_fresh_ping")).resolves.toBe("pong");
   });

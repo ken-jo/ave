@@ -67,7 +67,7 @@ function hostApiUnderTest(pluginDataDir: string): {
     routinesStore: {},
     getAlertsService: () => undefined,
   } as never);
-  const api = factory(PLUGIN_ID, MANIFEST, pluginDataDir, incarnation, null, undefined, null);
+  const api = factory(PLUGIN_ID, MANIFEST, pluginDataDir, incarnation, null, undefined);
   scope.bindGeneration(admittedGenerationAccess(GENERATION_ID), GENERATION_ID);
   scope.publish();
   return { api, scope };

@@ -1096,12 +1096,10 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     });
   });
 
-  it("allows only host theme subscriptions even when a candidate grant names another plugin", () => {
+  it("allows only host theme subscriptions", () => {
     const runtime = makeRuntime();
     expect(() => runtime.assertPluginEventAccess("first", "host.theme.changed")).not.toThrow();
-    expect(() => runtime.assertPluginEventAccess("first", "second.panel.updated", {
-      plugins: [{ pluginId: "second" }],
-    })).toThrow(/only to host.theme.changed/);
+    expect(() => runtime.assertPluginEventAccess("first", "second.panel.updated")).toThrow(/only to host.theme.changed/);
   });
 
   it("blocks plugins from emitting events owned by another plugin", async () => {

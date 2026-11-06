@@ -47,7 +47,7 @@ import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setup } from "../../config/vitest.globalSetup.js";
 
 const RUN_ENV = [
-  "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
+  "AVE_TEST_TMP_ROOT", "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
   "TMPDIR", "TEMP", "TMP",
   "ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE",
 ] as const;
@@ -66,6 +66,7 @@ afterEach(() => {
 });
 
 function scratchTestTmp(): string {
+  delete process.env.AVE_TEST_TMP_ROOT;
   const home = scratch();
   process.env.HOME = home;
   process.env.USERPROFILE = home;
@@ -126,6 +127,24 @@ const removeTree = async (path: string) => {
 };
 
 describe("vitest global setup", () => {
+  it("uses an explicit isolated scratch root without changing the account home", async () => {
+    const home = homedir();
+    const root = join(scratch(), "test-tmp");
+    process.env.AVE_TEST_TMP_ROOT = root;
+    const teardown = await setup(project());
+    try {
+      expect(homedir()).toBe(home);
+      expect(dirname(process.env.AVE_TEST_RUN_HOME!)).toBe(root);
+      expect(runDirs(root)).toHaveLength(2);
+    } finally { await teardown(); }
+    expect(runDirs(root)).toEqual([]);
+  });
+
+  it("rejects a relative isolated scratch root before creating run directories", async () => {
+    process.env.AVE_TEST_TMP_ROOT = "relative-test-tmp";
+    await expect(setup(project())).rejects.toThrow("AVE_TEST_TMP_ROOT must be absolute");
+  });
+
   it("makes one set of owned run directories for every project in the run and removes it after the last", async () => {
     const testTmp = scratchTestTmp();
     const nodeProvided: Provided = new Map();

@@ -134,7 +134,7 @@ import { initPluginRuntime } from "../plugin-runtime.js";
 import { emitEvent as emitHostEvent } from "../../types.js";
 import { subscribeOwnPluginUiEvents } from "../../../plugins/ui-events.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
-import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -211,7 +211,6 @@ type CreateHostApi = (
   },
   installPluginId: string | null,
   candidateRegistryEntry?: PluginRegistryTrust,
-  candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => ConfigHostApi;
 
 /** The logger passed to boot is the sink for runtime audit records. */
@@ -669,7 +668,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
     );
-    const candidateGrant = { plugins: [] };
     const api = createHostApi(
       "samplemail",
       { id: "samplemail", config: {}, capabilities: [] },
@@ -677,7 +675,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
       activeIncarnation(),
       "samplemail",
       { installSource: "admin", manifestSha256: "candidate-sha" },
-      candidateGrant,
     );
 
     api.onEvent("host.theme.changed", vi.fn());
@@ -685,7 +682,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(runtimeTestState.runtime.assertPluginEventAccess).toHaveBeenCalledWith(
       "samplemail",
       "host.theme.changed",
-      candidateGrant,
     );
   });
 

@@ -3,6 +3,7 @@ import { PassThrough, Writable } from "node:stream";
 import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { importPluginFactory } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
 import {
@@ -301,8 +302,9 @@ function serveOverStdio(): void {
   const service = servePluginChild(process.stdin, claimProtocolStdout());
   const end = (): void => {
     service.hostGone();
-    // Let EOF listeners finish cleanup; the host bounds a child that keeps resources open.
+    // Let EOF cleanup finish; a lost host cannot leave plugin-owned handles alive forever.
     process.exitCode = 0;
+    setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
   };
   process.stdin.on("end", end);
   process.stdin.on("close", end);
@@ -322,6 +324,7 @@ function serveOverLoopback(env: Readonly<Record<string, string>>): void {
       const end = (): void => {
         service.hostGone();
         process.exitCode = 0;
+        setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
       };
       socket.on("end", end);
       socket.on("close", end);

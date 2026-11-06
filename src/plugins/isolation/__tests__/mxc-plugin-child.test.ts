@@ -341,7 +341,7 @@ describe("plugin stderr diagnostics", () => {
   it("caps each line in bytes and marks truncation without consuming the next line", async () => {
     await capture((stream, records) => {
       stream.emit("data", Buffer.from("x".repeat(16_384)));
-      stream.emit("data", Buffer.from("z".repeat(100_000) + "\nnext\n"));
+      stream.emit("data", Buffer.from("z".repeat(20_000) + "\nnext\n"));
       expect(records).toHaveLength(2);
       expect(String(records[0]![0])).toMatch(/x+ \[truncated\]$/u);
       expect(Buffer.byteLength(String(records[0]![0]))).toBeLessThan(16_450);
@@ -352,6 +352,8 @@ describe("plugin stderr diagnostics", () => {
 
   it("drops rate excess with one summary and keeps the child alive", async () => {
     vi.useFakeTimers();
+    // The plugin budget persists across earlier children; elapsed time replenishes it.
+    vi.advanceTimersByTime(5_000);
     await capture((stream, records) => {
       stream.emit("data", Buffer.from("line\n".repeat(600)));
       expect(records).toHaveLength(500);

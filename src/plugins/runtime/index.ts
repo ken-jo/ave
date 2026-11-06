@@ -213,7 +213,6 @@ export interface PluginRuntimeOptions {
     incarnation: PluginHostApiIncarnation,
     installPluginId: string | null,
     candidateRegistryEntry?: Readonly<PluginRegistryTrust>,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   deploymentGuard?: PluginDeploymentGuard;
   installReceiptCacheRoot?: string;
@@ -234,7 +233,7 @@ export interface PluginRuntimeOptions {
   preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
 }
 
-/** Cross-plugin calls and subscriptions share one permission and audit policy. */
+/** Plugin event boundaries share one permission and audit policy. */
 
 type AuditLog = (
   level: "info" | "warn" | "error",
@@ -246,11 +245,13 @@ type AuditLog = (
 export function assertEventSubscribeAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  targetPluginId?: string;
-  getAccessGrant: () => PluginAccessSpec | undefined;
   auditLog?: AuditLog;
 }): void {
   if (opts.eventType === "host.theme.changed") return;
+  opts.auditLog?.("error", "plugin_event_access_denied", {
+    callerPluginId: opts.callerPluginId,
+    eventType: opts.eventType,
+  });
   throw new Error(`Plugin '${opts.callerPluginId}' may subscribe only to host.theme.changed`);
 }
 
@@ -258,10 +259,13 @@ export function assertEventSubscribeAccess(opts: {
 export function assertEventEmitAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  ownerPluginId?: string;
   auditLog?: AuditLog;
 }): void {
   if (canEmitEvent(opts.eventType, opts.callerPluginId)) return;
+  opts.auditLog?.("error", "plugin_event_emit_denied", {
+    callerPluginId: opts.callerPluginId,
+    eventType: opts.eventType,
+  });
   throw new Error(`Plugin '${opts.callerPluginId}' may emit only its own UI events`);
 }
 
@@ -1339,7 +1343,6 @@ abstract class PluginRuntimeState {
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ) => PluginHostApi;
   protected readonly deploymentGuard?: PluginDeploymentGuard;
   protected readonly installReceiptCacheRoot?: string;
@@ -1798,7 +1801,6 @@ abstract class PluginRuntimeState {
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): {
     hostApi: PluginHostApi;
     disposers: Array<() => void>;
@@ -1869,7 +1871,6 @@ abstract class PluginRuntimeState {
         incarnation,
         installPluginId,
         candidateRegistryEntry,
-        candidateApprovedPluginAccess,
       );
       const hostApi = hostEffects ? hostEffects.wrapHostApi(rawHostApi) : rawHostApi;
       // Partial test HostApi objects may omit required storage.
@@ -4629,7 +4630,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         hostEffects,
         installId,
         candidateRegistryEntry,
-        input.approvedPluginAccess ?? null,
       );
     } catch (error) {
       await releasePreparedConstruction(hostEffects);
@@ -5611,7 +5611,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       track(candidate.pluginId, candidate.releaseForShutdown?.() ?? candidate.settled);
     }
 
-    const graceMs = TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs;
+    const graceMs = TOOL_TIMEOUT_POLICY.pluginRetirementDrainMs;
     if (!await this.waitForGenerationRetirements(graceMs, signal) && !signal.aborted) {
       log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls and stopping their generations`);
     }
@@ -6428,12 +6428,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.methodMap.get(method)?.pluginId ?? this.knownToolOwners.get(method);
   }
 
-  assertPluginEventAccess(callerPluginId: string, eventType: string, candidateApprovedPluginAccess?: PluginAccessSpec | null): void {
+  assertPluginEventAccess(callerPluginId: string, eventType: string): void {
     assertEventSubscribeAccess({
       callerPluginId,
       eventType,
-      getAccessGrant: () => candidateApprovedPluginAccess === undefined
-        ? this.getPluginAccessGrant(callerPluginId) : candidateApprovedPluginAccess ?? undefined,
       auditLog: this.auditLog,
     });
   }
@@ -7008,10 +7006,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
 
   getApprovedPluginAccess(pluginId: string): PluginAccessSpec | undefined {
     return this.plugins.get(pluginId)?.approvedPluginAccess ?? this.knownPluginAccessGrants.get(pluginId);
-  }
-
-  private getPluginAccessGrant(pluginId: string): PluginAccessSpec | undefined {
-    return this.getApprovedPluginAccess(pluginId);
   }
 
   listPluginCards(toolRegistry?: { getModelVisibleTools(): Array<{ name: string }> }): PluginCard[] {

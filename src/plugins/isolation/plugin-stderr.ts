@@ -4,6 +4,8 @@ import { maskSensitiveData } from "../../audit/dlp-filter.js";
 
 const log = createLogger("plugin-stderr");
 const LINE_BYTES_MAX = 16_384;
+// Retain bounded lookahead for redaction before the display cap. Larger lines lose all free text.
+const RAW_LINE_BYTES_MAX = 65_536;
 const LINES_PER_SECOND = 100;
 const LINE_BURST_MAX = 500;
 
@@ -38,10 +40,10 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
   let truncated = false;
   let finished = false;
   const emitLine = (): void => {
-    const raw = Buffer.concat(parts, bytes).toString("utf8").replace(/\r$/u, "");
+    const raw = truncated ? "" : Buffer.concat(parts, bytes).toString("utf8").replace(/\r$/u, "");
     parts = [];
     bytes = 0;
-    const suffix = truncated ? " [truncated]" : "";
+    const overflowed = truncated;
     truncated = false;
     const now = Date.now();
     budget.tokens = Math.min(LINE_BURST_MAX, budget.tokens + Math.max(0, now - budget.updatedAt) * LINES_PER_SECOND / 1_000);
@@ -55,14 +57,27 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
       return;
     }
     budget.tokens--;
-    const line = maskSensitiveData(raw).masked + suffix;
+    const masked = Buffer.from(maskSensitiveData(raw).masked, "utf8");
+    let end = Math.min(masked.length, LINE_BYTES_MAX);
+    // A continuation byte belongs to the character beginning before the cap.
+    while (end < masked.length && end > 0 && (masked[end]! & 0xc0) === 0x80) end--;
+    const line = overflowed
+      ? "[truncated: line exceeded capture limit]"
+      : masked.subarray(0, end).toString("utf8") + (masked.length > end ? " [truncated]" : "");
     if (line.startsWith("ERROR ")) log.error({ pluginId }, line);
     else if (line.startsWith("WARN ")) log.warn({ pluginId }, line);
     else log.info({ pluginId }, line);
   };
   const append = (part: Buffer): void => {
-    const remaining = LINE_BYTES_MAX - bytes;
-    if (part.length > remaining) truncated = true;
+    if (truncated) return;
+    const remaining = RAW_LINE_BYTES_MAX - bytes;
+    if (part.length > remaining) {
+      // A clipped credential may no longer match the redactor. Discard rather than expose its prefix.
+      truncated = true;
+      parts = [];
+      bytes = 0;
+      return;
+    }
     if (remaining > 0 && part.length > 0) {
       const kept = part.subarray(0, remaining);
       // Copy so a small pending line never retains a large child-output buffer.
@@ -88,7 +103,7 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
     budget.users--;
     if (budget.users === 0) {
       reportDrops();
-      rates.delete(pluginId);
+      // Keep the bucket for this plugin across child restarts; only time replenishes its tokens.
     }
   };
   stream.once("end", finish);

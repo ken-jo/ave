@@ -56,9 +56,9 @@ export const TOOL_TIMEOUT_POLICY = {
   pluginFactoryMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
-  // Shutdown handlers may time out without blocking quit; worker transport gets kill grace beyond that timeout.
-  pluginShutdownHandlerMs: 5_000,
-  // Kill grace ensures the shutdown runner timeout wins over the transport deadline.
+  // Allow retiring generations to drain existing calls before shutdown aborts their scope.
+  pluginRetirementDrainMs: 5_000,
+  // Let stdin EOF cleanup finish before the host terminates a surviving child.
   pluginShutdownKillGraceMs: 1_000,
   // A stdio-control worker must answer the host's hello before spawnWorker resolves; cold interpreter start on Windows included.
   workerControlHelloMs: 60_000,
@@ -102,9 +102,9 @@ export const TOOL_TIMEOUT_POLICY = {
   processGroupRetentionWarningMs: 5 * 60 * 1000,
 } as const;
 
-/** Stopping a native plugin child: its stop hook (handler plus kill grace), then the owned process's own disposal deadline. */
+/** Stopping a native plugin child: optional stop hook, stdin EOF grace, then owned process disposal. */
 export function nativePluginChildStopBudgetMs(): number {
-  return TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
+  return TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
     + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
 }
 

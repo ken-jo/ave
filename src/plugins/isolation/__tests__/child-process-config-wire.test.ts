@@ -17,6 +17,7 @@ import {
   subscribePluginConfigChange,
   _resetPluginConfigChangeBus,
 } from "../../config-change-bus.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 
 const PLUGIN_ID = "sampleassistant";
@@ -288,6 +289,45 @@ export const createPlugin = async () => {
     });
     await instance.stop!();
     expect(readFileSync(marker, "utf8")).toBe("cleaned");
+  }, 180_000);
+
+  it("exits after host pipe loss even when the plugin keeps an interval alive", async () => {
+    const root = temporaryRoot!;
+    const entryPath = join(root, "interval-plugin.mjs");
+    writeFileSync(entryPath, `export const createPlugin = async () => {
+  setInterval(() => {}, 100);
+  return { handlers: {} };
+};
+`);
+    const { hostApi } = hostApiFor();
+    const factory = plainSessionFactory({
+      manifest: { ...MANIFEST, tools: [] }, entryPath,
+      childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+    });
+    await factory({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const child = [...spawnedChildren][0]!;
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    // Drop the host's protocol input without the normal stop hook or any signal.
+    child.stdin!.end();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        exited,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("child survived host pipe loss")),
+            TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2 + 1_000);
+        }),
+      ]);
+      expect(result).toEqual({ code: 0, signal: null });
+    } finally {
+      clearTimeout(timer);
+    }
   }, 180_000);
 
 });

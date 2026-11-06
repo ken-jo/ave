@@ -87,25 +87,18 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   startAudioCapture: "write",
   // A WRITE: it puts pixels on top of every other application on the machine. Nothing is read and nothing is stored, but "did something the user can see and did not initiate" is the boundary the effect gate exists for, and treating it as a read would take an always-on-top surface outside it.
   attachFloatingPanel: "write",
-
   triggerConversation: "write",
-
   // An alert is a write: it puts a card or notification in front of the user.
   raiseAlert: "write",
-
   // Structural-completeness vocabulary — writes (egress / persist / session).
   callLlm: "write",
   openAuthPartitionViewer: "write",
-
   // Structural-completeness vocabulary — reads (pure reads / self-subscriptions / host telemetry). A subscription registers the plugin to observe and is auto-disposed on plugin disable, so it does not flip a tool to mutating.
   "config.onChange": "read",
   onEvent: "read",
-
   hasRoutineBySource: "read",
-
   probePrivateHost: "read",
   resolveApiKey: "read",
-
   // FAIL-CLOSED — an unmapped hostApi method is conservatively MUTATING.
   unclassifiedHostApiMethod: "write",
 };
@@ -226,15 +219,12 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   },
   // top-level reads / non-persisting signals
   getSecret: { kind: "getSecret", targetFromArgs: cappedKeyArg },
-
   // Idempotency SOT probe — `source` arg is a non-secret forensic descriptor.
   hasRoutineBySource: { kind: "hasRoutineBySource", targetFromArgs: firstStringArg,
   },
-
   // The declared alert kind is the pivot; the key and slot values are not recorded.
   raiseAlert: { kind: "raiseAlert", async: true, targetFromArgs: objectStringField("kind"),
   },
-
   // Corp-network DNS presence probe — a read (no persistence / no egress body); the bare hostname is a non-secret forensic descriptor.
   probePrivateHost: { kind: "probePrivateHost", targetFromArgs: firstStringArg,
   },
@@ -242,7 +232,6 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
   },
   emitEvent: { kind: "emitEvent", targetFromArgs: firstStringArg },
   onEvent: { kind: "onEvent", targetFromArgs: firstStringArg },
-
   // top-level writes (egress / persist / session) callLlm carries the prompt BODY to an external provider; target stays undefined (the provider is not in args and the prompt is never a target).
   callLlm: { kind: "callLlm", async: true },
   // hostFetch is the ONLY verb-derived chokepoint: its read/write class comes from the HTTP method, a plugin-controlled arg VALUE. `selfRecorded` keeps the generic recorder from re-reading that value (which would diverge from the wire); the hostFetch host closure snapshots the verb ONCE and records the effect + target + pins the wire from that single read (plugin-runtime.ts). It is async but `selfRecorded`, so enforcement gates it INLINE in that same closure (an enforcement exclusion for the generic wrapper).
@@ -283,7 +272,6 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
     async: true,
     targetFromArgs: objectStringField("extensionId"),
   },
-
   triggerConversation: { kind: "triggerConversation", async: true, targetFromArgs: objectStringField("source"),
   },
 

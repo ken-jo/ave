@@ -28,7 +28,7 @@ import { enforceMutatingEffects, gateMutatingEffect, snapshotEffectArguments, as
 import { isRemoteControllerBoundToSession } from "../../../shared/chat-origin.js";
 import { recordEffect } from "../../../permissions/effect-ledger.js";
 import { methodEffect } from "../../../permissions/effect-kind.js";
-import type { PluginAccessSpec, PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import type { PluginHostApiIncarnation } from "../../../plugins/runtime/index.js";
 import {
   createPluginStorage,
@@ -249,7 +249,6 @@ export function createHostApiFactory(
   candidateRegistryEntry?: Readonly<
     PluginRegistryTrust
   >,
-  candidateApprovedPluginAccess?: PluginAccessSpec | null,
 ) => PluginHostApi {
   const {
     getPluginRuntime,
@@ -298,7 +297,6 @@ export function createHostApiFactory(
     candidateRegistryEntry?: Readonly<
       PluginRegistryTrust
     >,
-    candidateApprovedPluginAccess?: PluginAccessSpec | null,
   ): PluginHostApi => {
     // Resolve the runtime once per plugin incarnation, after assignment.
     const pluginRuntime = getPluginRuntime();
@@ -580,7 +578,7 @@ export function createHostApiFactory(
         emitPluginUiEvent(pluginId, type, data);
       },
       onEvent: (type, handler) => {
-        pluginRuntime.assertPluginEventAccess(pluginId, type, candidateApprovedPluginAccess);
+        pluginRuntime.assertPluginEventAccess(pluginId, type);
         const dispatch = (data: unknown) => {
           if (acceptsHostNotification()) handler(data);
         };
