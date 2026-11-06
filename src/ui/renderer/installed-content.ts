@@ -9,7 +9,7 @@ import {
 } from "../../shared/installed-content.js";
 import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 
-const EMPTY: InstalledContentView = Object.freeze({ languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
+const EMPTY: InstalledContentView = Object.freeze({ fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
 const FONT_STYLE_ID = "ave-installed-fonts";
 
 let current: InstalledContentView = EMPTY;
@@ -47,9 +47,9 @@ function applyFonts(fonts: readonly InstalledFontView[]): void {
 }
 
 /** Apply `view` to the font registry and tell subscribers. */
-export function applyInstalledContent(view: InstalledContentView, _api: InstalledContentApi): void {
+export function applyInstalledContent(view: InstalledContentView): void {
   applyFonts(view.fonts);
-  current = { ...view, languages: [] };
+  current = view;
   for (const listener of listeners) listener();
 }
 
@@ -63,7 +63,7 @@ export function ensureInstalledContent(
   if (!bridge) return Promise.resolve();
   const read = () =>
     bridge.installed().then((result) => {
-      if (result.ok) applyInstalledContent(result.content, bridge);
+      if (result.ok) applyInstalledContent(result.content);
     });
   pending = read();
   // A package installed or removed in the marketplace changes what this window lists.

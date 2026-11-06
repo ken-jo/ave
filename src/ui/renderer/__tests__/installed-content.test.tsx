@@ -4,20 +4,18 @@ import { act, cleanup, configure, render, waitFor } from "@testing-library/react
 import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { AppearanceTab } from "../tabs/AppearanceTab.js";
-import { applyInstalledContent, ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
+import { ensureInstalledContent, fontFaceCss, resetInstalledContentForTests } from "../installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
-import { isLocale, loadLocaleMessages, localeInfo, normalizeLocale, setLocale, translate } from "../../../i18n/index.js";
+import { isLocale, setLocale } from "../../../i18n/index.js";
 import type { InstalledContentApi, InstalledContentView } from "../../../shared/installed-content.js";
 
 configure({ asyncUtilTimeout: 5000 });
 
-const view = (patch: Partial<InstalledContentView> = {}): InstalledContentView => ({ languages: [], fonts: [], routineTemplates: [], broken: [], ...patch });
+const view = (patch: Partial<InstalledContentView> = {}): InstalledContentView => ({ fonts: [], routineTemplates: [], broken: [], ...patch });
 
-function bridge(content: InstalledContentView, messages: Record<string, Record<string, string>> = {}): InstalledContentApi {
+function bridge(content: InstalledContentView): InstalledContentApi {
   return {
     installed: vi.fn(async () => ({ ok: true as const, content })),
-    languageMessages: vi.fn(async (locale: string) =>
-      messages[locale] ? { ok: true as const, messages: messages[locale]! } : { ok: false as const, error: "language-not-installed" }),
   };
 }
 
@@ -36,41 +34,15 @@ afterEach(() => {
   delete (window as unknown as Record<string, unknown>).aveApi;
 });
 
-describe("installed languages", () => {
-  it("ignores legacy language views without loading their messages", async () => {
-    const api = bridge(view({
-      languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
-    }), { fr: { "appearanceTab.pageTitle": "Apparence" } });
-    await ensureInstalledContent({ installedContent: api });
-    expect(isLocale("fr")).toBe(false);
-    expect(localeInfo("fr")).toBeUndefined();
-    // @ts-expect-error Legacy package metadata cannot supply an internal locale.
-    await expect(loadLocaleMessages("fr")).rejects.toThrow("no catalog for locale fr");
-    expect(api.languageMessages).not.toHaveBeenCalled();
-    expect(translate(normalizeLocale("fr"), "appearanceTab.pageTitle")).toBe(translate("en", "appearanceTab.pageTitle"));
-    expect(translate(normalizeLocale("fr"), "appearanceTab.schemeTitle")).toBe(translate("en", "appearanceTab.schemeTitle"));
-  });
-
-  it("forgets a locale whose package is gone", async () => {
-    const api = bridge(view({
-      languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
-    }));
-    applyInstalledContent(view({ languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }] }), api);
-    applyInstalledContent(view(), api);
-    expect(isLocale("fr")).toBe(false);
-  });
-});
-
 describe("marketplace changes", () => {
   it("reads the installed content again when the marketplace catalog changes", async () => {
-    const french = { name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" };
     const api = bridge(view());
     let changed: () => void = () => undefined;
     const off = vi.fn();
     await ensureInstalledContent({ installedContent: api, gitMarketplace: { onCatalogChanged: (listener) => ((changed = listener), off) } });
     expect(isLocale("fr")).toBe(false);
 
-    vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ languages: [french] }) });
+    vi.mocked(api.installed).mockResolvedValue({ ok: true, content: view({ broken: [{ kind: "skill", name: "review", problem: "changed bytes" }] }) });
     changed();
     await waitFor(() => expect(api.installed).toHaveBeenCalledTimes(2));
     expect(isLocale("fr")).toBe(false);
@@ -118,10 +90,9 @@ describe("installed fonts", () => {
 });
 
 describe("appearance pickers list installed items", () => {
-  it("ignores installed languages while preserving installed fonts", async () => {
+  it("lists installed fonts alongside compiled language options", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE } } });
     api.installedContent = bridge(view({
-      languages: [{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [], sourceId: "acme", version: "1.0.0" }],
       fonts: [{ name: "harbor-sans", family: "Harbor Sans", stack: "\"ave-font-harbor-sans\", system-ui", faces: [], sourceId: "acme", version: "1.0.0" }],
     })) as never;
     (window as unknown as { aveApi: unknown }).aveApi = api;

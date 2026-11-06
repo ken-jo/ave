@@ -4,15 +4,6 @@ import type { SourceOrigin } from "../../sources/registry.js";
 import { isDataContentKind, parseContent, type ContentFile, type DataContentKind } from "../kinds.js";
 
 const json = (path: string, value: unknown): ContentFile => ({ path, data: Buffer.from(JSON.stringify(value)) });
-const ENGLISH = {
-  "app.title": "Ave",
-  "app.quit": "Quit",
-  "chat.send": "Send",
-  "approval.write": "Allow writing {path}?",
-  be_system_intro: "You are Ave.",
-  "shellExecution.defaultRoute": "Commands run through the host shell.",
-  "routinePanel.naturalRoutinePrompt": "Schedule this routine: {input}",
-};
 
 function parse(
   kind: DataContentKind,
@@ -20,9 +11,8 @@ function parse(
   name = "sample",
   payload: Record<string, unknown> | null = {},
   sourceOrigin: SourceOrigin = "custom",
-  unknownMessageKeys: "refuse" | "ignore" = "refuse",
 ) {
-  return parseContent(kind, files, { name, payload, english: ENGLISH, sourceOrigin, unknownMessageKeys });
+  return parseContent(kind, files, { name, payload, sourceOrigin });
 }
 
 const WOFF2 = Buffer.concat([Buffer.from("wOF2"), Buffer.alloc(60)]);

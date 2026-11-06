@@ -13,9 +13,9 @@ import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
 const FRENCH = { sourceId: "ave", version: "1.0.0", name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
-function install(content: Partial<InstalledContentView>) {
+function install(content: Partial<InstalledContentView> & { languages?: typeof FRENCH[] }) {
   const view = { languages: [], fonts: [], routineTemplates: [], broken: [], ...content } as InstalledContentView;
-  applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
+  applyInstalledContent(view);
 }
 
 beforeEach(() => {
@@ -61,18 +61,23 @@ describe("Appearance settings", () => {
     expect(queryByTestId("language-option-fr")).toBeNull();
     expect(queryByTestId("appearance-tab:language-marketplace-badge:fr")).toBeNull();
   });
+
   it("keeps compiled locale options after legacy content is reapplied", () => {
     const { getByTestId, queryByTestId } = renderAppearance();
     act(() => install({ languages: [FRENCH] }));
     expect(queryByTestId("language-option-fr")).toBeNull();
     expect(getByTestId("language-option-ko")).toBeTruthy();
   });
+
   it("does not offer a marketplace language entry point", () => {
     const { queryByTestId, container } = renderAppearance();
     expect(queryByTestId("appearance-tab:marketplace-languages")).toBeNull();
-    expect(container.querySelectorAll('[data-testid^="language-option-"]')).toHaveLength(2);
+    expect(Array.from(container.querySelectorAll('[data-testid^="language-option-"]')).map((radio) => radio.getAttribute("data-testid"))).toEqual(["language-option-en", "language-option-ko"]);
+    expect(container.querySelector('[data-testid="language-option-en"]')).toHaveAttribute("role", "radio");
+    expect(container.querySelector('[data-testid="language-option-ko"]')).toHaveAttribute("role", "radio");
     expect(container.querySelector('[data-testid^="appearance-tab:language-marketplace-badge:"]')).toBeNull();
   });
+
   it("offers Korean without an installed language package", () => {
     const originalLocale = getLocale();
     setLocale("en");
@@ -87,7 +92,6 @@ describe("Appearance settings", () => {
     }
   });
 });
-
 
 it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
   const { getByRole, getByTestId, container } = renderAppearance();

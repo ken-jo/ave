@@ -72,7 +72,6 @@ export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedCont
 
 export interface StageOptions {
   workRoot: string;
-  english: Readonly<Record<string, string>>;
 }
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
@@ -111,9 +110,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       version: descriptor.version,
       minAppVersion: descriptor.minAppVersion,
       payload: descriptor.payload,
-      english: options.english,
       sourceOrigin: dataPlan.sourceOrigin,
-      unknownMessageKeys: "ignore",
     });
     return { plan: dataPlan, files, contentSha256: digestOf(files), content, minAppVersion: descriptor.minAppVersion, hostProtocol: descriptor.hostProtocol ?? null };
   } finally {
@@ -133,7 +130,6 @@ export interface ContentActivation {
 
 export interface ContentStoreOptions {
   root: string;
-  english: Readonly<Record<string, string>>;
   activation: ContentActivation;
   now?: () => Date;
 }
@@ -315,6 +311,7 @@ export class ContentStore {
         throw error;
       });
       for (const kind of await entries(this.options.root)) {
+        // Preserve legacy language payloads, including directories no ledger entry names.
         if (kind.name === "language") continue;
         if (!kind.isDirectory() || !(CONTENT_KINDS as readonly string[]).includes(kind.name)) continue;
         for (const name of await entries(join(this.options.root, kind.name))) {
@@ -412,6 +409,7 @@ export class ContentStore {
       const loaded: LoadedContent[] = [];
       const broken: BrokenContent[] = [];
       for (const entry of this.ledger.list()) {
+        if (entry.kind === "language") continue;
         const result = await this.loadOne(entry);
         if ("content" in result) loaded.push(result);
         else broken.push(result);
@@ -432,9 +430,7 @@ export class ContentStore {
         name: entry.name,
         version: entry.version,
         payload: null,
-        english: this.options.english,
         sourceOrigin: entry.origin.sourceOrigin === null ? "direct" : entry.origin.sourceOrigin,
-        unknownMessageKeys: "ignore",
       });
       return { entry, content, dir };
     } catch (error) {

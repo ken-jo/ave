@@ -41,13 +41,10 @@ describe("InstalledContentService", () => {
       loaded("provider", "harbor-llm", { kind: "provider", preset: { providerId: "harbor-llm", label: "H", baseUrl: "https://h.example/v1", defaultModel: "m", modelOptions: ["m"], requiresApiKey: true } }),
     ], [{ entry: entry("font", "tampered"), problem: "the installed files changed after install" }]);
     const view = await svc.reload();
-    expect(view.languages).toEqual([]);
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans", faces: [{ url: `ave-content://${TOKEN}/font/harbor-sans/files/Harbor%20Sans.woff2`, format: "woff2" }] });
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans" });
     expect(view.fonts[0]!.stack.startsWith('"ave-font-harbor-sans", ')).toBe(true);
     expect(view.broken).toEqual([{ kind: "font", name: "tampered", problem: "the installed files changed after install" }]);
-    expect(() => svc.languageMessages("fr")).toThrow("no installed language provides fr");
-    expect(() => svc.languageMessages("de")).toThrow("no installed language provides de");
     expect(svc.servedFile("font", "harbor-sans", "files/Harbor Sans.woff2")).toEqual({ path: join("/pkgs/font/harbor-sans/1.0.0", "files/Harbor Sans.woff2"), contentType: "font/woff2" });
     expect(svc.servedFile("theme", "harbor", "theme.json")).toBeNull();
     expect(svc.servedFile("font", "harbor-sans", "LICENSE")).toBeNull();
@@ -56,7 +53,6 @@ describe("InstalledContentService", () => {
   it("applies the first package that claims a font family and lists the second as broken", async () => {
     const font = (name: string): LoadedContent => loaded("font", name, { kind: "font", family: "Harbor Sans", faces: [] });
     const view = await service([font("harbor-sans"), font("harbor-sans-2")]).reload();
-    expect(view.languages).toEqual([]);
     expect(view.fonts.map((f) => f.name)).toEqual(["harbor-sans"]);
     expect(view.broken).toEqual([
       { kind: "font", name: "harbor-sans-2", problem: "harbor-sans already provides the Harbor Sans family" },
@@ -72,9 +68,7 @@ describe("InstalledContentService", () => {
     });
     const view = await svc.reload();
     expect(asked).toEqual(["skill:pdf-tools@1.0.0"]);
-    expect(view.languages).toEqual([]);
     expect(view.broken).toEqual([{ kind: "skill", name: "pdf-tools", problem: "revoked by acme: leaks prompts" }]);
-    expect(() => svc.languageMessages("fr")).toThrow("no installed language provides fr");
     expect(svc.installedInstructions()).toEqual([]);
   });
 });

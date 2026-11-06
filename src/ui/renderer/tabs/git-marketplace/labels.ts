@@ -34,7 +34,7 @@ export function kindLabel(t: Translate, kind: PackageKind): string {
     case "skill": return t("gitMarketplace.kind.skill");
     case "agent": return t("gitMarketplace.kind.agent");
     case "font": return t("gitMarketplace.kind.font");
-    case "language": return kind;
+    case "language": return t("gitMarketplace.kind.language");
     case "provider": return t("gitMarketplace.kind.provider");
     case "messaging-connection": return t("gitMarketplace.kind.messaging");
   }

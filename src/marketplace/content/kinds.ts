@@ -73,12 +73,8 @@ export interface ContentContext {
   version?: string;
   minAppVersion?: string;
   payload: Record<string, unknown> | null;
-  /** Translations retain the English key placeholders. */
-  english: Readonly<Record<string, string>>;
   /** The source the package came from; some content is reserved for official and managed sources. */
   sourceOrigin: SourceOrigin;
-  /** Author checks reject unknown or model-facing keys; installed languages ignore them across catalog changes. */
-  unknownMessageKeys: "refuse" | "ignore";
 }
 
 class ContentFailure extends MarketplaceError {

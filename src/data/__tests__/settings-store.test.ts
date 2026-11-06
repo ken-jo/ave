@@ -2743,12 +2743,14 @@ describe("SettingsService appearance", () => {
   it("starts with independent light and dark scheme selections", () => {
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
+
   it("persists mode, scheme and partial terminal font changes across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ appearance: { mode: "light", lightScheme: "one-light", terminalFont: { size: 16 } } });
     await service.patch({ appearance: { terminalFont: { lineHeight: 1.5 } } });
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance")).toMatchObject({ mode: "light", lightScheme: "one-light", terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, size: 16, lineHeight: 1.5 } });
   });
+
   it("persists a valid glass tint across restart and keeps it over an invalid patch", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ appearance: { glassTint: 60 } });
@@ -2756,11 +2758,13 @@ describe("SettingsService appearance", () => {
     expect(service.get("appearance").glassTint).toBe(60);
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").glassTint).toBe(60);
   });
+
   it("rejects unknown fields and invalid scheme, mode and terminal font patches", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await expect(service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never)).rejects.toThrow("Invalid terminal font family");
     expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
+
   it("replaces a released package selection once while preserving language and font", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { schemaVersion: 2, bundleId: "package-theme", followSystem: true, language: "ko", font: { family: "Menlo", sizeScale: 1 } } }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -2808,24 +2812,25 @@ describe("SettingsService system locale detection", () => {
     expect(service.get("appearance").language).toBe("en");
   });
 
-  it("falls back for a saved installed-only language and logs only its replacement count once", () => {
+  it("falls back for a saved installed-only language and logs only the replacement locale once", () => {
     const savedLanguage = "fr-CA";
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, language: savedLanguage } }), "utf-8");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       expect(service.get("appearance").language).toBe("en");
-      expect(warn.mock.calls.filter(([message]) => String(message).includes("appearance.language replaced"))).toEqual([
-        ["[settings] appearance.language replaced %d saved locale values", 1],
+      expect(warn.mock.calls.filter(([message]) => String(message).includes("replaced an unsupported saved locale"))).toEqual([
+        ["[settings] replaced an unsupported saved locale with %s", "en"],
       ]);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(savedLanguage);
       warn.mockClear();
       expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").language).toBe("en");
-      expect(warn.mock.calls.filter(([message]) => String(message).includes("appearance.language replaced"))).toEqual([]);
+      expect(warn.mock.calls.filter(([message]) => String(message).includes("replaced an unsupported saved locale"))).toEqual([]);
     } finally {
       warn.mockRestore();
     }
   });
+
   it("existing settings file with explicit language is not overridden by systemLocale", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),

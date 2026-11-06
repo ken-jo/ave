@@ -66,7 +66,7 @@ describe("installed content mutation admission", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "ave-mutation-admission-"));
     vi.clearAllMocks();
-    store = await ContentStore.open({ root: join(root, "packages"), english: {}, activation });
+    store = await ContentStore.open({ root: join(root, "packages"), activation });
   });
   afterEach(async () => {
     setAppRelaunchRequested(false);

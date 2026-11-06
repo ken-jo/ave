@@ -1,5 +1,4 @@
 /** Repository checks reuse install validators so publication and runtime acceptance agree. */
-import { messages } from "../i18n/messages/index.js";
 import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type CatalogExclusion, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
 import { parseStrictJson } from "./catalog/strict-json.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
@@ -193,6 +192,7 @@ function checkMcp(tree: RepositoryTree, entry: IndexPackage, descriptor: Package
 
 function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: PackageDescriptor, options: RepositoryCheckOptions): void {
   const kind = descriptor.kind;
+  if (kind === "language") throw new Error("Language packages are retired");
   if (!isContentKind(kind)) return;
   const files = packageFiles(tree, entry.path);
   checkContentFiles(kind, files);
@@ -202,9 +202,7 @@ function checkContent(tree: RepositoryTree, entry: IndexPackage, descriptor: Pac
     version: descriptor.version,
     minAppVersion: descriptor.minAppVersion,
     payload: descriptor.payload,
-    english: messages.en,
     sourceOrigin: options.official ? "official" : "custom",
-    unknownMessageKeys: "refuse",
   });
 }
 

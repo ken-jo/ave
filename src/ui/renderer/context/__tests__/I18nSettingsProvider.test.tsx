@@ -171,57 +171,23 @@ describe("I18nSettingsProvider lazy locale loading", () => {
   });
 });
 
-/** A host API whose installed content carries a Korean language package laid over the compiled catalog. */
-function installApiWithKoreanPack(packTitle: string) {
-  const { api } = installApi("ko");
-  let pack = packTitle;
-  const catalogChanged: Array<() => void> = [];
-  const view = () => ({
-    themes: [], fonts: [], routineTemplates: [], broken: [],
-    languages: [{ locale: "ko", nativeName: "한국어", englishName: "Korean" }],
-  });
-  const withContent = Object.assign(api, {
-    installedContent: {
-      installed: vi.fn(async () => ({ ok: true, content: view() })),
-      languageMessages: vi.fn(async () => ({ ok: true, messages: { "settings.appearance.language.title": pack } })),
-    },
-    gitMarketplace: { onCatalogChanged: vi.fn((handler: () => void) => { catalogChanged.push(handler); return () => undefined; }) },
-  });
-  return {
-    api: withContent,
-    /** Replace the package (a marketplace update) and tell the window its catalog changed. */
-    updatePack(next: string) {
-      pack = next;
-      for (const handler of catalogChanged) handler();
-    },
-  };
-}
-
-describe("I18nSettingsProvider installed language package over a compiled locale", () => {
-  it("keeps compiled strings when legacy content is returned", async () => {
-    __resetLazyLocaleMessagesForTest();
-    const { api } = installApiWithKoreanPack("언어(패키지)");
-
-    const initialLocale = await resolveBootLocale(api as never);
-    render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
+describe("I18nSettingsProvider independent hydration", () => {
+  it("applies saved Korean without waiting for installed content", async () => {
+    const { api } = installApi("ko");
+    const installed = vi.fn(() => new Promise<never>(() => {}));
+    Object.assign(api, { installedContent: { installed } });
+    renderLocaleProbe();
+    await waitFor(() => expect(screen.getByTestId("active-locale")).toHaveTextContent("ko"));
     expect(screen.getByTestId("language-title")).toHaveTextContent("언어");
-
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
-    expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
+    expect(installed).not.toHaveBeenCalled();
   });
 
-  it("ignores updated legacy language messages", async () => {
-    __resetLazyLocaleMessagesForTest();
-    const { api, updatePack } = installApiWithKoreanPack("언어(패키지)");
-    const initialLocale = await resolveBootLocale(api as never);
-    render(<I18nSettingsProvider initialLocale={initialLocale}><LocaleProbe /></I18nSettingsProvider>);
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
-
-    updatePack("언어(새 패키지)");
-
-    await waitFor(() => expect(screen.getByTestId("language-title")).toHaveTextContent("언어"));
-    expect(api.installedContent.languageMessages).not.toHaveBeenCalled();
-    expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
+  it("normalizes a legacy saved French selection through boot and hydration", async () => {
+    const { api } = installApi("fr" as never);
+    await expect(resolveBootLocale(api as never)).resolves.toBe("en");
+    render(<I18nSettingsProvider initialLocale="ko"><LocaleProbe /></I18nSettingsProvider>);
+    await waitFor(() => expect(screen.getByTestId("active-locale")).toHaveTextContent("en"));
+    expect(screen.getByTestId("language-title")).toHaveTextContent("Language");
   });
 });
 

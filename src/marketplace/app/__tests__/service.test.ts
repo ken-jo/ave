@@ -106,7 +106,6 @@ describe("MarketplaceService", () => {
   let afterSourceSynced: ((sourceId: string) => void) | null;
 
   let legacyActivations: LegacyActivations;
-  let released: Array<{ locales: string[] }>;
   let contentReports: LegacyContentReport[];
   let adopting: boolean[];
   let feeds: RevocationFeed[];
@@ -152,8 +151,7 @@ describe("MarketplaceService", () => {
     catalogChanged = 0;
     afterCatalogChanged = null;
     afterSourceSynced = null;
-    legacyActivations = { locales: [], providers: [] };
-    released = [];
+    legacyActivations = { providers: [] };
     contentReports = [];
     adopting = [];
     feeds = [];
@@ -216,7 +214,6 @@ describe("MarketplaceService", () => {
     });
     store = await ContentStore.open({
       root: join(root, "packages"),
-      english: {},
       activation: {
         activate: async (_content, _entry, _previous, adopt) => {
           await takeHold("activate");
@@ -300,7 +297,6 @@ describe("MarketplaceService", () => {
       ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_ARTIFACT_CACHE },
       mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
       folders: { ...nodeFolders(), home: root },
-      english: {},
       onCatalogChanged: () => {
         emitted.catalogChanged += 1;
         events.onCatalogChanged();
@@ -331,7 +327,6 @@ describe("MarketplaceService", () => {
           const report = await migrateLegacyContent({
             ...ports,
             activations: legacyActivations,
-            release: async (provided) => void released.push(provided),
             log: { warn: () => {} },
           });
           contentReports.push(report);
@@ -716,7 +711,7 @@ describe("MarketplaceService", () => {
   });
 
 
-  it("preserves inert language receipts and payloads during source revocation", async () => {
+  it.each(["disable", "uninstall"])("preserves inert language receipts and payloads during source %s revocation", async (action) => {
     service.close();
     const ledgerPath = join(root, "packages", "ledger.json");
     const ledger = await ContentLedger.open(ledgerPath);
@@ -731,14 +726,14 @@ describe("MarketplaceService", () => {
     await build();
     const source = market("1.0.0", "acme-tools", { language: true });
     source.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations: [
-      { kind: "language", name: "korean", versions: "*", reason: "Retired", at: AT.toISOString(), action: "uninstall" },
+      { kind: "language", name: "korean", versions: "*", reason: "Retired", at: AT.toISOString(), action },
     ] }) }, "retire language fixture");
     await addMarket(source.url);
     await service.enforceRevocations();
     expect(readFileSync(ledgerPath, "utf8")).toBe(bytes);
     expect(readFileSync(join(payload, "messages.json"), "utf8")).toBe("legacy bytes");
-    expect((await service.catalog({})).entries.map(entry => entry.key.kind)).not.toContain("language");
-    expect((await service.catalog({ installedOnly: true })).entries.map(entry => entry.key.kind)).toContain("language");
+    expect((await service.catalog({})).entries.map((entry) => entry.key.kind)).not.toContain("language");
+    expect((await service.catalog({ installedOnly: true })).entries.map((entry) => entry.key.kind)).toContain("language");
   });
 
   it("refuses language install plans before source resolution", async () => {
@@ -752,7 +747,7 @@ describe("MarketplaceService", () => {
     service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
-    legacyActivations = { locales: ["ko", "retired"], providers: [] };
+    legacyActivations = { providers: [] };
 
     const before = await service.applyBootInstalls([], applied);
     expect(contentReports).toEqual([]);
@@ -763,7 +758,6 @@ describe("MarketplaceService", () => {
     expect(contentReports).toEqual([{ adopted: [], failed: [] }]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual([]);
     expect(adopting).toEqual([]);
-    expect(released).toEqual([]);
     expect(first.notice).toBeNull();
 
     await service.applyBootInstalls([], applied);

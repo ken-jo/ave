@@ -707,7 +707,7 @@ export interface MarketplaceSettings {
   installedProviderIds: MarketplaceEligibleLLMVendor[];
   /** User-installed OpenAI-compatible provider presets from Marketplace. */
   installedProviderPresets: MarketplaceInstalledProviderPreset[];
-  /** Language packs the server marketplace turned on. Legacy: the migration installs the language package for each locale. */
+  /** Inert legacy language activation data, retained for settings compatibility. */
   installedLanguagePacks: Locale[];
   /** Messaging connections the owner installed, as the catalog declared them. Declarations only; the
    * credentials each one names are held by the connection itself in the encrypted secret store, never here. */
@@ -1674,7 +1674,7 @@ export class SettingsService {
 
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
       if (typeof onDisk?.language === "string" && onDisk.language !== appearance.language) {
-        log.warn("appearance.language replaced %d saved locale values", 1);
+        log.warn("replaced an unsupported saved locale with %s", DEFAULT_LOCALE);
       }
       needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 

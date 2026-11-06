@@ -6,7 +6,6 @@ import { OFFICIAL_MARKETPLACE } from "../sources/official.js";
 import type { PackageKey } from "../sources/policy.js";
 
 export interface LegacyActivations {
-  locales: readonly string[];
   providers: readonly string[];
 }
 
@@ -17,7 +16,6 @@ export interface LegacyContentInput {
   listed(kind: LegacyContentKind, name: string): boolean;
   installed(kind: LegacyContentKind, name: string): Promise<boolean>;
   adopt(kind: LegacyContentKind, name: string): Promise<void>;
-  release(provided: { locales: string[] }): Promise<void>;
   log: { warn(message: string): void };
 }
 

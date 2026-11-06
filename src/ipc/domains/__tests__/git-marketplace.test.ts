@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS, isPublicChannel } from "../../../contract/app-contract.js";
 import { MARKETPLACE_ERROR_DETAIL_FIELDS, MarketplaceError } from "../../../marketplace/errors.js";
 import { NetworkGate } from "../../../marketplace/net/network-gate.js";
@@ -167,6 +167,11 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
 }
 
 const setupHomes: string[] = [];
+
+// Registration imports the shutdown module lazily; load the mock first so every registration's hook reaches it.
+beforeAll(async () => {
+  await import("../../../main/app-shutdown.js");
+});
 
 beforeEach(() => {
   handlers.clear();

@@ -193,7 +193,7 @@ interface InstalledBaseline {
 }
 
 /** These kinds expose their full consent fingerprint in the catalog, so review needs no staging. */
-const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "font", "language"]);
+const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "font"]);
 
 export interface UpdateCandidate extends PackageUpdateOffer {
   facts: UpdateFacts;
@@ -287,7 +287,6 @@ export interface MarketplaceServiceOptions {
   mcpLimits: LadderDeps["limits"];
   /** All folder reads use the supplied filesystem, platform, home and package ceilings. */
   folders: { fs: FolderFs; platform: NodeJS.Platform; home: string; limits: ExportLimits };
-  english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
   /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
   onCatalogChanged?: () => void;
@@ -308,7 +307,7 @@ export interface MarketplaceServiceOptions {
 }
 
 /** Gated kinds remain installed but unloaded on disable; config-based kinds must be removed. */
-const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "font", "language"]);
+const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "font"]);
 
 const PREVIEW_ID_PREFIX = "preview-";
 
@@ -1703,7 +1702,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   private async stageContent(planId: string, held: HeldPlan & { kind: "content" }, report: boolean): Promise<StagedContent> {
     const { plan } = held;
     if (report) this.progress(planId, "downloading");
-    const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english });
+    const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot });
     return held.folder ? stage(held.folder.access) : this.repositoryAccess(plan.sourceId, stage);
   }
 

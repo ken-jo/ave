@@ -38,7 +38,7 @@ export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
 }
 
 export class InstalledContentService {
-  private view: InstalledContentView = { languages: [], fonts: [], routineTemplates: [], broken: [] };
+  private view: InstalledContentView = { fonts: [], routineTemplates: [], broken: [] };
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
   private agentPlugins: InstalledAgentPlugin[] = [];
@@ -107,7 +107,7 @@ export class InstalledContentService {
         }
       }
     }
-    this.view = { languages: [], fonts, routineTemplates, broken: brokenViews };
+    this.view = { fonts, routineTemplates, broken: brokenViews };
     this.served = served;
     this.instructions = instructions;
     this.agentPlugins = agentPlugins;
@@ -129,10 +129,6 @@ export class InstalledContentService {
 
   installedAgentPluginRuntime(): readonly InstalledAgentPluginRuntime[] {
     return this.agentPluginRuntime;
-  }
-
-  languageMessages(locale: string): Record<string, string> {
-    throw new Error(`no installed language provides ${locale}`);
   }
 
   /** Serves only listed font faces; all other asset paths return null. */

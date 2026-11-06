@@ -45,7 +45,6 @@ import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
-const ENGLISH = { "app.title": "Ave", "chat.send": "Send" };
 
 const instruction = (name: string) => `---\nname: harbor\ndescription: ${name} instructions.\n---\n${name} instructions.\n`;
 
@@ -146,7 +145,7 @@ describe("content package store", () => {
   async function stage(syncer: SourceSyncer, row: CatalogRow, sourceId = "acme") {
     const plan = planPackage(row, candidateVersion(row));
     return syncer.withRepository(sourceId, ({ repo, remote }) =>
-      stageContentPackage(plan, gitAccess(repo, remote, false), { workRoot: join(root, "work"), english: ENGLISH }));
+      stageContentPackage(plan, gitAccess(repo, remote, false), { workRoot: join(root, "work") }));
   }
 
   const harborFiles = () => ({
@@ -154,7 +153,7 @@ describe("content package store", () => {
     "skills/harbor/SKILL.md": instruction("Harbor"),
   });
 
-  const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
+  const openStore = () => ContentStore.open({ root: join(root, "packages"), activation, now: () => new Date(AT) });
   async function openHarborMarket() {
     const fixture = market([{ kind: "skill", name: "harbor", path: "skills/harbor" }], harborFiles());
     const syncer = await open(fixture.name);
@@ -347,7 +346,7 @@ describe("content package store", () => {
 
   it("refuses language staging and forged installs before any writes", async () => {
     const plan = { kind: "language", name: "french" } as PackagePlan;
-    await expect(stageContentPackage(plan, {} as never, { workRoot: join(root, "work"), english: ENGLISH }))
+    await expect(stageContentPackage(plan, {} as never, { workRoot: join(root, "work") }))
       .rejects.toMatchObject({ code: "CONTENT_RULE_VIOLATION", message: "Language packages are no longer supported" });
     expect(existsSync(join(root, "work"))).toBe(false);
     const store = await openStore();
@@ -356,6 +355,7 @@ describe("content package store", () => {
     expect(existsSync(join(root, "packages"))).toBe(false);
     expect(activated).toEqual([]);
   });
+
   it("keeps mixed legacy ledger entries and payloads readable and inert until explicit uninstall", async () => {
     const { syncer, store } = await openHarborMarket();
     await store.install(await stage(syncer, (await rows(syncer))[0]!));
@@ -369,17 +369,18 @@ describe("content package store", () => {
     mkdirSync(payload, { recursive: true });
     writeFileSync(join(payload, "messages.json"), "unparsed legacy bytes");
     const reopened = await openStore();
-    expect(reopened.list().map(entry => entry.kind).sort()).toEqual(["language", "skill"]);
-    expect((await reopened.load()).loaded.map(item => item.entry.kind)).toEqual(["skill"]);
-    expect((await reopened.load()).broken).toMatchObject([{ entry: { kind: "language" }, problem: "language packages are not applied by this build" }]);
+    expect(reopened.list().map((entry) => entry.kind).sort()).toEqual(["language", "skill"]);
+    expect((await reopened.load()).loaded.map((item) => item.entry.kind)).toEqual(["skill"]);
+    expect((await reopened.load()).broken).toEqual([]);
     await reopened.sweep();
     expect(readFileSync(ledgerPath, "utf8")).toBe(bytes);
     expect(readFileSync(join(payload, "messages.json"), "utf8")).toBe("unparsed legacy bytes");
     await reopened.uninstall("language", "french", EMPTY_MARKETPLACE_POLICY);
-    expect(reopened.list().map(entry => entry.kind)).toEqual(["skill"]);
+    expect(reopened.list().map((entry) => entry.kind)).toEqual(["skill"]);
     expect(existsSync(payload)).toBe(false);
     expect(activated.at(-1)).toMatchObject({ op: "deactivate", content: null });
   });
+
   it("refuses the same name from another source unless the install switches source", async () => {
     const files = harborFiles();
     const packages = [{ kind: "skill", name: "harbor", path: "skills/harbor" }];

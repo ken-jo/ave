@@ -30,6 +30,24 @@ async function renderPackageSheet(fake: ReturnType<typeof fakeMarketplace>, card
 }
 
 describe("GitMarketplaceTab browse", () => {
+  it("labels a legacy language receipt and keeps removal available without activation controls", async () => {
+    const legacy = entry("team", "language", "french", { state: { state: "installed", version: "1.0.0" } });
+    const fake = fakeMarketplace({ sources: [team], entries: [legacy] });
+    fake.market.packageDetail.mockResolvedValue({ ok: false, code: "PACKAGE_INCOMPATIBLE", message: "Retired package" });
+    renderTab(fake);
+    fireEvent.click(screen.getByTestId("git-marketplace:installed"));
+    const card = await screen.findByTestId("git-marketplace:card:team:language:french");
+    expect(within(card).getByText("언어")).toBeInTheDocument();
+    fireEvent.click(within(card).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    const uninstall = await within(sheet).findByTestId("git-marketplace:uninstall");
+    expect(within(sheet).queryByRole("switch")).toBeNull();
+    expect(within(sheet).queryByRole("button", { name: /^(Enable|Disable|활성화|비활성화)$/u })).toBeNull();
+    fireEvent.click(uninstall);
+    await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "team", kind: "language", name: "french" }));
+  });
+
+
   it("lists every shown source's packages and filters them by kind", async () => {
     const fake = fakeMarketplace({
       sources: [official, team],

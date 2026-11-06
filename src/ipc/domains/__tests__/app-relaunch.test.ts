@@ -18,6 +18,7 @@ import { folderService, type FolderServiceHarness } from "../../../marketplace/_
 import { nodeFolders, writeFolderFiles } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
 import { descriptorText, jsonText } from "../../../marketplace/__tests__/fixtures/package-files.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ContentLedger } from "../../../marketplace/content/ledger.js";
 import { ContentStore } from "../../../marketplace/content/store.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../../marketplace/sources/policy.js";
 import { SettingsService, settingsFilePath, type AppSettings } from "../../../data/settings-store.js";
@@ -105,21 +106,20 @@ function holdSettingsSave(service: SettingsService) {
   return { started: started.promise, release: () => held.resolve() };
 }
 
-async function languageInstall() {
+async function skillInstall() {
   const root = mkdtempSync(join(tmpdir(), "ave-relaunch-marketplace-"));
   const folder = join(root, "source");
   writeFolderFiles(folder, {
-    "marketplace.json": jsonText({ schemaVersion: 2, name: "languages", displayName: "Languages", packages: [{ kind: "language", name: "french", path: "french" }] }),
-    "french/ave-package.json": descriptorText("language", "french", "1.0.0", { locale: "fr", entry: "language.json", messages: "messages.json" }),
-    "french/language.json": jsonText({ locale: "fr", nativeName: "Français", englishName: "French" }),
-    "french/messages.json": jsonText({}),
+    "marketplace.json": jsonText({ schemaVersion: 2, name: "skills", displayName: "Skills", packages: [{ kind: "skill", name: "review", path: "review" }] }),
+    "review/ave-package.json": descriptorText("skill", "review", "1.0.0", { entry: "SKILL.md" }),
+    "review/SKILL.md": "---\nname: review\ndescription: Review changes\n---\nReview the change.",
   });
   marketplace = await folderService({ root, home: root, folders: nodeFolders() });
   const preview = await marketplace.service.previewSource({ input: folder, auth: "none" });
   if (preview.type === "confirm") throw new Error("Unexpected source confirmation");
   await marketplace.service.addSource({ previewId: preview.previewId });
-  const plan = await marketplace.service.planInstall({ sourceId: "languages", kind: "language", name: "french" });
-  return { harness: marketplace, planId: plan.planId, written: join(root, "language-installed") };
+  const plan = await marketplace.service.planInstall({ sourceId: "skills", kind: "skill", name: "review" });
+  return { harness: marketplace, planId: plan.planId, written: join(root, "skill-installed") };
 }
 
 async function unboundMcpInstall() {
@@ -131,23 +131,32 @@ async function unboundMcpInstall() {
   return { harness: marketplace, planId: preview.planId, written: join(root, "mcp-installed") };
 }
 
-async function installedLanguage() {
-  const { harness, planId } = await languageInstall();
+async function installedPackage(kind: "skill" | "language" = "skill") {
+  const { harness, planId } = await skillInstall();
   await harness.service.executeInstall(planId);
   const deactivate = vi.fn(async () => undefined);
-  const store = await ContentStore.open({ root: join(harness.root, "packages"), english: {}, activation: {
+  let store = await ContentStore.open({ root: join(harness.root, "packages"), activation: {
     activate: async () => ({ retired: Promise.resolve() }), deactivate, approveComponents: async () => undefined,
   } });
   await store.install(harness.content[0]!);
+  if (kind === "language") {
+    const ledger = await ContentLedger.open(join(harness.root, "packages", "ledger.json"));
+    const entry = store.list()[0]!;
+    await ledger.remove("skill", "review");
+    await ledger.put({ ...entry, kind, origin: { ...entry.origin, installId: undefined, payloadDir: undefined, consent: undefined } });
+    store = await ContentStore.open({ root: join(harness.root, "packages"), activation: {
+      activate: async () => ({ retired: Promise.resolve() }), deactivate, approveComponents: async () => undefined,
+    } });
+  }
   harness.installers.content.list = async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name,
     version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit }));
-  harness.installers.content.uninstall = async () => { await store.uninstall("language", "french", EMPTY_MARKETPLACE_POLICY); };
-  return { harness, store, deactivate, key: { sourceId: "languages", kind: "language" as const, name: "french" } };
+  harness.installers.content.uninstall = async () => { await store.uninstall(kind, "review", EMPTY_MARKETPLACE_POLICY); };
+  return { harness, store, deactivate, key: { sourceId: "skills", kind, name: "review" } };
 }
 
-function revokeLanguage(root: string) {
+function revokeSkill(root: string) {
   writeFolderFiles(join(root, "source"), { "policy/revocations.json": jsonText({ schemaVersion: 1, revocations: [
-    { kind: "language", name: "french", versions: "*", reason: "unsafe", at: "2026-10-02T00:00:00Z", action: "uninstall" },
+    { kind: "skill", name: "review", versions: "*", reason: "unsafe", at: "2026-10-02T00:00:00Z", action: "uninstall" },
   ] }) });
 }
 
@@ -240,8 +249,8 @@ describe("app relaunch boundary", () => {
     expect(invoke()).toEqual({ ok: true });
   });
 
-  it("refuses language removal after accepted relaunch without deactivating or changing the ledger", async () => {
-    const { harness, store, deactivate, key } = await installedLanguage();
+  it("refuses skill removal after accepted relaunch without deactivating or changing the ledger", async () => {
+    const { harness, store, deactivate, key } = await installedPackage();
     const before = store.list();
     expect(invoke()).toEqual({ ok: true });
     await expect(harness.service.uninstall(key)).rejects.toMatchObject({ code: "relaunch-in-progress" });
@@ -249,26 +258,35 @@ describe("app relaunch boundary", () => {
     expect(store.list()).toEqual(before);
   });
 
-  it("refuses catalog language revocation after accepted relaunch", async () => {
-    const { harness, store, deactivate } = await installedLanguage();
+  it("refuses legacy language removal after accepted relaunch without deactivating or changing the ledger", async () => {
+    const { harness, store, deactivate, key } = await installedPackage("language");
     const before = store.list();
-    revokeLanguage(harness.root);
     expect(invoke()).toEqual({ ok: true });
-    await harness.service.refresh("languages");
+    await expect(harness.service.uninstall(key)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(deactivate).not.toHaveBeenCalled();
+    expect(store.list()).toEqual(before);
+  });
+
+  it("refuses catalog skill revocation after accepted relaunch", async () => {
+    const { harness, store, deactivate } = await installedPackage();
+    const before = store.list();
+    revokeSkill(harness.root);
+    expect(invoke()).toEqual({ ok: true });
+    await harness.service.refresh("skills");
     expect(deactivate).not.toHaveBeenCalled();
     expect(store.list()).toEqual(before);
     expect(harness.service.takeRevocationNotice()?.revoked).toEqual([expect.objectContaining({ outcome: "failed" })]);
   });
 
-  async function heldLanguageRemoval(revoked: boolean) {
-    const { harness, store, deactivate, key } = await installedLanguage();
+  async function heldContentRemoval(revoked: boolean, kind: "skill" | "language" = "skill") {
+    const { harness, store, deactivate, key } = await installedPackage(kind);
     let entered!: () => void;
     let release!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });
     const held = new Promise<void>((resolve) => { release = resolve; });
     deactivate.mockImplementationOnce(async () => { entered(); await held; });
-    if (revoked) revokeLanguage(harness.root);
-    const pending = revoked ? harness.service.refresh("languages") : harness.service.uninstall(key);
+    if (revoked) revokeSkill(harness.root);
+    const pending = revoked ? harness.service.refresh("skills") : harness.service.uninstall(key);
     await started;
     try {
       expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
@@ -282,16 +300,20 @@ describe("app relaunch boundary", () => {
     expect(invoke()).toEqual({ ok: true });
   }
 
-  it("refuses relaunch while a language uninstall holds deactivation", async () => {
-    await heldLanguageRemoval(false);
+  it("refuses relaunch while a skill uninstall holds deactivation", async () => {
+    await heldContentRemoval(false);
   });
 
-  it("refuses relaunch while catalog language revocation holds deactivation", async () => {
-    await heldLanguageRemoval(true);
+  it("refuses relaunch while catalog skill revocation holds deactivation", async () => {
+    await heldContentRemoval(true);
   });
 
-  it("refuses a language pack without writing after relaunch is accepted", async () => {
-    const { harness, planId, written } = await languageInstall();
+  it("refuses relaunch while a legacy language uninstall holds deactivation", async () => {
+    await heldContentRemoval(false, "language");
+  });
+
+  it("refuses a skill package without writing after relaunch is accepted", async () => {
+    const { harness, planId, written } = await skillInstall();
     const install = vi.spyOn(harness.installers.content, "install").mockImplementation(async () => {
       writeFileSync(written, "installed");
       return { action: { action: "install" } };
@@ -302,8 +324,8 @@ describe("app relaunch boundary", () => {
     expect(existsSync(written)).toBe(false);
   });
 
-  it("refuses relaunch while a language pack install is held mid-flight", async () => {
-    const { harness, planId, written } = await languageInstall();
+  it("refuses relaunch while a skill package install is held mid-flight", async () => {
+    const { harness, planId, written } = await skillInstall();
     let entered!: () => void;
     let release!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });
@@ -328,8 +350,8 @@ describe("app relaunch boundary", () => {
     expect(invoke()).toEqual({ ok: true });
   });
 
-  it("registers a language pack install before yielding to relaunch", async () => {
-    const { harness, planId } = await languageInstall();
+  it("registers a skill package install before yielding to relaunch", async () => {
+    const { harness, planId } = await skillInstall();
     const pending = harness.service.executeInstall(planId);
     try {
       expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });

@@ -25,16 +25,6 @@ interface InstalledFrom {
   version: string;
 }
 
-interface InstalledLanguageView extends InstalledFrom {
-  name: string;
-  /** BCP 47 tag; what `settings.language` holds while the language is selected. */
-  locale: string;
-  nativeName: string;
-  englishName: string;
-  /** English keys the catalog does not translate; they show in English. */
-  missingKeys: string[];
-}
-
 export type FontFormat = "woff2" | "woff" | "truetype" | "opentype";
 
 interface InstalledFontFace {
@@ -62,7 +52,6 @@ export interface BrokenContentView {
 }
 
 export interface InstalledContentView {
-  languages: InstalledLanguageView[];
   fonts: InstalledFontView[];
   routineTemplates: AgentPluginRoutineTemplate[];
   broken: BrokenContentView[];
@@ -82,14 +71,9 @@ export type InstalledContentResult =
   | { ok: true; content: InstalledContentView }
   | { ok: false; error: string; message?: string };
 
-export type LanguageMessagesResult =
-  | { ok: true; messages: Record<string, string> }
-  | { ok: false; error: string; message?: string };
-
 /** `window.aveApi.installedContent` (host renderer only). */
 export interface InstalledContentApi {
   installed(): Promise<InstalledContentResult>;
-  languageMessages(locale: string): Promise<LanguageMessagesResult>;
 }
 
 /** Malformed IPC projections return null. */
@@ -98,16 +82,7 @@ export function parseInstalledContentResult(value: unknown): InstalledContentRes
   if (value.ok === false) return typeof value.error === "string" ? { ok: false, error: value.error } : null;
   const content = value.content;
   if (value.ok !== true || !isRecord(content)) return null;
-  const lists = ["languages", "fonts", "routineTemplates", "broken"] as const;
+  const lists = ["fonts", "routineTemplates", "broken"] as const;
   if (!lists.every((key) => Array.isArray(content[key]))) return null;
   return { ok: true, content: content as unknown as InstalledContentView };
-}
-
-export function parseLanguageMessagesResult(value: unknown): LanguageMessagesResult | null {
-  if (!isRecord(value)) return null;
-  if (value.ok === false) return typeof value.error === "string" ? { ok: false, error: value.error } : null;
-  if (value.ok !== true || !isRecord(value.messages)) return null;
-  const messages = value.messages;
-  if (!Object.values(messages).every((message) => typeof message === "string")) return null;
-  return { ok: true, messages: messages as Record<string, string> };
 }

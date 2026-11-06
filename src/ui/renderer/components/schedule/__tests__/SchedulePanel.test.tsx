@@ -6,7 +6,6 @@ import { ScheduleItemPopover } from "../ScheduleItemPopover.js";
 import type { AveApi } from "../../../types.js";
 import type { RoutineOccurrence, RoutineRecord, RoutineRun } from "../../../../../shared/routines-types.js";
 import { applyInstalledContent, resetInstalledContentForTests } from "../../../installed-content.js";
-import type { InstalledContentApi } from "../../../../../shared/installed-content.js";
 import type { AgentPluginRoutineTemplate } from "../../../../../shared/agent-plugin-routine-template.js";
 
 const NOW = new Date(2026, 10, 4, 11, 20);
@@ -330,18 +329,17 @@ describe("SchedulePanel", () => {
     const template: AgentPluginRoutineTemplate = { id: "daily", packageName: "writer-plugin", version: "1.0.0", title: "Daily draft",
       description: "Write a draft", trigger: "schedule", schedule: { repeat: { kind: "cron", expression: "0 9 * * *" } },
       execution: "llm-session", prePrompt: "Write the full draft" };
-    const contentApi = { languageMessages: vi.fn(), installed: vi.fn() } as unknown as InstalledContentApi;
-    const content = (templates: AgentPluginRoutineTemplate[]) => ({ themes: [], languages: [], fonts: [], routineTemplates: templates, broken: [] });
+    const content = (templates: AgentPluginRoutineTemplate[]) => ({ fonts: [], routineTemplates: templates, broken: [] });
     const api = makeApi({
       routines: [routine({ source: "agent-plugin:writer-plugin:daily" })],
       occurrences: [{ routineId: "build", at: at(5, 9), status: "scheduled" }],
     });
     try {
-      act(() => applyInstalledContent(content([template]), contentApi));
+      act(() => applyInstalledContent(content([template])));
       const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
       fireEvent.click(await view.findByTestId("schedule-chip"));
       expect((await view.findByTestId("schedule-template-note")).textContent).toContain("writer-plugin");
-      act(() => applyInstalledContent(content([]), contentApi));
+      act(() => applyInstalledContent(content([])));
       expect(view.getByTestId("schedule-template-note").textContent).toContain("더 이상 설치");
       view.unmount();
     } finally { resetInstalledContentForTests(); }

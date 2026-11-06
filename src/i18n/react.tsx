@@ -61,7 +61,7 @@ export function I18nProvider({ locale, revision = 0, setLocale, children }: I18n
   // remounting — preserving component state (open chat, scroll position, …).
   setRuntimeLocale(locale);
   // The document language follows the UI (screen readers, hyphenation, and
-  // the font fallback a locale's glyphs take), including installed locales.
+  // the font fallback a locale's glyphs take).
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);

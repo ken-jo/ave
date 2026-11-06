@@ -7,10 +7,8 @@ import {
   tryLoadLocaleMessages,
   type Locale,
 } from "../../../i18n/index.js";
-import { messages, type Messages } from "../../../i18n/messages/index.js";
 import { I18nProvider } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
-import { ensureInstalledContent } from "../installed-content.js";
 import { BootSettingsUnavailableError } from "../model-catalog-bootstrap.js";
 import type { AveApi } from "../types.js";
 
@@ -38,28 +36,18 @@ export async function resolveBootLocale(api: Pick<AveApi, "getSettings">): Promi
 
 export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE }: { children: ReactNode; initialLocale?: Locale }) {
   const api = useMemo(() => tryGetApi(), []);
-  // Re-applying the same locale and compiled catalog preserves the translation callback.
-  const [active, setActive] = useState<{ locale: Locale; revision: number }>({ locale: initialLocale, revision: 0 });
-  const appliedRef = useRef<{ locale: Locale; catalog: Messages | undefined }>({ locale: initialLocale, catalog: messages[initialLocale] });
+  const [locale, setActiveLocale] = useState<Locale>(initialLocale);
   const mountedRef = useRef(true);
   const localeRequestRef = useRef(0);
   useEffect(() => () => { mountedRef.current = false; }, []);
-
-  const commitLocale = useCallback((next: Locale) => {
-    const catalog = messages[next];
-    const applied = appliedRef.current;
-    if (applied.locale === next && applied.catalog === catalog) return;
-    appliedRef.current = { locale: next, catalog };
-    setActive((previous) => ({ locale: next, revision: previous.revision + 1 }));
-  }, []);
 
   const applyLocale = useCallback(async (next: Locale) => {
     const requestId = ++localeRequestRef.current;
     const loaded = await tryLoadLocaleMessages(next);
     if (!mountedRef.current || requestId !== localeRequestRef.current) return;
     if (!loaded) return;
-    commitLocale(next);
-  }, [commitLocale]);
+    setActiveLocale(next);
+  }, []);
 
   // Hydrate from persisted settings on mount.
   useEffect(() => {
@@ -68,8 +56,7 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
     const requestAtStart = localeRequestRef.current;
     void (async () => {
       try {
-        // Hydrate other installed content alongside the saved settings.
-        const [settings] = await Promise.all([api.getSettings(), ensureInstalledContent(api)]);
+        const settings = await api.getSettings();
         if (cancelled || !mountedRef.current) return;
         if (localeRequestRef.current !== requestAtStart) return;
         await applyLocale(normalizeLocale(settings.appearance?.language));
@@ -103,7 +90,7 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
   );
 
   return (
-    <I18nProvider locale={active.locale} revision={active.revision} setLocale={setLocale}>
+    <I18nProvider locale={locale} setLocale={setLocale}>
       {children}
     </I18nProvider>
   );

@@ -6,7 +6,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { Sidebar } from "../Sidebar.js";
 import { CoveredConversationApprovalDock } from "../permissions/ApprovalDock.js";
 import { I18nProvider } from "../../../../i18n/react.js";
-import { normalizeLocale, type Locale } from "../../../../i18n/locale.js";
+import { type Locale } from "../../../../i18n/locale.js";
 import { getLocale, setLocale as setRuntimeLocale } from "../../../../i18n/runtime.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../../shared/suggestions-session.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
@@ -258,16 +258,27 @@ describe("Sidebar plugin view labels follow the UI language", () => {
       expect(await findByRole("menuitem", { name: /미팅/ })).toBeTruthy();
       expect(queryByRole("menuitem", { name: /Meeting/ })).toBeNull();
 
-      // A retired saved selection resolves to the default compiled language.
-      switchLocale(normalizeLocale("fr"));
-      if (!queryByRole("menuitem", { name: /Meeting/ })) fireEvent.click(getByTestId("sidebar-group-plugins"));
-      expect(await findByRole("menuitem", { name: /Meeting/ })).toBeTruthy();
     } finally {
       restore();
       cleanup();
       setRuntimeLocale(suiteLocale);
     }
   });
+
+  it("falls back to the entry text when its label map does not name the active locale", async () => {
+    const suiteLocale = getLocale();
+    const ownText = { ...meeting, extension: { ...meeting.extension, locales: { en: meeting.extension.locales.en } } };
+    const { getByTestId, findByRole, restore } = renderSidebar({ pluginViews: [ownText] }, { locale: "ko" });
+    try {
+      fireEvent.click(getByTestId("sidebar-group-plugins"));
+      expect(await findByRole("menuitem", { name: new RegExp(meeting.extension.displayName) })).toBeTruthy();
+    } finally {
+      restore();
+      cleanup();
+      setRuntimeLocale(suiteLocale);
+    }
+  });
+
 });
 
 /** The 기본 프로젝트's group in the all-projects tree: conversations without an open project live there (case 05). */

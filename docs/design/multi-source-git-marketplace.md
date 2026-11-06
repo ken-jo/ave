@@ -2226,8 +2226,7 @@ otherwise requires explicit approval and locks user-policy editing; see
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
-| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
-| `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
+| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (fonts, routine templates, broken packages; §5.5) |
 | `ave:marketplace:updates:status` | — | `UpdateStatusView` (§13.1) |
 | `ave:marketplace:updates:check` | — | `UpdateStatusView`, when the apply check's discovery and classification end (§7.3) |
 | `ave:marketplace:updates:apply-now` | — | `UpdateStatusView`; the apply queue skips the idle gate (§7.3) |
@@ -2789,7 +2788,7 @@ folder UI and the Updates card (§15.7.1) ship in 0.14.0.
 - Header: search field, **Sources** button, **Add** menu (Add marketplace…,
   Install from Git URL or folder…, Add MCP server…), source filter chips (All sources +
   one per enabled source).
-- Kind tabs: Plugins, MCP, Skills, Agents, Themes, Fonts, Languages,
+- Kind tabs: Plugins, MCP, Skills, Agents, Fonts,
   Providers, Messaging — each with a count.
 - Card: icon, display name, one-line description, **source badge**
   (`Ave Official` with a shield glyph; managed sources with a building glyph
