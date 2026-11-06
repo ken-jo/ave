@@ -112,6 +112,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "agentBrowser.observationDownloadInterrupted": "중단",
   "agentBrowser.observationError": "브라우저 관찰에 실패했습니다. 페이지는 계속 사용할 수 있습니다.",
   "agentBrowser.observationResync": "브라우저 동작이 실시간 보기 한도를 초과했습니다. 다음 동작부터 표시됩니다.",
+  "agentBrowser.focusObservedPane": "브라우저 패널로 이동",
+  "agentBrowser.live": "실시간",
   "agentBrowser.observationPreview": "에이전트 탭 실시간 보기",
   "agentBrowser.observationPreviewUpdating": "업데이트 중…",
   "be_streamCollector.runtimeUnauthenticated": "구독 실행 환경의 배포자를 확인할 수 없습니다. 공식 설치 안내에 따라 서명을 확인하거나 다시 설치한 뒤 다시 확인하세요.",

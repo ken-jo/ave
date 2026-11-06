@@ -3,7 +3,9 @@ import { createServer, type ServerResponse } from "node:http";
 import { writeFileSync } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent, BrowserObservationPreviewMessage } from "../../../src/shared/agent-observation.js";
-import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
+
+test.use({ trace: "on" });
 
 type PreviewCapture = { previewMessages: (BrowserObservationPreviewMessage & { receivedAt: number })[]; observed: AgentObservationEvent[] };
 
@@ -100,6 +102,7 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
       });
     });
     const page = ctx.page;
+    await setWindowSize(ctx.app, 1280, 800);
     const errors: string[] = [];
     page.on("crash", () => errors.push("Main renderer crashed"));
     page.on("pageerror", (error) => errors.push(error.message));
@@ -143,6 +146,60 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     if (click?.source !== "browser" || click.kind !== "action") throw new Error("No agent click observation");
     const binding = { targetId: click.target.id, sessionId: click.sessionId, tabId: click.after.tabId };
     expect(binding.tabId).toBe(tabId);
+    // Move the real side-panel tab to a main pane through the pane's existing drop path.
+    const rendererTabId = click.after.rendererTabId;
+    const chatPane = page.getByTestId("pane-cell:main").getByTestId("pane");
+    await chatPane.evaluate((element, id) => {
+      const rect = element.getBoundingClientRect();
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("application/x-ave-surface", JSON.stringify({ tabId: id, kind: "browser", from: { side: "main" } }));
+      element.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2 }));
+    }, rendererTabId);
+    const guestFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${rendererTabId}"]`);
+    await expect(guestFrame).toHaveCSS("visibility", "visible");
+    const hiddenAt = Date.now();
+    await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
+    const thumbnailRow = page.getByTestId("conversation-browser-observation");
+    const thumbnail = thumbnailRow.getByRole("button");
+    await expect(thumbnail).toBeVisible();
+    await expect(thumbnailRow.getByTestId("browser-observation-slot")).toBeVisible();
+    await expect(guestFrame).toHaveCSS("opacity", "0");
+    await expect(guestFrame).toHaveCSS("pointer-events", "none");
+    await expect(guestFrame).toHaveAttribute("aria-hidden", "true");
+    await expect(guestFrame).toHaveAttribute("inert", "");
+    expect(await guestFrame.evaluate((element) => element.contains(document.activeElement))).toBe(false);
+    expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(1);
+    const decoded: { src: string; ts: number }[] = [];
+    const deadline = Date.now() + 3_200;
+    while (Date.now() < deadline) {
+      const src = await thumbnail.locator("img").evaluateAll((images) => {
+        const image = images[0] as HTMLImageElement | undefined;
+        return image?.complete && image.naturalWidth > 0 ? image.src : "";
+      });
+      if (src && decoded.at(-1)?.src !== src) decoded.push({ src, ts: Date.now() });
+      await page.waitForTimeout(100);
+    }
+    console.log("Hidden conversation thumbnail decoded frames", { count: decoded.length, timestamps: decoded.map((frame) => frame.ts) });
+    expect(new Set(decoded.map((frame) => frame.src)).size).toBeGreaterThanOrEqual(3);
+    const hiddenFrames = (await readCapture()).messages.filter((message) => message.kind === "frame" && message.receivedAt >= hiddenAt);
+    expect(hiddenFrames.length).toBeGreaterThanOrEqual(3);
+    for (const frame of hiddenFrames) expect(frame).toMatchObject(binding);
+    await page.screenshot({ path: test.info().outputPath("conversation-browser-thumbnail.png") });
+    await thumbnail.click();
+    await expect(thumbnailRow).toHaveCount(0);
+    await expect(page.getByTestId("browser-observation-preview")).toHaveCount(0);
+    await expect(guestFrame).toHaveCSS("opacity", "1");
+    // Narrow mode also reveals the original pane via the same focus path.
+    await setWindowSize(ctx.app, 900, 700);
+    await page.getByTestId(`sidebar-session-${click.target.hostSessionId}`).click();
+    await expect(thumbnail).toBeVisible();
+    await thumbnail.click();
+    await expect(thumbnailRow).toHaveCount(0);
+    await setWindowSize(ctx.app, 1280, 800);
+    // Focusing the hidden pane carried the maximize to it; restore the split so the conversation and its approvals show again.
+    await page.locator('[data-testid="pane-maximize"][aria-pressed="true"]:visible').click();
+    await expect(page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]:visible').first()).toBeVisible();
+
     // Another tab handle is refused rather than substituted.
     expect(await page.evaluate((request) => window.ave.preview.requestObservationPreview(request),
       { action: "start" as const, ...binding, tabId: "tab-999", frame: 0 })).toEqual({ ok: false, error: "not-agent-tab" });
@@ -205,6 +262,18 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     expect(await page.evaluate((request) => window.ave.preview.requestObservationPreview(request),
       { action: "start" as const, ...binding, frame: 0 })).toEqual({ ok: false, error: "not-agent-tab" });
 
+    // Paused observation must not keep a hidden guest painting.
+    await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
+    await expect(guestFrame).toHaveCSS("visibility", "hidden");
+    await expect(guestFrame).toHaveCSS("opacity", "1");
+    await expect(guestFrame).not.toHaveAttribute("inert", "");
+    await expect(thumbnailRow).toHaveCount(0);
+    await page.getByTestId(`sidebar-surface-${rendererTabId}`).click();
+    await page.getByTestId("pane").filter({ has: page.getByTestId("agent-browser-control-resume") }).getByTestId("pane-close").click();
+    await expect(guestFrame).toHaveCount(0);
+
+    // Closing the focused pane leaves the maximize on a neighbour; restore the split to see the conversation finish.
+    await page.locator('[data-testid="pane-maximize"][aria-pressed="true"]:visible').click();
     releaseFinish!();
     await expect(page.getByTestId("chat-main-column").getByText("Preview task complete.", { exact: true })).toBeVisible({ timeout: 60_000 });
     approving = false;
@@ -212,7 +281,11 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     // Preview frames never entered the observation stream.
     const observed = (await readCapture()).observed;
     expect(JSON.stringify(observed)).not.toContain("image/jpeg");
-    expect(observed.every((event) => event.source === "browser" && event.actor === "agent")).toBe(true);
+    // Re-showing panes mounts terminal activity views, which publish empty snapshots; nothing else may appear.
+    expect(observed.filter((event) => event.source === "terminal")
+      .every((event) => event.kind === "snapshot" && JSON.stringify(event.after) === '{"commands":[]}')).toBe(true);
+    expect(observed.filter((event) => event.source !== "terminal")
+      .every((event) => event.source === "browser" && event.actor === "agent")).toBe(true);
     expect(errors).toEqual([]);
     expect(await ctx.app.evaluate(() => (globalThis as unknown as { previewCrashes: unknown[] }).previewCrashes)).toEqual([]);
   } finally {
