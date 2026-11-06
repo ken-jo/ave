@@ -960,11 +960,6 @@
     {
       "type": "types",
       "file": "src/ui/renderer/types.ts",
-      "name": "AvePermissionApi"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
       "name": "AvePluginConfigApi"
     },
     {
