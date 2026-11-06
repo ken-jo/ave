@@ -1738,7 +1738,7 @@ export class ApprovalGate {
       });
     }
     if (nativeRenderer && transition?.valid && !transition.saving && transition.from !== transition.to &&
-      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always" || resolvedDecision.choice === "deny-once")) {
+      (resolvedDecision.choice === "allow-once" || resolvedDecision.choice === "allow-session" || resolvedDecision.choice === "allow-always" || resolvedDecision.choice === "deny-once" || resolvedDecision.choice === "deny-always")) {
       this.approvedPolicyTransitions.set(resolvedDecision, { from: transition.from, to: transition.to });
     }
     if (
