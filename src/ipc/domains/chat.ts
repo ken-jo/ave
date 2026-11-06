@@ -426,8 +426,6 @@ function latestReviewTurnId(loop: ConversationLoop): string | undefined {
   return typeof latest?.meta?.messageId === "string" ? latest.meta.messageId : undefined;
 }
 
-
-
 // Rewind returns the complete original input or refuses without truncating history.
 function restorableRewindInput(
   message: Extract<GenericMessage, { role: "user" }>,
@@ -454,7 +452,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     memoryManager,
     memorySaveNotices,
     starredStore,
-    feedbackStore,
     auditLogger,
     askUserQuestionGate,
     preferenceRefreshService,
@@ -941,13 +938,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const { projectRoot } = groupOf(e, chatGroupId, CHANNELS.chat.listCustomCommands).loop.getSessionProjectContext();
     return { commands: await listCustomCommands(projectRoot) };
   });
-  ipcMain.handle(CHANNELS.llm.ping, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.llm.ping, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    return conversationLoop.pingProvider();
-  });
+
   ipcMain.handle(CHANNELS.llm.getModelCatalog, async (e): Promise<ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
@@ -1798,12 +1789,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     return readMemoryDetail(memoryManager, id, project.options, memoryConversationStores());
   });
-  ipcMain.handle(CHANNELS.memory.entriesList, (e, opts?: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesList, e); return UNAUTHORIZED_FRAME; }
-    const project = parseMemoryProjectOptions(opts);
-    if (!project.ok) return [];
-    return memoryManager.listMemoryEntries(project.options);
-  });
+
   ipcMain.handle(CHANNELS.memory.entriesDelete, async (e, filename: unknown, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesDelete, e); return UNAUTHORIZED_FRAME; }
     if (typeof filename !== "string") return { ok: false, error: "invalid-input" };
@@ -1965,7 +1951,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.feedback.submit, async (e, payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.feedback.submit, e); return UNAUTHORIZED_FRAME; }
-    const { sessionId, messageIndex, rating, reason } = payload ?? {};
+    const { sessionId, messageIndex, rating } = payload ?? {};
     if (
       typeof sessionId !== "string" ||
       typeof messageIndex !== "number" ||
@@ -1974,9 +1960,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-args" };
     }
-    if (feedbackStore) {
-      feedbackStore.add({ sessionId, messageIndex, rating, ...(reason !== undefined ? { reason } : {}) });
-    }
+
     auditLogger.log({
       timestamp: new Date().toISOString(),
       sessionId,

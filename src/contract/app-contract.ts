@@ -131,13 +131,13 @@ export const CHANNELS = {
     fallback: "ave:chat:fallback",
   },
   llm: {
-    ping: "ave:llm:ping",
+
     // The model catalog the main process resolves against, handed to the
     // renderer before it mounts so both sides resolve against the same one.
     getModelCatalog: "ave:llm:get-model-catalog",
   },
   memory: {
-    entriesList: "ave:memory:entries:list",
+
     detailGet: "ave:memory:detail-get",
     summariesGet: "ave:memory:summaries-get",
     entriesDelete: "ave:memory:entries:delete",
@@ -199,7 +199,7 @@ export const CHANNELS = {
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
     uiList: "ave:plugins:ui:list",
-    uiReadModule: "ave:plugins:ui:read-module",
+
     cards: "ave:plugins:cards",
     configGet: "ave:plugins:config:get",
     configSet: "ave:plugins:config:set",
@@ -230,7 +230,7 @@ export const CHANNELS = {
   },
   runtime: {
     counts: "ave:runtime:counts",
-    env: "ave:runtime:env",
+
   },
   remoteA2a: {
     targets: "ave:a2a-remote:targets",
@@ -367,15 +367,11 @@ export const CHANNELS = {
   },
   agents: {
     list: "ave:agents:list",
-    uninstall: "ave:agents:uninstall",
-    // Lifecycle event channel (main → renderer).
-    uninstallResult: "ave:agents:uninstall-result",
+
   },
   skills: {
     list: "ave:skills:list",
-    uninstall: "ave:skills:uninstall",
-    // Lifecycle event channel (main → renderer).
-    uninstallResult: "ave:skills:uninstall-result",
+
   },
   mcp: {
     servers: "ave:mcp:servers",
@@ -547,12 +543,7 @@ export const CHANNELS = {
     envForcedSettings: "ave:settings:env-forced",
     deleteApiKey: "ave:settings:delete-api-key",
     listLlmModels: "ave:settings:list-llm-models",
-    codexSubscriptionStatus: "ave:settings:codex-subscription:status",
-    codexSubscriptionStartBrowserLogin: "ave:settings:codex-subscription:start-browser-login",
-    codexSubscriptionStartDeviceCodeLogin: "ave:settings:codex-subscription:start-device-code-login",
-    codexSubscriptionCancelLogin: "ave:settings:codex-subscription:cancel-login",
-    codexSubscriptionLogout: "ave:settings:codex-subscription:logout",
-    codexSubscriptionListModels: "ave:settings:codex-subscription:list-models",
+
     subscriptionRuntimeStatus: "ave:settings:subscription:status",
     // Main → host renderer safe status invalidation; never carries a status payload.
     subscriptionRuntimeStatusUpdated: "ave:settings:subscription:status-updated",
@@ -567,16 +558,7 @@ export const CHANNELS = {
     subscriptionListModels: "ave:settings:subscription:list-models",
     subscriptionUseForChat: "ave:settings:subscription:use-for-chat",
     subscriptionUseApiForChat: "ave:settings:subscription:use-api-for-chat",
-    acpSubscriptionStatus: "ave:settings:acp-subscription:status",
-    acpSubscriptionChooseRuntime: "ave:settings:acp-subscription:choose-runtime",
-    acpSubscriptionForgetRuntime: "ave:settings:acp-subscription:forget-runtime",
-    acpSubscriptionVerify: "ave:settings:acp-subscription:verify",
-    acpSubscriptionStartLogin: "ave:settings:acp-subscription:start-login",
-    acpSubscriptionOpenLoginBrowser: "ave:settings:acp-subscription:open-login-browser",
-    acpSubscriptionCancelLogin: "ave:settings:acp-subscription:cancel-login",
-    acpSubscriptionLogout: "ave:settings:acp-subscription:logout",
-    marketplaceInstallProviderPreset: "ave:settings:marketplace:install-provider-preset",
-    marketplaceUninstallProviderPreset: "ave:settings:marketplace:uninstall-provider-preset",
+
     setWebApiKey: "ave:settings:set-web-api-key",
     hasWebApiKey: "ave:settings:has-web-api-key",
     deleteWebApiKey: "ave:settings:delete-web-api-key",
@@ -585,8 +567,7 @@ export const CHANNELS = {
     openExternal: "ave:shell:open-external",
   },
   telemetry: {
-    consentPrompt: "ave:telemetry:consent-prompt",
-    consentAnswer: "ave:telemetry:consent-answer",
+
     allowedHosts: "ave:telemetry:allowed-hosts",
   },
   usage: {
@@ -630,15 +611,7 @@ export const CHANNELS = {
     delete: "ave:prompts:delete",
     updated: "ave:prompts:updated",
   },
-  trigger: {
-    started: "ave:trigger:started",
-    completed: "ave:trigger:completed",
-    failed: "ave:trigger:failed",
-    expired: "ave:trigger:expired",
-    imported: "ave:trigger:imported",
-    dismiss: "ave:trigger:dismiss",
-    import: "ave:trigger:import",
-  },
+
   update: {
     state: "ave:update:state",
     getState: "ave:update:get-state",
@@ -809,9 +782,7 @@ export const CHANNELS = {
     refuseTabOp: "ave:browser:refuse-tab-op", // invoke renderer→main  an inTabId page could not be loaded
     stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
     pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
-    resume: "ave:browser:resume", // invoke renderer→main  explicit new agent control generation
-    pausePopup: "ave:browser:pause-popup", // invoke renderer→main  main-issued native popup handle
-    resumePopup: "ave:browser:resume-popup", // invoke renderer→main  main-issued native popup handle
+    resume: "ave:browser:resume",   // invoke renderer→main  main-issued native popup handle
     getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
     getSessionBindings: "ave:browser:get-session-bindings",
     sessionBindingsChanged: "ave:browser:session-bindings-changed",
@@ -1045,11 +1016,5 @@ export interface PluginInstallResultPayload {
  * to mean the same thing here. `agentId` is the success-only field — a failed
  * install never resolved one.
  */
-export interface AgentInstallResultPayload extends PluginInstallResultPayload {
-  agentId?: string;
-}
 
 /** Skill twin of {@link AgentInstallResultPayload}. */
-export interface SkillInstallResultPayload extends PluginInstallResultPayload {
-  skillId?: string;
-}

@@ -109,11 +109,6 @@
     },
     {
       "type": "exports",
-      "file": "src/data/settings-store.ts",
-      "name": "migrateAppearanceV1ToV2"
-    },
-    {
-      "type": "exports",
       "file": "src/i18n/index.ts",
       "name": "interpolate"
     },
@@ -299,11 +294,6 @@
     },
     {
       "type": "files",
-      "file": "scripts/asrt-runtime-smoke.mjs",
-      "name": "scripts/asrt-runtime-smoke.mjs"
-    },
-    {
-      "type": "files",
       "file": "scripts/capture-screenshots.mjs",
       "name": "scripts/capture-screenshots.mjs"
     },
@@ -316,11 +306,6 @@
       "type": "files",
       "file": "scripts/i18n-build-catalog.mjs",
       "name": "scripts/i18n-build-catalog.mjs"
-    },
-    {
-      "type": "files",
-      "file": "scripts/i18n-dump-maps.ts",
-      "name": "scripts/i18n-dump-maps.ts"
     },
     {
       "type": "files",
@@ -356,11 +341,6 @@
       "type": "files",
       "file": "src/plugins/__tests__/fixtures/registry-process-child.ts",
       "name": "src/plugins/__tests__/fixtures/registry-process-child.ts"
-    },
-    {
-      "type": "files",
-      "file": "src/ui/renderer/components/AveLogo.tsx",
-      "name": "src/ui/renderer/components/AveLogo.tsx"
     },
     {
       "type": "types",
@@ -611,11 +591,6 @@
       "type": "types",
       "file": "src/mcp/types.ts",
       "name": "McpGlobalRules"
-    },
-    {
-      "type": "types",
-      "file": "src/mcp/types.ts",
-      "name": "McpLegacyRemoteServerConfig"
     },
     {
       "type": "types",

@@ -56,7 +56,7 @@ type DashboardSummary = typeof MOCK_SUMMARY & { subscription?: typeof MOCK_SUBSC
 
 function usageDashboardApi(overrides: Partial<DashboardSummary> = {}) {
   const summary: DashboardSummary = { ...MOCK_SUMMARY, ...overrides };
-  const { api } = makeMockAveApi({ usage: summary });
+  const { api } = makeMockAveApi();
   api.getUsageRange = vi.fn(async () => summary);
   api.exportUsageCsv = vi.fn(async () => ({ ok: true, filePath: "/tmp/ave-usage.csv" }));
   return api;
@@ -71,7 +71,6 @@ async function renderDashboard(api = usageDashboardApi(), onNavigate: (tab: any)
 // Usage owns workspace statistics and marketplace status through the shared stats hook.
 function workspaceStatsApi(overrides: Record<string, unknown> = {}) {
   const { api } = makeMockAveApi({
-    usage: MOCK_SUMMARY,
     pluginUiExtensions: [{ pluginId: "a" }, { pluginId: "b" }],
     pluginCards: [
       { id: "a", name: "A", description: "", sampleTools: [], capabilities: [], tools: ["t1", "t2"] },

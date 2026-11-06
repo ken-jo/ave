@@ -53,7 +53,6 @@ import type { McpManager } from "../mcp/mcp-manager.js";
 import type { PluginLoopbackManager } from "../mcp/plugin-loopback-manager.js";
 import type { McpGovernance } from "../mcp/mcp-governance.js";
 import type { StarredStore } from "../data/starred-store.js";
-import type { FeedbackStore } from "../data/feedback-store.js";
 import type { TelemetryService } from "../main/telemetry.js";
 import type { PluginTelemetryClient } from "../telemetry/client.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
@@ -213,9 +212,8 @@ export class BootContext {
   /** Owns each plugin's loopback MCP host; the loopback-first arm of the render IPC's `ui://` resolver. */
   declare pluginLoopbackManager: PluginLoopbackManager;
 
-  // ── Starred / feedback ─────────────────────────────────────────────────────
+  // ── Starred ─────────────────────────────────────────────────────
   declare starredStore: StarredStore;
-  declare feedbackStore: FeedbackStore;
 
   // ── Post-boot release prep ─────────────────────────────────────────────────
   declare telemetry: TelemetryService | undefined;
@@ -325,7 +323,6 @@ const BOOT_CONTEXT_FIELDS = [
   "mcpManager",
   "pluginLoopbackManager",
   "starredStore",
-  "feedbackStore",
   "telemetry",
   "pluginTelemetry",
   "autoUpdaterStop",

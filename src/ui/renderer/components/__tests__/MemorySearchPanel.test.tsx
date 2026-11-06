@@ -14,7 +14,7 @@ function setupUser(): UserEventDriver {
   return (userEvent as unknown as { setup: () => UserEventDriver }).setup();
 }
 
-function summariesForNotes(notes: Awaited<ReturnType<AveApi["memoryListEntries"]>>) {
+function summariesForNotes(notes: Extract<Awaited<ReturnType<AveApi["memoryGetSummaries"]>>, { ok: true }>["notes"]) {
   return {
     ok: true as const,
     notes,
@@ -32,8 +32,7 @@ function memorySearchPanelApi(): AveApi {
   Object.assign(api, {
     memoryGetIndex: vi.fn(async () => ""),
     memoryGetDetail: vi.fn(async () => ({ ok: true, origin: { status: "absent" }, history: { entries: [] }, usage: { entries: [] } })),
-    memoryListEntries: vi.fn(async () => []),
-    memoryGetSummaries: vi.fn(async (opts?: Parameters<AveApi["memoryListEntries"]>[0]) => summariesForNotes(opts ? await api.memoryListEntries(opts) : await api.memoryListEntries())),
+    memoryGetSummaries: vi.fn(async () => summariesForNotes([])),
     memoryListSessions: vi.fn(async () => [
       {
         sessionId: "11111111-2222-3333-4444-555555555555",
@@ -61,7 +60,7 @@ function panelWithMemories() {
     { filename: "old.md", title: "오래된 메모", content: "# 오래된 메모\n\n지난달", updatedAt: OLD },
   ];
   const deletedEntry = entries[0]!;
-  api.memoryListEntries.mockImplementation(async () => entries);
+  api.memoryGetSummaries.mockImplementation(async () => summariesForNotes(entries));
   api.memoryGetIndex.mockImplementation(async () => "# MEMORY\n\n지침");
   api.memoryDeleteEntry.mockImplementation(async (filename: string) => {
     entries = entries.filter((entry) => entry.filename !== filename);
@@ -103,7 +102,7 @@ describe("MemorySearchPanel", () => {
   it("opens a new conversation from an empty project and shows global memories beside it", async () => {
     const api = memorySearchPanelApi();
     const note = { id: "global-memory", filename: "global.md", title: "모든 프로젝트의 선호", content: "짧게 답변", updatedAt: OLD };
-    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries: vi.fn(async () => ({ ...summariesForNotes([note]), scopeCounts: { project: 0, global: 1, defaultProject: 3, defaultProjectApplicable: false } })) });
+    Object.assign(api, { memoryGetSummaries: vi.fn(async () => ({ ...summariesForNotes([note]), scopeCounts: { project: 0, global: 1, defaultProject: 3, defaultProjectApplicable: false } })) });
     const onStartConversation = vi.fn(async () => true);
     render(<MemorySearchPanel api={api} project={PROJECT} defaultProject={{ projectRoot: "C:\\workspace\\default", projectName: "default", isDefault: true }} onStartConversation={onStartConversation} onAskAveToFix={noFix} />);
     const globalList = await screen.findByRole("complementary", { name: "전역 기억" });
@@ -117,7 +116,7 @@ describe("MemorySearchPanel", () => {
   it("does not label an unscoped legacy note as global", async () => {
     const api = memorySearchPanelApi();
     const note = { filename: "legacy.md", title: "이전 기억", content: "이전 형식의 본문", updatedAt: OLD };
-    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries: vi.fn(async () => summariesForNotes([note])) });
+    Object.assign(api, { memoryGetSummaries: vi.fn(async () => summariesForNotes([note])) });
     render(<MemorySearchPanel api={api} project={{ ...PROJECT, isDefault: true }} onAskAveToFix={noFix} />);
     const row = await screen.findByRole("button", { name: /^이전 기억/ });
     expect(row.textContent).not.toContain("전역");
@@ -132,7 +131,7 @@ describe("MemorySearchPanel", () => {
     ];
     const summaries = summariesForNotes(notes);
     summaries.entries[1]!.origin = { status: "recorded", sessionId: "review-source" };
-    Object.assign(api, { memoryListEntries: vi.fn(async () => notes), memoryGetSummaries: vi.fn(async () => ({ ...summaries, entries: summaries.entries.map((entry) => entry.id === "recent" ? { ...entry, origin: { status: "recorded", sessionId: "review-source", title: "원본 논의" } } : entry) })) });
+    Object.assign(api, { memoryGetSummaries: vi.fn(async () => ({ ...summaries, entries: summaries.entries.map((entry) => entry.id === "recent" ? { ...entry, origin: { status: "recorded", sessionId: "review-source", title: "원본 논의" } } : entry) })) });
     render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
     const idleRow = await screen.findByRole("button", { name: /안 쓰는 콜백/ });
     expect(idleRow.textContent).toContain("38일 동안 안 쓰임");
@@ -147,7 +146,7 @@ describe("MemorySearchPanel", () => {
     const api = memorySearchPanelApi();
     const notes = Array.from({ length: 60 }, (_, index) => ({ id: `memory-${index}`, filename: `memory-${index}.md`, title: `기억 ${index}`, content: `본문 ${index}`, updatedAt: OLD }));
     const memoryGetSummaries = vi.fn(async () => summariesForNotes(notes));
-    Object.assign(api, { memoryListEntries: vi.fn(async () => notes), memoryGetSummaries });
+    Object.assign(api, { memoryGetSummaries });
     render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
     await screen.findByRole("button", { name: /^기억 59/ });
     expect(memoryGetSummaries).toHaveBeenCalledTimes(1);
@@ -158,7 +157,7 @@ describe("MemorySearchPanel", () => {
     const api = memorySearchPanelApi();
     const note = { id: "cached-memory", filename: "cached.md", title: "검색할 기억", content: "본문", updatedAt: OLD };
     const memoryGetSummaries = vi.fn(async () => summariesForNotes([note]));
-    Object.assign(api, { memoryListEntries: vi.fn(async () => [note]), memoryGetSummaries, memorySearchEntries: vi.fn(async () => [{ ...note, excerpt: note.content }]) });
+    Object.assign(api, { memoryGetSummaries, memorySearchEntries: vi.fn(async () => [{ ...note, excerpt: note.content }]) });
     render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
     fireEvent.click(await screen.findByRole("button", { name: /^검색할 기억/ }));
     await screen.findByRole("tab", { name: /변경 이력/ });
@@ -178,7 +177,7 @@ describe("MemorySearchPanel", () => {
       { id: "m2", filename: "retries.md", title: "재시도", content: "두 번", excerpt: "두 번", origin, updatedAt: RECENT },
     ];
     Object.assign(api, {
-      memoryListEntries: vi.fn(async () => entries),
+      memoryGetSummaries: vi.fn(async () => summariesForNotes(entries)),
       memorySearchEntries: vi.fn(async () => [entries[0]!]),
       memoryGetDetail: vi.fn(async () => ({ ok: true, origin: { status: "resolved", sessionId: "shared-source" }, history: { entries: [] }, usage: { entries: [] } })),
     });

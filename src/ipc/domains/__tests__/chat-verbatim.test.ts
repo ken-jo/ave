@@ -170,7 +170,6 @@ function makeMinimalDeps(
     routineEngine: undefined,
     triggerExecutor: undefined,
     starredStore: undefined,
-    feedbackStore: undefined,
     auditLogger: { log: vi.fn() } as any,
     personaPromptStore: opts.personaPromptStore,
     getSubAgentRunner: opts.getSubAgentRunner,
@@ -597,7 +596,6 @@ describe("ave:chat:get-sub-agent-transcript", () => {
       messages: [{ role: "assistant", content: "artifact-backed child transcript" }],
     });
   });
-
 
   it("rejects requests for a non-active parent session before runner lookup", async () => {
     const getPersistedTranscript = vi.fn();
@@ -1993,7 +1991,6 @@ describe("sub-agent parent mailbox on manual turns", () => {
     );
   });
 });
-
 
 describe("sub-agent autonomous parent wake", () => {
   it("starts a current idle parent turn through agent-message provenance and acknowledges after completion", async () => {

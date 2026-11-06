@@ -5,7 +5,7 @@ import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyVi
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
-import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
+
 import type { InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -38,7 +38,7 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
 export function bootInstallNoticeFrom(
   report: BootInstallReport,
   policy: MarketplacePolicy,
-  legacy: Pick<LegacyPluginReport, "unmanaged" | "lostGrants"> | null,
+  legacy: { unmanaged: string[]; lostGrants: Array<{ plugin: string; keys: string[] }> } | null,
   revoked: readonly RevokedPackageView[],
 ): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });

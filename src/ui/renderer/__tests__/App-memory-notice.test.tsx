@@ -40,9 +40,9 @@ function mountApp(firstMessages: HistoryMessage[] = [], sessions?: Array<{ id: s
     messages: sessionId === FIRST_SESSION ? firstMessages : [],
     ...sessionProject,
   }) as never);
-  api.memoryListEntries.mockImplementation(async () => [
+  api.memoryGetSummaries.mockResolvedValue({ ok: true, notes: [
     { id: "m1", filename: "timeout.md", title: TITLE, content: `# ${TITLE}\n\n게이트웨이 기준`, updatedAt: new Date().toISOString() },
-  ]);
+  ], entries: [], scopeCounts: { project: 0, global: 1, defaultProject: 0, defaultProjectApplicable: false } });
   let emit: (event: MemorySaveResultEvent) => void = () => {};
   api.onMemorySaveResult.mockImplementation((handler: (event: MemorySaveResultEvent) => void) => {
     emit = handler;

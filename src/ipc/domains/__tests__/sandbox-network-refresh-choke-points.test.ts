@@ -103,78 +103,6 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
   });
 });
 
-describe("ASRT choke-point 2 — marketplace provider preset mutations (settings.ts)", () => {
-  beforeEach(async () => {
-    handlers.clear();
-    vi.resetModules();
-    const { configureHostResources } = await import("../../../main/host-resources.js");
-    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-  });
-
-  const preset = {
-    providerId: "future-router",
-    label: "Future Router",
-    baseUrl: "https://future.example/v1",
-    defaultModel: "future/free",
-    modelOptions: ["future/free"],
-    requiresApiKey: true,
-  };
-
-  function makePresetDeps() {
-    let presets: Array<typeof preset> = [preset];
-    let presetId: string | undefined = "future-router";
-    const refreshSandboxNetworkConfig = vi.fn();
-    const deps = {
-      settingsService: {
-        getAll: vi.fn(() => ({ llm: { provider: "openai-compatible", activeChatRuntime: { kind: "api" }, vendors: {} }, appearance: {} })),
-        get: vi.fn((key: string) => {
-          if (key === "llm") {
-            return {
-              provider: "openai-compatible",
-              activeChatRuntime: { kind: "api" },
-              ...(presetId ? { marketplaceProviderPresetId: presetId } : {}),
-              vendors: { "openai-compatible": {} },
-            };
-          }
-          if (key === "marketplace") {
-            return { installedProviderPresets: presets };
-          }
-          return {};
-        }),
-        uninstallMarketplaceProviderPreset: vi.fn(async () => {
-          presets = [];
-          presetId = undefined;
-          return { ok: true };
-        }),
-        patch: vi.fn(async () => ({ ok: true })),
-        replaceLlm: vi.fn(async () => {}),
-        getSecret: vi.fn(() => null),
-        hasStoredSecret: vi.fn(() => false),
-        setSecret: vi.fn(async () => {}),
-        deleteSecret: vi.fn(async () => {}),
-      },
-      conversationLoop: { refreshProvider: vi.fn() },
-      auditLogger: { log: vi.fn() },
-      getAppWindows: vi.fn(() => []),
-      rewireReviewerAgent: vi.fn(),
-      refreshActiveLlmWildcard: vi.fn(),
-      refreshSandboxNetworkConfig,
-    };
-    return { deps, refreshSandboxNetworkConfig };
-  }
-
-  it("calls refreshSandboxNetworkConfig when the active preset is uninstalled", async () => {
-    // Capture the pre-mutation registry signature or uninstall loses the old host from both comparisons.
-    const { deps, refreshSandboxNetworkConfig } = makePresetDeps();
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await invoke("ave:settings:marketplace:uninstall-provider-preset", "future-router");
-
-    expect(refreshSandboxNetworkConfig).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
   beforeEach(async () => {
     handlers.clear();
@@ -221,7 +149,6 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
       getMainWindow: vi.fn(() => null),
       memoryManager: { getSessionKind: vi.fn(() => "main") },
       starredStore: undefined,
-      feedbackStore: undefined,
       rewireReviewerAgent: vi.fn(),
       refreshActiveLlmWildcard: vi.fn(),
       refreshSandboxNetworkConfig,

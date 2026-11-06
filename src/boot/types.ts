@@ -25,7 +25,6 @@ import type { PostTurnHookChain } from "../hooks/post-turn-hook-chain.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import type { ApprovalSentenceSelector } from "../permissions/reviewer/approval-sentence-selector.js";
 import type { StarredStore } from "../data/starred-store.js";
-import type { FeedbackStore } from "../data/feedback-store.js";
 import type { TelemetryService } from "../main/telemetry.js";
 import type { PluginTelemetryClient } from "../telemetry/client.js";
 import type { NotificationService } from "../main/notification-service.js";
@@ -168,8 +167,7 @@ export interface AppServices {
   refreshSandboxNetworkConfig?: () => Promise<void>;
   /** Starred messages persistence (~/.ave/sessions/starred.json) */
   starredStore?: StarredStore;
-  /** Privacy hardening; feedback persistence separate from audit log (~/.ave/feedback.jsonl) */
-  feedbackStore?: FeedbackStore;
+
   /** Workflow tools; exposed for IPC handlers + shutdown wiring. */
   routinesStore?: import("../main/routines-store.js").RoutinesStore;
   routinesScheduler?: import("../main/routines-scheduler.js").RoutinesScheduler;
@@ -208,8 +206,7 @@ export interface AppServices {
   /** Release-prep; anonymous telemetry service. Retained here so the shutdown hook can run a
    * final flush + stop() before the process exits (otherwise queued events are lost on shutdown). */
   telemetry?: TelemetryService;
-  /** S12; plugin lifecycle telemetry client (opt-in). Tracks plugin_install / plugin_uninstall / plugin_update / plugin_error
-   * events to POST /telemetry/events on the marketplace backend. Never active until the user answers the first-boot consent prompt. */
+  /** Retained plugin telemetry client; delivery requires explicit consent and an enabled setting. */
   pluginTelemetry?: PluginTelemetryClient;
   /** Release-prep; auto-updater stop handle. Retained so shutdown can clear the 4h interval deterministically instead of relying on unref(). */
   autoUpdaterStop?: () => void;

@@ -17,7 +17,6 @@ const PATTERNS = [
 // Contract examples and fixed brand gradients are theme-independent exceptions.
 const GRANDFATHERED_FILES = new Set([
   "src/ui/renderer/theme/plugin-token-map.ts",
-  "src/ui/renderer/components/AveLogo.tsx",
 ]);
 
 const violations = [];

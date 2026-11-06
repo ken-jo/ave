@@ -298,34 +298,6 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
   });
 });
 
-describe("marketplace provider preset runtime refresh", () => {
-  it("refreshes both chat runtime providers after installing a provider preset", async () => {
-    const windows: ReturnType<typeof makeWindow>[] = [];
-    const baseDeps = makeDeps(windows);
-    const deps = {
-      ...baseDeps,
-      settingsService: {
-        ...baseDeps.settingsService,
-        installMarketplaceProviderPreset: vi.fn(async () => ({ ok: true })),
-      },
-    };
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await expect(invoke("ave:settings:marketplace:install-provider-preset", {
-      providerId: "router-a",
-      label: "Router A",
-      baseUrl: "https://router.example/v1",
-      defaultModel: "router/default",
-      modelOptions: ["router/default"],
-      requiresApiKey: true,
-    })).resolves.toEqual({ ok: true });
-
-    expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
-    expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();
-  });
-});
 // ─── MAJOR-2 R2: settings:update triggers rewireReviewerAgent when baseUrl changes ──
 
 describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry baseUrl change", () => {

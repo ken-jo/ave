@@ -8,7 +8,6 @@
  * Domain → channel prefix mapping. One line per registrar called below, so a
  * reader can answer "which file owns this channel" without opening all of them:
  *   settings      ave:settings:*, ave:shell:open-external,
- *                 ave:telemetry:consent-answer
  *   tour          ave:tour:*        — SpotlightTour state + broadcast
  *   chat          ave:chat:*, ave:llm:*, ave:memory:*, ave:starred:*,
  *                 ave:feedback:*, ave:ask-user-question:*

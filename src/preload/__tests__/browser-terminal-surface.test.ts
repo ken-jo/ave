@@ -49,14 +49,12 @@ describe("private browser and terminal preload boundaries", () => {
     expect(listeners.has(CHANNELS.browser.control)).toBe(false);
   });
 
-  it("separates renderer tab controls from popup handles", async () => {
+  it("addresses renderer tab controls and validates tab operations", async () => {
     const api = buildBrowserTabsApiSurface();
     invoke.mockResolvedValue({ ok: true });
     await api.pause("browser:1");
-    await api.resumePopup("native-handle");
     expect(invoke.mock.calls).toEqual([
       [CHANNELS.browser.pause, { tabId: "browser:1" }],
-      [CHANNELS.browser.resumePopup, { tabId: "native-handle" }],
     ]);
     const receive = vi.fn();
     api.onTabOp(receive);

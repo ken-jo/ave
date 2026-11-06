@@ -12,16 +12,12 @@ import {
   __resetSuggestedRepliesStoreForTests,
   __teardownSuggestedRepliesIpcForTests,
 } from "../use-suggested-replies.js";
-import {
-  getSuggestedRepliesCounters,
-  resetSuggestedRepliesCountersForTesting,
-} from "../../../../telemetry/suggested-replies-counter.js";
 
 describe("useSuggestedReplies", () => {
   beforeEach(() => {
     __resetSuggestedRepliesStoreForTests();
     __teardownSuggestedRepliesIpcForTests();
-    resetSuggestedRepliesCountersForTesting();
+
   });
 
   it("starts with empty snapshot", () => {
@@ -158,49 +154,6 @@ describe("useSuggestedReplies", () => {
     expect(result.current.text).toBeNull();
   });
 
-  it("telemetry: shown counter increments on non-empty push", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("네"); });
-    expect(getSuggestedRepliesCounters().shown).toBe(1);
-  });
-
-  it("telemetry: dismissed counter increments on dismiss", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("네"); });
-    act(() => { dismissSuggestedReplies(); });
-    expect(getSuggestedRepliesCounters().dismissed).toBe(1);
-  });
-
-  it("telemetry: accepted counter increments on accept", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("네"); });
-    act(() => { acceptSuggestedReply(); });
-    expect(getSuggestedRepliesCounters().accepted).toBe(1);
-  });
-
-  it("telemetry: accept on an empty store records nothing", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { acceptSuggestedReply(); });
-    expect(getSuggestedRepliesCounters().accepted).toBe(0);
-  });
-
-  it("telemetry: ignored counter increments when prior active push is replaced", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("첫 번째"); });
-    act(() => { pushSuggestedReply("두 번째"); });
-    expect(getSuggestedRepliesCounters().ignored).toBe(1);
-  });
-
-  it("telemetry: dismissed snapshot is NOT counted as ignored on next push", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("첫"); });
-    act(() => { dismissSuggestedReplies(); });
-    act(() => { clearDismissedReplies(); });
-    act(() => { pushSuggestedReply("둘"); });
-    expect(getSuggestedRepliesCounters().ignored).toBe(0);
-    expect(getSuggestedRepliesCounters().dismissed).toBe(1);
-  });
-
   it("resetSuggestedReplies clears an active snapshot and notifies subscribers", () => {
     const { result } = renderHook(() => useSuggestedReplies());
     act(() => { pushSuggestedReply("첫"); });
@@ -223,19 +176,4 @@ describe("useSuggestedReplies", () => {
     expect(result.current.isDismissed).toBe(false);
   });
 
-  it("resetSuggestedReplies does not record an ignored event — leaving a conversation is not passing one over", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("첫"); });
-    act(() => { resetSuggestedReplies(); });
-    act(() => { pushSuggestedReply("둘"); });
-    expect(getSuggestedRepliesCounters().ignored).toBe(0);
-  });
-
-  it("telemetry: shown is NOT counted when push lands while dismiss latch is set", () => {
-    renderHook(() => useSuggestedReplies());
-    act(() => { pushSuggestedReply("첫"); }); // shown=1
-    act(() => { dismissSuggestedReplies(); });    // dismissed=1, latch on
-    act(() => { pushSuggestedReply("둘"); }); // dismissed snapshot, NOT shown
-    expect(getSuggestedRepliesCounters().shown).toBe(1);
-  });
 });

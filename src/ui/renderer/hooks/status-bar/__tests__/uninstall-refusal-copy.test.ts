@@ -13,9 +13,7 @@ import type { AveApi } from "../../../types.js";
 import { useStatusBarInstall } from "../use-status-bar-install.js";
 
 type UninstallSubscription =
-  | "onPluginUninstallResult"
-  | "onAgentUninstallResult"
-  | "onSkillUninstallResult";
+  | "onPluginUninstallResult";
 
 function uninstallToastFor(
   payload: PluginInstallResultPayload,
@@ -50,8 +48,6 @@ function uninstallToastFor(
 
 const SUBSCRIPTIONS: readonly [string, UninstallSubscription][] = [
   ["plugin", "onPluginUninstallResult"],
-  ["agent", "onAgentUninstallResult"],
-  ["skill", "onSkillUninstallResult"],
 ];
 
 describe("uninstall refusal toast copy", () => {

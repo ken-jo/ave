@@ -1,12 +1,11 @@
-/** Wait for an official snapshot, migrate plugins before content, and mark complete only after both succeed.
- * Retries skip migrated entries and suppress notices already reported. */
+/** Wait for an official snapshot, adopt content, and mark complete only after it succeeds.
+ * Failed content adoption is retried. */
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
-import { pinnedArtifactSha256s, type SourceSnapshot } from "../sources/snapshot.js";
+import type { SourceSnapshot } from "../sources/snapshot.js";
 import type { LegacyContentKind, LegacyContentReport } from "./legacy-content.js";
-import type { LegacyPluginReport, OfficialPlugin } from "./legacy-plugins.js";
 
 interface MarkerFile {
   version: 1;
@@ -38,28 +37,16 @@ async function readMarker(path: string): Promise<MarkerFile | null> {
   return value as MarkerFile;
 }
 
-export function officialPluginsFrom(snapshot: SourceSnapshot): (name: string) => OfficialPlugin | null {
-  return (name) => {
-    const found = snapshot.packages.find((item) => item.kind === "plugin" && item.name === name);
-    if (!found) return null;
-    return {
-      snapshotCommit: snapshot.commit,
-      packagePath: found.path,
-      pins: (version) => pinnedArtifactSha256s(snapshot, name, version),
-    };
-  };
-}
-
 export interface LegacyMigrationInput {
   markerPath: string;
   officialSnapshot: SourceSnapshot | null;
-  plugins(officialPlugin: (name: string) => OfficialPlugin | null): Promise<LegacyPluginReport>;
+
   content(listed: (kind: LegacyContentKind, name: string) => boolean): Promise<LegacyContentReport>;
   now: () => Date;
 }
 
 export interface LegacyMigrationReport {
-  plugins: LegacyPluginReport;
+
   content: LegacyContentReport;
 }
 
@@ -68,14 +55,12 @@ export async function runLegacyMigration(input: LegacyMigrationInput): Promise<L
   if (previous?.completedAt !== undefined) return null;
   const snapshot = input.officialSnapshot;
   if (!snapshot) return null;
-  const migrated = await input.plugins(officialPluginsFrom(snapshot));
-  const reported = new Set(previous?.reportedUnmanaged ?? []);
-  const plugins = { ...migrated, unmanaged: migrated.unmanaged.filter((id) => !reported.has(id)) };
+
   const content = await input.content((kind, name) => snapshot.packages.some((item) => item.kind === kind && item.name === name));
   const marker: MarkerFile =
-    plugins.failed.length === 0 && content.failed.length === 0
+    content.failed.length === 0
       ? { version: 1, completedAt: input.now().toISOString() }
-      : { version: 1, reportedUnmanaged: [...new Set([...reported, ...migrated.unmanaged])].sort() };
+      : { version: 1, reportedUnmanaged: [] };
   await writeFileAtomicAtPath(input.markerPath, `${JSON.stringify(marker, null, 2)}\n`);
-  return { plugins, content };
+  return { content };
 }

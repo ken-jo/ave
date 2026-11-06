@@ -1,7 +1,6 @@
 import * as os from "node:os";
 import { clearIntervalSafe, clearTimeoutSafe } from "../lib/clear-timer.js";
 import { createLogger } from "../lib/logger.js";
-import { sleep } from "../shared/abortable-deadline.js";
 const log = createLogger("idle-scheduler");
 
 export type IdleState =
@@ -10,30 +9,6 @@ export type IdleState =
   | "THROTTLED"
   | "PAUSED"
   | "RESUME_DELAY";
-
-export interface IndexJob {
-  filePath: string;
-  mode: string; // "auto" | "pdf" | "md" | "docx" | "pptx" | "xlsx" | "txt" | "html"
-  priority: number; // 0-4
-  enqueuedAt?: number;
-}
-
-export interface WorkerClientLite {
-  enqueue(
-    filePath: string,
-    mode?: string,
-    priority?: number,
-  ): Promise<{ queued: boolean; queue_size: number }>;
-  processOne(
-    priority?: number,
-  ): Promise<{ processed: boolean; result?: unknown; reason?: string }>;
-  getIndexerState(): Promise<{
-    queue_size: number;
-    processed: number;
-    failed: number;
-    enqueued: number;
-  }>;
-}
 
 export interface PowerMonitorLike {
   getSystemIdleTime(): number;
@@ -56,9 +31,6 @@ export function adaptPowerMonitor(pm: unknown): PowerMonitorLike {
 }
 
 export interface IdleSchedulerOptions {
-  // Index worker client used to drain the idle-deferral queue. Optional: when omitted (the local-indexer plugin now indexes eagerly in its own background
-  // worker) the queue stays dormant and only the idle-state machine runs for the remaining consumers.
-  workerClient?: WorkerClientLite;
 
   powerMonitor?: PowerMonitorLike;
   idleThresholdSec?: number; // default 60
@@ -68,8 +40,6 @@ export interface IdleSchedulerOptions {
   conversationCooldownMs?: number; // default 30000
 
   keystrokeCooldownMs?: number;
-  chunkCooldownMs?: number; // default 200
-  throttledCooldownMs?: number; // default 2000
   resumeDelayMs?: number; // default 90000
   tickIntervalMs?: number; // default 1000
 
@@ -86,14 +56,14 @@ export type IdleStateChangeListener = (
 
 export class IdleSchedulerService {
   private state: IdleState = "RUNNING";
-  private queue: IndexJob[] = [];
+
   private cpuEma = 0;
   private lastConversationAt = 0;
   private lastKeystrokeAt = 0;
   private tickTimer: NodeJS.Timeout | null = null;
   private resumeTimer: NodeJS.Timeout | null = null;
   private prevCpuTimes: ReturnType<typeof os.cpus> = [];
-  private processing = false;
+
   private powerSubscribed = false;
   private readonly listeners: Array<{ event: string; handler: (...args: unknown[]) => void }> = [];
   private readonly stateChangeListeners = new Set<IdleStateChangeListener>();
@@ -104,8 +74,7 @@ export class IdleSchedulerService {
   private readonly cpuSpikeThreshold: number;
   private readonly conversationCooldownMs: number;
   private readonly keystrokeCooldownMs: number;
-  private readonly chunkCooldownMs: number;
-  private readonly throttledCooldownMs: number;
+
   private readonly resumeDelayMs: number;
   private readonly tickIntervalMs: number;
   private readonly logger: (message: string) => void;
@@ -118,21 +87,10 @@ export class IdleSchedulerService {
     this.conversationCooldownMs = opts.conversationCooldownMs ?? 30_000;
 
     this.keystrokeCooldownMs = opts.keystrokeCooldownMs ?? 10_000;
-    this.chunkCooldownMs = opts.chunkCooldownMs ?? 200;
-    this.throttledCooldownMs = opts.throttledCooldownMs ?? 2000;
     this.resumeDelayMs = opts.resumeDelayMs ?? 90_000;
     this.tickIntervalMs = opts.tickIntervalMs ?? 1000;
     this.logger = opts.logger ?? ((msg) => log.info(msg));
     this.prevCpuTimes = os.cpus();
-  }
-
-  enqueue(job: { filePath: string; mode: string; priority: number }): void {
-    this.queue.push({ ...job, enqueuedAt: Date.now() });
-
-    this.queue.sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority - b.priority;
-      return (a.enqueuedAt ?? 0) - (b.enqueuedAt ?? 0);
-    });
   }
 
   start(): void {
@@ -210,26 +168,17 @@ export class IdleSchedulerService {
     };
   }
 
-  getQueueLength(): number {
-    return this.queue.length;
-  }
-
-  // 현재 큐의 복사본 (관측용, 변이 금지)
-  peekQueue(): readonly IndexJob[] {
-    return this.queue.slice();
-  }
-
   getMetrics(): {
     state: IdleState;
     cpuEma: number;
-    queueLength: number;
+
     lastConversationAt: number;
     lastKeystrokeAt: number;
   } {
     return {
       state: this.state,
       cpuEma: this.cpuEma,
-      queueLength: this.queue.length,
+
       lastConversationAt: this.lastConversationAt,
       lastKeystrokeAt: this.lastKeystrokeAt,
     };
@@ -238,11 +187,6 @@ export class IdleSchedulerService {
   // 테스트 전용: 내부 tick을 수동 호출. 실제 setInterval 없이 단위 테스트 가능. 프로덕션 코드는 start()를 사용할 것.
   _testTick(): void {
     this._tick();
-  }
-
-  // 테스트 전용: 단일 job 처리.
-  async _testProcessOne(): Promise<void> {
-    await this._processOne();
   }
 
   // 테스트 전용: 상태 강제 전이.
@@ -278,13 +222,6 @@ export class IdleSchedulerService {
     this._updateCpuEma();
     this._reevaluate("tick");
 
-    if (this.state === "IDLE_SCAN" && this.queue.length > 0 && !this.processing) {
-      void this._processOne().catch((err) => {
-        this.logger(
-          `[idle-scheduler] process_one error: ${(err as Error).message ?? String(err)}`,
-        );
-      });
-    }
   }
 
   private _updateCpuEma(): void {
@@ -306,33 +243,6 @@ export class IdleSchedulerService {
       this.cpuEma = this.cpuEma * (1 - this.cpuEmaAlpha) + usage * this.cpuEmaAlpha;
     }
     this.prevCpuTimes = now;
-  }
-
-  private async _processOne(): Promise<void> {
-    if (this.processing) return;
-    const wc = this.opts.workerClient;
-    // No index worker client wired → indexing runs eagerly in the plugin's background worker, not deferred through this queue. Nothing to drain.
-    if (!wc) return;
-    const job = this.queue.shift();
-    if (!job) return;
-    this.processing = true;
-    try {
-      await wc.enqueue(job.filePath, job.mode, job.priority);
-      await wc.processOne();
-      // chunk cooldown — THROTTLED는 느리게, IDLE_SCAN은 기본
-      const cooldown =
-        this.state === "THROTTLED" ? this.throttledCooldownMs : this.chunkCooldownMs;
-      if (cooldown > 0) {
-        await sleep(cooldown);
-      }
-    } catch (err) {
-      // 실패 시 로그만, 재시도/DLQ는 추후 구현
-      this.logger(
-        `[idle-scheduler] enqueue/process failed for ${job.filePath}: ${(err as Error).message ?? String(err)}`,
-      );
-    } finally {
-      this.processing = false;
-    }
   }
 
   private _transition(newState: IdleState, reason: string): void {

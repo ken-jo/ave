@@ -1,12 +1,7 @@
-
-
-
-
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
-import { adoptLegacyRootFileSync } from "../main/storage/feature-namespace.js";
 const log = createLogger("starred-store");
 
 export interface StarredMessage {
@@ -26,7 +21,6 @@ export interface StarredStoreOptions {
 
 const FEATURE_ID = "sessions";
 const FILE_NAME = "starred.json";
-const LEGACY_ROOT_FILE = "starred.json";
 
 /** Store stars beside sessions so clearing sessions also removes their indexes; session enumeration excludes starred.json. */
 export class StarredStore {
@@ -36,10 +30,7 @@ export class StarredStore {
   constructor(options?: StarredStoreOptions) {
     const defaultPath = resolve(join(aveHome(), FEATURE_ID, FILE_NAME));
     this.filePath = resolve(options?.filePath ?? defaultPath);
-    // Migrate only the default path; custom callers must not touch a real user's store.
-    if (this.filePath === defaultPath) {
-      adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
-    }
+
     this.load();
   }
 

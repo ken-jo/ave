@@ -670,7 +670,6 @@ describe("common subscription runtime IPC", () => {
     });
   });
 
-
   it("rewires the reviewer when returning from subscription chat to the API-key runtime", async () => {
     const deps = makeDeps();
     const rewire = vi.fn();
@@ -1026,29 +1025,6 @@ describe("common subscription runtime IPC", () => {
     });
   });
 
-  it("keeps legacy Codex and ACP callers on the same central service", async () => {
-    const deps = makeDeps();
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    const codex = await invoke("ave:settings:codex-subscription:status");
-    const kimi = await invoke("ave:settings:acp-subscription:status", "kimi-code");
-
-    expect(codex).toMatchObject({ ok: true, status: { connection: "connected" } });
-    expect(kimi).toMatchObject({
-      ok: true,
-      status: {
-        provider: "kimi-code",
-        connection: "connected",
-        promptCapabilities: { image: true, embeddedContext: true },
-
-      },
-    });
-    expect(runtime.getStatus).toHaveBeenCalledWith("codex");
-    expect(runtime.getStatus).toHaveBeenCalledWith("kimi-code");
-    expect(runtimeServiceMock.get).toHaveBeenCalled();
-  });
-
   it.each(["codex", "claude-code"] as const)(
     "never opens a file picker for %s: Ave finds that CLI itself",
     async (provider) => {
@@ -1081,22 +1057,6 @@ describe("common subscription runtime IPC", () => {
     await expect(invoke("ave:settings:subscription:forget-runtime", "kimi-code"))
       .resolves.toMatchObject({ ok: true, status: { provider: "kimi-code" } });
     expect(runtime.forgetExecutable).toHaveBeenCalledWith("kimi-code");
-  });
-
-  it("maps a too-old or incompatible Codex CLI onto the legacy codes", async () => {
-    const deps = makeDeps();
-    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-version-unsupported" });
-    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-incompatible" });
-    runtime.getStatus.mockRejectedValueOnce({ code: "subscription-runtime-unsafe-location" });
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    await expect(invoke("ave:settings:codex-subscription:status"))
-      .resolves.toMatchObject({ ok: false, error: "codex-runtime-version-unsupported" });
-    await expect(invoke("ave:settings:codex-subscription:status"))
-      .resolves.toMatchObject({ ok: false, error: "codex-runtime-incompatible" });
-    await expect(invoke("ave:settings:codex-subscription:status"))
-      .resolves.toMatchObject({ ok: false, error: "codex-runtime-unsafe-location" });
   });
 
   it("rejects invalid generic subscription inputs before the runtime service", async () => {

@@ -123,7 +123,7 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       launchAtStartup: s.launchAtStartup,
       launchMinimized: s.launchMinimized,
       turnCompletionSoundEnabled: s.turnCompletionSoundEnabled,
-      sidebarActiveTab: s.sidebarActiveTab,
+
     };
   }
   if (settings.features) out.features = settings.features;

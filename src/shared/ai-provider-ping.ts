@@ -21,7 +21,3 @@ export type AiProviderPingResult =
       model?: string;
       error: "not-configured";
     };
-
-export type AiProviderPingIpcResult =
-  | AiProviderPingResult
-  | { ok: false; error: "unauthorized-frame" };

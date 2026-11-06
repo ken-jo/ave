@@ -147,39 +147,9 @@ describe("ave:runtime:counts", () => {
   });
 });
 
-describe("ave:runtime:env", () => {
-  it("returns { platform, hostname, user } — no cwd, no release", async () => {
-    await setupHandlers();
-
-    const result = await invokeRegisteredHandler(handlers, "ave:runtime:env") as Record<string, unknown>;
-
-    expect(typeof result.platform).toBe("string");
-    expect(result.platform).toBeTruthy();
-    expect(typeof result.hostname).toBe("string");
-    expect(result.hostname).toBeTruthy();
-    expect(typeof result.user).toBe("string");
-    expect(result.user).toBeTruthy();
-
-    expect(result).not.toHaveProperty("cwd");
-    expect(result).not.toHaveProperty("release");
-  });
-
-  it("rejects unauthorized sender frames", async () => {
-    await setupHandlers();
-
-    const result = await invokeRegisteredHandlerWithEvent(handlers,
-      "ave:runtime:env",
-      untrustedEvent(),
-    );
-
-    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-  });
-});
-
 describe("new runtime handlers — all reject unauthorized frames", () => {
   const channels = [
     "ave:runtime:counts",
-    "ave:runtime:env",
   ] as const;
 
   beforeEach(async () => {

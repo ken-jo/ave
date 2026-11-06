@@ -37,7 +37,7 @@ function subscribeForChatGroup<T>(
 
 function buildSurfaceForChatGroup(chatGroupId: string) {
   return {
-  chatHasProvider: async () => ipcRenderer.invoke(CHANNELS.chat.hasProvider, chatGroupId) as Promise<boolean>,
+
   chatListCustomCommands: async () =>
     ipcRenderer.invoke(CHANNELS.chat.listCustomCommands, chatGroupId) as Promise<{
       commands: import("../shared/custom-command.js").CustomCommandEntry[];
@@ -217,7 +217,6 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     getPerfStats: async () => ipcRenderer.invoke(CHANNELS.plugins.perfStats),
   },
 
-  getUsageSummary: async (days?: number) => ipcRenderer.invoke(CHANNELS.usage.summary, days),
   getUsageRange: async (opts: { dateFrom: string; dateTo: string }) => ipcRenderer.invoke(CHANNELS.usage.range, opts),
   exportUsageCsv: async (rows: Array<Record<string, string | number>>) => ipcRenderer.invoke(CHANNELS.usage.exportCsv, rows),
   };

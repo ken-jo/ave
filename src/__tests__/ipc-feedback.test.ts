@@ -18,13 +18,11 @@ const auditLog = vi.fn();
 const starredList = vi.fn(() => [] as unknown[]);
 const starredAdd = vi.fn(() => ({ id: "x", sessionId: "s1", messageIndex: 0, role: "assistant", text: "", starredAt: new Date().toISOString() }));
 
-const feedbackAdd = vi.fn(() => ({ id: "fb1", sessionId: "s1", messageIndex: 0, rating: "down", timestamp: new Date().toISOString() }));
-
 function makeServices(overrides: Record<string, unknown> = {}) {
   return {
     auditLogger: { log: auditLog, search: vi.fn(), getStats: vi.fn() },
     starredStore: { list: starredList, add: starredAdd, remove: vi.fn(), removeBySessionAndIndex: vi.fn(), listBySession: vi.fn() },
-    feedbackStore: { add: feedbackAdd, list: vi.fn(() => []), prune: vi.fn() },
+
     settingsService: { getAll: vi.fn(() => ({})), get: vi.fn(() => ({})), patch: vi.fn(), getSecret: vi.fn(() => null), setSecret: vi.fn(), deleteSecret: vi.fn() },
     conversationLoop: {
       getSessionId: vi.fn(() => "sess-test"),
@@ -50,7 +48,6 @@ function makeServices(overrides: Record<string, unknown> = {}) {
   };
 }
 
-
 import { registerIpcHandlers } from "../ipc-bridge.js";
 
 describe("ave:feedback:submit", () => {
@@ -59,7 +56,7 @@ describe("ave:feedback:submit", () => {
     auditLog.mockClear();
     starredList.mockClear();
     starredAdd.mockClear();
-    feedbackAdd.mockClear();
+
     registerIpcHandlers(makeServices() as never, () => null);
   });
 
@@ -67,7 +64,8 @@ describe("ave:feedback:submit", () => {
     const handler = handlers.get("ave:feedback:submit")!;
     const result = await handler(foreignFrameEvent("https://evil.example.com"), { sessionId: "s1", messageIndex: 0, rating: "up" });
     expect(result).toMatchObject({ ok: false, error: "unauthorized-frame" });
-    expect(feedbackAdd).not.toHaveBeenCalled();
+    expect(starredAdd).not.toHaveBeenCalled();
+    expect(auditLog.mock.calls.some(([entry]) => String(entry.input).startsWith("feedback:"))).toBe(false);
   });
 
   it("writes audit entry with correct stripped format for thumbs-up (no reason)", async () => {
@@ -83,29 +81,25 @@ describe("ave:feedback:submit", () => {
     expect(call.input).not.toMatch(/:/g.source.slice(0, -1) + "{4,}"); // no extra colon-delimited field
   });
 
-  it("writes feedback with reason to FeedbackStore, NOT audit log input", async () => {
+  it("keeps a dislike audit entry free of reason text", async () => {
     const handler = handlers.get("ave:feedback:submit")!;
     const result = await handler(hostFrameEvent(), { sessionId: "sess-42", messageIndex: 5, rating: "down", reason: "not helpful" });
     expect(result).toEqual({ ok: true });
-    expect(feedbackAdd).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "sess-42",
-      messageIndex: 5,
-      rating: "down",
-      reason: "not helpful",
-    }));
+
     expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "sess-42",
       input: "feedback:down:sess-42:5",
     }));
     const auditInput: string = (auditLog.mock.calls[0][0] as { input: string }).input;
     expect(auditInput).not.toContain("not helpful");
+    expect(starredAdd).not.toHaveBeenCalled();
   });
 
-  it("FeedbackStore receives reason without truncation (store owns retention)", async () => {
+  it("accepts a long reason without including it in the audit entry", async () => {
     const handler = handlers.get("ave:feedback:submit")!;
     const longReason = "x".repeat(300);
     await handler(hostFrameEvent(), { sessionId: "s", messageIndex: 0, rating: "down", reason: longReason });
-    expect(feedbackAdd).toHaveBeenCalledWith(expect.objectContaining({ reason: longReason }));
+
     const auditInput: string = (auditLog.mock.calls[0][0] as { input: string }).input;
     expect(auditInput).not.toContain("x");
   });
@@ -115,6 +109,7 @@ describe("ave:feedback:submit", () => {
     const handler = handlers.get("ave:feedback:submit")!;
     await handler(hostFrameEvent(), { sessionId: "s1", messageIndex: 2, rating: "up" });
     expect(starredAdd).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "s1", messageIndex: 2 }));
+    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ input: "feedback:up:s1:2" }));
   });
 
   it("skips auto-star on thumbs-up when already starred", async () => {

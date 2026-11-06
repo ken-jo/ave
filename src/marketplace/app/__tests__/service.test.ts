@@ -25,7 +25,6 @@ import { createPinnedFetch } from "../../net/pinned-fetch.js";
 import type { SourcePreviewResultView } from "../../../shared/git-marketplace.js";
 import { NO_ARTIFACT_CACHE } from "../../resolve/artifact-cache.js";
 import { migrateLegacyContent, type LegacyActivations, type LegacyContentReport } from "../../migration/legacy-content.js";
-import type { LegacyPluginReport, OfficialPlugin } from "../../migration/legacy-plugins.js";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import type { MarketplaceError } from "../../errors.js";
 import { OFFICIAL_MARKETPLACE, type OfficialMarketplace } from "../../sources/official.js";
@@ -52,7 +51,6 @@ import { setProcessPlatform } from "../../../__tests__/support/process-platform.
 import { aveHome, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
-
 
 vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
@@ -106,8 +104,7 @@ describe("MarketplaceService", () => {
   let catalogChanged: number;
   let afterCatalogChanged: (() => void) | null;
   let afterSourceSynced: ((sourceId: string) => void) | null;
-  let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
-  let legacyReport: LegacyPluginReport;
+
   let legacyActivations: LegacyActivations;
   let released: Array<{ themes: string[]; locales: string[] }>;
   let contentReports: LegacyContentReport[];
@@ -155,8 +152,6 @@ describe("MarketplaceService", () => {
     catalogChanged = 0;
     afterCatalogChanged = null;
     afterSourceSynced = null;
-    legacyRuns = [];
-    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [] };
     legacyActivations = { themes: [], locales: [], providers: [] };
     released = [];
     contentReports = [];
@@ -331,10 +326,7 @@ describe("MarketplaceService", () => {
       log: { warn: (message) => void warnings.push(message) },
       legacyMigration: {
         markerPath: join(root, "packages", "legacy-migration.json"),
-        plugins: async (officialPlugin) => {
-          legacyRuns.push(officialPlugin);
-          return legacyReport;
-        },
+
         content: async (ports) => {
           const report = await migrateLegacyContent({
             ...ports,
@@ -516,7 +508,6 @@ describe("MarketplaceService", () => {
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
     setAppRelaunchRequested(true);
     await expect(service.applyBootInstalls([], applied)).rejects.toMatchObject({ code: "relaunch-in-progress" });
-    expect(legacyRuns).toEqual([]);
     expect(contentReports).toEqual([]);
     expect(existsSync(join(root, "packages", "legacy-migration.json"))).toBe(false);
     expect(hasMarketplaceInstallInFlight()).toBe(false);
@@ -562,7 +553,6 @@ describe("MarketplaceService", () => {
     await expect(service.applyUpdate({ key, from: "1.0.0", to: "1.1.0", switchSource: false }, () => true)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
     await expect(service.applyBootInstalls([], applied)).rejects.toBeInstanceOf(AveHomeConfigurationRefusedWriteError);
-    expect(legacyRuns).toEqual([]);
     expect(store.list()).toEqual([]);
     expect(hasMarketplaceInstallInFlight()).toBe(false);
   });
@@ -673,7 +663,6 @@ describe("MarketplaceService", () => {
     expect(first.report.installed).toEqual([defaults[0]]);
     expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
     expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] , autoUpdated: [] });
-    expect(legacyRuns).toEqual([]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
 
     await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
@@ -716,28 +705,6 @@ describe("MarketplaceService", () => {
     }
   });
 
-  it("migrates existing installs once the official snapshot exists, once, and names what it unlocked", async () => {
-    const { url } = market("1.0.0", "ave");
-    service.close();
-    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
-    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
-    legacyReport = { bound: ["meeting"], unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], failed: [] };
-
-    const before = await service.applyBootInstalls([], applied);
-    expect(legacyRuns).toEqual([]);
-    expect(before.notice).toBeNull();
-
-    await service.refresh();
-    const first = await service.applyBootInstalls([], applied);
-    expect(legacyRuns).toHaveLength(1);
-    expect(legacyRuns[0]!("review")).toBeNull();
-    expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
-
-    const second = await service.applyBootInstalls([], applied);
-    expect(legacyRuns).toHaveLength(1);
-    expect(second.notice).toBeNull();
-  });
-
   it("adopts a legacy theme from the official source during the migration, and drops it from the legacy list", async () => {
     const { url } = market("1.0.0", "ave", { theme: true });
     service.close();
@@ -756,21 +723,6 @@ describe("MarketplaceService", () => {
 
     await service.applyBootInstalls([], applied);
     expect(contentReports).toHaveLength(1);
-  });
-
-  it("runs the migration again on the next boot while an entry could not be read", async () => {
-    const { url } = market("1.0.0", "ave");
-    service.close();
-    await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
-    await service.refresh();
-    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
-    legacyReport = { bound: [], unmanaged: [], lostGrants: [], failed: [{ plugin: "meeting", message: "plugin.json unreadable" }] };
-
-    await service.applyBootInstalls([], applied);
-    legacyReport = { bound: ["meeting"], unmanaged: [], lostGrants: [], failed: [] };
-    await service.applyBootInstalls([], applied);
-    await service.applyBootInstalls([], applied);
-    expect(legacyRuns).toHaveLength(2);
   });
 
   it.each([false, true])("captures retirement before a failed uninstall or policy lock (locked=%s)", async (locked) => {

@@ -5,8 +5,7 @@ import { dialog, ipcMain, webContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { canEmitEvent } from "../../plugins/capabilities.js";
@@ -116,7 +115,6 @@ import {
   PROCESS_ENTRY_REQUIRES_PINNED_ARTIFACT_CODE,
   PROCESS_ENTRY_UNCONFINED_CODE,
 } from "../../plugins/process-entry.js";
-import { aveHome } from "../../shared/ave-home.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import {
   handlePluginBundleE2eSnapshot,
@@ -484,47 +482,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.plugins.uiList, () => pluginRuntime.listUiExtensions());
 
-  ipcMain.handle(CHANNELS.plugins.uiReadModule, async (e, payload?: { pluginId?: string; viewId?: string }) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.plugins.uiReadModule, e);
-      throw new Error("Unauthorized renderer frame for ave:plugins:ui:read-module");
-    }
-
-    const pluginId = payload?.pluginId?.trim();
-    const viewId = payload?.viewId?.trim();
-    if (!pluginId || !viewId) {
-      throw new Error("pluginId and viewId are required to load a plugin UI module.");
-    }
-
-    const view = pluginRuntime
-      .listUiExtensions()
-      .find((item) => item.pluginId === pluginId && item.extension.id === viewId);
-    if (!view?.entryUrl) {
-      throw new Error(`Plugin UI entry not found (plugin=${pluginId}, view=${viewId}).`);
-    }
-    if (!view.entryUrl.startsWith("file:")) {
-      throw new Error(`Plugin UI entry is not file-backed (plugin=${pluginId}, view=${viewId}).`);
-    }
-
-    const entryPath = fileURLToPath(view.entryUrl);
-
-    const rawPluginRoot = pluginRuntime.getPluginRoot(pluginId);
-    if (!rawPluginRoot) {
-      throw new Error(`Plugin root not found (plugin=${pluginId}).`);
-    }
-    const pluginRoot = realpathSync(rawPluginRoot);
-    let resolvedEntryPath: string;
-    try {
-      resolvedEntryPath = realpathSync(entryPath);
-    } catch {
-      throw new Error(`Plugin UI entry path could not be resolved (plugin=${pluginId}).`);
-    }
-    if (!isPathWithin(pluginRoot, resolvedEntryPath)) {
-      throw new Error(`Plugin UI entry path escapes plugin directory (plugin=${pluginId}).`);
-    }
-    return readFile(resolvedEntryPath, "utf-8");
-  });
-
   ipcMain.handle(CHANNELS.plugins.cards, () => handlePluginCards(deps));
 
   ipcMain.handle(CHANNELS.plugins.contributionTrustList, (e, pluginId?: unknown) => {
@@ -599,16 +556,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     };
   });
 
-  ipcMain.handle(CHANNELS.runtime.env, async (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.runtime.env, e); return UNAUTHORIZED_FRAME; }
-    const os = await import("node:os");
-    return {
-      platform: process.platform,
-      hostname: os.hostname(),
-      user: os.userInfo().username,
-    };
-  });
-
   ipcMain.handle(CHANNELS.agents.list, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.agents.list, e);
@@ -632,66 +579,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
     const skills = deps.skillStore?.listCatalogSync() ?? [];
     return { skills };
-  });
-
-  ipcMain.handle(CHANNELS.agents.uninstall, async (e, slug: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.agents.uninstall, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const trimmed = typeof slug === "string" ? slug.trim() : "";
-    if (!trimmed) return { ok: false, error: "invalid-slug", message: "slug is required" } as const;
-    try {
-      const { uninstallAgentPackage } = await import("../../agents/agent-installer.js");
-      const result = await uninstallAgentPackage(trimmed, {
-        installRoot: path.resolve(aveHome(), "agents"),
-        registryPath: path.resolve(aveHome(), "agents", "registry.json"),
-      });
-      emitHostEvent("agent.uninstalled", { agentId: result.agentId, slug: result.slug, source: "marketplace" });
-      broadcastPluginLifecycleEvent(CHANNELS.agents.uninstallResult, {
-        slug: result.slug,
-        agentId: result.agentId,
-        success: true,
-      });
-      return { ok: true as const, slug: result.slug, agentId: result.agentId, uninstalled: true as const };
-    } catch (err) {
-      const message = (err as Error).message ?? "Agent uninstall failed";
-      broadcastPluginLifecycleEvent(
-        CHANNELS.agents.uninstallResult,
-        buildInstallFailureResult(trimmed, err, "Agent uninstall failed"),
-      );
-      return { ok: false as const, error: "uninstall-failed", message };
-    }
-  });
-
-  ipcMain.handle(CHANNELS.skills.uninstall, async (e, slug: string) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.skills.uninstall, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const trimmed = typeof slug === "string" ? slug.trim() : "";
-    if (!trimmed) return { ok: false, error: "invalid-slug", message: "slug is required" } as const;
-    try {
-      const { uninstallSkillPackage } = await import("../../skills/skill-installer.js");
-      const result = await uninstallSkillPackage(trimmed, {
-        installRoot: path.resolve(aveHome(), "skills"),
-        registryPath: path.resolve(aveHome(), "skills", "registry.json"),
-      });
-      emitHostEvent("skill.uninstalled", { skillId: result.skillId, slug: result.slug, source: "marketplace" });
-      broadcastPluginLifecycleEvent(CHANNELS.skills.uninstallResult, {
-        slug: result.slug,
-        skillId: result.skillId,
-        success: true,
-      });
-      return { ok: true as const, slug: result.slug, skillId: result.skillId, uninstalled: true as const };
-    } catch (err) {
-      const message = (err as Error).message ?? "Skill uninstall failed";
-      broadcastPluginLifecycleEvent(
-        CHANNELS.skills.uninstallResult,
-        buildInstallFailureResult(trimmed, err, "Skill uninstall failed"),
-      );
-      return { ok: false as const, error: "uninstall-failed", message };
-    }
   });
 
   ipcMain.handle(CHANNELS.plugins.configGet, (e, pluginId: string) => {

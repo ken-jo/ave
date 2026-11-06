@@ -5,13 +5,11 @@ import { createAutoUpdater } from "../../main/auto-updater.js";
 import { getMainWindow, getMainWindows } from "../../main/app-state.js";
 import { startCrashReporter } from "../../main/crash-reporter.js";
 import { TelemetryService } from "../../main/telemetry.js";
-import { PluginTelemetryClient, relocateDeviceUuid } from "../../telemetry/client.js";
+import { PluginTelemetryClient } from "../../telemetry/client.js";
 import { consentedTelemetryEndpoint } from "./service-endpoint.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
-import { onEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
-import { CHANNELS } from "../../contract/app-contract.js";
 const log = createLogger("ave");
 
 import type { ReleasePrepInput, ReleasePrepOutput } from "./post-boot.js";
@@ -43,22 +41,9 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     telemetry.start();
     telemetry.track("app_start");
 
-    const telemetrySettings = settingsService.get("telemetry");
-    if (!telemetrySettings.telemetryPromptAnswered) {
-      setTimeout(() => {
-        try {
-          if (!mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(CHANNELS.telemetry.consentPrompt);
-          }
-        } catch (e) {
-          log.warn("boot: telemetry consent prompt send failed: %s", (e as Error).message);
-        }
-      }, 500);
-    }
-
-    // Preserve device identity while moving telemetry into its feature namespace.
+    // Store device identity in the telemetry feature namespace.
     const deviceUuidPath = resolve(openFeatureNamespace("telemetry").dir, "device-uuid");
-    relocateDeviceUuid(resolve(app.getPath("userData"), ".ave", "device-uuid"), deviceUuidPath);
+
     // Resolve the telemetry endpoint only for opted-in users; announcements have separate consent.
     const ptClient = new PluginTelemetryClient({
       settings: () => settingsService.get("telemetry"),
@@ -68,36 +53,6 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     });
     pluginTelemetry = ptClient;
     ptClient.start();
-
-    onEvent("plugin.installed", (data) => {
-      const d = data as { pluginId?: string; version?: string } | undefined;
-      ptClient.track("plugin_install", {
-        slug: d?.pluginId ?? "unknown",
-        version: d?.version ?? "unknown",
-      });
-    });
-    onEvent("plugin.uninstalled", (data) => {
-      const d = data as { pluginId?: string; version?: string } | undefined;
-      ptClient.track("plugin_uninstall", {
-        slug: d?.pluginId ?? "unknown",
-        version: d?.version ?? "unknown",
-      });
-    });
-    onEvent("plugin.updated", (data) => {
-      const d = data as { pluginId?: string; version?: string } | undefined;
-      ptClient.track("plugin_update", {
-        slug: d?.pluginId ?? "unknown",
-        version: d?.version ?? "unknown",
-      });
-    });
-    onEvent("plugin.error", (data) => {
-      const d = data as { pluginId?: string; version?: string; errorClass?: string } | undefined;
-      ptClient.track("plugin_error", {
-        slug: d?.pluginId ?? "unknown",
-        version: d?.version ?? "unknown",
-        errorClass: d?.errorClass,
-      });
-    });
 
     registerShutdownHook("plugin-telemetry-flush", () => {
       try {

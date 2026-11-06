@@ -69,8 +69,6 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
       unsubs.push(api.onPluginInstallResult(handleInstallResult));
     }
     if (typeof api.onPluginUninstallResult === "function") unsubs.push(api.onPluginUninstallResult((payload) => handleUninstallResult(payload)));
-    if (typeof api.onAgentUninstallResult === "function") unsubs.push(api.onAgentUninstallResult((payload) => handleUninstallResult(payload, t("useStatusBarInstall.labelAgent"))));
-    if (typeof api.onSkillUninstallResult === "function") unsubs.push(api.onSkillUninstallResult((payload) => handleUninstallResult(payload, t("useStatusBarInstall.labelSkill"))));
     return () => {
       for (const u of unsubs) u();
     };

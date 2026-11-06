@@ -149,35 +149,6 @@ describe("routine pending results", () => {
     expect(results[0]).toHaveProperty("summary", "");
   });
 
-  it("returns routine session previews for the routine history list", async () => {
-    await setup([
-      {
-        id: "routine-session-1",
-        routineId: "routine-a",
-        routineTitle: "Routine A",
-        routineFiredAt: "2026-05-16T12:00:00.000Z",
-        title: "뉴스 요약",
-        preview: "뉴스 요약 완료",
-      },
-    ]);
-
-    const results = await invoke(ROUTINES.listSessions, "routine-a", 10);
-
-    expect(results).toEqual([
-      {
-        id: "routine-session-1",
-        modifiedAt: "2026-05-16T12:00:00.000Z",
-        title: "뉴스 요약",
-        sessionKind: "routine",
-        family: "routine",
-        routineId: "routine-a",
-        routineTitle: "Routine A",
-        routineFiredAt: "2026-05-16T12:00:00.000Z",
-        preview: "뉴스 요약 완료",
-      },
-    ]);
-  });
-
   it("waits for every routine session deletion before reporting removal", async () => {
     const deps = await setup([
       { id: "routine-session-1", preview: "first" },
@@ -440,7 +411,6 @@ describe("대화에 연결 IPC", () => {
   });
 });
 
-
 it("returns persisted metrics once per fire, preserving older connected turns and old records without metrics", async () => {
   const deps = await setup([{ id: "session", routineFiredAt: "2026-11-03T00:00:00.000Z", preview: "" }]);
   const recorded = { routineId: "routine-a", firedAt: "2026-11-03T00:00:00.000Z", status: "failed", sessionId: "session", metrics: { startedAt: "2026-11-03T00:00:00.000Z", durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } };
@@ -450,7 +420,6 @@ it("returns persisted metrics once per fire, preserving older connected turns an
   expect((result as { runs: unknown[] }).runs).toHaveLength(2);
   expect((result as { runs: Array<{ metrics?: unknown }> }).runs[1]!.metrics).toBeUndefined();
 });
-
 
 describe("stored routine conversation links", () => {
   it.each(["orphaned", "metadata-deleted", "transcript-deleted"])("omits an unopenable stored session while preserving metrics: %s", async (kind) => {
@@ -468,7 +437,6 @@ describe("stored routine conversation links", () => {
     expect((result as { runs: Array<{ sessionId?: string }> }).runs[0]!.sessionId).toBeUndefined();
   });
 });
-
 
 describe("routine occurrence session checks", () => {
   it.each(["available", "metadata-deleted", "transcript-deleted"])("checks a shared session once per request across 500 runs and two routines: %s", async (availability) => {

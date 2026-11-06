@@ -125,8 +125,7 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   });
   if (isAveHomeConfigurationOwner()) {
     await settingsService.migrateSecrets();
-    await settingsService.migrateRenamedVendorSecrets();
-    await settingsService.deleteRetiredMarketplaceApiKey();
+
     await settingsService.deleteRetiredLlmVendorApiKeys();
   }
   applyBootPiiRedactionPolicy(settingsService);

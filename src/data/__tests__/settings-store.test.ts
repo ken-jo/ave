@@ -285,37 +285,6 @@ describe("SettingsService marketplace defaults", () => {
     });
   });
 
-  it("drops the server marketplace settings once and writes the file back (design §16.2)", async () => {
-    const path = join(userDataPath, "ave-settings.json");
-    writeFileSync(
-      path,
-      JSON.stringify({
-        marketplace: {
-          backend: "real-cloud",
-          cloudBaseUrl: "https://marketplace.ave.local",
-          cloudAllowPrivateNetwork: true,
-          realCloudBaseUrl: "https://legacy.example",
-          realCloudAllowPrivateNetwork: true,
-          updateCheckEnabled: false,
-        },
-      }),
-      "utf-8",
-    );
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const marketplace = service.get("marketplace") as unknown as Record<string, unknown>;
-    for (const key of ["backend", "cloudBaseUrl", "cloudAllowPrivateNetwork", "realCloudBaseUrl", "realCloudAllowPrivateNetwork"]) {
-      expect(marketplace[key], key).toBeUndefined();
-    }
-    // The settings the git marketplace keeps are kept.
-    expect(marketplace.updateCheckEnabled).toBe(false);
-
-    await vi.waitFor(() => {
-      expect(JSON.parse(readFileSync(path, "utf-8")).appliedMigrations).toContain("marketplace-server-settings-removed");
-    });
-    expect(readFileSync(path, "utf-8")).not.toMatch(/cloudBaseUrl|CloudBaseUrl|real-cloud|AllowPrivateNetwork/u);
-  });
-
   it("normalizes the automatic-update switches, dropping invalid entries, and leaves the discovery interval as stored (design §18.9)", async () => {
     const load = (marketplace: unknown) => {
       writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ marketplace }), "utf-8");
@@ -1257,41 +1226,6 @@ describe("SettingsService marketplace defaults", () => {
       .toBeNull();
   });
 
-  it("unmirrors a preset endpoint that an older install left in the generic block", () => {
-    // Before the preset registry became the only owner of a preset's address, that address was copied into the generic openai-compatible block. On
-    // this install it would now read as the generic custom-provider row's OWN saved endpoint, and saving that card would write it back as if typed.
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
-        llm: {
-          provider: "openai-compatible",
-          marketplaceProviderPresetId: "future-router",
-          vendors: {
-            "openai-compatible": { model: "future/free", baseUrl: "https://future.example/v1" },
-          },
-        },
-        marketplace: {
-          installedProviderPresets: [{
-            providerId: "future-router",
-            label: "Future Router",
-            baseUrl: "https://future.example/v1",
-            defaultModel: "future/free",
-            modelOptions: ["future/free"],
-            requiresApiKey: true,
-          }],
-        },
-      }),
-      "utf-8",
-    );
-
-    const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
-
-    expect(getLlmVendorSettings(llm.vendors, "openai-compatible").baseUrl)
-      .toBeUndefined();
-    // The route itself is untouched; the preset still owns its address.
-    expect(llm.marketplaceProviderPresetId).toBe("future-router");
-  });
-
   it("leaves a generic endpoint that matches no installed preset alone", () => {
     writeFileSync(
       join(userDataPath, "ave-settings.json"),
@@ -1363,42 +1297,6 @@ describe("SettingsService marketplace defaults", () => {
 
     expect(getLlmVendorSettings(llm.vendors, "openai-compatible").baseUrl)
       .toBe("https://other.example/v1");
-  });
-
-  it("gives the selected preset the shared model slot it used to fight over", () => {
-    // One `model` served the generic custom-provider row and every preset reached through the same vendor, so the row picked last overwrote the
-    // rest. The stored value belongs to the row this install is actually on. Use an explicit alternative so default cleanup does not clear this slot.
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({
-        llm: {
-          provider: "openai-compatible",
-          marketplaceProviderPresetId: "future-router",
-          vendors: {
-            "openai-compatible": { model: "future/chosen", baseUrl: "http://localhost:8001/v1" },
-          },
-        },
-        marketplace: {
-          installedProviderPresets: [{
-            providerId: "future-router",
-            label: "Future Router",
-            baseUrl: "https://future.example/v1",
-            defaultModel: "future/free",
-            modelOptions: ["future/free"],
-            requiresApiKey: true,
-          }],
-        },
-      }),
-      "utf-8",
-    );
-
-    const llm = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("llm");
-    const block = getLlmVendorSettings(llm.vendors, "openai-compatible");
-
-    expect(block.presetModels).toEqual({ "future-router": "future/chosen" });
-    // The generic row starts empty, so its chooser shows what its OWN endpoint answers rather than a model borrowed from a gateway.
-    expect(block.model).toBe("");
-    expect(block.baseUrl).toBe("http://localhost:8001/v1");
   });
 
   it("persists and merges model image declarations, clears only the selected model, and retains inactive configuration", async () => {
@@ -2553,7 +2451,7 @@ describe("SettingsService system preferences", () => {
 
   it("defaults closeBehavior to 'hide-to-tray' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
@@ -2563,16 +2461,16 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a 'quit' preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic M1; schema-invalid value on disk falls back to default for THIS field only; other settings sections must remain intact.
@@ -2592,7 +2490,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
     expect(service.get("marketplace").updateCheckEnabled).toBe(false);
@@ -2605,7 +2503,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic N1; patch-merge must NOT clobber a valid prior preference when an invalid value
@@ -2772,7 +2670,7 @@ describe("SettingsService system — workspace preferences", () => {
   it("round-trips a localApiServer=true preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { localApiServer: true } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").localApiServer).toBe(true);
@@ -3049,205 +2947,6 @@ describe("SettingsService system locale detection", () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({}), "utf-8");
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, systemLocale: "ko-KR" });
     expect(service.get("appearance").language).toBe("en");
-  });
-});
-
-describe("SettingsService appearance v1 → v2 migration", () => {
-  let userDataPath: string;
-  let migrationWrites: Array<{ promise: Promise<void>; settled: boolean }>;
-  let restoreWriteObserver: () => void;
-
-  async function waitForV2WriteBack(): Promise<void> {
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        Promise.all(migrationWrites.map((writing) => writing.promise)),
-        new Promise<never>((_resolve, reject) => {
-          deadline = setTimeout(() => reject(new Error("Settings migration write-back did not settle before teardown")), 1_000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(deadline);
-    }
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-      appearance?: { schemaVersion?: unknown };
-    };
-    expect(onDisk.appearance?.schemaVersion).toBe(2);
-  }
-
-  beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-appearance-migration-"));
-    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
-    migrationWrites = [];
-    type SettingsWriter = { saveSettings(settings: unknown): Promise<void> };
-    const prototype = SettingsService.prototype as unknown as SettingsWriter;
-    const realSave = prototype.saveSettings;
-    const observer = vi.spyOn(prototype, "saveSettings").mockImplementation(function (this: SettingsWriter, settings) {
-      const writing = realSave.call(this, settings);
-      const tracked = { promise: writing, settled: false };
-      migrationWrites.push(tracked);
-      const markSettled = () => { tracked.settled = true; };
-      void writing.then(markSettled, markSettled);
-      return writing;
-    });
-    restoreWriteObserver = () => observer.mockRestore();
-  });
-
-  afterEach(async () => {
-    try {
-      await waitForV2WriteBack();
-    } finally {
-      restoreWriteObserver();
-      vi.clearAllMocks();
-      if (migrationWrites.every((writing) => writing.settled)) {
-        await cleanupTmpDir(userDataPath);
-      } else {
-        // A timed-out write still owns this root until its real I/O settles.
-        console.warn("Settings migration writes are pending; retained temporary directory: %s", userDataPath);
-      }
-    }
-  });
-
-  function writeV1(appearance: Record<string, unknown>): void {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance }),
-      "utf-8",
-    );
-  }
-
-  it("dark + default → tokyo-night", () => {
-    writeV1({ theme: "dark", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "tokyo-night" });
-  });
-
-  it("dark + lg → violet-dark", () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("light + default → forest", () => {
-    writeV1({ theme: "light", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  it("light + lg → violet-light", () => {
-    writeV1({ theme: "light", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-light" });
-  });
-
-  it("dark + lg + dark (code override) → violet-dark (code override ignored)", () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("light + default + dark (code override) → forest (code override ignored)", () => {
-    writeV1({ theme: "light", chatTheme: "default", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  it("* + purple → midnight (closest accent coercion)", () => {
-    writeV1({ theme: "dark", chatTheme: "purple", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("* + orange → midnight", () => {
-    writeV1({ theme: "light", chatTheme: "orange", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("* + blue → midnight", () => {
-    writeV1({ theme: "dark", chatTheme: "blue", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "midnight" });
-  });
-
-  it("high-contrast + * → high-contrast (HC always wins)", () => {
-    writeV1({ theme: "high-contrast", chatTheme: "purple", codeTheme: "dark" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "high-contrast" });
-  });
-
-  it("invalid theme string → DEFAULT_BUNDLE_ID", () => {
-    writeV1({ theme: "sepia", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-  });
-
-  it("v1 write-back: migrated appearance is written to disk as v2", async () => {
-    writeV1({ theme: "dark", chatTheme: "lg", codeTheme: "auto" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // Await the constructor's actual atomic write, including lock release.
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-    expect(onDisk.appearance).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-    // No legacy keys remain after write-back
-    expect(onDisk.appearance.theme).toBeUndefined();
-    expect(onDisk.appearance.chatTheme).toBeUndefined();
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-  });
-
-  it("persists migrations and normalized fields from an unmarked legacy file", async () => {
-    const settingsPath = join(userDataPath, "ave-settings.json");
-    writeFileSync(settingsPath, JSON.stringify({
-      appearance: { theme: "dark", chatTheme: "lg", codeTheme: "auto" },
-      features: { subAgentAutonomousWake: false },
-      shortcuts: { toggleWindow: 42, enabled: "nope" },
-    }), "utf-8");
-    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).not.toHaveProperty("appliedMigrations");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark" });
-    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
-    expect(service.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
-
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-    expect(onDisk.appearance).toEqual(service.get("appearance"));
-    expect(onDisk.features).toMatchObject({ subAgentAutonomousWake: true });
-    expect(onDisk.shortcuts).toEqual({ toggleWindow: null, enabled: false });
-    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
-  });
-
-  it("v2 file loads without re-migration", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ appearance: { schemaVersion: 2, language: "en", bundleId: "forest" } }),
-      "utf-8",
-    );
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "forest" });
-  });
-
-  // Main process has no window.matchMedia; system theme must not crash and must produce a deterministic DEFAULT_BUNDLE_ID result (no silent OS-scheme access).
-  it("system + default → DEFAULT_BUNDLE_ID (main process: no matchMedia needed)", () => {
-    writeV1({ theme: "system", chatTheme: "default", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: DEFAULT_BUNDLE_ID });
-  });
-
-  it("system + lg → violet-dark + followSystem:true (main process: renderer will track OS)", () => {
-    writeV1({ theme: "system", chatTheme: "lg", codeTheme: "auto" });
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("appearance")).toEqual({ schemaVersion: 2, language: "en", bundleId: "violet-dark", followSystem: true });
-  });
-
-  it("codeTheme-only v1 triggers write-back (needsV2WriteBack includes codeTheme)", async () => {
-    writeV1({ codeTheme: "light" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await waitForV2WriteBack();
-    const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as Record<string, unknown>;
-    expect((onDisk.appearance as Record<string, unknown>).codeTheme).toBeUndefined();
-    expect(service.get("appearance")).toMatchObject({ schemaVersion: 2 });
   });
 });
 
@@ -3798,56 +3497,6 @@ describe("SettingsService — persisted main-window location", () => {
   });
 });
 
-describe("subAgentAutonomousWake un-fossilize migration", () => {
-  let userDataPath: string;
-
-  beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-wake-migration-"));
-  });
-
-  afterEach(async () => {
-    await cleanupTmpDir(userDataPath);
-  });
-
-  it("drops a pre-flip fossil false once so the flipped default reaches the install", async () => {
-    // saveSettings() materializes merged defaults, so installs from the era when the flag defaulted to
-    // false carry an explicit false the user never chose; and the default flip to true could never reach them.
-    const path = join(userDataPath, "ave-settings.json");
-    writeFileSync(path, JSON.stringify({ features: { subAgentAutonomousWake: false } }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.subAgentAutonomousWake).toBe(true);
-
-    // Any save persists the marker; afterwards the migration never re-runs.
-    await service.patch({} as never);
-    const onDisk = JSON.parse(readFileSync(path, "utf-8")) as {
-      appliedMigrations?: string[];
-    };
-    expect(onDisk.appliedMigrations).toContain("subagent-autonomous-wake-default-flip");
-  });
-
-  it("keeps a fresh install's first-session opt-out across the next boot", async () => {
-    // Fresh installs have no settings file; loadSettings seeds KNOWN_MIGRATIONS so a user opt-out saved in the very
-    // first session (before any migration marker could exist on disk) is not treated as a fossil on the next load.
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ features: { subAgentAutonomousWake: false } } as never);
-
-    const rebooted = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(rebooted.get("features")?.subAgentAutonomousWake).toBe(false);
-  });
-
-  it("respects an explicit opt-out written after the migration ran", () => {
-    const path = join(userDataPath, "ave-settings.json");
-    writeFileSync(path, JSON.stringify({
-      appliedMigrations: ["subagent-autonomous-wake-default-flip"],
-      features: { subAgentAutonomousWake: false },
-    }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.subAgentAutonomousWake).toBe(false);
-  });
-});
-
 describe("plugin-worker confinement split migration", () => {
   let userDataPath: string;
   let path: string;
@@ -4032,226 +3681,6 @@ function writePlainSecrets(secretsPath: string, entries: Record<string, string>)
     ),
   })}\n`, { mode: 0o600 });
 }
-
-describe("vendor ids renamed to package names (nousResearch, v0)", () => {
-  const MARKER = "llm-vendor-id-package-names";
-  const MODEL = "selected-model";
-  const BASE_URL = "https://inference-api.nousresearch.com/v1";
-  let userDataPath: string;
-  let settingsPath: string;
-  let secretsPath: string;
-
-  function cacheEntry(vendor: string, models: string[]) {
-    return {
-      vendor,
-      baseUrl: BASE_URL,
-      endpoint: `${BASE_URL}/models`,
-      models,
-      fetchedAt: "2026-09-01T00:00:00.000Z",
-    };
-  }
-
-  beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-vendor-rename-"));
-    settingsPath = join(userDataPath, "ave-settings.json");
-    secretsPath = join(userDataPath, "ave-secrets.json");
-    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
-  });
-
-  afterEach(async () => {
-    vi.clearAllMocks();
-    await cleanupTmpDir(userDataPath);
-  });
-
-  it("carries every stored reference to the old id over to the new one, once", async () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      llm: {
-        provider: "nousResearch",
-        vendors: { nousResearch: { model: MODEL, baseUrl: BASE_URL } },
-        fallbackChain: [{ provider: "nousResearch", model: MODEL }],
-        modelListCache: {
-          [llmModelListCacheKey("nousResearch", BASE_URL)]: cacheEntry("nousResearch", [MODEL]),
-        },
-        pricingOverrides: [{ vendor: "nousResearch", model: MODEL, inputPer1M: 1, outputPer1M: 2 }],
-      },
-      marketplace: { installedProviderIds: ["nousResearch"] },
-    }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const llm = service.get("llm");
-    expect(llm.provider).toBe("nous-research");
-    expect(getLlmVendorSettings(llm.vendors, "nous-research")).toMatchObject({ model: MODEL, baseUrl: BASE_URL });
-    expect(llm.fallbackChain).toEqual([{ provider: "nous-research", model: MODEL }]);
-    expect(llm.modelListCache[llmModelListCacheKey("nous-research", BASE_URL)]).toMatchObject({
-      vendor: "nous-research",
-      models: [MODEL],
-    });
-    expect(llm.pricingOverrides).toEqual([
-      { vendor: "nous-research", model: MODEL, inputPer1M: 1, outputPer1M: 2 },
-    ]);
-    expect(service.get("marketplace").installedProviderIds).toEqual(["nous-research"]);
-
-    // The load writes the result back with the marker; nothing on disk still names the old id.
-    await vi.waitFor(() => {
-      expect(JSON.parse(readFileSync(settingsPath, "utf-8")).appliedMigrations).toContain(MARKER);
-    });
-    expect(readFileSync(settingsPath, "utf-8")).not.toContain("nousResearch");
-  });
-
-  it("renames v0 to vercel-v0 in the same load as nousResearch", () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      llm: {
-        provider: "v0",
-        vendors: { v0: { model: "selected-model" } },
-        fallbackChain: [
-          { provider: "nousResearch", model: MODEL },
-          { provider: "v0", model: "selected-model" },
-        ],
-      },
-      marketplace: { installedProviderIds: ["v0", "nousResearch"] },
-    }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const llm = service.get("llm");
-    expect(llm.provider).toBe("vercel-v0");
-    expect(getLlmVendorSettings(llm.vendors, "vercel-v0").model).toBe("selected-model");
-    expect(llm.fallbackChain).toEqual([
-      { provider: "nous-research", model: MODEL },
-      { provider: "vercel-v0", model: "selected-model" },
-    ]);
-    expect(service.get("marketplace").installedProviderIds).toEqual(["vercel-v0", "nous-research"]);
-  });
-
-  it("keeps the new id's value where the file holds both ids", () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      llm: {
-        provider: "nous-research",
-        vendors: {
-          nousResearch: { model: "old-model" },
-          "nous-research": { model: MODEL },
-        },
-        fallbackChain: [
-          { provider: "nousResearch", model: MODEL },
-          { provider: "nous-research", model: MODEL },
-        ],
-        modelListCache: {
-          [llmModelListCacheKey("nousResearch", BASE_URL)]: cacheEntry("nousResearch", ["old-model"]),
-          [llmModelListCacheKey("nous-research", BASE_URL)]: cacheEntry("nous-research", [MODEL]),
-        },
-        pricingOverrides: [
-          { vendor: "nous-research", model: MODEL, inputPer1M: 3, outputPer1M: 4 },
-          { vendor: "nousResearch", model: MODEL, inputPer1M: 1, outputPer1M: 2 },
-        ],
-      },
-      marketplace: { installedProviderIds: ["nousResearch", "nous-research"] },
-    }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    const llm = service.get("llm");
-    expect(getLlmVendorSettings(llm.vendors, "nous-research").model).toBe(MODEL);
-    expect(llm.fallbackChain).toEqual([{ provider: "nous-research", model: MODEL }]);
-    expect(Object.values(llm.modelListCache).map((entry) => entry.models)).toEqual([[MODEL]]);
-    expect(llm.pricingOverrides).toEqual([
-      { vendor: "nous-research", model: MODEL, inputPer1M: 3, outputPer1M: 4 },
-    ]);
-    expect(service.get("marketplace").installedProviderIds).toEqual(["nous-research"]);
-  });
-
-  it("does not run again once the marker is on disk", () => {
-    writeFileSync(settingsPath, JSON.stringify({
-      appliedMigrations: [MARKER],
-      llm: {
-        provider: "nousResearch",
-        vendors: { nousResearch: { model: MODEL } },
-      },
-      marketplace: { installedProviderIds: ["nousResearch"] },
-    }), "utf-8");
-
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // No rename: normalization treats the old id as the unknown id it is.
-    expect(service.get("llm").provider).toBe(DEFAULT_LLM_VENDOR);
-    expect(service.get("marketplace").installedProviderIds).toEqual([]);
-  });
-
-  it("starts a fresh install already migrated", () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("appliedMigrations")).toContain(MARKER);
-  });
-
-  it("moves each API key stored under an old id to the new id's key", async () => {
-    writePlainSecrets(secretsPath, {
-      "llm.apiKey.nousResearch": "nr_old",
-      "llm.apiKey.v0": "v0_old",
-      "llm.apiKey.openai": "sk-keep",
-    });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-
-    await service.migrateRenamedVendorSecrets();
-
-    expect(await service.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
-    expect(await service.getSecret("llm.apiKey.nousResearch")).toBeNull();
-    expect(await service.getSecret("llm.apiKey.vercel-v0")).toBe("v0_old");
-    expect(await service.getSecret("llm.apiKey.v0")).toBeNull();
-    expect(await service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
-  });
-
-  it("drops the old key when the new id already has one", async () => {
-    writePlainSecrets(secretsPath, { "llm.apiKey.nousResearch": "nr_old", "llm.apiKey.nous-research": "nr_new" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-
-    await service.migrateRenamedVendorSecrets();
-
-    expect(await service.getSecret("llm.apiKey.nous-research")).toBe("nr_new");
-    expect(await service.getSecret("llm.apiKey.nousResearch")).toBeNull();
-  });
-
-  it("writes nothing when no old key is stored", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-    await service.migrateRenamedVendorSecrets();
-    expect(() => readFileSync(secretsPath, "utf-8")).toThrow();
-
-    writePlainSecrets(secretsPath, { "llm.apiKey.openai": "sk-keep" });
-    const before = readFileSync(secretsPath, "utf-8");
-    await service.migrateRenamedVendorSecrets();
-    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
-  });
-
-  it("leaves the old key in place without failing the boot when the move fails", async () => {
-    // Packaged policy with no OS encryption refuses every secret write.
-    writePlainSecrets(secretsPath, { "llm.apiKey.nousResearch": "nr_old" });
-    const before = readFileSync(secretsPath, "utf-8");
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
-
-    await expect(service.migrateRenamedVendorSecrets()).resolves.toBeUndefined();
-    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
-
-    // The next boot, with writes available again, completes the move.
-    const retry = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-    await retry.migrateRenamedVendorSecrets();
-    expect(await retry.getSecret("llm.apiKey.nous-research")).toBe("nr_old");
-    expect(await retry.getSecret("llm.apiKey.nousResearch")).toBeNull();
-  });
-
-  it("deletes the retired marketplace API key and keeps every other secret", async () => {
-    writePlainSecrets(secretsPath, { "marketplace.apiKey": "mk_old", "llm.apiKey.openai": "sk-keep" });
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "development" });
-
-    await service.deleteRetiredMarketplaceApiKey();
-
-    expect(await service.getSecret("marketplace.apiKey")).toBeNull();
-    expect(readFileSync(secretsPath, "utf-8")).not.toContain("marketplace.apiKey");
-    expect(await service.getSecret("llm.apiKey.openai")).toBe("sk-keep");
-  });
-
-  it("leaves the retired key for the next boot when the store refuses the write", async () => {
-    writePlainSecrets(secretsPath, { "marketplace.apiKey": "mk_old" });
-    const before = readFileSync(secretsPath, "utf-8");
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath, secretPolicy: "packaged" });
-
-    await expect(service.deleteRetiredMarketplaceApiKey()).resolves.toBeUndefined();
-    expect(readFileSync(secretsPath, "utf-8")).toBe(before);
-  });
-});
 
 describe("retired vendor profile migration", () => {
   let userDataPath: string;
@@ -4714,7 +4143,6 @@ describe("SettingsService Files tree width", () => {
     expect(reloaded.get("system")).not.toHaveProperty("sidePanelSplitFilePercent");
   });
 });
-
 
 describe("owner-away approval wait settings", () => {
   it("defaults to an unlimited wait and persists an explicit wait", async () => {

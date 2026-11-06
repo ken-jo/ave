@@ -164,28 +164,6 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     return browserTabRegistry.sessionBindingsState(win.id);
   });
 
-  ipcMain.handle(CHANNELS.browser.pausePopup, (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.pausePopup, e);
-      return { ok: false, error: "unauthorized-frame" };
-    }
-    const win = mainWindowForContents(e.sender);
-    const tabId = asTabId((payload as { tabId?: unknown } | null)?.tabId);
-    if (!win || tabId === null) return { ok: false, error: "bad-request" };
-    return browserTabRegistry.pausePopup(win.id, tabId) ? { ok: true } : { ok: false, error: "no-such-tab" };
-  });
-
-  ipcMain.handle(CHANNELS.browser.resumePopup, (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.browser.resumePopup, e);
-      return { ok: false, error: "unauthorized-frame" };
-    }
-    const win = mainWindowForContents(e.sender);
-    const tabId = asTabId((payload as { tabId?: unknown } | null)?.tabId);
-    if (!win || tabId === null) return { ok: false, error: "bad-request" };
-    return browserTabRegistry.resumePopup(win.id, tabId) ? { ok: true } : { ok: false, error: "not-resumable" };
-  });
-
   ipcMain.handle(CHANNELS.surface.setActive, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.surface.setActive, e);

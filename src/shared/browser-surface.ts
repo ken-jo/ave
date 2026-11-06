@@ -156,9 +156,7 @@ export interface BrowserTabsApi {
   stop(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   pause(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   resume(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
-  /** Native popup operations take main-issued handles and never renderer slot ids. */
-  pausePopup(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
-  resumePopup(tabId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+
   /** Future requests only; main independently observes bind, active guest or destruction for completion. */
   onTabOp(handler: (request: BrowserTabOpRequest) => void): () => void;
   /** Future full snapshots only; use getState after subscribing for initial state. */

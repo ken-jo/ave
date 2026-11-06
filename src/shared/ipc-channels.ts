@@ -5,8 +5,7 @@
 export const OVERLAY_V1 = {
   /** main → renderer: push a new OverlayItem into the renderer queue */
   show: "ave:overlay:show",
-  /** main → renderer: patch an existing OverlayItem (e.g. running→done) */
-  update: "ave:overlay:update",
+
   /** main → renderer: remove an item by id */
   dismiss: "ave:overlay:dismiss",
 } as const;
@@ -31,14 +30,14 @@ export const ALERTS = {
 export const ROUTINES = {
   list: "ave:routines:list",
   add: "ave:routines:add",
-  dismiss: "ave:routines:dismiss",
+
   remove: "ave:routines:remove",
   triggerNow: "ave:routines:trigger-now",
   fired: "ave:routines:fired",
   pendingResults: "ave:routines:pending-results",
   acknowledgeResult: "ave:routines:ack-result",
   acknowledgeFailure: "ave:routines:ack-failure",
-  listSessions: "ave:routines:list-sessions",
+
   // Schedule panel: user edit, reversible pause, and projected occurrences plus past runs for the grids.
   update: "ave:routines:update",
   pause: "ave:routines:pause",
@@ -87,12 +86,10 @@ export const WORK_BOARD = {
   decidePlan: "ave:work-board:decide-plan",
   // Renderer → main: read a past run's persisted transcript (sessions/<itemId>/<runId>.jsonl) for the run-history view.
   runTranscript: "ave:work-board:run-transcript",
-  // Renderer → main: list the open proposals, accept one (creating the work item it becomes), or dismiss one.
-  listProposals: "ave:work-board:list-proposals",
+
   acceptProposal: "ave:work-board:accept-proposal",
   dismissProposal: "ave:work-board:dismiss-proposal",
-  // Main → renderer: the proposal set moved; a plugin posted or withdrew one, or the user accepted or dismissed one; so the board re-lists.
-  proposalChanged: "ave:work-board:proposal-changed",
+
 } as const;
 
 // Work-level decisions ("확인 필요"), kept apart from tool-execution approvals (the chat ApprovalDock). A read-only projection over the stores

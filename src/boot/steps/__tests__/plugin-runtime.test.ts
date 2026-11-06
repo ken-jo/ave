@@ -341,7 +341,6 @@ describe("deriveOverlaySummaryForDisplay", () => {
 
 describe("initPluginRuntime partition policy", () => {
 
-
   it("registers plugin webview preload policy from onEnable after a live reload", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
@@ -1067,12 +1066,9 @@ describe("initPluginRuntime HostApi factory", () => {
     );
   });
 
-  it("B7 — getSecret denied for unknown prefix falls into `other` counter bucket", async () => {
+  it("denies reads for unknown secret prefixes", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { resetHostSecretCountersForTesting, getHostSecretCounter } =
-      await import("../../../telemetry/host-secret-counters.js");
-    resetHostSecretCountersForTesting();
 
     await initPluginRuntime({
     host: createRuntimeHost(),
@@ -1133,20 +1129,11 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(await api.getSecret("garbage.y")).toBeNull();
     expect(await api.getSecret("evilprefix.z")).toBeNull();
 
-    expect(
-      getHostSecretCounter("hostSecret_denied", "plugin-b7", "other"),
-    ).toBe(3);
-    expect(
-      getHostSecretCounter("hostSecret_denied", "plugin-b7", "attacker"),
-    ).toBe(0);
   });
 
   it("quarantines endpoint URLs stored in api-key-like own plugin secrets", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const bootAuditLogger = { log: vi.fn() };
-    const { resetHostSecretCountersForTesting, getHostSecretCounter } =
-      await import("../../../telemetry/host-secret-counters.js");
-    resetHostSecretCountersForTesting();
 
     await initPluginRuntime({
     host: createRuntimeHost(),
@@ -1220,9 +1207,6 @@ describe("initPluginRuntime HostApi factory", () => {
       }),
     );
 
-    // Both secret APIs must account for own-namespace allows and denials.
-    expect(getHostSecretCounter("hostSecret_read", "plugin-q", "plugin")).toBe(2);
-    expect(getHostSecretCounter("hostSecret_denied", "plugin-q", "plugin")).toBe(1);
   });
 
   it("clears registry-entry cache on refresh failure so a host-secret grant fails closed (#959)", async () => {

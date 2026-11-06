@@ -305,7 +305,6 @@ vi.mock("../plugin-surface-permissions.js", () => ({
 }));
 
 vi.mock("../../data/starred-store.js", () => ({ StarredStore: class {} }));
-vi.mock("../../data/feedback-store.js", () => ({ FeedbackStore: class {} }));
 
 vi.mock("../../mcp/mcp-governance.js", () => ({
   McpGovernance: class {
@@ -747,7 +746,6 @@ describe("bootstrap() integration lock", () => {
         "bashAstValidator",
         "clearAuthPartitionService",
         "conversationLoop",
-        "feedbackStore",
         "findChatGroupLoop",
         "findLoopBySessionId",
         "flushTracing",

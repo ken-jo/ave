@@ -28,7 +28,6 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:chat:continue-last-user": "sensitive",
   "ave:chat:retry-effort": "sensitive",
   "ave:chat:export": "sensitive",
-  "ave:memory:entries:list": "sensitive",
   "ave:memory:entries:delete": "mutating",
   "ave:memory:undo": "mutating",
   "ave:memory:entries:search": "sensitive",
@@ -77,14 +76,11 @@ const CHANNEL_MANIFEST: Record<string, "mutating" | "sensitive" | "public-read">
   "ave:starred:remove": "sensitive",
   "ave:audit:search": "public-read",
   "ave:audit:stats": "public-read",
-  "ave:telemetry:consent-answer": "mutating",
   // Routines v2; invoke channels only (fired/running-started/running-finished are main→renderer push, no handle)
   "ave:routines:list": "public-read",
   "ave:routines:add": "mutating",
-  "ave:routines:dismiss": "mutating",
   "ave:routines:remove": "mutating",
   "ave:routines:trigger-now": "mutating",
-  "ave:routines:list-sessions": "public-read",
 };
 
 describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", () => {
@@ -136,10 +132,8 @@ describe("ipc-bridge.ts — mutating/sensitive channels have a sender guard", ()
   const channelConstantAliases: Record<string, string> = {
     "ave:routines:list": "ROUTINES.list",
     "ave:routines:add": "ROUTINES.add",
-    "ave:routines:dismiss": "ROUTINES.dismiss",
     "ave:routines:remove": "ROUTINES.remove",
     "ave:routines:trigger-now": "ROUTINES.triggerNow",
-    "ave:routines:list-sessions": "ROUTINES.listSessions",
     "ave:permission:get-mode": "PERMISSIONS.getMode",
     "ave:permission:set-mode": "PERMISSIONS.setMode",
     "ave:permission:list-rules": "PERMISSIONS.listRules",

@@ -78,7 +78,6 @@ import {
   type RequirementSourceState,
 } from "../boot-installs/run.js";
 import type { LegacyContentKind, LegacyContentReport } from "../migration/legacy-content.js";
-import type { LegacyPluginReport, OfficialPlugin } from "../migration/legacy-plugins.js";
 import { runLegacyMigration } from "../migration/run.js";
 import { readDirectPackage } from "../sources/direct-package.js";
 import { isReservedSourceId, isSourceId, OFFICIAL_MARKETPLACE, type SourceAuth } from "../sources/official.js";
@@ -294,7 +293,6 @@ export interface MarketplaceServiceOptions {
   onPackageTransactionsIdle?: () => void;
   legacyMigration: {
     markerPath: string;
-    plugins(officialPlugin: (name: string) => OfficialPlugin | null, applied: AppliedDefaults): Promise<LegacyPluginReport>;
     content(ports: {
       listed(kind: LegacyContentKind, name: string): boolean;
       installed(kind: LegacyContentKind, name: string): Promise<boolean>;
@@ -2195,10 +2193,9 @@ export class MarketplaceService implements RetirementEntryLookup {
     signal?: AbortSignal,
   ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
     signal?.throwIfAborted();
-    const legacy = await runLegacyMigration({
+    await runLegacyMigration({
       markerPath: this.options.legacyMigration.markerPath,
       officialSnapshot: await this.options.syncer.readSnapshot(OFFICIAL_MARKETPLACE.id),
-      plugins: (officialPlugin) => this.options.legacyMigration.plugins(officialPlugin, applied),
       content: (listed) =>
         this.options.legacyMigration.content({
           listed,
@@ -2230,7 +2227,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       now: () => this.now(),
       ...(signal ? { signal } : {}),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.policy, legacy?.plugins ?? null, revoked) };
+    return { report, notice: bootInstallNoticeFrom(report, this.policy, null, revoked) };
   }
 
   /** Enforce persisted revocations before network work, reporting each outcome once per session.
