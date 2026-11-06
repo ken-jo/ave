@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { effectiveRevocations } from "./effective-revocations.js";
 import { createHash } from "node:crypto";
 import { appVersionSatisfiesMin, compareSemver } from "../../shared/semver-compare.js";
-import { HOST_PROTOCOL_VERSION } from "../../plugins/isolation/host-api-wire.js";
+import { supportsHostProtocol } from "./host-protocol.js";
 import type { SourceOrigin } from "../sources/registry.js";
 import type { CatalogPackage, SourceSnapshot } from "../sources/snapshot.js";
 import type { IndexVersion, PackageKind, Revocation } from "./types.js";
@@ -64,7 +64,7 @@ export function versionExclusions(
 ): VersionExclusion[] {
   const reasons: VersionExclusion[] = [];
   if (!appVersionSatisfiesMin(context.appVersion, version.minAppVersion)) reasons.push("min_app_version");
-  if (kind === "plugin" && version.hostProtocol !== HOST_PROTOCOL_VERSION) reasons.push("host_protocol");
+  if (!supportsHostProtocol(kind, version.hostProtocol)) reasons.push("host_protocol");
   if (version.yanked) reasons.push("yanked");
   if (version.platforms && !version.platforms.includes(context.platform as "darwin" | "win32" | "linux")) reasons.push("platform");
   if (isPrerelease(version.version) && !context.canaryOptIn) reasons.push("prerelease");

@@ -28,6 +28,7 @@ import { sourceStatus } from "../../app/views.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
+import mixedHostProtocols from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
 
 const AT = "2026-09-23T00:00:00.000Z";
 const OTHER_COMMIT = "c".repeat(40);
@@ -1000,6 +1001,26 @@ describe("SourceSyncer", () => {
       appVersion: "0.13.0", platform: "win32", canaryOptIn: false, installationId: "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b",
     })).toEqual(["platform"]);
     expect(offer("win32").choice).toEqual({ state: "unavailable", reason: "withheld" });
+  });
+
+  it("publishes only current-protocol versions with their exclusion diagnostics", async () => {
+    const { repo, name } = fixture();
+    const input = structuredClone(mixedHostProtocols);
+    input.name = "acme";
+    repo.commit({ "marketplace.json": JSON.stringify(input) }, "publish protocol versions");
+    const { registry, syncer, changed } = await setup();
+    await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
+    expect(await syncer.sync("acme")).toMatchObject({ status: "ok", changed: true });
+    const snapshot = (await syncer.readSnapshot("acme"))!;
+    expect(snapshot.packages).toHaveLength(1);
+    expect(snapshot.packages[0]!.versions.map((version) => version.version)).toEqual(["0.10.3"]);
+    expect(snapshot.diagnostics).toEqual([{ subject: "plugin/meeting", message: "version 0.10.2: foreign-host-protocol" }]);
+    const rows = aggregateCatalog([{ sourceId: "acme", sourceOrigin: "custom", snapshot }], {
+      appVersion: "0.14.0", platform: "darwin", canaryOptIn: false, installationId: "catalog-test",
+    });
+    expect(rows[0]!.choice).toMatchObject({ state: "candidate", version: { version: "0.10.3" } });
+    expect(await syncer.sync("acme")).toMatchObject({ status: "ok", changed: false });
+    expect(changed).toEqual(["acme"]);
   });
 
   it("joins a sync that is already running for the same source", async () => {
