@@ -4,6 +4,7 @@ import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
+import { appearanceApiSurface } from "./appearance-api-surface.js";
 import { consumeUserKeyboardIntent } from "./gesture-intent.js";
 import type { UserKeyboardIntentSnapshot } from "../shared/chat-origin.js";
 import type { SideChatOperationFailure } from "../shared/side-chat-operation.js";
@@ -17,7 +18,6 @@ import {
   OVERLAY_V1,
   PERMISSIONS,
   ROUTINES,
-  SETTINGS,
   WORK_BOARD,
   WORK_APPROVALS,
   type AgentInstallResultPayload,
@@ -172,8 +172,7 @@ async function invokeRemoteA2AAction(
 export function buildInternalApiSurface() {
   return {
   relaunchApp: () => ipcRenderer.invoke(CHANNELS.app.relaunch, { intent: ipcUserKeyboardIntent() }) as Promise<AppRelaunchResult>,
-  getSettings: async () => ipcRenderer.invoke(CHANNELS.settings.get),
-  updateSettings: async (partial: unknown) => ipcRenderer.invoke(CHANNELS.settings.update, partial),
+  ...appearanceApiSurface,
   // Parsed here rather than in the renderer: an unrecognized path is drift in this build's own registry, not something to render.
   envForcedSettings: async () =>
     parseEnvForcedSettingsPaths(await ipcRenderer.invoke(CHANNELS.settings.envForcedSettings)) ?? [],
@@ -200,11 +199,6 @@ export function buildInternalApiSurface() {
   installedContent: buildInstalledContentApiSurface(),
   telegramConnection: buildTelegramConnectionApiSurface(),
   documentEngine: buildDocumentEngineApiSurface(),
-  onSettingsUpdated: (handler: Parameters<AveApi["onSettingsUpdated"]>[0]) => {
-    const listener = (_event: unknown, settings: Parameters<typeof handler>[0]) => handler(settings);
-    ipcRenderer.on(SETTINGS.updated, listener);
-    return () => ipcRenderer.removeListener(SETTINGS.updated, listener);
-  },
   onSubscriptionRuntimeStatusUpdated: (
     handler: (event: SubscriptionRuntimeStatusUpdatedEvent) => void,
   ) => {
@@ -434,12 +428,6 @@ export function buildInternalApiSurface() {
   applyClaudeDesktopMcpImport: async (payload: { raw: string; conflictPolicy?: "skip" | "overwrite" }) =>
     ipcRenderer.invoke(CHANNELS.mcp.importClaudeDesktopApply, payload),
 
-  notifyPluginTheme: (payload: {
-    bundleId: string;
-    shell: "light" | "dark";
-    tokens: Record<string, string>;
-  }) =>
-    ipcRenderer.invoke(CHANNELS.host.pluginThemeNotify, payload),
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 

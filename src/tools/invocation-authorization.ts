@@ -1076,6 +1076,7 @@ export async function authorizeToolInvocation(
           }
           decision = await services.approvalGate.requestAndWait({
             ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
+            ...(hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan }),
             ...approvalRequest,
             // The other half of the abort check just above. That one refuses
             // to open a dialog for a turn already stopped; this one is what

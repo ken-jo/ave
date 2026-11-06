@@ -22,14 +22,27 @@ function isConsentJson(value: unknown, depth = 0): value is ConsentJson {
 }
 
 /** Reject extra or malformed fingerprint fields rather than guess a baseline. */
-export function parseConsentFingerprint(value: unknown, what: string): ConsentFingerprint {
+function parseFingerprint(value: unknown, what: string): { kind: string; fields: ConsentFingerprint["fields"]; unknown: string[] } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${what} is not a consent fingerprint`);
   const record = value as Record<string, unknown>;
   if (Object.keys(record).some((key) => key !== "kind" && key !== "fields" && key !== "unknown")) throw new Error(`${what} has an unknown field`);
-  if (typeof record.kind !== "string" || !KINDS.has(record.kind)) throw new Error(`${what}.kind is not a package kind`);
+  if (typeof record.kind !== "string") throw new Error(`${what}.kind is not a package kind`);
   if (typeof record.fields !== "object" || record.fields === null || Array.isArray(record.fields) || !isConsentJson(record.fields)) {
     throw new Error(`${what}.fields is not a JSON object`);
   }
   if (!Array.isArray(record.unknown) || !record.unknown.every((field) => typeof field === "string")) throw new Error(`${what}.unknown is not a list of fields`);
-  return { kind: record.kind as PackageKind, fields: record.fields as Record<string, ConsentJson>, unknown: [...record.unknown as string[]] };
+  return { kind: record.kind, fields: record.fields as Record<string, ConsentJson>, unknown: [...record.unknown as string[]] };
+}
+
+/** Current callers never accept retired consent as install authority. */
+export function parseConsentFingerprint(value: unknown, what: string): ConsentFingerprint {
+  const fingerprint = parseFingerprint(value, what);
+  if (!KINDS.has(fingerprint.kind)) throw new Error(`${what}.kind is not a package kind`);
+  return { ...fingerprint, kind: fingerprint.kind as PackageKind };
+}
+
+/** Validate the released fingerprint before its containing retired ledger entry is removed. */
+export function assertRetiredThemeConsent(value: unknown, what: string): void {
+  const fingerprint = parseFingerprint(value, what);
+  if (fingerprint.kind !== "theme") throw new Error(`${what}.kind is not a package kind`);
 }

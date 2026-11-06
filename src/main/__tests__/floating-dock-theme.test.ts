@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { emitEvent } from "../../boot/types.js";
-import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/plugin-theme-cache.js";
+import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
   windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[]; attach(prefs: Record<string, unknown>, params: Record<string, string>): boolean; prefs: Record<string, unknown> }>,
@@ -158,7 +158,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     await import("../../floating-dock-preload.js");
     await import("../../floating-dock-window.js");
   }
-  // What the host renderer's theme notify does in main: validate into the cache, then broadcast (plugins.ts).
+  // What the host renderer's theme notify does in main: validate the replay payload, then broadcast (plugins.ts).
   function publish(theme: unknown) {
     const recorded = recordValidatedTheme(theme);
     if (!recorded.ok) throw new Error(recorded.error);
@@ -169,7 +169,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
   it("opens in the theme published before it, repaints for each later one, and asks main for nothing", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
-    publish({ bundleId: "moonstone", shell: "dark", tokens: THEME.tokens });
+    publish({ bundleId: "github-dark", shell: "dark", tokens: THEME.tokens });
 
     dock.show(BOUNDS);
     await openWindow(windows[0]!.args);
@@ -177,7 +177,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("hsl(210, 40%, 12%)");
 
-    publish({ bundleId: "moonstone", shell: "dark", tokens: NEXT.tokens });
+    publish({ bundleId: "github-dark", shell: "dark", tokens: NEXT.tokens });
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
 

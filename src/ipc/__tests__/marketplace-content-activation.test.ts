@@ -26,11 +26,9 @@ vi.mock("electron", () => ({
 import { SettingsService } from "../../data/settings-store.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
-import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { installedFontStack } from "../../shared/installed-content.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
-import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as configurationAccess from "../../shared/ave-home-configuration-access.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -124,12 +122,10 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([]);
   });
 
-  it("returns a selected theme, language or font to the default when its package is removed", async () => {
+  it("returns a selected language or font to the default when its package is removed", async () => {
     const activation = createContentActivation(deps);
-    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), bundleId: "harbor", language: "fr", font: { family: installedFontStack("harbor-sans") } } });
+    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "fr", font: { family: installedFontStack("harbor-sans") } } });
 
-    await activation.deactivate(entry("theme", "harbor"), null);
-    expect(settingsService.get("appearance").bundleId).toBe(DEFAULT_BUNDLE_ID);
 
     await activation.deactivate(entry("language", "french"), { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: {}, missingKeys: [] });
     expect(settingsService.get("appearance").language).toBe("en");
@@ -226,20 +222,16 @@ describe("createContentActivation", () => {
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
 
-    const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
-    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
-    await expect(activation.activate(nord, entry("theme", "nord"), null, false)).resolves.toEqual({ retired: expect.any(Promise) });
   });
 
-  it("reads the legacy activations for the first-boot migration, and drops only the theme ids and locales it was given", async () => {
+  it("reads the legacy activations for the first-boot migration, and drops only the locales it was given", async () => {
     await settingsService.installMarketplaceProviderPreset(preset);
-    await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"], installedThemeBundleIds: ["nord", "forest"], installedLanguagePacks: ["ko"] } });
+    await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"], installedLanguagePacks: ["ko"] } });
     const legacy = legacyContentSettings(deps);
-    expect(legacy.activations).toEqual({ themes: ["nord", "forest"], locales: ["ko"], providers: ["azure-foundry", "harbor-llm"] });
+    expect(legacy.activations).toEqual({ locales: ["ko"], providers: ["azure-foundry", "harbor-llm"] });
 
-    await legacy.release({ themes: ["nord"], locales: ["ko"] });
+    await legacy.release({ locales: ["ko"] });
     expect(settingsService.get("marketplace")).toMatchObject({
-      installedThemeBundleIds: ["forest"],
       installedLanguagePacks: [],
       installedProviderIds: ["azure-foundry"],
       installedProviderPresets: [expect.objectContaining({ providerId: "harbor-llm" })],
@@ -247,12 +239,6 @@ describe("createContentActivation", () => {
     expect(sent).toContain("ave:settings:updated");
   });
 
-  it("adds the selected theme, and its old followSystem counterpart, to the legacy themes (§16.3)", async () => {
-    await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] }, appearance: { schemaVersion: 2, bundleId: "violet-dark", followSystem: true } });
-    expect(legacyContentSettings(deps).activations.themes).toEqual(["nord", "violet-dark", "violet-light"]);
-    await settingsService.patch({ appearance: { schemaVersion: 2, bundleId: "gallery", followSystem: false } });
-    expect(legacyContentSettings(deps).activations.themes).toEqual(["nord"]);
-  });
 
   it("adopts a legacy activation the settings hold without rewriting it, and activates one they do not", async () => {
     const activation = createContentActivation(deps);
@@ -313,9 +299,8 @@ describe("createContentActivation", () => {
 
   it("leaves settings alone when the removed package is not the selected one", async () => {
     const activation = createContentActivation(deps);
-    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), bundleId: "midnight" } });
     const before = settingsService.getAll();
-    await activation.deactivate(entry("theme", "harbor"), null);
+    await activation.deactivate(entry("font", "harbor"), null);
     expect(settingsService.getAll()).toEqual(before);
     expect(sent).toEqual([]);
   });

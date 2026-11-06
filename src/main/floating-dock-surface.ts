@@ -4,7 +4,7 @@ import { runtimeAssetPath } from "./main-paths.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
-import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
+import { getLastThemePayload } from "../shared/host-theme-replay.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { configureMcpAppWebviewAttach } from "./webview-attach.js";
 import type {

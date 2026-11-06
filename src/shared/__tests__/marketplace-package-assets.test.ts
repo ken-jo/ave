@@ -11,11 +11,9 @@ import {
 } from "../marketplace-package-assets.js";
 
 describe("marketplace package assets", () => {
-  it("parses provider/theme/language package specs into structured assets", () => {
+  it("parses provider/language package specs into structured assets", () => {
     expect(assetFromMarketplacePackageSpec("provider", "provider:groq"))
       .toEqual({ type: "provider", providerId: "groq" });
-    expect(assetFromMarketplacePackageSpec("theme", "theme:tokyo-night"))
-      .toEqual({ type: "theme", bundleId: "tokyo-night" });
     expect(assetFromMarketplacePackageSpec("language-pack", "language-pack:ko"))
       .toEqual({ type: "language-pack", locale: "ko" });
   });
@@ -23,29 +21,6 @@ describe("marketplace package assets", () => {
   it("accepts explicit catalog asset fields and packageSpec fallbacks", () => {
     expect(parseMarketplacePackageAsset({ type: "provider", provider_id: "ollama" }))
       .toEqual({ type: "provider", providerId: "ollama" });
-    expect(parseMarketplacePackageAsset({
-      type: "theme",
-      package_spec: "theme:high-contrast",
-      display_name: "High Contrast",
-      description: "Accessible theme",
-      shell_mode: "dark",
-      compatibility_version: "1",
-      token_map: {
-        "app.background": "#000000",
-        "app.foreground": "#ffffff",
-      },
-    })).toEqual({
-      type: "theme",
-      bundleId: "high-contrast",
-      displayName: "High Contrast",
-      description: "Accessible theme",
-      shellMode: "dark",
-      compatibilityVersion: "1",
-      tokens: {
-        "app.background": "#000000",
-        "app.foreground": "#ffffff",
-      },
-    });
     expect(assetFromMarketplaceCatalogFields("language-pack", "@ave/ko@1.0.0", {
       locale: "ko",
       display_name: "Korean",
@@ -207,16 +182,16 @@ describe("marketplace package assets", () => {
       .toBe("provider");
     expect(marketplacePackageSpecForAsset({ type: "provider", providerId: "groq" }))
       .toBe("provider:groq");
-    expect(marketplacePackageSpecForAsset({ type: "theme", bundleId: "tokyo-night" }))
-      .toBe("theme:tokyo-night");
     expect(marketplacePackageSpecForAsset({ type: "language-pack", locale: "ko" }))
       .toBe("language-pack:ko");
   });
 
+  it("rejects removed theme assets", () => {
+    expect(parseMarketplacePackageAsset({ type: "theme", bundleId: "retired" })).toBeUndefined();
+  });
+
   it("rejects unknown ids without preset metadata and mismatched package specs", () => {
     expect(assetFromMarketplacePackageSpec("provider", "provider:not-a-vendor"))
-      .toBeUndefined();
-    expect(assetFromMarketplacePackageSpec("theme", "provider:groq"))
       .toBeUndefined();
     expect(parseMarketplacePackageAsset({ type: "language-pack", locale: "it" }))
       .toBeUndefined();
@@ -226,10 +201,6 @@ describe("marketplace package assets", () => {
     expect(assetFromMarketplacePackageSpec("provider", "provider:openai"))
       .toBeUndefined();
     expect(assetFromMarketplacePackageSpec("provider", "provider:openrouter"))
-      .toBeUndefined();
-    expect(assetFromMarketplacePackageSpec("theme", "theme:moonstone"))
-      .toBeUndefined();
-    expect(assetFromMarketplacePackageSpec("theme", "theme:gallery"))
       .toBeUndefined();
     expect(assetFromMarketplacePackageSpec("language-pack", "language-pack:en"))
       .toBeUndefined();
@@ -372,7 +343,7 @@ describe("installed messaging connection record", () => {
   });
 
   it("refuses an asset of another kind", () => {
-    expect(marketplaceMessagingConnectionFromAsset({ type: "theme", bundleId: "tokyo-night" }))
+    expect(marketplaceMessagingConnectionFromAsset({ type: "provider", providerId: "groq" }))
       .toBeUndefined();
   });
 });

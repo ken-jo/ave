@@ -53,7 +53,17 @@ function windowsVolumeRoot(path: string): string {
   return win32.parse(path).root;
 }
 
+// Filesystem syntax is defined positively: no `:`, a drive-absolute path, or UNC. Every other colon form (provider
+// drives, `Provider::`, module-qualified providers, drive-relative `C:x`, a drive path with a stream suffix) gets no
+// filesystem authority.
+export function isPowerShellFilesystemSyntax(path: string): boolean {
+  return !path.includes(":") || /^[A-Za-z]:[\\/][^:]*$/.test(path) || /^[\\/]{2}/.test(path);
+}
+
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {
+  if (model.dialect === "powershell" && !isPowerShellFilesystemSyntax(path)) {
+    return { nativePath: undefined, normalizedPath: path, volumeRoot: "", floorPaths: [] };
+  }
   if (sep !== "\\") {
     // Host path operations, so a simulated drive keeps its win32 spelling.
     const absolute = isAbsolute(path) ? path : resolve(model.location ?? "/", path);

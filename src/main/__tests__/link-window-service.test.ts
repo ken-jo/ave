@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
-import type { WebContents } from "electron";
+import { BrowserWindow, type WebContents } from "electron";
+import { LINK_WINDOW_SHELL_ARGUMENT } from "../../shared/preload-bundles.js";
 
 useChromiumRuntime();
 
@@ -101,4 +103,24 @@ describe("buildLinkWindowShellHtml — title sinks", () => {
       expect(literal).not.toContain("&quot;");
     }
   });
+});
+
+it("marks link shell preloads as independent of app appearance", async () => {
+  const win = Object.assign(new EventEmitter(), {
+    webContents: Object.assign(new EventEmitter(), { id: 4242, setWindowOpenHandler: vi.fn() }),
+    setMenu: vi.fn(),
+    show: vi.fn(),
+    loadURL: vi.fn<() => Promise<void>>(),
+  });
+  win.loadURL.mockImplementation(async () => { win.emit("ready-to-show"); });
+  vi.mocked(BrowserWindow).mockImplementation(function () { return win as unknown as BrowserWindow; });
+  const { openLinkWindow, buildLinkWindowShellHtml } = await import("../link-window-service.js");
+  try {
+    await openLinkWindow(null, { url: "https://example.test/", windowTitle: "Sign in" });
+    expect(vi.mocked(BrowserWindow).mock.calls.at(-1)?.[0]?.webPreferences?.additionalArguments).toEqual([LINK_WINDOW_SHELL_ARGUMENT]);
+    const html = buildLinkWindowShellHtml({ url: "https://example.test/", title: "Sign in", platform: "win32" });
+    expect(html).toContain("--ts-bg");
+    expect(html).not.toContain("var(--background)");
+    expect(html).toContain('document.getElementById("close").addEventListener("click", () => window.aveWindow?.close())');
+  } finally { win.webContents.emit("destroyed"); }
 });

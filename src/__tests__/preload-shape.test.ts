@@ -1,3 +1,4 @@
+import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /**
  * Preload contextBridge shape lock — Commit C0 safety snapshot.
  *
@@ -33,6 +34,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
+    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE })),
     invoke: mockInvoke,
     on: mockOn,
     removeListener: mockRemoveListener,
@@ -114,7 +116,7 @@ describe("preload contextBridge world shape lock", () => {
     expect([...exposed.keys()].sort()).toMatchInlineSnapshot(`
       [
         "__aveDevMode",
-        "__aveInitialTheme",
+        "__aveInitialAppearance",
         "ave",
         "aveApi",
         "aveDrop",
@@ -133,7 +135,18 @@ describe("preload contextBridge world shape lock", () => {
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
-        "__aveInitialTheme": "null",
+        "__aveInitialAppearance": {
+          "darkScheme": "string",
+          "language": "string",
+          "lightScheme": "string",
+          "mode": "string",
+          "schemaVersion": "number",
+          "terminalFont": [
+            "family",
+            "lineHeight",
+            "size",
+          ],
+        },
         "ave": {
           "approval": [
             "listPending",
@@ -820,10 +833,16 @@ describe("floating dock preload world shape lock", () => {
     `);
 
 
+    // Dock app roots consume the same appearance settings as the main renderer.
+    expect(deepShape(exposed.get("aveApi"))).toEqual({
+      getSettings: "function", updateSettings: "function", onSettingsUpdated: "function",
+      notifyPluginTheme: "function", openExternalUrl: "function",
+    });
+
     const handler = vi.fn();
     const dispose = dock.onTheme(handler);
     const listener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:dock:theme")![1];
-    const theme = { bundleId: "moonstone", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
+    const theme = { bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
     listener({ sender: "not forwarded" }, theme);
     expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
     dispose();

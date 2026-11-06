@@ -128,7 +128,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
       expect(screen.getByTestId("language-title")).toHaveTextContent("언어");
     });
     expect(api.updateSettings).toHaveBeenCalledWith({
-      appearance: { schemaVersion: 2, language: "ko" },
+      appearance: { schemaVersion: 3, language: "ko" },
     });
   });
 
@@ -160,7 +160,7 @@ describe("I18nSettingsProvider lazy locale loading", () => {
 
       await waitFor(() => {
         expect(api.updateSettings).toHaveBeenCalledWith({
-          appearance: { schemaVersion: 2, language: "ko" },
+          appearance: { schemaVersion: 3, language: "ko" },
         });
       });
       expect(screen.getByTestId("active-locale")).toHaveTextContent("en");

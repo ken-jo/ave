@@ -60,7 +60,7 @@ export function runEarlyBootEnv(): void {
   log.info({ workspaceCwd }, "main: cwd anchored to ~/.ave/workspace");
 
   // Electron takes the privileged schemes in a single call before `app.ready`. The MCP-app sandbox-proxy document needs `standard: true` for a real
-  // origin; installed fonts and theme previews load from `ave-content:`.
+  // origin; installed fonts load from `ave-content:`.
   protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME, CONTENT_ASSET_CUSTOM_SCHEME]);
 
   if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {

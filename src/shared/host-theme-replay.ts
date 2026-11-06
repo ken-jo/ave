@@ -1,4 +1,4 @@
-import { BUNDLE_IDS } from "./theme-bundles.js";
+import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS } from "./appearance-settings.js";
 import { AVE_TOKEN_NAMES } from "./plugin-ui-tokens.js";
 
 export type SafeThemePayload = {
@@ -9,16 +9,10 @@ export type SafeThemePayload = {
   tokens?: Record<string, string>;
 };
 
-const ALLOWED_BUNDLE_IDS = new Set<string>(BUNDLE_IDS);
-let installedThemeIds = new Set<string>();
-
-export function setInstalledThemeIds(ids: readonly string[]): void {
-  installedThemeIds = new Set(ids);
-}
-
+const ALLOWED_SCHEME_IDS = new Set<string>([...DARK_SCHEME_IDS, ...LIGHT_SCHEME_IDS]);
 const ALLOWED_SHELLS = new Set(["light", "dark"]);
 const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
-// Accept only token shapes emitted by bundleToPluginTokens; rejected values leave the plugin fallback in place.
+// Accept only token shapes emitted by the scheme token projection; rejected values leave the plugin fallback in place.
 // Allow colors, one non-nested color mix, lengths, weights, and durations; reject URLs and trailing function calls.
 const _HSL = String.raw`hsla?\(\s*-?\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?%\s*,\s*\d+(?:\.\d+)?%\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)`;
 const _HEX = String.raw`#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})`;
@@ -59,12 +53,14 @@ export function validateThemePayload(payload: unknown):
   | { ok: false; error: string } {
   if (!payload || typeof payload !== "object") return { ok: false, error: "invalid-payload" };
   const candidate = payload as Record<string, unknown>;
-  if (typeof candidate.bundleId !== "string" || !(ALLOWED_BUNDLE_IDS.has(candidate.bundleId) || installedThemeIds.has(candidate.bundleId))) {
+  if (typeof candidate.bundleId !== "string" || !ALLOWED_SCHEME_IDS.has(candidate.bundleId)) {
     return { ok: false, error: "invalid-bundle-id" };
   }
   if (typeof candidate.shell !== "string" || !ALLOWED_SHELLS.has(candidate.shell)) {
     return { ok: false, error: "invalid-shell" };
   }
+  const shellSchemeIds: readonly string[] = candidate.shell === "dark" ? DARK_SCHEME_IDS : LIGHT_SCHEME_IDS;
+  if (!shellSchemeIds.includes(candidate.bundleId)) return { ok: false, error: "invalid-shell" };
   if (!candidate.tokens || typeof candidate.tokens !== "object" || Array.isArray(candidate.tokens)) {
     return { ok: false, error: "missing-tokens" };
   }
@@ -79,7 +75,7 @@ export function validateThemePayload(payload: unknown):
     }
   }
   safe.tokens = safeTokens;
-  // Fonts are host-owned and must not enter this cache through legacy fields.
+  // Fonts are host-owned and do not belong in the replay payload.
   if (candidate.colorScheme === "light" || candidate.colorScheme === "dark") {
     safe.colorScheme = candidate.colorScheme;
   }

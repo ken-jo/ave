@@ -20,6 +20,7 @@ import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
+import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import {
   classifyPowerShellArchiveTraversal,
   isDefinitePowerShellRecursion,
@@ -30,7 +31,7 @@ import {
 } from "../../shared/powershell-recursive-traversal.js";
 
 import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
-import { modelShellPath } from "../../shared/shell-native-path.js";
+import { isPowerShellFilesystemSyntax, modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -1035,12 +1036,12 @@ export function powerShellRuleShape(input: PowerShellCommandInput, options?: { r
   return shape;
 }
 
-export function proveLiteralPowerShell(input: PowerShellCommandInput): { proven: true; commands: readonly (readonly string[])[] } | { proven: false; reason: string } {
+export function proveLiteralPowerShell(input: PowerShellCommandInput, plan?: HostShellExecutionPlan): { proven: true; commands: readonly (readonly string[])[] } | { proven: false; reason: string } {
   const shape = powerShellRuleShape(input);
   if (!shape.ok) return { proven: false, reason: shape.reason };
   if (shape.opaque !== null) return { proven: false, reason: shape.opaque };
   if (shape.commands.length === 0) return { proven: false, reason: "no command" };
-  if (!isPowerShellStartupPinned()) return { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
+  if (!isPowerShellStartupPinned(process.platform, plan)) return { proven: false, reason: POWERSHELL_STARTUP_UNPROVEN_REASON };
   return { proven: true, commands: shape.commands as readonly (readonly string[])[] };
 }
 
@@ -1162,10 +1163,10 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined,
     !work.unresolvedPath && program.literalEvaluation !== null && program.encodedReason === null), { readsPath, network });
 }
 
-function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
+function applyStartupPolicy(signals: ShellFloorSignals, executionPlan?: HostShellExecutionPlan): ShellFloorSignals {
   if (signals.outcome === "visible-floor" || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
-  if (isPowerShellStartupPinned()) return signals;
+  if (isPowerShellStartupPinned(process.platform, executionPlan)) return signals;
   const result: ShellFloorSignals = { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
   const flow = literalShellFlow(signals);
   return flow ? recordLiteralShellFlow(result, flow) : result;
@@ -1293,9 +1294,16 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   const stageEnvironment = stages.length === 1 ? environment : {};
   let currentDirectory: string | null = cwd;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
-    let value = binding.value;
+    // The FileSystem provider qualifier names the same file, so the remainder gets the ordinary floor checks.
+    let value = binding.value.replace(/^(?:(?:Microsoft\.PowerShell\.Core\\)?FileSystem::)+/i, "");
     if (effect === "write" && (binding.dynamic || !literalPath && /[*?\[\]]/.test(value))) {
       unknownProtectedWrite ??= "The shell write target may resolve to a protected path.";
+    }
+    if (!isPowerShellFilesystemSyntax(value)) {
+      unproven = true;
+      // Only a drive or provider qualifier before any separator names no project file; every other colon keeps the floor checks.
+      if (/^[^\\/]{2,}:/.test(value)
+        || /^[A-Za-z][\w.]*\\(?:Alias|Certificate|Environment|Function|Registry|Variable|WSMan)::/i.test(value)) return;
     }
     unproven ||= binding.dynamic;
     value = value.replace(/^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i, homedir());
@@ -1424,7 +1432,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   return { paths, unproven, credentialStore, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(evidenceLimitExceeded ? { evidenceLimitExceeded: true as const } : {}) };
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget)); }
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget), executionPlan); }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }

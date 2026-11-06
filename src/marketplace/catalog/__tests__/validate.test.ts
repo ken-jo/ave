@@ -29,7 +29,6 @@ const PAYLOADS: Record<string, () => Record<string, unknown>> = {
   mcp: () => ({ server: { transport: "stdio", command: "npx", args: ["-y", "@acme/mcp"], env: { ACME_MODE: "ro" }, auth: "api-key", apiKeyEnv: "ACME_KEY" } }),
   skill: () => ({ entry: "SKILL.md" }),
   agent: () => ({ entry: "AGENTS.md" }),
-  theme: () => ({ entry: "theme.json" }),
   font: () => ({ entry: "font.json" }),
   language: () => ({ locale: "ko", entry: "language.json", messages: "messages.json" }),
   provider: () => ({ entry: "provider.json" }),
@@ -74,6 +73,9 @@ describe("parseStrictJson", () => {
 });
 
 describe("validateDescriptorText", () => {
+  it("rejects a removed theme package kind", () => {
+    expect(checkDescriptor({ ...descriptor("skill"), kind: "theme", payload: { entry: "theme.json" } }).ok).toBe(false);
+  });
   it.each(Object.keys(PAYLOADS))("accepts a valid %s descriptor", (kind) => {
     expect(checkDescriptor(descriptor(kind))).toMatchObject({ ok: true });
   });
@@ -221,7 +223,6 @@ describe("validateDescriptorText", () => {
   it.each([
     ["language locale", "language", { locale: "Korean", entry: "language.json", messages: "messages.json" }],
     ["skill entry", "skill", { entry: "README.md" }],
-    ["theme entry", "theme", { entry: "theme.css" }],
   ])("rejects a wrong %s", (_label, kind, payload) => {
     expect(checkDescriptor(descriptor(kind, { payload })).ok).toBe(false);
   });
@@ -349,7 +350,7 @@ describe("validateIndexText", () => {
         { kind: "skill", name: "twin", path: "skills/a" },
         { kind: "skill", name: "twin", path: "skills/b" },
         { kind: "agent", name: "twin", path: "agents/twin" },
-        { kind: "theme", name: "one", path: "shared" },
+        { kind: "language", name: "one", path: "shared" },
         { kind: "font", name: "two", path: "shared" },
       ]),
       context,

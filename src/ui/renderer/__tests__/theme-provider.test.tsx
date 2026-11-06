@@ -1,627 +1,73 @@
 import "../../../../test/renderer/setup.js";
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { act, render, waitFor } from "@testing-library/react";
-import { StrictMode, useEffect, useLayoutEffect } from "react";
-import { ThemeProvider, useTheme, useOptionalTheme } from "../theme/ThemeProvider.js";
-import { applyBundleToDocument, resolveSystemPair } from "../theme/resolve-theme.js";
-import { bundleToPluginTokens } from "../theme/plugin-token-map.js";
-import {
-  findBundle,
-  DEFAULT_BUNDLE_ID,
-  setInstalledThemeBundles,
-  type ThemeBundle,
-} from "../theme/bundles/index.js";
-import { moonstoneBundle } from "../theme/bundles/moonstone.js";
-import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
-import type { InstalledContentView } from "../../../shared/installed-content.js";
-import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
-import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../test/renderer/installed-theme.js";
+import { describe, it, expect, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ThemeProvider, useTheme } from "../theme/ThemeProvider.js";
+import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
+import { applyAppearance } from "../theme/resolve-theme.js";
+import { schemeToHostTokens } from "../theme/host-theme-tokens.js";
+import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 
-/** Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below. */
-function installed(id: string, shell: "light" | "dark", tokens: Partial<ThemeBundle["tokens"]> = {}, highContrast = false, pair?: string): ThemeBundle {
-  return { ...moonstoneBundle, id, name: id, shell, highContrast, tokens: { ...moonstoneBundle.tokens, ...tokens }, ...(pair ? { pair } : {}) };
+function Picker() {
+  const theme = useTheme();
+  return <>
+    <span data-testid="scheme">{theme.appliedTheme.id}</span>
+    <button onClick={() => theme.setMode("dark")}>Dark</button>
+    <button onClick={() => theme.setScheme("dark", "nord")}>Nord</button>
+  </>;
 }
-const INSTALLED_THEMES: ThemeBundle[] = [
-  installed("tokyo-night", "dark"),
-  installed("midnight", "dark"),
-  installed("forest", "light", { background: "0 0% 100%" }),
-  installed("violet-light", "light", {}, false, "violet-dark"),
-  installed("violet-dark", "dark", { primary: "253 100% 65%" }, false, "violet-light"),
-  // A pair whose other half is not installed, and one whose pair has the same shell.
-  installed("lonely-dark", "dark", {}, false, "lonely-light"),
-  installed("dusk", "dark", {}, false, "midnight"),
-  installed("high-contrast", "dark", { primary: "60 100% 50%" }, true),
-];
 
-afterEach(() => {
-  document.documentElement.removeAttribute("data-theme-bundle");
-  document.documentElement.removeAttribute("data-shell");
-  Array.from(document.documentElement.classList)
-    .filter((c) => c.startsWith("ave-bundle-"))
-    .forEach((c) => document.documentElement.classList.remove(c));
-  vi.unstubAllGlobals();
-  resetInstalledContentForTests();
-});
-
-beforeEach(() => {
-  setInstalledThemeBundles(INSTALLED_THEMES);
-});
-
-describe("applyBundleToDocument", () => {
-  it("writes data-theme-bundle and data-shell", () => {
-    const bundle = findBundle("tokyo-night")!;
-    applyBundleToDocument(bundle);
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("tokyo-night");
-    expect(document.documentElement.getAttribute("data-shell")).toBe("dark");
-  });
-
-  it("adds ave-bundle-<id> class", () => {
-    const bundle = findBundle("forest")!;
-    applyBundleToDocument(bundle);
-    expect(document.documentElement.classList.contains("ave-bundle-forest")).toBe(true);
-  });
-
-  it("removes prior ave-bundle-* class when switching", () => {
-    applyBundleToDocument(findBundle("tokyo-night")!);
-    applyBundleToDocument(findBundle("forest")!);
-    expect(document.documentElement.classList.contains("ave-bundle-tokyo-night")).toBe(false);
-    expect(document.documentElement.classList.contains("ave-bundle-forest")).toBe(true);
-  });
-
-  it("sets data-shell=light for light bundles", () => {
-    applyBundleToDocument(findBundle("violet-light")!);
-    expect(document.documentElement.getAttribute("data-shell")).toBe("light");
-  });
-});
-
-describe("resolveSystemPair", () => {
-  const dark = { id: "harbor-dark", shell: "dark" as const };
-  const light = { id: "harbor-light", shell: "light" as const };
-
-  it("returns the light theme of the pair when prefers-color-scheme: light matches", () => {
-    const win = { matchMedia: () => ({ matches: true } as MediaQueryList) } as unknown as Window;
-    expect(resolveSystemPair(dark, light, win)).toBe("harbor-light");
-    expect(resolveSystemPair(light, dark, win)).toBe("harbor-light");
-  });
-
-  it("returns the dark theme of the pair when prefers-color-scheme: light does not match", () => {
-    const win = { matchMedia: () => ({ matches: false } as MediaQueryList) } as unknown as Window;
-    expect(resolveSystemPair(light, dark, win)).toBe("harbor-dark");
-  });
-
-  it("returns the dark theme when matchMedia is unavailable", () => {
-    expect(resolveSystemPair(light, dark, undefined)).toBe("harbor-dark");
-  });
-});
-
-describe("bundleToPluginTokens", () => {
-  it("tokyo-night bundle — returns full --ave-* token map with correct key count", () => {
-    const bundle = findBundle("tokyo-night")!;
-    const tokens = bundleToPluginTokens(bundle);
-    // Should have at least 20 keys (invariant + bundle-specific)
-    expect(Object.keys(tokens).length).toBeGreaterThanOrEqual(20);
-    expect(typeof tokens["--ave-bg"]).toBe("string");
-    expect(tokens["--ave-bg"]).toMatch(/^hsl\(/);
-    expect(tokens["--ave-radius"]).toBe("0.6rem");
-  });
-
-  it("violet-dark — primary maps to vivid purple", () => {
-    const bundle = findBundle("violet-dark")!;
-    const tokens = bundleToPluginTokens(bundle);
-    expect(tokens["--ave-primary"]).toContain("253");  // hsl(253, 100%, 65%)
-  });
-
-  it("high-contrast — primary is yellow", () => {
-    const bundle = findBundle("high-contrast")!;
-    const tokens = bundleToPluginTokens(bundle);
-    expect(tokens["--ave-primary"]).toContain("60");  // hsl(60, 100%, 50%)
-  });
-
-  it("forest bundle — bg is white (light shell)", () => {
-    const bundle = findBundle("forest")!;
-    const tokens = bundleToPluginTokens(bundle);
-    // forest background = "0 0% 100%" → hsl(0, 0%, 100%)
-    expect(tokens["--ave-bg"]).toContain("100%");
-  });
-});
-
-describe("<ThemeProvider>", () => {
-  function Probe({ onValue }: { onValue: (v: ReturnType<typeof useTheme>) => void }) {
-    const v = useTheme();
-    useEffect(() => { onValue(v); }, [v, onValue]);
-    return null;
-  }
-
-  it("hydrates bundleId from api.getSettings() on mount (v2 shape)", async () => {
-    const { api } = makeMockAveApi({
-      settings: {
-        ...MOCK_DEFAULT_SETTINGS,
-        appearance: { schemaVersion: 2, bundleId: "midnight" },
-      },
-    });
-    const seen: string[] = [];
-    render(
-      <ThemeProvider api={api as never}>
-        <Probe onValue={(v) => seen.push(v.bundleId)} />
-      </ThemeProvider>,
-    );
-    // The selected id and the DOM write land in separate commits: the bundle is applied after the commit that set the id, so
-    // wait for both.
-    await waitFor(() => {
-      expect(seen).toContain("midnight");
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
-    });
-    expect(api.getSettings).toHaveBeenCalled();
-  });
-
-  it("hydrates and follows the settings broadcast under StrictMode, whose remount runs every effect twice", async () => {
-    const { api } = makeMockAveApi({
-      settings: {
-        ...MOCK_DEFAULT_SETTINGS,
-        appearance: { schemaVersion: 2, bundleId: "midnight" },
-      },
-    });
-    const seen: string[] = [];
-    render(
-      <StrictMode>
-        <ThemeProvider api={api as never}>
-          <Probe onValue={(v) => seen.push(v.bundleId)} />
-        </ThemeProvider>
-      </StrictMode>,
-    );
-    // The simulated unmount must not leave the provider thinking it is gone: the saved theme applies.
-    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight"));
-    expect(seen.at(-1)).toBe("midnight");
-
-    // Another window changes the theme: the broadcast reaches this provider too.
-    await act(async () => { await api.updateSettings({ appearance: { schemaVersion: 2, bundleId: DEFAULT_BUNDLE_ID } }); });
-    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
-  });
-
-  it("falls back to DEFAULT_BUNDLE_ID when settings load fails", async () => {
-    const { api } = makeMockAveApi();
-    api.getSettings.mockRejectedValueOnce(new Error("boom"));
-    let observed: string | null = null;
-    render(
-      <ThemeProvider api={api as never}>
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-    await waitFor(() => {
-      expect(observed).not.toBeNull();
-    });
-    expect(observed).toBe(DEFAULT_BUNDLE_ID);
-  });
-
-  it("names as applied only the theme :root holds, at every commit of a switch", async () => {
-    // A layout effect runs before the provider's write: it sees what a consumer that copies the theme at commit (an MCP app's
-    // first context) would.
-    const seen: Array<{ applied: string; root: string | null }> = [];
-    let setter: ((id: string) => void) | null = null;
-    function Watch() {
-      const v = useTheme();
-      setter = v.setBundle;
-      useLayoutEffect(() => {
-        seen.push({ applied: v.appliedBundle.id, root: document.documentElement.getAttribute("data-theme-bundle") });
-      });
-      return null;
-    }
-    render(
-      <ThemeProvider initialBundleId={DEFAULT_BUNDLE_ID}>
-        <Watch />
-      </ThemeProvider>,
-    );
-    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
-    seen.length = 0;
-
-    act(() => setter!("midnight"));
-
-    await waitFor(() => expect(seen.at(-1)).toEqual({ applied: "midnight", root: "midnight" }));
-    for (const entry of seen) expect(entry.applied).toBe(entry.root);
-  });
-
-  it("setBundle persists via api.updateSettings and updates DOM", async () => {
-    const { api } = makeMockAveApi();
-    let setter: ((id: string) => void) | null = null;
-    function Capture() {
-      const { setBundle } = useTheme();
-      setter = setBundle;
-      return null;
-    }
-    render(
-      <ThemeProvider api={api as never}>
-        <Capture />
-      </ThemeProvider>,
-    );
-    await waitFor(() => { expect(setter).not.toBeNull(); });
-    act(() => { setter!("midnight"); });
-    await waitFor(() => {
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
-    });
-    expect(api.updateSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ appearance: expect.objectContaining({ bundleId: "midnight" }) }),
-    );
-  });
-
-  it("applies settings:update broadcasts from another window without restart", async () => {
-    const { api } = makeMockAveApi({
-      settings: {
-        ...MOCK_DEFAULT_SETTINGS,
-        appearance: { schemaVersion: 2, bundleId: "tokyo-night" },
-      },
-    });
-    let observed: string | null = null;
-    render(
-      <ThemeProvider api={api as never}>
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-    await waitFor(() => {
-      expect(observed).toBe("tokyo-night");
-    });
-
-    await act(async () => {
-      await api.updateSettings({ appearance: { schemaVersion: 2, bundleId: "forest" } });
-    });
-
-    await waitFor(() => {
-      expect(observed).toBe("forest");
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("forest");
-    });
-  });
-
-  it("persistence roundtrip: set midnight → simulated reload → still midnight", async () => {
-    let stored: { schemaVersion: 2; bundleId: string } = { schemaVersion: 2, bundleId: "tokyo-night" };
-    const settingsBacking = {
-      ...MOCK_DEFAULT_SETTINGS,
-      appearance: stored,
-    };
-    const { api: api1 } = makeMockAveApi({ settings: settingsBacking });
-    api1.updateSettings.mockImplementation(async (patch: any) => {
-      if (patch.appearance) stored = { ...stored, ...patch.appearance };
-      return { ...settingsBacking, appearance: stored };
-    });
-    let setter: ((id: string) => void) | null = null;
-    function Capture() {
-      const { setBundle } = useTheme();
-      setter = setBundle;
-      return null;
-    }
-    const first = render(
-      <ThemeProvider api={api1 as never}>
-        <Capture />
-      </ThemeProvider>,
-    );
-    await waitFor(() => { expect(setter).not.toBeNull(); });
-    act(() => { setter!("midnight"); });
-    await waitFor(() => {
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
-    });
-    expect(stored.bundleId).toBe("midnight");
-    first.unmount();
-
-    const { api: api2 } = makeMockAveApi({
-      settings: { ...settingsBacking, appearance: stored },
-    });
-    let observed: string | null = null;
-    render(
-      <ThemeProvider api={api2 as never}>
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-    await waitFor(() => {
-      expect(observed).toBe("midnight");
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
-    });
-  });
-
-  it("uses initialBundleId when no api is provided", () => {
-    let observed: string | null = null;
-    render(
-      <ThemeProvider initialBundleId="high-contrast">
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-    expect(observed).toBe("high-contrast");
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("high-contrast");
-  });
-
-  it("falls back to the default bundle when the selected theme is not installed", async () => {
-    setInstalledThemeBundles([]);
-
-    let observed: string | null = null;
-    render(
-      <ThemeProvider initialBundleId="tokyo-night">
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-
-    await waitFor(() => {
-      expect(observed).toBe(DEFAULT_BUNDLE_ID);
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID);
-    });
-  });
-
-  it("applies the saved theme once its package is installed after the window started", async () => {
-    // The first boot after the upgrade: `nord` is selected, and its package arrives with the migration.
-    setInstalledThemeBundles([]);
-    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "nord" } } });
-
-    let observed: string | null = null;
-    render(
-      <ThemeProvider api={api as never}>
-        <Probe onValue={(v) => { observed = v.bundleId; }} />
-      </ThemeProvider>,
-    );
-    await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe(DEFAULT_BUNDLE_ID));
-
-    const nord = installed("nord", "dark");
-    const view = { themes: [{ ...nord, preview: null }], languages: [], fonts: [], routineTemplates: [], broken: [] } as unknown as InstalledContentView;
-    act(() => {
-      applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
-    });
-
-    await waitFor(() => {
-      expect(observed).toBe("nord");
-      expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord");
-    });
-  });
-
-  describe("a theme package updated in place (same id)", () => {
-    // Updating a theme in the marketplace reloads the installed content: the registry gets new bundle objects under the same
-    // ids.
-    const reload = (themes: ThemeBundle[]) => act(() => { applyInstalledContent(installedThemeContent(themes), NO_LANGUAGE_BRIDGE); });
-
-    async function showing(id: string, themes: ThemeBundle[], followSystem = false) {
-      const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: id, followSystem } } });
-      reload(themes);
-      let revision = -1;
-      render(
-        <ThemeProvider api={api as never}>
-          <Probe onValue={(v) => { revision = v.appliedRevision; }} />
-        </ThemeProvider>,
-      );
-      return { api, revision: () => revision };
-    }
-
-    it("applies the selected theme's new tokens without selecting it again, and bumps appliedRevision", async () => {
-      const root = document.documentElement;
-      const before = installedTheme("nord", "dark", { "muted-foreground": "227 6% 71%" });
-      const after = installedTheme("nord", "dark", { "muted-foreground": "227 6% 78%" });
-      const { api, revision } = await showing("nord", [before]);
-      await waitFor(() => expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 71%"));
-      const applied = revision();
-
-      reload([after]);
-
-      await waitFor(() => {
-        expect(root.style.getPropertyValue("--muted-foreground")).toBe("227 6% 78%");
-        // Plugin webviews get the new tokens too.
-        expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", tokens: bundleToPluginTokens(after) }));
-        expect(revision()).toBeGreaterThan(applied);
-      });
-      expect(root.getAttribute("data-theme-bundle")).toBe("nord");
-    });
-
-    it("re-sends nothing when a reload carries the same values, in any key order", async () => {
-      const nord = installedTheme("nord", "dark");
-      const { api, revision } = await showing("nord", [nord]);
-      await waitFor(() => expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("nord"));
-      await act(async () => {});
-      const applied = revision();
-      api.notifyPluginTheme.mockClear();
-
-      const reordered = { ...nord, tokens: Object.fromEntries(Object.entries(nord.tokens).reverse()) as ThemeBundle["tokens"] };
-      reload([JSON.parse(JSON.stringify(nord)) as ThemeBundle, installedTheme("other", "light")]);
-      reload([reordered]);
-      await act(async () => {});
-
-      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
-      expect(revision()).toBe(applied);
-    });
-
-    it("follows an update to the side of a pair the OS shows, ignores the other side, and shows it on an OS switch", async () => {
-      let light = true;
-      const listeners = new Set<() => void>();
-      vi.stubGlobal("matchMedia", (query: string) => ({
-        matches: query.includes("light") ? light : false,
-        media: query,
-        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
-        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
-      }));
-      const root = document.documentElement;
-      const dark = installedTheme("harbor", "dark", { background: "210 40% 12%" }, "harbor-light");
-      const bright = installedTheme("harbor-light", "light", { background: "210 40% 92%" }, "harbor");
-      // The dark side is saved; the OS is light, so the light side shows.
-      const { api } = await showing("harbor", [dark, bright], true);
-      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 92%"));
-      await act(async () => {});
-
-      api.notifyPluginTheme.mockClear();
-      const brightNext = { ...bright, tokens: { ...bright.tokens, background: "210 40% 88%" } };
-      reload([dark, brightNext]);
-      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%"));
-      expect(api.notifyPluginTheme).toHaveBeenCalledTimes(1);
-      expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "harbor-light", tokens: bundleToPluginTokens(brightNext) }));
-
-      // The side not shown changes: nothing on screen does.
-      api.notifyPluginTheme.mockClear();
-      const darkNext = { ...dark, tokens: { ...dark.tokens, background: "210 40% 22%" } };
-      reload([darkNext, brightNext]);
-      await act(async () => {});
-      expect(api.notifyPluginTheme).not.toHaveBeenCalled();
-      expect(root.style.getPropertyValue("--background")).toBe("210 40% 88%");
-
-      // The OS turns dark: the dark side shows with its new values.
-      await act(async () => { light = false; for (const listener of listeners) listener(); });
-      await waitFor(() => expect(root.style.getPropertyValue("--background")).toBe("210 40% 22%"));
-    });
-  });
-
-  it("useTheme throws when called outside the provider", () => {
-    function BadConsumer() {
-      useTheme();
-      return null;
-    }
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(() => render(<BadConsumer />)).toThrow(/ThemeProvider/);
-    errSpy.mockRestore();
-  });
-
-  it("useOptionalTheme returns null without a provider (escape hatch)", () => {
-    let observed: unknown = "untouched";
-    function OptConsumer() {
-      observed = useOptionalTheme();
-      return null;
-    }
-    render(<OptConsumer />);
-    expect(observed).toBeNull();
-  });
-
-  it("resolved property reflects active bundle shell", async () => {
-    let observed: string | null = null;
-    function Capture() {
-      const { resolved } = useTheme();
-      useEffect(() => { observed = resolved; }, [resolved]);
-      return null;
-    }
-    render(
-      <ThemeProvider initialBundleId="forest">
-        <Capture />
-      </ThemeProvider>,
-    );
-    await waitFor(() => { expect(observed).toBe("light"); });
-  });
-
-  it("setFollowSystem persists and is togglable", async () => {
-    const { api } = makeMockAveApi();
-    let setter: ((next: boolean) => void) | null = null;
-    let observed: boolean | null = null;
-    function Capture() {
-      const { setFollowSystem, followSystem } = useTheme();
-      setter = setFollowSystem;
-      useEffect(() => { observed = followSystem; }, [followSystem]);
-      return null;
-    }
-    render(
-      <ThemeProvider api={api as never} initialBundleId="violet-dark">
-        <Capture />
-      </ThemeProvider>,
-    );
-    await waitFor(() => { expect(setter).not.toBeNull(); });
-    act(() => { setter!(true); });
-    await waitFor(() => { expect(observed).toBe(true); });
-    expect(api.updateSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ appearance: expect.objectContaining({ followSystem: true }) }),
-    );
-  });
-
-  it("follows the OS scheme across a declared pair, and only when the pair is installed with the other shell", async () => {
-    let light = true;
-    const listeners = new Set<() => void>();
-    vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: query.includes("light") ? light : false,
-      media: query,
-      addEventListener: (_: string, listener: () => void) => listeners.add(listener),
-      removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
-    }));
-    const seen: Record<string, unknown> = {};
-    let pick: ((id: string) => void) | null = null;
-    function Capture() {
-      const theme = useTheme();
-      pick = theme.setBundle;
-      seen.effective = theme.effectiveBundleId;
-      seen.follow = theme.followSystem;
-      seen.can = theme.canFollowSystem;
-      return null;
-    }
-    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "violet-dark", followSystem: true } } });
-    const view = render(
-      <ThemeProvider api={api as never} initialBundleId="violet-dark" initialFollowSystem>
-        <Capture />
-      </ThemeProvider>,
-    );
+describe("appearance provider", () => {
+  it("applies mode and scheme immediately and persists each choice", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
+    render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}><Picker /></ThemeProvider>);
+    expect(document.documentElement.getAttribute("data-scheme")).toBe("github-light");
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-    await waitFor(() => expect(seen.effective).toBe("violet-light"));
-    expect(seen.can).toBe(true);
+    fireEvent.click(screen.getByText("Dark"));
+    expect(document.documentElement.getAttribute("data-scheme")).toBe("github-dark");
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { mode: "dark" } });
+    fireEvent.click(screen.getByText("Nord"));
+    expect(document.documentElement.getAttribute("data-scheme")).toBe("nord");
+    await waitFor(() => expect(api.notifyPluginTheme).toHaveBeenLastCalledWith(expect.objectContaining({ bundleId: "nord", shell: "dark" })));
+  });
 
-    light = false;
-    act(() => { for (const listener of listeners) listener(); });
-    await waitFor(() => expect(seen.effective).toBe("violet-dark"));
-
-    // No installed counterpart, or one of the same shell: the selection applies as is.
-    act(() => { pick!("lonely-dark"); });
-    await waitFor(() => expect(seen.effective).toBe("lonely-dark"));
-    expect(seen.can).toBe(false);
-    act(() => { pick!("dusk"); });
-    await waitFor(() => expect(seen.effective).toBe("dusk"));
-    expect(seen.can).toBe(false);
+  it("follows OS changes using the saved scheme for each mode", () => {
+    let listener: (() => void) | undefined;
+    const query = { matches: false, addEventListener: (_event: string, callback: () => void) => { listener = callback; }, removeEventListener: vi.fn() };
+    const media = vi.spyOn(window, "matchMedia").mockReturnValue(query as unknown as MediaQueryList);
+    const view = render(<ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, darkScheme: "nord", lightScheme: "one-light" }}><Picker /></ThemeProvider>);
+    expect(screen.getByTestId("scheme")).toHaveTextContent("one-light");
+    act(() => { query.matches = true; listener!(); });
+    expect(screen.getByTestId("scheme")).toHaveTextContent("nord");
     view.unmount();
+    expect(query.removeEventListener).toHaveBeenCalled();
+    media.mockRestore();
   });
 
-  it("an explicit pick of a paired theme turns followSystem off, so the pick is what shows", async () => {
-    vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }));
-    const seen: Record<string, unknown> = {};
-    let pick: ((id: string) => void) | null = null;
-    function Capture() {
-      const theme = useTheme();
-      pick = theme.setBundle;
-      seen.effective = theme.effectiveBundleId;
-      seen.follow = theme.followSystem;
-      return null;
-    }
-    const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, appearance: { schemaVersion: 2, bundleId: "violet-light", followSystem: true } } });
-    render(
-      <ThemeProvider api={api as never} initialBundleId="violet-light" initialFollowSystem>
-        <Capture />
-      </ThemeProvider>,
-    );
-    await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-    await waitFor(() => expect(seen.effective).toBe("violet-light"));
-    act(() => { pick!("violet-dark"); });
-    await waitFor(() => expect(seen.effective).toBe("violet-dark"));
-    expect(seen.follow).toBe(false);
-    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { schemaVersion: 2, bundleId: "violet-dark", followSystem: false } });
-  });
-
-  it("ThemeProvider calls notifyPluginTheme with tokens field", async () => {
+  it("keeps cross-window colors and fonts synchronized", async () => {
     const { api } = makeMockAveApi();
+    render(<ThemeProvider api={api as never}><Picker /></ThemeProvider>);
+    await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
     await act(async () => {
-      render(
-        <ThemeProvider api={api} initialBundleId="violet-dark">
-          <div />
-        </ThemeProvider>,
-      );
+      await api.updateSettings({ appearance: { ...DEFAULT_APPEARANCE, mode: "dark", darkScheme: "tokyo-night", font: { family: "Example Mono", sizeScale: 1 } } });
     });
-    expect(api.notifyPluginTheme).toHaveBeenCalled();
-    const call = (api.notifyPluginTheme as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(call.tokens).toBeDefined();
-    expect(typeof call.tokens["--ave-bg"]).toBe("string");
-    expect(call.tokens["--ave-primary"]).toContain("253");  // vivid purple
-  });
-});
-
-describe("<ThemeProvider> + reduced-motion", () => {
-  beforeEach(() => {
-    vi.stubGlobal("matchMedia", (q: string) => ({
-      matches: q.includes("reduce"),
-      media: q,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    }));
+    expect(screen.getByTestId("scheme")).toHaveTextContent("tokyo-night");
+    expect(document.documentElement.style.getPropertyValue("--ave-font-family")).toBe("Example Mono");
+    expect(document.documentElement.style.getPropertyValue("--ave-font-size-scale")).toBe("1");
   });
 
-  it("does not throw and applies bundle cleanly when reduced-motion is set", () => {
-    render(
-      <ThemeProvider initialBundleId="tokyo-night">
-        <div />
-      </ThemeProvider>,
-    );
-    const inline = document.documentElement.getAttribute("style") ?? "";
-    expect(inline).not.toMatch(/transition/i);
-    expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("tokyo-night");
+  it("applies the same color and font path before and after hydration", () => {
+    const appearance = { ...DEFAULT_APPEARANCE, mode: "dark" as const, font: { family: "Example Sans", sizeScale: 1 as const } };
+    const theme = applyAppearance(appearance);
+    const first = document.documentElement.style.cssText;
+    render(<ThemeProvider initialAppearance={appearance}><Picker /></ThemeProvider>);
+    expect(document.documentElement.style.cssText).toBe(first);
+    expect(schemeToHostTokens(theme)["--ave-bg"]).toMatch(/^hsl\(/);
+    expect(schemeToHostTokens(theme)["--ave-motion-fast"]).toBe("120ms");
+  });
+
+  it("requires the provider at required consumers", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => render(<Picker />)).toThrow("must be used inside");
+    error.mockRestore();
   });
 });

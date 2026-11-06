@@ -1,0 +1,30 @@
+import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_APPEARANCE, normalizeAppearance } from "../appearance-settings.js";
+
+describe("appearance persistence normalization", () => {
+  it.each(["moonstone", "gallery"])("preserves the released light shell for %s", (bundleId) => {
+    const warn = vi.fn();
+    expect(normalizeAppearance({ schemaVersion: 2, bundleId, language: "ko", font: { family: "Menlo" } }, warn))
+      .toMatchObject({ ...DEFAULT_APPEARANCE, mode: "light", language: "ko", font: { family: "Menlo" } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+  it("retires a released package selection to the default schemes", () => {
+    expect(normalizeAppearance({ schemaVersion: 2, bundleId: "installed-theme" })).toEqual(DEFAULT_APPEARANCE);
+  });
+  it.each([undefined, 1, 4, "3", null])("repairs only an unknown schema version %s", (schemaVersion) => {
+    const warn = vi.fn();
+    const appearance = normalizeAppearance({ ...DEFAULT_APPEARANCE, schemaVersion, mode: "dark", darkScheme: "nord" }, warn);
+    expect(appearance).toMatchObject({ schemaVersion: 3, mode: "dark", darkScheme: "nord" });
+    expect(warn).toHaveBeenCalledExactlyOnceWith("schemaVersion");
+  });
+  it.each([
+    ["mode", "invalid", DEFAULT_APPEARANCE.mode],
+    ["darkScheme", "github-light", DEFAULT_APPEARANCE.darkScheme],
+    ["lightScheme", "missing", DEFAULT_APPEARANCE.lightScheme],
+  ])("repairs only invalid %s and names the field in a warning", (field, value, expected) => {
+    const warn = vi.fn();
+    const initial = { ...DEFAULT_APPEARANCE, mode: "dark", darkScheme: "nord", lightScheme: "one-light" };
+    expect(normalizeAppearance({ ...initial, [field]: value }, warn)).toEqual({ ...initial, [field]: expected });
+    expect(warn).toHaveBeenCalledExactlyOnceWith(field);
+  });
+});

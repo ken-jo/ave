@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { parsePluginAuthStatus, usePluginAuthRevision, type PluginAuthState } from "./ui/renderer/hooks/use-plugin-auth-status.js";
 import { createRoot, type Root } from "react-dom/client";
+import { ThemeProvider } from "./ui/renderer/theme/ThemeProvider.js";
+import { getApi } from "./ui/renderer/api-client.js";
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
@@ -108,5 +110,5 @@ function DockAppContent({ panelId, payload, authStatusTool, hostTheme: theme }: 
     window.addEventListener("focus", handleRefresh);
     return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", handleRefresh); };
   }, [panelId, authStatusTool]);
-  return <McpAppView key={authRevision} payload={payload} hostTheme={theme} />;
+  return <ThemeProvider api={getApi()}><McpAppView key={authRevision} payload={payload} hostTheme={theme} /></ThemeProvider>;
 }

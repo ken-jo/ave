@@ -780,7 +780,7 @@ receive standard MCP Apps host-context updates, including theme, locale and
 `styles.variables`; there is no parallel plugin view theme bridge. Main sends
 the floating dock's host chrome the cached theme when its window opens and
 forwards subsequent theme updates on `ave:dock:theme`. MCP app views build their host context
-from the theme already written to `:root` (`appliedBundle` / `appliedRevision`),
+from the theme already written to `:root` (`appliedTheme` / `appliedRevision`),
 so an app never receives one theme's shell with another theme's tokens. An open
 HTML preview is a snapshot: it keeps the theme it was created with, and the next
 preview uses the current theme. Its LLM HTML runs in an opaque-origin sandboxed

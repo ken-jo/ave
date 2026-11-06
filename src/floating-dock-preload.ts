@@ -1,6 +1,7 @@
 /** Narrow host chrome API for standard app panels in the floating dock. */
 import { contextBridge, ipcRenderer } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
+import { appearanceApiSurface } from "./preload/appearance-api-surface.js";
 import { mcpApiSurface } from "./preload/mcp-api-surface.js";
 
 /** One main-to-dock subscription, returning its own unsubscribe. */
@@ -70,5 +71,6 @@ const appMcp = {
 };
 contextBridge.exposeInMainWorld("ave", { mcp: appMcp });
 contextBridge.exposeInMainWorld("aveApi", {
+  ...appearanceApiSurface,
   openExternalUrl: (url: string) => ipcRenderer.invoke(CHANNELS.shell.openExternal, url),
 });

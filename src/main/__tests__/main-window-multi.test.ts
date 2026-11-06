@@ -62,11 +62,12 @@ const electronMock = vi.hoisted(() => {
       return true;
     }
   }
-  return { FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
   app: electronMock.app,
+  ipcMain: { on: (channel: string, listener: Listener) => electronMock.ipcListeners.set(channel, listener) },
   BrowserWindow: electronMock.FakeBrowserWindow,
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
   shell: { openExternal: vi.fn(async () => undefined) },
@@ -74,10 +75,17 @@ vi.mock("electron", () => ({
   nativeImage: {},
   Tray: class {},
 }));
-vi.mock("node:fs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:fs")>()),
-  existsSync: () => true,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...original,
+    existsSync: () => true,
+    readFileSync: (path: Parameters<typeof original.readFileSync>[0], options: Parameters<typeof original.readFileSync>[1]) =>
+      path === "/tmp/ave-test/ave-settings.json"
+        ? JSON.stringify({ appearance: electronMock.savedAppearance })
+        : original.readFileSync(path, options),
+  };
+});
 vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
 const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
@@ -89,6 +97,7 @@ const terminalOwners = new Map<string, number | null>();
 
 const appState = await import("../app-state.js");
 const approvalSurfaces = await import("../../permissions/approval-surface-registry.js");
+const { BOOTSTRAP_SPLASH_URL } = await import("../bootstrap-splash.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
 const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
 const { promptSurfaceResolver } = await import("../../boot/host-runtime.js");
@@ -98,22 +107,68 @@ function open(): FakeWindow {
   return createWindow({ showBootstrapSplash: false }) as unknown as FakeWindow;
 }
 
+function readAppearance(win: FakeWindow, frameUrl = rendererIndexUrl(), subframe = false): unknown {
+  const sender = win.webContents as unknown as { mainFrame: { url: string } };
+  sender.mainFrame = { url: frameUrl };
+  const event = { sender, senderFrame: subframe ? { url: frameUrl } : sender.mainFrame, returnValue: undefined as unknown };
+  const listener = electronMock.ipcListeners.get("ave:settings:initial-appearance");
+  if (!listener) throw new Error("Missing appearance listener");
+  listener(event);
+  return event.returnValue;
+}
+
 describe("main windows", () => {
   beforeEach(() => {
     appState.resetMainWindowsForTests();
     appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
+    electronMock.savedAppearance = undefined;
     electronMock.app.quit.mockClear();
   });
 
-  it("opens a centered responsive window with theme-only boot arguments", () => {
+  it("opens a centered responsive window without stale appearance arguments", () => {
     const win = open();
     expect(win.options).toMatchObject({
       x: 339, y: 156, width: 1243, height: 768, minWidth: 360,
       webPreferences: { contextIsolation: true, nodeIntegration: false },
     });
-    const options = win.options as { webPreferences: { additionalArguments: string[] } };
-    expect(options.webPreferences.additionalArguments.every((arg) => arg.startsWith("--ave-initial-theme="))).toBe(true);
+    expect((win.options as { webPreferences: object }).webPreferences).not.toHaveProperty("additionalArguments");
+  });
+
+  it("primes a saved scheme before services exist without a plugin theme cache", () => {
+    electronMock.savedAppearance = { schemaVersion: 3, mode: "dark", darkScheme: "nord", lightScheme: "one-light", terminalFont: { family: "Menlo", size: 15, lineHeight: 1.4 } };
+    const win = open();
+    expect(readAppearance(win)).toMatchObject({ ok: true, appearance: electronMock.savedAppearance });
+  });
+
+  it("serves saved appearance to the actual encoded splash URL before services exist", () => {
+    electronMock.savedAppearance = { schemaVersion: 3, mode: "dark", darkScheme: "nord", lightScheme: "one-light", terminalFont: { family: "Menlo", size: 15, lineHeight: 1.4 } };
+    const win = createWindow() as unknown as FakeWindow;
+    expect(win.loadURL).toHaveBeenCalledWith(BOOTSTRAP_SPLASH_URL);
+    expect(BOOTSTRAP_SPLASH_URL.startsWith("data:text/html;charset=utf-8,%3C")).toBe(true);
+    expect(readAppearance(win, BOOTSTRAP_SPLASH_URL)).toMatchObject({ ok: true, appearance: electronMock.savedAppearance });
+    expect(readAppearance(win, BOOTSTRAP_SPLASH_URL + "#unexpected")).toEqual({ ok: false, error: "unauthorized-frame" });
+  });
+
+  it("reads current in-memory appearance after a scheme change and reload", () => {
+    const win = open();
+    let appearance = { schemaVersion: 3, mode: "dark", darkScheme: "nord", lightScheme: "github-light", terminalFont: { family: "Menlo", size: 12, lineHeight: 1.2 } };
+    appState.setServices({ settingsService: { getAll: () => ({ appearance }) } } as never);
+    expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "nord" } });
+    appearance = { ...appearance, darkScheme: "tokyo-night" };
+    expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "tokyo-night" } });
+  });
+
+  it("refuses appearance reads from subframes and navigated documents", () => {
+    const win = open();
+    expect(readAppearance(win, rendererIndexUrl(), true)).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(readAppearance(win, "https://example.test/")).toEqual({ ok: false, error: "unauthorized-frame" });
+  });
+
+  it("refuses appearance reads from windows outside the app renderer registry", () => {
+    open();
+    const foreignWindow = new electronMock.FakeBrowserWindow({});
+    expect(readAppearance(foreignWindow)).toEqual({ ok: false, error: "unauthorized-frame" });
   });
 
   it("gives the first window the primary role and every later one the secondary role", () => {

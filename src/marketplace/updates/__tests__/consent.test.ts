@@ -145,7 +145,7 @@ describe("consentFingerprint: one row per field, each change alone needs review"
     expect(changedFields(before, changed)).toEqual([field]);
   });
 
-  it.each(["skill", "agent", "theme", "font", "language"] as const)("%s minAppVersion", (kind) => {
+  it.each(["skill", "agent", "font", "language"] as const)("%s minAppVersion", (kind) => {
     expect(changedFields(contentConsent(kind, "0.13.0", []), contentConsent(kind, "0.14.0", []))).toEqual(["minAppVersion"]);
     expect(changedFields(contentConsent(kind, "0.13.0", [file("SKILL.md", "a")]), contentConsent(kind, "0.13.0", [file("SKILL.md", "b")]))).toEqual([]);
   });

@@ -32,13 +32,12 @@ import { ContentStore, type StagedContent } from "../../marketplace/content/stor
 import type { PackagePlan } from "../../marketplace/resolve/descriptor.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../marketplace/sources/policy.js";
 import { treeDigest } from "../../marketplace/resolve/plugin-ladder.js";
-import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { loadInstalledContent, registerMarketplaceContentHandlers } from "../domains/marketplace-content.js";
 
 const TOKEN = "t0123456789abcdef0123456789abcdef";
 /** No installed package here has an MCP server: the runtime only registers its lease source. */
 const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined, registerBundledCredentialSource: () => undefined };
-const content = { themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] };
+const content = { languages: [], fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,
   languageMessages: (locale: string) => {
@@ -130,7 +129,6 @@ describe("loadInstalledContent", () => {
   afterEach(async () => {
     registerInstalledLocales([]);
     setInstalledCatalogLoader(null);
-    setInstalledThemeIds([]);
     setLocale("en");
     await rm(root, { recursive: true, force: true });
   });
@@ -144,7 +142,7 @@ describe("loadInstalledContent", () => {
     await store.install(staged);
   }
 
-  it("applies what the store holds to this process: locales, their catalogs, theme ids and the selected language", async () => {
+  it("applies what the store holds to this process: locales, their catalogs and the selected language", async () => {
     const language = { locale: "fr", nativeName: "Français", englishName: "French" };
     // A real interface key: the loader checks the package against the compiled English catalog.
     const key = "common.cancel";
@@ -162,7 +160,7 @@ describe("loadInstalledContent", () => {
 
   it("lists nothing and applies nothing for an empty store", async () => {
     const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
-    expect(service.installed()).toEqual({ themes: [], languages: [], fonts: [], routineTemplates: [], broken: [] });
+    expect(service.installed()).toEqual({ languages: [], fonts: [], routineTemplates: [], broken: [] });
     expect(isInstalledLocale("fr")).toBe(false);
   });
 

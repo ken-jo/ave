@@ -1,3 +1,4 @@
+import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import type { MemorySummariesResult } from "../../src/shared/memory-detail.js";
@@ -103,6 +104,7 @@ type ApiOverrides = {
   /** Give the double the agent browser surface (`api.browserTabs`) and the active-surface report
    * (`api.setActiveSurface`). A test drives main's side with `emitBrowserTabOp` / `emitBrowserControl` below. */
   browserTabs?: boolean;
+  /** Settings overrides are preserved; only an omitted appearance section receives its default. */
   settings?: unknown;
   /** Override the settings RPC itself when a renderer test needs to control its timing. */
   getSettings?: () => Promise<unknown>;
@@ -146,13 +148,13 @@ type ApiOverrides = {
 /** The settings a mock app boots with. Exported so a test that needs to vary ONE field can start from a
  * complete, bootable object instead of a partial one; App reads `llm.provider` during mount and throws on a bare stub. */
 export const MOCK_DEFAULT_SETTINGS = {
+  appearance: DEFAULT_APPEARANCE,
   llm: fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
   chat: { systemPrompt: "", autoCompact: true },
   workBoard: { toolApprovalSurface: "chat" },
   webSearch: { provider: "none" },
   marketplace: {
     installedProviderIds: [],
-    installedThemeBundleIds: [],
     installedLanguagePacks: [],
   },
   routine: {},
@@ -164,6 +166,14 @@ export const MOCK_DEFAULT_SETTINGS = {
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
 };
+
+function seedSettings(override: unknown): unknown {
+  const settings = override ?? MOCK_DEFAULT_SETTINGS;
+  if (typeof settings === "object" && !Array.isArray(settings) && !Object.hasOwn(settings, "appearance")) {
+    return { ...settings, appearance: DEFAULT_APPEARANCE };
+  }
+  return settings;
+}
 
 /** The session id the mock hands the main tile when a test names none. */
 export const MOCK_DEFAULT_SESSION_ID = "sess-default";
@@ -298,7 +308,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   let mintedPaneChats = 0;
   let paneChatStreams = 1000;
   const sideStreamHandlers = new Set<(event: ChatStreamEvent) => void>();
-  let settings = overrides.settings ?? MOCK_DEFAULT_SETTINGS;
+  let settings = seedSettings(overrides.settings);
   let personaPrompts = overrides.personaPrompts ?? [];
   const sessions = (overrides.sessions ?? []).map(sessionRow);
   const currentSession = overrides.currentSession ?? MOCK_DEFAULT_SESSION_ID;

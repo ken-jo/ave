@@ -44,7 +44,7 @@ function makeSettings(): AppSettings {
     },
     audit: { auditRotationMaxBytes: 1000, auditRetentionDays: 30 },
     diagnostics: { includeCrashDumps: false, logRetentionDays: 7 },
-    appearance: { schemaVersion: 2, bundleId: "violet-dark", language: "en" },
+    appearance: { schemaVersion: 3, mode: "dark", darkScheme: "github-dark", lightScheme: "github-light", terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 }, language: "en" },
     webView: { preferredFlow: "in-app" },
     system: { closeBehavior: "hide-to-tray", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"],
       projectSelection: { kind: "root", root: "/Users/example/selected-project" }, recentProjectRoots: ["/Users/example/recent-project"],

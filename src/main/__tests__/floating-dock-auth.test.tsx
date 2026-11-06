@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
+import { SETTINGS } from "../../shared/ipc-channels.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 
 const { listeners, invoke, lifetime, deniedAudit } = vi.hoisted(() => ({
@@ -20,9 +22,11 @@ vi.mock("electron", () => ({
 }));
 vi.mock("../../ui/renderer/components/McpAppView.js", async () => {
   const { useEffect, createElement } = await import("react");
+  const { useTheme } = await import("../../ui/renderer/theme/ThemeProvider.js");
   return { McpAppView: () => {
+    const theme = useTheme();
     useEffect(() => { lifetime.mounts += 1; return () => { lifetime.unmounts += 1; }; }, []);
-    return createElement("div", { "data-testid": "mounted-app" });
+    return createElement("div", { "data-testid": "mounted-app", "data-terminal-font": theme.appearance.terminalFont.family });
   } };
 });
 
@@ -42,6 +46,8 @@ describe("dock host auth observation", () => {
     let status: unknown = { authenticated: false };
     invoke.mockImplementation(async (channel: string) => {
       if (channel === CHANNELS.plugins.call) return status;
+      if (channel === CHANNELS.settings.get) return { appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Dock Mono, monospace" } } };
+      if (channel === CHANNELS.host.pluginThemeNotify) return { ok: true };
       deniedAudit(channel);
       throw new Error("Unexpected app tool call");
     });
@@ -56,6 +62,10 @@ describe("dock host auth observation", () => {
     expect(invoke).toHaveBeenCalledWith(CHANNELS.plugins.call, "fixture_status", undefined, { userAction: false });
     expect(lifetime.mounts).toBe(1);
     expect(lifetime.unmounts).toBe(0);
+    expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Dock Mono, monospace");
+    await act(async () => listeners.get(SETTINGS.updated)?.({}, { appearance: { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "Updated Mono, monospace" } } }));
+    expect(document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font")).toBe("Updated Mono, monospace");
+    expect(lifetime.mounts).toBe(1);
     status = { authenticated: true, account: "account-a" };
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(lifetime.mounts).toBe(2);

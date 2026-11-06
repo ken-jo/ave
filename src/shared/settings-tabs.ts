@@ -39,7 +39,7 @@ export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 /** Settings links resolve globally unique DOM section anchors; tests check registry and anchors in both directions. */
 export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   llm: ["llm-providers", "llm-thinking", "llm-fallback", "llm-pricing-overrides", "llm-model-catalog"],
-  appearance: ["appearance-language", "appearance-theme", "appearance-font"],
+  appearance: ["appearance-language", "appearance-theme", "appearance-font", "appearance-terminal"],
   chat: [
     "chat-optimization",
     "chat-documents",

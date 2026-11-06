@@ -5,7 +5,7 @@ import {
   isValidFontFamilyOverride,
 } from "../appearance-font.js";
 
-// Shared guards protect persisted settings and initial-theme argv from CSS injection before first paint.
+// Shared guards protect persisted settings and initial appearance arguments from CSS injection before first paint.
 describe("appearance-font — shared frame-0 / write-time guards", () => {
   it("exposes exactly the four discrete size-scale presets", () => {
     expect([...FONT_SIZE_SCALE_VALUES]).toEqual([0.75, 0.875, 1, 1.125]);

@@ -215,10 +215,10 @@ describe("changes to what is queued during an agent plugin's call check", () => 
 
   it("keeps the others when retain drops the agent plugin being checked", async () => {
     const { queue, attempted, finishCheck } = checkedQueue(false);
-    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" }), item("light", { kind: "theme" })]);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "font" }), item("light", { kind: "font" })]);
     await flush();
     queue.retain((next) => next.name !== "assist");
-    expect(queue.state().queued).toEqual(["acme:theme:dark", "acme:theme:light"]);
+    expect(queue.state().queued).toEqual(["acme:font:dark", "acme:font:light"]);
     finishCheck(false);
     await queue.drained();
     expect(attempted).toEqual(["dark", "light"]);
@@ -226,7 +226,7 @@ describe("changes to what is queued during an agent plugin's call check", () => 
 
   it("does not start what the check found ready once retain changed the queue: it checks again, and what retain dropped never starts", async () => {
     const { queue, attempted, callsInFlight, finishCheck } = checkedQueue(false);
-    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" }), item("light", { kind: "theme" })]);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "font" }), item("light", { kind: "font" })]);
     await flush();
     queue.retain((next) => next.name !== "light");
     finishCheck(false);
@@ -237,9 +237,9 @@ describe("changes to what is queued during an agent plugin's call check", () => 
 
   it("forgets a call wait that a replacement during the check made stale", async () => {
     const { queue, attempted, finishCheck } = checkedQueue(true);
-    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "theme" })]);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("dark", { kind: "font" })]);
     await flush();
-    queue.replace([item("dark", { kind: "theme" })]);
+    queue.replace([item("dark", { kind: "font" })]);
     finishCheck(true);
     await queue.drained();
     expect(attempted).toEqual(["dark"]);
@@ -251,14 +251,14 @@ describe("the queue", () => {
   it("waits for an agent plugin's calls, applying the others first, and tries it again", async () => {
     let calls = true;
     const { queue, applied } = queueOf({ calls: (next) => next.kind === "agent-plugin" && calls });
-    queue.replace([item("assist", { kind: "agent-plugin" }), item("theme", { kind: "theme" })]);
+    queue.replace([item("assist", { kind: "agent-plugin" }), item("font", { kind: "font" })]);
     await flush();
-    expect(applied).toEqual(["theme"]);
+    expect(applied).toEqual(["font"]);
     expect(queue.state().waitingForCalls).toEqual(["acme:agent-plugin:assist"]);
     calls = false;
     await vi.advanceTimersByTimeAsync(CALLS_RETRY_MS);
     await queue.drained();
-    expect(applied).toEqual(["theme", "assist"]);
+    expect(applied).toEqual(["font", "assist"]);
     expect(queue.state().waitingForCalls).toEqual([]);
   });
 

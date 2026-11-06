@@ -18,7 +18,6 @@ import { jsonText } from '../../../src/marketplace/__tests__/fixtures/package-fi
 import { deriveAgentPluginComponents } from '../../../src/marketplace/content/agent-plugin-components.js';
 import { agentPluginsDocument } from '../../../src/plugins/__tests__/test-helpers.js';
 import { HOST_PROTOCOL_VERSION } from '../../../src/plugins/isolation/host-api-wire.js';
-import { moonstoneBundle } from '../../../src/ui/renderer/theme/bundles/moonstone.js';
 import type {
   CatalogView,
   GitMarketplaceResult,
@@ -42,14 +41,6 @@ const MIN_APP_VERSION = '0.11.0';
 const AUTHORITY = { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: HOST_PROTOCOL_VERSION } };
 const READ_GRANT = { kind: 'hostDirectory' as const, segments: ['certs'], why: 'Read certificate bundles' };
 const WRITE_GRANT = { kind: 'userChosenDirectory' as const, configKey: 'workspace', why: 'Store project data' };
-const SURFACES = {
-  'surface-sunken': '228 30% 97%',
-  surface: '0 0% 100%',
-  'surface-raised': '0 0% 100%',
-  'surface-overlay': '0 0% 100%',
-  'border-subtle': '228 24% 94%',
-  'border-strong': '228 18% 84%',
-};
 
 /** The packages the marketplace lists, one of each kind, as `[kind, name, path]`. */
 const PACKAGES: ReadonlyArray<readonly [PackageKind, string, string]> = [
@@ -58,7 +49,6 @@ const PACKAGES: ReadonlyArray<readonly [PackageKind, string, string]> = [
   ['mcp', 'harbor-notes', 'mcp/harbor-notes'],
   ['skill', 'harbor-review', 'skills/harbor-review'],
   ['agent', 'harbor-guide', 'agents/harbor-guide'],
-  ['theme', 'harbor', 'themes/harbor'],
   ['font', 'harbor-sans', 'fonts/harbor-sans'],
   ['language', 'harbor-french', 'languages/harbor-french'],
   ['provider', 'harbor-llm', 'providers/harbor-llm'],
@@ -232,16 +222,6 @@ function marketplaceTree(version: string): Entry[] {
     file('agents/harbor-guide/ave-package.json', descriptorText('agent', 'harbor-guide', version, { entry: 'AGENTS.md' })),
     file('agents/harbor-guide/AGENTS.md', `---\nname: harbor-guide\ndescription: Guides harbor work (${version}).\n---\nAnswer briefly.\n`),
 
-    file('themes/harbor/ave-package.json', descriptorText('theme', 'harbor', version, { entry: 'theme.json' })),
-    file('themes/harbor/theme.json', jsonText({
-      name: 'Harbor',
-      description: `Harbor light (${version}).`,
-      shell: 'light',
-      highContrast: false,
-      tokens: moonstoneBundle.tokens,
-      surfaces: SURFACES,
-    })),
-
     file('fonts/harbor-sans/ave-package.json', descriptorText('font', 'harbor-sans', version, { entry: 'font.json' })),
     file('fonts/harbor-sans/font.json', jsonText({ family: 'Harbor Sans', license: 'LICENSE', faces: [{ file: 'files/HarborSans.woff2', weight: '100 900' }] })),
     file('fonts/harbor-sans/LICENSE', 'SIL Open Font License 1.1\n'),
@@ -386,14 +366,12 @@ test.describe('git marketplace lifecycle', () => {
       }
     }
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'installed', version: '1.0.0' })}`).sort());
-    await expect(settings.getByTestId(`git-marketplace:card:${SOURCE_ID}:theme:harbor`).getByTestId('git-marketplace:card:state')).toBeVisible();
 
     // The app took each one in.
     const content = await installedContent(mainWindow);
     expect(content.ok).toBe(true);
     if (!content.ok) return;
     expect(content.content.broken).toEqual([]);
-    expect(content.content.themes.map((theme) => theme.id)).toContain('harbor');
     expect(content.content.languages.map((language) => language.locale)).toContain('fr');
     expect(content.content.fonts.map((font) => font.family)).toContain('Harbor Sans');
     expect(content.content.routineTemplates).toEqual(expect.arrayContaining([
@@ -452,7 +430,6 @@ test.describe('git marketplace lifecycle', () => {
     }
     expect(await installed()).toEqual(keys.map((key) => `${key.kind}/${key.name}@${JSON.stringify({ state: 'installed', version: '1.1.0' })}`).sort());
     const updated = await installedContent(mainWindow);
-    expect(updated.ok && updated.content.themes.find((theme) => theme.id === 'harbor')?.description).toBe('Harbor light (1.1.0).');
     expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-kit')?.version).toBe('1.1.0');
     expect(updated.ok && updated.content.routineTemplates.find((template) => template.packageName === 'harbor-panel')?.version).toBe('1.1.0');
 
