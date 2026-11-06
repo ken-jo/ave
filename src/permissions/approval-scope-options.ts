@@ -32,6 +32,9 @@ export function buildApprovalScopeOptions(
   if (permitted("allow-once")) {
     push({ choice: "allow-once", widens: false, path: candidatePath });
   }
+  if (suggestedParent && permitted("allow-session")) {
+    push({ choice: "allow-session", widens: true, path: suggestedParent });
+  }
   if (suggestedParent && permitted("allow-always")) {
     push({ choice: "allow-always", widens: true, path: suggestedParent });
   }

@@ -31,7 +31,7 @@ export function approvalActionSummary(
     return translate(key, { target: boundedTarget });
   };
   if (request.kind === "out-of-allowed-dir") {
-    return describeTarget("approvalAction.outsideDirectory");
+    return describeTarget(request.toolCategory === "read" ? "approvalAction.outsideDirectory" : "approvalAction.outsideDirectoryWrite");
   }
   if (name) {
     if (request.toolName === "write_file" || request.toolName === "append_file") {

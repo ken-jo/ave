@@ -20,6 +20,7 @@ export const en = {
   "approvalAction.editFile": "Edit {target} file",
   "approvalAction.readFile": "Read {target} file",
   "approvalAction.outsideDirectory": "Read {target} outside scope",
+  "approvalAction.outsideDirectoryWrite": "Write {target} outside scope",
   "approvalAction.read": "Read data",
   "approvalAction.write": "Change data",
   "approvalAction.network": "Transfer network data",

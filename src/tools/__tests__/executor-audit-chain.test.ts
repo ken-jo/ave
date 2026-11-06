@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,7 +132,7 @@ describe("ToolExecutor permission audit chain", () => {
     )).rejects.toThrow("append boom");
   });
 
-  it("fails closed before executing when the initialized permission audit chain is not writable", async () => {
+  it("fails closed before executing when the initialized permission audit chain has a corrupt tail", async () => {
     const registry = new ToolRegistry();
     const execute = vi.fn(async () => ({ output: "should not run", isError: false }));
     registry.register(createDynamicTool({
@@ -149,9 +149,7 @@ describe("ToolExecutor permission audit chain", () => {
     permissionManager.checkDetailed = () => ({ decision: "allow", reason: "test allow", });
     const auditLogger = createAuditLogger();
     await auditLogger.setupPermissionAuditChain(SECRET);
-    vi.spyOn(auditLogger, "assertPermissionAuditWritable").mockImplementation(() => {
-      throw new Error("not writable");
-    });
+    writeFileSync(auditLogger.getPermissionAuditLogFile(), JSON.stringify({ corrupt: true }) + "\n");
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -168,7 +166,7 @@ describe("ToolExecutor permission audit chain", () => {
     );
 
     expect(result[0]).toMatchObject({ is_error: true });
-    expect(result[0].content).toContain("permission audit chain is not writable");
+    expect(result[0].content).toContain("permission audit chain is not writable: permission audit active tail is not self-authenticated");
     expect(execute).not.toHaveBeenCalled();
   });
 });
