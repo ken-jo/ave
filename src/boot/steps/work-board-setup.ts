@@ -2,11 +2,10 @@
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { migrateLegacyPluginBoardToWorkBoard } from "./work-board-migration.js";
 import { seedSampleWorkBoard } from "../../work-board/sample-data.js";
-import { scanAndEmitDueSoon } from "../../work-board/due-soon.js";
+import { scanAndRaiseDueSoon } from "../../work-board/due-soon.js";
 import { ALERT_HOST_PLUGIN_ID } from "../../shared/alerts-types.js";
 import { createDirStorage } from "../../work-board/storage.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
-import { emitEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 
@@ -39,11 +38,8 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
 
   const DUE_SOON_TICK_MS = 60 * 60_000;
   const runDueSoonScan = (): void => {
-    void scanAndEmitDueSoon(workBoardStore, workBoardStorage, emitEvent, Date.now(),
+    void scanAndRaiseDueSoon(workBoardStore, Date.now(),
       (input) => ctx.alertsService.raise(ALERT_HOST_PLUGIN_ID, input))
-      .then((fired) => {
-        if (fired.length) log.info("work-board: emitted %d due_soon nudge(s)", fired.length);
-      })
       .catch((err) =>
         log.warn("work-board: due_soon scan failed (non-fatal): %s", (err as Error).message),
       );
