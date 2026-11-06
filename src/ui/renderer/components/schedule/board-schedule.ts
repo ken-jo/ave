@@ -17,6 +17,7 @@ interface ScheduleWeekRow {
   routine: RoutineRecord;
   count: number;
   failed: number;
+  latestRun?: RoutineRun;
 }
 
 export interface BoardScheduleCards {
@@ -62,12 +63,13 @@ export function boardScheduleCards(input: {
     .sort((a, b) => Date.parse(a.nextAt) - Date.parse(b.nextAt));
 
   const fromMs = weekStart(input.now).getTime();
-  const counts = new Map<string, { count: number; failed: number }>();
+  const counts = new Map<string, { count: number; failed: number; latestRun?: RoutineRun }>();
   for (const run of input.runs) {
     if (Date.parse(run.firedAt) < fromMs || !byId.has(run.routineId)) continue;
     if (input.running.get(run.routineId) === run.firedAt) continue;
     const entry = counts.get(run.routineId) ?? { count: 0, failed: 0 };
     entry.count += 1;
+    if (!entry.latestRun || Date.parse(run.firedAt) > Date.parse(entry.latestRun.firedAt)) entry.latestRun = run;
     if (run.status === "failed") entry.failed += 1;
     counts.set(run.routineId, entry);
   }
