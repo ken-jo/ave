@@ -573,16 +573,20 @@ export function protectedControlEntryFor(path: string): string | undefined {
     return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
   });
   if (entry) return entry;
-  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")];
-  if (homes.some((home) => {
-    const base = normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
-    return normalized === base || normalized.startsWith(base + "/");
-  })) return "application-home";
+  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")]
+    .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
+  // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
+  const folded = caseFoldForMatch(normalizePath(path).normalize("NFC")).replace(/\/+$/u, "");
+  const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalizePathForMatch(aveHome())]
+    .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
+    .find((base) => folded === base || folded.startsWith(base + "/"));
+  if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
   if ([...runtimeSettingsScopes.values()].some((targets) => [...targets].some((target) => {
     const base = normalizePath(target).toLowerCase();
     return normalized === base;
   }))) return "runtime-settings-file";
-  if (segments.includes(".ave")) return "application-home";
+  // The managed workspace is user data; nested control homes remain protected.
+  if ((workspace ? folded.slice(workspace.length).toLowerCase().split("/") : segments).includes(".ave")) return "application-home";
   return undefined;
 }
 

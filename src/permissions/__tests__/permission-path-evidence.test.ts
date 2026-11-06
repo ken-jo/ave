@@ -22,6 +22,46 @@ beforeEach(() => {
 afterEach(async () => { vi.unstubAllEnvs(); await cleanupTmpDir(root); });
 
 describe("permission path facts", () => {
+  it.each([".ave", "profile"])("exempts only ordinary managed workspace paths under %s from the application home floor", (name) => {
+    const home = join(root, name);
+    vi.stubEnv("AVE_HOME", home);
+    const workspace = join(home, "workspace");
+    mkdirSync(workspace, { recursive: true });
+    const target = join(workspace, "notes.txt");
+    expect(protectedControlEntryFor(target)).toBeUndefined();
+    expect(protectedControlEntryFor(workspace)).toBeUndefined();
+    const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+    expect(protectedControlEntryFor(join(home, "WORKSPACE", "notes.txt"))).toBe(caseInsensitive ? undefined : "application-home");
+    if (process.platform === "win32") expect(protectedControlEntryFor(target.toUpperCase().replaceAll("/", "\\"))).toBeUndefined();
+    // A lone lexical call must not collapse `..` into the exception.
+    expect(protectedControlEntryFor(`${workspace}/../config/settings.json`)).toBe("application-home");
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("default");
+    expect(manager.checkDetailed("write_file", "builtin", "write", null, {
+      paths: [{ lexical: target, canonical: target, effect: "write" }],
+      fileWritePolicy: { insideProject: true, checkpointAvailable: true, directoryApproved: false },
+    })).toMatchObject({ decision: "allow", reasonCode: "project-write" });
+    for (const name of ["permissions.json", "config/settings.json", "sessions/chat.json", "sandbox/state", "workspace-other/file"]) {
+      expect(protectedControlEntryFor(join(home, name))).toBe("application-home");
+    }
+    expect(protectedControlEntryFor(home)).toBe("application-home");
+    const shell = manager.checkDetailed("powershell", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "powershell", command: "Set-Content -Path notes.txt -Value y", cwd: workspace },
+      shellExecution: { runsSandboxed: true, environmentSnapshot: {} },
+    });
+    // Only the application-home floor is under test; whether this sandboxed write then asks (row 148) or runs (row 147) is the PowerShell startup lane's call.
+    expect(shell.pipelineRequest?.floor).toBeUndefined();
+    expect(shell.reasonCode).not.toBe("application-home");
+    expect(protectedControlEntryFor(join(workspace, ".git/config"))).toBe(".git");
+    expect(protectedControlEntryFor(join(workspace, ".ave/permissions.json"))).toBe("application-home");
+    expect(isAdmissionDeniedPath(join(workspace, ".ave/keys/key"))).not.toBeNull();
+    const escaped = join(home, "config", "settings.json");
+    expect(createPermissionPathEvidence(workspace)({ lexical: target, canonical: escaped, effect: "write" }))
+      .toMatchObject({ protectedControl: "application-home", projectEscape: true });
+    expect(createPermissionPathEvidence(workspace)({ lexical: escaped, canonical: target, effect: "write" }).protectedControl)
+      .toBe("application-home");
+  });
+
   it.each([".env", ".env.production", ".ssh/id_rsa", ".aws/credentials", ".kube/config"])("separates an ordinary secret from host admission for %s", (name) => {
     const path = join(project, name);
     expect(isSensitivePath(path, "read")).not.toBeNull();

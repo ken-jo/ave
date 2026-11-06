@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -531,7 +531,12 @@ describe("strict packaged dependency inventory", () => {
       const { root, pins } = installation();
       const target = path.join(root, packageRoot, directory ? "linked" : "README.md");
       symlinkSync(path.join(root, "koffi", directory ? "" : "index.js"), target, directory ? "junction" : "file");
-      expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(/inventory path redirected/);
+      try {
+        expect(() => verifyMxcSdk(root, "x64", pins, {}, true)).toThrow(/inventory path redirected/);
+      } finally {
+        // Unlink the self-referential junction before recursive teardown.
+        unlinkSync(target);
+      }
     }
   });
 
@@ -584,7 +589,7 @@ describe("strict packaged dependency inventory", () => {
     writeFileSync(marker, "");
     pruneMxcPtyBuildPayloads(root, "x64");
     expect(existsSync(marker)).toBe(false);
-    for (const [name, contents] of [[".bun-tag-8c04ff0e0c6023a5", "planted"], [".bun-tag-invalid", ""], [".bun-tag-8c04ff0e0c6023a5\n", ""]]) {
+    for (const [name, contents] of [[".bun-tag-8c04ff0e0c6023a5", "planted"], [".bun-tag-invalid", ""], [".bun-tag-8c04ff0e0c6023a5-extra", ""]]) {
       const file = path.join(root, "node-pty", name);
       writeFileSync(file, contents);
       pruneMxcPtyBuildPayloads(root, "x64");
@@ -592,6 +597,19 @@ describe("strict packaged dependency inventory", () => {
       expect(() => assertMxcSdkInventory(root, pins, "x64")).toThrow(`Unexpected packaged SDK file: node-pty/${name}`);
       rmSync(file);
     }
+  });
+
+  it("rejects a newline-suffixed patch marker", async context => {
+    if (process.platform === "win32") context.skip("Requires filenames containing newline; the native Windows filename API forbids control characters");
+    const { pruneMxcPtyBuildPayloads } = await import("../../../scripts/lib/mxc-sdk-packaging.mjs");
+    const { root, pins } = installation();
+    mkdirSync(path.join(root, "node-pty/prebuilds/win32-x64"), { recursive: true });
+    const name = ".bun-tag-8c04ff0e0c6023a5\n";
+    const file = path.join(root, "node-pty", name);
+    writeFileSync(file, "");
+    pruneMxcPtyBuildPayloads(root, "x64");
+    expect(existsSync(file)).toBe(true);
+    expect(() => assertMxcSdkInventory(root, pins, "x64")).toThrow(`Unexpected packaged SDK file: node-pty/${name}`);
   });
 });
 

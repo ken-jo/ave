@@ -324,7 +324,8 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
-  it("reports cleanup failures to the command result owner after release", async () => {
+  // Bare-repository cleanup is prepared only on Linux (wrapToolCommand / wrapLongLivedCommand). Simulated on a Windows host, each of the 130 wraps inspects the real host home's protected paths.
+  it.skipIf(process.platform === "win32")("reports cleanup failures to the command result owner after release", async () => {
     await initializeAsrtSandbox({ allowedDomains: [] });
     vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(() => {
       throw new Error("cleanup permission refused");

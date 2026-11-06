@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
+import { aveHome } from "../../shared/ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/test-helpers.js";
 import { admitMxcExtensionFilesystem, assertExtensionStartAllowed } from "../asrt-sandbox.js";
@@ -87,9 +88,17 @@ describe("holder filesystem admission", () => {
     expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: [], denyRead: ["C:\\holder\\*.secret"] })).toThrow(/represented literally/);
   });
 
+  it("refuses a volume root that holds host storage as an ownership overlap", () => {
+    setProcessPlatform("win32");
+    expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\"], allowWrite: [] }, {
+      readRoots: [], writeRoots: [], hostStorageRoots: ["C:\\host-storage"],
+    })).toThrow(/reaches another holder or host storage/);
+  });
+
   it("refuses volume-root file-content grants", () => {
     setProcessPlatform("win32");
-    expect(() => admitMxcExtensionFilesystem({ allowRead: ["C:\\"], allowWrite: [] })).toThrow(/query access only/);
+    const unrelatedRoot = win32.parse(aveHome()).root.toUpperCase() === "Z:\\" ? "Y:\\" : "Z:\\";
+    expect(() => admitMxcExtensionFilesystem({ allowRead: [unrelatedRoot], allowWrite: [] })).toThrow(/query access only/);
   });
 });
 

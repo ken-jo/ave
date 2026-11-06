@@ -9,6 +9,10 @@ const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const REQUIRED_SECURITY_SUITES = [
+  "src/permissions/__tests__/allowed-directories-nfd-root.test.ts",
+  "src/permissions/__tests__/mxc-extension-admission.test.ts",
+  "src/permissions/__tests__/mxc-sdk-packaging.test.ts",
+  "src/permissions/__tests__/asrt-linux-runtime-probe.test.ts",
   // Home-content review must also cover case-insensitive filesystems.
   "src/ipc/domains/__tests__/permissions.test.ts",
   "src/permissions/__tests__/encoded-bypass-battery.test.ts",
