@@ -1,4 +1,4 @@
-// The positive control for escape 3 (plugin-hostapi-protocol.md §9.8, table
+// The positive control for escape 3 (plugin-hostapi-protocol-migration.md §9.8, table
 // row 3): a FULL Electron main process — the same binary the plugin child runs,
 // started with `ELECTRON_RUN_AS_NODE` removed from its environment — runs the
 // SAME detector `escape_electron` runs, `probeElectron()` from `entry.mjs`, and

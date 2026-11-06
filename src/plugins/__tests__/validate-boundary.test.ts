@@ -1,5 +1,5 @@
-// Validation serves recorded host answers and must stay unreachable from the app runtime.
-// Only the runtime factory and validator may open production protocol sessions; dynamic imports count.
+// Test support serves recorded host answers and must stay unreachable from the app runtime.
+// Only the runtime factory may open production protocol sessions; dynamic imports count.
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -38,11 +38,11 @@ function reachableFrom(entries: readonly string[]): Set<string> {
   return reached;
 }
 
-const VALIDATE_DIR = "plugins/validate/";
+const SUPPORT_DIR = "__tests__/support/plugin-validation/";
 const SESSION_MODULE = join(SRC, "plugins", "isolation", "plugin-protocol-session.ts");
 const FACTORY_MODULE = join(SRC, "plugins", "isolation", "out-of-process-plugin.ts");
 
-describe("the validator's code stays out of the running app", () => {
+describe("the protocol test support stays out of the running app", () => {
   it("is reached from neither the main process, the boot sequence nor the plugin runtime", () => {
     const entries = [...graph.keys()].filter((file) => {
       const name = display(file);
@@ -54,19 +54,18 @@ describe("the validator's code stays out of the running app", () => {
     const reached = [...reachableFrom(entries)].map(display);
     // Ensure the graph walk actually reaches the isolation factory.
     expect(reached).toContain("plugins/isolation/out-of-process-plugin.ts");
-    expect(reached.filter((name) => name.startsWith(VALIDATE_DIR))).toEqual([]);
+    expect(reached.filter((name) => name.startsWith(SUPPORT_DIR))).toEqual([]);
   });
 });
 
-describe("the protocol session has exactly two production callers", () => {
-  it("is imported by the factory and the validation session and nothing else", () => {
+describe("the protocol session has exactly one production caller", () => {
+  it("is imported only by the factory in production", () => {
     const importers = [...graph.entries()]
       .filter(([file, targets]) => isProduction(file) && targets.has(SESSION_MODULE))
       .map(([file]) => display(file))
       .sort();
     expect(importers).toEqual([
       "plugins/isolation/out-of-process-plugin.ts",
-      "plugins/validate/validation-session.ts",
     ]);
   });
 });

@@ -1488,7 +1488,7 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });
 
-/** The Doctor's arm and confinement, and a running plugin's refused attempt (`docs/design/plugin-hostapi-protocol.md` §9.8
+/** The Doctor's arm and confinement, and a running plugin's refused attempt (`docs/history/plugin-hostapi-protocol-migration.md` §9.8
  * A1, decisions 51 and 52). */
 describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
   function showCards(cards: unknown[]): void {
@@ -1749,7 +1749,6 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
       "pluginConfigTab.runtimeArmLabel",
       "pluginConfigTab.runtimeArmLine",
       "pluginConfigTab.armChild",
-      "pluginConfigTab.armInProcess",
       "pluginConfigTab.confinementMacosSandbox",
       "pluginConfigTab.confinementLinuxBubblewrap",
       "pluginConfigTab.confinementWindowsSrt",

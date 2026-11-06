@@ -8,7 +8,6 @@
     "docs/blueprints/a2a-subagent-messaging.md",
     "docs/design/permission-review-scenario-board-v2.html",
     "docs/design/plugin-hostapi-protocol.md",
-    "docs/development/knip-baseline.md",
     "docs/protocols/ave-a2a-exact-send-replay.md",
     "docs/references/production-release-checklist.md",
     "resources/AGENTS.md",
@@ -48,15 +47,13 @@
     "docs/guides/getting-started.md",
     "docs/guides/plugin-development.md",
     "docs/guides/user-hooks.md",
+    "docs/history/plugin-hostapi-protocol-migration.md",
     "docs/references/plugin-tool-schema-design.md",
     "docs/research/sandbox-isolation.md"
   ],
   "readers": {
     "docs/design/permission-review-scenario-board-v2.html": [
       "src/permissions/__tests__/permission-review-scenario-board.test.ts"
-    ],
-    "docs/development/knip-baseline.md": [
-      "test/scripts/repository-identity.test.ts"
     ],
     "web/DEPLOY.md": [
       "test/scripts/repository-identity.test.ts"

@@ -55,7 +55,6 @@ const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
 /** Doctor text for the arm a plugin's factory came from (§9.8 A1, decision 51). */
 const ARM_I18N_KEY: Record<NonNullable<PluginCardSummary["arm"]>, string> = {
   child: "pluginConfigTab.armChild",
-  "in-process": "pluginConfigTab.armInProcess",
 };
 
 /** Doctor text for each confinement a plugin can report — one per value. */

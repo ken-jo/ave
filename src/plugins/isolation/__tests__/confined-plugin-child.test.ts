@@ -71,7 +71,7 @@ import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
 import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
-import { createValidationHost } from "../../validate/validation-host.js";
+import { createValidationHost } from "../../../__tests__/support/plugin-validation/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
 import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
@@ -1537,7 +1537,7 @@ export const createPlugin = async (context) => ({
   );
 });
 
-/** The host protocol's process rules, and one golden conversation, against a REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4). `host-protocol-golden.test.ts` pins the frames over paired streams, which proves nothing about the
+/** The host protocol's process rules, and one golden conversation, against a REAL confined child (plugin-hostapi-protocol.md §2.5; plugin-hostapi-protocol-migration.md §9.4). `host-protocol-golden.test.ts` pins the frames over paired streams, which proves nothing about the
  * process: that the child leaves when the host does, that nothing but protocol reaches its stdout, and that the bundle which ships speaks the same conversation the in-memory runtime recorded. Those three need the bundled entry running in its sandbox. */
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
@@ -2806,7 +2806,7 @@ export default async function createPlugin(context) {
   );
 });
 
-/** A `process` entry under the real wrap (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
+/** A `process` entry under the real wrap (docs/history/plugin-hostapi-protocol-migration.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
  * the wrapper ASRT spawns; `/bin/bash -c`; sees only the safe host environment and the sandbox HOME. So a variable that would make the wrapper itself run code is set too late to do so, and anything it makes the plugin's own process run is confined. The context the lifecycle hands a process plugin's factory, over the validation host. */
 function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
   return {

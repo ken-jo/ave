@@ -381,18 +381,8 @@ with **Cmd+V** on macOS or **Ctrl+V** on Windows/Linux instead.
 
 Before publishing or merging an extension change:
 
-- run the plugin validator on the extension directory: `bun run plugin:validate
-  <dir>` in this repository, or the vendored `node tools/vendor/ave-plugin-validate.js
-  <dir>` in a plugin repository. It checks `plugin.json` against the host's
-  manifest schema and protocol rules, drives the extension through the host
-  protocol over a real child process (construct, lifecycle hooks, MCP discovery
-  and tool calls, stdout discipline, exit on stdin close), and cross-checks event
-  and UI-bridge names against the manifest. A `process` extension runs its own
-  executable there, unconfined and from your directory, so its report marks
-  sandbox confinement and the install's sha256 pin as not exercised (the app
-  checks both), and on Windows its protocol step is not run. It prints one
-  JSON report row per check to stdout and exits non-zero when a check fails;
-  pass `--tool-args <file.json>` for tools whose input requires arguments;
+- install and load the extension in the app to verify manifest and protocol
+  admission, then exercise its tools and lifecycle;
 - run tool-schema lint where applicable;
 - verify settings schema rendering;
 - verify install, update and remove from a local git marketplace;

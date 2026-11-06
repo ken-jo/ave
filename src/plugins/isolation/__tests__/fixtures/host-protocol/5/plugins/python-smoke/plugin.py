@@ -1,4 +1,4 @@
-"""The cross-language smoke plugin (plugin-hostapi-protocol.md §9.7 P5).
+"""The cross-language smoke plugin (plugin-hostapi-protocol-migration.md §9.7 P5).
 
 A `process` plugin in Python that owns its stdin and stdout: one
 newline-delimited JSON-RPC loop. `ave/instance/*` requests go to the handlers
@@ -66,7 +66,7 @@ TOOLS = [
         description="Answer with the arguments it was called with.",
         input_schema={"type": "object", "properties": {}},
     ),
-    # Admission's escapes 1 and 2 (plugin-hostapi-protocol.md §9.8 A2), from a
+    # Admission's escapes 1 and 2 (plugin-hostapi-protocol-migration.md §9.8 A2), from a
     # child that is not JavaScript: the filesystem and the raw network claims
     # are the substrate's, so they are re-proven here under the same wrap. They
     # report every answer; the confined suite asserts them.

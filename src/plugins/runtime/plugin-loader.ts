@@ -7,8 +7,6 @@ import type {
 } from "../types.js";
 import { isAppVisible } from "./tool-visibility.js";
 import { pathToFileURL } from "node:url";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 
 /** App-visible methods are the normalized app-only and dual tool union. */
 export function declaredAppVisibleToolMethods(
@@ -40,38 +38,6 @@ export async function importPluginFactory(
     createPlugin?: RuntimePluginFactory;
   };
   return module.default ?? module.createPlugin;
-}
-
-export class PluginImportTimeoutError extends Error {
-  readonly code = "plugin-import-timeout";
-
-  constructor(timeoutMs: number) {
-    super(`plugin import timeout (>${timeoutMs}ms)`);
-  }
-}
-
-/** Dynamic import cannot be aborted; quarantine timed-out in-process instances and observe late rejection. */
-export async function runPluginImportWithTimeout<T>(
-  importer: () => Promise<T>,
-  timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginImportMs,
-): Promise<T> {
-  const operation = Promise.resolve().then(importer);
-  try {
-    return await raceWithTimeout(operation, timeoutMs, () => new PluginImportTimeoutError(timeoutMs));
-  } finally {
-    void operation.catch(() => undefined);
-  }
-}
-
-/**
- * Deprecated in-process import path, kept for a reviewed routing reversal.
- * Deprecation owner: the owner role of `ken-jo` (decision 5). Removal
- * condition and boundary (0.16.0 at the latest): design §9.8.
- */
-export async function importInProcessPluginFactory(
-  resolvedEntryPath: string,
-): Promise<RuntimePluginFactory | undefined> {
-  return runPluginImportWithTimeout(() => importPluginFactory(resolvedEntryPath));
 }
 
 /** Skip missing declared handlers and report each through the caller diagnostic callback. */

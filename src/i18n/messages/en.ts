@@ -393,7 +393,6 @@ export const en = {
   "pluginConfigTab.runtimeArmLabel": "Runs as",
   "pluginConfigTab.runtimeArmLine": "{arm} · {confinement}",
   "pluginConfigTab.armChild": "Separate process",
-  "pluginConfigTab.armInProcess": "Inside the app process",
   "pluginConfigTab.confinementMacosSandbox": "macOS sandbox",
   "pluginConfigTab.confinementLinuxBubblewrap": "Linux sandbox (bubblewrap)",
   "pluginConfigTab.confinementWindowsSrt": "Windows sandbox",
