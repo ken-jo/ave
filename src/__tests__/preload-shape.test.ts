@@ -804,6 +804,7 @@ describe("floating dock preload world shape lock", () => {
     expect(added).toEqual(["aveDock"]);
     const dock = exposed.get("aveDock") as Record<string, unknown> & { onTheme(handler: (theme: unknown) => void): () => void };
     exposed.delete("aveDock");
+    // Dock chrome observes mounted-panel auth to remount views without making auth tools app-callable.
     expect(deepShape(dock)).toMatchInlineSnapshot(`
       {
         "onActivity": "function",
@@ -812,6 +813,7 @@ describe("floating dock preload world shape lock", () => {
         "onRetitle": "function",
         "onTheme": "function",
         "onUnmount": "function",
+        "readAuthStatus": "function",
         "reportSlotGone": "function",
         "requestClose": "function",
       }
