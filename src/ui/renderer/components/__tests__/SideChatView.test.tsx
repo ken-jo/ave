@@ -12,6 +12,7 @@ import { approvalRequest, approvalSurfaceStub, deferred } from "../../../../../t
 import { makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getUsableContext } from "../../../../shared/context-budget.js";
+import { t } from "../../../../i18n/runtime.js";
 import type { ApprovalRequest, AskUserQuestionRequest } from "../../types.js";
 
 beforeEach(() => { vi.stubGlobal("ave", makeMockAveNamespace().ns); });
@@ -21,6 +22,8 @@ function makeApi() {
   // Two subscribers share the side stream — the transcript reducer and the message queue's drain — so the seam fans every
   // frame out to all of them, in subscription order, exactly as the preload channel does.
   const handlers = new Set<(e: ChatStreamEvent) => void>();
+  const fallbackHandlers = new Set<(event: { from: string; to: string }) => void>();
+  const unsubscribeFallback = vi.fn();
   const spies = {
     send: vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string) => ({ ok: true as const, result: {} })),
     new: vi.fn(async () => ({ ok: true as const, sessionId: "side-2" })),
@@ -39,11 +42,17 @@ function makeApi() {
           handlers.delete(h);
         };
       },
-      onFallback: () => () => {},
+      onFallback: vi.fn((handler: (event: { from: string; to: string }) => void) => {
+        fallbackHandlers.add(handler);
+        return () => { fallbackHandlers.delete(handler); unsubscribeFallback(); };
+      }),
     },
   } as unknown as AveApi;
   return {
     api,
+    fallbackHandlers,
+    unsubscribeFallback,
+    emitFallback: (event: { from: string; to: string }) => act(() => { for (const handler of fallbackHandlers) handler(event); }),
     dispatch: (e: ChatStreamEvent) => { for (const h of handlers) h(e); },
     emit: (e: ChatStreamEvent) => act(() => { for (const h of handlers) h(e); }),
     acceptTurn: (streamId: number) => act(() => {
@@ -91,6 +100,49 @@ async function startTurn(text = "hello") {
 }
 
 describe("SideChatView — New button gating during streaming", () => {
+  it("shows provider switches in its composer, replaces the notice, and unsubscribes on unmount", async () => {
+    const { api, acceptTurn, emitFallback, fallbackHandlers, unsubscribeFallback } = makeApi();
+    const view = renderView(api);
+    await startTurn();
+    acceptTurn(1);
+    const event = { from: "primary/model-a", to: "secondary/model-b" };
+    emitFallback(event);
+    const dock = within(screen.getByTestId("side-chat-composer-dock"));
+    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
+    const next = { from: event.to, to: "secondary/model-c" };
+    emitFallback(next);
+    expect(dock.getAllByTestId("status-toast-message")).toHaveLength(1);
+    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", next));
+    const previousHandler = [...fallbackHandlers][0]!;
+    fireEvent.change(sideComposer().textarea, { target: { value: "interrupt and continue" } });
+    fireEvent.keyDown(sideComposer().textarea, { key: "Enter", metaKey: true });
+    await act(async () => {});
+    acceptTurn(2);
+    emitFallback(event);
+    act(() => previousHandler(next));
+    expect(dock.getByTestId("status-toast-message")).toHaveTextContent(t("useChatState.fallbackToast", event));
+    const lateHandler = [...fallbackHandlers][0]!;
+    const callsBefore = unsubscribeFallback.mock.calls.length;
+    view.unmount();
+    expect(unsubscribeFallback).toHaveBeenCalledTimes(callsBefore + 1);
+    expect(fallbackHandlers.size).toBe(0);
+    act(() => lateHandler(event));
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+  });
+
+  it("drops a captured fallback callback after a session switch", async () => {
+    const { api, acceptTurn, emit, fallbackHandlers } = makeApi();
+    renderView(api);
+    await startTurn();
+    acceptTurn(1);
+    const lateHandler = [...fallbackHandlers][0]!;
+    emit({ type: "done", streamId: 1 });
+    fireEvent.click(screen.getByTestId("side-chat-new"));
+    await act(async () => {});
+    act(() => lateHandler({ from: "primary/model-a", to: "secondary/model-b" }));
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+  });
+
   it("keeps a pane send running across a surface switch and restores its continuing transcript", async () => {
     const { api, emit, spies, acceptTurn } = makeApi();
     const reply = deferred<{ ok: true; result: Record<string, never> }>();

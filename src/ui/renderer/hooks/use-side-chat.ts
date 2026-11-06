@@ -76,6 +76,7 @@ export interface UseSideChat {
 }
 
 export interface UseSideChatOptions {
+  onProviderFallback?: (message: string) => void;
   /** Acquires ownership on an accepted send, new or load, including the same session. */
   onSessionBound?: (sessionId: string) => void;
   /** Pane lifetime follows its tab, including while its view is unmounted. */
@@ -451,6 +452,18 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (!runtime.retained) runtime.unsubscribe?.();
     };
   }, [runtime, api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
+
+  const fallbackGeneration = sendGenerationRef.current;
+  useEffect(() => {
+    if (!api.sideChat || !isStreaming || !options?.onProviderFallback) return;
+    let alive = true;
+    const off = api.sideChat.onFallback(({ from, to }) => {
+      if (!alive || !viewMountedRef.current || fallbackGeneration !== sendGenerationRef.current
+        || !isStreamingRef.current || activeStreamIdRef.current === null || terminalStreamClosedRef.current) return;
+      options.onProviderFallback?.(t("useChatState.fallbackToast", { from, to }));
+    });
+    return () => { alive = false; off(); };
+  }, [runtime, api.sideChat, isStreaming, sessionId, fallbackGeneration, options?.onProviderFallback]);
 
   const abandonTurn = useCallback(() => {
     // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial
