@@ -1001,7 +1001,6 @@ export function BrowserWorkspace({
   const { t } = useTranslation();
   const guest = useWebSurfaceGuest(tabId);
   const navigation = useGuestNavigation(guest);
-  const navigate = (action: () => void) => { void navigateBrowserTabAsUser(api, tabId, action); };
   const [addressDraft, setAddressDraft] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
   const latestTarget = useMemo(
@@ -1012,15 +1011,27 @@ export function BrowserWorkspace({
     [targets],
   );
 
-  // The tab whose address row holds text the user typed and has not submitted. A page that reports a new address while
-  // the user types (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
+  // The tab whose address row holds text the user is typing and has not submitted. While the field has focus, a page that
+  // reports a new address (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
+  // The draft lives only that long: leaving the field, Escape, and back, forward or reload put the page's real address back,
+  // so the row never shows a typed address for a page it is not showing.
   const draftEditedForTab = useRef<string | null>(null);
+  const currentAddress = navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : "");
+  const discardDraft = () => {
+    draftEditedForTab.current = null;
+    setAddressDraft(currentAddress);
+    setAddressError(null);
+  };
   useEffect(() => {
     if (draftEditedForTab.current === tabId) return;
     draftEditedForTab.current = null;
-    setAddressDraft(navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : ""));
+    setAddressDraft(currentAddress);
     setAddressError(null);
-  }, [navigation.url, manualUrl, latestTarget, tabId]);
+  }, [currentAddress, tabId]);
+  const navigate = (action: () => void) => {
+    discardDraft();
+    void navigateBrowserTabAsUser(api, tabId, action);
+  };
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1093,6 +1104,15 @@ export function BrowserWorkspace({
             draftEditedForTab.current = tabId;
             setAddressDraft(event.target.value);
             if (addressError) setAddressError(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") discardDraft();
+          }}
+          onBlur={(event) => {
+            // Moving to the Go button submits the draft; anywhere else drops it.
+            const next = event.relatedTarget;
+            if (next instanceof HTMLElement && next.getAttribute("type") === "submit" && event.currentTarget.form?.contains(next)) return;
+            discardDraft();
           }}
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-8 min-w-0 flex-1 text-xs"

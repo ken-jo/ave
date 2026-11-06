@@ -101,6 +101,9 @@ test.describe("workspace rail UX redesign", () => {
     const filterBox = await boxOf(filters);
     expect(filterBox.x).toBeGreaterThanOrEqual(treeBox.x);
     expect(filterBox.x + filterBox.width).toBeLessThanOrEqual(treeBox.x + treeBox.width + 0.5);
+    // And stay compact enough for narrow file panes.
+    expect((await boxOf(page.getByTestId("chat-side-panel-file-filter-all"))).height).toBeLessThanOrEqual(26);
+    expect(filterBox.height).toBeLessThanOrEqual(30);
 
     const search = page.getByTestId("chat-side-panel-file-tree").getByTestId("chat-preview-search");
     await search.fill("no-such-file");
@@ -169,10 +172,13 @@ test.describe("workspace rail UX redesign", () => {
     await app.close();
     await launch();
     await setWindowSize(app, 1400, 840);
-    // The window layout restores the open side panel at its widened width; toggling it here would close it.
+    // The window layout restores the open side panel at its widened width, on its empty landing: content tabs are not
+    // restored. Toggling the panel here would close it, so Files is opened from the landing.
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
+    await expect(page.getByTestId("chat-side-panel-launcher")).toBeVisible();
     const restoredFiles = page.getByTestId("chat-side-panel-file-browser");
-    if (!await restoredFiles.isVisible()) await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
+    await expect(restoredFiles).not.toBeVisible();
+    await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
     await expect(restoredFiles).toHaveAttribute("data-file-layout", "columns");
     await expect
       .poll(async () => page.getByTestId("chat-side-panel-file-tree").evaluate((el) => (el as HTMLElement).style.width))
