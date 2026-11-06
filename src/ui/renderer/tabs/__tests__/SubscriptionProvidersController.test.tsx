@@ -223,6 +223,20 @@ describe("SubscriptionProvidersController", () => {
     });
   });
 
+  it("asks main for a live status only when the user checks again", async () => {
+    const { api, subscriptionRuntimeStatus } = controllerApi();
+    subscriptionRuntimeStatus.mockImplementation(async (provider: SubscriptionRuntimeId) => ({
+      ok: true as const,
+      status: { ...signedOutStatus(provider), runtime: "not-configured" as const },
+    }));
+    render(<SubscriptionProvidersController api={api} />);
+    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledWith("claude-code"));
+    expect(subscriptionRuntimeStatus.mock.calls.every((call) => call.length === 1)).toBe(true);
+
+    fireEvent.click(await screen.findByTestId("subscription-provider:claude-code:check-again"));
+    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenLastCalledWith("claude-code", { refresh: true }));
+  });
+
   it("keeps the newest status when an older read completes after a status invalidation", async () => {
     const staleCodexStatus = deferred<{
       ok: true;

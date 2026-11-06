@@ -1,5 +1,7 @@
 // Run before app.whenReady(): protocol privileges and command-line switches must precede network-service startup.
-import { app, protocol } from "electron";
+import { existsSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { app, protocol, shell } from "electron";
 import { createLogger } from "../lib/logger.js";
 import { ensureWorkspaceCwd } from "./ensure-workspace-cwd.js";
 import { PLUGIN_ASSET_CUSTOM_SCHEME } from "./plugin-asset-protocol.js";
@@ -14,8 +16,38 @@ import {
 } from "./persisted-hardware-acceleration.js";
 
 const log = createLogger("ave");
+const APP_USER_MODEL_ID = "ai.agent-connector.ave";
 const WINDOWS_TOAST_ACTIVATOR_CLSID =
   "{62FD3EFB-B3D2-4235-9402-6979F52C0286}";
+// An unpackaged run registers its bare electron.exe as the toast activator; under the product CLSID that hijacks clicks on the installed app's
+// notifications into Electron's default app.
+const DEV_APP_USER_MODEL_ID = "ai.agent-connector.ave.dev";
+const DEV_WINDOWS_TOAST_ACTIVATOR_CLSID =
+  "{3A31E029-A551-4866-84E0-3F814EE74B69}";
+
+/**
+ * Electron's notification setup reuses the CLSID stored in `Programs\<exe product name>.lnk` over setToastActivatorCLSID; for an
+ * unpackaged run that is `Electron.lnk`. A dev run from before the separate dev identity left that shortcut carrying the product
+ * CLSID, and keeping it would re-point the installed app's activator at electron.exe on every dev launch. Remove only that stale
+ * shortcut; a shortcut that cannot be read or removed stops the dev boot rather than adopting the product CLSID.
+ */
+function removeStaleDevToastShortcut(): void {
+  const shortcut = join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "Electron.lnk");
+  if (!existsSync(shortcut)) return;
+  let clsid: string | undefined;
+  try {
+    clsid = shell.readShortcutLink(shortcut).toastActivatorClsid;
+  } catch (cause) {
+    throw new Error(`Cannot read ${shortcut} to check its toast activator; remove it, then start Ave again`, { cause });
+  }
+  if (clsid?.replace(/[{}]/g, "").toUpperCase() !== WINDOWS_TOAST_ACTIVATOR_CLSID.replace(/[{}]/g, "")) return;
+  try {
+    unlinkSync(shortcut);
+  } catch (cause) {
+    throw new Error(`Cannot remove ${shortcut}, which carries the installed app's toast activator; remove it, then start Ave again`, { cause });
+  }
+  log.warn({ shortcut }, "notifications: removed a stale shortcut that carried the installed app's toast activator");
+}
 
 export function applyRuntimeAppIcon() {
   const iconPath = resolveAppIconPath();
@@ -57,11 +89,12 @@ export function runEarlyBootEnv(): void {
   }
 
   // Windows notifications require an AppUserModelId to appear under the app identity; other platforms treat this as a no-op.
-  app.setAppUserModelId("ai.agent-connector.ave");
+  app.setAppUserModelId(app.isPackaged ? APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID);
   // Electron 43 otherwise creates a fresh random toast activator CLSID when the current-user notification shortcut is absent. Pin a product-owned ID
   // before any Notification presenter can initialize so reinstall/repair does not accumulate orphaned HKCU CLSID registrations.
   if (process.platform === "win32") {
-    app.setToastActivatorCLSID(WINDOWS_TOAST_ACTIVATOR_CLSID);
+    if (!app.isPackaged) removeStaleDevToastShortcut();
+    app.setToastActivatorCLSID(app.isPackaged ? WINDOWS_TOAST_ACTIVATOR_CLSID : DEV_WINDOWS_TOAST_ACTIVATOR_CLSID);
   }
 
   // Scrub development and test flags before packaged children inherit them so diagnostic signals reflect shipped behavior.

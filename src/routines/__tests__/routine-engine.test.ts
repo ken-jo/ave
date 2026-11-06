@@ -109,13 +109,13 @@ describe("RoutineEngine.runRoutine", () => {
     expect(result.summary).toBe("[요약 형식 누락]");
   });
 
-  it("captures error message as summary when runTurn throws", async () => {
+  it("keeps the existing error summary when a turn throws", async () => {
     const loop = makeLoop({ throws: true });
     const engine = new RoutineEngine({ createConversationLoop: () => loop as any });
 
     const result = await engine.runRoutine({ id: "shutdown-daily", trigger: "shutdown", prePrompt: "" });
-
     expect(result.summary).toContain("loop crashed");
+    expect(loop.cleanupSession).toHaveBeenCalled();
   });
 
   it("does not resolve a routine until session cleanup is proven", async () => {

@@ -61,6 +61,8 @@ function makeDeps(
         title: "",
         ...session,
       }))),
+      loadSessionMetadata: vi.fn((_id: string): { projectRoot?: string; noTranscript?: true } | null => ({})),
+      hasSessionTranscript: vi.fn((_id: string) => true),
       deleteSession: vi.fn(async () => undefined),
       touchSessionTranscript: vi.fn(),
     },
@@ -435,5 +437,76 @@ describe("대화에 연결 IPC", () => {
     store.listForDisplay = vi.fn(() => ({ routines: [], invalid: [] }));
     const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
     expect(result).toEqual({ ok: true, occurrences: [], runs: [{ routineId: "routine-c", firedAt: "2026-11-03T00:00:00.000Z", status: "done", sessionId: CHAT }], running: [] });
+  });
+});
+
+
+it("returns persisted metrics once per fire, preserving older connected turns and old records without metrics", async () => {
+  const deps = await setup([{ id: "session", routineFiredAt: "2026-11-03T00:00:00.000Z", preview: "" }]);
+  const recorded = { routineId: "routine-a", firedAt: "2026-11-03T00:00:00.000Z", status: "failed", sessionId: "session", metrics: { startedAt: "2026-11-03T00:00:00.000Z", durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } };
+  deps.routinesStore.list.mockReturnValue([{ id: "routine-a", trigger: "schedule", execution: "llm-session", lastFiredAt: "2026-11-04T00:00:00.000Z", runs: [recorded] }] as never);
+  const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+  expect(result).toMatchObject({ ok: true, runs: [recorded, { routineId: "routine-a", firedAt: "2026-11-04T00:00:00.000Z", status: "done" }] });
+  expect((result as { runs: unknown[] }).runs).toHaveLength(2);
+  expect((result as { runs: Array<{ metrics?: unknown }> }).runs[1]!.metrics).toBeUndefined();
+});
+
+
+describe("stored routine conversation links", () => {
+  it.each(["orphaned", "metadata-deleted", "transcript-deleted"])("omits an unopenable stored session while preserving metrics: %s", async (kind) => {
+    const deps = await setup([]);
+    const firedAt = "2026-11-03T00:00:00.000Z";
+    const metrics = { startedAt: firedAt, durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } };
+    deps.routinesStore.list.mockReturnValue([{ id: "routine-a", trigger: "schedule", execution: "llm-session", targetSessionId: "deleted-chat", lastFiredAt: firedAt,
+      ...(kind === "orphaned" ? { orphanedAt: firedAt } : {}),
+      runs: [{ routineId: "routine-a", firedAt, status: "done", sessionId: "deleted-chat", metrics }],
+    }] as never);
+    if (kind === "metadata-deleted") deps.memoryManager.loadSessionMetadata.mockReturnValue(null);
+    if (kind === "transcript-deleted") deps.memoryManager.hasSessionTranscript.mockReturnValue(false);
+    const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" });
+    expect(result).toMatchObject({ ok: true, runs: [{ routineId: "routine-a", firedAt, metrics }] });
+    expect((result as { runs: Array<{ sessionId?: string }> }).runs[0]!.sessionId).toBeUndefined();
+  });
+});
+
+
+describe("routine occurrence session checks", () => {
+  it.each(["available", "metadata-deleted", "transcript-deleted"])("checks a shared session once per request across 500 runs and two routines: %s", async (availability) => {
+    const deps = await setup([]);
+    if (availability === "metadata-deleted") deps.memoryManager.loadSessionMetadata.mockReturnValue(null);
+    if (availability === "transcript-deleted") deps.memoryManager.hasSessionTranscript.mockReturnValue(false);
+    const records = ["routine-a", "routine-b"].map((routineId, group) => ({
+      id: routineId, trigger: "schedule", execution: "llm-session", targetSessionId: "shared-chat",
+      runs: Array.from({ length: 250 }, (_, index) => ({ routineId, status: "done", sessionId: "shared-chat",
+        firedAt: new Date(Date.parse("2026-11-03T00:00:00.000Z") + (group * 250 + index) * 60_000).toISOString(),
+      })),
+    }));
+    deps.routinesStore.list.mockReturnValue(records as never);
+    const query = { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" };
+    const result = await invoke(ROUTINES.listOccurrences, query) as { ok: boolean; runs: Array<{ sessionId?: string }> };
+    expect(result.ok).toBe(true);
+    expect(result.runs).toHaveLength(500);
+    expect(result.runs.every((run) => run.sessionId === (availability === "available" ? "shared-chat" : undefined))).toBe(true);
+    expect(deps.memoryManager.loadSessionMetadata).toHaveBeenCalledTimes(1);
+    expect(deps.memoryManager.hasSessionTranscript).toHaveBeenCalledTimes(availability === "metadata-deleted" ? 0 : 1);
+    // A later request must check again; a prior positive or negative result is not durable.
+    await invoke(ROUTINES.listOccurrences, query);
+    expect(deps.memoryManager.loadSessionMetadata).toHaveBeenCalledTimes(2);
+    expect(deps.memoryManager.hasSessionTranscript).toHaveBeenCalledTimes(availability === "metadata-deleted" ? 0 : 2);
+  });
+
+  it("keeps orphan state local to each routine when its target is shared", async () => {
+    const deps = await setup([]);
+    const firedAt = "2026-11-03T00:00:00.000Z";
+    deps.routinesStore.list.mockReturnValue(["orphaned", "linked"].map((id) => ({
+      id, trigger: "schedule", execution: "llm-session", targetSessionId: "shared-chat",
+      ...(id === "orphaned" ? { orphanedAt: firedAt } : {}),
+      runs: [{ routineId: id, firedAt, status: "done", sessionId: "shared-chat" }],
+    })) as never);
+    const result = await invoke(ROUTINES.listOccurrences, { from: "2026-11-02T00:00:00.000Z", to: "2026-11-09T00:00:00.000Z" }) as { runs: Array<{ routineId: string; sessionId?: string }> };
+    expect(result.runs.find((run) => run.routineId === "orphaned")!.sessionId).toBeUndefined();
+    expect(result.runs.find((run) => run.routineId === "linked")!.sessionId).toBe("shared-chat");
+    expect(deps.memoryManager.loadSessionMetadata).toHaveBeenCalledTimes(1);
+    expect(deps.memoryManager.hasSessionTranscript).toHaveBeenCalledTimes(1);
   });
 });

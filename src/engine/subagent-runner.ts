@@ -1959,6 +1959,14 @@ export class SubAgentRunner {
     return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
   }
 
+  /** Read a persisted child's title without loading or hydrating its transcript. */
+  getPersistedSessionMetadata(sessionId: string): { title?: string } | null {
+    if (!isValidSessionId(sessionId)) return null;
+    const metadata = this.deps.subAgentMemoryManager.loadSessionMetadata(sessionId);
+    if (metadata?.sessionKind !== "subagent") return null;
+    return metadata.subAgentTitle ? { title: metadata.subAgentTitle } : {};
+  }
+
   /** The sub-agent sessions work-board items spawned, newest first; the rows the sidebar's conversation list shows beside the main sessions. Same reason as above for routing through the runner: the
    * children live in the sub-agent namespace, which only this class holds. The memory manager owns the classification (which origin names an item); this method only carries the page window through. */
   listWorkBoardRunSessions(

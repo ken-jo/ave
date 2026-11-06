@@ -52,9 +52,9 @@ rm -rf "$work" "$prefix" "$bin_dir"
 mkdir -p "$work"
 
 url="https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWS_CLI_VERSION}.zip"
-curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+curl --fail --silent --show-error --location --retry 6 --retry-delay 5 --retry-max-time 180 --proto '=https' --tlsv1.2 \
   --output "$work/awscliv2.zip" "$url"
-curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+curl --fail --silent --show-error --location --retry 6 --retry-delay 5 --retry-max-time 180 --proto '=https' --tlsv1.2 \
   --output "$work/awscliv2.sig" "$url.sig"
 
 # A throwaway keyring: a persistent self-hosted runner's own keyring is never

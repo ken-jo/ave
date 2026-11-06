@@ -12,6 +12,7 @@ import { makeAppIpcInvoker } from "./test-helpers.js";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const runtimeServiceMock = vi.hoisted(() => ({
   get: vi.fn(),
+  onAutoVerified: vi.fn((_listener: (provider: string) => void) => vi.fn()),
   errorCode: vi.fn((error: unknown) => {
     if (
       error !== null
@@ -52,6 +53,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../../../main/subscription-runtime-service.js", () => ({
   getSubscriptionRuntimeService: runtimeServiceMock.get,
+  onSubscriptionRuntimeAutoVerified: runtimeServiceMock.onAutoVerified,
   subscriptionRuntimeErrorCode: runtimeServiceMock.errorCode,
   SubscriptionRuntimeServiceError: runtimeServiceMock.RuntimeError,
 }));
@@ -109,6 +111,7 @@ const runtime = {
   cancelLogin: vi.fn(),
   logout: vi.fn(),
   listModels: vi.fn(),
+  invalidateCachedReads: vi.fn(),
 };
 
 type TestLlm = {
@@ -263,7 +266,7 @@ describe("common subscription runtime IPC", () => {
 
     expect(result).toMatchObject({ ok: true, status: { provider: "codex", capabilities: READY_CAPABILITIES } });
     expect(runtime.verify).toHaveBeenCalledWith("codex");
-    expect(runtime.listModels).toHaveBeenCalledWith("codex");
+    expect(runtime.listModels).toHaveBeenCalledWith("codex", { allowCached: true });
     expect(deps.settingsService.patch).toHaveBeenCalledWith({
       llm: { activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5" } },
     });
@@ -440,6 +443,22 @@ describe("common subscription runtime IPC", () => {
     expect(bound.at(-1)).toEqual({ kind: "api" });
   });
 
+  it("announces a status a chat turn proved", async () => {
+    const send = vi.fn();
+    const deps = { ...makeStatefulSelectionDeps({ provider: "openai", vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "subscription", provider: "codex" } }).deps };
+    deps.getAppWindows = vi.fn(() => [{ isDestroyed: vi.fn(() => false), webContents: { isDestroyed: vi.fn(() => false), send } }]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    const dispose = registerSettingsHandlers(deps as never);
+    const listener = runtimeServiceMock.onAutoVerified.mock.calls.at(-1)![0];
+    listener("codex");
+    expect(send).toHaveBeenCalledWith("ave:settings:subscription:status-updated", expect.objectContaining({ provider: "codex" }));
+    // The registration hands back the service's own unsubscribe, so the listener can be removed.
+    const unsubscribe = runtimeServiceMock.onAutoVerified.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
+    dispose();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   it("announces the subscription restored when overlapping switches fail to save", async () => {
     const saved = { kind: "subscription", provider: "kimi-code" } as const;
     const state = makeStatefulSelectionDeps({
@@ -591,6 +610,35 @@ describe("common subscription runtime IPC", () => {
     expect(events[0]).toEqual({ provider: "codex", revision: expect.any(Number) });
     expect(events[1]).toEqual({ provider: "codex", revision: expect.any(Number) });
     expect(events[1]!.revision).toBeGreaterThan(events[0]!.revision);
+  });
+
+  it("serves settings status and catalog reads from the runtime cache unless the user asks to check again", async () => {
+    const deps = makeDeps();
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await invoke("ave:settings:subscription:status", "claude-code");
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    await invoke("ave:settings:subscription:status", "claude-code", { refresh: true });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: false });
+    await invoke("ave:settings:subscription:status", "claude-code", { refresh: "yes" });
+    expect(runtime.getStatus).toHaveBeenLastCalledWith("claude-code", { allowCached: true });
+    await invoke("ave:settings:subscription:list-models", "codex");
+    expect(runtime.listModels).toHaveBeenLastCalledWith("codex", { allowCached: true });
+  });
+
+  it("drops cached runtime reads for both providers when the chat selection changes", async () => {
+    const state = makeStatefulSelectionDeps({
+      provider: "openai",
+      vendors: { openai: { model: "gpt-5", baseUrl: null } },
+      activeChatRuntime: { kind: "subscription", provider: "codex", model: "gpt-5" },
+    });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(state.deps as never);
+
+    await invoke("ave:settings:subscription:use-for-chat", "kimi-code");
+    expect(runtime.invalidateCachedReads).toHaveBeenCalledWith("codex");
+    expect(runtime.invalidateCachedReads).toHaveBeenCalledWith("kimi-code");
   });
 
   it("invalidates the prior active subscription after switching back to API keys", async () => {

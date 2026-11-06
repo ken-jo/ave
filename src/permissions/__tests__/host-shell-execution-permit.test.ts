@@ -27,7 +27,7 @@ import {
   type PermissionCheckResult,
 } from "../permission-manager.js";
 
-// An explicit host retry on a host whose sandbox is available: the route invocation authorization passes, so a wildcard allow may match (without a sandbox only an exact allow can).
+// An explicit host retry on a host whose sandbox is available: the route invocation authorization passes, so a wildcard allow may match.
 const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false } as const;
 
 function windowsPlan() {

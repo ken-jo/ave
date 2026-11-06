@@ -419,6 +419,46 @@ describe("useSettings", () => {
     expect(api.subscriptionRuntimeStatus).toHaveBeenCalledWith("codex");
   });
 
+  it("lets a connected, ready runtime not yet proven this launch send its first turn, without attachments", async () => {
+    const settings = makeSettings();
+    settings.llm.activeChatRuntime = { kind: "subscription", provider: "codex" };
+    const { api } = makeMockAveApi({ settings, hasApiKey: false });
+    api.subscriptionRuntimeStatus = vi.fn(async () => ({
+      ok: true,
+      status: {
+        provider: "codex",
+        runtime: "ready",
+        connection: "connected",
+        planType: "subscription",
+        pendingLogin: null,
+        pendingDeviceCode: null,
+        canOpenVerificationUrl: false,
+        version: "test",
+        capabilities: {
+          chat: false,
+          tools: false,
+          projectAccess: false,
+          plugins: false,
+          mcp: false,
+          generateText: false,
+          compaction: false,
+          routine: false,
+          subagent: false,
+          images: false,
+          imageAttachmentLimits: null,
+          files: false,
+        },
+      },
+    }));
+
+    const { result } = renderHook(() => useSettings(api as unknown as AveApi));
+
+    await waitFor(() => expect(result.current.subscriptionChatReady).toBe(true));
+    expect(result.current.subscriptionRuntimePolicy.chatUnavailable).toBe(false);
+    expect(result.current.subscriptionImagesReady).toBe(false);
+    expect(result.current.subscriptionFilesReady).toBe(false);
+  });
+
   it("fails closed synchronously when an active subscription status revision arrives", async () => {
     const settings = makeSettings();
     settings.llm.activeChatRuntime = { kind: "subscription", provider: "codex" };

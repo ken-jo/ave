@@ -3,7 +3,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import type { MessageQueueStore } from "../../src/ui/renderer/state/message-queue-store.js";
 import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
-import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
+import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS, type MockAveApi } from "./mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import type { ToolActivityState } from "../../src/ui/renderer/components/ToolActivity.js";
 import { ApprovalSurfaceClaims, ApprovalSurfaceProvider, type ApprovalSurfaceContextValue } from "../../src/ui/renderer/hooks/use-approval.js";
@@ -75,6 +75,23 @@ export async function submitChatMessage(
   await act(async () => {
     fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
   });
+}
+
+/** Deliver an agent `browser_tab_new` op the way main does: from a conversation, named on the op. The focused tile gets its
+ * conversation from a first turn, so the op has a chat to belong to. */
+export async function emitAgentTabNew(
+  container: HTMLElement,
+  api: MockAveApi,
+  request: { requestId: string; url: string; active?: boolean },
+): Promise<void> {
+  const chatSend = api.chatSend;
+  if (!chatSend) throw new Error("mock api has no chatSend");
+  if (chatSend.mock.calls.length === 0) {
+    await submitChatMessage(container, "open a page");
+    await waitFor(() => expect(chatSend.mock.calls.length).toBeGreaterThan(0));
+  }
+  const browserTabs = api.browserTabs as unknown as { emitBrowserTabOp: (request: unknown) => void };
+  await act(async () => browserTabs.emitBrowserTabOp({ op: "new", active: false, ...request, sessionId: MOCK_DEFAULT_SESSION_ID }));
 }
 
 export interface RenderedTile {

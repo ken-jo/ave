@@ -1163,11 +1163,7 @@ export function PermissionsTab({
               onCheckedChange={() => void handleSandboxToggle()}
             />
             <div className="min-w-0 space-y-0.5">
-              <p className="text-sm">
-                {t("permissionsTab.osSandboxShellLabel")}
-                {" — "}
-                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-              </p>
+              <p className="text-sm">{t("permissionsTab.osSandboxShellLabel")}</p>
               <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
               {shellStatusError ? (
                 <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
@@ -1193,11 +1189,7 @@ export function PermissionsTab({
               onCheckedChange={() => void handleWorkerConfinementToggle()}
             />
             <div className="min-w-0 space-y-0.5">
-              <p className="text-sm">
-                {t("permissionsTab.workerConfinementLabel")}
-                {" — "}
-                {workerConfinementEffective ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-              </p>
+              <p className="text-sm">{t("permissionsTab.workerConfinementLabel")}</p>
               <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
             </div>
           </div>
@@ -1221,7 +1213,8 @@ export function PermissionsTab({
           {sandboxCapability && sandboxCapability.available ? (
             <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground">
               <p className="font-medium text-foreground">{t("permissionsTab.osSandboxCapabilityHeading")}</p>
-              <p>
+              {/* On Windows the session box below states the same per substrate. */}
+              {sandboxCapability.platform === "win32" && windowsSubstrate ? null : <p>
                 {sandboxCapability.platform === "darwin"
                   ? t("permissionsTab.osSandboxCapabilityMac")
                   : sandboxCapability.platform === "linux"
@@ -1229,7 +1222,7 @@ export function PermissionsTab({
                     : sandboxCapability.platform === "win32"
                       ? t("permissionsTab.osSandboxCapabilityWindows")
                       : t("permissionsTab.osSandboxCapabilityOther")}
-              </p>
+              </p>}
               {sandboxPotentialReason ? (
                 <p data-testid="os-sandbox-potential-reason">
                   {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
@@ -1299,7 +1292,10 @@ export function PermissionsTab({
                       : t("permissionsTab.osSandboxWindowsShellsNone")}
               </p>
               {windowsSubstrate.shells === "mxc" ? (
-                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+                <>
+                  <p data-testid="os-sandbox-windows-shells-limits">{t("permissionsTab.osSandboxWindowsShellsMxcLimits")}</p>
+                  <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+                </>
               ) : null}
               {windowsSubstrate.mxc.state === "unavailable" ? (
                 <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>

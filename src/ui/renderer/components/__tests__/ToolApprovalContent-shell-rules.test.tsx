@@ -9,6 +9,11 @@ import type { ShellRuleApproval } from "../../../../shared/permissions-events.js
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
+const OUTSIDE_SANDBOX_COPY = {
+  en: "This command runs outside the sandbox. A saved exact or prefix allow rule lets matching commands run without asking.",
+  ko: "이 명령은 샌드박스 밖에서 실행됩니다. 정확히 일치하거나 접두사가 일치하는 허용 규칙을 저장하면 일치하는 명령은 다시 묻지 않고 실행됩니다.",
+} as const;
+
 const EXACT_RULE = "Bash(printf %s ready)";
 
 function shellRule(overrides: Partial<ShellRuleApproval> = {}): ShellRuleApproval {
@@ -38,11 +43,12 @@ afterEach(() => { vi.unstubAllGlobals(); setLocale(originalLocale); });
 
 // Owner 2026-10-25 (unified approval card): a shell card draws Deny ▾ | Allow for session ▾ | Allow once; every remembering choice saves a Bash(...)/PowerShell(...) rule, editable before it is saved.
 describe("shell approval card: the shared decision row", () => {
-  it("draws the three buttons, with no rule row until a choice is selected", () => {
+  it.each(["en", "ko"] as const)("draws the three buttons and explains saved host rules in %s", (locale) => {
+    setLocale(locale);
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     renderApproval(shellRequest(), vi.fn());
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "shell");
-    expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
+    expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(OUTSIDE_SANDBOX_COPY[locale]);
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent(t("toolApprovalDialog.decisionDeny"));
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent(t("toolApprovalDialog.decisionAllowSession"));
     expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent(t("toolApprovalDialog.allowOnce"));
@@ -55,12 +61,13 @@ describe("shell approval card: the shared decision row", () => {
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
   });
 
-  it("does not claim a sandboxed command runs outside the sandbox or needs an exact rule", () => {
+  it("does not show host-rule guidance for a sandboxed command", () => {
+    setLocale("en");
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     const executionPlan = { sandboxed: true, mode: "sandboxed" } as unknown as ApprovalRequest["executionPlan"];
     renderApproval(shellRequest({ executionPlan }), vi.fn());
     expect(screen.queryByTestId("approval-shell-outside-sandbox")).toBeNull();
-    expect(screen.getByTestId("approval-shell-rule-context").textContent).not.toContain(t("toolApprovalDialog.shellOutsideSandbox"));
+    expect(screen.getByTestId("approval-shell-rule-context").textContent).not.toContain(OUTSIDE_SANDBOX_COPY.en);
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
   });
 

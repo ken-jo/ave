@@ -1,3 +1,4 @@
+import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
@@ -226,8 +227,10 @@ export function buildInternalApiSurface() {
   codexSubscriptionCancelLogin: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionCancelLogin),
   codexSubscriptionLogout: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionLogout),
   codexSubscriptionListModels: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionListModels),
-  subscriptionRuntimeStatus: async (provider: unknown) =>
-    ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider),
+  subscriptionRuntimeStatus: async (provider: unknown, options?: unknown) =>
+    options === undefined
+      ? ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider)
+      : ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider, options),
   subscriptionChooseRuntime: async (provider: unknown) =>
     ipcRenderer.invoke(CHANNELS.settings.subscriptionChooseRuntime, provider),
   subscriptionForgetRuntime: async (provider: unknown) =>
@@ -441,6 +444,10 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
+  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
+    opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
+  memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
+    invokeWithOptionalMemoryOptions(CHANNELS.memory.summariesGet, opts),
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>

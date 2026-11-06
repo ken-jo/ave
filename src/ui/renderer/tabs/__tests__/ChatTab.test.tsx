@@ -92,7 +92,7 @@ describe("ChatTab idle long-term-memory consolidation", () => {
 
     expect(toggle.getAttribute("data-state")).toBe("unchecked");
     expect(screen.getByText("유휴 상태에서 장기 기억 통합")).toBeTruthy();
-    expect(screen.getByText(/현재 프로젝트 원본 기억을 구성된 LLM에 전송/)).toBeTruthy();
+    expect(screen.getByText(/현재 프로젝트 기억을 설정한 모델에 보내/)).toBeTruthy();
     expect(screen.getByText(/Roles의 수동 통합은 계속 사용할 수 있습니다/)).toBeTruthy();
 
     fireEvent.click(toggle);

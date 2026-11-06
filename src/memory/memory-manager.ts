@@ -1454,6 +1454,24 @@ export class MemoryManager implements PromptMemorySource {
     return this.readMarkdownEntries(this.memoryDir, options);
   }
 
+  /** One inventory pass; only the selected scope's notes leave the store, alongside scope counts. */
+  readMemoryPanelCatalog(options: ProjectScopedMemoryOptions, defaultProjectRoot: string) {
+    const entries = this.readMarkdownEntries(this.memoryDir, { includeOtherProjects: true });
+    const notes = entries.filter((entry) => this.matchesMemoryRead(entry, options));
+    const global = entries.filter((entry) => entry.id && !entry.projectRoot).length;
+    return {
+      notes,
+      scopeCounts: {
+        project: notes.filter((entry) => entry.projectRoot || !entry.id).length,
+        global,
+        defaultProject: entries.filter((entry) => entry.projectRoot
+          ? projectRootEquals(entry.projectRoot, defaultProjectRoot)
+          : !entry.id).length,
+        defaultProjectApplicable: projectRootEquals(options.projectRoot, defaultProjectRoot),
+      },
+    };
+  }
+
   // Global refresh includes unscoped legacy records but never project-scoped managed memories.
   listGlobalMemoryEntries(): NoteEntry[] {
     return this.listMemoryEntries().filter((entry) => !entry.projectRoot);
@@ -3500,7 +3518,7 @@ export class MemoryManager implements PromptMemorySource {
 
   private readMarkdownEntries(
     dir: string,
-    options: MemoryReadOptions & { excludeMarkedMemory?: boolean } = {},
+    options: MemoryReadOptions & { excludeMarkedMemory?: boolean; includeOtherProjects?: true } = {},
   ): NoteEntry[] {
     return readdirIfPresent(dir)
       .filter((filename) => filename.endsWith(".md"))
@@ -3528,7 +3546,7 @@ export class MemoryManager implements PromptMemorySource {
               ...(parsed.legacyProject.projectRoot ? { projectRoot: parsed.legacyProject.projectRoot } : {}),
               ...(parsed.legacyProject.projectName ? { projectName: parsed.legacyProject.projectName } : {}),
             };
-        return this.matchesMemoryRead(entry, options) ? [entry] : [];
+        return (options.includeOtherProjects ? !noteIsExpired(entry) : this.matchesMemoryRead(entry, options)) ? [entry] : [];
       })
       .sort((left, right) =>
         new Date(right.updatedAt ?? 0).getTime() - new Date(left.updatedAt ?? 0).getTime()

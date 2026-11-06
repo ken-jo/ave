@@ -362,7 +362,7 @@ describe("useWorkspaceTabs", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
       act(() => result.current.addTab("terminal"));
       const selected = result.current.activeTabId;
-      act(() => result.current.openAgentBrowserTab("https://a.example/", "background-op", false));
+      act(() => result.current.openAgentBrowserTab("https://a.example/", "background-op", false, "s1"));
       expect(result.current.activeTabId).toBe(selected);
       expect(result.current.tabs).toHaveLength(2);
     });
@@ -370,7 +370,7 @@ describe("useWorkspaceTabs", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
       let tabId: string | null = null;
       act(() => {
-        tabId = result.current.openAgentBrowserTab("about:blank", "browser-op-blank", true);
+        tabId = result.current.openAgentBrowserTab("about:blank", "browser-op-blank", true, "s1");
       });
       expect(tabId).not.toBeNull();
       expect(result.current.tabs).toEqual([expect.objectContaining({
@@ -384,7 +384,7 @@ describe("useWorkspaceTabs", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
       let tabId: string | null = "unset";
       act(() => {
-        tabId = result.current.openAgentBrowserTab("about:blank", requestId, true);
+        tabId = result.current.openAgentBrowserTab("about:blank", requestId, true, "s1");
       });
       expect(tabId).toBeNull();
       expect(result.current.tabs).toEqual([]);
@@ -394,7 +394,7 @@ describe("useWorkspaceTabs", () => {
       const { result } = renderHook(() => useWorkspaceTabs());
       let tabId: string | null = "unset";
       act(() => {
-        tabId = result.current.openAgentBrowserTab(url, "browser-op-blank", true);
+        tabId = result.current.openAgentBrowserTab(url, "browser-op-blank", true, "s1");
       });
       expect(tabId).toBeNull();
       expect(result.current.tabs).toEqual([]);

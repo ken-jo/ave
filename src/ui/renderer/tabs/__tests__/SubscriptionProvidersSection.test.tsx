@@ -272,6 +272,23 @@ describe("SubscriptionAuthControls", () => {
     }
   });
 
+  it("keeps Verify for a connected, ready runtime until it is proven, so a failed first-turn proof can be retried", () => {
+    const verifyRuntime = vi.fn();
+    const { unmount } = renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: false }) })], {
+      beginLogin: vi.fn(),
+      verifyRuntime,
+    });
+    fireEvent.click(screen.getByTestId("subscription-provider:codex:verify-runtime"));
+    expect(verifyRuntime).toHaveBeenCalledWith("codex");
+    unmount();
+
+    renderProviders([viewFor("codex", { runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ chat: true }) })], {
+      beginLogin: vi.fn(),
+      verifyRuntime: vi.fn(),
+    });
+    expect(screen.queryByTestId("subscription-provider:codex:verify-runtime")).toBeNull();
+  });
+
   it.each([
     ["codex", "Install the Codex CLI to sign in with your ChatGPT plan.", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
     ["claude-code", "Install the Claude Code CLI to sign in with your Claude plan.", "curl -fsSL https://claude.ai/install.sh | bash"],

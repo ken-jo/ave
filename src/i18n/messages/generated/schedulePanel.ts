@@ -1,5 +1,9 @@
 // i18n fragment. Source: src/ui/renderer/components/schedule/SchedulePanel.tsx.
 export const en = {
+  "schedulePanel.durationHour": "h",
+  "schedulePanel.durationMinute": "m",
+  "schedulePanel.durationSecond": "s",
+  "schedulePanel.runMetrics": "{duration} · {tokens} tokens",
   "schedulePanel.add": "Add schedule",
   "schedulePanel.addShort": "Add",
   "schedulePanel.addManual": "Add schedule",
@@ -106,6 +110,10 @@ export const en = {
 };
 
 export const ko: Record<keyof typeof en, string> = {
+  "schedulePanel.durationHour": "시간",
+  "schedulePanel.durationMinute": "분",
+  "schedulePanel.durationSecond": "초",
+  "schedulePanel.runMetrics": "{duration} · {tokens} 토큰",
   "schedulePanel.add": "스케줄 추가",
   "schedulePanel.addShort": "추가",
   "schedulePanel.addManual": "스케줄 추가",

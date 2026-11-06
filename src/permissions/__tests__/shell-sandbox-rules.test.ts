@@ -427,6 +427,25 @@ describe("plain-shell invocation authorization", () => {
     expect(check("printf later", true).decision).toBe("allow");
   });
 
+  it.each(["off", "unavailable"] as const)("uses a saved project prefix for host calls with the sandbox %s", async (sandboxState) => {
+    manager.setMode("default");
+    setShellSandboxRequestedAtBoot(sandboxState !== "off");
+    setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
+    await manager.addRulePersist({ pattern: "Bash(printf ready *)", action: "allow" }, { kind: "project", projectCwd: dir });
+    // Reload from disk so this checks a saved project rule rather than an in-memory grant.
+    manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("default");
+    const { run, requests, input, send } = executorWithDock({ executionMode: "host" });
+    input.command = "printf ready extra";
+    expect((await run())[0]).toMatchObject({ content: "ready", executionPlan: { mode: "plain", executionRequest: "host", sandboxed: false } });
+    expect(requests).toEqual([]);
+    expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+    input.command = "printf other";
+    expect((await run())[0]).toMatchObject({ content: "other" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.args).toMatchObject({ command: "printf other", executionMode: "host" });
+  });
+
   it("uses prefix and exact rules for host spawns while unmatched commands still ask", async () => {
     manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests, input } = executorWithDock();

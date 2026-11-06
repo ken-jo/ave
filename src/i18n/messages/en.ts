@@ -114,7 +114,7 @@ export const en = {
   "documentEngine.description": "Render document pages and recalculate spreadsheet formulas in the read-only preview. Existing viewers remain available without this download.",
   "documentEngine.size": "Version {version} · {download} MiB download · about {installed} MiB on disk",
   "documentEngine.localOnly": "Document processing stays on this computer. The engine receives a private copy and cannot save changes to the original.",
-  "documentEngine.hwpRuntime": "HWP/HWPX import also requires a compatible Java runtime and is not available on macOS yet. The importer source and GPL-3.0 license are linked below.",
+  "documentEngine.hwpRuntime": "HWP/HWPX also needs a Java runtime; not available on macOS yet. Source and GPL-3.0 license below.",
   "documentEngine.importerSource": "H2Orestart source",
   "documentEngine.importerLicense": "GPL-3.0 license",
   "documentEngine.sourceOpenFailed": "Could not open the source or license page.",
@@ -182,7 +182,7 @@ export const en = {
   "compactionSettings.title": "Compaction",
   "compactionSettings.model": "Compaction model",
   "compactionSettings.currentModel": "Current chat model",
-  "compactionSettings.description": "Leave empty to use the current chat model. Another model ID uses this provider, endpoint and credentials for manual and automatic compaction. Switching provider routes uses the current chat model until you save a selection for that route. Use /compact followed by focus instructions to choose what to preserve.",
+  "compactionSettings.description": "Empty uses the current chat model; another model ID compacts with this provider. Add focus instructions after /compact to choose what to keep.",
   "compactionSettings.unavailable": "This runtime uses the current chat model for compaction and does not support a separate compaction model.",
   "compactionSettings.saveFailed": "Could not save the compaction model. Your changes are still here; try again.",
   "documentSettings.title": "Document opening",
@@ -232,7 +232,7 @@ export const en = {
   "permissionJudge.off": "No custom evaluators",
   "permissionJudge.shadow": "Observe custom results · keep normal review",
   "permissionJudge.active": "Use custom results for automatic review",
-  "permissionJudge.modeHelp": "Observation records custom results while normal automatic review still decides. Applying custom results uses them only for reviewer-bound requests in auto; HIGH offers the model choices, and errors use a normal approval card. Removing custom evaluators keeps normal review. Turning review off or an invalid reviewer setting makes review unavailable and requires a card.",
+  "permissionJudge.modeHelp": "Observe records custom results while normal review decides. Apply uses them for reviewer-bound requests in auto; an error falls back to an approval card. With review off or a misconfigured reviewer, review is unavailable and every such request asks with a card.",
   "permissionJudge.categories": "Tool categories",
   "permissionJudge.shell": "Shell",
   "permissionJudge.write": "Write",
@@ -383,10 +383,12 @@ export const en = {
   "routinePanel.triggerLabel": "Trigger",
   "routinePanel.triggerSchedule": "Schedule",
   "be_routineSchedule.templateSourceDescription": "Optional attribution. When the user creates a routine from an installed plugin template, set agent-plugin:<package>:<templateId>. Use suggestion:<extensionId>:<intent> only when the system prompt instructs it. Otherwise leave unset.",
-  "pluginConfigTab.protocolUpdateCatalog": "Update required: review version {version} in the marketplace",
   "pluginConfigTab.protocolUpdateRepository": "Update required: get a compatible release from {source}",
-  "pluginConfigTab.protocolOpenRepository": "Open extension repository",
   "pluginConfigTab.protocolUpdateUnavailable": "Update required: contact the extension publisher for a compatible release.",
+  "pluginConfigTab.protocolUpdateButton": "Update to {version}",
+  "pluginConfigTab.doctorMigrateButton": "Migrate with AI",
+  "pluginConfigTab.installFromFolder": "Install from folder…",
+  "pluginConfigTab.installUnreviewedDev": "Install unreviewed (dev)",
   "pluginConfigTab.runtimeArmLabel": "Runs as",
   "pluginConfigTab.runtimeArmLine": "{arm} · {confinement}",
   "pluginConfigTab.armChild": "Separate process",
@@ -463,8 +465,7 @@ export const en = {
     "Control whether Ave uses your graphics card to draw the interface.",
   "startupTab.hardwareAccelerationLabel":
     "Use hardware acceleration",
-  "startupTab.hardwareAccelerationHelp":
-    "Takes effect the next time Ave starts. Turn this off if the window goes blank, flickers, or the app crashes while drawing — some managed and virtual-desktop machines ship graphics drivers that cannot run it. It is off by default on Windows and Linux for that reason.",
+  "startupTab.hardwareAccelerationHelp": "Applies on next launch. Turn off if the window goes blank, flickers or crashes. Off by default on Windows and Linux.",
   "startupTab.hardwareAccelerationEnvForced":
     "The environment variable {envVar} is currently turning this on, whatever is saved here.",
   "startupTab.corpCaSectionTitle":
@@ -473,14 +474,12 @@ export const en = {
     "For networks that inspect TLS traffic with a company-issued root certificate.",
   "startupTab.corpCaEnabledLabel":
     "Trust the corporate root certificate",
-  "startupTab.corpCaEnabledHelp":
-    "Takes effect the next time Ave starts. Ave trusts the certificates your operating system trusts for browsing, but model calls, marketplace requests, and update checks verify separately and do not. On a network that inspects TLS traffic, those fail with a certificate error while ordinary pages load fine; this is what fixes that. Leave it on if you are unsure -- on a machine with no such certificate it finds nothing and changes nothing.",
+  "startupTab.corpCaEnabledHelp": "Applies on next launch. Fixes certificate errors in model calls, marketplace and updates on networks that inspect TLS. Harmless without such a certificate.",
   "startupTab.corpCaEnabledEnvForced":
     "The environment variable {envVar} is currently turning this off, whatever is saved here.",
   "startupTab.corpCaCommonNameLabel":
     "Certificate name",
-  "startupTab.corpCaCommonNameHelp":
-    "The common name (CN) of your company's root certificate, as it appears in the system trust store. The default below is a placeholder -- ask your IT department for the real name if certificate errors persist. A partial name matches.",
+  "startupTab.corpCaCommonNameHelp": "Common name (CN) of the company root certificate. A partial name matches; ask IT for the exact name.",
   "startupTab.corpCaCommonNameEnvForced":
     "The environment variable {envVar} is supplying this name right now, instead of the value saved here.",
   "startupTab.corpCaDebugLabel":
@@ -499,8 +498,7 @@ export const en = {
   "startupTab.launchRegisterFailedTitle": "Launch at startup could not be applied",
   "startupTab.shutdownTimeoutLabel":
     "Time allowed for cleanup when quitting",
-  "startupTab.shutdownTimeoutHelp":
-    "When you quit, Ave stops its routines, extensions, and background processes and saves your window layout before it closes. If that is not finished within this time, it closes anyway and whatever was still being written is abandoned. Raise it if an extension needs longer to shut down; lower it if quitting feels slow.",
+  "startupTab.shutdownTimeoutHelp": "How long Ave waits for extensions and background work at quit before closing anyway; unsaved writes are lost.",
   "startupTab.shutdownTimeoutEnvForced":
     "The environment variable {envVar} is supplying this value right now, instead of the value saved here.",
   "startupTab.shutdownTimeoutSeconds": "{seconds} seconds",

@@ -472,3 +472,20 @@ describe("SchedulePanel — a schedule connected to a chat", () => {
     expect(api.addRoutine).toHaveBeenCalledWith(expect.objectContaining({ prePrompt: "deploy check", targetSessionId: CHAT }));
   });
 });
+
+
+it("shows recorded metrics on chips and the detail popover while older fires stay blank", async () => {
+  const api = makeApi({ routines: [routine()], runs: [
+    { routineId: "build", firedAt: at(3, 9), status: "failed", metrics: { startedAt: at(3, 9), durationMs: 192000, tokens: { input: 4000, output: 100, total: 4100 } } },
+    { routineId: "build", firedAt: at(2, 9), status: "done" },
+  ] });
+  const view = render(<SchedulePanel api={api} project={project} now={() => NOW} />);
+  await waitFor(() => expect(view.getAllByTestId("schedule-chip")).toHaveLength(2));
+  const chips = view.getAllByTestId("schedule-chip");
+  expect(within(chips[0]!).queryByTestId("routine-run-metrics")).toBeNull();
+  expect(within(chips[1]!).getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
+  fireEvent.click(chips[1]!);
+  const recent = await view.findByTestId("schedule-recent-runs");
+  expect(within(recent).getAllByTestId("routine-run-metrics")).toHaveLength(1);
+  expect(within(recent).getByTestId("routine-run-metrics").textContent).toBe("3분 12초 · 4.1k 토큰");
+});

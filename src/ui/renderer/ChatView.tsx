@@ -36,7 +36,7 @@ import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/previ
 import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
 import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
 import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
-import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { tabVisibleTo, useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
 import { forgetActiveSurface } from "./preview/active-surface.js";
@@ -59,7 +59,7 @@ import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narro
 import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
 import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
-import { useChatScroll } from "./hooks/use-chat-scroll.js";
+import { useChatScroll, type ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
 import { useCheckpointView } from "./hooks/use-checkpoint-view.js";
 import { useMessageQueue } from "./hooks/use-message-queue.js";
 import { useAttachmentPicker } from "./hooks/use-attachment-picker.js";
@@ -139,6 +139,8 @@ export interface ChatViewProps {
   onSidePanelOpenChange: (open: boolean) => void;
   /** Tile identity addresses side-panel tabs during surface moves. */
   chatGroupId?: string;
+  revealMessage?: ChatMessageRevealRequest | null;
+  onMessageRevealHandled?: (nonce: number) => void;
   /** Side-chat requests target the tile whose conversation owns the panel. */
   sideChatOpenRequest?: SideChatOpenRequest | undefined;
   /** Tell the window its conversation list is stale — a side-chat turn moves a row in it. */
@@ -155,7 +157,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -181,6 +183,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
+  useEffect(() => {
+    if (revealMessage?.sessionId === currentSessionId) setViewMode(null);
+  }, [currentSessionId, revealMessage]);
 
   const visibleEntries = useMemo(
     () => viewMode ? entries.slice(0, viewMode.slicedRangeEnd) : entries,
@@ -245,8 +250,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   // Persist terminal directories and page addresses with the pane layout.
-  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
-  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId };
   const sidePanelVisibleRef = useRef(false);
   // A tab that moved away and left the panel empty takes the panel with it: an open panel with no tabs is the workspace
   // launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
@@ -284,7 +289,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       },
       visibleTabId: () => {
         if (!sidePanelVisibleRef.current) return null;
-        const { tabs, activeTabId } = savedTabsRef.current;
+        // The panel shows only this chat's tabs (ChatSidePanel's own rule), so another chat's active agent page is not visible here.
+        const { activeTabId, currentSessionId: shownSession } = savedTabsRef.current;
+        const tabs = savedTabsRef.current.tabs.filter((tab) => tabVisibleTo(tab, shownSession));
         return (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0])?.id ?? null;
       },
     });
@@ -496,6 +503,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     closeContainerTab("subagent");
   }, [currentSessionId, closeContainerTab]);
 
+  // A chat with nothing of its own in the panel, only another chat's agent pages, starts with the panel closed.
+  const panelOnSwitchRef = useRef({ tabs: workspaceTabs.tabs, onSidePanelOpenChange });
+  panelOnSwitchRef.current = { tabs: workspaceTabs.tabs, onSidePanelOpenChange };
+  useEffect(() => {
+    const { tabs, onSidePanelOpenChange: setOpen } = panelOnSwitchRef.current;
+    if (tabs.some((tab) => !tabVisibleTo(tab, currentSessionId))
+      && !tabs.some((tab) => tab.kind !== "subagent" && tabVisibleTo(tab, currentSessionId))) setOpen(false);
+  }, [currentSessionId]);
+
   // Auto-open for new live sub-agent spawns, never for rows restored from disk.
   useEffect(() => {
     let sawLiveSpawn = false;
@@ -521,9 +537,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
     hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
-    openAgentTab: (url, requestId, active) => {
+    openAgentTab: (url, requestId, active, owner) => {
       const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
-      if (store.openAgentBrowserTab(url, requestId, active) !== null && active) openPanel(true);
+      if (store.openAgentBrowserTab(url, requestId, active, owner) !== null && active) openPanel(true);
     },
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
@@ -596,6 +612,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     searchMatches,
     searchIdx,
     hidden,
+    revealMessage,
+    onMessageRevealHandled,
   });
 
   const { forkToast, handleEnterView, handleExitView, handleBranchFrom } = useCheckpointView({

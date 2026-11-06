@@ -1,3 +1,4 @@
+import type { ChatMessageRevealRequest } from "./hooks/use-chat-scroll.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
@@ -16,7 +17,7 @@ import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { PluginUiHostView } from "../../plugin-ui-host.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // One mounted singleton per away display mode; empty slots render nothing.
@@ -98,6 +99,7 @@ import type { MarketplaceAnnouncementActionTarget } from "../../shared/marketpla
 import { useBootstrapStatus } from "./hooks/use-bootstrap-status.js";
 import { usePluginMarketplace } from "./hooks/use-plugin-marketplace.js";
 import { requestUpdateReview } from "./tabs/git-marketplace/update-review-request.js";
+import { onNewChatDraft } from "./chat-draft-request.js";
 import type { PackageUpdateView } from "../../shared/git-marketplace.js";
 import { usePluginAuthStatuses } from "./hooks/use-plugin-auth-status.js";
 import { useRolePresets } from "./hooks/use-role-presets.js";
@@ -344,6 +346,12 @@ export function App() {
 
   const [pendingSessionDrop, setPendingSessionDrop] =
     useState<{ chatGroupId: string; sessionId: string } | null>(null);
+  // New Chat with an opening draft beside a busy tile: started in the adopted tile once it publishes its handle.
+  const [pendingNewChatOpening, setPendingNewChatOpening] = useState<{
+    chatGroupId: string;
+    project?: { projectRoot: string; projectName?: string };
+    opening: NewChatOpening;
+  } | null>(null);
 
   // Hold the requested project on the adopted tile until hydration; a refused adoption must leave the window project
   // unchanged.
@@ -460,6 +468,20 @@ export function App() {
     if (deliver()) return;
     return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
   }, [pendingSessionDrop, chatGroupSessions]);
+
+  useEffect(() => {
+    if (!pendingNewChatOpening) return;
+    const { chatGroupId, project, opening } = pendingNewChatOpening;
+    const deliver = () => {
+      const tile = chatGroupSessions.read(chatGroupId);
+      if (!tile) return false;
+      setPendingNewChatOpening(null);
+      void tile.startNewChat(project, opening);
+      return true;
+    };
+    if (deliver()) return;
+    return chatGroupSessions.subscribe(chatGroupId, () => { deliver(); });
+  }, [pendingNewChatOpening, chatGroupSessions]);
 
   /** Move surface ownership and pane location together; the surface itself stays mounted. */
   const surfaceMoves = useMemo<SurfaceMoves>(() => {
@@ -1026,7 +1048,7 @@ export function App() {
   }, [mainSurfaces.surfaces, navigateToLocation, settingsTab, statusPushToast, t]);
 
   // New Chat is set up further down, with the conversation tiles it starts in.
-  const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }) => Promise<void>) | undefined>(undefined);
+  const handleNewChatRef = useRef<((project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => Promise<void>) | undefined>(undefined);
   /** A launcher opens its surface in `project` (case 11–13): a new terminal starts in the project folder. */
   const launchInProject = useCallback((kind: SidebarLaunchKind, project: ProjectIdentity) => {
     if (kind === "chat") {
@@ -1605,6 +1627,11 @@ export function App() {
   }, [checkApiKey, refreshLlmSettings]);
 
   // A memory notice's 보기 opens the memory panel searching for that memory.
+  const [memoryMessageReveal, setMemoryMessageReveal] = useState<ChatMessageRevealRequest | null>(null);
+  const memoryMessageRevealNonce = useRef(0);
+  const handleMemoryMessageRevealHandled = useCallback((nonce: number) => {
+    setMemoryMessageReveal((current) => current?.nonce === nonce ? null : current);
+  }, []);
   const [memoryPanelQuery, setMemoryPanelQuery] = useState<{ text: string; nonce: number } | null>(null);
   const handleOpenMemory = useCallback((query: string) => {
     setMemoryPanelQuery((current) => ({ text: query, nonce: (current?.nonce ?? 0) + 1 }));
@@ -1637,7 +1664,7 @@ export function App() {
     return true;
   }, [streaming, resolveKnownProject, activeProject, defaultWorkspaceProject, focusedSession, followProject, setActiveView, t]);
 
-  const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }) => {
+  const handleNewChat = useCallback(async (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) => {
     const nextProject = resolveKnownProject(projectIdentityFromPayload(project)) ?? activeProject ?? defaultWorkspaceProject;
     if (streaming) {
       // New Chat beside a busy tile adopts another group; at the ceiling it refuses without changing the current conversation.
@@ -1647,13 +1674,20 @@ export function App() {
       if (nextProject) {
         setFreshProjectByGroup((current) => new Map(current).set(adopted, nextProject));
       }
+      if (opening) {
+        setPendingNewChatOpening({
+          chatGroupId: adopted,
+          ...(nextProject ? { project: { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName } } : {}),
+          opening,
+        });
+      }
       setActiveView("home");
       return;
     }
     // Start chatNew on the focused tile's loop and reset that tile's transcript.
     const started = await focusedSession.startNewChat(nextProject
       ? { projectRoot: nextProject.projectRoot, projectName: nextProject.projectName }
-      : undefined);
+      : undefined, opening);
     if (!started) return;
     followProject(nextProject?.projectRoot);
     setActiveView("home");
@@ -1662,6 +1696,10 @@ export function App() {
     resolveKnownProject, setActiveView, streaming,
   ]);
   handleNewChatRef.current = handleNewChat;
+
+  // A draft prepared elsewhere (Doctor's migration) opens a new conversation the way New Chat does, with the draft in its
+  // composer: refused, or at the pane ceiling, it changes nothing in the conversation on screen.
+  useEffect(() => onNewChatDraft((draft) => { void handleNewChatRef.current?.(undefined, { draft }); }), []);
 
   // Refresh the conversation list after every row mutation.
   const conversationActions = useMemo<ConversationRowActions>(() => {
@@ -2000,15 +2038,27 @@ export function App() {
         <MemorySearchPanel
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
+          defaultProject={defaultWorkspaceProject}
           initialQuery={memoryPanelQuery}
+          onStartConversation={async () => {
+            const project = activeProject ?? defaultWorkspaceProject;
+            const started = await focusedSession.startNewChat(project
+              ? { projectRoot: project.projectRoot, projectName: project.projectName }
+              : undefined);
+            if (started) closePane();
+            return started;
+          }}
           onAskAveToFix={async (memory) => {
             const opened = await handleAskAveToFix(memory);
             if (opened) closePane();
             return opened;
           }}
-          onOpenSession={async (sessionId) => {
+          onOpenSession={async (sessionId, messageId) => {
             const loaded = await handleLoadSessionAndRefresh(sessionId);
-            if (loaded !== false) closePane();
+            if (loaded !== false) {
+              setMemoryMessageReveal(messageId ? { sessionId, messageId, nonce: ++memoryMessageRevealNonce.current } : null);
+              closePane();
+            }
             return loaded;
           }}
         />
@@ -2651,6 +2701,8 @@ export function App() {
                                     chatGroupId={group.id}
                                     api={api}
                                     registry={chatGroupSessions}
+                                    revealMessage={memoryMessageReveal}
+                                    onMessageRevealHandled={handleMemoryMessageRevealHandled}
                                     env={chatGroupEnvironment}
                                     panelOpen={group.panelOpen}
                                     thumbnailOpen={group.thumbnailOpen}
