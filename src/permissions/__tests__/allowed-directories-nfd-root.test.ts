@@ -46,6 +46,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { buildRuntimeAllowedDirectories, sanitizeAllowedDirectories, sanitizeRuntimeAllowedDirectories } from "../allowed-directories.js";
+import { canonicalizePathForMatch } from "../sensitive-paths.js";
 
 let parent: string;
 let root: string;
@@ -68,7 +69,7 @@ describe("runtime allowed directories on an NFD-preserving filesystem", () => {
 
   it("keep the NFC matching form for a folder that does not exist", () => {
     const missing = join(parent, `${NFD}-missing`);
-    expect(sanitizeRuntimeAllowedDirectories([missing])).toEqual([missing.normalize("NFC")]);
+    expect(sanitizeRuntimeAllowedDirectories([missing])).toEqual([canonicalizePathForMatch(missing)]);
   });
 
   it("leave the case-folded matching list in its NFC form", () => {
@@ -86,7 +87,7 @@ describe("the on-disk spelling is pinned to the matching form's target", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const directories = buildRuntimeAllowedDirectories([root, other], parent);
-      expect(directories).toContain(other);
+      expect(directories).toContain(canonicalizePathForMatch(other));
       expect(directories).not.toContain(root);
       expect(directories).not.toContain(swapped.to);
       expect(directories.some((dir) => dir.normalize("NFC") === root.normalize("NFC"))).toBe(false);
@@ -107,7 +108,7 @@ describe("the on-disk spelling is pinned to the matching form's target", () => {
     try {
       const directories = buildRuntimeAllowedDirectories([root, other], parent);
       expect(swapped.calls).toBe(2);
-      expect(directories).toContain(other);
+      expect(directories).toContain(canonicalizePathForMatch(other));
       expect(directories.some((dir) => dir.normalize("NFC") === root.normalize("NFC"))).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("left out"));
     } finally {
@@ -120,17 +121,19 @@ describe("the on-disk spelling is pinned to the matching form's target", () => {
   it("lets the realpath decide when the filesystem reports no file ID", () => {
     const plain = join(parent, "plain");
     mkdirSync(plain, { recursive: true });
+    const matchingPlain = canonicalizePathForMatch(plain);
     swapped.from = plain;
     swapped.to = plain;
     try {
       swapped.calls = 0;
-      expect(buildRuntimeAllowedDirectories([plain], parent)).toContain(plain);
+      expect(sanitizeRuntimeAllowedDirectories([plain])).toContain(matchingPlain);
       const withFileIds = swapped.calls;
       swapped.noFileId = parent;
       swapped.calls = 0;
-      expect(buildRuntimeAllowedDirectories([plain], parent)).toContain(plain);
+      expect(sanitizeRuntimeAllowedDirectories([plain])).toContain(plain);
       // Inode 0 on both sides is no proof of one folder: the runtime spelling's own realpath ran as well.
       expect(swapped.calls).toBe(withFileIds + 1);
+      expect(buildRuntimeAllowedDirectories([plain], parent)).toContain(plain);
     } finally {
       swapped.from = "";
       swapped.noFileId = "";
