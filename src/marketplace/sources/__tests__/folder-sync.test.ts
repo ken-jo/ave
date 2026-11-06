@@ -7,6 +7,7 @@ import { sourceStatusDetail } from "../../../ui/renderer/tabs/git-marketplace/la
 import { FakeVolume, nodeFolders, TEST_FOLDER_LIMITS, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService } from "../../__tests__/fixtures/folder-service.js";
 import type { FolderStat } from "../folder-fs.js";
+import mixedHostProtocols from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
 
 const skill = (name: string) => `${JSON.stringify({ schemaVersion: 2, kind: "skill", name, version: "1.0.0", minAppVersion: "0.12.0", payload: { entry: "SKILL.md" } })}\n`;
 const index = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages })}\n`;
@@ -32,6 +33,27 @@ async function addMarket() {
 }
 
 describe("folder source reads", () => {
+  it("explains an indexed foreign folder version only through its exclusion", async () => {
+    const input = structuredClone(mixedHostProtocols);
+    input.name = "team";
+    const entry = input.packages[0]!;
+    const old = entry.versions[1]!;
+    // The folder descriptor's shape is still valid; only its index authority uses the retired field.
+    const authority = { capabilities: [], requires: { minAppVersion: old.minAppVersion, hostProtocol: old.hostProtocol } };
+    writeFolderFiles(folder, {
+      "marketplace.json": JSON.stringify(input),
+      "plugins/meeting/ave-package.json": JSON.stringify({ schemaVersion: 2, kind: "plugin", name: "meeting", version: old.version,
+        minAppVersion: old.minAppVersion, hostProtocol: old.hostProtocol, payload: { authority, artifact: old.artifact } }),
+    });
+    const { harness } = await addMarket();
+    try {
+      const snapshot = (await harness.syncer.readSnapshot("team"))!;
+      expect(snapshot.packages).toEqual([]);
+      expect(snapshot.diagnostics).toEqual([]);
+      expect(snapshot.excluded).toEqual([expect.objectContaining({ packageId: "plugin/meeting", version: old.version, reason: "foreign-host-protocol" })]);
+    } finally { harness.service.close(); }
+  });
+
   it.each(["dev", "ino"] as const)("repairs a refused legacy numeric %s record with freshly verified decimal identities", async (field) => {
     const highBits = 2n ** 60n + 1n;
     let identityOffset = highBits;

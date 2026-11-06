@@ -254,6 +254,7 @@ function marketplaceTree(version: string): Entry[] {
 
 type Call =
   | { method: 'listSources'; args: [] }
+  | { method: 'refreshSources'; args: [string] }
   | { method: 'listCatalog'; args: [{ installedOnly?: boolean; sourceId?: string }] }
   | { method: 'planInstall'; args: [{ sourceId: string; kind: PackageKind; name: string }] }
   | { method: 'planUpdate'; args: [{ sourceId: string; kind: PackageKind; name: string }] }
@@ -448,6 +449,67 @@ test.describe('git marketplace lifecycle', () => {
     }
     expect(await installed()).toEqual([]);
     await closeInlineSettings(app, again);
+  });
+});
+
+test.describe('git marketplace excluded installed versions', () => {
+  test.use({ seedViewFixturePlugin: false });
+  test.setTimeout(150_000);
+
+  test('explains an installed foreign-protocol plugin and keeps it removable', async ({ admitted: { app, mainWindow }, t }) => {
+    const served = mkdtempSync(join(tmpdir(), 'ave-e2e-marketplace-protocol-'));
+    const server = await startGitHttpServer({ root: served });
+    const repo = createFixtureRepo(served, SOURCE_ID);
+    try {
+      repo.commit({ 'README.md': 'A local marketplace.\n' }, 'start');
+      const commit = repo.commitEntries(marketplaceTree('1.0.0'), 'publish current plugin');
+      const settings = await openInlineSettings(app, mainWindow, 'marketplace');
+      await settings.getByTestId('git-marketplace:add-menu').click();
+      await settings.getByRole('menuitem', { name: t('gitMarketplace.addMarketplace') }).click();
+      await settings.getByTestId('git-marketplace:add:url').fill(server.url(SOURCE_ID));
+      await settings.getByTestId('git-marketplace:add:check').click();
+      await expect(settings.getByTestId('git-marketplace:add:preview')).toContainText('Harbor Tools', { timeout: 60_000 });
+      await settings.getByTestId('git-marketplace:add:confirm').click();
+      await expect(settings.getByTestId('git-marketplace:add')).toHaveCount(0, { timeout: 30_000 });
+      const key = { sourceId: SOURCE_ID, kind: 'plugin' as const, name: 'harbor-panel' };
+      const plan = await call<InstallPlanView>(mainWindow, { method: 'planInstall', args: [key] });
+      const installed = await call<InstallResultView>(mainWindow, { method: 'executeInstall', args: [plan.planId] });
+      expect(installed).toMatchObject({ key, version: '1.0.0', action: { action: 'install' } });
+
+      const description = 'Records harbor meetings and keeps their notes.';
+      repo.commit({ 'marketplace.json': jsonText({
+        schemaVersion: 2, name: SOURCE_ID, displayName: 'Harbor Tools', packages: [{
+          kind: key.kind, name: key.name, path: 'plugins/harbor-panel', displayName: 'Harbor Panel', description,
+          latest: '1.0.0', versions: [{
+            version: '1.0.0', commit, minAppVersion: MIN_APP_VERSION, hostProtocol: '3',
+            authority: { capabilities: [], requires: { minAppVersion: MIN_APP_VERSION, hostProtocol: '3' },
+              pluginAccess: { plugins: [{ pluginId: 'calendar', events: ['calendar.event.added'] }] } },
+            artifact: { tree: 'plugins/harbor-panel' }, publishedAt: '2026-11-06T00:00:00Z',
+          }],
+        }],
+      }) }, 'publish foreign protocol declaration');
+      await call(mainWindow, { method: 'refreshSources', args: [SOURCE_ID] });
+      await settings.getByTestId('git-marketplace:installed').click();
+      const card = settings.getByTestId(`git-marketplace:card:${SOURCE_ID}:plugin:harbor-panel`);
+      await expect(card).toContainText(description);
+      await expect(card.getByTestId('git-marketplace:card:incompatibility')).toHaveText(t('gitMarketplace.version.hostProtocol'));
+      await test.info().attach('foreign-protocol-installed-card', { body: await card.screenshot({ path: test.info().outputPath('foreign-protocol-installed-card.png') }), contentType: 'image/png' });
+      await card.getByTestId('git-marketplace:card:state').click();
+      const sheet = mainWindow.getByTestId('git-marketplace:sheet');
+      await expect(sheet).toContainText(t('gitMarketplace.version.hostProtocol'));
+      await expect(sheet.getByTestId('git-marketplace:plan')).toHaveCount(0);
+      await expect(sheet.getByTestId('git-marketplace:delivery-help')).toHaveCount(0);
+      await test.info().attach('foreign-protocol-installed-sheet', { body: await sheet.screenshot({ path: test.info().outputPath('foreign-protocol-installed-sheet.png') }), contentType: 'image/png' });
+      await sheet.getByTestId('git-marketplace:uninstall').click();
+      await expect(sheet).toHaveCount(0);
+      await expect.poll(async () => (await call<CatalogView>(mainWindow, { method: 'listCatalog', args: [{ installedOnly: true }] }))
+        .entries.some((entry) => entry.key.kind === key.kind && entry.key.name === key.name)).toBe(false);
+      await expect(card).toHaveCount(0);
+    } finally {
+      await server.close();
+      await removeFixtureRepo(repo);
+      rmSync(served, { recursive: true, force: true });
+    }
   });
 });
 

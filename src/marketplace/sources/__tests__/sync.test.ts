@@ -1014,7 +1014,8 @@ describe("SourceSyncer", () => {
     const snapshot = (await syncer.readSnapshot("acme"))!;
     expect(snapshot.packages).toHaveLength(1);
     expect(snapshot.packages[0]!.versions.map((version) => version.version)).toEqual(["0.10.3"]);
-    expect(snapshot.diagnostics).toEqual([{ subject: "plugin/meeting", message: "version 0.10.2: foreign-host-protocol" }]);
+    expect(snapshot.diagnostics).toEqual([]);
+    expect(snapshot.excluded).toEqual([expect.objectContaining({ packageId: "plugin/meeting", version: "0.10.2", reason: "foreign-host-protocol" })]);
     const rows = aggregateCatalog([{ sourceId: "acme", sourceOrigin: "custom", snapshot }], {
       appVersion: "0.14.0", platform: "darwin", canaryOptIn: false, installationId: "catalog-test",
     });

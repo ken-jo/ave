@@ -46,6 +46,7 @@ import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
+import mixedHostProtocols from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { aveHome, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -1647,6 +1648,66 @@ describe("MarketplaceService", () => {
       expect.objectContaining({ key: { sourceId: "acme-tools", kind: "skill", name: "review" }, state: { state: "source-removed", version: "1.0.0" } }),
     ]);
     await expect(service.removeSource(OFFICIAL_MARKETPLACE.id)).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED" });
+  });
+
+  it("explains an installed foreign-protocol plugin without offering its authority or blocking removal", async () => {
+    const source = market();
+    const input = structuredClone(mixedHostProtocols);
+    input.name = "acme-tools";
+    const entry = input.packages[0]!;
+    entry.versions.shift();
+    entry.latest = "0.10.2";
+    Object.assign(entry, { displayName: "Meeting notes", description: "Records meeting notes", keywords: ["meetings"] });
+    source.repo.commit({ "marketplace.json": text(input) }, "publish historical plugin");
+    await addMarket(source.url);
+    const key = { sourceId: "acme-tools", kind: "plugin" as const, name: "meeting" };
+    expect((await service.catalog({})).entries).toEqual([]);
+    await expect(service.detail(key)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+
+    pluginPort.list = async () => [{ ...key, version: "0.10.2", originCommit: null }];
+    const catalog = await service.catalog({ installedOnly: true });
+    expect(catalog.entries).toEqual([expect.objectContaining({
+      key,
+      displayName: "Meeting notes",
+      description: "Records meeting notes",
+      keywords: ["meetings"],
+      state: { state: "installed", version: "0.10.2" },
+      incompatibility: "host_protocol",
+    })]);
+    const detail = await service.detail(key);
+    expect(detail.entry).toEqual(catalog.entries[0]);
+    expect(detail).toMatchObject({
+      compatibility: { compatible: false }, authority: null, components: null, rungs: [], versions: [],
+      provenance: { path: "plugins/meeting", versionCommit: null, publishedAt: null },
+    });
+    await expect(service.planInstall(key)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+    await expect(service.planInstall({ ...key, version: "0.10.2" })).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+    expect(await service.updates()).toEqual([]);
+
+    await service.setEnabled(key.sourceId, false);
+    expect((await service.catalog({ installedOnly: true })).entries[0]).toMatchObject({ incompatibility: "host_protocol" });
+    expect((await service.detail(key)).entry).toMatchObject({ incompatibility: "host_protocol" });
+    const uninstall = vi.fn(async () => { pluginPort.list = async () => []; });
+    pluginPort.uninstall = uninstall;
+    await expect(service.uninstall(key)).resolves.toEqual({ key, keptDataDir: null });
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith("meeting", undefined);
+    expect((await service.catalog({ installedOnly: true })).entries).toEqual([]);
+  });
+
+  it("does not attribute a protocol exclusion to another installed source or version", async () => {
+    const source = market();
+    const input = structuredClone(mixedHostProtocols);
+    input.name = "acme-tools";
+    input.packages[0]!.versions.shift();
+    input.packages[0]!.latest = "0.10.2";
+    source.repo.commit({ "marketplace.json": text(input) }, "publish historical plugin");
+    await addMarket(source.url);
+    const key = { sourceId: "acme-tools", kind: "plugin" as const, name: "meeting" };
+    for (const installed of [{ ...key, version: "0.10.1" }, { ...key, sourceId: "another", version: "0.10.2" }]) {
+      pluginPort.list = async () => [{ ...installed, originCommit: null }];
+      expect((await service.catalog({ installedOnly: true })).entries[0]).not.toHaveProperty("incompatibility");
+      await expect(service.detail(key)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
+    }
   });
 
   it("repairs an official source whose state file went missing, keeps its installs, and follows no link inside (§18.8)", async () => {

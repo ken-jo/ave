@@ -25,7 +25,7 @@ import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.
 import { isIpcErrorResult, type AveApi } from "../../types.js";
 import { AddSourceDialog } from "./AddSourceDialog.js";
 import { DirectInstallView } from "./DirectInstallView.js";
-import { KIND_ORDER, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, stateLabel, updateStateLabel } from "./labels.js";
+import { KIND_ORDER, exclusionLabel, kindLabel, originLabel, OTHER_SUBJECT, relativeTime, shortSha, stateLabel, updateStateLabel } from "./labels.js";
 import { MarketplaceProblem } from "./MarketplaceProblem.js";
 import { PackageSheet } from "./PackageSheet.js";
 import { LocalPluginPackageSheet, PluginStudioView } from "./PluginStudioView.js";
@@ -87,6 +87,9 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
           <span className="line-clamp-2 text-[11px] text-muted-foreground">{entry.description || entry.key.name}</span>
         </span>
       </button>
+      {entry.incompatibility && (
+        <p className="text-xs text-warning" data-testid="git-marketplace:card:incompatibility">{exclusionLabel(t, entry.incompatibility)}</p>
+      )}
       <div className="mt-auto flex flex-wrap items-center gap-1.5">
         {entry.sourceOrigin && (
           <Badge variant={entry.sourceOrigin === "official" ? "default" : "outline"} className="h-5 max-w-[10rem] truncate px-1.5 text-[10px]" title={originLabel(t, entry.sourceOrigin)}>

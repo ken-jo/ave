@@ -49,7 +49,7 @@ import type { McpRuntimeSpec } from "../../plugins/types.js";
 import { AGENT_PLUGIN_DECLARATION_PATHS, extensionDeclarationPaths, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
 import { packageUpdateSkipKey } from "../../shared/skipped-plugin-updates.js";
 import { aggregateCatalog, findRevocation, versionExclusions, type CatalogRow, type VersionChoiceContext } from "../catalog/aggregate.js";
-import { hasVersionTree, PACKAGE_KINDS, type AgentPluginComponents, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
+import { hasVersionTree, PACKAGE_KINDS, type AgentPluginComponents, type CatalogExclusion, type IndexVersion, type PackageKind, type PluginAuthority } from "../catalog/types.js";
 import { parseStrictJson } from "../catalog/strict-json.js";
 import { credentialRefusal } from "../catalog/validate.js";
 import { stageContentPackage, stagedConsent, type StagedContent } from "../content/store.js";
@@ -1196,6 +1196,29 @@ export class MarketplaceService implements RetirementEntryLookup {
     };
   }
 
+  private excludedInstalled(installed: InstalledRecord | null, snapshot: SourceSnapshot | undefined): CatalogExclusion | undefined {
+    if (installed?.kind !== "plugin" || installed.sourceId !== snapshot?.sourceId || installed.version === null) return undefined;
+    return snapshot.excluded?.find((excluded) => excluded.reason === "foreign-host-protocol"
+      && excluded.packageId === `plugin/${installed.name}` && excluded.version === installed.version
+      && excluded.package.kind === "plugin" && excluded.package.name === installed.name);
+  }
+
+  private excludedEntry(installed: InstalledRecord, excluded: CatalogExclusion, label: string, badges: readonly SourceBadge[]): CatalogEntryView {
+    return {
+      key: { sourceId: installed.sourceId, kind: installed.kind, name: installed.name },
+      sourceOrigin: this.registry.get(installed.sourceId!)?.origin ?? "custom",
+      sourceLabel: label,
+      displayName: excluded.package.displayName ?? installed.name,
+      description: excluded.package.description ?? "",
+      keywords: [...(excluded.package.keywords ?? [])],
+      state: { state: "installed", version: installed.version },
+      incompatibility: "host_protocol",
+      required: lockedByPolicy(this.policy, installed.kind, installed.name, installed.sourceId) !== undefined,
+      runsCode: true,
+      sourceBadges: [...badges],
+    };
+  }
+
   async catalog(query: CatalogQuery): Promise<CatalogView> {
     return this.operation(() => this.catalogNow(query));
   }
@@ -1237,6 +1260,11 @@ export class MarketplaceService implements RetirementEntryLookup {
           });
           continue;
         }
+        const excluded = this.excludedInstalled(item, snapshots.get(item.sourceId));
+        if (excluded) {
+          entries.push(this.excludedEntry(item, excluded, labels.get(item.sourceId) ?? item.sourceId, badges.get(item.sourceId) ?? []));
+          continue;
+        }
         entries.push({
           // Round-trip credential-shaped source ids through opaque handles for uninstall.
           key: { sourceId: this.viewSourceId(item.sourceId), kind: item.kind, name: item.name },
@@ -1264,14 +1292,19 @@ export class MarketplaceService implements RetirementEntryLookup {
     };
   }
 
-  /** Hidden-source details serve bound installs, but all plans require the source to be shown. */
-  private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string; badges: SourceBadge[] }> {
+  private async rowContext(key: PackageKeyView) {
     const installed = await this.installed(key.kind, key.name);
     const bound = installed?.sourceId === key.sourceId ? new Set([key.sourceId]) : undefined;
     const { rows, snapshots, shown, badges } = await this.rows(bound);
     const row = rows.find((item) => item.sourceId === key.sourceId && item.kind === key.kind && item.name === key.name);
     const snapshot = snapshots.get(key.sourceId);
     const source = shown.find((item) => item.id === key.sourceId);
+    return { row, rows, snapshot, source, installed, badges };
+  }
+
+  /** Hidden-source details serve bound installs, but all plans require the source to be shown. */
+  private async row(key: PackageKeyView): Promise<{ row: CatalogRow; rows: CatalogRow[]; snapshot: SourceSnapshot; label: string; badges: SourceBadge[] }> {
+    const { row, rows, snapshot, source, badges } = await this.rowContext(key);
     if (!row || !snapshot || !source) {
       throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${key.sourceId} does not list ${key.kind} ${key.name}`);
     }
@@ -1306,8 +1339,32 @@ export class MarketplaceService implements RetirementEntryLookup {
       if (installed?.sourceId && holdsCredential(installed.sourceId) && this.handleOf(installed.sourceId) === key.sourceId) throw quarantineRefusal();
     }
     const source = this.source(key.sourceId);
-    const { row, rows, snapshot, label, badges } = await this.row(key);
-    const installed = await this.installed(key.kind, key.name);
+    const listed = await this.rowContext(key);
+    const { row, rows, snapshot, installed } = listed;
+    if (!snapshot || !listed.source) throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${key.sourceId} does not list ${key.kind} ${key.name}`);
+    const label = sourceLabel(listed.source, snapshot);
+    const badges = listed.badges.get(source.id) ?? [];
+    if (!row) {
+      const excluded = this.excludedInstalled(installed, snapshot);
+      if (!excluded || !installed) throw new MarketplaceError("PACKAGE_INCOMPATIBLE", `${key.sourceId} does not list ${key.kind} ${key.name}`);
+      return {
+        entry: this.excludedEntry(installed, excluded, label, badges),
+        provenance: {
+          sourceLabel: label,
+          repository: source.transport === "git" ? source.url.url : null,
+          folder: source.transport === "folder" ? { path: source.path, readAt: await this.folderReadAt(source.id, snapshot), contents: null } : null,
+          path: excluded.package.path,
+          snapshotCommit: snapshot.commit,
+          versionCommit: null,
+          publishedAt: null,
+        },
+        compatibility: { minAppVersion: null, appVersion: this.options.versionContext().appVersion, compatible: false },
+        authority: null,
+        components: null,
+        rungs: [],
+        versions: [],
+      };
+    }
     const existing = new Set(this.registry.list().map((source) => source.id));
     const context = this.options.versionContext();
     const shownVersion = shownVersionOf(row);

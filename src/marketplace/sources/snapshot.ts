@@ -2,6 +2,7 @@
  * Folder snapshots offer only the installed tree version and derive their revision after all reads. */
 import type {
   IndexVersion,
+  CatalogExclusion,
   MarketplaceIndex,
   PackageDescriptor,
   PackageKind,
@@ -44,6 +45,8 @@ export interface SourceSnapshot {
   packages: CatalogPackage[];
   revocations: Revocation[];
   diagnostics: CatalogDiagnostic[];
+  /** Absent in snapshots written before protocol exclusions were recorded. */
+  excluded?: CatalogExclusion[];
 }
 
 type MarketplaceIdentity = Pick<MarketplaceIndex, "name" | "displayName" | "description" | "owner">;
@@ -193,11 +196,12 @@ export class SnapshotBuilder {
     return found;
   }
 
-  private async fromIndex(text: string, diagnostics: CatalogDiagnostic[]): Promise<{ identity: MarketplaceIdentity; packages: CatalogPackage[] }> {
+  private async fromIndex(text: string, diagnostics: CatalogDiagnostic[], excluded: CatalogExclusion[]): Promise<{ identity: MarketplaceIdentity; packages: CatalogPackage[] }> {
     const validated = validateIndexText(text, { sourceId: this.source.id, official: this.source.origin === "official" });
     if (!validated.ok) throw new Rejection("SOURCE_INDEX_INVALID", validated.error);
     const { index } = validated.value;
     diagnostics.push(...validated.value.diagnostics);
+    excluded.push(...validated.value.excluded);
     const publishedAt = await this.reader.revisionTime();
     const listed: CatalogPackage[] = [];
     const described = this.folder ? index.packages : index.packages.filter((entry) => !entry.versions);
@@ -214,6 +218,7 @@ export class SnapshotBuilder {
         // The folder version must match its index copy because only these files can install.
         const here = versions.find((version) => version.version === descriptor.version);
         if (!here) {
+          if (excluded.some((item) => item.packageId === subjectOf(entry) && item.version === descriptor.version)) continue;
           diagnostics.push({ subject: subjectOf(entry), message: `the folder holds ${descriptor.version}, which the index does not list` });
           continue;
         }
@@ -291,6 +296,7 @@ export class SnapshotBuilder {
 
   async build(fetchedAt: string): Promise<SnapshotResult> {
     const diagnostics: CatalogDiagnostic[] = [];
+    const excluded: CatalogExclusion[] = [];
     try {
       const direct = this.source.origin === "direct";
       await this.ensure(direct ? [REVOCATIONS_PATH] : [INDEX_PATH, REVOCATIONS_PATH]);
@@ -298,7 +304,7 @@ export class SnapshotBuilder {
       let packages: CatalogPackage[];
       const indexText = direct ? null : await this.read(INDEX_PATH, SNAPSHOT_FILE_LIMITS.index);
       if (indexText !== null) {
-        ({ identity, packages } = await this.fromIndex(indexText, diagnostics));
+        ({ identity, packages } = await this.fromIndex(indexText, diagnostics, excluded));
       } else if (direct) {
         packages = await this.fromDirect();
         const only = packages[0]!;
@@ -331,6 +337,7 @@ export class SnapshotBuilder {
           packages: kept,
           revocations,
           diagnostics,
+          excluded,
         },
       };
     } catch (error) {

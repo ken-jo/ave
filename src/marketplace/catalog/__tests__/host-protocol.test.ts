@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
-import { validateIndexText } from "../validate.js";
+import { admitSnapshotPackages, validateCachedSnapshotText, validateIndexText } from "../validate.js";
+import type { SourceSnapshot } from "../../sources/snapshot.js";
 import { chooseVersion } from "../aggregate.js";
 
 const log = vi.hoisted(() => ({ info: vi.fn() }));
@@ -19,7 +20,10 @@ describe("catalog host protocol admission", () => {
     expect(result.value.index.packages).toHaveLength(1);
     const entry = result.value.index.packages[0]!;
     expect(entry.versions?.map((version) => version.version)).toEqual(["0.10.3"]);
-    expect(result.value.diagnostics).toEqual([{ subject: "plugin/meeting", message: "version 0.10.2: foreign-host-protocol" }]);
+    expect(result.value.diagnostics).toEqual([]);
+    expect(result.value.excluded).toEqual([{ packageId: "plugin/meeting", versionIndex: 1, version: "0.10.2", hostProtocol: "3", reason: "foreign-host-protocol", package: {
+      kind: "plugin", name: "meeting", path: "plugins/meeting",
+    } }]);
     expect(chooseVersion("ave", { ...entry, versions: entry.versions! }, [], {
       appVersion: "0.14.0", platform: "darwin", canaryOptIn: false, installationId: "catalog-test",
     })).toMatchObject({ state: "candidate", version: { version: "0.10.3" } });
@@ -33,11 +37,10 @@ describe("catalog host protocol admission", () => {
     input.packages.push({ ...structuredClone(input.packages[0]!), name: "calendar", path: "plugins/calendar" });
     const result = check(input);
     expect(result).toMatchObject({ ok: true, value: { index: { packages: [] } } });
-    expect(result.ok && result.value.diagnostics).toEqual([
-      { subject: "plugin/meeting", message: "version 0.10.2: foreign-host-protocol" },
-      { subject: "plugin/meeting", message: "no versions remain after foreign-host-protocol exclusions" },
-      { subject: "plugin/calendar", message: "version 0.10.2: foreign-host-protocol" },
-      { subject: "plugin/calendar", message: "no versions remain after foreign-host-protocol exclusions" },
+    expect(result.ok && result.value.diagnostics).toEqual([]);
+    expect(result.ok && result.value.excluded.map(({ packageId, version, reason }) => ({ packageId, version, reason }))).toEqual([
+      { packageId: "plugin/meeting", version: "0.10.2", reason: "foreign-host-protocol" },
+      { packageId: "plugin/calendar", version: "0.10.2", reason: "foreign-host-protocol" },
     ]);
     expect(log.info).toHaveBeenCalledExactlyOnceWith({ versionsSkipped: 2, packagesDropped: 2 }, "Catalog foreign-host-protocol versions skipped");
   });
@@ -60,6 +63,62 @@ describe("catalog host protocol admission", () => {
     expect(result).toMatchObject({ ok: true, value: { index: { packages: [] } } });
     expect(result.ok && result.value.diagnostics).toEqual([{ subject: "plugin/meeting", message: expect.stringContaining("additional properties") }]);
     expect(log.info).not.toHaveBeenCalled();
+  });
+
+  it.each(["x".repeat(10000), "1.2.3-" + "x".repeat(128), "<script>alert(1)</script>", 123, null, {}])("bounds the display label of an unvalidated foreign version %j", (version) => {
+    const input = document();
+    Object.assign(input.packages[0]!.versions[1]!, { version });
+    const result = check(input);
+    expect(result.ok && result.value.excluded[0]).toMatchObject({ version: "versions[1]", versionIndex: 1 });
+    expect(result.ok && result.value.diagnostics).toEqual([]);
+  });
+
+  it("preserves strict package metadata and duplicate admission for foreign-only packages", () => {
+    const input = document();
+    input.packages[0]!.versions.shift();
+    input.packages[0]!.path = "../outside";
+    const result = check(input);
+    expect(result).toMatchObject({ ok: true, value: { excluded: [], index: { packages: [] } } });
+    expect(result.ok && result.value.diagnostics).toHaveLength(1);
+    input.packages[0]!.path = "plugins/meeting";
+    input.packages.push(structuredClone(input.packages[0]!));
+    expect(check(input)).toMatchObject({ ok: true, value: { excluded: [], index: { packages: [] } } });
+  });
+
+  it("round trips exclusion-only snapshots while refusing authority and unsafe metadata in the exclusion channel", () => {
+    const input = document();
+    input.packages[0]!.versions.shift();
+    const result = check(input);
+    if (!result.ok) throw new Error(result.error);
+    const snapshot: SourceSnapshot = {
+      formatVersion: 2, sourceId: "ave", commit: "a".repeat(40), fetchedAt: "2026-11-06T00:00:00Z",
+      marketplace: { name: "ave", displayName: "Catalog" }, packages: [], revocations: [], conditionalRevocations: [],
+      diagnostics: result.value.diagnostics, excluded: result.value.excluded,
+    };
+    expect(validateCachedSnapshotText(JSON.stringify(snapshot))).toEqual({ ok: true, value: snapshot });
+    expect(admitSnapshotPackages(snapshot).excluded).toEqual(result.value.excluded);
+    Object.assign(snapshot.excluded![0]!.package, { authority: { capabilities: [] } });
+    expect(validateCachedSnapshotText(JSON.stringify(snapshot)).ok).toBe(false);
+    expect(admitSnapshotPackages(snapshot).excluded).toEqual([]);
+  });
+
+  it.each(["packageId", "hostProtocol", "name", "path"] as const)("refuses a cached exclusion with an unsafe %s", (field) => {
+    const result = check(document());
+    if (!result.ok) throw new Error(result.error);
+    const snapshot: SourceSnapshot = {
+      formatVersion: 2, sourceId: "ave", commit: "a".repeat(40), fetchedAt: "2026-11-06T00:00:00Z",
+      marketplace: { name: "ave", displayName: "Catalog" }, packages: [], revocations: [], conditionalRevocations: [],
+      diagnostics: [], excluded: result.value.excluded,
+    };
+    const exclusion = snapshot.excluded![0]!;
+    if (field === "packageId") exclusion.packageId = "plugin/another";
+    if (field === "hostProtocol") exclusion.hostProtocol = "5";
+    if (field === "name") {
+      exclusion.package.name = `glp${"at-"}${"abcd1234".repeat(3)}`;
+      exclusion.packageId = `plugin/${exclusion.package.name}`;
+    }
+    if (field === "path") exclusion.package.path = "../outside";
+    expect(admitSnapshotPackages(snapshot).excluded).toEqual([]);
   });
 
   it("admits a schema-valid undeclared version while install compatibility still withholds it", () => {

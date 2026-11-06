@@ -189,6 +189,8 @@ export interface CatalogEntryView {
   description: string;
   keywords: string[];
   state: PackageStateView;
+  /** Installed versions excluded from the source remain removable with a compatibility explanation. */
+  incompatibility?: "host_protocol";
   /** Required installs cannot be uninstalled or disabled. */
   required: boolean;
   runsCode: boolean;

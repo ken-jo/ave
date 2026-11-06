@@ -417,11 +417,13 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                 </dl>
               </Section>
               <Section title={t("gitMarketplace.detail.compatibility")}>
-                {detail.compatibility.minAppVersion === null
-                  ? t("gitMarketplace.detail.noVersion")
-                  : detail.compatibility.compatible
-                    ? t("gitMarketplace.detail.compatible", { version: detail.compatibility.minAppVersion })
-                    : t("gitMarketplace.detail.incompatible", { version: detail.compatibility.minAppVersion, app: detail.compatibility.appVersion })}
+                {entry?.incompatibility
+                  ? exclusionLabel(t, entry.incompatibility)
+                  : detail.compatibility.minAppVersion === null
+                    ? t("gitMarketplace.detail.noVersion")
+                    : detail.compatibility.compatible
+                      ? t("gitMarketplace.detail.compatible", { version: detail.compatibility.minAppVersion })
+                      : t("gitMarketplace.detail.incompatible", { version: detail.compatibility.minAppVersion, app: detail.compatibility.appVersion })}
               </Section>
               {detail.authority && (
                 <Section title={t("gitMarketplace.detail.permissions")}>

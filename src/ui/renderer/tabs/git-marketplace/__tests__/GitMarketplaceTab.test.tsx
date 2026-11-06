@@ -201,6 +201,39 @@ describe("GitMarketplaceTab search answers", () => {
 });
 
 describe("GitMarketplaceTab package sheet", () => {
+  it("explains an installed foreign-protocol extension on its card and sheet while keeping removal available", async () => {
+    const item = entry("team", "plugin", "meeting", {
+      displayName: "Meeting recorder",
+      description: "Records and summarizes meetings",
+      state: { state: "installed", version: "0.10.2" },
+      incompatibility: "host_protocol",
+    });
+    const fake = fakeMarketplace({ sources: [team], entries: [item] });
+    fake.market.packageDetail.mockResolvedValue({ ok: true, value: detail(item, {
+      provenance: { sourceLabel: "Team", repository: "https://github.com/example/market.git", folder: null, path: "plugins/meeting", snapshotCommit: COMMIT_A, versionCommit: null, publishedAt: null },
+      compatibility: { minAppVersion: null, appVersion: "0.14.0", compatible: false },
+      authority: null,
+      rungs: [],
+      versions: [],
+    }) });
+    renderTab(fake);
+    fireEvent.click(screen.getByTestId("git-marketplace:installed"));
+    const card = await screen.findByTestId("git-marketplace:card:team:plugin:meeting");
+    expect(within(card).getByText("Meeting recorder")).toBeInTheDocument();
+    expect(within(card).getByText("Records and summarizes meetings")).toBeInTheDocument();
+    expect(within(card).getByTestId("git-marketplace:card:incompatibility")).toHaveTextContent("다른 익스텐션 호스트 프로토콜 버전이 필요합니다");
+    fireEvent.click(within(card).getByTestId("git-marketplace:card:state"));
+    const sheet = await screen.findByTestId("git-marketplace:sheet");
+    expect(await within(sheet).findByText("다른 익스텐션 호스트 프로토콜 버전이 필요합니다")).toBeInTheDocument();
+    expect(within(sheet).queryByTestId("git-marketplace:plan")).toBeNull();
+    expect(within(sheet).queryByTestId("git-marketplace:delivery-help")).toBeNull();
+    expect(within(sheet).queryByTestId("git-marketplace:version:0.10.2")).toBeNull();
+    fireEvent.click(within(sheet).getByTestId("git-marketplace:uninstall"));
+    await waitFor(() => expect(fake.market.uninstall).toHaveBeenCalledWith({ sourceId: "team", kind: "plugin", name: "meeting" }));
+    expect(fake.market.planInstall).not.toHaveBeenCalled();
+    expect(fake.market.planUpdate).not.toHaveBeenCalled();
+  });
+
   it("shows the localized process-entry refusal from the install result", async () => {
     const item = entry("team", "plugin", "process-kit");
     const fake = fakeMarketplace({ sources: [team], entries: [item] });
