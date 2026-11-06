@@ -79,6 +79,23 @@ describe("dock host auth observation", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(lifetime.mounts).toBe(2);
     expect(deniedAudit).not.toHaveBeenCalled();
+    // An unknown scheme id is a contract violation: it throws clearly and leaves every piece of dock state as it was.
+    const root = document.documentElement;
+    const snapshot = () => ({ style: root.getAttribute("style"), scheme: root.getAttribute("data-scheme"), shell: document.querySelector("[data-shell]")?.getAttribute("data-shell"), font: document.querySelector("[data-terminal-font]")?.getAttribute("data-terminal-font") });
+    const before = snapshot();
+    expect(before).toMatchObject({ scheme: "nord", shell: "dark", font: "Updated Mono, monospace" });
+    expect(() => listeners.get(CHANNELS.dock.theme)?.({}, { theme: { bundleId: "not-a-scheme", shell: "light", tokens: { "--ave-bg": "#ffffff" } }, terminalFontFamily: "Other Mono" }))
+      .toThrow("Unknown color scheme: not-a-scheme");
+    // A later render (another slot mounting) must still paint the last good appearance, not the refused one.
+    await act(async () => listeners.get(CHANNELS.dock.mount)?.({}, {
+      panelId: "second", title: "Second", height: 120,
+      payload: { serverId: "fixture", generationId: "generation", resourceUri: "ui://fixture/second" },
+    }));
+    expect(snapshot()).toEqual(before);
+    const shells = [...document.querySelectorAll("#slot-second [data-shell]")].map((node) => node.getAttribute("data-shell"));
+    expect(shells.length).toBeGreaterThan(0);
+    expect(shells.every((shell) => shell === "dark")).toBe(true);
+    await act(async () => listeners.get(CHANNELS.dock.unmount)?.({}, { panelId: "second" }));
     await act(async () => listeners.get(CHANNELS.dock.unmount)?.({}, { panelId: "panel" }));
     const calls = invoke.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
@@ -109,5 +126,11 @@ describe("dock slot chrome", () => {
     await act(async () => listeners.get(CHANNELS.dock.retitle)?.({}, { panelId: "panel", title: "Renamed" }));
     expect(head?.querySelector(".slot-title")?.textContent).toBe("Renamed");
     expect(slot?.querySelectorAll(".slot-head")).toHaveLength(1);
+    // The requested height is the WHOLE slot (public-contract AttachFloatingPanelRequest.height; the dock's height is chrome + every slot):
+    // the host head and the card body share it, and a resize changes the same box.
+    expect(slot?.style.height).toBe("200px");
+    expect(slot?.children).toHaveLength(2);
+    await act(async () => listeners.get(CHANNELS.dock.resize)?.({}, { panelId: "panel", height: 240 }));
+    expect(slot?.style.height).toBe("240px");
   });
 });

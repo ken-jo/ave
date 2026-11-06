@@ -140,10 +140,15 @@ export function applySchemeColors(scheme: ColorScheme, doc: Document = document)
 /** The single pre-paint and live-update path for colors and UI fonts. */
 export function applyAppearance(appearance: AppearanceSettings, doc: Document = document, prefersDark = doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false): ResolvedTheme {
   const theme = applySchemeColors(resolveAppearanceScheme(appearance, prefersDark), doc);
+  applyUiFont(appearance.font, doc);
+  return theme;
+}
+
+/** Writes the user's UI font family and size scale onto the document root, which the stylesheet's rem scale and font stack read. */
+export function applyUiFont(font: AppearanceSettings["font"], doc: Document = document): void {
   const root = doc.documentElement;
-  const family = appearance.font?.family;
+  const family = font?.family;
   if (family && family !== "system") root.style.setProperty("--ave-font-family", family);
   else root.style.removeProperty("--ave-font-family");
-  root.style.setProperty("--ave-font-size-scale", String(appearance.font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT));
-  return theme;
+  root.style.setProperty("--ave-font-size-scale", String(font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT));
 }

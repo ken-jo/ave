@@ -46,11 +46,16 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     this.#currentTheme = deps.currentTheme;
     // The surface lives as long as the app, so this subscription is never undone. No window: nothing to repaint, and the next one is sent the current theme on opening.
     deps.onThemeChanged((theme) => this.#sendAppearance(theme));
-    let terminalFontFamily = settings.get("appearance").terminalFont.family;
+    // Fonts are the dock snapshot's settings-owned part; colours arrive with the host theme above.
+    const fontKey = () => {
+      const appearance = settings.get("appearance");
+      return JSON.stringify([appearance.terminalFont.family, appearance.font?.family ?? null, appearance.font?.sizeScale ?? null]);
+    };
+    let fonts = fontKey();
     settings.onChanged("appearance", () => {
-      const next = settings.get("appearance").terminalFont.family;
-      if (next === terminalFontFamily) return;
-      terminalFontFamily = next;
+      const next = fontKey();
+      if (next === fonts) return;
+      fonts = next;
       this.#sendAppearance(this.#currentTheme());
     });
     // Register IPC once per surface instance and validate this dock’s sender so reopen cannot stack handlers or permit cross-window control.
@@ -207,7 +212,8 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
 
   #sendAppearance(theme: unknown): void {
     if (theme === null) return;
-    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: this.settings.get("appearance").terminalFont.family });
+    const appearance = this.settings.get("appearance");
+    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: appearance.terminalFont.family, font: appearance.font });
   }
 
   #post(channel: string, payload: unknown): void {

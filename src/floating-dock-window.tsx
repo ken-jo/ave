@@ -4,7 +4,7 @@ import { parsePluginAuthStatus, usePluginAuthRevision, type PluginAuthState } fr
 import { createRoot, type Root } from "react-dom/client";
 import { HostAppearanceProvider, type HostAppearance } from "./ui/renderer/theme/HostAppearanceProvider.js";
 import { McpAppView } from "./ui/renderer/components/McpAppView.js";
-import { applySchemeColors } from "./ui/renderer/theme/resolve-theme.js";
+import { applySchemeColors, applyUiFont } from "./ui/renderer/theme/resolve-theme.js";
 import { requireScheme } from "./ui/renderer/theme/schemes/index.js";
 import type { AveDockBridge } from "./floating-dock-preload.js";
 import type { McpUiPayload } from "./mcp/types.js";
@@ -39,10 +39,13 @@ dock.onActivity((value) => {
 });
 element("close").addEventListener("click", () => dock.requestClose());
 dock.onTheme((value) => {
-  const { theme, terminalFontFamily } = value;
+  const { theme, terminalFontFamily, font } = value;
+  // Resolved before any state changes: an unknown scheme id is a contract violation and must leave the dock as it was, not half-repainted.
+  const scheme = requireScheme(theme.bundleId);
   appearance = { ...theme, terminalFontFamily };
-  // The cards' stylesheet tokens follow the same snapshot as the dock chrome and HostAppearance: the host renderer's scheme.
-  applySchemeColors(requireScheme(theme.bundleId), document);
+  // The cards' stylesheet tokens and rem scale follow the same snapshot as the dock chrome and HostAppearance.
+  applySchemeColors(scheme, document);
+  applyUiFont(font, document);
   renderPanels();
   const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
   for (const [name, key] of Object.entries(pick)) {

@@ -7,6 +7,7 @@ import { SettingsService } from "../../data/settings-store.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { FONT_SIZE_SCALE_DEFAULT } from "../../shared/appearance-font.js";
 import { emitEvent } from "../../boot/types.js";
 import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
 
@@ -149,9 +150,14 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     const sent = win.send.mock.calls.length;
     await service.patch({ appearance: { terminalFont: { size: 18 } } });
     expect(win.send).toHaveBeenCalledTimes(sent);
+    // The UI font is the snapshot's other settings-owned part: a family or size-scale change repaints the dock too.
+    await service.patch({ appearance: { font: { family: "Dock Sans", sizeScale: 1.125 } } });
+    expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
+    });
     dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
     expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
     }]);
   });
 
@@ -266,6 +272,12 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
     deliver("github-light", "light");
     const light = resolveTheme(requireScheme("github-light"));
+    expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe(String(FONT_SIZE_SCALE_DEFAULT));
+    expect(root.style.getPropertyValue("--ave-font-family")).toBe("");
+    rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId: "github-light", shell: "light", tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", font: { family: "Dock Sans", sizeScale: 1.125 } }));
+    // The same font write the main window makes, so the cards' rem utilities and font stack follow the user's choice.
+    expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe("1.125");
+    expect(root.style.getPropertyValue("--ave-font-family")).toBe("Dock Sans");
     expect(root.getAttribute("data-shell")).toBe("light");
     expect(token("background")).toBe(light.tokens.background);
     expect(token("background")).not.toBe(nord.tokens.background);
