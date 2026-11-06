@@ -31,7 +31,8 @@ import type { FileMentionReference } from "../../../shared/file-mention-referenc
 import { deriveWorkspaceChanges, workspaceFilePath, type WorkspaceChanges, type FileWorkspaceReveal, type WorkspaceFileFilter } from "../preview/workspace-changes.js";
 import { buildWorkspaceTree, normalizeWorkspaceTreePath, type WorkspaceTreeNode } from "../preview/workspace-file-tree.js";
 import { TurnChangeDetail } from "./TurnChangeDetail.js";
-import { FILE_CHANGE_ADDED_CLASS, FILE_CHANGE_REMOVED_CLASS, FILE_CHANGE_FOLDER_BADGE_CLASS, FILE_CHANGE_SELECTED_CLASS, SESSION_FILE_BADGE_CLASS, fileChangeBadgeClass, fileChangeLetter } from "./file-change-style.js";
+import { FILE_CHANGE_FOLDER_BADGE_CLASS, FILE_CHANGE_SELECTED_CLASS, SESSION_FILE_BADGE_CLASS } from "./file-change-style.js";
+import { FileChangeBadge } from "./FileChangeBadge.js";
 import {
   useAddProjectFolder,
   type AddProjectFolderOutcome,
@@ -541,10 +542,7 @@ function ProjectRootsBrowser({
             <span className={cn("min-w-0 flex-1 truncate", entry.change?.operation === "delete" && "text-muted-foreground line-through")}>{entry.name}</span>
             {entry.session && !isDir ? <span data-testid="chat-side-panel-file-session-badge" className={cn("shrink-0 rounded px-1 text-[10.5px] font-medium", SESSION_FILE_BADGE_CLASS)}>{t("chatPreviewRail.sessionFileBadge")}</span> : null}
             {incompleteStatusKey && !isDir ? <span data-testid="chat-side-panel-file-state" className="shrink-0 text-[10.5px] text-muted-foreground">{t(incompleteStatusKey)}</span> : null}
-            {entry.change && !isDir ? <>
-              <span className="shrink-0 font-mono text-[11px]" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{entry.change.countsKnown ? entry.change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{entry.change.countsKnown ? entry.change.removed : "—"}</span></span>
-              <span title={t("chatPreviewRail.fileOperation." + entry.change.operation)} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(entry.change.operation))}>{fileChangeLetter(entry.change.operation)}</span>
-            </> : null}
+            {entry.change && !isDir ? <FileChangeBadge change={entry.change} operationTitle={t("chatPreviewRail.fileOperation." + entry.change.operation)} /> : null}
             {isDir && entry.changedDescendants > 0 && (filter === "all" || !isOpen) ? <span data-testid="chat-side-panel-folder-changes" aria-label={t("chatPreviewRail.changedDescendants", { count: entry.changedDescendants })} className={cn("min-w-4 shrink-0 rounded-full px-1 text-center text-[10.5px] font-semibold", FILE_CHANGE_FOLDER_BADGE_CLASS)}>{entry.changedDescendants}</span> : null}
           </div>
           {isDir && isOpen ? <div role="group">{renderEntries(entry.path, depth + 1, entry.children)}</div> : null}
@@ -737,10 +735,7 @@ function MatchedFileList({ files, changes, query, selectedPath, onOpenFile }: {
         className={cn("flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs outline-none hover:bg-muted/(--opacity-muted) focus-visible:ring-1 focus-visible:ring-ring", opened && FILE_CHANGE_SELECTED_CLASS)}>
         {createElement(fileIcon(node.name), { className: "h-3 w-3 shrink-0 text-muted-foreground" })}
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {node.change ? <>
-          <span className="shrink-0 font-mono text-[11px]" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{node.change.countsKnown ? node.change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{node.change.countsKnown ? node.change.removed : "—"}</span></span>
-          <span title={t("chatPreviewRail.fileOperation." + node.change.operation)} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(node.change.operation))}>{fileChangeLetter(node.change.operation)}</span>
-        </> : null}
+        {node.change ? <FileChangeBadge change={node.change} operationTitle={t("chatPreviewRail.fileOperation." + node.change.operation)} /> : null}
       </button>;
     })}
   </div>;
