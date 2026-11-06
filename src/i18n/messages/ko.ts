@@ -3,6 +3,7 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "approvalAttribution.extensionSessionRequest": "익스텐션 요청 · {extension}",
   "appearanceTab.fontSaveFailed": "글꼴 설정을 불러오거나 저장하지 못했습니다.",
   "appearanceTab.schemeTitle": "색상 스킴",
   "appearanceTab.schemeDescription": "하나의 스킴이 화면과 터미널 색상을 함께 설정합니다. 시스템 모드는 라이트와 다크 선택을 각각 저장합니다.",

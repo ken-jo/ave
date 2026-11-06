@@ -97,6 +97,8 @@ export interface ToolPermissionContext {
   ownerUnattended?: boolean;
   /** Host-owned UI capability, independent of routine/headless tool scope. */
   approvalSurface?: ApprovalSurface;
+  /** Host panel calls retain their execution session but deliver cards through the main-window lane. */
+  unattributedApproval?: true;
   allowedPluginIds?: ReadonlySet<string>;
   /** Derived only after hooks finalize the invocation arguments. */
   approvalCacheKey?: string;
@@ -113,8 +115,6 @@ export interface ToolPermissionContext {
   remoteControllerAuthority?: RemoteControllerAuthority;
   // Host-selected guest for grading process and filesystem effects; never supplied by tools or wire data.
   disposableSubstrate?: DisposableSubstrate;
-  /** Direct plugin panel/renderer user activation marker. */
-  pluginPanelUserAction?: boolean;
   /** Host-derived app identity and optional opaque one-shot grant. Never copied into tool metadata. */
   pluginOperation?: PluginOperationInvocationContext;
   /** Host-owned stale-card binding checked against the final resolved registry Tool. */

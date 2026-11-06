@@ -184,3 +184,40 @@ describe("mcpToolToPluginTool — v6 reverse projection from _meta", () => {
     expect(tool.pathFields).toEqual(["new"]);
   });
 });
+
+
+describe("plugin read declaration", () => {
+  it("round-trips the sole authorable annotation into host read classification", () => {
+    const manifest = structuredClone(MANIFEST);
+    manifest.tools[0].annotations = { readOnlyHint: true };
+    const wire = manifestToolsToMcpTools(manifest)[0];
+    expect(wire.annotations).toEqual({ readOnlyHint: true });
+    const tool = mcpToolToPluginTool(PLUGIN_ID, wire, async () => ({ text: "read" }));
+    expect(tool.category).toBe("read");
+    expect(tool.mcpReadOnlyHint).toBe(true);
+    expect(tool.isReadOnly({})).toBe(true);
+    expect(tool.pathFields).toEqual(["path"]);
+  });
+  it.each([false])("keeps an explicit false declaration write-equivalent: %s", (readOnlyHint) => {
+    const tool = mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint } as { readOnlyHint?: boolean },
+    }, async () => ({ text: "read" }));
+    expect(tool.category).toBe("write");
+    expect(tool.isReadOnly({})).toBe(false);
+  });
+  it.each([undefined, null, "true", "false", 0, 1, {}, []])("rejects a non-boolean readOnlyHint %j", (readOnlyHint) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint } as never,
+    }, async () => ({ text: "read" }))).toThrow("invalid readOnlyHint; expected a boolean");
+  });
+  it.each([null, [], true, "readOnlyHint"])("rejects malformed wire annotations %j", (annotations) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: annotations as never,
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
+  });
+  it.each(["destructiveHint", "idempotentHint", "openWorldHint", "title"])("rejects unexpected wire annotation %s", (key) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint: true, [key]: true },
+    }, async () => ({ text: "read" }))).toThrow("unsupported annotations; only readOnlyHint is allowed");
+  });
+});

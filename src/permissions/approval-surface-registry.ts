@@ -22,6 +22,15 @@ export class ApprovalSurfaceRegistry {
   private readonly terminals = new Map<string, WebContents | null>();
   private readonly terminalSessions = new Map<string, string>();
   private unattributed: WebContents | null = null;
+  private readonly ownerReleaseListeners = new Set<(owner: WebContents) => void>();
+
+  observeOwnerReleased(listener: (owner: WebContents) => void): void {
+    this.ownerReleaseListeners.add(listener);
+  }
+
+  unobserveOwnerReleased(listener: (owner: WebContents) => void): void {
+    this.ownerReleaseListeners.delete(listener);
+  }
 
   register(sessionId: string, owner: WebContents | null): void {
     requireIdentity(sessionId);
@@ -97,7 +106,7 @@ export class ApprovalSurfaceRegistry {
     this.unattributed = owner;
   }
 
-  /** Revocation never settles a pending card: without turn abort it waits for the normal deny timeout. */
+  /** Revoke registered scopes, then notify pending unattributed cards to hand off or deny. */
   releaseOwner(owner: WebContents): void {
     requireSurface(owner);
     if (owner === null) throw new Error("approval-surface: invalid owner release");
@@ -108,6 +117,7 @@ export class ApprovalSurfaceRegistry {
       if (registered === owner) this.terminals.set(tabId, null);
     }
     if (this.unattributed === owner) this.unattributed = null;
+    for (const listener of [...this.ownerReleaseListeners]) listener(owner);
   }
 
   resolve(sessionId: string | undefined, terminalTabId?: string): WebContents | null {
@@ -151,7 +161,9 @@ export type ApprovalSurfaceUpdate =
   | { kind: "bind-terminal-session"; tabId: string; sessionId: string }
   | { kind: "release-terminal"; tabId: string }
   | { kind: "attach-unattributed"; surface: WebContents | null }
-  | { kind: "release-owner"; surface: WebContents };
+  | { kind: "release-owner"; surface: WebContents }
+  | { kind: "observe-owner-release" | "unobserve-owner-release"; listener: (owner: WebContents) => void;
+      registry?: Readonly<Pick<ApprovalSurfaceRegistry, "observeOwnerReleased" | "unobserveOwnerReleased">> };
 
 const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
 
@@ -193,6 +205,12 @@ export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {
       return registeredApprovalSurfaces.registerUnattributed(update.surface);
     case "release-owner":
       return registeredApprovalSurfaces.releaseOwner(update.surface);
+    case "observe-owner-release":
+      if (update.registry) return update.registry.observeOwnerReleased(update.listener);
+      return registeredApprovalSurfaces.observeOwnerReleased(update.listener);
+    case "unobserve-owner-release":
+      if (update.registry) return update.registry.unobserveOwnerReleased(update.listener);
+      return registeredApprovalSurfaces.unobserveOwnerReleased(update.listener);
     default:
       throw new Error("approval-surface: invalid update operation");
   }

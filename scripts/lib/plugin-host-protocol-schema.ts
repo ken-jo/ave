@@ -291,6 +291,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
     expose: "export",
     topRef: false,
     jsDoc: "basic",
+    extraTags: ["additionalProperties"],
     additionalProperties: true,
   };
   const program = createProgram(config);
