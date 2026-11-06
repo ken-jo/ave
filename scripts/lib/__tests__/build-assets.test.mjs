@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { resolveBuildAssets } from "../build-assets.mjs";
 
@@ -14,8 +14,8 @@ test("resolveBuildAssets exposes one SOT for build and dev watched assets", () =
       assets.map((asset) => [
         asset.category,
         asset.label,
-        asset.src.replace(`${root}/`, ""),
-        asset.out.replace(`${root}/`, ""),
+        relative(root, asset.src).replaceAll("\\", "/"),
+        relative(root, asset.out).replaceAll("\\", "/"),
       ]),
       [
         ["app-shell", "index.html", "src/index.html", "dist/src/index.html"],
