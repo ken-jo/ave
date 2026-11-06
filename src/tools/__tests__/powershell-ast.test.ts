@@ -98,3 +98,18 @@ it.each([
 it.each([String.raw`HKCU:\Software\Foo`, "file:///C:/Users/example/.ssh/id_test"])("still refuses %s beside the URL exception", path => {
   expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
 });
+
+it.each(["HKCU://Software/Foo", "cert://CurrentUser/My/ABC", "Temp://x", "Registry://HKEY_CURRENT_USER/Software/Foo"])("refuses non-network scheme %s as a provider path", path => {
+  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
+});
+
+it.each([
+  ["positional", command("Get-Content", [literal("C://Users/example/.ssh/id_rsa")])],
+  ["-LiteralPath", command("Get-Content", [{ kind: "parameter", name: "LiteralPath", text: "-LiteralPath", argument: literal("C://Users/example/.ssh/id_rsa") }])],
+] as const)("checks a drive path written with // as a filesystem path: %s", (_name, summary) => {
+  expect(check(summary)).not.toBeNull();
+});
+
+it("allows an ssh URL operand", () => {
+  expect(check(command("git", [literal("clone"), literal("ssh://git@example.com/a/b")]))).toBeNull();
+});

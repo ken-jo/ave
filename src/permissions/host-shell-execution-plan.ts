@@ -1,7 +1,7 @@
 // Path-string ACL grants cannot make one-shot filesystem leases reparse-safe; until handle-bound/no-follow grants exist, the plain-host Windows route requires per-invocation consent.
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { recordIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
+import { recordBuiltHostShellExecutionPlan } from "./host-shell-execution-plan-built.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
 import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
@@ -185,7 +185,7 @@ function hasShellContainment(capability: SandboxCapability): boolean {
 
 // Build the immutable plan once per invocation, after final tool category/input are known and before permission routing. It intentionally does not attempt Windows ACL grants or an ASRT wrapper for the Plan-B branch.
 export function buildHostShellExecutionPlan(input: HostShellExecutionPlanInput): HostShellExecutionPlan {
-  return recordIssuedHostShellExecutionPlan(planHostShellExecution(input));
+  return recordBuiltHostShellExecutionPlan(planHostShellExecution(input));
 }
 
 interface HostShellExecutionPlanInput {

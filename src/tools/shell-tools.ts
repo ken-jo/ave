@@ -3465,8 +3465,8 @@ export function findPowerShellAstPathViolation(
     if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath) : null;
     if (argument.kind !== "literal") return { kind: "dynamic-path", reason: "PowerShell path argument is unresolved", candidate: argument.text };
     const path = argument.value;
-    // A network URL names no file; `file://` still resolves locally and stays refused.
-    if (/^(?!file:)[a-z][a-z0-9+.-]*:\/\//i.test(path)) return null;
+    // Only network schemes name no file; `C://`, `HKCU://`, `file://` and other providers still resolve locally.
+    if (/^(?:https?|ftps?|sftp|ssh|git(?:\+(?:https?|ssh))?):\/\//i.test(path)) return null;
     if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || isPowerShellProviderPath(path) || /^[a-z]:(?![\\/])/i.test(path)) {
       return { kind: "dynamic-path", reason: "PowerShell provider, home or wildcard path requires an explicit ordinary path", candidate: argument.text };
     }
