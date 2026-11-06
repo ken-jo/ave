@@ -642,7 +642,6 @@ export interface SystemSettings {
    * tab is its address row and page only, so it has no split. Clamped to the [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at drag time in the renderer. Default 45. */
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
-
   /** Where the main window was when it last closed, so a restart resumes the user's location instead of always landing on home. Default "home". SoT for the value set: `../shared/view-key.js`. Validation here is
    * STRUCTURAL only; this process cannot know which plugins are installed, and a `plugin:<id>:<viewId>` key stays well-formed after its plugin is uninstalled. The renderer therefore re-checks a restored plugin key against the views it actually loaded before navigating there. */
   activeView?: InlineViewKey;

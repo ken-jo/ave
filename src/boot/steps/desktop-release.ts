@@ -9,6 +9,7 @@ import { PluginTelemetryClient } from "../../telemetry/client.js";
 import { consentedTelemetryEndpoint } from "./service-endpoint.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
+import { onEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 const log = createLogger("ave");
 
@@ -53,6 +54,21 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     });
     pluginTelemetry = ptClient;
     ptClient.start();
+
+    onEvent("plugin.installed", (data) => {
+      const d = data as { pluginId?: string; version?: string } | undefined;
+      ptClient.track("plugin_install", {
+        slug: d?.pluginId ?? "unknown",
+        version: d?.version ?? "unknown",
+      });
+    });
+    onEvent("plugin.uninstalled", (data) => {
+      const d = data as { pluginId?: string; version?: string } | undefined;
+      ptClient.track("plugin_uninstall", {
+        slug: d?.pluginId ?? "unknown",
+        version: d?.version ?? "unknown",
+      });
+    });
 
     registerShutdownHook("plugin-telemetry-flush", () => {
       try {

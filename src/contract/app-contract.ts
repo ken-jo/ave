@@ -772,7 +772,7 @@ export const CHANNELS = {
     refuseTabOp: "ave:browser:refuse-tab-op", // invoke renderer→main  an inTabId page could not be loaded
     stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
     pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
-    resume: "ave:browser:resume",   // invoke renderer→main  embedded renderer tab ID
+    resume: "ave:browser:resume", // invoke renderer→main  explicit new agent control generation
     getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
     getSessionBindings: "ave:browser:get-session-bindings",
     sessionBindingsChanged: "ave:browser:session-bindings-changed",

@@ -37,7 +37,6 @@ function subscribeForChatGroup<T>(
 
 function buildSurfaceForChatGroup(chatGroupId: string) {
   return {
-
   chatListCustomCommands: async () =>
     ipcRenderer.invoke(CHANNELS.chat.listCustomCommands, chatGroupId) as Promise<{
       commands: import("../shared/custom-command.js").CustomCommandEntry[];

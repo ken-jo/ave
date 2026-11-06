@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { t } from "../../i18n/index.js";
 import { McpGovernance } from "../mcp-governance.js";
 import type { McpGovernancePolicy, McpServerApproval, McpServerConfig } from "../types.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -584,6 +585,6 @@ describe("McpGovernance transport validation", () => {
     const result = gov.validateServer({ id: "browser-use", transport } as unknown as McpServerConfig);
     expect(result).toMatchObject({ valid: false, layer: 1 });
     if (result.valid) throw new Error("Unsupported transport was accepted");
-    expect(result.reason).toMatch(/unsupported.*transport/i);
+    expect(result.reason).toBe(t("be_mcpClient.unsupportedTransport", { transport }));
   });
 });

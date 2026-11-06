@@ -3292,7 +3292,7 @@ with its own owner rule:
   `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
   relative, `/`-separated, lower-cased on Windows) holds `current` and at most
   one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
-  `permissions/` stores, `mcp/servers.json(.bak)`, `governance/mcp-policy.json`,
+  `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
   `routine/routines.json`, the marketplace sources, states and snapshots,

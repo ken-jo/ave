@@ -148,7 +148,7 @@ export class McpGovernance {
   /** Return the specific policy layer refusing a server configuration. */
   validateServer(config: McpServerConfig): ValidationResult {
     if (config.transport !== "stdio" && config.transport !== "http") {
-      return { valid: false, reason: "Unsupported MCP transport; expected stdio or http.", layer: 1 };
+      return { valid: false, reason: t("be_mcpClient.unsupportedTransport", { transport: (config as { transport: string }).transport }), layer: 1 };
     }
 
     if (!this.policy) {
@@ -658,7 +658,7 @@ export class McpGovernance {
     }
 
     if (approval.tlsRequired && config.url) {
-      const isSecure = config.url.startsWith("https://") || config.url.startsWith("wss://");
+      const isSecure = config.url.startsWith("https://");
       if (!isSecure) {
         return { valid: false, reason: t("be_mcpGovernance.tlsRequired", { url: config.url }), layer: 2 };
       }

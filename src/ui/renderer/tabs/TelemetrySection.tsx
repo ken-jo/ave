@@ -49,8 +49,7 @@ export function TelemetrySection() {
 
   const handleEnabledChange = useCallback((next: boolean) => {
     setEnabled(next);
-    // `telemetryPromptAnswered` rides along: reaching this switch at all is an answer, so the first-boot prompt must not
-    // reappear afterwards asking a question the user has now answered twice.
+    // Record the explicit telemetry choice alongside the enabled setting.
     persist({ enabled: next, telemetryPromptAnswered: true });
   }, [persist]);
 

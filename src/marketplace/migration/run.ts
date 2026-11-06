@@ -10,11 +10,6 @@ import type { LegacyContentKind, LegacyContentReport } from "./legacy-content.js
 interface MarkerFile {
   version: 1;
   completedAt?: string;
-  reportedUnmanaged?: string[];
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 async function readMarker(path: string): Promise<MarkerFile | null> {
@@ -30,7 +25,7 @@ async function readMarker(path: string): Promise<MarkerFile | null> {
     typeof value !== "object" ||
     value === null ||
     value.version !== 1 ||
-    (value.completedAt === undefined ? !isStringArray(value.reportedUnmanaged) : typeof value.completedAt !== "string")
+    (value.completedAt !== undefined && typeof value.completedAt !== "string")
   ) {
     throw new Error(`${path}: not a migration marker`);
   }
@@ -40,13 +35,11 @@ async function readMarker(path: string): Promise<MarkerFile | null> {
 export interface LegacyMigrationInput {
   markerPath: string;
   officialSnapshot: SourceSnapshot | null;
-
   content(listed: (kind: LegacyContentKind, name: string) => boolean): Promise<LegacyContentReport>;
   now: () => Date;
 }
 
 export interface LegacyMigrationReport {
-
   content: LegacyContentReport;
 }
 
@@ -60,7 +53,7 @@ export async function runLegacyMigration(input: LegacyMigrationInput): Promise<L
   const marker: MarkerFile =
     content.failed.length === 0
       ? { version: 1, completedAt: input.now().toISOString() }
-      : { version: 1, reportedUnmanaged: [] };
+      : { version: 1 };
   await writeFileAtomicAtPath(input.markerPath, `${JSON.stringify(marker, null, 2)}\n`);
   return { content };
 }

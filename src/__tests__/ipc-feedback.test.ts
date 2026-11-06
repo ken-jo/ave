@@ -22,7 +22,6 @@ function makeServices(overrides: Record<string, unknown> = {}) {
   return {
     auditLogger: { log: auditLog, search: vi.fn(), getStats: vi.fn() },
     starredStore: { list: starredList, add: starredAdd, remove: vi.fn(), removeBySessionAndIndex: vi.fn(), listBySession: vi.fn() },
-
     settingsService: { getAll: vi.fn(() => ({})), get: vi.fn(() => ({})), patch: vi.fn(), getSecret: vi.fn(() => null), setSecret: vi.fn(), deleteSecret: vi.fn() },
     conversationLoop: {
       getSessionId: vi.fn(() => "sess-test"),

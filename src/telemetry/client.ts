@@ -3,7 +3,7 @@
  *
  * Privacy contract:
  *   - Opt-in ONLY. Default: disabled. Events are never enqueued before user
- *     explicitly answers the first-boot consent prompt (telemetryPromptAnswered=true
+ *     explicitly records telemetry consent (telemetryPromptAnswered=true
  *     AND enabled=true).
  *   - No PII. Payload contains only: event type, plugin slug, plugin version,
  *     error class name (for plugin_error), device_uuid (random, locally generated).
@@ -149,7 +149,7 @@ export class PluginTelemetryClient {
 
   /**
    * Returns true only when:
-   *   1. User has answered the first-boot prompt (telemetryPromptAnswered === true)
+   *   1. User has recorded telemetry consent (telemetryPromptAnswered === true)
    *   2. User opted in (enabled === true)
    *   3. The service document names a telemetry endpoint
    */
