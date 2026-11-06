@@ -471,13 +471,15 @@ async function openObservedWorkbook() {
   readDocument.mockResolvedValueOnce(observedWorkbook());
   const view = render(<PreviewBody observe api={{} as never} sessionId={OBSERVATION_SESSION} target={fileTarget("/w/book.xlsx")} />);
   await screen.findByTestId("chat-side-panel-table-grid");
+  // The grid mounts before its rows; wait for a cell so callers never query an empty grid.
+  await screen.findAllByRole("gridcell");
   return view;
 }
 
 describe("agent document live view", () => {
   it("keeps cells read-only after double-click and Enter", async () => {
     await openObservedWorkbook();
-    const cell = screen.getByRole("gridcell", { name: "120" });
+    const cell = await screen.findByRole("gridcell", { name: "120" });
     fireEvent.doubleClick(cell);
     fireEvent.keyDown(cell, { key: "Enter" });
     expect(screen.queryByRole("textbox")).toBeNull();
