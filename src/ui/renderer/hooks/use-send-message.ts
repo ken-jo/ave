@@ -187,9 +187,9 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // Do not let a fast legacy-key probe race ahead of the authoritative runtime selection. Until settings resolves we cannot
       // know whether a subscription login, rather than an API-key provider, is selected.
       if (!settingsReady) return;
-      // User sends interrupt in the same chatSend IPC so keyboard intent remains valid; staged and queue-auto sends never abort
-      // a running turn.
-      const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt")
+      // Explicit keyboard interruption is independent of the message's app provenance.
+      const appInterrupt = mode === "app-message" && opts?.injectHint === "interrupt" && userIntent !== undefined;
+      const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt" || appInterrupt)
         && streaming
         && opts?.inputOrigin !== "queue-auto";
       // Renderer only performs UX-level shortcuts for typed composer input. Main owns the authoritative trust-origin
@@ -326,7 +326,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
 
           opts?.inputOrigin === "queue-auto"
             ? undefined
-            : mode === "default" ? userIntent : undefined,
+            : mode === "default" || appInterrupt ? userIntent : undefined,
           opts?.inputOrigin === "queue-auto"
             ? undefined
             : mode === "default" ? composed.personaPromptId : undefined,

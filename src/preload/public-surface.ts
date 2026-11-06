@@ -60,7 +60,7 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       ...(personaPromptId ? { personaPromptId } : {}),
       // One Enter gesture authorizes abort-and-send together; consume its intent once.
       ...(options?.interrupt === true ? { interrupt: true } : {}),
-      ...(inputOrigin === "user-keyboard"
+      ...((inputOrigin === "user-keyboard" || (inputOrigin === "app-emitted" && options?.interrupt === true))
         ? { userActivation: consumeUserKeyboardIntent(userIntent) }
         : {}),
     }, chatGroupId),

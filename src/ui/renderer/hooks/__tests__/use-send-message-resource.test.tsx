@@ -506,6 +506,23 @@ describe("handleAsk — the host refuses the send with a resolved value", () => 
 });
 
 describe("handleAsk — a send while a turn is still running", () => {
+  it("interrupts an explicitly submitted app draft while preserving its envelope and provenance", async () => {
+    const s = setup({ streaming: true, attachments: [] });
+    const intent = { inputOrigin: "user-keyboard" as const, token: "gesture" };
+    const envelope = '<app-message source="app:fixture">new direction</app-message>';
+    await act(async () => s.result.current.handleAsk(envelope, "app-message", intent, { injectHint: "interrupt" }));
+    expect(s.chatSend).toHaveBeenCalledWith(envelope, [], "app-emitted", intent, undefined, { interrupt: true });
+    expect(s.markLastAssistantInterrupted).toHaveBeenCalledOnce();
+  });
+
+  it("does not interrupt an app draft without explicit keyboard authority", async () => {
+    const s = setup({ streaming: true, attachments: [] });
+    await act(async () => s.result.current.handleAsk("app text", "app-message", undefined, { injectHint: "interrupt" }));
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+    expect(s.chatSend.mock.calls[0]?.[5]).toBeUndefined();
+    expect(s.markLastAssistantInterrupted).not.toHaveBeenCalled();
+  });
+
   it("asks the host to interrupt inside the same call instead of awaiting an abort first", async () => {
     const { result, chatSend, chatAbort, resetStreamAccumulators, markLastAssistantInterrupted } = setup({
       streaming: true,

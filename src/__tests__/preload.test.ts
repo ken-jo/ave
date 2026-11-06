@@ -688,6 +688,20 @@ describe("preload — plugin webview asset URLs", () => {
     }), "main");
   });
 
+  it("consumes an explicit app interrupt gesture without changing its provenance", async () => {
+    const api = await loadAveApi();
+    const capture = api["captureUserKeyboardIntent"] as () => unknown;
+    const chatSend = api["chatSend"] as (input: string, attachments: undefined, origin: string, intent?: unknown, persona?: undefined, options?: { interrupt: boolean }) => Promise<unknown>;
+    mockUserActivation.isActive = true;
+    const token = capture();
+    await chatSend("app text", undefined, "app-emitted", token, undefined, { interrupt: true });
+    expect(mockInvoke.mock.calls.at(-1)![1]).toMatchObject({ inputOrigin: "app-emitted", interrupt: true, userActivation: true });
+    await chatSend("replayed", undefined, "app-emitted", token, undefined, { interrupt: true });
+    expect(mockInvoke.mock.calls.at(-1)![1]).toMatchObject({ inputOrigin: "app-emitted", userActivation: false });
+    await chatSend("ordinary app send", undefined, "app-emitted", capture());
+    expect(mockInvoke.mock.calls.at(-1)![1]).not.toHaveProperty("userActivation");
+  });
+
   it("never lets lingering activation rescue a missing, replayed, forged or expired chat send intent", async () => {
     const api = await loadAveApi();
     const capture = api["captureUserKeyboardIntent"] as () => unknown;

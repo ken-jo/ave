@@ -6,6 +6,7 @@ import os from "node:os";
 beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false }));
 import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
+import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { BRANCH_CONTINUATION_REFUSED, USER_KEYBOARD_REQUIRED } from "../../../shared/chat-origin.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
@@ -2429,6 +2430,30 @@ describe("an interrupt send while a turn is running", () => {
     expect(loop.abortCurrentTurn).toHaveBeenCalledTimes(1);
     expect(loop.runTurn).toHaveBeenCalledTimes(2);
     expect(second).toMatchObject({ text: "second answer" });
+  });
+
+  it.each([true, false])("keeps app provenance while interrupt admission requires a consumed gesture (%s)", async (userActivation) => {
+    const { loop, turnEntered } = runningTurn();
+    await setupHandlers(loop);
+    const first = invokeRegisteredHandler(handlers, CHANNELS.chat.send, {
+      input: "first", inputOrigin: "user-keyboard", userActivation: true,
+    }, "main") as Promise<unknown>;
+    await turnEntered.promise;
+    const input = formatAppMessageEnvelope("App request", "app:fixture");
+    const second = await invokeRegisteredHandler(handlers, CHANNELS.chat.send, {
+      input, inputOrigin: "app-emitted", userActivation, interrupt: true,
+    }, "main");
+    if (userActivation) {
+      expect(loop.abortCurrentTurn).toHaveBeenCalledTimes(1);
+      expect(loop.runTurn.mock.calls.at(-1)?.[0]).toBe(input);
+      expect(loop.runTurn.mock.calls.at(-1)?.at(-1)).toMatchObject({ inputOrigin: "app-emitted", originSource: "app:fixture" });
+      expect(second).toMatchObject({ text: "second answer" });
+    } else {
+      expect(loop.abortCurrentTurn).not.toHaveBeenCalled();
+      expect(second).toEqual({ error: "streaming-active" });
+      loop.abortCurrentTurn();
+    }
+    await first;
   });
 
   it("leaves the running turn alone when the interrupting send would be refused", async () => {

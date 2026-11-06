@@ -1,9 +1,22 @@
 /** See docs/blueprints/composer-redesign-message-queue.md#message-queue-semantics. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MessageQueueStore, formatQueueInject, queueAppSource } from "../message-queue-store.js";
+import { MessageQueueStore, formatQueueInject, groupQueueItems, queueAppSource } from "../message-queue-store.js";
 
 describe("MessageQueueStore", () => {
+  it("splits different app sources in order and rejects an unsplit delivery", () => {
+    const queue = new MessageQueueStore();
+    queue.add("A", "app:first");
+    queue.add("User");
+    queue.add("B", "app:second");
+    queue.add("A again", "app:first");
+    const items = queue.getPending();
+    expect(groupQueueItems(items).map((group) => group.map((item) => item.text)))
+      .toEqual([["A", "User"], ["B"], ["A again"]]);
+    expect(() => queueAppSource(items)).toThrow("different app sources");
+    expect(queue.reservePending()?.items.map((item) => item.text)).toEqual(["A", "User"]);
+  });
+
   let store: MessageQueueStore;
 
   beforeEach(() => {
@@ -482,7 +495,8 @@ describe("app source ownership", () => {
     store.add("User text");
     store.add("App text", "app:fixture");
     store.add("Other app text", "app:other");
-    expect(queueAppSource(store.getPending())).toBe("app:fixture");
+    expect(queueAppSource(groupQueueItems(store.getPending())[0])).toBe("app:fixture");
+    expect(() => queueAppSource(store.getPending())).toThrow("different app sources");
     expect(queueAppSource([])).toBeUndefined();
     expect(() => store.add("Text", "user-keyboard")).toThrow("invalid app source");
   });

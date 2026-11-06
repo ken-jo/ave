@@ -1058,7 +1058,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (isInterruptSend(payload)) {
       // Validate keyboard authority and payload before interrupting the running turn.
       const admitted = parseChatSendPayload(payload);
-      if (admitted.ok && admitted.payload.inputOrigin === "user-keyboard") {
+      if (admitted.ok && admitted.payload.userActivation === true
+        && (admitted.payload.inputOrigin === "user-keyboard" || admitted.payload.inputOrigin === "app-emitted")) {
         await interruptActiveTurn(group);
         interrupted = true;
       }
