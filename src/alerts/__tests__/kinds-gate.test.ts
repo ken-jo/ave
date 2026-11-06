@@ -6,7 +6,6 @@ import type { AlertKindDeclaration } from "../../plugins/public-contract.js";
 import type { AlertSettings } from "../../shared/alerts-types.js";
 import { RegistrationLedger, markPluginAbsent, resolveRegistration } from "../kinds.js";
 import { clampTtl, effectiveVisibility, predecessorBlocks } from "../gate.js";
-import { alertEventReaches, isAlertEvent } from "../events.js";
 
 function kind(overrides: Partial<AlertKindDeclaration> = {}): AlertKindDeclaration {
   return {
@@ -158,29 +157,5 @@ describe("raise-time bounds", () => {
     expect(effectiveVisibility("user-visible", "silent")).toBe("silent");
     expect(effectiveVisibility("summary-only", "user-visible")).toBe("summary-only");
     expect(effectiveVisibility("summary-only", undefined)).toBe("summary-only");
-  });
-});
-
-describe("alert event delivery", () => {
-  const grant = { plugins: [{ pluginId: "fixturemail", events: ["alert.raised"] }] };
-  it("reaches the raising plugin, and another only with a grant naming it and the event", () => {
-    const payload = { pluginId: "fixturemail", kind: "reply", alertId: "x" };
-    expect(alertEventReaches("fixturemail", "alert.raised", payload, undefined)).toBe(true);
-    expect(alertEventReaches("otherfixture", "alert.raised", payload, undefined)).toBe(false);
-    expect(alertEventReaches("otherfixture", "alert.raised", payload, grant)).toBe(true);
-    expect(alertEventReaches("otherfixture", "alert.withdrawn", payload, grant)).toBe(false);
-  });
-
-  it("reaches no plugin for a host kind or a payload without an owner", () => {
-    expect(alertEventReaches("fixturemail", "alert.raised", { pluginId: "@host" }, undefined)).toBe(false);
-    expect(alertEventReaches("fixturemail", "alert.raised", { pluginId: "@host" }, {
-      plugins: [{ pluginId: "@host", events: ["alert.raised"] }],
-    })).toBe(false);
-    expect(alertEventReaches("fixturemail", "alert.raised", {}, grant)).toBe(false);
-  });
-
-  it("recognises the namespace", () => {
-    expect(isAlertEvent("alert.raised")).toBe(true);
-    expect(isAlertEvent("alerts.raised")).toBe(false);
   });
 });

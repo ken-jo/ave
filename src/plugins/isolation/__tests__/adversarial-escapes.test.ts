@@ -342,7 +342,6 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
     userHome: homedir(),
     aveHome: staged.aveHome,
     config,
-    log: () => undefined,
     hostApi: host.api,
   };
 }

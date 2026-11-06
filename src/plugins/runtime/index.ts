@@ -1,8 +1,8 @@
 /** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
-import { classifySubscription } from "../capabilities.js";
-import { parsePluginJson, buildManifestValidator, getDeclaredEmittedEvents, recordManifestDocument } from "./manifest-validation.js";
+import { canEmitEvent } from "../capabilities.js";
+import { parsePluginJson, buildManifestValidator, recordManifestDocument } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -242,65 +242,27 @@ type AuditLog = (
   data?: unknown,
 ) => void;
 
-/** Foreign event subscriptions require an explicit grant; self-owned and unowned events are allowed. */
+/** Only theme notifications remain available to a plugin process. */
 export function assertEventSubscribeAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  targetPluginId: string | undefined;
+  targetPluginId?: string;
   getAccessGrant: () => PluginAccessSpec | undefined;
   auditLog?: AuditLog;
 }): void {
-  const { callerPluginId, eventType, targetPluginId } = opts;
-  if (classifySubscription(eventType) === "private") {
-    opts.auditLog?.("error", "plugin_private_event_access_denied", {
-      callerPluginId,
-      eventType,
-    });
-    throw new Error(
-      `Plugin '${callerPluginId}' is not allowed to subscribe to private event '${eventType}'`,
-    );
-  }
-  if (!targetPluginId || targetPluginId === callerPluginId) return;
-  const rule = opts
-    .getAccessGrant()
-    ?.plugins.find((entry) => entry.pluginId === targetPluginId);
-  if (rule?.events?.includes(eventType)) return;
-  opts.auditLog?.("error", "plugin_event_access_denied", {
-    callerPluginId,
-    targetPluginId,
-    eventType,
-  });
-  throw new Error(
-    `Plugin '${callerPluginId}' is not allowed to subscribe to event '${eventType}' from plugin '${targetPluginId}'`,
-  );
+  if (opts.eventType === "host.theme.changed") return;
+  throw new Error(`Plugin '${opts.callerPluginId}' may subscribe only to host.theme.changed`);
 }
 
-/** Plugins may emit only their own events or events without a resolvable owner. */
+/** Event names must identify their own UI owner. */
 export function assertEventEmitAccess(opts: {
   callerPluginId: string;
   eventType: string;
-  ownerPluginId: string | undefined;
+  ownerPluginId?: string;
   auditLog?: AuditLog;
 }): void {
-  const { callerPluginId, eventType, ownerPluginId } = opts;
-  if (classifySubscription(eventType) === "private") {
-    opts.auditLog?.("error", "plugin_private_event_emit_denied", {
-      callerPluginId,
-      eventType,
-    });
-    throw new Error(
-      `Plugin '${callerPluginId}' is not allowed to emit private event '${eventType}'`,
-    );
-  }
-  if (!ownerPluginId || ownerPluginId === callerPluginId) return;
-  opts.auditLog?.("error", "plugin_event_emit_denied", {
-    callerPluginId,
-    ownerPluginId,
-    eventType,
-  });
-  throw new Error(
-    `Plugin '${callerPluginId}' is not allowed to emit event '${eventType}' owned by plugin '${ownerPluginId}'`,
-  );
+  if (canEmitEvent(opts.eventType, opts.callerPluginId)) return;
+  throw new Error(`Plugin '${opts.callerPluginId}' may emit only its own UI events`);
 }
 
 /** Renderer calls require explicit app visibility in the tool declaration. */
@@ -1488,7 +1450,6 @@ abstract class PluginRuntimeState {
   protected readonly knownInstallClaims = new Map<string, string | null>();
   private readonly pendingInstallIdentityOwners = new Map<string, symbol>();
   protected readonly knownToolOwners = new Map<string, string>();
-  protected readonly knownEventOwners = new Map<string, string>();
   protected readonly failedPluginIds = new Set<string>();
   protected readonly failedPluginStubs = new Map<string, { name: string; description: string }>();
   /** Classify load failures by canonical id, or registry hint when no manifest can be read. */
@@ -2011,13 +1972,7 @@ abstract class PluginRuntimeState {
     for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
       if (ownerId === pluginId) this.knownToolOwners.delete(toolName);
     }
-    for (const [eventType, ownerId] of [...this.knownEventOwners.entries()]) {
-      if (ownerId === pluginId) this.knownEventOwners.delete(eventType);
-    }
     this.rememberToolOwners(pluginId, manifest);
-    for (const eventType of getDeclaredEmittedEvents(manifest)) {
-      this.knownEventOwners.set(eventType, pluginId);
-    }
   }
 
   protected rememberPluginInstallAlias(pluginId: string, alias: string | undefined): void {
@@ -2433,7 +2388,6 @@ abstract class PluginRuntimeState {
     this.knownInstallAliases.clear();
     this.knownInstallClaims.clear();
     this.knownToolOwners.clear();
-    this.knownEventOwners.clear();
     this.plugins.clear();
     for (const pluginId of this.pluginUiRevisions.keys()) {
       this.onPluginUiRevisionChange?.(pluginId);
@@ -2879,23 +2833,6 @@ abstract class PluginRuntimeState {
       displayName: manifest.name ?? manifest.id,
     });
     return true;
-  }
-
-  protected inferEventOwner(eventType: string): string | undefined {
-    const exactOwner = this.knownEventOwners.get(eventType);
-    if (exactOwner) return exactOwner;
-    const candidateIds = new Set<string>([
-      ...this.plugins.keys(),
-      ...this.knownPluginManifests.keys(),
-    ]);
-    let bestMatch: string | undefined;
-    for (const pluginId of candidateIds) {
-      if (!eventType.startsWith(`${pluginId}.`)) continue;
-      if (!bestMatch || pluginId.length > bestMatch.length) {
-        bestMatch = pluginId;
-      }
-    }
-    return bestMatch;
   }
 
   protected async materializeImmutableRuntimeRoot(
@@ -3664,9 +3601,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.knownPluginAccessGrants.delete(canonicalPluginId);
     for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
       if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
-    }
-    for (const [eventType, ownerId] of [...this.knownEventOwners.entries()]) {
-      if (ownerId === canonicalPluginId) this.knownEventOwners.delete(eventType);
     }
     this.failedPluginIds.delete(canonicalPluginId);
     this.failedPluginStubs.delete(canonicalPluginId);
@@ -5070,9 +5004,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       this.knownPluginManifests.set(pluginId, outcome.manifest);
       this.knownPluginAccessGrants.set(pluginId, outcome.approvedPluginAccess);
       this.rememberToolOwners(pluginId, outcome.manifest);
-      for (const eventType of getDeclaredEmittedEvents(outcome.manifest)) {
-        this.knownEventOwners.set(eventType, pluginId);
-      }
     }
     for (const outcome of preflight) {
       await this.admitPreflightedPlugin(outcome, enabledManifestSnapshots);
@@ -6501,7 +6432,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     assertEventSubscribeAccess({
       callerPluginId,
       eventType,
-      targetPluginId: this.inferEventOwner(eventType),
       getAccessGrant: () => candidateApprovedPluginAccess === undefined
         ? this.getPluginAccessGrant(callerPluginId) : candidateApprovedPluginAccess ?? undefined,
       auditLog: this.auditLog,
@@ -6512,7 +6442,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     assertEventEmitAccess({
       callerPluginId,
       eventType,
-      ownerPluginId: this.inferEventOwner(eventType),
       auditLog: this.auditLog,
     });
   }

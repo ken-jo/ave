@@ -20,7 +20,6 @@ import {
   type PluginConstructParams,
   type PluginConstructResult,
   type PluginLifecycleHookName,
-  type PluginShutdownParams,
 } from "./plugin-instance-wire.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -215,14 +214,6 @@ export function servePluginChild(
       case PLUGIN_INSTANCE_METHODS.stop:
         await instance.stop?.();
         return null;
-      case PLUGIN_INSTANCE_METHODS.shutdown: {
-        const subscriptionId = (params as unknown as PluginShutdownParams | undefined)?.subscriptionId;
-        if (typeof subscriptionId !== "string") {
-          throw new Error("[plugin-child] shutdown requires a string 'subscriptionId'");
-        }
-        await runtime.runShutdownHandler(subscriptionId);
-        return null;
-      }
       default:
         throw new Error(`[plugin-child] unknown instance method '${method}'`);
     }
@@ -310,8 +301,8 @@ function serveOverStdio(): void {
   const service = servePluginChild(process.stdin, claimProtocolStdout());
   const end = (): void => {
     service.hostGone();
-    // Host pipe closure must end the child; no plugin process may remain unwatched.
-    process.exit(0);
+    // Let EOF listeners finish cleanup; the host bounds a child that keeps resources open.
+    process.exitCode = 0;
   };
   process.stdin.on("end", end);
   process.stdin.on("close", end);
@@ -330,7 +321,7 @@ function serveOverLoopback(env: Readonly<Record<string, string>>): void {
       const service = servePluginChild(socket, socket);
       const end = (): void => {
         service.hostGone();
-        process.exit(0);
+        process.exitCode = 0;
       };
       socket.on("end", end);
       socket.on("close", end);

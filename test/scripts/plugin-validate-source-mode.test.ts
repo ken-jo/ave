@@ -12,7 +12,7 @@ import { systemProcessProbe } from "../../src/__tests__/support/test-run-dirs.js
 const APP_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const GOLDEN_PLUGINS = join(APP_ROOT, "src/plugins/isolation/__tests__/fixtures/host-protocol/5/plugins");
 const LINKED = ["package.json", "tsconfig.json", "node_modules", "schemas", "scripts", "src"];
-const PLUGIN_LOG_TEXT = "the plugin is speaking through context.log";
+const PLUGIN_LOG_TEXT = "the plugin is speaking through stderr";
 
 let scratch: string;
 let checkout: string;
@@ -70,7 +70,7 @@ export const createPlugin = async () => {
       $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
       name: "logging-plugin",
       version: "1.0.0",
-      description: "Logs through context.log at construct, start and in its tool.",
+      description: "Logs through stderr at construct, start and in its tool.",
       extensions: {
         "ai.agent-connector.ave": {
           displayName: "Logging Plugin",
@@ -90,12 +90,12 @@ export const createPlugin = async () => {
   writeFileSync(
     join(loggingPlugin, "entry.mjs"),
     `export const createPlugin = async (context) => {
-  context.log(${JSON.stringify(`${PLUGIN_LOG_TEXT} at construct`)});
+  process.stderr.write(${JSON.stringify(`${PLUGIN_LOG_TEXT} at construct\n`)});
   return {
-    start: async () => context.log(${JSON.stringify(`${PLUGIN_LOG_TEXT} at start`)}),
+    start: async () => process.stderr.write(${JSON.stringify(`${PLUGIN_LOG_TEXT} at start\n`)}),
     handlers: {
       speak: async () => {
-        context.log(${JSON.stringify(`${PLUGIN_LOG_TEXT} in its tool`)});
+        process.stderr.write(${JSON.stringify(`${PLUGIN_LOG_TEXT} in its tool\n`)});
         return "spoke";
       },
     },

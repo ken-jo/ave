@@ -6,8 +6,6 @@ import { expect, vi } from "vitest";
 import { initPluginRuntime } from "../../boot/steps/plugin-runtime.js";
 import { KNOWN_CAPABILITIES } from "../../plugins/capabilities.js";
 import { isPlainNamespace } from "../hostapi-effect-recorder.js";
-import { join } from "node:path";
-import { WorkBoardStore } from "../../main/work-board-store.js";
 import { AlertsService } from "../../alerts/service.js";
 import type { AlertSettings } from "../../shared/alerts-types.js";
 import type { PluginHostApi } from "../../plugins/types.js";
@@ -45,7 +43,7 @@ function capturedCreateHostApi(
     | undefined;
 }
 
-// Build a REAL hostApi object via the production `createHostApi` factory captured from `initPluginRuntime`. Built with the FULL capability vocabulary, not a sampled subset: a namespace/method wired ONLY under a capability absent from the fixture would never be enumerated, and would therefore escape every assertion made about this surface. Declare the maximal capability set so conditionally-wired members are present. Every scratch directory — the plugin's data directory and the alerts and board stores behind it — comes from `resources`, so the caller's `afterEach` removes them with the rest of its directories.
+// Build a REAL hostApi object via the production `createHostApi` factory captured from `initPluginRuntime`. Built with the FULL capability vocabulary, not a sampled subset: a namespace/method wired ONLY under a capability absent from the fixture would never be enumerated, and would therefore escape every assertion made about this surface. Declare the maximal capability set so conditionally-wired members are present. Every scratch directory — the plugin's data directory and the alerts store behind it — comes from `resources`, so the caller's `afterEach` removes them with the rest of its directories.
 export async function buildRealHostApi(
   harness: RealHostApiHarness,
   resources: PermissionTestResources,
@@ -53,7 +51,7 @@ export async function buildRealHostApi(
 ): Promise<PluginHostApi> {
   harness.capturedRuntimeOptions = null;
   const bootAuditLogger = { log: vi.fn() };
-  // A real alerts service over a temp directory, for the same reason as the board below: `raiseAlert` must return a genuine envelope, and the probe's kind is undeclared so it refuses before anything is rendered or stored.
+  // A real alerts service over a temp directory, `raiseAlert` must return a genuine envelope, and the probe's kind is undeclared so it refuses before anything is rendered or stored.
   const alertsDir = resources.makeTmpDir("ave-probe-alerts-");
   let alertSettings: AlertSettings = { osNotificationsEnabled: true, kinds: {} };
   // Flushed before the directory goes: a write still queued would recreate it.
@@ -106,9 +104,6 @@ export async function buildRealHostApi(
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn(), resolve: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    // A real store over a temp path: `proposeWork` must return a genuine envelope for the JSON-representability probe, and the probe's kind is undeclared so it refuses before it ever touches the file.
-    getWorkBoardStore: () =>
-      new WorkBoardStore(join(resources.makeTmpDir("ave-probe-wb-"), "board.json")),
     getAlertsService: () => alertsService,
   });
 

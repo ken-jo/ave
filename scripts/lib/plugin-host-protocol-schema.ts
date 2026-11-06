@@ -74,7 +74,6 @@ const INSTANCE_FORMS: Record<
   start: { params: { type: "object" }, result: { type: "null" }, errors: ["payload-too-large"] },
   onPublished: { params: { type: "object" }, result: { type: "null" }, errors: ["payload-too-large"] },
   stop: { params: { type: "object" }, result: { type: "null" }, errors: ["payload-too-large"] },
-  shutdown: { params: "PluginShutdownParams", result: { type: "null" }, errors: ["payload-too-large"] },
 };
 
 const SUBSCRIPTION_ID: JsonSchema = {

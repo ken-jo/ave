@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 28,
+    "id": 23,
     "jsonrpc": "2.0",
     "method": "ave/host/openExternalUrl",
     "params": {
@@ -11,7 +11,7 @@
     }
   },
   "response": {
-    "id": 28,
+    "id": 23,
     "jsonrpc": "2.0",
     "result": null
   }

@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 18,
+    "id": 16,
     "jsonrpc": "2.0",
     "method": "ave/host/probePrivateHost",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 18,
+    "id": 16,
     "jsonrpc": "2.0",
     "result": true
   }

@@ -129,7 +129,6 @@ export class BootContext {
   declare pluginRuntime: PluginRuntime;
   declare deploymentGuard: PluginDeploymentGuard;
   declare lateBinding: LateBindingRefs;
-  declare runPluginShutdownHandlers: () => Promise<void>;
   declare pluginPaths: PluginPaths;
 
   // ── Workflow services + stores ─────────────────────────────────────────────
@@ -265,7 +264,6 @@ const BOOT_CONTEXT_FIELDS = [
   "pluginRuntime",
   "deploymentGuard",
   "lateBinding",
-  "runPluginShutdownHandlers",
   "pluginPaths",
   "routinesScheduler",
   "workBoardStore",

@@ -12,7 +12,6 @@ import { normalizeLocale, setLocale, tryLoadLocaleMessages } from "../../i18n/in
 import { reconcileGlobalShortcuts } from "../../main/global-shortcuts.js";
 import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { telemetryAllowedHosts } from "../../main/telemetry.js";
-import { publishAppPreferenceChange } from "../../boot/steps/plugin-runtime/app-preference.js";
 import {
   reconcileStartupLaunch,
   notifyStartupLaunchFailureIfNeeded,
@@ -261,7 +260,6 @@ export async function broadcastSettingsSnapshot(
   const snapshot = deps.settingsService.getAll();
   // Publish plugin preference snapshots before locale awaits and outside renderer staleness guards so concurrent saves cannot drop changes.
   // The publisher compares allow-listed values before announcing.
-  publishAppPreferenceChange(deps.settingsService);
   const snapshotSignature = canonicalStringify(snapshot);
   // Keep the main-process UI locale in sync with the persisted language so dialogs/menus/notifications shown after a language switch use it too. Optional-chain
   // `appearance`; a partial snapshot (e.g. a test double or a pre-migration settings file) must not crash the broadcast. setLocale coerces undefined to the English default.

@@ -72,7 +72,6 @@ import {
   type WorkProposalDismissResult,
   type WorkProposalInput,
   type WorkProposalListResult,
-  type WorkProposalResult,
   type WorkPlanApproval,
   type WorkPlanApprovalStatus,
   type WorkPlanDecideRefusal,
@@ -369,7 +368,7 @@ function runStatusActivityKind(
 }
 
 export class WorkBoardStore {
-  // Fires after every proposals.json write, whichever path made it (plugin HostApi, briefing, accept, dismiss, withdraw).
+  // Fires after every proposals.json write, including briefing, accept and dismiss.
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
   // Fires after every board.json write (items, runs and plan approvals), whichever path made it (IPC, engine, model tools, reconcile).
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
@@ -948,7 +947,7 @@ export class WorkBoardStore {
   }
 
   // Read `proposals.json`, dropping rows that are past their expiry and rows that do not parse. Expiry is a read-time sweep rather than a timer: a
-  // proposal whose plugin died still stops being shown.
+  // stale proposal still stops being shown.
   private async readProposals(nowMs: number): Promise<ProposalsFile> {
     const raw = await readJsonFileOrEmpty<ProposalsFile>(
       this.proposalsPath(),
@@ -985,71 +984,6 @@ export class WorkBoardStore {
     return { status: "ok", proposals: live.map((p) => ({ ...p })) };
   }
 
-  // Derive origin and grants from the host binding; same-key refresh preserves acceptance/dismissal and different-key live slots refuse.
-  async upsertProposal(
-    origin: { pluginId: string; pluginLabel: string; grantedKinds: readonly string[] },
-    input: WorkProposalInput,
-  ): Promise<WorkProposalResult> {
-    const normalized = normalizeProposalInput(input);
-    if (!normalized.ok) return { status: "invalid", field: normalized.field };
-    if (!origin.grantedKinds.includes(input.kind)) {
-      return { status: "kind_not_granted", kind: input.kind };
-    }
-
-    const path = this.proposalsPath();
-    return withInProcessFileQueue(path, async () => {
-      const nowMs = this.now();
-      const file = await this.readProposals(nowMs);
-      const id = proposalId(origin.pluginId, input.kind, input.key.trim());
-      const existingIdx = file.proposals.findIndex((p) => p.id === id);
-      const slotTaken = file.proposals.some(
-        (p) =>
-          p.pluginId === origin.pluginId
-          && p.kind === input.kind
-          && p.id !== id
-          && isLiveProposal(p, nowMs),
-      );
-      if (slotTaken) return { status: "slot_busy" as const, kind: input.kind };
-      if (existingIdx === -1 && file.proposals.length >= MAX_PROPOSALS) {
-        return { status: "cap_reached" as const };
-      }
-
-      const prior = existingIdx === -1 ? undefined : file.proposals[existingIdx];
-      const proposal = composeProposal({
-        id,
-        kind: input.kind,
-        key: input.key.trim(),
-        pluginId: origin.pluginId,
-        pluginLabel: origin.pluginLabel,
-        normalized,
-        nowMs,
-        ...(prior ? { prior } : {}),
-      });
-      if (existingIdx === -1) file.proposals.push(proposal);
-      else file.proposals[existingIdx] = proposal;
-      await this.writeProposals(file);
-      return { status: "ok" as const, proposal: { ...proposal } };
-    });
-  }
-
-  // Derive plugin identity from the caller binding; foreign or missing proposals are indistinguishable and retract is idempotent.
-  async withdrawProposal(pluginId: string, kind: string, key: string): Promise<boolean> {
-    if (typeof kind !== "string" || typeof key !== "string") return false;
-    const path = this.proposalsPath();
-    return withInProcessFileQueue(path, async () => {
-      const nowMs = this.now();
-      const file = await this.readProposals(nowMs);
-      const id = proposalId(pluginId, kind, key.trim());
-      const idx = file.proposals.findIndex(
-        (p) => p.id === id && p.pluginId === pluginId && isLiveProposal(p, nowMs),
-      );
-      if (idx === -1) return false;
-      file.proposals.splice(idx, 1);
-      await this.writeProposals(file);
-      return true;
-    });
-  }
-
   // Close a card the user does not want. Sticky: a re-post keeps the mark.
   async dismissProposal(id: string): Promise<WorkProposalDismissResult> {
     const path = this.proposalsPath();
@@ -1067,7 +1001,7 @@ export class WorkBoardStore {
     });
   }
 
-  // User-requested briefing output uses per-run and global caps instead of the unattended plugin per-kind slot budget.
+  // User-requested briefing output uses per-run and global caps.
   // Stable proposal IDs refresh duplicates without reopening dismissed or accepted cards.
   async fileBriefingProposals(
     inputs: readonly WorkProposalInput[],

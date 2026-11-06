@@ -441,7 +441,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
         plugins: [
           {
             pluginId: "samplemail",
-            events: ["samplemail.snapshot.ready"],
             tools: ["samplemail_email_list"],
           },
         ],
@@ -946,7 +945,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       loginTool: "ff_login",
       logoutTool: "ff_logout",
     },
-    emittedEvents: ["full-featured-plugin.auth.changed"],
     networkAccess: {
       allowedDomains: ["api.example.com"],
       reasoning: "Host-mediated egress for document sync.",

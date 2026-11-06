@@ -24,6 +24,16 @@ of `minAppVersion`. Its schema/client and wire fixtures live under
 `schemas/plugin-host-protocol/5/` and
 `src/plugins/isolation/__tests__/fixtures/host-protocol/5/`.
 
+The unreleased protocol 5 surface also removes unused lifecycle, discovery,
+logging, proposal and approval members. Diagnostics use stderr; host shutdown
+closes stdin before the existing termination escalation. Extension events reach
+only the emitting extension’s UI, and manifest cross-extension event grants are
+removed. `config.get`, `config.set` and `config.onChange` remain: lifecycle config
+writes cannot safely restart their own active lifecycle operation, so removing
+the change subscription would leave the live child’s config snapshot stale.
+Historical implementation plans below may name retired members; the current
+surface is the §4 table and the generated protocol-5 schema.
+
 The existing unreleased-candidate convention (§6.1) stores the new schema under
 `web/public/schemas/plugin-host-protocol/5/v0.14.2/`, with
 `publishedTag: null`. That version segment identifies the open schema candidate,
@@ -475,13 +485,8 @@ is this generation", enforced by the host closing the pipe when the generation r
 
 Consequences that must hold:
 
-- `getInstalledPluginIds` excludes the caller (`public-contract.ts:1270-1276`) using the
-  host's binding, never a wire field.
-- `emitEvent` authority is the manifest of the bound plugin; the child's local
-  pre-check remains a courtesy that preserves the synchronous throw and is re-decided
-  host-side (`host-api-child.ts:32-36`).
-- `agentApproval.respond` HMAC/nonce (`public-contract.ts:1891-1896`) stays as is; the
-  connection binding is an additional check, not a replacement.
+- `emitEvent` delivers only to the bound plugin’s own UI. Another plugin’s
+  events cannot be emitted or subscribed to through HostApi.
 
 ### 2.5 Lifecycle
 
@@ -567,10 +572,10 @@ Why this and not the alternatives:
   the direction. Rejected in §12.4.
 
 Method naming: `ave/host/<path with "." replaced by "/">`. So `storage.read` is
-`ave/host/storage/read`, `agentApproval.request` is `ave/host/agentApproval/request`.
+`ave/host/storage/read`, and `config.set` is `ave/host/config/set`.
 The lifecycle methods keep `ave/instance/*` (`plugin-instance-wire.ts:38-45`):
-`construct`, `start`, `onPublished` and `stop` stay, `shutdown` is added (§3.4) and
-`readUiResource` folds into MCP `resources/read` (§5), so the set stays at five.
+`construct`, `start`, `onPublished` and `stop` remain; `readUiResource` folds into
+MCP `resources/read` (§5). Shutdown uses stdin EOF rather than a protocol method.
 Tool names keep `^[a-zA-Z_][a-zA-Z0-9_]*$` (AGENTS.md); protocol method names are
 host-owned and are not in that namespace.
 
@@ -652,9 +657,8 @@ Rules:
   bound (`markIncompatibleAppVersion` checks the lower bound only,
   `runtime/index.ts:2880-2902`, and stays that way).
 - A plugin **may** call a method not in `requires` and handle `method-not-found`; that is
-  how optional members (`hostFetch?`, `spawnWorker?`, `resolveApiKey?`,
-  `getAppPreference?` are optional today, `public-contract.ts:1319, 1371, 1410, 1762`)
-  are expressed without `undefined` checks.
+  how optional members (`hostFetch?`, `spawnWorker?`, `resolveApiKey?`) are
+  expressed without `undefined` checks.
 - Capabilities are method names, not feature flags, so the list is derived from the
   dispatch table and cannot drift from what is actually served.
 
@@ -871,18 +875,15 @@ two-sided lifetime; this is the shipped `SubscriptionLedger` mechanism
 
 | Direction | Message | Purpose |
 |---|---|---|
-| plugin→host request | `ave/host/onEvent`, `config/onChange`, `onPluginsChanged`, `onShutdown`, `startAudioCapture`, `spawnWorker`, `attachFloatingPanel`, `resolveApiKey` | returns `{ subscriptionId }` (or a handle carrying one) |
+| plugin→host request | `ave/host/onEvent`, `config/onChange`, `startAudioCapture`, `spawnWorker`, `attachFloatingPanel`, `resolveApiKey` | returns `{ subscriptionId }` (or a handle carrying one) |
 | host→plugin notification | `notifications/ave/subscription` `{ subscriptionId, payload }` | one event, one frame, one worker chunk, one config change |
 | host→plugin notification | `notifications/ave/subscription/closed` `{ subscriptionId, reason: "revoked" }` | host ended it (plugin retired, dock slot detached, capture surface lost) |
 | plugin→host notification | `notifications/ave/subscription/release` `{ subscriptionId }` | plugin called its disposer |
-| host→plugin request | `ave/instance/shutdown` | replaces `onShutdown` delivery: a **request** the host awaits (bounded), preserving today's "host awaits the handler" semantics (blueprint §3.1 row `onShutdown`) |
-| plugin→host notification | `notifications/ave/log` `{ message, meta? }` | `context.log(message, meta?)` lines (`public-contract.ts:2209`), tagged `plugin:<id>` by the host; today `kind: "log"` with the same two fields (`host-api-wire.ts:136-141`, sent from `plugin-child-runtime.ts:348-356`) |
-| host→plugin notification | `notifications/ave/config/snapshot`, `notifications/ave/installedPlugins/snapshot`, `notifications/ave/preferences/snapshot` | the three child-local snapshots; today `config-snapshot`, `installed-plugins`, `preference-snapshot` (`host-api-wire.ts:152-215`; sent from `out-of-process-plugin.ts:1224-1316`, consumed at `plugin-child-runtime.ts:634-672`) |
+| host→plugin notification | `notifications/ave/config/snapshot` | child-local cleartext config snapshot |
 | either direction | `notifications/cancelled` | replaces `kind: "abort"` (`host-api-wire.ts:131-135`; §3.5) |
 
-Those rows cover all eight `kind`s of today's `HostApiNotification` (`host-api-wire.ts:98-215`);
-a frame the router does not recognise is dropped (§9.4 item 4), so a missing row would
-be a stale `config.get` or a lost log line, not an error. `peer-gone` is never sent; it
+These rows cover the host notification contract. A frame the router does not
+recognise is dropped (§9.4 item 4). `peer-gone` is never sent; it
 is what each side does locally when the pipe closes (`host-api-wire.ts:85-92`).
 
 Audio: `startAudioCapture` returns `{ subscriptionId, captureId, opened }`; each frame is
@@ -896,14 +897,22 @@ the OS pipe. Rationale and numbers in §8.
 Config: `config.get` stays child-local against a host-pushed snapshot, with the snapshot
 delivered as `notifications/ave/config/snapshot` at construct and re-pushed before the
 `config.set` reply, so a plugin that sets-then-gets sees its own write (blueprint §3.1,
-row `config.get`). `getInstalledPluginIds` and `getAppPreference` use the same snapshot
-form (`host-api-dispatcher.ts`: `childLocalHostApiPath` for `storage.resolve`,
-`config.get`, `getInstalledPluginIds`, `getAppPreference`).
+row `config.get`).
 
 Progress: long host operations (`callLlm`, `spawnWorker` startup) may carry an MCP
 `progressToken` in `_meta` and emit `notifications/progress`
 ([MCP progress](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/progress)).
 Optional, not required in protocol `1`.
+
+Plugins write diagnostics to stderr. The host attributes each buffered line with a
+structured `pluginId`, redacts free text, caps retained line content at 16,384
+bytes with a truncation marker, and captures ordinary lines at info level.
+Leading `WARN ` or `ERROR ` tokens raise the level. A shared per-plugin bucket
+allows 100 lines per second with a burst of 500; excess lines produce one
+aggregated summary without terminating the plugin. Stdout remains exclusively the JSON-RPC stream.
+The host closes stdin on shutdown, waits the existing grace period, then escalates
+through SIGTERM and SIGKILL if the child has not exited. Plugins release resources
+on stdin EOF; there is no shutdown callback registration.
 
 ### 3.5 Cancellation
 
@@ -999,18 +1008,13 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `config.get` (:1247) | local | snapshot | none | snapshot push ordering (§3.4) |
 | `config.set` (:1252) | req | plain-json → void | triggers plugin reload (restart of the child) | unchanged |
 | `config.onChange` (:1258) | sub | handler-registration → handle, child-disposable | secret keys arrive redacted (`SECRET_REDACTED_SENTINEL`, `host-api-wire.ts:1141`) | notification stream |
-| `emitEvent` (:1263) | notif | plain-json → void | manifest `emittedEvents`, denial audit host-side | child pre-check keeps the sync throw; host re-decides |
-| `onEvent` (:1268) | sub | handler-registration | none | notification stream |
-| `getInstalledPluginIds` (:1276) | local | snapshot | caller excluded by host binding (§2.4) | none |
-| `onPluginsChanged` (:1295) | sub | handler-registration | none | notification stream |
+| `emitEvent` | notif | plain-json → void | bound plugin’s own UI only; another namespace is refused | no cross-plugin delivery |
+| `onEvent` | sub | handler-registration | host theme updates only | notification stream |
 | `getSecret` (:1339 at `f1a8d191e`) | req | plain-json → plain-json | four-tier `runSecretGate` (`src/plugins/secret-access/secret-gate.ts:190-215`); host-key entitlement and provenance (`grants.ts:33-44`, `:87-111`); **value crosses**, by design: an allow-listed secret is granted to this plugin | audit unchanged. Under Lease the shared gate gains an operation axis: `getSecret` is `export`, refused for the host-provider key class for every plugin before the read; the entitlement rows stay for the resolver's `lease` operation (§4.1.6); own-namespace reads stay. See §4.1 |
 | `resolveApiKey` (:1350 at `f1a8d191e`) | sub | encoded → `WireApiKeyLease` handle (`host-api-wire.ts:2003-2015`), child-disposable | gate + permission revoke signal (`host-api-factory.ts:794-827`); lease registry and epoch fencing (§4.1.2) | **raw key stops crossing** on the default `exposure: "lease"`; `bearer()` removed from the contract; `key` crosses only for `exposure: "raw"` under `secrets:raw-api-key` (§4.1.1) |
 | `callLlm` (:1349) | req | encoded → plain-json | host provider, host rate window, `effect-boundary-denied` | cancellation via `notifications/cancelled` |
 | `hostFetch` (:1402 at `f1a8d191e`) | req | encoded → encoded | Tier A egress gate, allow-list, SSRF (`host-fetch-guard.ts:9-20`); partition cookies attached host-side (`host-api-factory.ts:1056-1085`); per-hop recheck (`host-fetch-guard.ts:438-485`) | bodies buffered and capped at 16 MiB; gains `init.auth = { lease }` (§4.1.1) with host-owned credential injection, audience and redirect rules (§4.1.3-4.1.4); `FormData` bodies serialised by the reference runtime (§8) |
 | `raiseAlert` (:1886 at `f1a8d191e`) | req | plain-json → plain-json | manifest `alerts.kinds`; alert service rate limit returns `status: "rate_limited"` as a *result* (`src/alerts/service.ts:338-339`, `:357-358`), distinct from the transport `rate-limited` error (§3.6) | unchanged; golden fixture `fixtures/host-protocol/1/methods/ave/host/raiseAlert.json` |
-| `withdrawAlert` (:1893 at `f1a8d191e`) | req | plain-json → plain-json | caller's own alert kinds only | unchanged; golden fixture `.../withdrawAlert.json` |
-| `logEvent` (:1377) | notif | plain-json → void | tagged `plugin:<id>` by host | none |
-| `onShutdown` (:1388) | sub | handler-registration, host-terminated | 5 s per handler (`:1384-1386`) | becomes `ave/instance/shutdown` request (§3.4) |
 | `spawnWorker` (:1410) | sub | plain-json → handle | worker envelope must be within the plugin's envelope (`host-api-dispatcher.ts:1160-1161`); command is a host-spawned process | `{ handleId, control, pid }` cross; control traffic is the child notification `notifications/ave/subscription/send` (§3.3.2); the internal handle id derives from the existing RPC id and is registered before send; stdout/stderr/exit notifications use bounded pre-listener replay, drained-output completion and explicit overflow failure as defined in the blueprint §3.2 (`host-api-wire.ts:1652-1666`) |
 | `openAuthWindow` (:1437) | UI | plain-json → plain-json | host-owned BrowserWindow, cookie host allow-list (`auth-window-service.ts:10-16`) | with `retainCookies` the values stay in the partition; the reply carries names or the final URL only |
 | `authRedirect.open/wait/close` (:1474-1484) | req | plain-json | host loopback listener, one per plugin | host-issued state required before callback delivery (§3.3.1) |
@@ -1018,17 +1022,14 @@ column names the chokepoint that stays host-side. "Wire today" is from
 | `resolveMappedDriveRoot` (:1530) | req | plain-json | host replaces a `powershell.exe` spawn (blueprint §10) | unchanged |
 | `listAudioInputDevices` (:1536) | req | plain-json | renderer permission state | unchanged |
 | `startAudioCapture` (:1551) | sub | plain-json → handle | host-owned renderer capture (`audio-capture.ts:4-14`); microphone/system permission is the OS prompt | frames as notifications (§3.4, §8) |
-| `attachFloatingPanel` / `resizeFloatingPanel` (:1579, :1594) | sub / req | plain-json → handle / plain-json | one host-owned dock, height clamped (`floating-dock.ts:11-24`) | `detached` notification |
+| `attachFloatingPanel` | sub | plain-json → handle | one host-owned dock, height clamped (`floating-dock.ts`) | `detached` notification |
 | `openAuthPartitionViewer` (:1632) | UI | plain-json → void | partition owned by the caller; URL host in `auth.partitionDomains` (`auth-partition-viewer-service.ts:15-19`) | unchanged |
 | `clearAuthPartition` (:1660) | req | plain-json → void | partition name must be the caller's | unchanged |
 | `getAuthPartitionCookies` (:1685) | req | plain-json | gated read; **values cross** (`public-contract.ts:195-202`) | see §4.1: stays, but is the one member that hands a session credential to the plugin |
 | `openExternalUrl` (:1713) | UI | plain-json → void | host webView preference policy | unchanged |
 | `probePrivateHost` (:1742) | req | plain-json | host resolver; result is a boolean | unchanged |
-| `getAppPreference` (:1762) | local | snapshot | `HOST_PUBLIC_PREFERENCE_KEYS` allow-list (`app-preference.ts:33`) | none |
 | `triggerConversation` (:1785) | req | plain-json | overlay staging only; a user click starts the turn (`:1765-1767`) | unchanged |
 | `hasRoutineBySource` (:1801) | req | plain-json | none | unchanged |
-| `proposeWork` / `withdrawWorkProposal` (:1827, :1841) | req | plain-json | declared `WorkProposalKind`, `effect-boundary-denied` | unchanged |
-| `agentApproval.request/respond` (:1868-1896) | req | plain-json | ApprovalGate; `respond` carries nonce+HMAC | connection binding added (§2.4) |
 
 What becomes impossible or different out of process, summarised:
 
@@ -1944,8 +1945,8 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
   `ToolExecutor` pipeline with Layer-1 deny, ApprovalGate, audit and the effect-ledger
   shadow (`architecture.md:980-989`). The plugin process is reached by `tools/call`
   *after* those stages, exactly as the loopback arm is today
-  (`out-of-process-plugin.ts:1397`). No protocol method bypasses a gate; `agentApproval`
-  is a request *to* the gate.
+  (`out-of-process-plugin.ts:1397`). No protocol method bypasses a gate.
+  Extensions cannot issue separate approval requests.
 - **Trust tiers**: `trustFromSource` maps `source` to a tier (`tools/types.ts:83`); a
   first-party plugin stays `medium` and an external MCP server `low`
   (`mcp-tool-adapter.ts:25`). Running out of process does **not** change the tier — an
@@ -1966,7 +1967,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 
 | Risk | Control |
 |---|---|
-| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; the numbers are §7.4. `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:709`, `:810-815` at `f1a8d191e`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. At `f1a8d191e` every accepted request allocates an in-flight entry before its handler runs (`host-api-dispatcher.ts:2004-2032`), `adopt` checks ended and duplicate state but no ceiling (`subscription-ledger.ts:108-115`), and log notifications go straight to the sink (`host-api-dispatcher.ts:2044-2050`); no limit constant exists in the dispatcher. |
+| RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; the numbers are §7.4. `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:709`, `:810-815` at `f1a8d191e`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; stderr diagnostics have their independent line and rate bounds (§3.4). |
 | Resource exhaustion: a plugin process consumes memory/CPU | Linux: per-plugin cgroup limits are not wired to the spawn path. macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
@@ -1994,11 +1995,11 @@ budget below is exhausted, before the handler runs.
 | requests, default per method | 50/s sustained, burst 200 | (plugin id, method) | `rate-limited`, `retryAfterMs` = time to next token |
 | `hostFetch` | 20/s, burst 60 | (plugin id, method) | same |
 | `resolveApiKey` | 10/s, burst 30 | (plugin id, method) | same |
-| `emitEvent` (notification) | 50/s, burst 200 | (plugin id) | dropped, counted; one audit line per 60 s |
-| `notifications/ave/log` and `logEvent` | 100/s, burst 500 | (plugin id) | dropped, counted; one audit line per 60 s |
+| `emitEvent` (notification) | 50/s, burst 200 | plugin id | dropped, counted; one audit line per 60 s |
+| child stderr | 100 lines/s, burst 500 | plugin id | excess lines dropped with one summary; child stays alive |
 | in-flight requests | 64 | plugin incarnation | `rate-limited`, `retryAfterMs` 100 |
 | open subscriptions, total | 256 | plugin incarnation | `rate-limited` on the opening request |
-| per kind | `onEvent` 64, `config.onChange` 16, `onPluginsChanged` 4, `spawnWorker` 8, `startAudioCapture` 2, `attachFloatingPanel` 1, leases 32 (§4.1.2, its own `lease-limit` result) | plugin incarnation | same |
+| per kind | `onEvent` 64, `config.onChange` 16, `spawnWorker` 8, `startAudioCapture` 2, `attachFloatingPanel` 1, leases 32 (§4.1.2, its own `lease-limit` result) | plugin incarnation | same |
 
 Rules: buckets are keyed by plugin id and survive handle churn, so opening and
 releasing handles cannot reset a quota; a restart is a host action and starts a new
@@ -2117,8 +2118,8 @@ its evidence.
   Plugins start in parallel, and the loopback projection is unchanged, so the user-visible
   cost is the slowest plugin, not the sum.
 - **Per-call latency.** One JSON round trip per hostApi call. Members on hot paths
-  (`config.get`, `storage.resolve`, `getInstalledPluginIds`, `getAppPreference`) are
-  child-local already; `logEvent` and `emitEvent` are notifications and never wait.
+  (`config.get`, `storage.resolve`) are child-local already; `emitEvent` is a
+  notification and never waits. Diagnostics go to stderr.
 
 ---
 
@@ -2151,7 +2152,7 @@ at its commit `6a4d3b3df`, under `plugins/<name>/source/`; the portal and reposi
 their own repositories at a pinned commit.
 
 1. `assistant` — `triggerConversation`, `callLlm`, `onEvent`, `config`,
-   `hasRoutineBySource`, `getInstalledPluginIds`, `onPluginsChanged`
+   `hasRoutineBySource`
    (`plugins/assistant/source/src/hostPlugin.ts:1038`); no worker, no window, no audio.
 2. `mail` — `authRedirect`, `openAuthWindow`, `openAuthPartitionViewer`,
    `clearAuthPartition`, `storage.*Encrypted`, `probePrivateHost`
@@ -2321,13 +2322,10 @@ migrated.
    `implemented` entries of `options.table` (`host-api-dispatcher.ts:1927`), never the
    static `HOSTAPI_DISPATCH_TABLE` (`:268-316`), which marks every path unimplemented or
    child-local — mapped through the path→method function, so a host that leaves
-   `hostFetch`, `spawnWorker`, `resolveApiKey` or `getAppPreference` unbound does not
-   advertise them and the four child-local paths (`storage.resolve`, `config.get`,
-   `getInstalledPluginIds`, `getAppPreference`; `:269`, `:281`, `:285`, `:289`) are never
-   methods. In the same
-   change `onShutdown` delivery becomes the `ave/instance/shutdown` request (§3.4) and
+   `hostFetch`, `spawnWorker` or `resolveApiKey` unbound does not advertise them.
+   Child-local paths (`storage.resolve`, `config.get`) are never methods.
    `readUiResource` folds into MCP `resources/read`, which the child's server already
-   serves (`plugin-mcp-server.ts:137`); `PLUGIN_INSTANCE_METHODS` stays at five.
+   serves (`plugin-mcp-server.ts:137`). Shutdown closes stdin.
 6. **Manifest.** `requires.hostProtocol` (`^[1-9][0-9]*$`) is added to
    `schemas/plugin-manifest.schema.json` beside `minAppVersion` (`:689`), to the manifest
    type in `public-contract.ts`, and to the format gate in `manifest-validation.ts` beside
@@ -2455,7 +2453,7 @@ changes, so no page lags a merged change.
    ends, and splitting the shapes from the identity removal would leave a commit that
    carries identity in a params object nothing checks.
 3. `feat(plugins): construct negotiates the host protocol` — items 5 and 6, the
-   negotiation tests above, goldens updated; blueprint §2.1 and §3.1 (rows `onShutdown`, `readUiResource`) follow.
+   negotiation tests above, goldens updated; blueprint §2.1 and §3.1 follow the current shutdown and UI-resource contracts.
 4. `feat(plugins): the host protocol schema is generated and gated` — item 7, the parity
    test, schema validation of every golden frame, the vendoring guidance in the
    `public-contract.ts` header, and this page's §6.1 status.
@@ -3417,11 +3415,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
   with recording handlers; the worker double at `:95` and `:175` becomes
   `scriptedWorker`, and every `mock`/`fake` identifier in the moved code is renamed for
   what it does, which keeps the file inside the naming gate without a `Why` header
-  (fact 12). `goldenFiles` (`:283`) stays in `__tests__`. Its `getInstalledPluginIds`
-  default is `[]` (the member excludes the caller, and a validated plugin is validated
-  alone); the recorded neighbourhood the goldens pin is supplied through `overrides` by
-  a `__tests__` helper, so no recorded plugin id lands in the production host. Its
-  roots are synthetic and outside the vendor embedded-path rule (`/validation/user`,
+  (fact 12). `goldenFiles` (`:283`) stays in `__tests__`. Its roots are synthetic and outside the vendor embedded-path rule (`/validation/user`,
   `vendor.mjs:37-43`), because the CLI bundle carries them (P2). The file also defines **the
   validation host's authority**, `validationConfinement(pluginId, pluginRoot,
   pluginDataDir)` = `derivePluginChildEnvelope({ pluginId, pluginRoot, pluginDataDir,
@@ -3465,7 +3459,7 @@ every consumer the deletion of `connect` breaks is **migrated in S1** (fact 15).
      cases that exercise the protocol once a child exists — "the pilot" (`:282`), "a child
      that dies" (`:460`), the config snapshot (`:555`), the framing limits (`:615`),
      construct negotiation after connection (`:873-952`), the `ui://` card (`:954`) and
-     `onShutdown` (`:1008`) — call `openPluginProtocolSession` over the same paired link
+     stdin EOF shutdown — call `openPluginProtocolSession` over the same paired link
      with a table bound by `createBoundHostApiDispatchTable(hostApi, envelope)` to a
      literal test envelope (the recorded `terminate` of `:668` and `:1031` stays on that
      link). The two cases that assert a refusal **before any spawn** (`:847`, `:860`)
@@ -3793,8 +3787,8 @@ recipe, which replaces `src/lib/logger.js` with a no-op logger (fact 17). For th
 this is required, not tolerated — the app logger writes to stdout outside a headless run
 (`logger.ts:70-99`), and stdout is the CLI's JSON-lines report; the CLI's own output is
 the report on stdout and the summary on stderr, never the host logger. For the
-child-main bundle it drops only host-module diagnostics; the plugin's own `context.log`
-still crosses as `notifications/ave/log`, and the production child (built by esbuild,
+child-main bundle it drops only host-module diagnostics; the plugin's own diagnostics
+go directly to stderr, and the production child (built by esbuild,
 `scripts/build-main-esbuild.mjs:47`) keeps the real logger. **Source mode uses the same
 substitution**, not a variant: `npm run plugin:validate` loads
 `scripts/lib/stub-app-logger-hook.mjs` in the CLI and in its child (above), so all three
@@ -3809,8 +3803,8 @@ app logger, and one test per mode parses every stdout line as a report row.
   pointer path (remove the served-set check); `minAppVersion: "0.11.0"` with
   `hostProtocol: "2"` fails (remove the first-version rule); `pluginProtocol.requires`
   naming a method the validation host lacks fails `construct.requires` (remove the subset
-  check); an `emitEvent("x")` with no `emittedEvents` entry fails `events.emit-undeclared`
-  (remove the scan); a `tools/list` before construct is **not** sent (a recording link
+  check); an `emitEvent("other.ready")` targeting another extension is refused
+  (remove the namespace check); a `tools/list` before construct is **not** sent (a recording link
   asserts the first frame is construct; revert: reorder).
 - **Dedicated raw child-process fixtures** under
   `src/plugins/validate/__tests__/fixtures/raw/`, each a plain `.mjs` script that speaks
@@ -3893,9 +3887,8 @@ app logger, and one test per mode parses every stdout line as a report row.
   <fixture>` on the `local-indexer` fixture in a checkout with **no `dist/`**, exit 0
   (drop the `--child-exec-arg` pair → `ERR_MODULE_NOT_FOUND` for
   `src/plugins/runtime/plugin-loader.js`); and **stdout carries only the report**: the
-  same command on a fixture whose plugin logs through `context.log` at construct, start
-  and in its tool — so the host side logs each `notifications/ave/log` it receives
-  (`out-of-process-plugin.ts:1218-1223`) — run once with the test runner's environment
+  same command on a fixture whose plugin writes stderr at construct, start
+  and in its tool, run once with the test runner's environment
   (`VITEST` set, the logger's test-mode path) and once with `VITEST` and `NODE_ENV`
   removed (its pretty-stream path), parses **every** stdout line as JSON with exactly
   the report-row keys `{ check, ok, message }` plus an optional `path`, and finds the
@@ -4367,7 +4360,7 @@ marketplace DTO tests (`src/shared/git-marketplace.ts`) unchanged because no DTO
   is a reserved name (`safe-names.ts:41`; fact 9), so the launcher sets it itself, inside
   confinement, from the host-owned `PLUGIN_ROOT` — `requires: { hostProtocol: "2",
   minAppVersion: "0.13.0" }`, one tool `echo` with an empty `inputSchema`,
-  `eventSubscriptions` and `emittedEvents` empty; `bin/plugin`, a `#!/bin/sh` script that
+  no cross-extension event grants; `bin/plugin`, a `#!/bin/sh` script that
   sets `PYTHONPATH="$PLUGIN_ROOT/vendor"` and `exec`s the interpreter recorded in
   `bin/python-path` (written by the harness into its temporary copy of the fixture, never
   committed) with `-s` (no user site directory) on `plugin.py` and its arguments;

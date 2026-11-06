@@ -324,7 +324,7 @@ describe("FloatingDock slot lifetime", () => {
     const { stub, dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder" });
 
-    expect(await handle.resize(9999)).toBe(MAX_SLOT_HEIGHT);
+    expect(dock.resizeByPanelId("meeting", handle.panelId, 9999)).toBe(MAX_SLOT_HEIGHT);
     expect(handle.height).toBe(MAX_SLOT_HEIGHT);
     expect(stub.calls).toContain(`resize:${handle.panelId}:${MAX_SLOT_HEIGHT}`);
   });
@@ -334,7 +334,7 @@ describe("FloatingDock slot lifetime", () => {
     const { dock } = createDock();
     const handle = dock.attach("meeting", { extensionId: "recorder", height: 400 });
 
-    expect(await handle.resize(MAX_SLOT_HEIGHT)).toBe(MAX_SLOT_HEIGHT);
+    expect(dock.resizeByPanelId("meeting", handle.panelId, MAX_SLOT_HEIGHT)).toBe(MAX_SLOT_HEIGHT);
   });
 
   it("re-reads the work area on resize", async () => {
@@ -343,7 +343,7 @@ describe("FloatingDock slot lifetime", () => {
     const handle = dock.attach("meeting", { extensionId: "recorder" });
 
     stub.area.current = { x: 0, y: 0, width: 1200, height: 600 };
-    expect(await handle.resize(9999)).toBe(maxDockHeight(stub.area.current) - DOCK_CHROME_HEIGHT);
+    expect(dock.resizeByPanelId("meeting", handle.panelId, 9999)).toBe(maxDockHeight(stub.area.current) - DOCK_CHROME_HEIGHT);
   });
 
   it("notifies once with the reason when the user closes the dock", async () => {
@@ -414,7 +414,7 @@ describe("FloatingDock slot lifetime", () => {
     const handle = dock.attach("meeting", { extensionId: "recorder" });
     await handle.detach();
 
-    await expect(handle.resize(200)).rejects.toThrow(/detached/u);
+    expect(() => dock.resizeByPanelId("meeting", handle.panelId, 200)).toThrow(FloatingDockError);
   });
 
   it("lets a surface be re-attached after it detaches", async () => {

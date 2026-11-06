@@ -68,7 +68,7 @@ function recordEffectForPath(path: string, args: readonly unknown[]): void {
   }
 }
 
-// Recurse only into plain namespace objects (e.g. storage/config/agentApproval). Exported so the completeness test asserts the SAME traversal surface the wrapper instruments — a hostApi namespace that is NOT plain (class instance / custom prototype) would otherwise pass completeness yet be copied verbatim and left UNINSTRUMENTED by the wrapper (a silent fail-open one level up).
+// Recurse only into plain namespace objects (e.g. storage/config). Exported so the completeness test asserts the SAME traversal surface the wrapper instruments — a hostApi namespace that is NOT plain (class instance / custom prototype) would otherwise pass completeness yet be copied verbatim and left UNINSTRUMENTED by the wrapper (a silent fail-open one level up).
 export function isPlainNamespace(value: unknown,
 ): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;

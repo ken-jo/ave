@@ -8,7 +8,10 @@
       "displayName": "Process Launch",
       "process": {
         "command": "./bin/plugin.mjs",
-        "args": ["--stdio", "${PLUGIN_ROOT}/assets"],
+        "args": [
+          "--stdio",
+          "${PLUGIN_ROOT}/assets"
+        ],
         "env": {
           "PLUGIN_LOG_LEVEL": "info",
           "PLUGIN_STATE_DIR": "${PLUGIN_DATA}/state"
@@ -22,7 +25,10 @@
         {
           "name": "report_launch",
           "description": "Report that the plugin's own program answered.",
-          "inputSchema": { "type": "object", "properties": {} }
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
         }
       ]
     }

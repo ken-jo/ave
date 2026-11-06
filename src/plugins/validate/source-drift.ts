@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { PluginManifest } from "../types.js";
-import { PUBLIC_HOST_EVENT_TYPES } from "../capabilities.js";
+import { canEmitEvent, PUBLIC_HOST_EVENT_TYPES } from "../capabilities.js";
 import { failed, notExercised, passed, type ReportRow } from "./report.js";
 
 const BLOCK_COMMENT = /\/\*[\s\S]*?\*\//g;
@@ -75,16 +75,16 @@ export function scanSourceDrift(pluginRoot: string, manifest: PluginManifest): R
   ];
   const uiFiles = walk(join(pluginRoot, "src", "ui"), isUiScript, true);
 
-  const emitted = new Set(manifest.emittedEvents ?? []);
-  const subscribed = new Set(
-    (manifest.eventSubscriptions ?? []).map((entry) => (typeof entry === "string" ? entry : entry.type)),
-  );
+  const emitted = new Set(references(pluginRoot, hostFiles, HOST_EMIT).map((entry) => entry.name)
+    .filter((name) => canEmitEvent(name, manifest.id)));
+  const subscribed = PUBLIC_HOST_EVENT_TYPES;
   const appTools = new Set(
     manifest.tools
       .filter((tool) => tool._meta?.ui?.visibility?.includes("app") === true)
       .map((tool) => tool.name),
   );
-  const bridged = new Set([...emitted, ...subscribed, ...PUBLIC_HOST_EVENT_TYPES]);
+  const bridged = new Set(references(pluginRoot, uiFiles, BRIDGE_ON_EVENT).map((entry) => entry.name)
+    .filter((name) => canEmitEvent(name, manifest.id) || PUBLIC_HOST_EVENT_TYPES.has(name)));
 
   const hostScope = "src/**/*.ts or dist/**/*.js to scan";
   const uiScope = "src/ui/**/*.{js,mjs,cjs} to scan";
@@ -95,7 +95,7 @@ export function scanSourceDrift(pluginRoot: string, manifest: PluginManifest): R
       hostScope,
       references(pluginRoot, hostFiles, HOST_EMIT),
       emitted,
-      (name) => `hostApi.emitEvent("${name}") but plugin.json "emittedEvents" does not declare it`,
+      (name) => `hostApi.emitEvent("${name}") but it is outside this plugin's own UI namespace`,
     ),
     ...crossCheck(
       "events.subscribe-undeclared",
@@ -103,7 +103,7 @@ export function scanSourceDrift(pluginRoot: string, manifest: PluginManifest): R
       hostScope,
       references(pluginRoot, hostFiles, HOST_ON_EVENT),
       subscribed,
-      (name) => `hostApi.onEvent("${name}") but plugin.json "eventSubscriptions" does not declare it`,
+      (name) => `hostApi.onEvent("${name}") but only host.theme.changed is subscribable`,
     ),
     ...crossCheck(
       "bridge.call-tool",
@@ -119,7 +119,7 @@ export function scanSourceDrift(pluginRoot: string, manifest: PluginManifest): R
       uiScope,
       references(pluginRoot, uiFiles, BRIDGE_ON_EVENT),
       bridged,
-      (name) => `bridge.onEvent("${name}") but plugin.json neither emits nor subscribes to "${name}" — the host never forwards it to the UI`,
+      (name) => `bridge.onEvent("${name}") but it is outside this plugin's own UI namespace and is not a host theme event`,
     ),
   ];
 }

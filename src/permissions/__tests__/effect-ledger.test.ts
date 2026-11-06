@@ -130,7 +130,6 @@ describe("recordChokepoint — newly instrumented host-mediated mutating chokepo
     "clearAuthPartition",
     "openAuthWindow",
     "triggerConversation",
-    "agentApprovalRespond",
   ] as const;
 
   it("all newly instrumented mutating chokepoints are classified write in the SOT", () => {

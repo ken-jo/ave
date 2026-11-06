@@ -1839,9 +1839,9 @@ Key boundaries:
 The [alerts design](../design/plugin-alerts.md) defines the complete alerts
 release; partial rollout builds expose only their implemented portions. Extensions
 own signal detection and declare localized templates and bounded slots in
-`alerts.kinds`. The host owns consent and delivery through `raiseAlert` and
-`withdrawAlert`, with no extension-specific delivery branches. A malformed block
-grants no kinds. Durable work proposals retain their separate contract.
+`alerts.kinds`. The host owns consent and delivery through `raiseAlert`, with no
+extension-specific delivery branches. A malformed block grants no kinds.
+Extensions cannot submit Work Board proposals or issue separate agent approvals.
 
 The pipeline checks grant, input shape, predecessor, user toggle, open/closed
 identity, cooldown and rate before accepting and delivering an alert. A

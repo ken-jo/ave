@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 40,
+    "id": 34,
     "jsonrpc": "2.0",
     "method": "ave/host/attachFloatingPanel",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 40,
+    "id": 34,
     "jsonrpc": "2.0",
     "result": {
       "handleId": "<uuid-2>",

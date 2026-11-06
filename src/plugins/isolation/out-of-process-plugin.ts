@@ -8,6 +8,7 @@ import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
+import { capturePluginStderr } from "./plugin-stderr.js";
 import {
   NODE_PRESERVE_SYMLINK_FLAGS,
   resolvePluginChildEntryPath,
@@ -586,9 +587,7 @@ export async function spawnConfinedPluginChild(
       throw new Error(`[out-of-process-plugin] ${spec.pluginId}: child has no pipes`);
     }
     // Diagnostics only. The child rebinds everything except the framer to stderr precisely so a stray plugin `console.log` lands here instead of corrupting the protocol.
-    child.stderr?.on("data", (chunk: Buffer) => {
-      log.debug(`[${spec.pluginId}] ${chunk.toString("utf-8").trimEnd()}`);
-    });
+    if (child.stderr) capturePluginStderr(child.stderr, spec.pluginId);
     // A launch that hands back a child already gone (its `exit` emitted before these listeners) is released and reported at once, not waited on.
     const alreadyExited = child.exitCode !== null || child.signalCode !== null;
     const exited = new Promise<void>((resolve) => {

@@ -961,8 +961,7 @@ export type AveApi = {
   ) => Promise<unknown>;
   /**
    * Subscribe to plugin-emitted events forwarded by the host event bridge
-   * (`boot/steps/ipc-bridge.ts` → `ave:plugin:event`). Plugin must declare
-   * the type in `manifest.emittedEvents[]`. The preload layer rejects
+   * (`boot/steps/ipc-bridge.ts` → `ave:plugin:event`). Event types identify the emitting plugin's own UI namespace. The preload layer rejects
    * subscriptions whose namespace prefix appears in `PLUGIN_PRIVATE_NAMESPACES`
    * by returning a no-op unsubscribe without wiring the IPC listener — so
    * renderer code can never observe sensitive host state (memory contents,

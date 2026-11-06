@@ -1,23 +1,5 @@
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
-import type {
-  WorkProposal,
-  WorkProposalBlocker,
-  WorkProposalEvidence,
-  WorkProposalInput,
-  WorkProposalResult,
-  WorkProposalUntrustedText,
-} from "../plugins/public-contract.js";
-
-export type {
-  WorkProposal,
-  WorkProposalBlocker,
-  WorkProposalEvidence,
-  WorkProposalInput,
-  WorkProposalResult,
-  WorkProposalUntrustedText,
-};
-
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
 
 /** Overdue is computed on every read from incomplete status and due_at. */
@@ -422,20 +404,71 @@ export type WorkBoardCancelIpcResult =
   | WorkBoardCancelResult
   | { ok: false; reason: WorkBoardControlRequestRefusal };
 
-// Proposals are author-revocable and expire separately from user-owned work items; only user acceptance creates an item.
-// Proposals carry text and identity, never plugin actions; starting one uses the host plan/approve/execute flow.
+// Host briefing proposals expire separately from user-owned work items; acceptance uses the ordinary plan/approve/execute flow.
 
-// Import the plugin public-contract shapes rather than restating them so submitted and persisted proposals stay identical.
+/** Supporting evidence shown as plain text under a proposal. */
+export interface WorkProposalEvidence {
+  label: string;
+  detail: string;
+}
+
+/** A blocker and an optional way to resolve it. */
+export interface WorkProposalBlocker {
+  reason: string;
+  resolution?: string;
+}
+
+/** Machine-authored text remains untrusted; taskBrief is instruction text for the approved run. */
+export interface WorkProposalUntrustedText {
+  title: string;
+  summary: string;
+  state: string;
+  evidence: WorkProposalEvidence[];
+  blockers: WorkProposalBlocker[];
+  taskBrief: string;
+}
+
+/** Text and scheduling hints filed by the host briefing engine. */
+export interface WorkProposalInput {
+  kind: string;
+  /** Stable identity for the condition within its source. */
+  key: string;
+  title: string;
+  summary: string;
+  state: string;
+  evidence?: WorkProposalEvidence[];
+  blockers?: WorkProposalBlocker[];
+  taskBrief: string;
+  priority?: "high" | "medium" | "low";
+  dueAt?: string;
+  /** Host-clamped to one hour through fourteen days; seven days when omitted. */
+  ttlMs?: number;
+}
+
+/** Persisted proposal identity and timestamps are assigned by the host. */
+export interface WorkProposal extends WorkProposalUntrustedText {
+  id: string;
+  kind: string;
+  key: string;
+  /** Persisted source identity; retained for existing proposal records. */
+  pluginId: string;
+  pluginLabel: string;
+  priority: "high" | "medium" | "low";
+  dueAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  dismissedAt?: string;
+  acceptedItemId?: number;
+}
 
 /** Longest a declared kind id may be, and the shape it must take. */
 export const PROPOSAL_KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
-/** Most proposal kinds one plugin may declare — the outer bound of its ceiling. */
-export const MAX_PROPOSAL_KINDS = 4;
 /** Most evidence rows one proposal may carry. */
 export const MAX_PROPOSAL_EVIDENCE = 6;
 /** Most blocker rows one proposal may carry. */
 export const MAX_PROPOSAL_BLOCKERS = 4;
-/** Hard cap on stored proposals across every plugin (runaway-record defence). */
+/** Hard cap on stored proposals. */
 export const MAX_PROPOSALS = 64;
 
 export const PROPOSAL_KEY_MAX = 200;
@@ -445,7 +478,6 @@ export const PROPOSAL_STATE_MAX = 400;
 /** Cap on one evidence / blocker line. */
 export const PROPOSAL_LINE_MAX = 200;
 export const PROPOSAL_TASK_BRIEF_MAX = 2000;
-export const PROPOSAL_KIND_LABEL_MAX = 60;
 
 /** Shortest a proposal may ask to live. */
 export const PROPOSAL_TTL_MIN_MS = 60 * 60 * 1000;
@@ -470,6 +502,6 @@ export type WorkProposalDismissResult =
 /** Proposal changes emit pointers so renderer windows refresh without polling. */
 export interface WorkProposalChangedEventPayload {
   proposalId: string;
-  change: "posted" | "withdrawn" | "dismissed" | "accepted";
+  change: "posted" | "dismissed" | "accepted";
   changedAt: string;
 }

@@ -51,7 +51,7 @@ import { OUTBOUND_QUEUE_BYTES_MAX } from "./child-stream-multiplex.js";
  */
 const CHILD_MCP_UNWRITTEN_OUTPUT_BYTES_MAX = OUTBOUND_QUEUE_BYTES_MAX;
 
-/** Carry runtime context as data; rebuild log and hostApi from the channel. */
+/** Carry runtime context as data; rebuild hostApi from the channel. */
 export interface PluginChildContext {
   readonly pluginId: string;
   readonly pluginRoot: string;
@@ -61,13 +61,7 @@ export interface PluginChildContext {
   readonly userHome: string;
   readonly aveHome: string;
   readonly config?: Record<string, unknown>;
-  /** Synchronous installed-plugin reads use a pushed snapshot seeded at construction. */
-  readonly installedPluginIds: readonly string[];
-  /** Split preference keys from values to preserve unset values; absent reader differs from an unset preference. */
-  readonly appPreferences?: {
-    readonly keys: readonly string[];
-    readonly values: Record<string, unknown>;
-  };
+
 }
 
 export type PluginFactoryLoader = (
@@ -116,8 +110,6 @@ export interface PluginChildRuntime {
     onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ): () => void;
   deliver(notification: HostApiNotification): NotificationOutcome;
-  /** Await shutdown only for an open registration the child actually supplied. */
-  runShutdownHandler(subscriptionId: string): Promise<void>;
   /** Host loss drops registrations without writing release messages to closed pipes. */
   hostGone(): number;
 }
@@ -241,12 +233,8 @@ export async function startPluginChildRuntime(
     `plugin-child:${pluginId}`,
   );
   const pendingLeaseClosures = new Map<string, "revoked" | "peer-gone">();
-  const log = (message: string, meta?: unknown): void => {
-    channel.notify({
-      jsonrpc: "2.0",
-      method: HOST_PROTOCOL_NOTIFICATIONS.log,
-      params: { message, meta },
-    });
+  const report = (message: string, meta?: unknown): void => {
+    process.stderr.write(`${message}${meta === undefined ? "" : ` ${JSON.stringify(meta)}`}\n`);
   };
   const releaseChildSubscription: SubscriptionRelease<ChildSubscription> = (
     subscription,
@@ -301,13 +289,6 @@ export async function startPluginChildRuntime(
   const caller = createHostApiCaller(channel, context);
   /** Mutate the captured config snapshot in place; context remains its original startup view. */
   const config: Record<string, unknown> = { ...(context.config ?? {}) };
-  const shutdownHandlers = new Map<string, () => void | Promise<void>>();
-  /** Keep an internal installed-plugin snapshot and return fresh arrays so callers cannot mutate it. */
-  let installedPluginIds: readonly string[] = [...context.installedPluginIds];
-  /** Mutate the captured preference snapshot in place; undefined means no reader. */
-  const appPreferences: Record<string, unknown> | undefined = context.appPreferences
-    ? { ...context.appPreferences.values }
-    : undefined;
   /** Compose groups over throwing defaults so missing implementations never resolve undefined. */
   const members: Partial<Record<HostApiPath, (...args: unknown[]) => unknown>> = {
     ...createInteractionChildMembers(caller),
@@ -316,7 +297,7 @@ export async function startPluginChildRuntime(
       manifest,
       call: caller,
       adoptSubscription,
-      report: log,
+      report,
       send: (subscriptionId, payload) => {
         channel.notify({
           jsonrpc: "2.0",
@@ -330,25 +311,10 @@ export async function startPluginChildRuntime(
       call: caller,
       openSubscription,
       config,
-      report: log,
-      shutdownHandlers,
+      report,
     }),
     ...createStorageChildMembers(caller, context),
-    getInstalledPluginIds: () => [...installedPluginIds],
-    /** Synchronous preference reads use the pushed snapshot; an absent optional reader must refuse. */
-    getAppPreference: (...args) => {
-      if (!appPreferences) {
-        throw new Error(
-          `[plugin-child:${pluginId}] hostApi.getAppPreference: this host published no `
-            + `preference snapshot, so 'unset' and 'unavailable' cannot be told apart`,
-        );
-      }
-      const key = args[0];
-      // Use own-key checks so inherited prototype members cannot appear as preferences.
-      return typeof key === "string" && Object.hasOwn(appPreferences, key)
-        ? appPreferences[key]
-        : undefined;
-    },
+
   };
   const hostApi = createChildHostApiStub(
     pluginId,
@@ -377,7 +343,6 @@ export async function startPluginChildRuntime(
     userHome: context.userHome,
     aveHome: context.aveHome,
     config: context.config,
-    log,
     hostApi,
   };
 
@@ -440,10 +405,6 @@ export async function startPluginChildRuntime(
     openSubscription,
     adoptSubscription,
     deliver(notification) {
-      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.installedPluginsSnapshot) {
-        installedPluginIds = [...notification.params.pluginIds];
-        return "delivered";
-      }
       if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.configSnapshot) {
         const { keys, values } = notification.params;
         // Mutate only enumerated snapshot keys so existing closures and plugin-created keys survive.
@@ -453,20 +414,6 @@ export async function startPluginChildRuntime(
           } else {
             // Delete cleared keys rather than assign undefined so key enumeration stays accurate.
             delete config[key];
-          }
-        }
-        return "delivered";
-      }
-      if (notification.method === HOST_PROTOCOL_NOTIFICATIONS.preferencesSnapshot) {
-        // Report a preference push without a reader as an unknown delivery.
-        if (!appPreferences) return "unknown-subscription";
-        const { keys, values } = notification.params;
-        for (const key of keys) {
-          if (Object.hasOwn(values, key)) {
-            appPreferences[key] = values[key];
-          } else {
-            // Delete unset preference keys instead of retaining undefined entries.
-            delete appPreferences[key];
           }
         }
         return "delivered";
@@ -487,15 +434,6 @@ export async function startPluginChildRuntime(
       if (!subscription) return "unknown-subscription";
       subscription.handler(notification.params.payload);
       return "delivered";
-    },
-    async runShutdownHandler(subscriptionId) {
-      const run = shutdownHandlers.get(subscriptionId);
-      if (!run || !subscriptions.get(subscriptionId)) {
-        throw new Error(
-          `[plugin-child:${pluginId}] no open onShutdown registration '${subscriptionId}'`,
-        );
-      }
-      await run();
     },
     hostGone() {
       pendingLeaseClosures.clear();

@@ -102,7 +102,7 @@ import type {
   RuntimePlugin,
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { createOutOfProcessPluginFactory, PluginSandboxGrantError } from "../out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory, PluginSandboxGrantError, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -127,7 +127,6 @@ import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
@@ -172,15 +171,14 @@ function writePluginModule(): { dir: string; entryPath: string } {
       pilot_echo: async (payload) => ({
         payload: payload ?? null,
         payloadWasAbsent: payload === undefined,
-        installed: context.hostApi.getInstalledPluginIds(),
         pluginDataDir: context.pluginDataDir,
         configuredDomains: context.hostApi.config.get("domains") ?? null,
       }),
       pilot_reach_host: async () => await context.hostApi.callLlm("say hello"),
       pilot_throw: async () => { throw new Error("the handler exploded"); },
     },
-    start: async () => { context.hostApi.emitEvent("pilot:started", { ok: true }); },
-    stop: async () => { context.hostApi.logEvent("info", "pilot:stopped"); },
+    start: async () => { context.hostApi.emitEvent("sampleassistant.lifecycle.started", { ok: true }); },
+    stop: async () => undefined,
   };
 };
 `,
@@ -235,11 +233,8 @@ function fakeHostApi(): PluginHostApi & {
       else configValues.set(key, value);
       for (const listener of configListeners.get("*") ?? []) listener(value);
     },
-    agentApproval: { request: vi.fn(), respond: vi.fn() },
     getSecret: vi.fn(),
-    getInstalledPluginIds: vi.fn(() => ["sampleassistant", "meeting"]),
     hasRoutineBySource: vi.fn(async () => false),
-    getAppPreference: vi.fn(),
     probePrivateHost: vi.fn(),
     resolveApiKey: vi.fn(),
     emitEvent: vi.fn((type: string, data?: unknown) => {
@@ -253,11 +248,6 @@ function fakeHostApi(): PluginHostApi & {
       }
       set.add(handler);
       return () => set?.delete(handler);
-    }),
-    onPluginsChanged: vi.fn(() => () => undefined),
-    onShutdown: vi.fn(),
-    logEvent: vi.fn((level: string, message: string) => {
-      logged.push([level, message]);
     }),
     callLlm: vi.fn(async () => "the host answered"),
     hostFetch: vi.fn(),
@@ -314,7 +304,6 @@ function hostContext(
     userHome: "/Users/example",
     aveHome: "/Users/example/.ave",
     config: { domains: ["portal.example.com"] },
-    log: () => undefined,
     hostApi,
     ...overrides,
   };
@@ -429,7 +418,6 @@ describe("the pilot, out of process", () => {
       expect(echoed).toEqual({
         payload: { text: "hi" },
         payloadWasAbsent: false,
-        installed: ["sampleassistant", "meeting"],
         pluginDataDir: "/plugins/sampleassistant/data",
         configuredDomains: ["portal.example.com"],
       });
@@ -482,9 +470,9 @@ describe("the pilot, out of process", () => {
       });
       const instance = await factory(hostContext(hostApi));
       await instance.start?.();
-      expect(hostApi.emitted).toContainEqual(["pilot:started", { ok: true }]);
+      expect(hostApi.emitted).toContainEqual(["sampleassistant.lifecycle.started", { ok: true }]);
       await instance.stop?.();
-      expect(hostApi.logged).toContainEqual(["info", "pilot:stopped"]);
+      expect(hostApi.logged).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -685,7 +673,7 @@ describe("the host keeps the child's config snapshot current", () => {
 describe("a message too large to frame fails its call, not the channel", () => {
   // Oversized plain JSON must fail locally without destroying unrelated pending calls.
   const MiB = 1024 * 1024;
-  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo", "events_seen", "log_big"];
+  const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo", "events_seen"];
   const MODULE = `export const createPlugin = async (context) => {
   const refusal = (error) => ({ name: error.name, code: error.code ?? null });
   const seen = [];
@@ -693,11 +681,6 @@ describe("a message too large to frame fails its call, not the channel", () => {
   return {
     handlers: {
       events_seen: async () => ({ seen }),
-      // A log line the child cannot frame. context.log never throws in-process.
-      log_big: async () => {
-        context.log("a large log line", { blob: "x".repeat(46 * ${MiB}) });
-        return { logged: true };
-      },
       // Crosses twice — text content and raw result — so about 46 MB.
       big_result: async () => "x".repeat(23 * ${MiB}),
       read_big_file: async () => {
@@ -766,28 +749,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
     }
   });
 
-  it("drops a plugin's log line too large to frame without throwing into the plugin", async () => {
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const { dir, instance, terminate } = await construct(fakeHostApi());
-    try {
-      await expect(instance.handlers.log_big!()).resolves.toEqual({ logged: true });
-      const reported = stderr.mock.calls
-        .map(([chunk]) => String(chunk))
-        .filter((line) => line.startsWith("[plugin-child] dropped a notification too large to frame"));
-      expect(reported).toHaveLength(1);
-      expect(JSON.parse(reported[0]!.slice(reported[0]!.indexOf("{")))).toMatchObject({
-        pluginId: PLUGIN_ID,
-        method: "notifications/ave/log",
-        limit: FRAME_BYTES_MAX,
-      });
-      await expect(instance.handlers.echo!()).resolves.toEqual({ echoed: null });
-      expect(terminate).not.toHaveBeenCalled();
-      await instance.stop?.();
-    } finally {
-      stderr.mockRestore();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+
 
   it("refuses a tool result too large to frame, and the plugin keeps serving", async () => {
     const { dir, instance, terminate } = await construct(fakeHostApi());
@@ -1442,6 +1404,29 @@ describe("on Windows a confined child holds a grant on its own directories for e
     );
   }
 
+  it("attributes pipe stderr with a structured plugin id", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      const child = fakeChild();
+      const info = vi.spyOn(console, "log").mockImplementation(() => {});
+      spawnConfinedChild.mockResolvedValue({ child, confinement: "none" });
+      try {
+        await spawnConfinedPluginChild({
+          pluginId: PLUGIN_ID,
+          envelope: { read: [], write: [] },
+          socketDir: join(layout.own, "sockets"),
+          launch: { kind: "entry", childEntryPath: join(tmpdir(), "diagnostic-entry.mjs") },
+        });
+        child.stderr.write("pipe diagnostic\n");
+        expect(info).toHaveBeenCalledWith(expect.stringContaining("pipe diagnostic"), { pluginId: PLUGIN_ID });
+      } finally {
+        child.stderr.destroy();
+        end(child, 0, null);
+        info.mockRestore();
+      }
+    }, { sandboxActive: false });
+  });
+
   it("grants the envelope and the throwaway HOME before the spawn, and releases it when the child exits", async () => {
     const layout = aveLayout();
     await asWindows(layout, async () => {
@@ -1951,87 +1936,6 @@ describe("a ui:// card is MCP resources/read", () => {
       expect(instance.readUiResource).toBeUndefined();
       await instance.stop?.();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("onShutdown runs through ave/instance/shutdown", () => {
-  /** A plugin whose shutdown handler finishes only when `pilot_echo` releases it. */
-  const HELD_SHUTDOWN = `export const createPlugin = async (context) => {
-  let release;
-  const released = new Promise((resolve) => { release = resolve; });
-  context.hostApi.onShutdown(async () => { await released; });
-  return { handlers: { pilot_echo: async () => { release(); return {}; } } };
-};
-`;
-
-  async function constructHeld(): Promise<{
-    dir: string;
-    instance: RuntimePlugin;
-    runShutdown: () => Promise<void>;
-    terminate: ReturnType<typeof vi.fn>;
-  }> {
-    const { dir, entryPath } = writeModule("oop-plugin-shutdown-", HELD_SHUTDOWN);
-    const { child } = pairedChild();
-    const terminate = vi.fn(child.link.terminate);
-    const hostApi = fakeHostApi();
-    const factory = sessionFactory({
-      manifest: MANIFEST,
-      entryPath,
-      link: { ...child.link, terminate },
-    });
-    const instance = await factory(hostContext(hostApi));
-    await vi.waitFor(() => expect(hostApi.onShutdown).toHaveBeenCalledTimes(1));
-    const handler = vi.mocked(hostApi.onShutdown).mock.calls[0]![0];
-    return { dir, instance, runShutdown: async () => await handler(), terminate };
-  }
-
-  it("makes the host wait for the plugin's handler to finish", async () => {
-    const { dir, instance, runShutdown } = await constructHeld();
-    try {
-      let finished = false;
-      const shutdown = runShutdown().then(() => {
-        finished = true;
-      });
-      for (let turn = 0; turn < 10; turn += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      expect(finished).toBe(false);
-      await instance.handlers.pilot_echo!({});
-      await shutdown;
-      expect(finished).toBe(true);
-      await instance.stop?.();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("kills the child whose handler overruns the shutdown bound, after the runner's timeout", async () => {
-    const { dir, instance, runShutdown, terminate } = await constructHeld();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const { pluginShutdownHandlerMs, pluginShutdownKillGraceMs } = TOOL_TIMEOUT_POLICY;
-      let settled = false;
-      const shutdown = runShutdown().finally(() => {
-        settled = true;
-      });
-      const outcome = expect(shutdown).rejects.toThrow(
-        `exceeded ${String(pluginShutdownHandlerMs + pluginShutdownKillGraceMs)}ms`,
-      );
-      // Keep child and request alive beyond the handler deadline so transport failure cannot replace the timeout diagnostic.
-      await vi.advanceTimersByTimeAsync(pluginShutdownHandlerMs);
-      expect(settled).toBe(false);
-      expect(terminate).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(pluginShutdownKillGraceMs);
-      await outcome;
-      expect(terminate).toHaveBeenCalledTimes(1);
-      // The transport is closed with it, so nothing else waits on this child.
-      await expect(instance.handlers.pilot_echo!({})).rejects.toThrow(
-        /'ave\/instance\/shutdown' timed out/,
-      );
-    } finally {
-      vi.useRealTimers();
       rmSync(dir, { recursive: true, force: true });
     }
   });

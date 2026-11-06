@@ -205,7 +205,7 @@ describe("repository identity source of truth", () => {
     expect(repositoryReferences(`const slug = 'some-owner/ave';`)).toEqual([
       { named: "some-owner/ave", index: 13 },
     ]);
-    expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.log}"`)).toEqual([]);
+    expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.subscription}"`)).toEqual([]);
     expect(repositoryReferences("const target = `refs/ave/${localRef}`;")).toEqual([]);
     expect(repositoryReferences(`join(ROOT, "methods/ave/host/storage/read.json")`)).toEqual([]);
     // A golden-directory prefix does not exempt paths outside method fixtures.

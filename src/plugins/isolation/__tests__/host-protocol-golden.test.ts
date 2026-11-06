@@ -27,6 +27,8 @@ import {
   HOST_API_WIRE_ERROR_CODES,
   HOST_PROTOCOL_NOTIFICATIONS,
   HOSTAPI_PATH_CONTRACTS,
+  HostApiBoundaryError,
+  inactiveHostApiMessage,
   IncompatibleHostProtocolError,
   WIRE_BYTES_MAX,
   hostApiMethodOf,
@@ -61,7 +63,6 @@ interface RecordedFrame {
 const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
   "sampleassistant": [
     "onEvent",
-    "onPluginsChanged",
     "config.onChange",
     "config.set",
     "hasRoutineBySource",
@@ -315,9 +316,6 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
   await settle();
   await instance.handlers.dispose_all!();
   await settle();
-  // Run onShutdown before stopping, matching host shutdown order.
-  await host.runShutdown();
-  await settle();
   await instance.stop?.();
   await settle();
   return frames;
@@ -351,8 +349,6 @@ describe("one request/response pair per method", () => {
 interface ErrorTrigger {
   readonly trigger: string;
   readonly overrides?: ValidationHostOverrides;
-  /** Retire the incarnation before dispatching this request. */
-  readonly afterStop?: boolean;
   readonly provoke: (session: Session) => Promise<RecordedFrame>;
 }
 
@@ -377,8 +373,10 @@ const throwing = (error: () => Error) => () => {
 
 const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-version-mismatch">, ErrorTrigger>> = {
   "plugin-inactive": {
-    trigger: "a request that arrives after the host stopped the incarnation",
-    afterStop: true,
+    trigger: "the bound host API incarnation retired before the request ran",
+    overrides: {
+      getSecret: throwing(() => new HostApiBoundaryError("plugin-inactive", inactiveHostApiMessage("golden-invoker", "hostApi.getSecret"))),
+    },
     provoke: byHand("ave/host/getSecret", { key: "service.token" }),
   },
   "path-unknown": {
@@ -510,15 +508,14 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
 type ErrorTriggerCode = keyof typeof ERROR_TRIGGERS;
 
 const recordErrorConversation = Object.fromEntries(
-  Object.entries(ERROR_TRIGGERS).map(([code, { overrides, afterStop, provoke }]) => [
+  Object.entries(ERROR_TRIGGERS).map(([code, { overrides, provoke }]) => [
     code,
     once(async () => {
       const host = createRecordingHost(overrides);
       const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
-      if (afterStop) await session.instance.stop?.();
       const request = await provoke(session);
       const response = await replyTo(session.frames, request);
-      if (!afterStop) await session.instance.stop?.();
+      await session.instance.stop?.();
       await settle();
       return { request, response, frames: session.frames };
     }),
@@ -783,21 +780,6 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
 
   const spellings = (path: string): string[] => [...new Set([path, realpathSync(path)])];
 
-  /** Normalize measured peak RSS in child logs while retaining raw values for assertions. */
-  function measureRuMaxrss(frames: RecordedFrame[]): number[] {
-    const measured: number[] = [];
-    for (const recorded of frames) {
-      const { frame } = recorded;
-      if (recorded.from !== "child" || frame.method !== HOST_PROTOCOL_NOTIFICATIONS.log) continue;
-      const meta = (frame.params as { meta?: Record<string, unknown> } | undefined)?.meta;
-      if (meta && typeof meta.ruMaxrss === "number") {
-        measured.push(meta.ruMaxrss);
-        meta.ruMaxrss = "<measured>";
-      }
-    }
-    return measured;
-  }
-
   function replaceRoots(value: unknown, replacements: ReadonlyArray<readonly [string, string]>): unknown {
     if (typeof value === "string") {
       return replacements.reduce((text, [spelling, placeholder]) => text.replaceAll(spelling, placeholder), value);
@@ -864,7 +846,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
         await record.stdoutEnded;
       }
 
-      const measured = measureRuMaxrss(frames);
+      const measured = [...stderr.matchAll(/python-smoke stopping \{"ruMaxrss": (\d+)\}/g)].map((match) => Number(match[1]));
       expect(measured, "one stop log carries the child's ru_maxrss").toHaveLength(1);
       const ruMaxrssBytes = process.platform === "darwin" ? measured[0]! : measured[0]! * 1024;
       const replacements = [

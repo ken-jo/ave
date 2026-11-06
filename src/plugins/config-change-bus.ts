@@ -85,37 +85,6 @@ export function emitPluginConfigChange(
   }
 }
 
-// Host preference snapshots need invalidation when allowlisted values change.
-// Events carry no values; listeners reread through the authoritative preference reader.
-type AppPreferenceChangeListener = () => void;
-
-const appPreferenceListeners = new Set<AppPreferenceChangeListener>();
-
-/** Host preference changes reach all listeners; the reader allowlist protects private settings. */
-export function subscribeAppPreferenceChange(
-  listener: AppPreferenceChangeListener,
-): () => void {
-  appPreferenceListeners.add(listener);
-  return () => {
-    appPreferenceListeners.delete(listener);
-  };
-}
-
-/** The publisher compares allowlisted values and emits only when a plugin-readable value changes. */
-export function emitAppPreferenceChange(): void {
-  for (const listener of appPreferenceListeners) {
-    try {
-      listener();
-    } catch (err) {
-      log.warn(
-        `app-preference listener failed: %s`,
-        (err as Error).message,
-      );
-    }
-  }
-}
-
 export function _resetPluginConfigChangeBus(): void {
   listenersByPlugin.clear();
-  appPreferenceListeners.clear();
 }

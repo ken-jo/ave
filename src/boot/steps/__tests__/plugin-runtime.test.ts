@@ -118,14 +118,12 @@ function officialOrigin(name: string) {
 }
 
 import {
-  auditApprovalViolation,
   declaresHostManagedPythonRuntime,
   deriveOverlaySummaryForDisplay,
   formatPluginPendingPrompt,
   initPluginRuntime,
   sanitizePluginPendingPrompt,
 } from "../plugin-runtime.js";
-import { ApprovalOriginError } from "../../../permissions/agent-action-requester.js";
 import { installPluginPartitionPolicy } from "../../../main/html-preview-partition.js";
 import { pluginPartitionName } from "../../../shared/plugin-partition.js";
 import { emitEvent } from "../../types.js";
@@ -220,63 +218,6 @@ function createRuntimeSettings() {
     setPluginConfig: vi.fn(),
   };
 }
-
-describe("auditApprovalViolation (Group C — audit logger try-catch swallow)", () => {
-  it("re-throws the original ApprovalOriginError even when auditLogger.log throws", () => {
-    const brokenLogger = {
-      log: vi.fn(() => {
-        throw new Error("audit broken");
-      }),
-    };
-    const originError = new ApprovalOriginError(
-      "[cross-plugin-hijack] plugin='evil' requestId='req-1' ...",
-      "cross-plugin-hijack",
-    );
-
-    expect(() =>
-      auditApprovalViolation(originError, brokenLogger, "evil", "req-1"),
-    ).toThrow(originError);
-
-    expect(brokenLogger.log).toHaveBeenCalledOnce();
-  });
-
-  it("re-throws the original error when audit succeeds", () => {
-    const okLogger = { log: vi.fn() };
-    const originError = new ApprovalOriginError(
-      "scope not allowed",
-      "scope-not-allowed",
-    );
-
-    expect(() =>
-      auditApprovalViolation(originError, okLogger, "plugin-a", "req-2"),
-    ).toThrow(originError);
-
-    expect(okLogger.log).toHaveBeenCalledOnce();
-    const entry = okLogger.log.mock.calls[0][0] as {
-      type: string;
-      input: string;
-    };
-    expect(entry.type).toBe("error");
-    expect(entry.input).toContain("[scope-not-allowed]");
-    expect(entry.input).toContain("plugin='plugin-a'");
-    expect(entry.input).toContain("requestId='req-2'");
-  });
-
-  it("re-throws unknown (non-ApprovalOriginError) errors and still swallows audit crash", () => {
-    const brokenLogger = {
-      log: vi.fn(() => {
-        throw new Error("audit down");
-      }),
-    };
-    const unexpectedErr = new Error("unexpected gate error");
-
-    expect(() =>
-      auditApprovalViolation(unexpectedErr, brokenLogger, "plugin-b", "req-3"),
-    ).toThrow(unexpectedErr);
-
-    expect(brokenLogger.log).toHaveBeenCalledOnce();
-  });
-});
 
 describe("declaresHostManagedPythonRuntime", () => {
   it("recognizes only the canonical Host manifest Python declaration", () => {
@@ -399,46 +340,7 @@ describe("deriveOverlaySummaryForDisplay", () => {
 });
 
 describe("initPluginRuntime partition policy", () => {
-  it("exposes an idempotent shutdown-handler runner for updater install cleanup", async () => {
-    runtimeTestState.capturedRuntimeOptions = null;
-    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
-    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
 
-    const output = await initPluginRuntime({
-    host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-        hasPluginKeywords: vi.fn(() => false),
-      } as never,
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      shellOpenExternal: vi.fn(),
-      approvalGate: {} as never,
-      routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
-      getAlertsService: () => undefined,
-    });
-
-    const handler = vi.fn(async () => {});
-    output.pluginShutdownHandlers.push({ pluginId: "meeting", handler });
-
-    expect(runtimeTestState.onBootShutdown).toHaveBeenCalledWith(output.runPluginShutdownHandlers, expect.any(Function));
-
-    await Promise.all([
-      output.runPluginShutdownHandlers(),
-      output.runPluginShutdownHandlers(),
-    ]);
-
-    expect(handler).toHaveBeenCalledOnce();
-  });
 
   it("registers plugin webview preload policy from onEnable after a live reload", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
@@ -469,7 +371,6 @@ describe("initPluginRuntime partition policy", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: {} as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -527,7 +428,6 @@ describe("initPluginRuntime partition policy", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: {} as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -609,7 +509,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -764,185 +663,6 @@ describe("initPluginRuntime HostApi factory", () => {
     expect(redirectingFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects agentApproval.request before prompting when the manifest has not declared the scope", async () => {
-    runtimeTestState.capturedRuntimeOptions = null;
-    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue({
-      agentApprovalScopes: ["agent_task_delegate"],
-    });
-    const bootAuditLogger = { log: vi.fn() };
-    const approvalGate = { requestAndWait: vi.fn() };
-
-    await initPluginRuntime({
-    host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      shellOpenExternal: vi.fn(),
-      approvalGate: approvalGate as never,
-      routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
-      getAlertsService: () => undefined,
-    });
-
-    const createHostApi = runtimeTestState.capturedRuntimeOptions
-      ?.createHostApi as
-      | ((
-          pluginId: string,
-          manifest: {
-            id: string;
-            config?: Record<string, unknown>;
-            pluginAccess?: { agentApprovalScopes?: string[] };
-          },
-          pluginDataDir: string,
-        ) => {
-          agentApproval: {
-            request: (input: {
-              toolName: string;
-              args: unknown;
-              reason: string;
-              scope: string;
-            }) => Promise<unknown>;
-          };
-        })
-      | undefined;
-    expect(createHostApi).toBeDefined();
-
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
-    const api = invokeHostApiFactory(
-      createHostApi!,
-      "plugin-a",
-      {
-        id: "plugin-a",
-        config: {},
-        pluginAccess: { agentApprovalScopes: ["agent_external_api_call"] },
-      },
-      pluginDataDir,
-    );
-
-    await expect(
-      api.agentApproval.request({
-        toolName: "agent_external_call",
-        args: { target: "example" },
-        reason: "plugin wants host approval",
-        scope: "agent_external_api_call",
-      }),
-    ).rejects.toMatchObject({ code: "scope-not-allowed" });
-
-    expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
-    expect(
-      runtimeTestState.runtime.getApprovedPluginAccess,
-    ).toHaveBeenCalledWith("plugin-a");
-    expect(bootAuditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        input: expect.stringContaining("[scope-not-allowed]"),
-      }),
-    );
-  });
-
-  it("allows agentApproval.request only from the approved grant and forwards issuer provenance", async () => {
-    runtimeTestState.capturedRuntimeOptions = null;
-    runtimeTestState.runtime.getApprovedPluginAccess.mockReturnValue({
-      agentApprovalScopes: ["agent_external_api_call"],
-    });
-    const bootAuditLogger = { log: vi.fn() };
-    const approvalGate = {
-      requestAndWait: vi.fn(async (req: { id: string }) => ({
-        requestId: req.id,
-        choice: "allow-once" as const,
-      })),
-    };
-
-    await initPluginRuntime({
-    host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-      } as never,
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: bootAuditLogger as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      shellOpenExternal: vi.fn(),
-      approvalGate: approvalGate as never,
-      routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
-      getAlertsService: () => undefined,
-    });
-
-    const createHostApi = runtimeTestState.capturedRuntimeOptions
-      ?.createHostApi as
-      | ((
-          pluginId: string,
-          manifest: {
-            id: string;
-            config?: Record<string, unknown>;
-            pluginAccess?: { agentApprovalScopes?: string[] };
-          },
-          pluginDataDir: string,
-        ) => {
-          agentApproval: {
-            request: (input: {
-              toolName: string;
-              args: unknown;
-              reason: string;
-              scope: string;
-            }) => Promise<unknown>;
-          };
-        })
-      | undefined;
-    expect(createHostApi).toBeDefined();
-
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
-    const api = invokeHostApiFactory(
-      createHostApi!,
-      "plugin-a",
-      {
-        id: "plugin-a",
-        config: {},
-        pluginAccess: { agentApprovalScopes: [] },
-      },
-      pluginDataDir,
-    );
-
-    await expect(
-      api.agentApproval.request({
-        toolName: "agent_external_call",
-        args: { target: "example" },
-        reason: "plugin wants host approval",
-        scope: "agent_external_api_call",
-      }),
-    ).resolves.toBe("allow-once");
-
-    expect(
-      runtimeTestState.runtime.getApprovedPluginAccess,
-    ).toHaveBeenCalledWith("plugin-a");
-    expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "agent-action",
-        kind: "agent-action",
-        source: "plugin",
-        sourcePluginId: "plugin-a",
-        approvalScope: "agent_external_api_call",
-      }),
-    );
-  });
-
   it("does not expose cross-plugin callTool from PluginHostApi", async () => {
     runtimeTestState.capturedRuntimeOptions = null;
 
@@ -964,7 +684,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: {} as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1012,7 +731,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: {} as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1100,7 +818,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1211,7 +928,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1315,7 +1031,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1387,7 +1102,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1469,7 +1183,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1566,7 +1279,6 @@ describe("initPluginRuntime HostApi factory", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
 
@@ -1643,7 +1355,6 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       shellOpenExternal: vi.fn(),
       approvalGate: { requestAndWait: vi.fn() } as never,
       routinesStore: { list: () => records } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
     });
     const createHostApi = runtimeTestState.capturedRuntimeOptions
@@ -1738,7 +1449,6 @@ describe("initPluginRuntime sandbox union ordering", () => {
       shellOpenExternal: vi.fn(),
       approvalGate: {} as never,
       routinesStore: { list: () => [] } as never,
-      getWorkBoardStore: () => undefined,
       getAlertsService: () => undefined,
       deferStart: true,
       refreshSandboxUnionDomains,

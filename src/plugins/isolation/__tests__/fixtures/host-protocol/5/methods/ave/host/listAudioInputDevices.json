@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 37,
+    "id": 32,
     "jsonrpc": "2.0",
     "method": "ave/host/listAudioInputDevices",
     "params": {
@@ -10,7 +10,7 @@
     }
   },
   "response": {
-    "id": 37,
+    "id": 32,
     "jsonrpc": "2.0",
     "result": [
       {

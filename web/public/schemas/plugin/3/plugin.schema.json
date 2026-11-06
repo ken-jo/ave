@@ -267,7 +267,7 @@
             },
             "capabilities": {
               "type": "array",
-              "description": "Free-form capability declarations (format-validated, NOT a closed enum). The host ENFORCES only two at runtime — 'external-auth-consumer' and 'host:overlay' (see src/plugins/capabilities.ts KNOWN_CAPABILITY_IDS). Every other string is a harmless self-declaration (strings on already-installed manifests that the host no longer reads). Kept free-form — rather than an enum — so an installed manifest declaring a removed capability still validates and loads instead of being rejected at schema validation. Emit authorization for event-source namespaces (email/calendar/meeting/index) is inferred from emittedEvents, not from a capability here. The pattern is format hygiene only (blocks uppercase/whitespace/garbage), not a vocabulary.",
+              "description": "Free-form capability declarations (format-validated, NOT a closed enum). The host ENFORCES only two at runtime — 'external-auth-consumer' and 'host:overlay' (see src/plugins/capabilities.ts KNOWN_CAPABILITY_IDS). Every other string is a harmless self-declaration (strings on already-installed manifests that the host no longer reads). Kept free-form — rather than an enum — so an installed manifest declaring a removed capability still validates and loads instead of being rejected at schema validation. The pattern is format hygiene only (blocks uppercase/whitespace/garbage), not a vocabulary.",
               "items": {
                 "type": "string",
                 "pattern": "^[a-z][a-z0-9:-]*$",
@@ -357,72 +357,6 @@
                   },
                   "description": "Opt-in session-cookie vault: names the sub-namespace of this plugin's own auth partition (persist:plugin-auth:<pluginId>:<sub>) whose harvested session cookies the host attaches to every hostApi.hostFetch request, scoped per URL and re-scoped per redirect hop. For portals with no SSO/OAuth — where the session cookie IS the credential — this keeps the value on the host: the plugin never receives it (pair with openAuthWindow({ retainCookies: true })). A plugin that declares this must not send its own Cookie header; the host rejects such a request. Only the <sub> segment is named here, so a plugin cannot address another plugin's partition."
                 }
-              }
-            },
-            "eventSubscriptions": {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object",
-                    "required": [
-                      "type"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "type": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "hint": {
-                        "type": "object",
-                        "required": [
-                          "category",
-                          "priority",
-                          "title"
-                        ],
-                        "additionalProperties": false,
-                        "properties": {
-                          "category": {
-                            "type": "string",
-                            "enum": [
-                              "task",
-                              "note",
-                              "session",
-                              "meeting",
-                              "email",
-                              "calendar",
-                              "system"
-                            ]
-                          },
-                          "priority": {
-                            "type": "string",
-                            "enum": [
-                              "high",
-                              "medium",
-                              "low"
-                            ]
-                          },
-                          "title": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        }
-                      }
-                    }
-                  }
-                ]
-              }
-            },
-            "emittedEvents": {
-              "type": "array",
-              "description": "Event types this plugin emits.",
-              "items": {
-                "type": "string",
-                "minLength": 1
               }
             },
             "hostSecrets": {
@@ -538,50 +472,6 @@
                         }
                       }
                     ]
-                  }
-                }
-              }
-            },
-            "workProposals": {
-              "type": "object",
-              "description": "Recommended-work channel declaration. Declaration IS authorization (no capability string): a plugin may post a proposal only in a kind declared here, and may hold at most ONE OPEN PROPOSAL PER DECLARED KIND — the declared list doubles as the nag ceiling. Absent or empty = the plugin may post nothing. A malformed block grants nothing rather than the entries that happened to parse.",
-              "additionalProperties": false,
-              "required": [
-                "kinds"
-              ],
-              "properties": {
-                "reasoning": {
-                  "type": "string",
-                  "description": "Human-readable justification surfaced to the user.",
-                  "maxLength": 400
-                },
-                "kinds": {
-                  "type": "array",
-                  "minItems": 1,
-                  "maxItems": 4,
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "id",
-                      "label"
-                    ],
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "description": "Slot id, unique within the plugin. Namespaced by the host as <pluginId>:<kind>.",
-                        "pattern": "^[a-z][a-z0-9-]{0,31}$",
-                        "not": {
-                          "pattern": "[\\r\\n]"
-                        }
-                      },
-                      "label": {
-                        "type": "string",
-                        "description": "User-facing name of the slot, shown in the install disclosure and on the card.",
-                        "minLength": 1,
-                        "maxLength": 60
-                      }
-                    }
                   }
                 }
               }
@@ -760,31 +650,9 @@
                       "pluginId": {
                         "type": "string",
                         "minLength": 1
-                      },
-                      "events": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "uniqueItems": true
                       }
                     }
                   }
-                },
-                "agentApprovalScopes": {
-                  "type": "array",
-                  "description": "§8 P0 security — approval action scopes this plugin is permitted to issue and respond to via hostApi.agentApproval. Omitted or empty array means no approval scopes allowed (host enforces empty-list semantics). Known values: 'agent_file_share', 'agent_task_delegate', 'agent_external_api_call'.",
-                  "default": [],
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9_]*$",
-                    "not": {
-                      "pattern": "[\\r\\n]"
-                    }
-                  },
-                  "uniqueItems": true
                 }
               }
             },
@@ -1237,12 +1105,9 @@
                 "routineTemplates": false,
                 "capabilities": false,
                 "networkAccess": false,
-                "eventSubscriptions": false,
-                "emittedEvents": false,
                 "hostSecrets": false,
                 "startupTimeoutMs": false,
                 "auth": false,
-                "workProposals": false,
                 "alerts": false,
                 "configInherits": false,
                 "dependencies": false,

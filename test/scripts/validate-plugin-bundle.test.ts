@@ -12,7 +12,7 @@ import { embeddedBuildPaths } from "./fixtures/vendor-embedded-build-paths.js";
 const APP_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const RECIPE = fileURLToPath(new URL("./fixtures/bundle-app-marketplace.e53fb40a8.mjs", import.meta.url));
 const RECIPE_SHA256 = "475a7275ccc1ec4793ac6c44598f729e19c335c5ec16f7be6b20a6d230aef85a";
-const PLUGIN_LOG_TEXT = "hello from the plugin's context.log";
+const PLUGIN_LOG_TEXT = "hello from the plugin's stderr";
 
 const BUNDLES = {
   "ave-plugin-validate.js": "src/plugins/validate/cli.ts",
@@ -52,11 +52,11 @@ function helloWorld(name: string, minAppVersion: string | undefined): string {
   writeFileSync(
     join(dir, "dist", "index.js"),
     `export const createPlugin = async (context) => {
-  context.log(${JSON.stringify(PLUGIN_LOG_TEXT)});
+  process.stderr.write(${JSON.stringify(PLUGIN_LOG_TEXT + "\n")});
   return {
     handlers: {
       hello_world: async () => {
-        context.log(${JSON.stringify(PLUGIN_LOG_TEXT)});
+        process.stderr.write(${JSON.stringify(PLUGIN_LOG_TEXT + "\n")});
         return "hello";
       },
     },

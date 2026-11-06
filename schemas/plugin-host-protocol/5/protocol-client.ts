@@ -67,16 +67,6 @@ export type HostProtocolVersion = "5";
 export type JsonRpcRequestId = string | number;
 export type PluginManifest = EntryPluginManifest | ProcessPluginManifest;
 export type PluginLifecycleHookName = "start" | "onPublished" | "stop";
-export type PluginLifecycleEvent =
-  | {
-      pluginId: string;
-      source: "marketplace" | "local-dev";
-      type: "installed";
-    }
-  | {
-      pluginId: string;
-      type: "uninstalled";
-    };
 export type PluginWorkerControl = "stdio-control-v1" | "output-only-v1";
 export type PluginWorkerExitReason = "exited" | "stopped" | "control-violation" | "output-overflow";
 export type WireApiKeyLease =
@@ -132,9 +122,6 @@ export type WireWorkerSend =
       id: number;
       kind: "cancel";
     };
-export type HostAgentApprovalRequestResult =
-  "allow-once" | "allow-session" | "allow-always" | "deny-once" | "deny-always";
-export type HostAgentApprovalRespondResult = null;
 export type HostAuthRedirectCloseResult = null;
 export type HostCallLlmResult = string;
 export type HostClearAuthPartitionResult = null;
@@ -147,8 +134,6 @@ export type HostGetAuthPartitionCookiesResult = {
 export type HostGetSecretResult = string | null;
 export type HostHasRoutineBySourceResult = boolean;
 export type HostListAudioInputDevicesResult = AudioCaptureDevice[];
-export type HostLogEventResult = null;
-export type HostOnShutdownResult = null;
 export type HostOpenAuthPartitionViewerResult = null;
 export type HostOpenAuthWindowResult =
   | {
@@ -158,29 +143,6 @@ export type HostOpenAuthWindowResult =
   | AuthWindowCookie[];
 export type HostOpenExternalUrlResult = null;
 export type HostProbePrivateHostResult = boolean;
-export type HostProposeWorkResult =
-  | {
-      proposal: WorkProposal;
-      status: "ok";
-    }
-  | {
-      kind: string;
-      status: "kind_not_granted";
-    }
-  | {
-      kind: string;
-      status: "slot_busy";
-    }
-  | {
-      field: string;
-      status: "invalid";
-    }
-  | {
-      status: "cap_reached";
-    }
-  | {
-      status: "rate_limited";
-    };
 export type HostRaiseAlertResult =
   | {
       alertId: string;
@@ -219,7 +181,6 @@ export type HostRaiseAlertResult =
       field: string;
       status: "invalid";
     };
-export type HostResizeFloatingPanelResult = number;
 export type HostResolveMappedDriveRootResult = string | null;
 export type HostStorageExistsResult = boolean;
 export type HostStorageListResult = string[];
@@ -233,10 +194,7 @@ export type HostStorageRmResult = null;
 export type HostStorageWriteResult = null;
 export type HostStorageWriteEncryptedResult = null;
 export type HostStorageWriteJsonResult = null;
-export type HostWithdrawAlertResult = boolean;
-export type HostWithdrawWorkProposalResult = boolean;
 export type InstanceOnPublishedResult = null;
-export type InstanceShutdownResult = null;
 export type InstanceStartResult = null;
 export type InstanceStopResult = null;
 
@@ -310,9 +268,7 @@ export interface EntryPluginManifest {
   configSchema?: PluginConfigSchema;
   dependencies?: (string | DependencySpec)[];
   description: string;
-  emittedEvents?: string[];
   entry: string;
-  eventSubscriptions?: string[] | EventSubscription[];
   hooks?: PluginContributionDeclaration[];
   hostSecrets?: {
     read?: string[];
@@ -348,10 +304,6 @@ export interface EntryPluginManifest {
   uiResources?: PluginUiResourceDecl[];
   uiSlots?: string[];
   version: string;
-  workProposals?: {
-    kinds: WorkProposalKind[];
-    reasoning?: string;
-  };
 }
 export interface PluginAlertsDeclaration {
   kinds: AlertKindDeclaration[];
@@ -407,15 +359,6 @@ export interface PluginConfigSchemaPropertyLocalizedText {
   description?: string;
   title?: string;
 }
-export interface EventSubscription {
-  hint?: EventSubscriptionHint;
-  type: string;
-}
-export interface EventSubscriptionHint {
-  category: "task" | "note" | "session" | "meeting" | "email" | "calendar" | "system";
-  priority: "high" | "medium" | "low";
-  title: string;
-}
 export interface PluginContributionDeclaration {
   id: string;
   path: string;
@@ -449,11 +392,9 @@ export interface PluginHighlightCopy {
   headline: string;
 }
 export interface PluginAccessSpec {
-  agentApprovalScopes?: string[];
   plugins: PluginAccessTarget[];
 }
 export interface PluginAccessTarget {
-  events?: string[];
   pluginId: string;
 }
 export interface RequiresSpec {
@@ -575,26 +516,15 @@ export interface PluginUiResourceDecl {
   };
   uri: string;
 }
-export interface WorkProposalKind {
-  id: string;
-  label: string;
-}
 export interface HostApiHandle {
   handleId: string;
 }
 export interface PluginChildContext {
-  appPreferences?: {
-    keys: string[];
-    values: {
-      [k: string]: unknown | undefined;
-    };
-  };
   aveHome: string;
   config?: {
     [k: string]: unknown | undefined;
   };
   hostRoot: string;
-  installedPluginIds: string[];
   pluginDataDir: string;
   pluginId: string;
   pluginRoot: string;
@@ -621,9 +551,7 @@ export interface ProcessPluginManifest {
   configSchema?: PluginConfigSchema;
   dependencies?: (string | DependencySpec)[];
   description: string;
-  emittedEvents?: string[];
   entry?: never;
-  eventSubscriptions?: string[] | EventSubscription[];
   hooks?: PluginContributionDeclaration[];
   hostSecrets?: {
     read?: string[];
@@ -659,10 +587,6 @@ export interface ProcessPluginManifest {
   uiResources?: PluginUiResourceDecl[];
   uiSlots?: string[];
   version: string;
-  workProposals?: {
-    kinds: WorkProposalKind[];
-    reasoning?: string;
-  };
 }
 export interface PluginProcessEntry {
   args?: string[];
@@ -678,9 +602,6 @@ export interface PluginConstructResult {
     requires: string[];
   };
   servesUiResources: boolean;
-}
-export interface PluginShutdownParams {
-  subscriptionId: string;
 }
 export interface WireAudioCaptureHandle {
   captureId: string;
@@ -744,48 +665,6 @@ export interface WireWorkerHandle {
   control: PluginWorkerControl;
   handleId: string;
   pid?: number;
-}
-export interface WorkProposal {
-  acceptedItemId?: number;
-  blockers: WorkProposalBlocker[];
-  createdAt: string;
-  dismissedAt?: string;
-  dueAt?: string;
-  evidence: WorkProposalEvidence[];
-  expiresAt: string;
-  id: string;
-  key: string;
-  kind: string;
-  pluginId: string;
-  pluginLabel: string;
-  priority: "high" | "medium" | "low";
-  state: string;
-  summary: string;
-  taskBrief: string;
-  title: string;
-  updatedAt: string;
-}
-export interface WorkProposalBlocker {
-  reason: string;
-  resolution?: string;
-}
-export interface WorkProposalEvidence {
-  detail: string;
-  label: string;
-}
-export interface HostAgentApprovalRequestParams {
-  input: {
-    args: unknown;
-    reason: string;
-    scope: string;
-    toolName: string;
-  };
-}
-export interface HostAgentApprovalRespondParams {
-  choice: "allow-once" | "allow-session" | "allow-always" | "deny-once" | "deny-always";
-  hmac?: string;
-  nonce?: string;
-  requestId: string;
 }
 export interface HostAttachFloatingPanelParams {
   request: {
@@ -857,25 +736,8 @@ export interface HostHostFetchParams {
   input: string;
 }
 export interface HostListAudioInputDevicesParams {}
-export interface HostLogEventParams {
-  data?: unknown;
-  level: "info" | "warn" | "error";
-  message: string;
-}
 export interface HostOnEventParams {
   eventType: string;
-  /**
-   * The subscription id the child allocated. The function stays in the child.
-   */
-  handler: string;
-}
-export interface HostOnPluginsChangedParams {
-  /**
-   * The subscription id the child allocated. The function stays in the child.
-   */
-  handler: string;
-}
-export interface HostOnShutdownParams {
   /**
    * The subscription id the child allocated. The function stays in the child.
    */
@@ -926,21 +788,6 @@ export interface HostProbePrivateHostParams {
     timeoutMs?: number;
   };
 }
-export interface HostProposeWorkParams {
-  input: {
-    blockers?: WorkProposalBlocker[];
-    dueAt?: string;
-    evidence?: WorkProposalEvidence[];
-    key: string;
-    kind: string;
-    priority?: "high" | "medium" | "low";
-    state: string;
-    summary: string;
-    taskBrief: string;
-    title: string;
-    ttlMs?: number;
-  };
-}
 export interface HostRaiseAlertParams {
   input: {
     key: string;
@@ -952,10 +799,6 @@ export interface HostRaiseAlertParams {
     ttlMs?: number;
     visibility?: AlertVisibility;
   };
-}
-export interface HostResizeFloatingPanelParams {
-  height: number;
-  panelId: string;
 }
 export interface HostResolveApiKeyParams {
   opts: WireResolveApiKeyOptions;
@@ -1067,14 +910,6 @@ export interface HostTriggerConversationResult {
     | "suggestion_limit";
   source: string;
 }
-export interface HostWithdrawAlertParams {
-  key: string;
-  kind: string;
-}
-export interface HostWithdrawWorkProposalParams {
-  key: string;
-  kind: string;
-}
 export interface InstanceOnPublishedParams {}
 export interface InstanceStartParams {}
 export interface InstanceStopParams {}
@@ -1087,8 +922,6 @@ export const HOST_PROTOCOL_VERSION = "5";
  * A request the plugin sends to the host.
  */
 export type HostMethod =
-  | "ave/host/agentApproval/request"
-  | "ave/host/agentApproval/respond"
   | "ave/host/attachFloatingPanel"
   | "ave/host/authRedirect/close"
   | "ave/host/authRedirect/open"
@@ -1103,18 +936,13 @@ export type HostMethod =
   | "ave/host/hasRoutineBySource"
   | "ave/host/hostFetch"
   | "ave/host/listAudioInputDevices"
-  | "ave/host/logEvent"
   | "ave/host/onEvent"
-  | "ave/host/onPluginsChanged"
-  | "ave/host/onShutdown"
   | "ave/host/openAuthPartitionViewer"
   | "ave/host/openAuthWindow"
   | "ave/host/openExternalUrl"
   | "ave/host/pickFolders"
   | "ave/host/probePrivateHost"
-  | "ave/host/proposeWork"
   | "ave/host/raiseAlert"
-  | "ave/host/resizeFloatingPanel"
   | "ave/host/resolveApiKey"
   | "ave/host/resolveMappedDriveRoot"
   | "ave/host/spawnWorker"
@@ -1130,9 +958,7 @@ export type HostMethod =
   | "ave/host/storage/write"
   | "ave/host/storage/writeEncrypted"
   | "ave/host/storage/writeJson"
-  | "ave/host/triggerConversation"
-  | "ave/host/withdrawAlert"
-  | "ave/host/withdrawWorkProposal";
+  | "ave/host/triggerConversation";
 
 /**
  * A request the host sends to the plugin.
@@ -1140,7 +966,6 @@ export type HostMethod =
 export type InstanceMethod =
   | "ave/instance/construct"
   | "ave/instance/onPublished"
-  | "ave/instance/shutdown"
   | "ave/instance/start"
   | "ave/instance/stop";
 
@@ -1149,9 +974,6 @@ export type InstanceMethod =
  */
 export type HostNotification =
   | "notifications/ave/config/snapshot"
-  | "notifications/ave/installedPlugins/snapshot"
-  | "notifications/ave/log"
-  | "notifications/ave/preferences/snapshot"
   | "notifications/ave/subscription"
   | "notifications/ave/subscription/closed"
   | "notifications/ave/subscription/release"
@@ -1197,16 +1019,6 @@ export interface HostClientTransport {
 
 /** One typed method per `ave/host/*` request, named by its path segments. */
 export interface HostClient {
-  readonly agentApproval: {
-    /**
-     * Request an approval via the §8 ApprovalGate on behalf of this plugin.
-     */
-    request(params: HostAgentApprovalRequestParams): Promise<HostAgentApprovalRequestResult>;
-    /**
-     * Resolve a pending ApprovalGate entry from the main process.
-     */
-    respond(params: HostAgentApprovalRespondParams): Promise<HostAgentApprovalRespondResult>;
-  };
   /**
    * Attach one of this plugin's declared `floating` surfaces to the host's floating dock — the single always-on-top window the host owns.
    */
@@ -1239,10 +1051,13 @@ export interface HostClient {
      */
     onChange(params: HostConfigOnChangeParams): Promise<HostApiHandle>;
     /**
-     * Persist a config key. Triggers a plugin reload so the new value is visible to the plugin on next handler invocation.
+     * Persist a config key. Reloads the plugin unless a lifecycle mutation or an existing restart must finish first.
      */
     set(params: HostConfigSetParams): Promise<HostConfigSetResult>;
   };
+  /**
+   * Notify this plugin's own UI; eventType must begin with this plugin's id and a dot.
+   */
   emitEvent(params: HostEmitEventParams): Promise<HostEmitEventResult>;
   /**
    * Read the session cookies the host holds for this plugin in its auth partition, scoped to the given request URLs. The counterpart to `networkAccess.authCookiePartition` for flows that `hostFetch` cannot cover — chiefly a browser/page-automation flow that must inject the session into a separate browser context.
@@ -1265,21 +1080,9 @@ export interface HostClient {
    */
   listAudioInputDevices(params: HostListAudioInputDevicesParams): Promise<HostListAudioInputDevicesResult>;
   /**
-   * Structured log event routed through AuditLogger. Automatically tagged with `plugin:${pluginId}` context (sessionId = "plugin").
-   */
-  logEvent(params: HostLogEventParams): Promise<HostLogEventResult>;
-  /**
-   * Subscribes to a host event. Returns an `unsubscribe()` disposer so callers (and PluginRuntime.onDisable) can clean up handlers deterministically.
+   * Subscribe to host.theme.changed. Other event types are rejected. Returns a disposer owned by the current plugin generation.
    */
   onEvent(params: HostOnEventParams): Promise<HostApiHandle>;
-  /**
-   * Subscribe to plugin install / uninstall events. Returns an `unsubscribe()` disposer (also cleared automatically on plugin disable).
-   */
-  onPluginsChanged(params: HostOnPluginsChangedParams): Promise<HostApiHandle>;
-  /**
-   * Register a handler fired before app shutdown (Electron `before-quit`). Host enforces a 5s timeout on each handler; slow handlers are logged but do not block quit.
-   */
-  onShutdown(params: HostOnShutdownParams): Promise<HostOnShutdownResult>;
   /**
    * Open a hardened viewer BrowserWindow that loads `url` inside the caller plugin's `persist:plugin-auth:<pluginId>` partition. The existing cookies in that partition (typically deposited by an earlier `openAuthWindow` IdP flow) make the load silent-SSO — no re-login.
    */
@@ -1301,17 +1104,9 @@ export interface HostClient {
    */
   probePrivateHost(params: HostProbePrivateHostParams): Promise<HostProbePrivateHostResult>;
   /**
-   * Post or refresh this plugin's recommended-work proposal for ONE declared kind. The host persists it beside the Work Board and draws it as a card at the top of that board; the card's start button runs the HOST's own plan → approve → execute sequence over a work item the host composes.
-   */
-  proposeWork(params: HostProposeWorkParams): Promise<HostProposeWorkResult>;
-  /**
    * Raise one alert of a kind declared in this plugin's `alerts` block.
    */
   raiseAlert(params: HostRaiseAlertParams): Promise<HostRaiseAlertResult>;
-  /**
-   * Change one of this plugin's dock slots to a new height.
-   */
-  resizeFloatingPanel(params: HostResizeFloatingPanelParams): Promise<HostResizeFloatingPanelResult>;
   /**
    * Host-managed LLM key resolver. Optional on older app releases; plugins guard with `typeof hostApi.resolveApiKey === "function"` unless their `requires.minAppVersion` guarantees a supporting release.
    */
@@ -1378,23 +1173,11 @@ export interface HostClient {
    * Overlay trigger — ask the host to stage a plugin-authored suggestion in the overlay. The plugin does not start a conversation turn; only a user's overlay confirmation imports the prompt into the normal chat loop.
    */
   triggerConversation(params: HostTriggerConversationParams): Promise<HostTriggerConversationResult>;
-  /**
-   * Withdraw this plugin's open alert for `(kind, key)` because its condition no longer holds. Scoped to the caller; resolves `false` when no such alert is open.
-   */
-  withdrawAlert(params: HostWithdrawAlertParams): Promise<HostWithdrawAlertResult>;
-  /**
-   * Retract this plugin's own proposal because the condition it described no longer holds — the mail was answered, the index was rescanned.
-   */
-  withdrawWorkProposal(params: HostWithdrawWorkProposalParams): Promise<HostWithdrawWorkProposalResult>;
 }
 
 /** A client that sends every `ave/host/*` request through `transport`. */
 export function createHostClient(transport: HostClientTransport): HostClient {
   return {
-    agentApproval: {
-      request: (params) => transport.request("ave/host/agentApproval/request", params) as Promise<HostAgentApprovalRequestResult>,
-      respond: (params) => transport.request("ave/host/agentApproval/respond", params) as Promise<HostAgentApprovalRespondResult>,
-    },
     attachFloatingPanel: (params) => transport.request("ave/host/attachFloatingPanel", params) as Promise<WireFloatingPanelHandle>,
     authRedirect: {
       close: (params) => transport.request("ave/host/authRedirect/close", params) as Promise<HostAuthRedirectCloseResult>,
@@ -1413,18 +1196,13 @@ export function createHostClient(transport: HostClientTransport): HostClient {
     hasRoutineBySource: (params) => transport.request("ave/host/hasRoutineBySource", params) as Promise<HostHasRoutineBySourceResult>,
     hostFetch: (params) => transport.request("ave/host/hostFetch", params) as Promise<WireHttpResponse>,
     listAudioInputDevices: (params) => transport.request("ave/host/listAudioInputDevices", params) as Promise<HostListAudioInputDevicesResult>,
-    logEvent: (params) => transport.request("ave/host/logEvent", params) as Promise<HostLogEventResult>,
     onEvent: (params) => transport.request("ave/host/onEvent", params) as Promise<HostApiHandle>,
-    onPluginsChanged: (params) => transport.request("ave/host/onPluginsChanged", params) as Promise<HostApiHandle>,
-    onShutdown: (params) => transport.request("ave/host/onShutdown", params) as Promise<HostOnShutdownResult>,
     openAuthPartitionViewer: (params) => transport.request("ave/host/openAuthPartitionViewer", params) as Promise<HostOpenAuthPartitionViewerResult>,
     openAuthWindow: (params) => transport.request("ave/host/openAuthWindow", params) as Promise<HostOpenAuthWindowResult>,
     openExternalUrl: (params) => transport.request("ave/host/openExternalUrl", params) as Promise<HostOpenExternalUrlResult>,
     pickFolders: (params) => transport.request("ave/host/pickFolders", params) as Promise<HostPickFoldersResult>,
     probePrivateHost: (params) => transport.request("ave/host/probePrivateHost", params) as Promise<HostProbePrivateHostResult>,
-    proposeWork: (params) => transport.request("ave/host/proposeWork", params) as Promise<HostProposeWorkResult>,
     raiseAlert: (params) => transport.request("ave/host/raiseAlert", params) as Promise<HostRaiseAlertResult>,
-    resizeFloatingPanel: (params) => transport.request("ave/host/resizeFloatingPanel", params) as Promise<HostResizeFloatingPanelResult>,
     resolveApiKey: (params) => transport.request("ave/host/resolveApiKey", params) as Promise<WireApiKeyLease>,
     resolveMappedDriveRoot: (params) => transport.request("ave/host/resolveMappedDriveRoot", params) as Promise<HostResolveMappedDriveRootResult>,
     spawnWorker: (params) => transport.request("ave/host/spawnWorker", params) as Promise<WireWorkerHandle>,
@@ -1443,16 +1221,11 @@ export function createHostClient(transport: HostClientTransport): HostClient {
       writeJson: (params) => transport.request("ave/host/storage/writeJson", params) as Promise<HostStorageWriteJsonResult>,
     },
     triggerConversation: (params) => transport.request("ave/host/triggerConversation", params) as Promise<HostTriggerConversationResult>,
-    withdrawAlert: (params) => transport.request("ave/host/withdrawAlert", params) as Promise<HostWithdrawAlertResult>,
-    withdrawWorkProposal: (params) => transport.request("ave/host/withdrawWorkProposal", params) as Promise<HostWithdrawWorkProposalResult>,
   };
 }
 
 const HOST_NOTIFICATIONS: ReadonlySet<string> = new Set<HostNotification>([
   "notifications/ave/config/snapshot",
-  "notifications/ave/installedPlugins/snapshot",
-  "notifications/ave/log",
-  "notifications/ave/preferences/snapshot",
   "notifications/ave/subscription",
   "notifications/ave/subscription/closed",
   "notifications/ave/subscription/release",

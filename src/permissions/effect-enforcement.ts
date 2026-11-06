@@ -19,11 +19,8 @@ import {
 } from "./effect-kind.js";
 import { isPlainNamespace, INSTRUMENTED } from "./hostapi-effect-recorder.js";
 
-// Actual asynchronous effects are mandatory inside tool calls. Approval completion cannot wait on itself; network effects authorize inline per hop.
+// Actual asynchronous effects are mandatory inside tool calls; network effects authorize inline per hop.
 export const ENFORCEMENT_EXCLUSIONS: ReadonlyMap<string, string> = new Map([
-  // Approval completion resolves an already authorized host-owned request and cannot wait on itself.
-  ["agentApproval.respond", "resolves host-owned approval machinery without introducing an external effect",
-  ],
   // The lone VERB-derived egress — gated INLINE in its host closure from the single verb snapshot that also self-records + pins the wire (so the gate's read/write class can never diverge from what is sent). NOT ungated: it is caught at the SAME effect-gate, just inline. The generic wrapper skips it precisely because it self-gates.
   ["hostFetch", "verb-derived egress — self-gated INLINE in its closure (same effect-gate, not ungated); the generic wrapper skips it",
   ],

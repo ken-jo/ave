@@ -11,11 +11,6 @@
         "external-auth-consumer",
         "background-watcher"
       ],
-      "emittedEvents": [
-        "sampleportal.auth.changed",
-        "sampleportal.ui.open-request",
-        "sampleportal.video-conference.reserved"
-      ],
       "requires": {
         "minAppVersion": "0.14.0",
         "hostProtocol": "5"

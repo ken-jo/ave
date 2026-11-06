@@ -5,24 +5,9 @@
     "method": "ave/instance/construct",
     "params": {
       "context": {
-        "appPreferences": {
-          "keys": [
-            "webView.preferredFlow"
-          ],
-          "values": {
-            "webView.preferredFlow": "system"
-          }
-        },
         "aveHome": "/validation/user/.ave",
         "config": {},
         "hostRoot": "/app",
-        "installedPluginIds": [
-          "sampleportal",
-          "local-indexer",
-          "meeting",
-          "samplemail",
-          "sampleassistant"
-        ],
         "pluginDataDir": "/plugins/golden-invoker/data",
         "pluginId": "golden-invoker",
         "pluginRoot": "/plugins/golden-invoker",
@@ -37,8 +22,6 @@
       "entryPath": "<golden>/invoker.mjs",
       "hostProtocol": {
         "capabilities": [
-          "ave/host/agentApproval/request",
-          "ave/host/agentApproval/respond",
           "ave/host/attachFloatingPanel",
           "ave/host/authRedirect/close",
           "ave/host/authRedirect/open",
@@ -53,18 +36,13 @@
           "ave/host/hasRoutineBySource",
           "ave/host/hostFetch",
           "ave/host/listAudioInputDevices",
-          "ave/host/logEvent",
           "ave/host/onEvent",
-          "ave/host/onPluginsChanged",
-          "ave/host/onShutdown",
           "ave/host/openAuthPartitionViewer",
           "ave/host/openAuthWindow",
           "ave/host/openExternalUrl",
           "ave/host/pickFolders",
           "ave/host/probePrivateHost",
-          "ave/host/proposeWork",
           "ave/host/raiseAlert",
-          "ave/host/resizeFloatingPanel",
           "ave/host/resolveApiKey",
           "ave/host/resolveMappedDriveRoot",
           "ave/host/spawnWorker",
@@ -80,9 +58,7 @@
           "ave/host/storage/write",
           "ave/host/storage/writeEncrypted",
           "ave/host/storage/writeJson",
-          "ave/host/triggerConversation",
-          "ave/host/withdrawAlert",
-          "ave/host/withdrawWorkProposal"
+          "ave/host/triggerConversation"
         ],
         "version": "5"
       },

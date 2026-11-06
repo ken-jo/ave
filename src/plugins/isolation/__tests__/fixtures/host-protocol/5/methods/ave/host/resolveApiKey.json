@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 19,
+    "id": 17,
     "jsonrpc": "2.0",
     "method": "ave/host/resolveApiKey",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 19,
+    "id": 17,
     "jsonrpc": "2.0",
     "result": {
       "baseUrl": "https://api.example.com/v1",

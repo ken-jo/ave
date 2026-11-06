@@ -65,7 +65,7 @@ function fixture() {
 describe("native plugin stream ownership", () => {
   it("uses native streams and the container identity without a relay or process facade", async () => {
     const { owned, launch, resolve } = fixture();
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     expect(child.link.input).toBe(owned.stdout);
     expect(child.link.output).toBe(owned.stdin);
     expect(child.pid).toBe(42);
@@ -80,7 +80,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, controller, resolve } = fixture();
     let settleDisposal!: () => void;
     vi.mocked(owned.dispose).mockImplementation(() => new Promise<void>((yes) => { settleDisposal = yes; }));
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     const fault = vi.fn(); const gone = vi.fn();
     child.link.onFault(fault); child.link.onGone(gone);
     controller.abort();
@@ -99,7 +99,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch, reject } = fixture();
     const error = new MxcProcessCleanupError("Termination unverified");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     const gone = vi.fn(); child.link.onGone(gone);
     reject(error);
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -110,7 +110,7 @@ describe("native plugin stream ownership", () => {
     const { owned, launch } = fixture();
     const error = new MxcProcessCleanupError("No terminal receipt");
     vi.mocked(owned.dispose).mockRejectedValue(error);
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     const gone = vi.fn(); child.link.onGone(gone);
     child.link.terminate("revoke");
     await expect(child.waitForExit()).rejects.toBe(error);
@@ -119,7 +119,7 @@ describe("native plugin stream ownership", () => {
 
   it("reports the start of termination once, synchronously, and replays it to late listeners", async () => {
     const { owned, launch } = fixture();
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     const early = vi.fn();
     child.onTerminating(early);
     child.link.terminate("first"); child.link.terminate("second");
@@ -131,7 +131,7 @@ describe("native plugin stream ownership", () => {
 
   it("remembers faults for listeners attached after process failure", async () => {
     const { owned, launch, reject } = fixture();
-    const child = attachMxcPluginChild(owned, launch);
+    const child = attachMxcPluginChild(owned, launch, "native-probe");
     reject(new Error("Supervisor lost"));
     await child.waitForExit();
     const fault = vi.fn(); child.link.onFault(fault);
@@ -296,5 +296,79 @@ describe("native plugin stream ownership", () => {
     expect(failure).toBeInstanceOf(MxcProcessContractError);
     expect((failure as Error).message).toMatch(/^Admitted plugin request does not/u);
     expect(launch.probe).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("plugin stderr diagnostics", () => {
+  async function capture(run: (stream: OwnedMxcExtensionProcess["stderr"], records: unknown[][]) => void | Promise<void>) {
+    const { owned, launch, resolve } = fixture();
+    const records: unknown[][] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...args) => { records.push(args); });
+    const warn = vi.spyOn(console, "warn").mockImplementation((...args) => { records.push(args); });
+    const error = vi.spyOn(console, "error").mockImplementation((...args) => { records.push(args); });
+    const child = attachMxcPluginChild(owned, launch, "diagnostic-probe");
+    try {
+      await run(owned.stderr, records);
+    } finally {
+      await new Promise<void>((done) => { owned.stderr.once("close", done); owned.stderr.destroy(); });
+      resolve({ exitCode: 0, timedOut: false });
+      await child.waitForExit();
+      log.mockRestore(); warn.mockRestore(); error.mockRestore();
+      vi.useRealTimers();
+    }
+  }
+
+  it("attributes native diagnostics with a structured plugin id", async () => {
+    await capture((stream, records) => {
+      stream.emit("data", Buffer.from("native diagnostic\n"));
+      expect(records).toEqual([[expect.stringContaining("native diagnostic"), { pluginId: "diagnostic-probe" }]]);
+    });
+  });
+
+  it("buffers lines and split multibyte characters across chunks", async () => {
+    await capture((stream, records) => {
+      const bytes = Buffer.from("ready 한글\nnext\r\n");
+      stream.emit("data", bytes.subarray(0, 7));
+      expect(records).toHaveLength(0);
+      stream.emit("data", bytes.subarray(7));
+      expect(records).toEqual([
+        [expect.stringContaining("ready 한글"), { pluginId: "diagnostic-probe" }],
+        [expect.stringMatching(/next$/u), { pluginId: "diagnostic-probe" }],
+      ]);
+    });
+  });
+
+  it("caps each line in bytes and marks truncation without consuming the next line", async () => {
+    await capture((stream, records) => {
+      stream.emit("data", Buffer.from("x".repeat(16_384)));
+      stream.emit("data", Buffer.from("z".repeat(100_000) + "\nnext\n"));
+      expect(records).toHaveLength(2);
+      expect(String(records[0]![0])).toMatch(/x+ \[truncated\]$/u);
+      expect(Buffer.byteLength(String(records[0]![0]))).toBeLessThan(16_450);
+      expect(String(records[0]![0])).not.toContain("z");
+      expect(records[1]).toEqual([expect.stringMatching(/next$/u), { pluginId: "diagnostic-probe" }]);
+    });
+  });
+
+  it("drops rate excess with one summary and keeps the child alive", async () => {
+    vi.useFakeTimers();
+    await capture((stream, records) => {
+      stream.emit("data", Buffer.from("line\n".repeat(600)));
+      expect(records).toHaveLength(500);
+      vi.advanceTimersByTime(1_000);
+      expect(records).toHaveLength(501);
+      expect(records[500]).toEqual([expect.stringContaining("rate limit"), { pluginId: "diagnostic-probe", droppedLines: 100 }]);
+      stream.emit("data", Buffer.from("resumed\n"));
+      expect(records).toHaveLength(502);
+      expect(stream.destroyed).toBe(false);
+    });
+  });
+
+  it("redacts free-text credentials before logging", async () => {
+    await capture((stream, records) => {
+      stream.emit("data", Buffer.from("authorization: Bearer private-token-123\n"));
+      expect(JSON.stringify(records)).not.toContain("private-token-123");
+      expect(JSON.stringify(records)).toContain("REDACTED");
+    });
   });
 });

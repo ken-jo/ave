@@ -1475,7 +1475,6 @@ export const createPlugin = async (context) => ({
       ownData: readFileSync(${JSON.stringify(join(fx.pluginDataDir, "own-data.txt"))}, "utf-8"),
       secretRead: (() => { try { return readFileSync(${JSON.stringify(fx.secretFile)}, "utf-8"); } catch (error) { return "DENIED:" + (error.code ?? error.name); } })(),
       fromHost: await context.hostApi.callLlm("ping"),
-      installed: context.hostApi.getInstalledPluginIds(),
     }),
   },
 });
@@ -1505,8 +1504,8 @@ export const createPlugin = async (context) => ({
       });
       const hostApi = {
         callLlm: async () => "the host answered",
-        getInstalledPluginIds: () => ["sampleassistant"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: { get: () => undefined, set: async () => undefined, onChange: () => () => undefined },
       } as unknown as PluginHostApi;
       const instance = await factory({
@@ -1518,7 +1517,7 @@ export const createPlugin = async (context) => ({
         userHome: homedir(),
         aveHome: aveHome(),
         config: {},
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
       try {
@@ -1526,7 +1525,6 @@ export const createPlugin = async (context) => ({
         // The plugin's own structured value, out of a different process.
         expect(result.ownData).toBe("the plugin's own bytes");
         expect(result.fromHost).toBe("the host answered");
-        expect(result.installed).toEqual(["sampleassistant"]);
         // …and the same process could not read the host's secrets while doing it.
         expect(String(result.secretRead)).toMatch(/^DENIED:/);
       } finally {
@@ -1572,7 +1570,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       userHome: homedir(),
       aveHome: aveHome(),
       config: {},
-      log: () => undefined,
+
       hostApi,
     };
   }
@@ -1885,8 +1883,8 @@ export const createPlugin = async (context) => {
             headers: { "x-ave": "from-the-host" },
           }),
         spawnWorker,
-        getInstalledPluginIds: () => ["sampleassistant"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: (key: string) => configValues.get(key),
           set: async () => undefined,
@@ -1934,7 +1932,7 @@ export const createPlugin = async (context) => {
         userHome: homedir(),
         aveHome: aveHome(),
         config: { watched: "before", workspace: fx.userRoot },
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2201,10 +2199,10 @@ export const createPlugin = async (context) => {
           new Response(new Uint8Array([0x00, 0x80, 0xff, 0x41]), { status: 200 }),
         callLlm: async () => "three action items",
         emitEvent: () => undefined,
-        logEvent: () => undefined,
+
         onEvent: () => () => undefined,
-        getInstalledPluginIds: () => ["meeting"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: (key: string) => configValues.get(key),
           set: async () => undefined,
@@ -2266,7 +2264,7 @@ export const createPlugin = async (context) => {
         userHome: homedir(),
         aveHome: aveHome(),
         config: Object.fromEntries(configValues),
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2734,10 +2732,10 @@ export default async function createPlugin(context) {
           return null;
         },
         emitEvent: () => undefined,
-        logEvent: () => undefined,
+
         onEvent: () => () => undefined,
-        getInstalledPluginIds: () => ["local-indexer"],
-        onPluginsChanged: () => () => undefined,
+
+
         config: {
           get: () => undefined,
           set: async () => undefined,
@@ -2772,7 +2770,7 @@ export default async function createPlugin(context) {
         userHome: homedir(),
         aveHome: aveHome(),
         config: {},
-        log: () => undefined,
+
         hostApi,
       } as PluginRuntimeContext);
 
@@ -2818,7 +2816,7 @@ function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeCont
     userHome: homedir(),
     aveHome: aveHome(),
     config: {},
-    log: () => undefined,
+
     hostApi: createValidationHost().api,
   };
 }

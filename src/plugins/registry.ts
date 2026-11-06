@@ -324,7 +324,7 @@ function validatePendingUpdate(value: unknown, pluginId: string): void {
 
 function validatePluginAccess(value: unknown, pluginId: string): void {
   if (!isRecord(value)) throw new Error(`Invalid plugin registry access grant: ${pluginId}`);
-  assertOnlyKeys(value, new Set(["plugins", "agentApprovalScopes"]), `plugin access for '${pluginId}'`);
+  assertOnlyKeys(value, new Set(["plugins"]), `plugin access for '${pluginId}'`);
   if (!Array.isArray(value.plugins)) throw new Error(`Invalid plugin access targets: ${pluginId}`);
   for (const target of value.plugins) {
     // Allow only the specific historical null target and retired tools shape during migration.
@@ -332,16 +332,10 @@ function validatePluginAccess(value: unknown, pluginId: string): void {
     if (!isRecord(target) || typeof target.pluginId !== "string" || target.pluginId.length === 0) {
       throw new Error(`Invalid plugin access target: ${pluginId}`);
     }
-    assertOnlyKeys(target, new Set(["pluginId", "events", "tools"]), `plugin access target for '${pluginId}'`);
-    if (target.events !== undefined && !isStringArray(target.events)) {
-      throw new Error(`Invalid plugin access events: ${pluginId}`);
-    }
+    assertOnlyKeys(target, new Set(["pluginId", "tools"]), `plugin access target for '${pluginId}'`);
     if (target.tools !== undefined && !isStringArray(target.tools)) {
       throw new Error(`Invalid legacy plugin access tools: ${pluginId}`);
     }
-  }
-  if (value.agentApprovalScopes !== undefined && !isStringArray(value.agentApprovalScopes)) {
-    throw new Error(`Invalid plugin approval scopes: ${pluginId}`);
   }
 }
 

@@ -802,7 +802,7 @@ describe("marketplace pending-update recovery", () => {
     const originalBackup = join(paths.pluginsRoot, `.${pluginId}.old-${backupSuffix}`);
     const retryBackup = join(paths.pluginsRoot, `.${pluginId}.old-00000000-0000-4000-8000-000000000002`);
     const original = (await readPluginRegistry(paths.registryPath)).plugins[0]!;
-    original.approvedPluginAccess = { plugins: [{ pluginId: "trusted-peer", events: ["old.event"] }] };
+    original.approvedPluginAccess = { plugins: [{ pluginId: "trusted-peer" }] };
     await writeFile(paths.registryPath, JSON.stringify({ version: 1, plugins: [original] }));
     await preparePendingPluginUpdate(paths, original, {
       kind: "marketplace",

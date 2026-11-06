@@ -1,4 +1,4 @@
-Protocol 4 manifests, method frames, notifications, and conversations are pinned here.
+Protocol 5 manifests, method frames, notifications, and conversations are pinned here.
 Each `plugins/<id>` directory is a complete plugin — its `plugin.json`, its own
 `entry.mjs` and its recorded `expected.jsonl` — so a directory validator can take
 it as is. `invoker.mjs` is the golden invoker every method frame is recorded

@@ -141,8 +141,8 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
   });
   const onClosed = vi.fn(async () => undefined);
   const plain = {
-    getInstalledPluginIds: () => [PLUGIN_ID],
-    onPluginsChanged: watch,
+
+
     config: { get: () => undefined, set: async () => undefined, onChange: watch },
     onEvent: () => stopSubscription,
     raiseAlert: async (input: { key?: unknown }) => {
@@ -168,7 +168,7 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
     userHome: "/Users/example",
     aveHome: "/Users/example/.ave",
     config: {},
-    log: () => undefined,
+
     hostApi,
   };
   const session = await openPluginProtocolSession({
@@ -283,11 +283,11 @@ describe("session cleanup always reaches the transport", () => {
       await expect(probe.session.instance.handlers.subscribe!()).resolves.toBe("subscribed");
       await expect(probe.session.teardown("subscription failure")).rejects.toThrow("subscription cleanup failed");
       expect(probe.stopSubscription).toHaveBeenCalledTimes(1);
-      expect(probe.stopWatcher).toHaveBeenCalledTimes(2);
+      expect(probe.stopWatcher).toHaveBeenCalledTimes(1);
       expect(probe.onClosed).toHaveBeenCalledExactlyOnceWith("subscription failure");
       await expect(probe.session.channel.requestMcp("tools/list", {})).rejects.toThrow("subscription failure");
       await probe.session.teardown("repeat");
-      expect(probe.stopWatcher).toHaveBeenCalledTimes(2);
+      expect(probe.stopWatcher).toHaveBeenCalledTimes(1);
       expect(probe.onClosed).toHaveBeenCalledTimes(1);
     } finally {
       probe.session.channel.closeInput();
@@ -307,7 +307,7 @@ describe("session cleanup always reaches the transport", () => {
         : probe.session.teardown("watcher failure");
       await expect(closing).rejects.toThrow("watcher cleanup failed");
       await expect(probe.session.channel.requestMcp("tools/list", {}))
-        .rejects.toThrow(/watcher failure|stopped/);
+        .rejects.toThrow(ending === "stop" ? "child exited" : "watcher failure");
     } finally {
       probe.session.channel.closeInput();
       await probe.session.teardown("case over");

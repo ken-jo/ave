@@ -1,6 +1,7 @@
 /** Protocol-session cleanup must own both ledgers and the child from construct through abort or exit. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,8 +89,6 @@ function watchedHostApi(): {
     onExit: () => undefined,
   }));
   const hostApi = {
-    getInstalledPluginIds: () => [PLUGIN_ID],
-    onPluginsChanged: () => watch(),
     config: {
       get: () => undefined,
       set: async () => undefined,
@@ -110,13 +109,12 @@ function contextFor(hostApi: PluginHostApi): PluginRuntimeContext {
     userHome: "/Users/example",
     aveHome: "/Users/example/.ave",
     config: {},
-    log: () => undefined,
     hostApi,
   };
 }
 
 /** Model requested termination separately from observed exit. */
-function processLink(answer: "runtime" | ((frame: Frame, reply: (frame: Frame) => void) => void)): {
+function processLink(answer: "runtime" | ((frame: Frame, reply: (frame: Frame) => void) => void), exitOnEof = true): {
   link: ChildLink;
   sent: Frame[];
   terminated: string[];
@@ -147,7 +145,7 @@ function processLink(answer: "runtime" | ((frame: Frame, reply: (frame: Frame) =
     childToHost.end();
     for (const handler of gone) handler(reason);
   };
-  hostToChild.on("end", () => exit(EXIT_REASON));
+  hostToChild.on("end", () => { if (exitOnEof) exit(EXIT_REASON); });
   return {
     link: {
       input: childToHost,
@@ -212,7 +210,7 @@ describe("the channel is non-destructive", () => {
     const { hostApi, liveWatchers } = watchedHostApi();
     const onClosed = vi.fn(async () => undefined);
     const session = await openPluginProtocolSession(sessionSpec(child.link, hostApi, onClosed));
-    expect(liveWatchers()).toBe(2);
+    expect(liveWatchers()).toBe(1);
     session.channel.closeInput();
     await expect(session.channel.exited).resolves.toBe(EXIT_REASON);
     expect(onClosed).toHaveBeenCalledTimes(1);
@@ -279,14 +277,31 @@ describe("teardown is the one destructive operation", () => {
     expect(child.terminated).toHaveLength(1);
   });
 
-  it("stops the instance with one stop frame and then exactly one terminate", async () => {
+  it("waits after stdin EOF before terminating an unresponsive child", async () => {
+    const child = processLink("runtime", false);
+    const { hostApi } = watchedHostApi();
+    const session = await openPluginProtocolSession(sessionSpec(child.link, hostApi, async () => undefined));
+    vi.useFakeTimers();
+    const stopping = session.instance.stop!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.link.output.writableEnded).toBe(true);
+    expect(child.terminated).toEqual([]);
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs - 1);
+    expect(child.terminated).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await stopping;
+    expect(child.terminated).toEqual([`[out-of-process-plugin] ${PLUGIN_ID}: stopped`]);
+  });
+
+  it("stops the instance with one stop frame and stdin EOF", async () => {
     const child = processLink("runtime");
     const { hostApi } = watchedHostApi();
     const onClosed = vi.fn(async () => undefined);
     const session = await openPluginProtocolSession(sessionSpec(child.link, hostApi, onClosed));
     await session.instance.stop!();
     expect(child.sent.filter((frame) => frame.method === PLUGIN_INSTANCE_METHODS.stop)).toHaveLength(1);
-    expect(child.terminated).toEqual([`[out-of-process-plugin] ${PLUGIN_ID}: stopped`]);
+    expect(child.link.output.writableEnded).toBe(true);
+    expect(child.terminated).toEqual([]);
     expect(onClosed).toHaveBeenCalledTimes(1);
   });
 });
