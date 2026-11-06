@@ -23,8 +23,9 @@ applyInitialAppearance(aveInitialAppearance);
 
 // ─── Composed host API surface ──────────────────────────────────────────────
 // The public + internal builders partition the methods; their full union
-// is split between the canonical `window.aveApi` and `window.ave` worlds. The
-// `satisfies` is the drift gate: the renderer declares AvePreloadApi and this is
+// is split: `window.ave` alone carries the five permission-side namespaces,
+// `window.aveApi` the rest. The
+// `satisfies` is the drift gate: types.ts declares AvePreloadApi and this is
 // the one place the whole surface is assembled, so a member the renderer
 // expects and no builder provides fails to compile here (each builder checks
 // its own members against the same type).
