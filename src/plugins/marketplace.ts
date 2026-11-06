@@ -105,6 +105,13 @@ function requirePreparedMarketplacePluginActivation(
   return activation;
 }
 
+/** Registry approval grants contain only the current target allowlist, independently of authored extension fields. */
+function projectApprovedPluginAccess(access: PluginAccessSpec | undefined): PluginAccessSpec | undefined {
+  return access === undefined ? undefined : {
+    plugins: access.plugins.map(({ pluginId }) => ({ pluginId })),
+  };
+}
+
 function shaOfManifest(manifest: unknown): string {
   return sha256Hex(canonicalJSON(manifest));
 }
@@ -642,7 +649,7 @@ export class PluginMarketplaceService {
           installedConsent = consent;
           return this.prepareGitInstallReceipt(pluginId, pluginRoot, staged, files, verifiedPayload, consent, options.reviewedAppVersion);
         },
-        approvedPluginAccess: plan.authority.pluginAccess as PluginAccessSpec | undefined,
+        approvedPluginAccess: projectApprovedPluginAccess(plan.authority.pluginAccess as PluginAccessSpec | undefined),
         activatePreparedArtifact,
         registryInstallSource: "user",
         registryOrigin: origin,
@@ -753,7 +760,7 @@ export class PluginMarketplaceService {
     previousEntry: PluginRegistryEntry | null,
   ): Promise<void> {
     const { plan } = staged;
-    const approvedPluginAccess = plan.authority.pluginAccess as PluginAccessSpec | undefined;
+    const approvedPluginAccess = projectApprovedPluginAccess(plan.authority.pluginAccess as PluginAccessSpec | undefined);
     await updatePluginRegistry(this.registryPath, (registry) => {
       const existing = registry.plugins.find((entry) => entry.id === plan.name);
       if (existing) {
@@ -1135,7 +1142,7 @@ export class PluginMarketplaceService {
         });
         const registryManifestPath = posix.join(pluginId, "plugin.json");
         const manifestSha256 = shaOfManifest(manifestDocument);
-        const approvedPluginAccess = manifest.pluginAccess;
+        const approvedPluginAccess = projectApprovedPluginAccess(manifest.pluginAccess);
 
         const durableCommit = (): Promise<string> => {
           if (commitAttempt) return commitAttempt;

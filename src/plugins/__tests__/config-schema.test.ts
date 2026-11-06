@@ -298,7 +298,6 @@ describe("US-B1 regression — baseline manifest WITHOUT configSchema still vali
         },
       ],
       capabilities: ["meeting-recorder"],
-      eventSubscriptions: ["calendar.event.started"],
     }));
     if (!ok) {
       // eslint-disable-next-line no-console

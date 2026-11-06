@@ -34,6 +34,9 @@ function ownedChild(disposeAfterMs?: number) {
   const service = servePluginChild(hostToChild, childToHost);
   let failCompletion!: (error: Error) => void, finish!: (result: { exitCode: number; timedOut: boolean }) => void;
   const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve, reject) => { finish = resolve; failCompletion = reject; });
+  // A healthy process exits on stdin EOF; the supervisor still disposes it before releasing ownership.
+  const eof = vi.fn(() => { service.hostGone(); finish({ exitCode: 0, timedOut: false }); });
+  hostToChild.once("end", eof);
   let rejectDisposal!: (error: Error) => void, resolveDisposal!: () => void;
   const disposal = new Promise<void>((resolve, reject) => { resolveDisposal = resolve; rejectDisposal = reject; });
   void disposal.catch(() => undefined);
@@ -45,7 +48,7 @@ function ownedChild(disposeAfterMs?: number) {
   return {
     owned: { id: 4242, stdin: hostToChild, stdout: childToHost, stderr: new PassThrough(), completion, dispose,
       diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" } },
-    dispose, failCompletion, finish,
+    dispose, failCompletion, finish, eof,
     failCleanup: () => rejectDisposal(new MxcProcessCleanupError("Termination unverified")),
   };
 }
@@ -179,6 +182,7 @@ describe("native plugin child quarantine through the runtime", () => {
     await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
     // onTerminating → disposal resolves → onClosed → the incumbent's registration is released exactly once.
     await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(children[0]!.eof).toHaveBeenCalledOnce();
     expect(children[0]!.dispose).toHaveBeenCalledOnce();
     expect(spawnNativeChild).toHaveBeenCalledTimes(2);
     // Its record is gone, so a second restart is neither pending nor quarantined.

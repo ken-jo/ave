@@ -987,10 +987,10 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors manifest.pluginAccess into registry approvedPluginAccess (parity with marketplace install)", async () => {
-    // Sideloaded cross-plugin event subscriptions require an approvedPluginAccess grant.
+    // Sideloaded cross-plugin calls retain the same target allowlist as marketplace installs.
     const accessSpec = {
       plugins: [
-        { pluginId: "samplemail", events: ["email.new", "calendar.event.upcoming"] },
+        { pluginId: "samplemail" },
       ],
     };
     await writeFile(
@@ -1019,9 +1019,9 @@ describe("PluginMarketplaceService.installLocal", () => {
   });
 
   it("mirrors approvedPluginAccess on UPDATE (existing entry path) — not just on insert", async () => {
-    // Reinstall must replace approvedPluginAccess so new cross-plugin subscriptions are authorized.
+    // Reinstall replaces the approved target allowlist rather than retaining the old grant.
     const accessSpec = {
-      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
+      plugins: [{ pluginId: "samplemail" }],
     };
     await writeFile(
       registryPath,
@@ -1068,6 +1068,30 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(entry.installSource).toBe("local-dev");
     expect(entry.bundleRefs).toEqual(["sampleassistant"]);
     expect(entry.pendingUpdate).toBeUndefined();
+  });
+
+  it.each(["insert", "update"])("projects only current access targets before %s activation or registry commit", async (operation) => {
+    const service = makeService();
+    if (operation === "update") await service.installLocal(sourceDir, preparedActivationOptionsForTest);
+    const accessSpec = {
+      plugins: [{ pluginId: "samplemail", events: ["email.new"] }],
+      agentApprovalScopes: ["email.send"],
+    };
+    await writeFile(join(sourceDir, "plugin.json"), JSON.stringify(agentPluginsDocument({
+      id: "test-plugin", name: "Test Plugin", version: "1.2.3", description: "fixture",
+      entry: "dist/hostPlugin.js", pluginAccess: accessSpec,
+    })), "utf-8");
+    const currentAccess = { plugins: [{ pluginId: "samplemail" }] };
+    // The injected activation commits without schema validation; registry trust still uses only supported fields.
+    await service.installLocal(sourceDir, {
+      activatePreparedArtifact: async (prepared) => {
+        expect(prepared.approvedPluginAccess).toEqual(currentAccess);
+        return preparedActivationOptionsForTest.activatePreparedArtifact(prepared);
+      },
+    });
+    const registry = JSON.parse(await readFile(registryPath, "utf-8"));
+    expect(registry.plugins.find((entry: { id: string }) => entry.id === "test-plugin")?.approvedPluginAccess)
+      .toEqual(currentAccess);
   });
 
   it.each([

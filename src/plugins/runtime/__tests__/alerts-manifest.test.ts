@@ -332,7 +332,6 @@ describe("parsePluginJson — alert declarations at load", () => {
       entry: { type: "string" },
       tools: { type: "array" },
       alerts: { type: "object" },
-      emittedEvents: { type: "array" },
     },
     namespaceRequired: ["entry", "tools"],
   });
@@ -356,7 +355,6 @@ describe("parsePluginJson — alert declarations at load", () => {
     const write = pluginManifestWriter({ id: "fixturedeprecated", name: "Fixture Deprecated" }, () => workDir);
     const extra = {
       alerts: alertsBlock(),
-      emittedEvents: ["fixture.reply.detected"],
       notificationEvents: [{ event: "fixture.reply.detected" }],
     };
     const validator = await buildManifestValidator();

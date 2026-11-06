@@ -154,7 +154,6 @@ describe("runtime manifest validation hardening", () => {
   it("3) retired notification declarations drop with a warning and the plugin still loads", async () => {
     await writePlugin("p-notif", {
       tools: ["pnotif_hello", "pnotif_bad", "pnotif_good"],
-      eventSubscriptions: ["meeting.started"],
       notificationEvents: [{ event: "meeting.ghost" }],
     });
     const runtime = new PluginRuntime({
