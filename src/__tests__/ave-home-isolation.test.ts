@@ -1,9 +1,9 @@
 /** Mock the account home so a broken isolation guard can only resolve scratch paths. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join, parse, resolve } from "node:path";
+import { dirname, join, parse, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -167,8 +167,9 @@ describe("the test process's Ave home", () => {
     for (const [value, error] of [
       ["relative-root", /AVE_TEST_TMP_ROOT must be absolute/],
       ["", /AVE_TEST_TMP_ROOT must be absolute/],
-      // Checked against the real home global setup captured, not the mocked one: the filesystem root holds it.
-      [parse(actualOs.homedir()).root, /AVE_TEST_TMP_ROOT must not contain/],
+      // Checked against the real account home global setup captured, not HOME or the mocked one; on a Windows runner HOME
+      // may sit on another drive (D:\a\_temp\home) than the account profile, so the root must come from that capture.
+      [parse(inject("realAccountHome")).root, /AVE_TEST_TMP_ROOT must not contain/],
     ] as const) {
       process.env.AVE_TEST_TMP_ROOT = value;
       expect(() => aveHome(), value).toThrow(error);
@@ -248,5 +249,29 @@ describe("canonicalPath", () => {
 
   it.runIf(process.platform === "darwin")("reads /tmp as /private/tmp for a path that does not exist", () => {
     expect(canonicalPath("/tmp/ave-home-guard-not-there/child")).toBe("/private/tmp/ave-home-guard-not-there/child");
+  });
+});
+
+describe("an explicit AVE_TEST_TMP_ROOT", () => {
+  it("is refused on Windows when it is the drive root, or any ancestor, of the account home, whatever the letter case", () => {
+    const home = "D:\\a\\_temp\\home";
+    for (const value of ["D:\\", "d:\\", "D:/", "D:\\a", "D:\\A\\_TEMP\\", home, `${home}\\.ave`]) {
+      expect(() => configuredTestTmpRoot(home, value, true, win32), value).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    }
+    expect(() => configuredTestTmpRoot(home, "scratch", true, win32)).toThrow(/AVE_TEST_TMP_ROOT must be absolute/);
+    expect(configuredTestTmpRoot(home, "D:\\scratch\\", true, win32)).toBe("D:\\scratch");
+    expect(configuredTestTmpRoot(home, "E:\\", true, win32)).toBe("E:\\");
+    expect(configuredTestTmpRoot(home, `${home}\\.ave\\scratch`, true, win32)).toBe(`${home}\\.ave\\scratch`);
+    expect(configuredTestTmpRoot(home, "D:\\a\\_temp\\home-sibling", true, win32)).toBe("D:\\a\\_temp\\home-sibling");
+  });
+
+  it("is refused on POSIX when it is / or an ancestor of the account home, case-sensitively on Linux", () => {
+    const home = "/home/runner";
+    for (const value of ["/", "/home", "/home/", home, `${home}/.ave`]) {
+      expect(() => configuredTestTmpRoot(home, value, false, posix), value).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    }
+    expect(configuredTestTmpRoot(home, "/HOME", false, posix)).toBe("/HOME");
+    expect(() => configuredTestTmpRoot(home, "/HOME", true, posix)).toThrow(/AVE_TEST_TMP_ROOT must not contain/);
+    expect(configuredTestTmpRoot(home, "/tmp/ave-scratch", false, posix)).toBe("/tmp/ave-scratch");
   });
 });

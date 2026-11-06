@@ -3,7 +3,9 @@ import { createRequire } from "node:module";
 
 // Path functions only, loaded past suite mocks like the isolation guard that imports this.
 const nodeRequire = createRequire(import.meta.url);
-const { isAbsolute, join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
+const hostPath = nodeRequire("node:path") as typeof import("node:path");
+
+type PathApi = Pick<typeof import("node:path"), "isAbsolute" | "join" | "resolve" | "sep">;
 
 /**
  * Undefined when unset, so the default roots apply. A set value replaces every default test root, so it must be absolute
@@ -14,6 +16,7 @@ export function configuredTestTmpRoot(
   accountHome: string,
   value: string | undefined = process.env.AVE_TEST_TMP_ROOT,
   caseInsensitive: boolean = process.platform !== "linux",
+  { isAbsolute, join, resolve, sep }: PathApi = hostPath,
 ): string | undefined {
   if (value === undefined) return undefined;
   if (!isAbsolute(value)) throw new Error(`AVE_TEST_TMP_ROOT must be absolute, got ${JSON.stringify(value)}`);
