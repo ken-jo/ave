@@ -9,7 +9,8 @@ import type { AlertCard, AlertSettings } from "../../shared/alerts-types.js";
 import { normalizeAlertSettings } from "../../data/settings-normalization.js";
 import { parseStagedEnvelope } from "../../shared/staged-origins.js";
 import { AlertsService } from "../service.js";
-import { scanAndRaiseDueSoon } from "../../work-board/due-soon.js";
+import { DUE_SOON_TICK_MS, scanAndRaiseDueSoon } from "../../work-board/due-soon.js";
+import { ALERT_KIND_COOLDOWN_MS } from "../gate.js";
 import { okListReader } from "../../work-board/__tests__/board-test-fixtures.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import type { AlertResult } from "../../plugins/public-contract.js";
@@ -871,6 +872,33 @@ describe("host kinds", () => {
     expect(h.shown).toHaveLength(delivered + 1);
     expect(h.fired).toHaveLength(1);
     expect(h.events.filter((event) => event.type === "alert.raised")).toHaveLength(1);
+  });
+
+  it("alerts every item due together before its deadline through cooldown re-scans", async () => {
+    const h = await harness();
+    await h.service.registerHostKinds();
+    await h.service.setKind("@host:due-soon", { enabled: true, osNotification: true });
+    const start = h.clock.now;
+    const items: WorkItemResolved[] = [12, 14, 16].map((minutes, index) => ({
+      id: index + 1, title: `item ${index + 1}`, status: "planned", status_resolved: "planned", priority: "medium",
+      created_at: new Date(start).toISOString(), updated_at: new Date(start).toISOString(),
+      due_at: new Date(start + minutes * MINUTE).toISOString(),
+    }));
+    const store = okListReader(items);
+    const raisedAt = new Map<string, number>();
+    // Follow the scheduler cadence: a deferred scan re-runs after the cooldown, otherwise on the next tick.
+    while (h.clock.now < start + 20 * MINUTE) {
+      const deferred = await scanAndRaiseDueSoon(store, h.clock.now, async (input) => {
+        const result = await h.service.raise("@host", input);
+        if (result.status === "raised") raisedAt.set(input.key, h.clock.now);
+        return result;
+      });
+      h.clock.now += deferred ? ALERT_KIND_COOLDOWN_MS : DUE_SOON_TICK_MS;
+    }
+    expect(raisedAt.size).toBe(items.length);
+    for (const item of items) {
+      expect(raisedAt.get(`${item.id}:${item.due_at}`)).toBeLessThan(Date.parse(item.due_at!));
+    }
   });
 
   it("redraws a restarted deadline, preserves dismissal and admits a changed deadline", async () => {

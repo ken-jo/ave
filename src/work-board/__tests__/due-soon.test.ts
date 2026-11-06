@@ -1,6 +1,7 @@
 /** Scan a half-open deadline window; the host owns delivery decisions. */
 import { describe, it, expect, vi } from "vitest";
-import { scanAndRaiseDueSoon, DUE_SOON_WINDOW_MS, type DueSoonBoardReader } from "../due-soon.js";
+import { scanAndRaiseDueSoon, startDueSoonScans, DUE_SOON_TICK_MS, DUE_SOON_WINDOW_MS, type DueSoonBoardReader } from "../due-soon.js";
+import { ALERT_KIND_COOLDOWN_MS } from "../../alerts/gate.js";
 import type { WorkItem, WorkItemResolved } from "../../shared/work-board-types.js";
 import { okListReader } from "./board-test-fixtures.js";
 
@@ -83,5 +84,54 @@ describe("scanAndRaiseDueSoon", () => {
     const raise = vi.fn(raiseAlert);
     await scanAndRaiseDueSoon(store, NOW, raise);
     expect(raise).not.toHaveBeenCalled();
+  });
+});
+
+describe("startDueSoonScans", () => {
+  it("re-scans once per cooldown while deferred, keeps one pending re-scan and stops both timers", async () => {
+    vi.useFakeTimers();
+    try {
+      let deferred = true;
+      const scan = vi.fn(async () => deferred);
+      const onError = vi.fn();
+      const stop = startDueSoonScans(scan, onError);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(scan).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(2);
+      await vi.advanceTimersByTimeAsync(ALERT_KIND_COOLDOWN_MS);
+      expect(scan).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(2);
+      deferred = false;
+      await vi.advanceTimersByTimeAsync(ALERT_KIND_COOLDOWN_MS);
+      expect(scan).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(DUE_SOON_TICK_MS);
+      expect(scan).toHaveBeenCalledTimes(4);
+      deferred = true;
+      await vi.advanceTimersByTimeAsync(DUE_SOON_TICK_MS);
+      expect(vi.getTimerCount()).toBe(2);
+      const calls = scan.mock.calls.length;
+      stop();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(2 * DUE_SOON_TICK_MS);
+      expect(scan).toHaveBeenCalledTimes(calls);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a failed scan and keeps the tick", async () => {
+    vi.useFakeTimers();
+    try {
+      const scan = vi.fn(async () => { throw new Error("scan failed"); });
+      const onError = vi.fn();
+      const stop = startDueSoonScans(scan, onError);
+      await vi.advanceTimersByTimeAsync(DUE_SOON_TICK_MS);
+      expect(onError).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

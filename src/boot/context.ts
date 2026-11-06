@@ -134,8 +134,8 @@ export class BootContext {
   declare routinesScheduler: RoutinesScheduler;
   declare workBoardStore: WorkBoardStore;
   declare workBoardStorage: WorkBoardStorage;
-  declare dueSoonTimer: ReturnType<typeof setInterval> | undefined;
   declare startWorkBoardDueSoon: () => void;
+  declare stopWorkBoardDueSoon: (() => void) | undefined;
   declare alertsService: AlertsService;
   declare sessionTasksStore: SessionTasksStore;
   declare sessionGoalStore: SessionGoalStore;
@@ -222,7 +222,7 @@ export class BootContext {
     this.projectRoot = inputs.projectRoot;
     this.mainWindow = inputs.mainWindow;
     this.getMainWindow = inputs.getMainWindow;
-    this.dueSoonTimer = undefined;
+    this.stopWorkBoardDueSoon = undefined;
   }
 }
 
@@ -263,8 +263,8 @@ const BOOT_CONTEXT_FIELDS = [
   "routinesScheduler",
   "workBoardStore",
   "workBoardStorage",
-  "dueSoonTimer",
   "startWorkBoardDueSoon",
+  "stopWorkBoardDueSoon",
   "alertsService",
   "sessionTasksStore",
   "sessionGoalStore",
