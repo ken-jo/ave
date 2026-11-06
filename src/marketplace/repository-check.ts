@@ -222,8 +222,8 @@ function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: Reposi
     report(`${path}: ${errorMessage(error)}`);
     return;
   }
-  // A published foreign descriptor remains listed without admitting its authority to this host.
-  if (isRecord(document) && document.kind === entry.kind && document.name === entry.name
+  // Foreign-only listings carry metadata without versions; mixed listings still validate their descriptor and tree.
+  if (!entry.versions && isRecord(document) && document.kind === entry.kind && document.name === entry.name
     && excluded.some((item) => item.packageId === subject && item.version === document.version && item.hostProtocol === document.hostProtocol)) {
     if (options.releasedManifests) checkReleasedManifests(entry, options.releasedManifests, options.alertsReleaseVersion, report, excluded);
     return;
