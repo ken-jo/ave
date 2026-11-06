@@ -40,7 +40,8 @@ it.runIf(process.platform !== "win32")("preserves host path semantics", () => {
 });
 
 it.each([String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`, String.raw`Cert:\CurrentUser\My\fixture`,
-  String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`, "Env:fixture"])("does not assign a filesystem identity to provider target %s", path => {
+  String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`, "Env:fixture",
+  String.raw`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\Software\Foo`, String.raw`Microsoft.PowerShell.Core\Environment::GITHUB_TOKEN`, "C:fixture"])("does not assign a filesystem identity to provider target %s", path => {
   expect(modelShellPath(path, { dialect: "powershell", location: process.cwd() }).nativePath).toBeUndefined();
 });
 it.runIf(process.platform === "win32").each([String.raw`C:\fixture`, "d:/fixture"])("retains absolute single-letter drive %s", path => {

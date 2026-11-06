@@ -12,10 +12,17 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { PermissionManager } from "../permission-manager.js";
 import { decidePermission } from "../decision-pipeline.js";
-import { buildHostShellExecutionPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan as buildPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { recordIssuedHostShellExecutionPlan } from "../host-shell-execution-plan-issuance.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
 
+// Plans as the host provider issues them; startup proof trusts only issued plans.
+function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
+  const plan = buildPlan(input);
+  recordIssuedHostShellExecutionPlan(plan, "fixture");
+  return plan;
+}
 const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture",
   confines: { filesystem: true, process: true, network: true } } as const;
 const MXC_PLAN = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true,
@@ -81,7 +88,7 @@ describe("confined native shell startup decisions", () => {
   });
 
   it.each([
-    "Set-Content -Path ../outside.txt -Value y", "Remove-Item -Recurse child",
+    "Set-Content -Path ../outside.txt -Value y", String.raw`Set-Content -Path ..\outside.txt -Value y`, "Remove-Item -Recurse child",
     "Set-Content -Path x.txt -Value y; & $x", "& $x",
     "Set-Content -Path .git/config -Value y", "New-Item -ItemType SymbolicLink -Path d",
     "New-Item -ItemType Directory -Path ../outside", "New-Item -ItemType Directory -Path .git/config",
@@ -100,14 +107,16 @@ describe("confined native shell startup decisions", () => {
 
 const PROVIDER_TARGETS = [String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`,
   String.raw`Cert:\CurrentUser\My\fixture`, String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`,
-  "Env:fixture", "Function:fixture", "Variable:fixture"];
+  "Env:fixture", "Function:fixture", "Variable:fixture",
+  String.raw`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\Software\Foo`, String.raw`Microsoft.PowerShell.Security\Certificate::CurrentUser\My\ABC`,
+  String.raw`Microsoft.PowerShell.Core\Variable::x`, String.raw`Microsoft.PowerShell.Core\Environment::GITHUB_TOKEN`, String.raw`C:fixture`];
 describe("provider targets stay outside filesystem authority", () => {
   it.each(["win32", "darwin"] as const)("asks for provider writes on %s", platform => {
     setProcessPlatform(platform);
     for (const target of PROVIDER_TARGETS) for (const command of [
       `Remove-Item -Path ${target}`, `Move-Item ${target} ${target}Destination`,
       `New-Item -ItemType Directory -Path ${target}`, `Set-Content -Path ${target} -Value y`,
-      `Set-ItemProperty -Path ${target} -Name fixture -Value y`,
+      `Set-ItemProperty -Path ${target} -Name fixture -Value y`, `Get-Content -Path ${target}`,
     ]) {
       const result = check(command, MXC_PLAN);
       expect(result, command).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });

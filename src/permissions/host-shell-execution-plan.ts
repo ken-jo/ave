@@ -1,7 +1,6 @@
 // Path-string ACL grants cannot make one-shot filesystem leases reparse-safe; until handle-bound/no-follow grants exist, the plain-host Windows route requires per-invocation consent.
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { recordBuiltHostShellExecutionPlan } from "./host-shell-execution-plan-built.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
 import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
@@ -184,20 +183,14 @@ function hasShellContainment(capability: SandboxCapability): boolean {
 }
 
 // Build the immutable plan once per invocation, after final tool category/input are known and before permission routing. It intentionally does not attempt Windows ACL grants or an ASRT wrapper for the Plan-B branch.
-export function buildHostShellExecutionPlan(input: HostShellExecutionPlanInput): HostShellExecutionPlan {
-  return recordBuiltHostShellExecutionPlan(planHostShellExecution(input));
-}
-
-interface HostShellExecutionPlanInput {
+export function buildHostShellExecutionPlan(input: {
   platform: NodeJS.Platform;
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
-}
-
-function planHostShellExecution(input: HostShellExecutionPlanInput): HostShellExecutionPlan {
+}): HostShellExecutionPlan {
   const shellSubstrate = input.shellSubstrate ?? "asrt";
   if (shellSubstrate === "mxc" && input.platform !== "win32") {
     throw new Error("The MXC shell substrate exists only on Windows");

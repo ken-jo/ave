@@ -16,6 +16,7 @@ import {
   type HostShellExecutionRequest,
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
+import { issuedHostShellExecutionPlanGeneration, recordIssuedHostShellExecutionPlan } from "./host-shell-execution-plan-issuance.js";
 
 // RENDERER-SAFETY: this module is imported by the renderer (ToolApprovalContent uses isWeakSandbox / the types), so it MUST NOT statically import `asrt-sandbox.js` — that package (`@anthropic-ai/sandbox-runtime`) pulls Node built-ins (`fs`/`child_process`/`net`) into the renderer webpack bundle. The "is a server genuinely wrapped" signal therefore comes from the MAIN-process wrapped registry below (only StdioTransport, main-only, populates it) plus the active capability snapshot — never a direct gate call into asrt-sandbox.
 
@@ -85,7 +86,6 @@ let _pluginWorkerConfinementRequestedAtBoot = false;
 let _bootOutcome: SandboxBootOutcome | null = null;
 let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
-const _issuedHostShellExecutionPlans = new WeakMap<HostShellExecutionPlan, string>();
 let _statusChangeListener: (() => void) | undefined;
 
 // The one observer of status-snapshot changes: the desktop IPC layer, which turns each change into a renderer hint so a
@@ -304,7 +304,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
   });
-  _issuedHostShellExecutionPlans.set(plan, generation);
+  recordIssuedHostShellExecutionPlan(plan, generation);
   return plan;
 }
 
@@ -312,14 +312,14 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
 export function isIssuedHostShellExecutionPlan(
   plan: HostShellExecutionPlan,
 ): boolean {
-  return _issuedHostShellExecutionPlans.has(plan);
+  return issuedHostShellExecutionPlanGeneration(plan) !== undefined;
 }
 
 // Capability generation captured atomically when the host issued this plan.
 export function getIssuedHostShellExecutionPlanGeneration(
   plan: HostShellExecutionPlan,
 ): string | undefined {
-  return _issuedHostShellExecutionPlans.get(plan);
+  return issuedHostShellExecutionPlanGeneration(plan);
 }
 
 // Only exact builtin bash/powershell names imply per-command shell wrapping. Do not merge this set with broad shell-name validation or canonical-instance checks; other builtins and loopback plugins run in-process, while external workers need their own live wrap records.

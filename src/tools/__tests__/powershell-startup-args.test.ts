@@ -4,7 +4,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 
 vi.mock("../../shared/powershell-startup-policy.js", async original => ({
   ...await original<typeof import("../../shared/powershell-startup-policy.js")>(),
-  MXC_POWERSHELL_STARTUP_ARGS: ["-fixture-startup", "-fixture-policy"],
+  WIN32_POWERSHELL_STARTUP_ARGS: ["-fixture-startup", "-fixture-policy"],
 }));
 const originalPlatform = process.platform;
 afterEach(() => { setProcessPlatform(originalPlatform); });

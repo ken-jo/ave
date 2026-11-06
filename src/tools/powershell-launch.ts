@@ -1,4 +1,4 @@
-import { MXC_POWERSHELL_STARTUP_ARGS, POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
+import { WIN32_POWERSHELL_STARTUP_ARGS, POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -41,7 +41,7 @@ export function preparePowerShellLaunch(
   profile?: SandboxProcessHome,
 ): PowerShellLaunch {
   const env = Object.fromEntries(Object.entries(baseEnv).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
-  const args = [...(process.platform === "win32" ? MXC_POWERSHELL_STARTUP_ARGS : POWERSHELL_STARTUP_ARGS)];
+  const args = [...(process.platform === "win32" ? WIN32_POWERSHELL_STARTUP_ARGS : POWERSHELL_STARTUP_ARGS)];
   let ownedProfile: SandboxProcessHome | undefined;
   let cleaned = false;
   const cleanup = (): void => {

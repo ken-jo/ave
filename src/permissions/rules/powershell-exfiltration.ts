@@ -31,7 +31,7 @@ import {
 } from "../../shared/powershell-recursive-traversal.js";
 
 import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
-import { isPowerShellProviderPath, modelShellPath } from "../../shared/shell-native-path.js";
+import { isPowerShellFilesystemSyntax, modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -1166,7 +1166,7 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined,
 function applyStartupPolicy(signals: ShellFloorSignals, executionPlan?: HostShellExecutionPlan): ShellFloorSignals {
   if (signals.outcome === "visible-floor" || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
-  if (isPowerShellStartupPinned(executionPlan?.platform, executionPlan)) return signals;
+  if (isPowerShellStartupPinned(process.platform, executionPlan)) return signals;
   const result: ShellFloorSignals = { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
   const flow = literalShellFlow(signals);
   return flow ? recordLiteralShellFlow(result, flow) : result;
@@ -1295,7 +1295,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   let currentDirectory: string | null = cwd;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
     let value = binding.value;
-    if (isPowerShellProviderPath(value)) { unproven = true; return; }
+    if (!isPowerShellFilesystemSyntax(value)) { unproven = true; return; }
     if (effect === "write" && (binding.dynamic || !literalPath && /[*?\[\]]/.test(value))) {
       unknownProtectedWrite ??= "The shell write target may resolve to a protected path.";
     }

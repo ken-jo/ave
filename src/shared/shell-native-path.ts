@@ -53,14 +53,14 @@ function windowsVolumeRoot(path: string): string {
   return win32.parse(path).root;
 }
 
-// Provider drives are not filesystem confinement. Env/Function/Variable stay
-// unresolved too; no provider is granted filesystem authority.
-export function isPowerShellProviderPath(path: string): boolean {
-  return /^[a-z][a-z0-9_-]+:|^[a-z][a-z0-9_-]*::/i.test(path);
+// Filesystem syntax is defined positively: no `:`, a drive-absolute path, or UNC. Every other colon form (provider
+// drives, `Provider::`, module-qualified providers, drive-relative `C:x`) gets no filesystem authority.
+export function isPowerShellFilesystemSyntax(path: string): boolean {
+  return !path.includes(":") || /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}/.test(path);
 }
 
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {
-  if (model.dialect === "powershell" && isPowerShellProviderPath(path)) {
+  if (model.dialect === "powershell" && !isPowerShellFilesystemSyntax(path)) {
     return { nativePath: undefined, normalizedPath: path, volumeRoot: "", floorPaths: [] };
   }
   if (sep !== "\\") {
