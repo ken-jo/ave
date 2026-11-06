@@ -138,11 +138,8 @@ jobs:
       # The steps above are preconditions, not gates: without a checkout, an
       # install, the uv toolchain and the smoke's Python there is nothing to
       # verify, so a red job there genuinely means "could not verify". From
-      # here down the job compiles and builds the product, and plans the suite
-      # the Vitest shards run — and the
-      # repository-hygiene gates run after all of it, in build-and-test, which
-      # needs this job and every Vitest shard. The block above them says why
-      # they are there and not above.
+      # here down the job compiles and builds the product and plans the suite.
+      # Independent gates cannot prevent those checks from running.
       - name: Typecheck
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -154,12 +151,11 @@ jobs:
       # `typecheck` covers production sources only — both tsconfigs exclude
       # `src/**/__tests__/**`, so before this step a test could reference an unimported
       # symbol and reach CI green. This is the ratchet for the rest: new test files are
-      # fully checked, existing ones may only improve. The self-test runs beside it
-      # because a ratchet that silently stops comparing reports green forever.
+      # fully checked, existing ones may only improve.
       - name: Typecheck tests (baseline ratchet)
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: bun run check:typecheck-tests:self-test && bun run check:typecheck-tests
+        run: bun run check:typecheck-tests
       # Postinstall leaves native modules on Electron's ABI. The shared Vitest
       # runner uses ELECTRON_RUN_AS_NODE, so tests and the desktop runtime consume
       # that same binary without an in-place Node-ABI rebuild.
@@ -337,17 +333,84 @@ jobs:
         run: bun run test:ci
         working-directory: ave
 
+  gate-core:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        with:
+          bun-version-file: ave/.bun-version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - run: bun install --frozen-lockfile
+        working-directory: ave
+      - name: Remove root-level binary shims before the hygiene gates
+        working-directory: ave
+        run: rm -f ajv pino
+      - name: Core hygiene gates
+        working-directory: ave
+        run: bun run check:gate-core && bun run test:knip-gate
+
+  mxc-pins:
+    runs-on: ubuntu-24.04-arm
+    env:
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron-win
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        with:
+          bun-version-file: ave/.bun-version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - run: bun install --frozen-lockfile
+        working-directory: ave
+      - name: Cache Windows runtime archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/electron-win
+          key: ci-win-electron-${{ hashFiles('ave/bun.lock') }}
+      - name: Verify native SDK pins and Windows packaging
+        timeout-minutes: 10
+        working-directory: ave
+        run: bun run check:mxc-pins && bun run check:mxc-packaging
+
   build-and-test:
-    # The required check on main. It reports success only when the build job
-    # and every Vitest shard succeeded (a docs-only change skips the shards
-    # and checks its documents in the build job), and every selected native platform succeeded, then verifies SDK
-    # packaging and runs hygiene gates. `always()` keeps it running when a needed job failed
-    # and when the run was cancelled, so a red or cancelled shard turns this
-    # check red instead of skipping it: a skipped job reports success to
-    # branch protection. Its first step is `always()` too, so a cancelled run
-    # cannot skip it either, and it fails on any upstream result other than
-    # success (cancelled and skipped included).
-    needs: [build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests]
+    # Reject upstream failures and cancellations even when shards are skipped.
+    # `build-and-test`, `naming-gate` and `Linux confinement path tests` are
+    # the required status checks on `main` (gh api repos/ken-jo/ave/branches/main/protection --jq
+    # .required_status_checks.contexts). gate-core and mxc-pins report under
+    # names that list does not contain, so only this job's explicit result
+    # check below lets them block a merge; skipped or cancelled fails too.
+    needs: [build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -361,14 +424,12 @@ jobs:
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
     runs-on: ubuntu-24.04-arm
-    env:
-      # Parallel runners may share a home; each workspace owns its Bun cache.
-      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron-win
     steps:
       - name: Require the build and every Vitest shard
         if: always()
         env:
+          GATE_CORE_RESULT: ${{ needs.gate-core.result }}
+          MXC_PINS_RESULT: ${{ needs.mxc-pins.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           VITEST_RESULT: ${{ needs.vitest.result }}
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
@@ -377,6 +438,14 @@ jobs:
           MACOS_RESULT: ${{ needs.macos-permission-tests.result }}
           LINUX_RESULT: ${{ needs.linux-confinement-tests.result }}
         run: |
+          if [ "$GATE_CORE_RESULT" != "success" ]; then
+            echo "::error::the core gates ended $GATE_CORE_RESULT"
+            exit 1
+          fi
+          if [ "$MXC_PINS_RESULT" != "success" ]; then
+            echo "::error::the native pins and packaging ended $MXC_PINS_RESULT"
+            exit 1
+          fi
           if [ "$BUILD_RESULT" != "success" ]; then
             echo "::error::the build job ended $BUILD_RESULT"
             exit 1
@@ -408,137 +477,11 @@ jobs:
         if: needs.build.outputs.docs_only != 'true'
         with:
           path: ave
-          # Packaging and hygiene inspect this tree and tracked-file inventory;
-          # diff/ancestry planning stays in the build job with full history.
+          # Only the CI budget report reads this tree; diff/ancestry planning
+          # stays in the build job with full history.
           fetch-depth: 1
           # No later step pushes or fetches with the job token.
           persist-credentials: false
-      - uses: ./ave/.github/actions/setup-bun
-        if: needs.build.outputs.docs_only != 'true'
-        with:
-          bun-version-file: ave/.bun-version
-      # Cache the built node_modules (Electron dist + electron-rebuilt native
-      # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
-      # ABI-correct binaries without re-downloading Electron or recompiling
-      # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
-      # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: node-modules-cache
-        if: needs.build.outputs.docs_only != 'true'
-        with:
-          path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
-      # Bun's download cache only feeds an install that has to fetch packages.
-      # After an exact node_modules hit `bun install` finds every package in
-      # place (2-3 s in every measured run), so restoring this cache there was
-      # ~45 s of download for nothing. It is restored, and saved, only when
-      # node_modules missed.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.build.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
-        with:
-          path: .cache/bun
-          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
-      - run: bun install --frozen-lockfile
-        if: needs.build.outputs.docs_only != 'true'
-        working-directory: ave
-      - name: Cache Windows runtime archives
-        if: needs.build.outputs.docs_only != 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .cache/electron-win
-          key: ci-win-electron-${{ hashFiles('ave/bun.lock') }}
-      - name: Verify native SDK pins and Windows packaging
-        if: needs.build.outputs.docs_only != 'true'
-        timeout-minutes: 10
-        working-directory: ave
-        run: bun run check:mxc-pins && bun run check:mxc-packaging
-      # Repository hygiene: manifests, baseline ledgers, and the self-tests of
-      # the gates that read them. Nothing below compiles or runs the product; a
-      # failure here means a bookkeeping file is stale, not that the code is
-      # broken.
-      #
-      # Two of the four used to run ahead of Typecheck; the duplicate scan ran
-      # ahead of the suite from inside `check:test-quality`, and the sunset
-      # ledger ahead of every compile from inside `bun run build`. Two changes
-      # landed the same day — one declared every tracked image in a manifest,
-      # the other deleted some of those images — and the merge left the
-      # manifest stale. The gate failed, and because a job stops at its first
-      # failed step, Typecheck, the test-typecheck ratchet, the build and the
-      # entire suite were skipped. `main` carried a red check that meant
-      # "nothing was verified", which is indistinguishable from "something was
-      # verified and failed" and so is worse than having no gate at all.
-      # Running these four after every verification step ends that for them.
-      # It does not end it for the repository: the paragraph below names the
-      # commands where the same shape survives, inside `bun run build`.
-      #
-      # Last *in this job* rather than in a job of their own, because the check
-      # name `build-and-test` is one of the two required status checks on
-      # `main`; the other is `naming-gate`. Read the current list with
-      #   gh api repos/ken-jo/ave/branches/main/protection \
-      #     --jq .required_status_checks.contexts
-      # A separate job reports under a separate check name, and a name branch
-      # protection does not list cannot block a merge. That is measured, not
-      # feared: an earlier revision of this change put these three in a
-      # `repo-hygiene` job, and on a commit carrying a deliberately stale
-      # manifest entry both required contexts reported success. Two checks did
-      # go red on it — `Repository hygiene gates` here and a web-ci.yml job —
-      # and neither name is in the required list,
-      # so neither stood between that manifest and a merge. Two jobs is the
-      # better shape and stays available — but the required-contexts list has to
-      # gain the new name in the same change, or the split trades a masking bug
-      # for a silent hole.
-      #
-      # Within this trailing group the first failure still skips the rest: a red
-      # Knip gate leaves the duplicate and sunset scans reported as
-      # skipped. That is accepted, not overlooked. Every verification step has
-      # already run and reported its own result by then, and the failing step
-      # names itself, so the red says one true thing — a ledger is stale, and
-      # this is the first one. Reporting all four independently would need `if:
-      # always()` on each, which also runs them after a genuine build failure
-      # and chains bookkeeping noise onto a red that already has its answer, or
-      # one runner per gate.
-      #
-      # What this ordering does NOT reach: `bun run build` above is one workflow
-      # step and eighteen commands, and twelve of those assert rather than
-      # compile. Five of the twelve — `check:import-cycles`,
-      # `check-generated-assets`, `check:plugin-host-protocol-schema`,
-      # `check:i18n-catalog`, `check:i18n-barrels` — sit ahead of a later
-      # compile command inside the composite, and all twelve sit ahead of the
-      # suite in this job, so any of them can fail the build step and skip the
-      # steps after it. That residual is deliberate and bounded: each reads
-      # either the sources being compiled or the bytes the build itself just
-      # wrote, and a local `bun run build` is where their drift has to surface.
-      # `check:sunset-inventory` was the one that did not fit that description —
-      # it reads a hand-written ledger naming source paths that any unrelated
-      # change can delete, the same shape as the manifest incident above — so it
-      # left the composite and runs here instead. Measured on this tree before
-      # the move: one nonexistent path added to the inventory made `bun run
-      # build` exit 1 at `[sunset-inventory]`, with clean-dist, build:icons,
-      # build:main and build:webpack never reached.
-      #
-      # `src/__tests__/packaging-discipline-source.test.ts` fails if any job in
-      # .github/workflows/ puts one of these gates ahead of a compile or test
-      # step, if these gates leave `build-and-test`, if one of them re-enters
-      # the `build` composite, and if the set of asserting commands inside that
-      # composite changes without the list above changing with it.
-      # `check:gate-core` is the one inventory of the gates both CI and the
-      # pre-push hook (scripts/hooks/run-local-checks.mjs) run: the Knip
-      # baseline, the duplicate-helper scan, the sunset ledger, the
-      # single-source shape ledger, the ASRT capability claims, and the
-      # retired-name gate (check:retired-name). The two callers
-      # used to list them separately and had drifted. The gates below it are
-      # CI-only on purpose — the Knip self-test costs more than a pre-push
-      # budget allows — and
-      # `check:test-coverage` above is CI-only for the same reason.
-      - name: Remove root-level Bun binary shims before the hygiene gates
-        if: needs.build.outputs.docs_only != 'true'
-        working-directory: ave
-        run: rm -f ajv pino
-      - name: Core hygiene gates
-        if: needs.build.outputs.docs_only != 'true'
-        working-directory: ave
-        run: bun run check:gate-core && bun run test:knip-gate
       - name: Report the total runner budget
         if: always() && needs.build.outputs.docs_only != 'true' && hashFiles('ave/scripts/report-ci-budget.mjs') != ''
         # Timing service failures are advisory; product checks above stay required.

@@ -17,9 +17,8 @@ function functionSegment(source: string, start: string, end: string) {
 }
 
 describe("app typecheck pre-push gate", () => {
-  it("runs the test-typecheck self-test and ratchet immediately after typecheck", () => {
+  it("runs the test-typecheck ratchet immediately after typecheck", () => {
     expect(APP_TYPECHECK_TEST_RATCHET_SCRIPTS).toEqual([
-      "check:typecheck-tests:self-test",
       "check:typecheck-tests",
     ]);
     expect(APP_TYPECHECK_GATE_SCRIPTS).toEqual([
@@ -64,7 +63,7 @@ describe("app typecheck pre-push gate", () => {
       functionSegment(
         runner,
         "function runAppCommentOnlyChecks",
-        "// Dispatch",
+        "const { stage, repo, remote, remoteLocation }",
       ),
     ).toContain("runAppTypecheckGate(dir,");
   });

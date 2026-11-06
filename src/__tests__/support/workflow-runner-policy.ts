@@ -97,13 +97,7 @@ function pullRequestCodeStepViolations(job: Job, inheritedEnv: readonly unknown[
 }
 
 /** Pin privileged workflow bytes and every executed repository file; reject newly executed or imported files until pinned. */
-export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "cluster-detector.yml": {
-    ".github/workflows/cluster-detector.yml": "17639cbf71170c65865a07d577472d405233fafe99017ab22a8edb7a570abc56",
-    "scripts/check-cluster-scope.mjs": "7ee8ae74cfbd607c571f8d8844f18d7fdaf016dd01c76a6ce8d621ef88318787",
-    "scripts/check-cluster-sensitive-paths.mjs": "45b2179ebcc146834e0cc8433af2b19440ef28e37cbd5460ba5e01e4458b229c",
-  },
-};
+export const PULL_REQUEST_TARGET_WORKFLOWS: Readonly<Record<string, Readonly<Record<string, string>>>> = {};
 
 function workflowContentHash(source: string): string {
   return createHash("sha256").update(source.replace(/\r\n/gu, "\n")).digest("hex");

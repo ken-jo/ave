@@ -72,7 +72,7 @@ function readText(path: string): string | null {
 const GRAPH_SOURCES = [
   "src/core/route-input.ts",
   "src/shared/escape-html.ts",
-  "src/plugins/runtime/index.ts",
+  "src/main/ave-protocol-registration.ts",
   "src/core/model-catalog/refresh.ts",
   "src/__tests__/support/git-diff-entry.ts",
 ];
@@ -135,12 +135,11 @@ describe("CI test selection over the real import graph", () => {
   });
 
   it("selects a test that reads a changed module as text, which the import graph does not show", () => {
-    // module-size-boundaries.test.ts reads each module it bounds with fs; on 2026-08-07 a guard block pushed src/plugins/runtime/index.ts past its ceiling and only that test failed.
-    const reader = "src/__tests__/module-size-boundaries.test.ts";
-    expect(readText(reader)).toContain('"src/plugins/runtime/index.ts"');
-    expect(graphCoverage.get("src/plugins/runtime/index.ts")).not.toContain(reader);
+    const reader = "src/__tests__/packaging-discipline-source.test.ts";
+    expect(readText(reader)).toContain('"src/main/ave-protocol-registration.ts"');
+    expect(graphCoverage.get("src/main/ave-protocol-registration.ts")).not.toContain(reader);
 
-    const plan = select([modified("src/plugins/runtime/index.ts")]);
+    const plan = select([modified("src/main/ave-protocol-registration.ts")]);
     expect(plan.mode).toBe("affected");
     expect(plan.tests).toContain(reader);
   });

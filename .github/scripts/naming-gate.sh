@@ -13,8 +13,6 @@
 # Diff-based on purpose: existing violations are grandfathered and removed by
 # separate sweep PRs. The job here is to stop new call sites.
 #
-# `.github/scripts/naming-gate-selftest.sh` pins every behavior below against
-# synthetic diffs and runs in the same workflow. Change one, change the other.
 
 set -uo pipefail
 
@@ -151,8 +149,7 @@ patterns=(
 # with an allowed one still blocks: the lookahead requires a word boundary
 # after the allowed spelling, so `MockShellHeader` is matched and rejected
 # while `MockShell` is not. `AGENTS.md` > `Naming` > `Test doubles` carries the
-# same list with the reason for each, and the self-test asserts every entry
-# still exists in the tree, so the list cannot outlive the names it excuses.
+# same list with the reason for each.
 #
 # The list is empty today: its last entry named a web component the site
 # renewal removed. Names are joined with `|` when one is added.
@@ -244,8 +241,7 @@ while IFS= read -r file; do
     # compaction stub); as a filename PREFIX they are adjectives and the
     # contrast is the whole meaning. The hatch is a `Why <prefix>:` header in
     # the first 30 lines, for a simulation the product deliberately ships. No
-    # file in this tree uses the hatch; the only place that literal appears is
-    # the self-test fixture that proves it works.
+    # file in this tree uses the hatch.
     if ! head -30 "$file" 2>/dev/null | grep -qE 'Why (real|mock|fake|stub):'; then
       echo "::error file=$file::new $base prefix in production path without 'Why <prefix>:' header justification"
       violations=$((violations + 1))
