@@ -210,7 +210,7 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
   onChatStream: (handler: (event: ChatStreamEvent) => void) =>
     subscribeForChatGroup<ChatStreamEvent>(CHANNELS.chat.stream, chatGroupId, handler),
   // Filter provider-fallback banners by the same group label as stream frames.
-  onChatFallback: (handler: (payload: { from: string; to: string }) => void) =>
+  onChatFallback: (handler: (payload: { from: string; to: string; streamId?: number }) => void) =>
     subscribeForChatGroup(CHANNELS.chat.fallback, chatGroupId, handler),
   listPluginCards: async () => ipcRenderer.invoke(CHANNELS.plugins.cards),
   plugins: {

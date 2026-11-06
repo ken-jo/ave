@@ -339,7 +339,7 @@ export function buildInternalApiSurface() {
       ipcRenderer.on(CHANNELS.sidechat.stream, listener);
       return () => ipcRenderer.removeListener(CHANNELS.sidechat.stream, listener);
     },
-    onFallback: (handler: (payload: { from: string; to: string }) => void) => {
+    onFallback: (handler: (payload: { from: string; to: string; streamId?: number }) => void) => {
       const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
       ipcRenderer.on(CHANNELS.sidechat.fallback, listener);
       return () => ipcRenderer.removeListener(CHANNELS.sidechat.fallback, listener);

@@ -1,7 +1,7 @@
 /** Side chat uses shared transcript reducers but subscribes only to its dedicated stream channel; adopt stream ids from
  * matching preludes and drop stale frames before reduction. User sends interrupt, queue drains do not; approval requests
  * remain in the global gate. */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { t } from "../../../i18n/runtime.js";
 import {
   applyReasoningDelta,
@@ -76,6 +76,7 @@ export interface UseSideChat {
 }
 
 export interface UseSideChatOptions {
+  onProviderFallback?: (message: string) => void;
   /** Acquires ownership on an accepted send, new or load, including the same session. */
   onSessionBound?: (sessionId: string) => void;
   /** Pane lifetime follows its tab, including while its view is unmounted. */
@@ -451,6 +452,14 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (!runtime.retained) runtime.unsubscribe?.();
     };
   }, [runtime, api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
+
+  const onProviderFallbackRef = useRef(options?.onProviderFallback);
+  useLayoutEffect(() => { onProviderFallbackRef.current = options?.onProviderFallback; });
+  useEffect(() => api.sideChat?.onFallback((payload) => {
+    if (!viewMountedRef.current || !isStreamingRef.current || terminalStreamClosedRef.current
+      || payload.streamId !== activeStreamIdRef.current) return;
+    onProviderFallbackRef.current?.(t("useChatState.fallbackToast", { from: payload.from, to: payload.to }));
+  }), [api.sideChat]);
 
   const abandonTurn = useCallback(() => {
     // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial

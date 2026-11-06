@@ -662,7 +662,7 @@ export type AveApi = {
       | { ok: false; error: string }
     >;
     onStream: (handler: (event: ChatStreamEvent) => void) => () => void;
-    onFallback: (handler: (payload: { from: string; to: string }) => void) => () => void;
+    onFallback: (handler: (payload: { from: string; to: string; streamId?: number }) => void) => () => void;
   };
   /**
    * Tutorial-C — SpotlightTour state + broadcast bridge. The host persists
@@ -798,7 +798,7 @@ export type AveApi = {
    * the primary group refuses it.
    */
   chatGroupRelease: () => Promise<{ ok: boolean; released?: boolean; error?: string }>;
-  onChatFallback: (h: (payload: { from: string; to: string }) => void) => () => void;
+  onChatFallback: (h: (payload: { from: string; to: string; streamId?: number }) => void) => () => void;
   chatGetHistory: () => Promise<{ restoredSubAgents?: RestoredSubAgentPayload[]; sessionId: string; sessionTitle?: string; sessionKind: "main" | "routine"; routineId?: string; routineTitle?: string; projectRoot?: string; projectName?: string; projectIsDefault?: boolean; messages: SerializedHistoryMessage[] }>;
   chatMainActiveState: () => Promise<{ mainActiveSessionId: string | null; mainActiveMode: "resume" | "fresh"; updatedAt: string } | null>;
   chatSessionHistory: (sessionId: string) => Promise<{
