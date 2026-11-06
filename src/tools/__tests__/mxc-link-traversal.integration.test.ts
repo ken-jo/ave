@@ -78,7 +78,9 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
       ];
       for (const { name, layer, command, refusal } of cases) {
         const result = await new PowerShellTool().execute({ command, timeoutSeconds }, context);
-        const leaked = secrets.some((value) => result.output.includes(value));
+        // CLIXML wraps long error lines at console width.
+        const output = result.output.replaceAll('_x000D__x000A_</S><S S="Error">', "");
+        const leaked = secrets.some((value) => output.includes(value));
         const denial = result.output.split(/\r?\n/).filter((line) => /denied|linked/i.test(line)).join(" | ").slice(0, 400);
         console.info("MXC link evidence " + JSON.stringify({ link: linkType, case: name, layer, exitCode: result.metadata?.returncode ?? null,
           isError: result.isError, sandboxed: result.metadata?.sandboxed ?? null, leaked, controlVisible: result.output.includes(control),
@@ -91,11 +93,11 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
           expect(result.metadata?.sandboxed, result.output).toBe(true);
           expect(result.isError, result.output).toBe(true);
           if (layer === "container-direct") {
-            expect(result.output).toMatch(/^UnauthorizedAccessException$/m);
+            expect(result.output).toMatch(/^UnauthorizedAccessException\r?$/m);
           } else {
             expect(result.output, "control file must be readable").toContain(control);
-            // The container refuses the link itself (localized access-denied error naming it); CLIXML wraps long lines at console width.
-            expect(result.output.replaceAll('_x000D__x000A_</S><S S="Error">', "")).toContain(linked);
+            // The container refuses the link itself (localized access-denied error naming it).
+            expect(output).toContain(linked);
           }
         }
       }

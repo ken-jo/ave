@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFil
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import * as policyHome from "../../shared/policy-home.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { canonicalizePathForMatch, createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { evaluateScopedRules } from "../rules/scoped-rule-matcher.js";
@@ -82,12 +81,10 @@ describe("permission path facts", () => {
     writeFileSync(join(ssh, name), "synthetic secret");
     const linked = join(project, "linked");
     symlinkSync(ssh, linked, linkType);
-    const homeAnchors = vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home]);
     try {
       const lexical = join(linked, name);
       const canonical = canonicalizePathForMatch(lexical);
       expect(canonical).toBe(canonicalizePathForMatch(join(ssh, name)));
-      expect(canonical).not.toBe(lexical.replaceAll("\\", "/"));
       const path = { lexical, canonical, effect: "read" as const };
       expect(createPermissionPathEvidence(project)(path)).toMatchObject({
         secret: expect.any(String), admissionDenial: null, protectedControl: undefined, projectEscape: false,
@@ -98,12 +95,17 @@ describe("permission path facts", () => {
       const result = manager.checkDetailed("read_file", "builtin", "read", null, {
         paths: [path], projectRulesCwd: project,
       });
-      expect(result).toMatchObject({ decision: "ask", reasonCode: "secret-read", pipelineRequest: { secretRead: true } });
-      expect(result.pipelineRequest?.admissionDenial).toBeUndefined();
-      expect(result.pipelineRequest?.floor).toBeUndefined();
-      expect(result.forceModal).toBeUndefined();
+      const shell = manager.checkDetailed("powershell", "builtin", "shell", null, {
+        ruleSubject: { kind: "shell", dialect: "powershell", command: `Get-Content -LiteralPath '${lexical}'`, cwd: project },
+        shellExecution: { runsSandboxed: true, environmentSnapshot: {} }, projectRulesCwd: project,
+      });
+      for (const outcome of [result, shell]) {
+        expect(outcome).toMatchObject({ decision: "ask", reasonCode: "secret-read", pipelineRequest: { secretRead: true } });
+        expect(outcome.pipelineRequest?.admissionDenial).toBeUndefined();
+        expect(outcome.pipelineRequest?.floor).toBeUndefined();
+        expect(outcome.forceModal).toBeUndefined();
+      }
     } finally {
-      homeAnchors.mockRestore();
       unlinkSync(linked);
     }
   });
