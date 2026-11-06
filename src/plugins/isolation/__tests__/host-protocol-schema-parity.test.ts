@@ -34,7 +34,6 @@ import {
 } from "../../../../scripts/lib/plugin-host-protocol-schema.js";
 
 import type { AuthRedirectOpenResult } from "../../public-contract.js";
-import type { HostAuthRedirectOpenResult } from "../../../../schemas/plugin-host-protocol/5/protocol-client.js";
 
 type JsonSchema = Record<string, unknown>;
 type Frame = Record<string, unknown>;
@@ -89,8 +88,8 @@ const DISPATCHABLE = (Object.keys(HOSTAPI_PATH_CONTRACTS) as HostApiPath[]).filt
 );
 
 describe("the schema names what the host serves, and nothing else", () => {
-  it("requires host-issued state in the schema, public SDK and generated client", () => {
-    const result = { handle: "redirect-1", redirectUri: "http://localhost:43110", state: "host-state" } satisfies AuthRedirectOpenResult & HostAuthRedirectOpenResult;
+  it("requires host-issued state in the schema and public contract", () => {
+    const result = { handle: "redirect-1", redirectUri: "http://localhost:43110", state: "host-state" } satisfies AuthRedirectOpenResult;
     const schema = SCHEMA.$defs.methods["ave/host/authRedirect/open"]!.result;
     expect(violations("auth-open", schema, result)).toEqual([]);
     for (const state of [undefined, null, 42]) {

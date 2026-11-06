@@ -24,9 +24,8 @@ import {
 } from "./plugin-instance-wire.js";
 import {
   HOST_PROTOCOL_NOTIFICATIONS,
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_VERSION,
   HostApiBoundaryError,
-  isServedHostProtocolVersion,
   type HostApiChannel,
   type HostApiNotification,
   type HostApiReply,
@@ -159,12 +158,12 @@ export function servePluginChild(
     if (runtime) throw new Error("[plugin-child] already constructed");
     // A stale child bundle must refuse protocol mismatch rather than claim unsupported behavior.
     const version = params.hostProtocol?.version;
-    if (!isServedHostProtocolVersion(version)) {
+    if (version !== HOST_PROTOCOL_VERSION) {
       throw new HostApiBoundaryError(
         "protocol-version-mismatch",
         `[plugin-child] host protocol ${String(version)} is not one this runtime serves `
-          + `(${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")})`,
-        { version: String(version), served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
+          + `(${HOST_PROTOCOL_VERSION})`,
+        { version: String(version), served: [HOST_PROTOCOL_VERSION] },
       );
     }
     const capabilities: unknown = params.hostProtocol.capabilities;

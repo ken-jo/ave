@@ -389,7 +389,6 @@ export const ko: Record<SeedMessageKey, string> = {
   "pluginConfigTab.protocolUpdateRepository": "업데이트 필요: {source}에서 호환 버전 확인",
   "pluginConfigTab.protocolUpdateUnavailable": "업데이트 필요: 익스텐션 배포자에게 호환 버전을 문의하세요.",
   "pluginConfigTab.protocolUpdateButton": "{version}(으)로 업데이트",
-  "pluginConfigTab.doctorMigrateButton": "AI로 마이그레이션",
   "pluginConfigTab.installFromFolder": "폴더에서 설치…",
   "pluginConfigTab.installUnreviewedDev": "검토 없이 설치 (개발)",
   "pluginConfigTab.runtimeArmLabel": "실행 방식",

@@ -1,7 +1,6 @@
 /** Staged manifests must match reviewed identity, version and canonicalized authority.
  * Process entries require supported platforms, a pinned artifact, no tree rung and sufficient host floors. */
 import { AVE_EXTENSION_NAMESPACE, flattenAgentPluginsManifest } from "../../plugins/public-contract.js";
-import { HOST_PROTOCOL_FIRST_APP_VERSION, isServedHostProtocolVersion } from "../../plugins/isolation/host-api-wire.js";
 import { hasProcessEntry, PROCESS_ENTRY_FIRST_APP_VERSION } from "../../plugins/process-entry.js";
 import { sandboxDeclarationProblem } from "../../plugins/sandbox-authority.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -121,14 +120,6 @@ export function gitInstallManifestMismatches(document: unknown, expected: Expect
   const hostProtocol = isRecord(requires) ? requires.hostProtocol : undefined;
   if (hostProtocol !== expected.hostProtocol) {
     problems.push(`requires.hostProtocol differs from the descriptor's hostProtocol`);
-  }
-  const protocolFloor = expected.hostProtocol !== undefined && isServedHostProtocolVersion(expected.hostProtocol)
-    ? HOST_PROTOCOL_FIRST_APP_VERSION[expected.hostProtocol]
-    : undefined;
-  if (protocolFloor !== undefined && compareSemver(expected.minAppVersion, protocolFloor) < 0) {
-    problems.push(
-      `minAppVersion in ${descriptor} is "${expected.minAppVersion}"; host protocol ${expected.hostProtocol} needs ${protocolFloor} or newer, the first release that serves it`,
-    );
   }
   for (const field of PLUGIN_AUTHORITY_FIELDS) {
     if (!sameField(ave, expected.authority, field)) problems.push(`${field} differs from the descriptor's authority`);

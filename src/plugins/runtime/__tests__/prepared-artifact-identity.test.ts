@@ -19,7 +19,7 @@ import type { EntryPluginManifest, PluginManifest } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { agentPluginsDocument } from "../../__tests__/test-helpers.js";
 import {
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
 } from "../../isolation/host-api-wire.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -268,7 +268,7 @@ async function writePreparedPlugin(
     version: "1.0.0",
     entry: "entry.mjs",
     description: "Prepared identity fixture.",
-    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0] },
+    requires: { hostProtocol: HOST_PROTOCOL_VERSION },
     tools: [{
       name: toolName,
       description: "Return a ping reply.",
@@ -781,7 +781,7 @@ describe("a prepared update the child factory refuses leaves the running generat
     expect(boot.audit[0]).toEqual({
       level: "error",
       message: "plugin_incompatible_host_protocol",
-      data: { pluginId, declared: null, served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
+      data: { pluginId, declared: null, served: [HOST_PROTOCOL_VERSION] },
     });
 
     const card = runtime.listPluginCards().find((entry) => entry.id === pluginId);

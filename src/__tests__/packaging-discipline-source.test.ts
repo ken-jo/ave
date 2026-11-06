@@ -253,7 +253,6 @@ describe("installer smoke and packaging discipline", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
     const installers = jobs.get("installers");
     if (installers === undefined) throw new Error("missing installers job");
-    expect(installers).toContain("if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'");
     const build = jobRunCommands(installers).find((command) => command.includes('args=("--${{ matrix.target }}")'));
     if (build === undefined) throw new Error("missing installer build command");
     expect(build.split("elif")[0]).toContain('if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then');
@@ -262,7 +261,6 @@ describe("installer smoke and packaging discipline", () => {
     for (const id of ["publish-release", "publish-r2"]) {
       expect(jobs.get(id)).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
     }
-    expect(jobs.get("publish-contract")).toContain("inputs.installer_scope != 'windows-disposable'");
     // Every installer job runs on a disposable hosted image, so the Windows
     // smoke is authorized by target alone; no runner.environment branch.
     expect(installers).toContain("AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}");
@@ -1048,17 +1046,6 @@ describe("installer smoke and packaging discipline", () => {
     expect(() => assertReleaseSecretEnvironments(stringifyYaml(workflow), "allowed.yml")).not.toThrow();
   });
 
-  it("runs contract probes only from main while retaining protected tag publication", () => {
-    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
-    const contract = jobs.get("publish-contract");
-    if (contract === undefined) throw new Error("build-installers.yml has no publish-contract job");
-    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true' && inputs\.installer_scope != 'windows-disposable'\)$/mu);
-    expect(contract).toContain("if: github.event_name == 'push'");
-    expect(contract).toContain('if [ "$REF_PROTECTED" != "true" ]; then');
-    expect(contract).toContain('if [ "$tag_object_type" != "tag" ]');
-    expect(contract).toContain('if [ "$target_type" != "commit" ] || [ "$target_sha" != "$EXPECTED_SOURCE_SHA" ]; then');
-  });
-
   it("runs the R2 credential probe only by manual dispatch from main and only under _ci-probe/", () => {
     const workflow = readRepoFile(".github/workflows/r2-probe.yml");
     const trigger = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
@@ -1084,7 +1071,7 @@ describe("installer smoke and packaging discipline", () => {
   it("runs every release Linux job on the pinned hosted ARM64 image", () => {
     const linuxRunner = "runs-on: ubuntu-24.04-arm";
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
-    for (const id of ["release-profile", "publish-release", "publish-r2", "publish-contract"]) {
+    for (const id of ["release-profile", "publish-release", "publish-r2"]) {
       const body = installers.get(id);
       if (body === undefined) throw new Error(`build-installers.yml has no ${id} job`);
       expect(body.match(/^ {4}runs-on: .*$/gmu), id).toEqual([`    ${linuxRunner}`]);
@@ -1962,8 +1949,6 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
-      "bun run check:plugin-host-protocol-mirror",
-      "bun run check:plugin-host-protocol-client",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
       "node scripts/check-no-tls-bypass.mjs",
@@ -1975,7 +1960,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:source-text-safe",
     ]);
 
-    // Of those fourteen, the seven that a later command in the same composite
+    // Of those twelve, the five that a later command in the same composite
     // compiles behind. ci.yml's comment states this number; this is where it
     // comes from.
     const lastCompile = commands.reduce(
@@ -1990,38 +1975,9 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:import-cycles",
       "node scripts/check-generated-assets.mjs",
       "bun run check:plugin-host-protocol-schema",
-      "bun run check:plugin-host-protocol-mirror",
-      "bun run check:plugin-host-protocol-client",
       "bun run check:i18n-catalog",
       "bun run check:i18n-barrels",
     ]);
-  });
-
-  it("runs the protocol mirror gate and refreshes the release candidate", () => {
-    expect(packageScripts["check:plugin-host-protocol-mirror"]).toBe(
-      "node scripts/check-plugin-host-protocol-mirror.mjs",
-    );
-    expect(readRepoFile("scripts/release.mjs")).toContain(
-      'run("node", ["scripts/sync-plugin-host-protocol-mirror.mjs"]);',
-    );
-  });
-
-  it("checks the protocol client after the mirror and regenerates it after the schema on release", () => {
-    expect(packageScripts["check:plugin-host-protocol-client"]).toBe(
-      "node --import tsx scripts/generate-plugin-host-protocol-client.ts --check",
-    );
-    expect(packageScripts["generate:plugin-host-protocol-client"]).toBe(
-      "node --import tsx scripts/generate-plugin-host-protocol-client.ts",
-    );
-    // The client is a projection of the committed schema, so it regenerates
-    // after the schema does, and before the build that checks both.
-    const release = readRepoFile("scripts/release.mjs");
-    const schema = release.indexOf('run("bun", ["run", "generate:plugin-host-protocol-schema"]);');
-    const client = release.indexOf('run("bun", ["run", "generate:plugin-host-protocol-client"]);');
-    const build = release.indexOf('"scripts/build-installers.mjs"');
-    expect(schema).toBeGreaterThan(-1);
-    expect(client).toBeGreaterThan(schema);
-    expect(build).toBeGreaterThan(client);
   });
 
   it("keeps the composite that orders a hygiene scan first out of CI", () => {

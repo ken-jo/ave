@@ -16,14 +16,13 @@ import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_API_WIRE_ERROR_CODES,
   HOST_PROTOCOL_NOTIFICATIONS,
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_VERSION,
   UNIVERSAL_WIRE_ERROR_CODES,
   hostApiMethodOf,
   type HostApiPath,
   type HostApiWireErrorCode,
 } from "../../src/plugins/isolation/host-api-wire.js";
 import { PLUGIN_INSTANCE_METHODS } from "../../src/plugins/isolation/plugin-instance-wire.js";
-import { hostProtocolSchemaId } from "./plugin-host-protocol-mirror.mjs";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -41,7 +40,7 @@ function hostProtocolSchemaPath(version: string): string {
 }
 
 function schemaId(version: string, appVersion: string): string {
-  return hostProtocolSchemaId(`${version}/v${appVersion}/protocol.schema.json`);
+  return `https://ave.agent-connector.ai/schemas/plugin-host-protocol/${version}/v${appVersion}/protocol.schema.json`;
 }
 
 // Encoded axes need explicit wire shapes; golden frames keep these paired with dispatcher and child stubs.
@@ -280,13 +279,7 @@ function errorSchema(
 }
 
 export function generateHostProtocolSchema(): { path: string; text: string } {
-  if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
-    fail(
-      `the host serves ${HOST_PROTOCOL_VERSIONS_SERVED.join(", ")}; one schema per version `
-        + "needs the sources of each, which this generator does not yet read",
-    );
-  }
-  const version = HOST_PROTOCOL_VERSIONS_SERVED[0]!;
+  const version = HOST_PROTOCOL_VERSION;
   const appVersion = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")) as { version: string })
     .version;
 
