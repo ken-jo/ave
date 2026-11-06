@@ -35,13 +35,12 @@ import {
   resolveTurnExtensionPolicy,
   turnExtensionPolicyContext,
 } from "../shared/turn-extension-policy.js";
-import type { AiProviderPingResult } from "../shared/ai-provider-ping.js";
 import { isToolResultStubContent } from "../shared/tool-result-stub.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { createTracer, type ConversationTracer } from "../observability/conversation-trace.js";
 import { t } from "../i18n/index.js";
 import { selectedCompactionModel } from "../shared/compaction-model.js";
-import { buildProvider, cleanModelOverride, generateText, pingProvider, resolveVendorName, AI_PROVIDER_PING_TIMEOUT_MS } from "./turn/provider.js";
+import { buildProvider, cleanModelOverride, generateText, resolveVendorName } from "./turn/provider.js";
 import type { GenerateTextOptions } from "./turn/provider.js";
 import { fireLifecycleEvent, fireUserPromptSubmit } from "./turn/lifecycle-hooks.js";
 import {
@@ -416,12 +415,6 @@ export class ConversationLoop {
     // Explicit recap selection permits retries, but never substitution by a chat fallback route.
     const provider = await buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
     return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
-  }
-
-  /** Probe connectivity without adding a chat-history turn. */
-  async pingProvider(timeoutMs = AI_PROVIDER_PING_TIMEOUT_MS): Promise<AiProviderPingResult> {
-    if (this.providerPending) await this.whenProviderReady();
-    return pingProvider(this.provider, this.deps.settingsService, timeoutMs);
   }
 
   getVendor(): string {

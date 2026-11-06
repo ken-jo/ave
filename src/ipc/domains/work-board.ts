@@ -434,7 +434,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     });
     if (result.status === "accepted") {
       broadcastItemChanged(result.itemId, "created");
-
     }
     return result;
   });
@@ -476,7 +475,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           includeUnscoped: resolved.project.isDefault === true,
           approvalSurface: e.sender,
         });
-
         return result;
       } catch (err) {
         const reason = errorMessage(err);

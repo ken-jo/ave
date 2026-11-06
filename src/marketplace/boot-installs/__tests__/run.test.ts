@@ -291,16 +291,14 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
   const empty = { installed: [], skipped: [], failed: [] };
 
   it("is null when the boot installed, updated and moved nothing", () => {
-    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, null, [])).toBeNull();
-    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, { unmanaged: [], lostGrants: [] }, [])).toBeNull();
+    expect(bootInstallNoticeFrom({ ...empty, skipped: [{ key: key("a"), reason: "r" }], failed: [{ key: key("b"), message: "m" }] }, EMPTY_MARKETPLACE_POLICY, [])).toBeNull();
   });
 
-  it("offers the default installs to the user, lists what the policy required, and what the migration unlocked", () => {
+  it("offers the default installs to the user and lists what the policy required", () => {
     const policy: MarketplacePolicy = { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [key("vpn", "corp")] };
     const notice = bootInstallNoticeFrom(
       { ...empty, installed: [key("meeting"), key("vpn", "corp"), key("tokyo-night", "ave", "theme")] },
       policy,
-      { unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }] },
       [],
     );
     expect(notice).toEqual({
@@ -309,8 +307,8 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
         { sourceId: "ave", kind: "theme", name: "tokyo-night" },
       ],
       required: [{ sourceId: "corp", kind: "plugin", name: "vpn" }],
-      unmanaged: ["sampleportal"],
-      lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }],
+      unmanaged: [],
+      lostGrants: [],
       revoked: [],
       autoUpdated: [],
     });
@@ -318,6 +316,6 @@ describe("bootInstallNoticeFrom (design §15.1)", () => {
 
   it("reports a revocation the boot pass acted on even when nothing else moved (§10.4)", () => {
     const revoked = [{ key: { sourceId: "acme", kind: "mcp" as const, name: "scraper" }, version: "1.2.0", reason: "exfiltrates cookies", outcome: "uninstalled" as const }];
-    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, null, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked, autoUpdated: [] });
+    expect(bootInstallNoticeFrom(empty, EMPTY_MARKETPLACE_POLICY, revoked)).toEqual({ forYou: [], required: [], unmanaged: [], lostGrants: [], revoked, autoUpdated: [] });
   });
 });

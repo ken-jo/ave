@@ -38,16 +38,13 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
 export function bootInstallNoticeFrom(
   report: BootInstallReport,
   policy: MarketplacePolicy,
-  legacy: { unmanaged: string[]; lostGrants: Array<{ plugin: string; keys: string[] }> } | null,
   revoked: readonly RevokedPackageView[],
 ): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
   const requiredKeys = report.installed.filter(required).map(view);
-  const unmanaged = [...(legacy?.unmanaged ?? [])];
-  const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
-  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
+  const notice = { forYou, required: requiredKeys, unmanaged: [], lostGrants: [], revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 

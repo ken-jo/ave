@@ -144,9 +144,6 @@ export interface McpHttpServerConfig extends McpServerConfigBase {
   apiKeyEnv?: never;
 }
 
-/** Legacy / not-yet-implemented transports. Kept on the discriminated union so governance validation
- * paths that branch on `config.transport === "sse"` or `"websocket"` continue to type-check unchanged. */
-
 export type McpServerConfig =
   | McpStdioServerConfig
   | McpHttpServerConfig;

@@ -109,6 +109,11 @@
     },
     {
       "type": "exports",
+      "file": "src/data/settings-store.ts",
+      "name": "migrateAppearanceV1ToV2"
+    },
+    {
+      "type": "exports",
       "file": "src/i18n/index.ts",
       "name": "interpolate"
     },

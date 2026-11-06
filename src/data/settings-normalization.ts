@@ -114,7 +114,10 @@ import type {
   A2ARemoteSettings,
   AutoUpdateSwitch,
   AppearanceSettings,
+  AppearanceSettingsV1,
   ChatSettings,
+  ChatThemePreference,
+  CodeThemePreference,
   DiagnosticsSettings,
   FeatureFlags,
   HomeDocsSettings,
@@ -124,6 +127,7 @@ import type {
   SystemCloseBehavior,
   SystemSettings,
   TelemetrySettings,
+  ThemePreference,
   WebViewPreferredFlow,
   WebViewSettings,
 } from "./settings-store.js";
@@ -674,6 +678,43 @@ function autoUpdateSwitches(
   return switches;
 }
 
+/** Migrate old appearance shapes and validate current ones; malformed UI settings must never crash boot. */
+
+const VALID_THEMES_V1: readonly ThemePreference[] = ["system", "light", "dark", "high-contrast"];
+const VALID_CHAT_THEMES_V1: readonly ChatThemePreference[] = ["default", "lg", "purple", "orange", "blue"];
+
+
+/** Do not resolve system appearance in main, where window is unavailable; the renderer tracks the OS scheme. */
+function migrateAppearanceV1ToV2(
+  legacy: AppearanceSettingsV1,
+): AppearanceSettings {
+  const theme = VALID_THEMES_V1.includes(legacy.theme) ? legacy.theme : "system";
+  const chatTheme = VALID_CHAT_THEMES_V1.includes(legacy.chatTheme) ? legacy.chatTheme : "default";
+
+  if (theme === "high-contrast") {
+    return { schemaVersion: 2, bundleId: "high-contrast" };
+  }
+
+  if (chatTheme === "purple" || chatTheme === "orange" || chatTheme === "blue") {
+    return { schemaVersion: 2, bundleId: "midnight" };
+  }
+
+  if (chatTheme === "lg") {
+    if (theme === "light") return { schemaVersion: 2, bundleId: "violet-light" };
+    if (theme === "dark")  return { schemaVersion: 2, bundleId: "violet-dark" };
+    return { schemaVersion: 2, bundleId: "violet-dark", followSystem: true };
+  }
+
+  if (theme === "light") return { schemaVersion: 2, bundleId: "forest" };
+  if (theme === "dark")  return { schemaVersion: 2, bundleId: "tokyo-night" };
+
+  return { schemaVersion: 2, bundleId: DEFAULT_BUNDLE_ID };
+}
+
+export const appearanceMigration = Object.freeze({
+  migrateV1ToV2: migrateAppearanceV1ToV2,
+});
+
 export function normalizeAppearance(input: unknown): AppearanceSettings {
   if (!input || typeof input !== "object") {
     return { ...DEFAULT_SETTINGS.appearance };
@@ -693,6 +734,17 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
     const font = normalizeAppearanceFont(obj.font);
     if (font) result.font = font;
     return result;
+  }
+
+  if (typeof obj.theme === "string" || typeof obj.chatTheme === "string" || typeof obj.codeTheme === "string") {
+    const legacy: AppearanceSettingsV1 = {
+      theme: (typeof obj.theme === "string" && (VALID_THEMES_V1 as readonly string[]).includes(obj.theme)
+        ? obj.theme : "system") as ThemePreference,
+      chatTheme: (typeof obj.chatTheme === "string" && (VALID_CHAT_THEMES_V1 as readonly string[]).includes(obj.chatTheme)
+        ? obj.chatTheme : "default") as ChatThemePreference,
+      codeTheme: (typeof obj.codeTheme === "string" ? obj.codeTheme : "auto") as CodeThemePreference,
+    };
+    return { ...migrateAppearanceV1ToV2(legacy), language: normalizeLocaleSetting(obj.language) };
   }
 
   return { ...DEFAULT_SETTINGS.appearance };

@@ -60,11 +60,9 @@ describe("uninstall refusal toast copy", () => {
       );
 
       expect(copy).toContain(t("formatIpcError.packageNotInstalled"));
-      // The three shapes of the regression: the raw code, the English predicate, and the half-localized welding of a Korean noun
-      // onto it.
+      // Reject the raw code and the untranslated English predicate.
       expect(copy).not.toContain(PACKAGE_NOT_INSTALLED_CODE);
       expect(copy).not.toContain("not installed");
-      expect(copy).not.toContain(`${t("useStatusBarInstall.labelAgent")} not`);
     },
   );
 

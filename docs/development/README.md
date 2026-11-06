@@ -315,7 +315,7 @@ Skills use **progressive disclosure**, the same discipline the tool policy
 applies to schemas, applied to instruction bytes:
 
 1. **Installed** — skill bytes sit on disk (`~/.ave/skills`, plugin bundles);
-   nothing enters the prompt (`src/skills/skill-installer.ts`).
+   nothing enters the prompt.
 2. **Activated** — when a plugin generation is active (or a user skill exists),
    the skill is reflected into the in-memory catalog
    (`src/main/skill-store.ts`). Activation tracks the *current active

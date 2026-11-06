@@ -8,7 +8,7 @@ import { FallbackProvider } from "../../llm/vercel/fallback-chain.js";
 import { rejectedToolNameFromError } from "../../llm/rejected-tool-schema.js";
 import { getModelPreflightThreshold, getModelUsableContext } from "../../auto-compact.js";
 import { contextBudgetForCurrentRuntime } from "../compaction.js";
-import { buildProvider, pingProvider } from "../provider.js";
+import { buildProvider } from "../provider.js";
 import { collectRoundStream } from "../stream-collector.js";
 import type { ConversationLoopDeps } from "../types.js";
 import { freshVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
@@ -166,12 +166,6 @@ describe("buildProvider subscription model overrides", () => {
     expect(selection).not.toBe(persisted);
     expect(Object.isFrozen(selection)).toBe(true);
     expect(persisted.model).toBe("gpt-5.4");
-    await expect(pingProvider(provider, deps.settingsService)).resolves.toMatchObject({
-      configured: true,
-      online: true,
-      vendor: "subscription:codex",
-      model: "gpt-5.5-codex",
-    });
   });
 
   it.each([

@@ -2227,7 +2227,7 @@ export class MarketplaceService implements RetirementEntryLookup {
       now: () => this.now(),
       ...(signal ? { signal } : {}),
     });
-    return { report, notice: bootInstallNoticeFrom(report, this.policy, null, revoked) };
+    return { report, notice: bootInstallNoticeFrom(report, this.policy, revoked) };
   }
 
   /** Enforce persisted revocations before network work, reporting each outcome once per session.

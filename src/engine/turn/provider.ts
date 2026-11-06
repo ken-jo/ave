@@ -8,7 +8,6 @@ import {
   activeLlmRouteModel,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
-import type { AiProviderPingResult } from "../../shared/ai-provider-ping.js";
 import { selectProviderRuntimeFetch } from "../llm/marketplace-provider-fetch.js";
 import type { ConversationLoopDeps } from "./types.js";
 import {
@@ -21,8 +20,6 @@ import { stripSuggestedReplies } from "../suggested-replies.js";
 import { t } from "../../i18n/index.js";
 import { estimateTokens } from "../../shared/token-estimate.js";
 import { clampBackgroundOutputTokenLimit } from "../llm/output-token-limit.js";
-
-export const AI_PROVIDER_PING_TIMEOUT_MS = 8_000;
 
 // Export the probe prompt so fixtures recognize the actual request without a drifting copy.
 export const PROVIDER_PING_SYSTEM_PROMPT =
@@ -290,84 +287,4 @@ export async function generateText(
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");
     // Strip reply markup because plugins and routines consume the returned text verbatim.
     return stripSuggestedReplies(text).trim();
-}
-
-export async function pingProvider(
-  provider: LLMProvider | null,
-  settingsService: SettingsService,
-  timeoutMs = AI_PROVIDER_PING_TIMEOUT_MS,
-): Promise<AiProviderPingResult> {
-    const llm = settingsService.get("llm");
-    const selectedSubscription =
-      llm.activeChatRuntime?.kind === "subscription"
-        ? llm.activeChatRuntime
-        : undefined;
-    const subscription = provider?.subscriptionRuntime ?? selectedSubscription;
-    const vendor = subscription
-      ? `subscription:${subscription.provider}`
-      : llm.provider;
-    const model = subscription
-      ? subscription.model || "default"
-      : activeLlmRouteModel(llm);
-    if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
-      return {
-        configured: false,
-        online: false,
-        vendor,
-        ...(model ? { model } : {}),
-        error: "not-configured",
-      };
-    }
-
-    const startedAt = Date.now();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      for await (const ev of provider.streamTurn({
-        systemPrompt: PROVIDER_PING_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: "ping" }],
-        tools: [],
-        model,
-        abortSignal: ctrl.signal,
-      })) {
-        if (ev.type === "error") {
-          return {
-            configured: true,
-            online: false,
-            vendor,
-            model,
-            error: ev.error,
-            latencyMs: Date.now() - startedAt,
-          };
-        }
-        if (ev.type === "message_complete") {
-          return {
-            configured: true,
-            online: true,
-            vendor,
-            model,
-            latencyMs: Date.now() - startedAt,
-          };
-        }
-      }
-      return {
-        configured: true,
-        online: false,
-        vendor,
-        model,
-        error: "stream-ended",
-        latencyMs: Date.now() - startedAt,
-      };
-    } catch (err) {
-      return {
-        configured: true,
-        online: false,
-        vendor,
-        model,
-        error: ctrl.signal.aborted ? "timeout" : (err as Error).message,
-        latencyMs: Date.now() - startedAt,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
 }

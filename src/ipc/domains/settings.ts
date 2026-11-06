@@ -201,8 +201,8 @@ async function refreshChatRuntimeProviders(
   const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failure) throw failure.reason;
 }
-/** Install or remove marketplace provider presets and run every follow-up a preset change needs (reviewer rewire, chat providers, wildcard, sandbox endpoints, the settings broadcast), reporting a follow-up that
- * fails as `finishError` once `mutate` has saved. The settings IPC and the content store's provider activation both go through here, so a preset installed from a git package behaves exactly like one installed today. */
+/** Run provider preset follow-ups for content activation and deactivation (reviewer rewire, chat providers, wildcard, sandbox endpoints, and the settings broadcast).
+ * Report follow-up failures as `finishError` once `mutate` has saved. */
 export async function mutateMarketplaceProviderPresets(
   deps: IpcDeps,
   mutate: () => Promise<AppSettings>,

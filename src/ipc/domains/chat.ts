@@ -938,7 +938,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const { projectRoot } = groupOf(e, chatGroupId, CHANNELS.chat.listCustomCommands).loop.getSessionProjectContext();
     return { commands: await listCustomCommands(projectRoot) };
   });
-
   ipcMain.handle(CHANNELS.llm.getModelCatalog, async (e): Promise<ModelCatalogIpcResult | typeof UNAUTHORIZED_FRAME> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.llm.getModelCatalog, e);
@@ -1789,7 +1788,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     return readMemoryDetail(memoryManager, id, project.options, memoryConversationStores());
   });
-
   ipcMain.handle(CHANNELS.memory.entriesDelete, async (e, filename: unknown, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesDelete, e); return UNAUTHORIZED_FRAME; }
     if (typeof filename !== "string") return { ok: false, error: "invalid-input" };
@@ -1960,7 +1958,6 @@ export function registerChatHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "invalid-args" };
     }
-
     auditLogger.log({
       timestamp: new Date().toISOString(),
       sessionId,

@@ -8,7 +8,7 @@ import {
 } from "../../../shared/marketplace-package-assets.js";
 import { rendererSettingsSnapshot } from "../../../ipc/domains/settings.js";
 import { resolveMainActiveChatModel } from "../active-chat-model.js";
-import { buildProvider, generateText, pingProvider } from "../provider.js";
+import { buildProvider, generateText } from "../provider.js";
 import type { ConversationLoopDeps } from "../types.js";
 
 vi.mock("electron", () => ({
@@ -80,13 +80,6 @@ describe("main's active chat model", () => {
       kind: "none",
       reason: "no-model-selected",
     });
-  });
-
-  it("reports ping as unconfigured if the selection was cleared after provider construction", async () => {
-    const settingsService = fakeSettings({ secrets: { "llm.apiKey.openai": "fixture-key" } });
-    const streamTurn = vi.fn(async function* () { yield { type: "message_complete" as const, stopReason: "end_turn" as const }; });
-    expect(await pingProvider({ vendor: "openai", streamTurn }, settingsService)).toMatchObject({ configured: false, error: "not-configured" });
-    expect(streamTurn).not.toHaveBeenCalled();
   });
 
   it("reports generation as unconfigured if the selection was cleared after provider construction", async () => {

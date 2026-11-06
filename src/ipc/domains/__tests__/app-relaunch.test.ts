@@ -11,7 +11,7 @@ import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import { registerAppHandlers } from "../app.js";
 import type { IpcDeps } from "../../types.js";
 import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { folderService, type FolderServiceHarness } from "../../../marketplace/__tests__/fixtures/folder-service.js";
@@ -20,6 +20,11 @@ import { descriptorText, jsonText } from "../../../marketplace/__tests__/fixture
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { ContentStore } from "../../../marketplace/content/store.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../../marketplace/sources/policy.js";
+import { SettingsService, settingsFilePath, type AppSettings } from "../../../data/settings-store.js";
+import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { hasMarketplaceInstallInFlight } from "../../../marketplace/app/install-lifecycle.js";
+import { mutateMarketplaceProviderPresets } from "../settings.js";
 
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
@@ -30,6 +35,7 @@ const intent = { intent: { inputOrigin: "user-keyboard", userActivation: true } 
 let mainEvent: IpcMainInvokeEvent;
 let marketplace: FolderServiceHarness | undefined;
 let settingsRoot: string | undefined;
+let presetDeps: IpcDeps;
 
 beforeEach(() => {
   clearAppUpdateInstallRequested();
@@ -59,6 +65,44 @@ afterEach(async () => {
 
 function invoke(event = mainEvent, payload: unknown = intent) {
   return handlers.get(CHANNELS.app.relaunch)!(event, payload);
+}
+
+const PROVIDER_PRESET = {
+  providerId: "fixture-router", label: "Fixture Router", baseUrl: "https://router.example.test/v1",
+  defaultModel: "fixture", modelOptions: ["fixture"], requiresApiKey: true,
+};
+
+async function providerPresetSettings() {
+  settingsRoot = mkdtempSync(join(tmpdir(), "ave-relaunch-presets-"));
+  const settingsService = new SettingsService({ userDataPath: settingsRoot, encryption: unavailableSecretEncryption, secretPolicy: "development" });
+  await settingsService.patch({});
+  const refreshProvider = vi.fn();
+  const refreshSandboxNetworkConfig = vi.fn(async () => undefined);
+  presetDeps = { settingsService, auditLogger, getAppWindows: () => [],
+    conversationLoop: { refreshProvider }, refreshSandboxNetworkConfig } as unknown as IpcDeps;
+  return { settingsService, refreshProvider, refreshSandboxNetworkConfig,
+    stored: () => readFileSync(settingsFilePath(settingsRoot!), "utf8") };
+}
+
+function invokePresetInstall(preset = PROVIDER_PRESET) {
+  return mutateMarketplaceProviderPresets(presetDeps, () => presetDeps.settingsService.installMarketplaceProviderPreset(preset));
+}
+
+function invokePresetRemove() {
+  return mutateMarketplaceProviderPresets(presetDeps, () => presetDeps.settingsService.uninstallMarketplaceProviderPreset(PROVIDER_PRESET.providerId));
+}
+
+function holdSettingsSave(service: SettingsService) {
+  const started = deferred<void>();
+  const held = deferred<void>();
+  const writer = service as unknown as { saveSettings(settings: AppSettings): Promise<void> };
+  const save = writer.saveSettings.bind(service);
+  vi.spyOn(writer, "saveSettings").mockImplementationOnce(async (settings) => {
+    started.resolve();
+    await held.promise;
+    await save(settings);
+  });
+  return { started: started.promise, release: () => held.resolve() };
 }
 
 async function languageInstall() {
@@ -108,6 +152,93 @@ function revokeLanguage(root: string) {
 }
 
 describe("app relaunch boundary", () => {
+  it("refuses preset install mutation after accepted relaunch without changing stored settings", async () => {
+    const { settingsService, stored, refreshProvider } = await providerPresetSettings();
+    const before = stored();
+    expect(invoke()).toEqual({ ok: true });
+    await expect(invokePresetInstall()).rejects.toThrow("Installed package changes are paused while Ave is restarting.");
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
+    expect(stored()).toBe(before);
+    expect(refreshProvider).not.toHaveBeenCalled();
+  });
+
+  it("refuses preset remove mutation after accepted relaunch without changing stored settings", async () => {
+    const { settingsService, stored, refreshProvider } = await providerPresetSettings();
+    await settingsService.installMarketplaceProviderPreset(PROVIDER_PRESET);
+    const before = stored();
+    const presets = settingsService.get("marketplace").installedProviderPresets;
+    expect(presets).toHaveLength(1);
+    expect(invoke()).toEqual({ ok: true });
+    await expect(invokePresetRemove()).rejects.toThrow("Installed package changes are paused while Ave is restarting.");
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual(presets);
+    expect(stored()).toBe(before);
+    expect(refreshProvider).not.toHaveBeenCalled();
+  });
+
+  it("refuses relaunch while preset install mutation holds a settings save", async () => {
+    const { settingsService, stored } = await providerPresetSettings();
+    const before = stored();
+    const hold = holdSettingsSave(settingsService);
+    const pending = invokePresetInstall();
+    try {
+      await hold.started;
+      expect({ busy: hasMarketplaceInstallInFlight(), relaunch: invoke() }).toEqual({
+        busy: true, relaunch: { ok: false, error: "plugin-install-in-progress" },
+      });
+      expect(relaunchApp).not.toHaveBeenCalled();
+      expect(stored()).toBe(before);
+    } finally {
+      hold.release();
+      await pending;
+    }
+    expect(settingsService.get("marketplace").installedProviderPresets).toHaveLength(1);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+    expect(invoke()).toEqual({ ok: true });
+  });
+
+  it("refuses relaunch while preset remove mutation holds a settings save", async () => {
+    const { settingsService, stored } = await providerPresetSettings();
+    await settingsService.installMarketplaceProviderPreset(PROVIDER_PRESET);
+    const before = stored();
+    const hold = holdSettingsSave(settingsService);
+    const pending = invokePresetRemove();
+    try {
+      await hold.started;
+      expect({ busy: hasMarketplaceInstallInFlight(), relaunch: invoke() }).toEqual({
+        busy: true, relaunch: { ok: false, error: "plugin-install-in-progress" },
+      });
+      expect(relaunchApp).not.toHaveBeenCalled();
+      expect(stored()).toBe(before);
+    } finally {
+      hold.release();
+      await pending;
+    }
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+    expect(invoke()).toEqual({ ok: true });
+  });
+
+  it("keeps relaunch busy through preset endpoint refresh after the save", async () => {
+    const { settingsService, refreshSandboxNetworkConfig } = await providerPresetSettings();
+    await settingsService.installMarketplaceProviderPreset(PROVIDER_PRESET);
+    await settingsService.patch({ llm: { provider: "openai-compatible", marketplaceProviderPresetId: PROVIDER_PRESET.providerId } });
+    const started = deferred<void>();
+    const held = deferred<void>();
+    refreshSandboxNetworkConfig.mockImplementationOnce(async () => { started.resolve(); await held.promise; });
+    const pending = invokePresetInstall({ ...PROVIDER_PRESET, baseUrl: "https://other.example.test/v1" });
+    try {
+      await started.promise;
+      expect(settingsService.get("marketplace").installedProviderPresets[0]?.baseUrl).toBe("https://other.example.test/v1");
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+      expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunchApp).not.toHaveBeenCalled();
+    } finally {
+      held.resolve();
+      await pending;
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+    expect(invoke()).toEqual({ ok: true });
+  });
 
   it("refuses language removal after accepted relaunch without deactivating or changing the ledger", async () => {
     const { harness, store, deactivate, key } = await installedLanguage();

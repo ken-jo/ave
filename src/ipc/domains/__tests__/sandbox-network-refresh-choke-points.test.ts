@@ -1,3 +1,4 @@
+import type { IpcDeps } from "../../types.js";
 // Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolve } from "node:path";
@@ -100,6 +101,79 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
     });
 
     expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe("ASRT choke-point 2 — marketplace provider preset mutations (settings.ts)", () => {
+  beforeEach(async () => {
+    handlers.clear();
+    vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  });
+
+  const preset = {
+    providerId: "future-router",
+    label: "Future Router",
+    baseUrl: "https://future.example/v1",
+    defaultModel: "future/free",
+    modelOptions: ["future/free"],
+    requiresApiKey: true,
+  };
+
+  function makePresetDeps() {
+    let presets: Array<typeof preset> = [preset];
+    let presetId: string | undefined = "future-router";
+    const refreshSandboxNetworkConfig = vi.fn();
+    const deps = {
+      settingsService: {
+        getAll: vi.fn(() => ({ llm: { provider: "openai-compatible", activeChatRuntime: { kind: "api" }, vendors: {} }, appearance: {} })),
+        get: vi.fn((key: string) => {
+          if (key === "llm") {
+            return {
+              provider: "openai-compatible",
+              activeChatRuntime: { kind: "api" },
+              ...(presetId ? { marketplaceProviderPresetId: presetId } : {}),
+              vendors: { "openai-compatible": {} },
+            };
+          }
+          if (key === "marketplace") {
+            return { installedProviderPresets: presets };
+          }
+          return {};
+        }),
+        uninstallMarketplaceProviderPreset: vi.fn(async () => {
+          presets = [];
+          presetId = undefined;
+          return { ok: true };
+        }),
+        patch: vi.fn(async () => ({ ok: true })),
+        replaceLlm: vi.fn(async () => {}),
+        getSecret: vi.fn(() => null),
+        hasStoredSecret: vi.fn(() => false),
+        setSecret: vi.fn(async () => {}),
+        deleteSecret: vi.fn(async () => {}),
+      },
+      conversationLoop: { refreshProvider: vi.fn() },
+      auditLogger: { log: vi.fn() },
+      getAppWindows: vi.fn(() => []),
+      rewireReviewerAgent: vi.fn(),
+      refreshActiveLlmWildcard: vi.fn(),
+      refreshSandboxNetworkConfig,
+    };
+    return { deps, refreshSandboxNetworkConfig };
+  }
+
+  it("calls refreshSandboxNetworkConfig when the active preset is uninstalled", async () => {
+    // Capture the pre-mutation registry signature or uninstall loses the old host from both comparisons.
+    const { deps, refreshSandboxNetworkConfig } = makePresetDeps();
+    const { mutateMarketplaceProviderPresets } = await import("../settings.js");
+    const ipcDeps = deps as unknown as IpcDeps;
+    await mutateMarketplaceProviderPresets(ipcDeps, () =>
+      ipcDeps.settingsService.uninstallMarketplaceProviderPreset("future-router"),
+    );
+
+    expect(refreshSandboxNetworkConfig).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -131,13 +131,11 @@ export const CHANNELS = {
     fallback: "ave:chat:fallback",
   },
   llm: {
-
     // The model catalog the main process resolves against, handed to the
     // renderer before it mounts so both sides resolve against the same one.
     getModelCatalog: "ave:llm:get-model-catalog",
   },
   memory: {
-
     detailGet: "ave:memory:detail-get",
     summariesGet: "ave:memory:summaries-get",
     entriesDelete: "ave:memory:entries:delete",
@@ -199,7 +197,6 @@ export const CHANNELS = {
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
     uiList: "ave:plugins:ui:list",
-
     cards: "ave:plugins:cards",
     configGet: "ave:plugins:config:get",
     configSet: "ave:plugins:config:set",
@@ -230,7 +227,6 @@ export const CHANNELS = {
   },
   runtime: {
     counts: "ave:runtime:counts",
-
   },
   remoteA2a: {
     targets: "ave:a2a-remote:targets",
@@ -367,11 +363,9 @@ export const CHANNELS = {
   },
   agents: {
     list: "ave:agents:list",
-
   },
   skills: {
     list: "ave:skills:list",
-
   },
   mcp: {
     servers: "ave:mcp:servers",
@@ -543,7 +537,6 @@ export const CHANNELS = {
     envForcedSettings: "ave:settings:env-forced",
     deleteApiKey: "ave:settings:delete-api-key",
     listLlmModels: "ave:settings:list-llm-models",
-
     subscriptionRuntimeStatus: "ave:settings:subscription:status",
     // Main → host renderer safe status invalidation; never carries a status payload.
     subscriptionRuntimeStatusUpdated: "ave:settings:subscription:status-updated",
@@ -558,7 +551,6 @@ export const CHANNELS = {
     subscriptionListModels: "ave:settings:subscription:list-models",
     subscriptionUseForChat: "ave:settings:subscription:use-for-chat",
     subscriptionUseApiForChat: "ave:settings:subscription:use-api-for-chat",
-
     setWebApiKey: "ave:settings:set-web-api-key",
     hasWebApiKey: "ave:settings:has-web-api-key",
     deleteWebApiKey: "ave:settings:delete-web-api-key",
@@ -567,7 +559,6 @@ export const CHANNELS = {
     openExternal: "ave:shell:open-external",
   },
   telemetry: {
-
     allowedHosts: "ave:telemetry:allowed-hosts",
   },
   usage: {
@@ -611,7 +602,6 @@ export const CHANNELS = {
     delete: "ave:prompts:delete",
     updated: "ave:prompts:updated",
   },
-
   update: {
     state: "ave:update:state",
     getState: "ave:update:get-state",
@@ -782,7 +772,7 @@ export const CHANNELS = {
     refuseTabOp: "ave:browser:refuse-tab-op", // invoke renderer→main  an inTabId page could not be loaded
     stop: "ave:browser:stop", // invoke renderer→main  pause before user navigation
     pause: "ave:browser:pause", // invoke renderer→main  explicit persistent human takeover
-    resume: "ave:browser:resume",   // invoke renderer→main  main-issued native popup handle
+    resume: "ave:browser:resume",   // invoke renderer→main  embedded renderer tab ID
     getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
     getSessionBindings: "ave:browser:get-session-bindings",
     sessionBindingsChanged: "ave:browser:session-bindings-changed",
@@ -1007,14 +997,3 @@ export interface PluginInstallResultPayload {
   error?: string;
   message?: string;
 }
-
-/**
- * Payload of the `agents.installResult` / `agents.uninstallResult` broadcasts.
- *
- * Extends the plugin shape rather than restating it: the status-bar toast runs
- * one handler for all three package families, so the `error`/`message` pair has
- * to mean the same thing here. `agentId` is the success-only field — a failed
- * install never resolved one.
- */
-
-/** Skill twin of {@link AgentInstallResultPayload}. */

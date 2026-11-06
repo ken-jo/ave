@@ -87,6 +87,7 @@ import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
+  appearanceMigration,
   marketplaceProviderPresetSecretInvalidationIds,
   mergeLlmPatch,
   normalizeA2ARemote,
@@ -544,6 +545,23 @@ export interface AppSettings {
 
 export interface PluginSettings {}
 
+/** Appearance schema 2 selects one complete token bundle; followSystem uses its paired theme.
+ * Load migrates legacy axes once; new callers use AppearanceSettings. */
+
+/** @internal; legacy v1 axis types, used only in migration. */
+export type ThemePreference = "system" | "light" | "dark" | "high-contrast";
+/** @internal; legacy v1 axis types, used only in migration. */
+export type ChatThemePreference = "default" | "lg" | "purple" | "orange" | "blue";
+/** @internal; legacy v1 axis types, used only in migration. */
+export type CodeThemePreference = "auto" | "light" | "dark";
+
+/** @internal; legacy v1 shape, used only in migrateAppearanceV1ToV2. */
+export interface AppearanceSettingsV1 {
+  theme: ThemePreference;
+  chatTheme: ChatThemePreference;
+  codeTheme: CodeThemePreference;
+}
+
 /** User-configurable font preferences. `family`; `"system"` keeps the built-in HOST_FONT_STACK (default). Any other value MUST match `isValidFontFamilyOverride`; rejected values fall back to `"system"` at normalize time so a corrupt settings.json cannot break first paint. `sizeScale`; multiplicative on `1rem`. Discrete preset values keep the UI legible at every step (a
  * free slider would let users pick `0.4` and lock themselves out of the settings dialog). The values + validators live in `src/shared/appearance-font.ts` (a zero-import pure module) so the renderer preload can enforce the same contract on the frame-0 theme prime without pulling this store's `electron`/`node:fs` deps. Re-exported here so existing import sites stay unchanged. */
 export {
@@ -565,6 +583,12 @@ export interface AppearanceSettings {
    * the choice survives restarts and is read by both main and renderer.
    */
   language?: Locale;
+}
+
+export function migrateAppearanceV1ToV2(
+  legacy: AppearanceSettingsV1,
+): AppearanceSettings {
+  return appearanceMigration.migrateV1ToV2(legacy);
 }
 
 /** §B1; External URL viewer policy. `preferredFlow` decides whether external URLs (OAuth IdP, calendar webLinks, email open/compose URLs, etc.) are surfaced inside a host BrowserWindow ("in-app") or routed to the OS default browser ("system-browser"). SoT for the host. Plugins consume this via
@@ -1100,7 +1124,7 @@ export class SettingsService {
         ...(appearanceRest as Partial<AppearanceSettings>),
       };
       // schemaVersion is host-owned, not user data: this store only ever persists the v2 shape, so the stored
-      // value is pinned to 2 regardless of what the caller claims.
+      // value is pinned to 2 regardless of what the caller claims. Migration from v1 happens on load, from disk.
       if (schemaVersionPatch !== undefined && schemaVersionPatch !== 2) {
         log.warn(
           `appearance.schemaVersion patch ignored (received ${JSON.stringify(schemaVersionPatch)}), keeping 2`,
@@ -1692,12 +1716,17 @@ export class SettingsService {
         if (retiredModel) llm = { ...llm, retiredProvider: retiredModel };
       }
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
-
       const pluginConfigs = sanitizeStoredPluginConfigs(parsed.pluginConfigs);
       // Unknown routine keys are preserved in storage but never read by current code.
       const normalizedRoutine: RoutineSettings = {
         ...(parsed.routine as Record<string, unknown> | undefined ?? {}),
       };
+
+      const onDisk = parsed.appearance as Record<string, unknown> | null | undefined;
+      // Detect v1 (legacy tri-axis) to trigger write-back after constructor.
+      const needsV2WriteBack = !!onDisk && typeof onDisk === "object" &&
+        onDisk.schemaVersion !== 2 &&
+        (typeof onDisk.theme === "string" || typeof onDisk.chatTheme === "string" || typeof onDisk.codeTheme === "string");
 
       const marketplace = normalizeMarketplace(marketplaceParsed);
       const normalizedLlm = mergeLlmPatch(
@@ -1759,7 +1788,7 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
-      return { settings: result, writeBack: migrationWriteBack };
+      return { settings: result, writeBack: needsV2WriteBack || migrationWriteBack };
     } catch (error) {
       if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);

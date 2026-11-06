@@ -78,13 +78,6 @@ function makeConversationLoop(sessionId: string) {
     loadSession: vi.fn(),
     refreshProvider: vi.fn(),
     abortCurrentTurn: vi.fn(),
-    pingProvider: vi.fn(async () => ({
-      configured: true,
-      online: true,
-      vendor: "openai",
-      model: "gpt-4o",
-      latencyMs: 1,
-    })),
     resetAndResume: vi.fn(),
     manualCompact: vi.fn(),
     startRoutineConversation: vi.fn(),

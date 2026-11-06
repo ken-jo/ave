@@ -136,7 +136,6 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
       expect(api.acknowledgeRoutineResult).toHaveBeenCalledWith("schedule-daily", expect.any(String));
       expect(container.querySelector('[data-testid="routine-card"]')).toBeFalsy();
     });
-    expect(api.listRoutineSessions).not.toHaveBeenCalled();
   });
 
   it("does not acknowledge or dismiss a routine result when opening its session fails", async () => {
