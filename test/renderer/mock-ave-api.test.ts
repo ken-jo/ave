@@ -3,33 +3,46 @@ import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 
 describe("mock settings snapshots", () => {
-  it("keeps bootable defaults when a fixture supplies only another section", async () => {
+  it("defaults only appearance when a fixture omits it", async () => {
     const { api } = makeMockAveApi({ settings: { system: { sidebarState: "hidden" } } });
 
-    expect(await api.getSettings()).toMatchObject({
+    const snapshot = await api.getSettings();
+    expect(snapshot).toMatchObject({
       appearance: DEFAULT_APPEARANCE,
-      llm: MOCK_DEFAULT_SETTINGS.llm,
       system: { sidebarState: "hidden" },
     });
+    expect(snapshot).not.toHaveProperty("llm");
+    expect(snapshot).not.toHaveProperty("chat");
   });
 
-  it("preserves nested overrides and their unmodified sibling defaults", async () => {
+  it("preserves a supplied appearance section exactly", async () => {
+    const appearance = { mode: "dark", terminalFont: { size: 18 } };
     const { api } = makeMockAveApi({
-      settings: { appearance: { mode: "dark", terminalFont: { size: 18 } } },
+      settings: { appearance },
     });
 
     expect(await api.getSettings()).toMatchObject({
-      appearance: {
-        ...DEFAULT_APPEARANCE,
-        mode: "dark",
-        terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, size: 18 },
-      },
+      appearance,
     });
+    expect((await api.getSettings() as { appearance: unknown }).appearance).toBe(appearance);
   });
 
-  it("preserves explicit invalid values for tests of boundary validation", async () => {
-    const { api } = makeMockAveApi({ settings: { appearance: null } });
+  it("preserves nested settings references and later fixture changes", async () => {
+    const llm = { ...MOCK_DEFAULT_SETTINGS.llm, vendors: { ...MOCK_DEFAULT_SETTINGS.llm.vendors } };
+    const { api } = makeMockAveApi({ settings: { llm } });
+    llm.vendors["openai-compatible"] = {
+      ...llm.vendors["openai-compatible"],
+      baseUrl: "http://localhost:8001/v1",
+    };
 
-    expect(await api.getSettings()).toMatchObject({ appearance: null });
+    const snapshot = await api.getSettings() as { llm: typeof llm };
+    expect(snapshot.llm).toBe(llm);
+    expect(snapshot.llm.vendors["openai-compatible"].baseUrl).toBe("http://localhost:8001/v1");
+  });
+
+  it.each([null, undefined])("preserves explicit invalid appearance %s for boundary validation", async (appearance) => {
+    const { api } = makeMockAveApi({ settings: { appearance } });
+
+    expect(await api.getSettings()).toMatchObject({ appearance });
   });
 });
