@@ -437,7 +437,7 @@ function PermissionQuickPicker({
     if (busy) return;
     setBusy(true);
     try {
-      const perm = getApi().permission;
+      const perm = window.ave.permission;
       // The card closes only once the pick took. A refused or failed change leaves it open with the current mark unmoved; the honest state.
       const res = await perm.setMode(mode);
       if (!res.ok) {
@@ -585,7 +585,7 @@ function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPe
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const info = await getApi().permission.sandboxCapability();
+      const info = await window.ave.permission.sandboxCapability();
       if (mounted.current && current === generation.current) {
         setStatus(info.shell);
         setLoadFailed(false);
@@ -602,7 +602,7 @@ function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPe
     mounted.current = true;
     void refresh();
     const offSettings = getApi().onSettingsUpdated(() => { void refresh(); });
-    const offSandbox = getApi().permission.onSandboxCapabilityChanged?.(() => { void refresh(); });
+    const offSandbox = window.ave.permission.onSandboxCapabilityChanged?.(() => { void refresh(); });
     return () => {
       mounted.current = false;
       generation.current += 1;

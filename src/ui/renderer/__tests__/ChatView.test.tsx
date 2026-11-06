@@ -2652,7 +2652,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
 
   async function setupWithCallback() {
     const { container, api, unmount } = await renderApp({ hasApiKey: true });
-    const onHitMock = api.permission.onUserApprovalHit as unknown as ReturnType<
+    const onHitMock = window.ave.permission.onUserApprovalHit as unknown as ReturnType<
       typeof vi.fn
     >;
     await waitFor(() => expect(onHitMock).toHaveBeenCalled());
@@ -2812,7 +2812,7 @@ describe("ChatView — reviewer suggestion", () => {
     // The offer belongs where the user is already deciding, so it has no surface of its own in the window: with no card up it
     // appears nowhere, and the hook goes on holding it for the next one.
     const { container, api } = await renderApp({ hasApiKey: true });
-    const onSuggestionMock = api.permission.onReviewSuggestion as unknown as ReturnType<typeof vi.fn>;
+    const onSuggestionMock = window.ave.permission.onReviewSuggestion as unknown as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(onSuggestionMock).toHaveBeenCalled());
     const fire = onSuggestionMock.mock.calls[0]?.[0] as SuggestionCb;
 

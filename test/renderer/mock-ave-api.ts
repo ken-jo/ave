@@ -492,50 +492,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     deleteWebApiKey: vi.fn(async () => ({ ok: true })),
     previewClaudeDesktopMcpImport: vi.fn(async () => ({ entries: [], errors: [] })),
     applyClaudeDesktopMcpImport: vi.fn(async () => ({ ok: true, results: [], parseErrors: [] })),
-    permission: {
-      getMode: vi.fn(async () => ({ mode: "default" })),
-      setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
-      onModeChanged: vi.fn(() => () => undefined),
-      listRules: vi.fn(async () => []),
-      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
-      removeScopedRule: vi.fn(async () => ({ ok: true })),
-      addRule: vi.fn(async () => ({ ok: true })),
-      removeRule: vi.fn(async () => ({ ok: true })),
-      recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
-      recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
-      onRecentlyDeniedChanged: vi.fn(() => () => undefined),
-      hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
-      dirDispatch: vi.fn(async () => ({ ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] })),
-      judgeGet: mockJudgeGet(),
-      reviewerDispatch: vi.fn(async () => ({
-        ok: true,
-        verb: "show",
-        settings: {
-          mode: "disabled",
-          fallbackOnError: "deny",
-        },
-      })),
-      auditShow: vi.fn(async () => ({ ok: true, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),
-      auditVerify: vi.fn(async () => ({ ok: true, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
-      onManifestViolation: vi.fn(() => () => undefined),
-      onUserApprovalHit: vi.fn(() => () => undefined),
-      onReviewSuggestion: vi.fn(() => () => undefined),
-      // No home content pending review unless a test says so.
-      homeTrustReview: vi.fn(async () => null),
-      homeTrustApprove: vi.fn(async () => ({ ok: true, approved: 0 })),
-      homeTrustRemove: vi.fn(async () => ({ ok: true })),
-    },
-    policy: {
-      get: vi.fn(async () => ({
-        version: 1,
-        requireExplicitApproval: false,
-        managed: false,
-        updatedAt: new Date().toISOString(),
-        source: "defaults",
-      })),
-      set: vi.fn(async () => ({ ok: true })),
-    },
-
     // A tile binds its own view of the window api through `chatGroupApi`, so a window with more than one tile needs this to exist at all; without it a split throws
     // `chat-group-unavailable`. Each non-primary group answers with its OWN conversation id, which is what lets a test tell two tiles apart; everything else is deliberately the window's shared mock.
     chatGroup: vi.fn((chatGroupId: string) => {
@@ -1045,6 +1001,21 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
+        hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
+        dirDispatch: vi.fn(async () => ({ ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] })),
+        judgeGet: mockJudgeGet(),
+        reviewerDispatch: vi.fn(async () => ({
+          ok: true,
+          verb: "show",
+          settings: {
+            mode: "disabled",
+            fallbackOnError: "deny",
+          },
+        })),
+        auditShow: vi.fn(async () => ({ ok: true, entries: [], total: 0, summary: { files: 0, bytes: 0 } })),
+        auditVerify: vi.fn(async () => ({ ok: true, intact: true, totalFiles: 0, totalEntries: 0, perDay: [] })),
+        onManifestViolation: vi.fn(() => () => undefined),
+        onUserApprovalHit: vi.fn(() => () => undefined),
         onReviewSuggestion: vi.fn(() => () => undefined),
         homeTrustReview: vi.fn(async () => null),
         homeTrustApprove: vi.fn(async () => ({ ok: true, approved: 0 })),

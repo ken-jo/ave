@@ -5,7 +5,7 @@ import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/react";
 import { useState } from "react";
-import { DEFAULT_APP_INFO, makeMockAveApi } from "./mock-ave-api.js";
+import { DEFAULT_APP_INFO, makeMockAveApi, makeMockAveNamespace } from "./mock-ave-api.js";
 import { activeSettingsTab, clickSettingsTab, settingsTabTrigger } from "./helpers.js";
 
 afterEach(() => {
@@ -16,6 +16,7 @@ type Embedder = "content" | "inline";
 
 async function renderWithConsumer(embedder: Embedder) {
   const { api } = makeMockAveApi();
+  vi.stubGlobal("ave", makeMockAveNamespace().ns);
   vi.stubGlobal("aveApi", api);
   (window as unknown as { aveApi: typeof api }).aveApi = api;
 

@@ -4,7 +4,7 @@
 // `__toESM(require("electron"), 1).default.contextBridge`.
 import { contextBridge } from "electron";
 import { buildPublicSurface } from "./preload/public-surface.js";
-import type { AveApi } from "./ui/renderer/types.js";
+import type { AvePreloadApi } from "./ui/renderer/types.js";
 import { prepareFileDrop, resolveDroppedPaths } from "./preload/webutils-bridge.js";
 import {
   applyInitialAppearance,
@@ -22,21 +22,23 @@ const aveInitialAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ?
 applyInitialAppearance(aveInitialAppearance);
 
 // ─── Composed host API surface ──────────────────────────────────────────────
-// The public + internal builders partition the methods; the exposed
-// `window.aveApi` object is their union (byte-identical name + shape). The
-// `satisfies` is the drift gate: the renderer declares AveApi and this is
+// The public + internal builders partition the methods; their full union
+// is split: `window.ave` alone carries the five permission-side namespaces,
+// `window.aveApi` the rest. The
+// `satisfies` is the drift gate: types.ts declares AvePreloadApi and this is
 // the one place the whole surface is assembled, so a member the renderer
 // expects and no builder provides fails to compile here (each builder checks
 // its own members against the same type).
 const api = {
   ...buildPublicSurface(),
   ...buildInternalApiSurface(),
-} satisfies AveApi;
+} satisfies AvePreloadApi;
 
 // Seed the provider with the appearance already painted by preload.
 contextBridge.exposeInMainWorld("__aveInitialAppearance", aveInitialAppearance);
 
-contextBridge.exposeInMainWorld("aveApi", api);
+const { permission, approval, userApproval, policy, mcp, ...aveApi } = api;
+contextBridge.exposeInMainWorld("aveApi", aveApi);
 // Dev mode runtime flag — main process sets NODE_ENV=development in
 // `scripts/run-electron.mjs`, so preload reads it at runtime.
 //
@@ -66,8 +68,6 @@ contextBridge.exposeInMainWorld("aveWindow", buildAveWindowWorld());
 
 
 
-// permission/approval/userApproval/policy/mcp are shared with aveApi (same
-// object refs); the remaining namespaces come from the internal surface.
 // ─── Drop-path resolution bridge (webUtils.getPathForFile) ────────────────
 // A dropped File cannot cross IPC, so its path must be resolved here in preload.
 // The returned string is only a CANDIDATE path — the main-process
@@ -78,11 +78,12 @@ contextBridge.exposeInMainWorld("aveWindow", buildAveWindowWorld());
 // the main world hands over File objects, never a path string.
 contextBridge.exposeInMainWorld("aveDrop", { resolveDroppedPaths, prepareFileDrop });
 
+// These namespaces are exposed only in this world; extras come from the internal surface.
 contextBridge.exposeInMainWorld("ave", {
-  permission: api.permission,
-  approval: api.approval,
-  userApproval: api.userApproval,
-  policy: api.policy,
-  mcp: api.mcp,
+  permission,
+  approval,
+  userApproval,
+  policy,
+  mcp,
   ...buildAveNamespaceExtras(),
 });

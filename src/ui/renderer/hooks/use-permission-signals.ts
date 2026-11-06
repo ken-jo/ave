@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getApi } from "../api-client.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import type {
   PermissionReviewSuggestionPayload,
@@ -58,12 +57,8 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
   // permission-manager emitting `null` / `""` / `"critical"` would otherwise
   // propagate to `.toUpperCase()` (throws) or render unexpected text.
   useEffect(() => {
-    let api;
-    try {
-      api = getApi();
-    } catch {
-      return;
-    }
+    const api = window.ave;
+    if (!api) return;
     const unsubscribe = api.permission.onUserApprovalHit((payload) => {
       if (
         !payload ||
@@ -97,12 +92,8 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
   }, []);
 
   useEffect(() => {
-    let api;
-    try {
-      api = getApi();
-    } catch {
-      return;
-    }
+    const api = window.ave;
+    if (!api) return;
     const unsubscribe = api.permission.onReviewSuggestion((payload) => {
       if (
         !payload ||
@@ -139,7 +130,7 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
       current ? { ...current, busy: true, error: undefined } : current,
     );
     try {
-      const api = getApi();
+      const api = window.ave;
       const reviewerResult = await api.permission.reviewerDispatch("mode llm");
       if (!reviewerResult?.ok) {
         throw new Error(reviewerResult?.error ?? "reviewer mode change failed");

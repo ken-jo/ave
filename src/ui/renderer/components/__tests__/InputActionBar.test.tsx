@@ -62,9 +62,14 @@ vi.mock("../../api-client.js", () => ({
     onSettingsUpdated,
     subscriptionUseApiForChat,
     hasApiKey,
-    permission: { setMode, reviewerDispatch, sandboxCapability, onSandboxCapabilityChanged },
   }),
 }));
+
+beforeEach(() => {
+  Object.defineProperty(window, "ave", { configurable: true, writable: true, value: {
+    permission: { setMode, reviewerDispatch, sandboxCapability, onSandboxCapabilityChanged },
+  } });
+});
 
 const defaultStatusRow: InputStatusRow = {
   vendorModel: "OpenAI · gpt-5.4",

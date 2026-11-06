@@ -70,7 +70,7 @@ import type { AppBootstrapStatus } from "../shared/bootstrap-status.js";
 import type {
   AskUserQuestionRequest,
   AskUserQuestionResponse,
-  AveApi,
+  AvePreloadApi,
   NotificationClickPayload,
   NotificationToastPayload,
 } from "../ui/renderer/types.js";
@@ -139,7 +139,7 @@ export function normalizePluginActionResult(result: unknown): PluginActionResult
   return { ok: true, pluginId, uninstalled: true };
 }
 
-type RemoteA2AStatusPromise = ReturnType<AveApi["remoteA2a"]["status"]>;
+type RemoteA2AStatusPromise = ReturnType<AvePreloadApi["remoteA2a"]["status"]>;
 
 function invokeRemoteA2AAction(
   action: "resume",
@@ -770,14 +770,14 @@ export function buildInternalApiSurface() {
 
   approval: {
     /** main→renderer 단방향 이벤트 구독 */
-    onRequest: (cb: Parameters<AveApi["approval"]["onRequest"]>[0]) => {
+    onRequest: (cb: Parameters<AvePreloadApi["approval"]["onRequest"]>[0]) => {
       const listener = (_event: unknown, req: Parameters<typeof cb>[0]) => cb(req);
       ipcRenderer.on(CHANNELS.approval.request, listener);
       return () => ipcRenderer.removeListener(CHANNELS.approval.request, listener);
     },
     /** main→renderer: a request the host is no longer waiting on. Window-wide like `onRequest`; the queue
      * it reconciles is the window's one FIFO, and the surface drawing the card is decided renderer-side. */
-    onSettled: (cb: Parameters<AveApi["approval"]["onSettled"]>[0]) => {
+    onSettled: (cb: Parameters<AvePreloadApi["approval"]["onSettled"]>[0]) => {
       const listener = (_event: unknown, payload: Parameters<typeof cb>[0]) => cb(payload);
       ipcRenderer.on(CHANNELS.approval.settled, listener);
       return () => ipcRenderer.removeListener(CHANNELS.approval.settled, listener);
@@ -1116,7 +1116,7 @@ export function buildInternalApiSurface() {
   },
 
   // Overlay IPC bridges (main → renderer push)
-  onOverlayShow: (handler: Parameters<AveApi["onOverlayShow"]>[0]) => {
+  onOverlayShow: (handler: Parameters<AvePreloadApi["onOverlayShow"]>[0]) => {
     const listener = (_e: unknown, item: Parameters<typeof handler>[0]) => handler(item);
     ipcRenderer.on(OVERLAY_V1.show, listener);
     return () => ipcRenderer.removeListener(OVERLAY_V1.show, listener);
@@ -1238,5 +1238,5 @@ export function buildInternalApiSurface() {
         | { ok: false; error: string }
       >,
   },
-  } satisfies Partial<AveApi>;
+  } satisfies Partial<AvePreloadApi>;
 }

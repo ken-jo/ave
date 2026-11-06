@@ -2,7 +2,7 @@
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { makeMockAveApi } from "./mock-ave-api.js";
+import { makeMockAveApi, makeMockAveNamespace } from "./mock-ave-api.js";
 import { TEST_IDS } from "../../src/shared/test-ids.js";
 
 afterEach(() => {
@@ -13,6 +13,7 @@ afterEach(() => {
 describe("settings model chooser", () => {
   it("persists a pick without the Save button", async () => {
     const { api } = makeMockAveApi();
+    vi.stubGlobal("ave", makeMockAveNamespace().ns);
     // Endpoint catalogs must arrive before model choices exist.
     api.listLlmModels = vi.fn(async () => ({
       ok: true,

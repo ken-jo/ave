@@ -433,7 +433,8 @@ export type NotificationClickPayload = {
   contextRef?: NotificationContextRef;
 };
 
-export type AveApi = {
+/** Everything preload assembles; the renderer sees it split between `window.aveApi` ({@link AveApi}) and `window.ave`. */
+export type AvePreloadApi = {
   relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
 
   permission: AvePermissionApi;
@@ -2044,6 +2045,8 @@ export interface AveUiApi {
 export type AvePlatformApi = {
   isDarwin: boolean;
 };
+
+export type AveApi = Omit<AvePreloadApi, "permission" | "approval" | "userApproval" | "policy" | "mcp">;
 
 declare global {
   interface Window {
