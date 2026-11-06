@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 import {
   setWindowSize,
@@ -6,7 +7,7 @@ import {
   launchSeededElectron,
   teardownSeededElectron,
   type SeededElectronContext,
-} from "./seeded-electron";
+} from "./seeded-electron.js";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
 // Keep the no-key chip in the reserved strip without moving the empty-conversation composer.
@@ -19,7 +20,7 @@ test.describe("chat no-API-key layout", () => {
     if (ctx) await teardownSeededElectron(ctx);
   });
 
-  test("puts the no-key chip in the composer strip, not the transcript", async () => {
+  test("puts the no-key chip in the composer strip, not the transcript", async ({}, testInfo) => {
     ctx = await launchSeededElectron({
       historyRows: [],
       settings: buildLlmSettings("openai", "gpt-5.4-mini"),
@@ -27,27 +28,34 @@ test.describe("chat no-API-key layout", () => {
       homePrefix: "ave-no-api-key-layout-home-",
     });
 
-    await setWindowSize(ctx.app, 1040, 360);
+    // A user-created stacked split makes the conversation short while the real window stays above its minimum.
+    await setWindowSize(ctx.app, 1200, 700);
+    const sidebarToggle = ctx.page.getByTestId("sidebar-collapse-toggle");
+    if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
+    await ctx.page.getByTestId("pane-split").click();
+    await ctx.page.getByTestId("pane-split-column").click();
+    await expect(ctx.page.getByTestId("pane")).toHaveCount(2);
+    const pane = ctx.page.getByTestId("pane").first();
 
-    const chip = ctx.page.locator('[data-testid="composer-api-key-chip"]');
-    const composer = ctx.page.locator(testIdSelector(TEST_IDS.composerInputBar));
-    const projectSelector = ctx.page.locator('[data-testid="composer-project-selector-slot"]');
+    const chip = pane.locator('[data-testid="composer-api-key-chip"]');
+    const composer = pane.locator(testIdSelector(TEST_IDS.composerInputBar));
+    const projectSelector = pane.locator('[data-testid="composer-project-selector-slot"]');
     await expect(chip).toBeVisible();
     await expect(composer).toBeVisible();
     await expect(projectSelector).toBeVisible();
 
-    const metrics = await ctx.page.evaluate(() => {
+    const metrics = await pane.evaluate((pane) => {
       const toBox = (selector: string) => {
-        const el = document.querySelector(selector);
+        const el = pane.querySelector(selector);
         if (!el) return null;
         const rect = el.getBoundingClientRect();
         return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, height: rect.height };
       };
-      const chipEl = document.querySelector('[data-testid="composer-api-key-chip"]');
+      const chipEl = pane.querySelector('[data-testid="composer-api-key-chip"]');
       const chipBox = toBox('[data-testid="composer-api-key-chip"]');
       const selectorBox = toBox('[data-testid="composer-project-selector-slot"]');
       const composerBox = toBox('[data-testid="composer-input-bar"]');
-      const composerDock = document.querySelector("[data-composer-placement]");
+      const composerDock = pane.querySelector("[data-composer-placement]");
       if (!chipBox || !selectorBox || !composerBox) return null;
       const overlapsComposer = !(
         chipBox.right <= composerBox.left ||
@@ -64,7 +72,8 @@ test.describe("chat no-API-key layout", () => {
         chipAboveComposer: chipBox.bottom <= composerBox.top,
         sameStrip: Math.abs(chipBox.top - selectorBox.top) <= 12,
         composerBottom: composerBox.bottom,
-        viewportHeight: window.innerHeight,
+        paneHeight: pane.getBoundingClientRect().height,
+        paneBottom: pane.getBoundingClientRect().bottom,
         chipBox,
         selectorBox,
         composerBox,
@@ -72,6 +81,7 @@ test.describe("chat no-API-key layout", () => {
     });
 
     expect(metrics).not.toBeNull();
+    expect(metrics!.paneHeight).toBeLessThan(360);
     expect(metrics?.placement).toBe("bottom");
     expect(metrics?.hasLiftAttr, JSON.stringify(metrics)).toBe(false);
     expect(metrics?.chipInsideScroll).toBe(false);
@@ -80,8 +90,16 @@ test.describe("chat no-API-key layout", () => {
     expect(metrics?.chipAboveComposer, JSON.stringify(metrics)).toBe(true);
     expect(metrics?.sameStrip, JSON.stringify(metrics)).toBe(true);
     expect(metrics?.composerBottom, JSON.stringify(metrics)).toBeLessThanOrEqual(
-      metrics?.viewportHeight ?? 0,
+      metrics?.paneBottom ?? 0,
     );
+    const documentSize = await ctx.page.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
+    const windowHandle = await ctx.app.browserWindow(ctx.page);
+    const windowSize = await windowHandle.evaluate((window) => window.getContentSize());
+    expect(documentSize).toEqual(windowSize);
+    const measurements = testInfo.outputPath("no-key-short-tile.json");
+    writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, metrics }, null, 2));
+    await testInfo.attach("no-key-short-tile.json", { path: measurements, contentType: "application/json" });
+    await ctx.page.screenshot({ path: testInfo.outputPath("no-key-short-tile.png") });
   });
 
   test("keeps the composer bottom-docked on a tall viewport when no key is set", async () => {

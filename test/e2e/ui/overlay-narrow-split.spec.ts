@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { OVERLAY_V1 } from "../../../src/shared/ipc-channels.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
@@ -16,6 +17,19 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
   });
   try {
     const { app, page } = ctx;
+    const captureCase = async (name: string, conditions: unknown) => {
+      const documentSize = await page.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
+      const windowHandle = await app.browserWindow(page);
+      const windowSize = await windowHandle.evaluate((window) => window.getContentSize());
+      expect(documentSize).toEqual(windowSize);
+      const tile = page.getByTestId("pane").filter({ has: page.getByTestId(name === "alert-short-tile" ? "routine-card" : "approval-lane-card") });
+      const tileSize = await tile.evaluate((pane) => ({ width: pane.clientWidth, height: pane.clientHeight }));
+      expect(tileSize.height).toBeLessThan(windowSize[1] / 2);
+      const measurements = testInfo.outputPath(name + ".json");
+      writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, tileSize, conditions }, null, 2));
+      await testInfo.attach(name + ".json", { path: measurements, contentType: "application/json" });
+      await page.screenshot({ path: testInfo.outputPath(name + ".png") });
+    };
     await setWindowSize(app, 1440, 900);
     const skipTour = page.getByTestId("spotlight-tour:skip");
     if (await skipTour.isVisible()) await skipTour.click();
@@ -33,7 +47,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
       source: { kind: "alert", pluginId, kindId: "notice", alertId: "narrow-split" },
       pluginDisplayName: "Mail tools",
       title: "Review notice",
-      summary: "Review this notice.",
+      summary: "Review the pending workspace changes before continuing. ".repeat(12),
       running: false,
       pendingPrompt: "Review this notice.",
       primaryActionLabel: "Review",
@@ -103,15 +117,22 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     expect(narrow!.reviewHit).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("long-id-narrow-split.png") });
 
-    // Short enough that the card overflows its lane and its primary action starts out of view. Suggestions has no composer under the lane, so the lane reaches lower than
-    // in a conversation tile and the window must be shorter for the card to need scrolling.
-    await setWindowSize(app, 390, 240);
+    // A stacked tile and an expanded alert create a short, overflowing lane at a supported window size.
+    await setWindowSize(app, 1200, 700);
+    await suggestionsPane.getByTestId("pane-split").click();
+    await page.getByTestId("pane-split-column").click();
+    await expect(page.getByTestId("pane")).toHaveCount(3);
+    await suggestionsPane.getByRole("heading").first().click();
+    await overlay.getByTestId("overlay-card-expand-toggle").click();
+    await expect(overlay.getByTestId("overlay-card-summary")).toHaveAttribute("data-expanded", "true");
+    await expect.poll(async () => (await layout())?.laneScrollHeight ?? 0).toBeGreaterThan((await layout())!.laneClientHeight);
     const short = await layout();
     expect(short).not.toBeNull();
     expect(short!.laneScrollHeight).toBeGreaterThan(short!.laneClientHeight);
     expect(short!.closeHit).toBe(true);
     // The primary action starts below the lane's edge, so reaching it needs the lane to scroll.
     expect(short!.reviewHit).toBe(false);
+    await captureCase("alert-short-tile", short);
     const narrowCard = await overlay.boundingBox();
     expect(narrowCard).not.toBeNull();
     const touchX = Math.round(narrowCard!.x + narrowCard!.width / 2);
@@ -174,7 +195,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
         toolName: "read_file",
         toolCategory: "read",
         args: { path: "/tmp/layout-fixture.txt" },
-        reason: "Review fixture read",
+        reason: "Review the requested workspace file before allowing this read. ".repeat(3),
         createdAt: Date.now(),
         requireExplicit: false,
       },
@@ -201,25 +222,31 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
           }),
       };
     });
-    // At 240px the lane holding only the approval card overflows. Its decision row is drawn in view, and scrolling the lane must
-    // keep every decision reachable rather than carrying the row out of view or under another layer.
+    // The stacked tile also overflows with an approval card; scrolling must keep every decision reachable.
     await expect.poll(async () => (await approvalLayout())?.laneScrollRange ?? 0).toBeGreaterThan(0);
     const approvalBefore = await approvalLayout();
     expect(approvalBefore!.shrink).toBe("0");
     const approvalLaneBox = await page.getByTestId("floating-right-lane").filter({ has: approval }).boundingBox();
     expect(approvalLaneBox).not.toBeNull();
-    await page.mouse.move(Math.round(approvalLaneBox!.x + approvalLaneBox!.width / 2), Math.round(approvalLaneBox!.y + approvalLaneBox!.height / 2));
+    // Wheel over the card header so the lane owns the gesture, rather than the independently scrolling details body.
+    await approval.locator("header").first().hover();
     await page.mouse.wheel(0, 600);
-    await expect.poll(async () => (await approvalLayout())?.laneScrollTop ?? 0).toBe(approvalBefore!.laneScrollRange);
+    // Scroll extents are integers while the bottom scroll position can retain a fractional pixel.
+    await expect.poll(async () => Math.abs(((await approvalLayout())?.laneScrollTop ?? 0) - approvalBefore!.laneScrollRange)).toBeLessThanOrEqual(1);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-wheel.png") });
 
-    // The shared approval row (c7701bb5e) fits its card at the narrow split's 320px height, so no scrolling stands between the
-    // user and its decisions there: every button is reachable as drawn.
-    await setWindowSize(app, 390, 320);
+    // A taller stacked tile fits the approval row without scrolling between the user and its decisions.
+    await setWindowSize(app, 1200, 900);
+    await approval.locator("header").first().hover();
+    await page.mouse.wheel(0, -600);
+    await expect.poll(async () => (await approvalLayout())?.laneScrollTop).toBe(0);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     const approvalShown = await approvalLayout();
     expect(approvalShown!.shrink).toBe("0");
+    expect(approvalShown!.laneScrollTop).toBe(0);
+    expect(approvalShown!.laneScrollRange).toBe(0);
+    await captureCase("approval-short-tile", approvalShown);
     await page.screenshot({ path: testInfo.outputPath("approval-narrow-split.png") });
   } finally {
     await teardownSeededElectron(ctx);
