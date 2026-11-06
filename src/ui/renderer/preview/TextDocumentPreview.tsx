@@ -5,6 +5,8 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "./preview-targets.js";
 import { defaultAppOpenErrorKey, resolveIpcErrorKey } from "../format-ipc-error.js";
+import { FileInfoCard } from "./FileInfoCard.js";
+import { FilePreviewContent, MarkdownPreviewToggle } from "./file-preview-content.js";
 import { PreviewContent, resolvePreviewRenderer } from "./preview-renderers.js";
 import { PreviewDocumentFooter, PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "./preview-document-chrome.js";
 import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
@@ -45,6 +47,8 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
   const { startLine, endLine } = target;
   const selected = startLine !== undefined && endLine !== undefined;
   const inlineText = selected ? undefined : target.inlineText;
+  const [markdownSource, setMarkdownSource] = useState(false);
+  useEffect(() => { setMarkdownSource(false); }, [target.path, inlineText]);
   const [revision, setRevision] = useState(0);
   // The i18n key of the last refused or failed open, cleared when the preview reloads.
   const [openFailed, setOpenFailed] = useState<string | null>(null);
@@ -147,6 +151,9 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
     acknowledgeRendered();
   }, [passiveKind, sourceVisible, acknowledgeRendered]);
 
+  const passiveMarkdown = !selected && (inlineText !== undefined
+    ? resolvePreviewRenderer({ text: inlineText, path: target.path }).kind === "markdown"
+    : state.phase === "ok" && !state.binding && !state.image && passiveKind === "markdown");
   const latest = state.phase === "ok" ? state.changes.at(-1) : undefined;
   const changedLines = state.phase === "ok" ? state.changes.map((change) => change.line) : [];
   const summary = latest ? t("chatPreviewRail.documentObservationLines", { count: changedLines.length,
@@ -164,8 +171,11 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
       refreshing={inlineText === undefined && state.phase === "loading"} />
     <PreviewDocumentLiveStrip status={state.phase === "ok" ? state.status : undefined} summary={summary} ts={latest?.ts}
       error={openFailed ? t(openFailed) : undefined} />
-    {inlineText !== undefined ? <PreviewContent descriptor={{ text: inlineText, path: target.path }} />
+    {passiveMarkdown ? <MarkdownPreviewToggle source={markdownSource} onSourceChange={setMarkdownSource} /> : null}
+    {inlineText !== undefined ? <FilePreviewContent descriptor={{ text: inlineText, path: target.path }} source={markdownSource} />
       : state.phase === "loading" ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">{t("chatPreviewRail.filePreviewLoading")}</div>
+      : state.phase === "error" && !selected && (state.code === "binary-file" || state.code === "too-large")
+        ? <FileInfoCard name={target.title} kindLabel={previewFormatLabel(target.path)} location={target.path} reason={state.code} />
       : state.phase === "error" ? <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>
       : state.image ? <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
       : sourceVisible ? <pre className="max-h-(--preview-block-max-height) overflow-auto border-t py-2 font-mono text-xs"
@@ -183,7 +193,8 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
             {current ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-[9px] leading-3 text-background">Ave</span> : null}
           </span>;
         })}
-      </pre> : <PreviewContent descriptor={{ text: state.content, path: state.path }} onRendered={acknowledgeRendered} />}
+      </pre> : state.binding ? <PreviewContent descriptor={{ text: state.content, path: state.path }} onRendered={acknowledgeRendered} />
+        : <FilePreviewContent descriptor={{ text: state.content, path: state.path }} source={markdownSource} /> }
     <PreviewDocumentFooter><span>{previewFormatLabel(target.path)}{lineCount !== undefined ? ` · ${t("chatPreviewRail.documentLineCount", { count: lineCount })}` : ""}</span>
       {state.phase === "ok" && state.truncated ? <Badge variant="outline" className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-file-truncated">{t("chatPreviewRail.filePreviewTruncated")}</Badge> : null}
     </PreviewDocumentFooter>

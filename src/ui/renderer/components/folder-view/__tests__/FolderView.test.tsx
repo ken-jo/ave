@@ -264,6 +264,9 @@ describe("FolderView", () => {
     expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull();
     expect(screen.getAllByTestId("preview-code-line")[0]!.textContent).toContain("# Title");
 
+    fireEvent.click(screen.getByTestId("folder-markdown-view"));
+    expect(screen.getByTestId("folder-markdown-rendered").querySelector("h1")?.textContent).toBe("Title");
+
     fireEvent.click(row(`${ROOT}/src/payments/flow.png`));
     const image = await screen.findByTestId("folder-image-viewer");
     expect(within(image).getByTestId("folder-image-zoom").textContent).toBe("맞춤");
