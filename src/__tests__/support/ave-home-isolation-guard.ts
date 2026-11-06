@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import { homedir, userInfo } from "node:os";
 import { inject } from "vitest";
+import { configuredTestTmpRoot } from "./test-tmp-root.js";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -46,7 +47,11 @@ export function checkSandboxStampTargets(paths: readonly string[]): void {
   for (const path of paths) {
     const action = "stamp or grant sandbox target; constrain the test's deny/allow targets to fixtures:";
     // Windows runs keep TEMP under the profile (runTmpRoot in test-run-dirs.ts), so fixtures there are the run's own.
-    const sanctioned = [join(realAccountHome, ".ave", "test-tmp"), ...(process.platform === "win32" ? [join(realAccountHome, ".ave-test-tmp")] : [])];
+    const sanctioned = [
+      join(realAccountHome, ".ave", "test-tmp"),
+      ...(process.platform === "win32" ? [join(realAccountHome, ".ave-test-tmp")] : []),
+      ...explicitTestTmpRoot(),
+    ];
     refuseUnder(path, action, [resolve(realAccountHome)], true, true, sanctioned);
     if (realProgramData !== null) {
       refuseUnder(path, action, [resolve(realProgramData), resolve("C:\\ProgramData")], false, true);
@@ -79,6 +84,16 @@ function accountAveHome(): string {
   return resolve(join(accountHome, ".ave"));
 }
 
+/** The caller's explicit scratch root is the run's own, validated as global setup did against the real account home
+ * captured before any suite mocked it; nothing wider is sanctioned. */
+function explicitTestTmpRoot(): string[] {
+  if (process.env.AVE_TEST_TMP_ROOT === undefined) return [];
+  const realAccountHome = inject("realAccountHome");
+  if (!realAccountHome) throw new Error("AVE_TEST_TMP_ROOT isolation requires realAccountHome captured by vitest.globalSetup.ts");
+  const root = configuredTestTmpRoot(realAccountHome);
+  return root === undefined ? [] : [root];
+}
+
 function refuseUnder(path: string, action: string, realHomes: readonly string[], allowTestTmp = true, caseInsensitive = process.platform !== "linux", testTmpRoots?: readonly string[]): void {
   // Check both named and resolved paths so links cannot hide real-home access.
   const homes = [...new Set(realHomes.flatMap((home) => [home, canonicalPath(home)]))];
@@ -88,7 +103,8 @@ function refuseUnder(path: string, action: string, realHomes: readonly string[],
   const inside = (candidate: string, dir: string) =>
     fold(candidate) === fold(dir) || fold(candidate).startsWith(fold(dir).replace(/[\\/]+$/, "") + sep);
   for (const real of homes) {
-    const sanctioned = testTmpRoots ?? [join(real, "test-tmp")];
+    // A guard test may mock the account home into the run's own scratch; never sanction a root that holds the home checked.
+    const sanctioned = testTmpRoots ?? [join(real, "test-tmp"), ...explicitTestTmpRoot().filter((root) => !inside(real, root))];
     for (const candidate of paths) {
       if (inside(candidate, real) && !(allowTestTmp && sanctioned.some((root) => inside(candidate, root)))) {
         throw new Error(`refusing to ${action} ${path} from a test process; it is under the real ${real}`);

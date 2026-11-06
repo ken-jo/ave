@@ -43,6 +43,7 @@ import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { configuredTestTmpRoot } from "../../__tests__/support/test-tmp-root.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -300,7 +301,7 @@ describe("the sandbox private roots in a test process", () => {
     delete process.env.AVE_HOME;
     const base = process.env.AVE_TEST_SANDBOX_BASE;
     expect(base, "vitest.globalSetup.ts sets the per-run base").toBeDefined();
-    expect(base!.startsWith(join(realAve, "test-tmp") + sep)).toBe(true);
+    expect(base!.startsWith((configuredTestTmpRoot(homedir()) ?? join(realAve, "test-tmp")) + sep)).toBe(true);
     expect(appOwnedSandboxTempRoot()).toBe(join(base!, "tmp"));
     expect(appOwnedSandboxHomeRoot()).toBe(join(base!, "home"));
   });

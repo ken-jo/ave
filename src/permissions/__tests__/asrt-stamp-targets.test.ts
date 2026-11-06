@@ -115,6 +115,21 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave-test-tmp-sibling", "fixture")])).toThrow(refusal);
   });
 
+  it("allows an explicit AVE_TEST_TMP_ROOT in the profile but not its siblings", () => {
+    const saved = process.env.AVE_TEST_TMP_ROOT;
+    const root = join(inject("realAccountHome"), "ave-explicit-test-root");
+    try {
+      process.env.AVE_TEST_TMP_ROOT = root;
+      expect(() => homeGuard.checkSandboxStampTargets([join(root, "t-run", "fixture")])).not.toThrow();
+      expect(() => homeGuard.checkSandboxStampTargets([`${root}-sibling`])).toThrow(refusal);
+      process.env.AVE_TEST_TMP_ROOT = "relative-root";
+      expect(() => homeGuard.checkSandboxStampTargets([join(scratch(), "target")])).toThrow("AVE_TEST_TMP_ROOT must be absolute");
+    } finally {
+      if (saved === undefined) delete process.env.AVE_TEST_TMP_ROOT;
+      else process.env.AVE_TEST_TMP_ROOT = saved;
+    }
+  });
+
   it("refuses the default floor before native initialization", async () => {
     expect(homeGuard.checkSandboxStampTargets).toBeTypeOf("function");
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");

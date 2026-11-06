@@ -1,7 +1,7 @@
 /** Mock the account home so a broken isolation guard can only resolve scratch paths. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,6 +14,7 @@ import { defaultAveHome, aveHome } from "../shared/ave-home.js";
 import { checkSandboxSweepRoot, AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { AVE_HOME_AT_IMPORT } from "./fixtures/import-time-ave-home.js";
 import { canonicalPath } from "./support/ave-home-isolation-guard.js";
+import { configuredTestTmpRoot } from "./support/test-tmp-root.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
@@ -21,6 +22,7 @@ const fileEnv = {
   AVE_HOME: process.env.AVE_HOME,
   HOME: process.env.HOME,
   USERPROFILE: process.env.USERPROFILE,
+  AVE_TEST_TMP_ROOT: process.env.AVE_TEST_TMP_ROOT,
 };
 const refusal = /refusing to resolve AVE_HOME to .* from a test process; it is under the real /;
 const scratch = useTempDirs("ave-home-guard-");
@@ -66,7 +68,7 @@ describe("the test process's Ave home", () => {
     expect(runHome).toBeDefined();
     expect(fileEnv.AVE_HOME).toBeDefined();
     expect(dirname(fileEnv.AVE_HOME!)).toBe(runHome);
-    expect(dirname(runHome!)).toBe(join(defaultAveHome(), "test-tmp"));
+    expect(dirname(runHome!)).toBe(configuredTestTmpRoot(homedir()) ?? join(defaultAveHome(), "test-tmp"));
     expect(aveHome()).toBe(fileEnv.AVE_HOME);
   });
 
@@ -144,6 +146,33 @@ describe("the test process's Ave home", () => {
     pointHome(elsewhere);
     delete process.env.AVE_HOME;
     expect(aveHome()).toBe(join(elsewhere, ".ave"));
+  });
+
+  it("allows exactly an explicit AVE_TEST_TMP_ROOT under the account's Ave home, and nothing beside it", () => {
+    const { ave } = account();
+    const root = join(ave, "scratch-root");
+    process.env.AVE_TEST_TMP_ROOT = root;
+    process.env.AVE_HOME = join(root, "h-explicit");
+    expect(aveHome()).toBe(join(root, "h-explicit"));
+    expect(() => checkSandboxSweepRoot(join(root, "sbx-x"))).not.toThrow();
+    process.env.AVE_HOME = join(ave, "scratch-root-sibling");
+    expect(() => aveHome()).toThrow(refusal);
+    process.env.AVE_HOME = join(ave, "audit");
+    expect(() => aveHome()).toThrow(refusal);
+  });
+
+  it("throws on an explicit AVE_TEST_TMP_ROOT that is relative or contains the real account home", () => {
+    const { ave } = account();
+    process.env.AVE_HOME = join(ave, "test-tmp", "elsewhere");
+    for (const [value, error] of [
+      ["relative-root", /AVE_TEST_TMP_ROOT must be absolute/],
+      ["", /AVE_TEST_TMP_ROOT must be absolute/],
+      // Checked against the real home global setup captured, not the mocked one: the filesystem root holds it.
+      [parse(actualOs.homedir()).root, /AVE_TEST_TMP_ROOT must not contain/],
+    ] as const) {
+      process.env.AVE_TEST_TMP_ROOT = value;
+      expect(() => aveHome(), value).toThrow(error);
+    }
   });
 
   it("guards a sandbox sweep against HOME's ~/.ave as well as the account's", () => {

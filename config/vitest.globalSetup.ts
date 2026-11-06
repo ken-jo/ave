@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
 import { claimRunDir, ensureRunTmpRoot, ensureTestTmpRoot, RUN_OWNER_FILE, runTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
+import { configuredTestTmpRoot } from "../src/__tests__/support/test-tmp-root.js";
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Capture before redirecting the inherited environment, including across projects.
@@ -76,9 +77,14 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     return () => releaseRunDirs(holder);
   }
 
-  const configuredRoot = process.env.AVE_TEST_TMP_ROOT;
-  if (configuredRoot !== undefined && !isAbsolute(configuredRoot)) {
-    throw new Error("AVE_TEST_TMP_ROOT must be absolute");
+  // An explicit root replaces both defaults; a relative or home-containing one throws rather than falling back.
+  let configuredRoot: string | undefined;
+  try {
+    configuredRoot = configuredTestTmpRoot(REAL_ACCOUNT_HOME);
+  } catch (error) {
+    // Vite's module runner can fail while source-mapping a setup error's stack and print only its own TypeError.
+    console.error(`[vitest setup] ${(error as Error).message}`);
+    throw error;
   }
   const testTmp = configuredRoot ?? join(homedir(), ".ave", "test-tmp");
   // Explicit scratch roots retain directory, ownership and link checks without changing the account home.
@@ -86,7 +92,7 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   else ensureTestTmpRoot(testTmp, (path) => mkdirSync(path, { recursive: true }));
   // Claim the run temp root first; rejected roots must leave no unowned run directories.
   // Teardown reports leaks here, and the sweep removes only directories from dead runs.
-  const tmpRoot = runTmpRoot();
+  const tmpRoot = runTmpRoot(process.platform, homedir(), configuredRoot);
   ensureRunTmpRoot(tmpRoot);
   const tmpBase = mkdtempSync(join(tmpRoot, "t-"));
   // Confined test processes need a separate private root; app startup clears the app sandbox.
@@ -120,7 +126,9 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       );
     }
     // Load app modules only after AVE_HOME is set; sweep dead runs and preserve live ones.
-    const sweeps = [await sweepStaleRunDirs(testTmp, removeRunDir), await sweepStaleRunDirs(tmpRoot, removeRunDir)];
+    // With an explicit root both roots are one directory; sweep it once.
+    const sweeps = [];
+    for (const root of new Set([testTmp, tmpRoot])) sweeps.push(await sweepStaleRunDirs(root, removeRunDir));
     const swept = { stranded: sweeps.flatMap((s) => s.stranded), leftAside: sweeps.flatMap((s) => s.leftAside) };
     for (const aside of swept.stranded) {
       console.warn(`[vitest setup] left ${aside} in place: it changed between being judged abandoned and being taken aside`);
