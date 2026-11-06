@@ -179,7 +179,7 @@ describe("I18nSettingsProvider independent hydration", () => {
     renderLocaleProbe();
     await waitFor(() => expect(screen.getByTestId("active-locale")).toHaveTextContent("ko"));
     expect(screen.getByTestId("language-title")).toHaveTextContent("언어");
-    expect(installed).not.toHaveBeenCalled();
+    expect(installed).toHaveBeenCalledOnce();
   });
 
   it("normalizes a legacy saved French selection through boot and hydration", async () => {

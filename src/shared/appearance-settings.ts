@@ -1,4 +1,4 @@
-import { normalizeLocaleSetting, type Locale } from "../i18n/locale.js";
+import { normalizeLocale, type Locale } from "../i18n/locale.js";
 import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride, type FontSizeScale, type AppearanceFontSettings } from "./appearance-font.js";
 
 export const DARK_SCHEME_IDS = ["github-dark", "gruvbox-dark", "catppuccin-mocha", "tokyo-night", "nord", "solarized-dark"] as const;
@@ -75,7 +75,7 @@ function isAppearanceRecord(value: unknown): value is Record<string, unknown> {
 /** Retire released bundle selections once; current settings keep only the curated scheme contract. */
 export function normalizeAppearance(input: unknown, warn: (field: string) => void = (field) => console.warn(`Invalid appearance setting: ${field}`)): AppearanceSettings {
   const obj = isAppearanceRecord(input) ? input : {};
-  const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocaleSetting(obj.language) };
+  const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocale(obj.language) };
   const font = normalizeAppearanceFont(obj.font);
   if (font) result.font = font;
   if (obj.schemaVersion === 2) {

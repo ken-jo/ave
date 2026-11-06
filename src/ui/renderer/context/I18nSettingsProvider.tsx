@@ -9,6 +9,7 @@ import {
 } from "../../../i18n/index.js";
 import { I18nProvider } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
+import { ensureInstalledContent } from "../installed-content.js";
 import { BootSettingsUnavailableError } from "../model-catalog-bootstrap.js";
 import type { AveApi } from "../types.js";
 
@@ -25,7 +26,7 @@ function tryGetApi(): AveApi | null {
  * The locale the first render uses: the saved `appearance.language` (seeded from the system language on a fresh install), with
  * its compiled catalog already loaded, so the first paint is not English for a user who chose another language. `renderer.tsx`
  * awaits this beside the model catalog before mounting. It does not wait for installed content: that load can take seconds at
- * boot; hydration loads the other installed content independently of locale selection.
+ * boot; hydration starts installed-content loading without delaying locale selection.
  */
 export async function resolveBootLocale(api: Pick<AveApi, "getSettings">): Promise<Locale> {
   // An unreadable snapshot is an internal failure: the boot-failure panel names it rather than mounting a guessed language.
@@ -52,6 +53,7 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
   // Hydrate from persisted settings on mount.
   useEffect(() => {
     if (!api) return;
+    void ensureInstalledContent(api).catch(() => { /* ignore — the window renders without installed content */ });
     let cancelled = false;
     const requestAtStart = localeRequestRef.current;
     void (async () => {

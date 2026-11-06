@@ -54,7 +54,6 @@ import {
   DEFAULT_LOCALE,
   isDefaultVisibleLocale,
   normalizeLocale,
-  normalizeLocaleSetting,
   type Locale,
 } from "../i18n/locale.js";
 import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
@@ -1075,7 +1074,7 @@ export class SettingsService {
       acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "glassTint", patch.glassTint, isGlassTint, "appearance", PATCHED_FIELD);
-      if ("language" in patch) nextAppearance.language = normalizeLocaleSetting(patch.language);
+      if ("language" in patch) nextAppearance.language = normalizeLocale(patch.language);
       const fontPatch = patch.font;
       if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {
         const font = fontPatch as Record<string, unknown>;
@@ -1674,7 +1673,7 @@ export class SettingsService {
 
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
       if (typeof onDisk?.language === "string" && onDisk.language !== appearance.language) {
-        log.warn("replaced an unsupported saved locale with %s", DEFAULT_LOCALE);
+        log.warn("replaced an unsupported saved locale with %s", appearance.language);
       }
       needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 

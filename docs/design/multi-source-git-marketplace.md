@@ -228,7 +228,7 @@ skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
 themes/<name>/                   # ave-package.json, theme.json
 fonts/<name>/                    # ave-package.json, font.json, files/
-languages/<name>/                # ave-package.json, language.json, messages.json
+languages/<name>/                # retired; legacy receipts only
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
 policy/revocations.json          # revocations of this repository's own packages
@@ -396,7 +396,7 @@ interface PackageDescriptor {
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, optional preview image |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
-| `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | those two JSON files |
+| `language` (retired; legacy receipts only) | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | those two JSON files |
 | `provider` | `{ entry: "provider.json" }` | `provider.json`: a preset (today's `MarketplaceProviderPackageAsset` minus `type`), or for a marketplace-eligible built-in vendor `{ providerId, defaultModel?, baseUrl? }` (§5.5) |
 | `messaging-connection` | `{ entry: "connection.json" }` | `connection.json` (today's messaging asset minus `type`) |
 
@@ -612,9 +612,10 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   settings stay on the old address). Uninstalling the
   package locks the vendor again and drops its key, which may have been
   entered for the package's address.
-- **Selection stays the user's.** Installing does not select a theme,
-  language or font. Removing the selected one puts that setting back to its
-  default; a selected id that is not installed renders the default.
+- **Selection stays the user's.** Installing does not select a theme or font.
+  Removing the selected one puts that setting back to its default; a selected id
+  that is not installed renders the default. Removing a legacy language receipt
+  leaves the compiled language selection unchanged.
 - **Asset scheme.** `ave-content://<token>/<kind>/<name>/<path>` answers only the
   files the loaded store lists (font faces, theme previews), with `nosniff`;
   anything else is 404. The CSP admits it for `img-src` and `font-src` only.
@@ -3122,9 +3123,9 @@ On first boot of the new version:
   entries are not rewritten (`src/plugins/registry.ts` still derives `admin`
   from `installedBy`, and `PluginRegistryEntryInstallSource` still admits it).
   The migration writes nothing to `packages/default-installs.json`.
-- Activated providers and the Korean language activation are adopted from the
-  official source through ordinary install plans when it lists them; a failed
-  adoption leaves the marker incomplete and is retried at the next boot.
+- Activated providers are adopted from the official source through ordinary
+  install plans when it lists them; a failed adoption leaves the marker incomplete
+  and is retried at the next boot. Legacy language activations remain inert.
 
 ### 16.4 As built
 

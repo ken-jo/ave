@@ -2126,7 +2126,6 @@ export const en = {
   "formatIpcError.unknownError": "Unknown error",
   "formatIpcError.errorSuffix": " has occurred.",
   "formatIpcError.installedContentUnavailable": "Installed content could not be loaded.",
-  "formatIpcError.languageNotInstalled": "That language is not installed.",
   "formatIpcError.providerPresetRefreshFailed": "The provider change was saved but could not be applied yet. Restart the app to apply it.",
   "formatIpcError.workApprovalsSourceUnavailable": "Items that need your review could not be loaded.",
   "formatIpcError.telegramOwnerIdRequired": "Register your own numeric Telegram user ID on this desktop before connecting your account.",

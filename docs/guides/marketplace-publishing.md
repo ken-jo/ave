@@ -51,7 +51,7 @@ within a marketplace.
 | `agent` | `entry: "AGENTS.md"` only |
 | `theme` | `entry: "theme.json"` and an optional preview image; contrast rules are enforced |
 | `font` | `entry: "font.json"`, `LICENSE` and font files under `files/` (`.woff2`, `.woff`, `.ttf`, `.otf`) |
-| `language` | `locale`, `language.json` and `messages.json` (interface keys of the English catalog only) |
+| `language` | Retired; language packages are rejected. Korean is built in. |
 | `provider` | `entry: "provider.json"` (a provider preset) |
 | `messaging-connection` | `entry: "connection.json"` |
 | `mcp` | `server` (stdio launcher `npx`/`uvx`/`docker` with an exact version, a package-local `server/…` command, or Streamable HTTP), or `serverJson` naming an official MCP `server.json` |

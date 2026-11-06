@@ -83,11 +83,6 @@ export function normalizeLocale(value: unknown): Locale {
   return isDefaultVisibleLocale(primary) ? primary : DEFAULT_LOCALE;
 }
 
-/** Resolve persisted values through the same unsupported-locale fallback. */
-export function normalizeLocaleSetting(value: unknown): Locale {
-  return normalizeLocale(value);
-}
-
 export function visibleLocalesFor(): Locale[] {
   return [...SUPPORTED_LOCALES];
 }

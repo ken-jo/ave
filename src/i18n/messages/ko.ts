@@ -2129,7 +2129,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.unknownError": "알 수 없는 오류",
   "formatIpcError.errorSuffix": "가 발생했습니다.",
   "formatIpcError.installedContentUnavailable": "설치한 콘텐츠를 불러오지 못했습니다.",
-  "formatIpcError.languageNotInstalled": "설치되지 않은 언어입니다.",
   "formatIpcError.providerPresetRefreshFailed": "프로바이더 변경은 저장했지만 아직 적용하지 못했습니다. 앱을 다시 시작하면 적용됩니다.",
   "formatIpcError.telegramOwnerIdRequired": "계정을 연결하기 전에 이 데스크톱에서 본인의 숫자 Telegram 사용자 ID를 등록하세요.",
   "formatIpcError.telegramConnectionDisabled": "이 데스크톱에서는 Telegram을 사용할 수 없습니다.",

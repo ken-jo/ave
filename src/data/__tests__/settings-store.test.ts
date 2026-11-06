@@ -2812,19 +2812,21 @@ describe("SettingsService system locale detection", () => {
     expect(service.get("appearance").language).toBe("en");
   });
 
-  it("falls back for a saved installed-only language and logs only the replacement locale once", () => {
-    const savedLanguage = "fr-CA";
+  it.each([
+    ["fr-CA", "en"],
+    ["ko-KR", "ko"],
+  ] as const)("normalizes saved %s to %s and logs only the replacement locale once", (savedLanguage, expectedLanguage) => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { ...DEFAULT_APPEARANCE, language: savedLanguage } }), "utf-8");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-      expect(service.get("appearance").language).toBe("en");
+      expect(service.get("appearance").language).toBe(expectedLanguage);
       expect(warn.mock.calls.filter(([message]) => String(message).includes("replaced an unsupported saved locale"))).toEqual([
-        ["[settings] replaced an unsupported saved locale with %s", "en"],
+        ["[settings] replaced an unsupported saved locale with %s", expectedLanguage],
       ]);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(savedLanguage);
       warn.mockClear();
-      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").language).toBe("en");
+      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").language).toBe(expectedLanguage);
       expect(warn.mock.calls.filter(([message]) => String(message).includes("replaced an unsupported saved locale"))).toEqual([]);
     } finally {
       warn.mockRestore();
