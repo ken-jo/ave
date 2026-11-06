@@ -674,9 +674,28 @@ describe("ChatSidePanel", () => {
     act(() => { webview.dispatchEvent(new Event("did-navigate")); });
     expect(addressInput.value).toBe("https://example.com/docs");
 
+    // Focus that reaches Go and then leaves it (pressed and dragged off, then clicked elsewhere) drops the draft too.
+    const go = screen.getByTestId("chat-side-panel-browser-go");
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.blur(go, { relatedTarget: null });
+    expect(addressInput.value).toBe("https://example.com/docs");
+    guestUrl = "https://evil.example/";
+    act(() => { webview.dispatchEvent(new Event("did-navigate")); });
+    expect(addressInput.value).toBe("https://evil.example/");
+
+    // Tab from Go to the next control drops it as well; Tab back from Go to the field keeps it.
+    fireEvent.change(addressInput, { target: { value: "mybank.com" } });
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    fireEvent.blur(go, { relatedTarget: addressInput });
+    expect(addressInput.value).toBe("mybank.com");
+    fireEvent.blur(addressInput, { relatedTarget: go });
+    fireEvent.blur(go, { relatedTarget: screen.getByTestId("browser-back") });
+    expect(addressInput.value).toBe("https://evil.example/");
+
     // Moving to the Go button keeps the draft, so it is what gets submitted.
     fireEvent.change(addressInput, { target: { value: "google.com" } });
-    const go = screen.getByTestId("chat-side-panel-browser-go");
     fireEvent.blur(addressInput, { relatedTarget: go });
     expect(addressInput.value).toBe("google.com");
     await act(async () => { fireEvent.click(go); });

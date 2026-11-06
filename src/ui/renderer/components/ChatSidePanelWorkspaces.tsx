@@ -1016,6 +1016,8 @@ export function BrowserWorkspace({
   // The draft lives only that long: leaving the field, Escape, and back, forward or reload put the page's real address back,
   // so the row never shows a typed address for a page it is not showing.
   const draftEditedForTab = useRef<string | null>(null);
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
+  const goButtonRef = useRef<HTMLButtonElement | null>(null);
   const currentAddress = navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : "");
   const discardDraft = () => {
     draftEditedForTab.current = null;
@@ -1076,6 +1078,15 @@ export function BrowserWorkspace({
       */}
       <form
         className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
+        onBlur={(event) => {
+          // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
+          // from either of them, drops it.
+          const left: EventTarget = event.target;
+          const next: EventTarget | null = event.relatedTarget;
+          if (left !== addressInputRef.current && left !== goButtonRef.current) return;
+          if (next === addressInputRef.current || next === goButtonRef.current) return;
+          discardDraft();
+        }}
         onSubmit={(event) => {
           event.preventDefault();
           submitAddress();
@@ -1098,6 +1109,7 @@ export function BrowserWorkspace({
         </Button>
         <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
+          ref={addressInputRef}
           data-testid="chat-side-panel-browser-address"
           value={addressDraft}
           onChange={(event) => {
@@ -1108,12 +1120,7 @@ export function BrowserWorkspace({
           onKeyDown={(event) => {
             if (event.key === "Escape") discardDraft();
           }}
-          onBlur={(event) => {
-            // Moving to the Go button submits the draft; anywhere else drops it.
-            const next = event.relatedTarget;
-            if (next instanceof HTMLElement && next.getAttribute("type") === "submit" && event.currentTarget.form?.contains(next)) return;
-            discardDraft();
-          }}
+
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-8 min-w-0 flex-1 text-xs"
         />
@@ -1124,6 +1131,7 @@ export function BrowserWorkspace({
               size="icon"
               variant="ghost"
               className="h-8 w-8 shrink-0"
+              ref={goButtonRef}
               aria-label={t("chatPreviewRail.browserGo")}
               data-testid="chat-side-panel-browser-go"
             >
