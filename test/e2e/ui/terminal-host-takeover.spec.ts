@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  setWindowSize,
   MAIN_ENTRY, buildE2eBaseSettings, buildE2eSecrets, buildIsolatedElectronEnv, buildLlmSettings, builtMainExists, launchElectron,
   teardownSeededElectron,
 } from "./seeded-electron.js";
@@ -106,7 +107,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     app.process().stderr?.on("data", (chunk) => appendFileSync(bootLog, chunk));
     page = await app.firstWindow();
     page.on("pageerror", (error) => appErrors.push(error.message));
-    await page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(app, 1280, 860);
     await expect(page.getByTestId("main-toolbar").first()).toBeVisible({ timeout: 60_000 });
     await page.evaluate((id) => {
       const state = window as unknown as { hostOutput: string };

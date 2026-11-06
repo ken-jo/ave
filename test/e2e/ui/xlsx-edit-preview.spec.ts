@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildLlmSettings, builtMainExists, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import * as XLSX from "xlsx";
 import { offsetWorkbook } from "../../../src/__tests__/support/table-document-fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
@@ -41,7 +41,7 @@ test("edited workbook shows a recalculation badge through the real viewer", asyn
   });
   try {
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.locator('[data-testid^="tool-activity-item-"]').filter({ hasText: "budget.xlsx" }).click();
     await expect(ctx.page.getByTestId("chat-side-panel-table-grid")).toContainText("43");
@@ -282,7 +282,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       observer.observe(document.body, { subtree: true, childList: true, characterData: true,
         attributes: true, attributeFilter: ["data-advisory"] });
     });
-    await ctx.page.setViewportSize({ width: 960, height: 860 });
+    await setWindowSize(ctx.app, 960, 860);
     const composer = ctx.page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
     await composer.fill("Observe agent workbook edits.");
     await composer.press("Enter");
@@ -428,7 +428,7 @@ test("approved native edits highlight lines in the read-only code viewer", async
   try {
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory],
       reviewer: { interactive: { autoApprove: "off" } } } }));
-    await ctx.page.setViewportSize({ width: 960, height: 860 });
+    await setWindowSize(ctx.app, 960, 860);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.locator('[data-testid^="tool-activity-item-"]').filter({ hasText: "live-observation.ts" }).click();
     const preview = ctx.page.getByTestId("chat-side-panel-file-preview");

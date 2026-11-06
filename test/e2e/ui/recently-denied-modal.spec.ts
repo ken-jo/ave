@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
+import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
 import { makeTestT } from "./i18n.js";
 
 // This independently seeded harness uses Korean regardless of the shared fixture locale.
@@ -86,7 +86,7 @@ test.describe("recent denial history modal", () => {
   });
 
   test("keeps long denied input inside the modal without horizontal page overflow", async () => {
-    await page.setViewportSize({ width: 460, height: 840 });
+    await setWindowSize(app, 460, 840);
     await page.keyboard.press(process.platform === "darwin" ? "Meta+Shift+B" : "Control+Shift+B");
     await expect(page.getByTestId("primary-sidebar")).toHaveCount(0);
     const queueButton = page.getByTestId("permission-pending-badge");

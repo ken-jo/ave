@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { builtMainExists, launchSeededElectron } from "./seeded-electron.js";
+import { setWindowSize, builtMainExists, launchSeededElectron } from "./seeded-electron.js";
 import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPreview } from "./document-preview-flow.js";
 import { openInlineSettings } from "./inline-settings.js";
 import { wordDocumentFixture, textDocumentFixture } from "../../../src/__tests__/support/structured-document-fixtures.js";
@@ -28,7 +28,7 @@ test("optional engine absence keeps document outlines and an explicit installati
   });
   try {
     writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
-    await ctx.page.setViewportSize({ width: 1280, height: 860 });
+    await setWindowSize(ctx.app, 1280, 860);
     await openDocumentSessionFiles(ctx.page, directory);
     await openDocumentSessionFile(ctx.page, "report.docx");
     const preview = ctx.page.getByTestId("chat-side-panel-page-preview");

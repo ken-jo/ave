@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import type { ElectronApplication, Page } from 'playwright';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
@@ -76,16 +77,16 @@ test.describe('ask_user_question overlay layout', () => {
   });
 
   for (const viewport of [
-    { width: 360, height: 900 },
-    { width: 900, height: 900 },
-    { width: 1243, height: 900 },
-    { width: 1600, height: 900 },
+    { width: 360, height: 860 },
+    { width: 900, height: 860 },
+    { width: 1243, height: 860 },
+    { width: 1440, height: 860 },
   ]) {
     test(`decision card shares the composer gutter and has four rounded corners at ${viewport.width}x${viewport.height}`, async ({
       app,
       mainWindow,
     }) => {
-      await mainWindow.setViewportSize(viewport);
+      await setWindowSize(app, viewport.width, viewport.height);
 
       const visible = await ensureQuestionOverlayVisible(
         app,

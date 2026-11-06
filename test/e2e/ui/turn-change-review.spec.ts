@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  setWindowSize,
   buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron,
   type SeededElectronContext,
 } from "./seeded-electron.js";
@@ -68,13 +69,13 @@ async function setupChanges() {
   }] }), { mode: 0o600 });
   await page.reload();
   await expect(page.getByTestId("latest-turn-summary")).toBeVisible();
-  return { page, path: changes[0]!.path, after };
+  return { app: context.app, page, path: changes[0]!.path, after };
 }
 
 for (const width of [900, 1243]) {
   test(`compact turn summary reveals Files and inserts a native hunk reference at ${width}px`, async ({}, testInfo) => {
-    const { page, path, after } = await setupChanges();
-    await page.setViewportSize({ width, height: 768 });
+    const { app, page, path, after } = await setupChanges();
+    await setWindowSize(app, width, 768);
     const summary = page.getByTestId("latest-turn-summary");
     const frame = page.getByTestId("composer-frame").first();
     await expect(summary.getByTestId("latest-turn-summary-file")).toHaveCount(5);

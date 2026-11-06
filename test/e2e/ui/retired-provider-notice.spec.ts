@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings, forceWideMainWindow, openInlineSettings } from './inline-settings.js';
 import { TEST_IDS } from '../../../src/shared/test-ids.js';
@@ -94,9 +95,7 @@ for (const locale of ['en', 'ko'] as const) {
       await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A turn on a deprecated model');
       await expect(mainWindow.getByRole('button', { name: t('bottomActionRow.sendButton'), exact: true })).toBeEnabled();
 
-      await app.evaluate(({ BrowserWindow }) => {
-        for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(420, 900);
-      });
+      await setWindowSize(app, 420, 860);
       await expect(notice).toBeVisible();
       const measure = () => {
         const element = document.querySelector('[data-testid="deprecated-model-notice"]') as HTMLElement;

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
+  setWindowSize,
   buildLlmSettings,
   builtMainExists,
   launchSeededElectron,
@@ -33,7 +34,7 @@ async function launchChatScrollProbe(): Promise<SeededElectronContext> {
       },
     ],
   });
-  await ctx.page.setViewportSize({ width: 560, height: 860 });
+  await setWindowSize(ctx.app, 560, 860);
   await ctx.page.locator(testIdSelector(TEST_IDS.composer)).first().waitFor({
     state: "visible",
     timeout: 20_000,

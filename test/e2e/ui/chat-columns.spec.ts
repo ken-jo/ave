@@ -1,9 +1,16 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from "./fixtures.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { SIDE_PANEL_MIN_RESERVE } from "../../../src/shared/side-panel.js";
+import { CHAT_THUMBNAIL_WIDTH } from "../../../src/ui/renderer/preview/chat-columns-layout.js";
 import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/shared/shell-geometry.js";
 
-test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ mainWindow: page }, testInfo) => {
-  await page.setViewportSize({ width: 1920, height: 1080 });
+test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ app, mainWindow: page }, testInfo) => {
+  // Both columns appear at a 1064px tile: 320px transcript + 280px thumbnails + 464px panel reserve.
+  const shellReserve = await page.evaluate(() => innerWidth - document.querySelector<HTMLElement>('[data-testid="pane"]')!.getBoundingClientRect().width);
+  // This is not a boundary test: leave 8px for fractional layout and display-scale rounding.
+  const wideWidth = Math.ceil(shellReserve + MIN_DOCKED_TRANSCRIPT_WIDTH + CHAT_THUMBNAIL_WIDTH + SIDE_PANEL_MIN_RESERVE + 8);
+  await setWindowSize(app, wideWidth, 860);
   const thumbnailsToggle = page.getByTestId(TEST_IDS.paneThumbnailToggle);
   const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
   const thumbnails = page.getByTestId("chat-thumbnail-column");
@@ -24,6 +31,10 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
     const panelBox = (await panel.boundingBox())!;
     return panelBox.x - thumbnailBox.x - thumbnailBox.width;
   }).toBeGreaterThanOrEqual(-1);
+  // Compare the settled columns after the opening width/transform transition.
+  await panel.evaluate(async (element) => {
+    await Promise.all(element.getAnimations().map((animation) => animation.finished));
+  });
   const boxes = { chat: (await chat.boundingBox())!, thumbnails: (await thumbnails.boundingBox())!, panel: (await panel.boundingBox())! };
   expect(boxes.chat.width).toBeGreaterThanOrEqual(MIN_DOCKED_TRANSCRIPT_WIDTH);
   expect(boxes.thumbnails.x).toBeGreaterThanOrEqual(boxes.chat.x + boxes.chat.width - 1);
@@ -50,7 +61,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
   await panelToggle.click();
 
-  await page.setViewportSize({ width: 1100, height: 820 });
+  await setWindowSize(app, 1100, 820);
   await expect(thumbnails).toHaveCount(0);
   await expect(panel).toHaveAttribute("aria-hidden", "false");
   await expect(thumbnailsToggle).toHaveAttribute("aria-disabled", "true");
@@ -59,7 +70,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   await thumbnailsToggle.dispatchEvent("click");
   await expect(thumbnailsToggle).toHaveAttribute("aria-disabled", "true");
   await expect.poll(async () => (await chat.boundingBox())!.width).toBeGreaterThanOrEqual(MIN_DOCKED_TRANSCRIPT_WIDTH);
-  await page.setViewportSize({ width: 900, height: 720 });
+  await setWindowSize(app, 900, 720);
   await expect(thumbnails).toHaveCount(0);
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("aria-hidden", "false");
@@ -83,7 +94,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
       && panelBox.y + panelBox.height <= paneBox.y + paneBox.height + 1;
   }).toBe(true);
   await testInfo.attach("narrow-chat-columns.png", { body: await page.screenshot({ path: testInfo.outputPath("narrow-chat-columns.png") }), contentType: "image/png" });
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  await setWindowSize(app, wideWidth, 860);
   await expect(thumbnails).toBeVisible();
   await expect(panel).toBeVisible();
   await expect(panel).toHaveAttribute("data-panel-mode", "docked");

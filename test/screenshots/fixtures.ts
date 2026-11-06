@@ -12,6 +12,7 @@ import {
   buildIsolatedElectronEnv,
   buildLlmSettings,
   launchElectron,
+  setWindowSize,
 } from '../e2e/ui/seeded-electron.js';
 import {
   seedExecutionMode,
@@ -24,8 +25,8 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from '../../src/shared/permission-r
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
 
-// Use a fixed viewport for consistent full-window capture proportions.
-export const CAPTURE_VIEWPORT = { width: 1600, height: 1000 } as const;
+// Use a fixed native content size for consistent full-window capture proportions.
+export const CAPTURE_VIEWPORT = { width: 1440, height: 860 } as const;
 
 export interface CaptureViewport {
   width: number;
@@ -416,7 +417,8 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
 
   mainWindow: async ({ app, captureViewport }, use) => {
     const win = await app.firstWindow();
-    await win.setViewportSize(captureViewport ?? CAPTURE_VIEWPORT);
+    const size = captureViewport ?? CAPTURE_VIEWPORT;
+    await setWindowSize(app, size.width, size.height);
     await win.locator('[data-testid="main-toolbar"]').first().waitFor({
       state: 'visible',
       timeout: 60_000,

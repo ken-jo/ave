@@ -1,3 +1,4 @@
+import { setWindowSize } from "./seeded-electron.js";
 import { test, expect } from "./fixtures.js";
 import { openInlineSettings } from "./inline-settings.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
@@ -80,9 +81,7 @@ for (const locale of ["en", "ko"] as const) {
       await testInfo.attach("picker", { body: await content.screenshot(), contentType: "image/png" });
       await settings.keyboard.press("Escape");
 
-      await app.evaluate(({ BrowserWindow }) => {
-        for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(420, 900);
-      });
+      await setWindowSize(app, 420, 860);
       // Reopen inline settings after the narrow layout folds them away.
       const narrowSettings = await openInlineSettings(app, mainWindow, "llm");
       await narrowSettings.getByTestId(TEST_IDS.llmModelSelect).click();
@@ -103,9 +102,7 @@ for (const locale of ["en", "ko"] as const) {
         body: await narrowSettings.locator('[data-slot="select-content"]').screenshot(), contentType: "image/png",
       });
       await narrowSettings.keyboard.press("Escape");
-      await app.evaluate(({ BrowserWindow }) => {
-        for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(1280, 900);
-      });
+      await setWindowSize(app, 1280, 860);
       await openInlineSettings(app, mainWindow, "llm");
 
       for (const { model } of CASE_MODELS) {
