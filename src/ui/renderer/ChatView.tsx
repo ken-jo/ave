@@ -191,12 +191,14 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const observation = useHostedBrowserObservation(currentSessionId ?? "");
   const browserControl = useBrowserControlState();
   const browserControlUnavailable = useBrowserControlUnavailable();
-  const observedTabId = observation?.kind === "action" && observation.after.action !== "tab-close"
-    && observation.target.hostSessionId === currentSessionId ? observation.after.rendererTabId : undefined;
-  const showObservedBrowser = !hidden && !!observedTabId && !!onFocusObservedBrowser
+  const observedHandle = observation?.kind === "action" && observation.after.action !== "tab-close"
+    && observation.target.hostSessionId === currentSessionId
+    ? { tabId: observation.after.tabId, rendererTabId: observation.after.rendererTabId, sessionId: observation.sessionId } : undefined;
+  const observedTabId = observedHandle?.rendererTabId;
+  const showObservedBrowser = !hidden && !!observedHandle && !!observedTabId && !!onFocusObservedBrowser
     && hiddenBrowserTabIds?.has(observedTabId) && !browserControlUnavailable
     && browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === observedTabId
-      && observation?.kind === "action" && tab.tabId === observation.after.tabId && agentDrivesBrowserTab(tab, observation.sessionId));
+      && tab.tabId === observedHandle.tabId && agentDrivesBrowserTab(tab, observedHandle.sessionId));
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
@@ -929,7 +931,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
             <div className="min-w-0 flex-1"><BrowserObservationLiveStrip tabId={observedTabId} sessionId={currentSessionId} /></div>
             <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => onFocusObservedBrowser?.(observedTabId)}
               className="relative shrink-0 overflow-hidden rounded border" style={{ width: 128, height: 80 }}>
-              <BrowserObservationPreview tabId={observedTabId} sessionId={currentSessionId} active={!hidden} observeHidden>
+              <BrowserObservationPreview tabId={observedTabId} sessionId={currentSessionId} observeHidden>
                 <span className="text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
               </BrowserObservationPreview>
             </button>

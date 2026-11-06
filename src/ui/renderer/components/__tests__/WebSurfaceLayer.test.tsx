@@ -281,8 +281,10 @@ describe("WebSurfaceLayer", () => {
       slot.style.visibility = "visible";
       act(() => { placeWebSurfaces(); });
       expect(frame("browser:1").style.pointerEvents).toBe("auto");
+      expect(frame("browser:1").style.visibility).toBe("visible");
       expect(frame("browser:1").style.opacity).toBe("");
       expect(frame("browser:1").hasAttribute("inert")).toBe(false);
+      expect(frame("browser:1").hasAttribute("aria-hidden")).toBe(false);
     } finally { setHiddenWebSurfaceObserved("browser:1", false); }
   });
 

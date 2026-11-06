@@ -128,7 +128,6 @@ describe("ChatView", () => {
     fireEvent.click(button);
     await waitFor(() => expect(row()).toBeNull());
     expect(container.querySelector('[data-testid="pane-cell:group-2"]')!.getAttribute("data-hidden")).toBe("true");
-
   });
 
   it("mounts without crashing", async () => {

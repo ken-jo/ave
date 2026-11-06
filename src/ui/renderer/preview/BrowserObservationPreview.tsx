@@ -35,7 +35,7 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
 }
 
 /**
- * A live picture of the agent's tab where that tab is open in another panel. It binds to the exact main-issued tab
+ * A live picture of the agent's tab, shown in the owning conversation while that tab's pane is hidden. It binds to the exact main-issued tab
  * handle and observation target of the latest agent action for this renderer tab, runs only while shown, and keeps
  * no frame after it stops. Without an agent binding it renders `children` unchanged.
  */
@@ -44,6 +44,7 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
   sessionId?: string;
   /** The hosting panel's visibility. A hidden panel stops the preview even before its styles settle. */
   active?: boolean;
+  /** Keeps the hidden guest painting at opacity 0 while this preview is live. */
   observeHidden?: boolean;
   children?: ReactNode;
   probe?: (element: Element) => boolean;

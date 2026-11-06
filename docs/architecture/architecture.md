@@ -197,9 +197,9 @@ no size, is outside the viewport or sits in a hidden document stops the preview
 and drops its frame. Only while an agent-driven conversation thumbnail is shown,
 its hidden guest keeps painting with zero opacity, clipping, no pointer events,
 and aria-hidden and inert attributes. Otherwise hidden guests use visibility
-hidden. Revealing the pane or ending observation restores the normal attributes. The agent's typing tools already refuse
-password, card and one-time code fields, so the preview adds no secret-input
-display path.
+hidden. Revealing the pane or ending observation restores the normal
+attributes. The agent's typing tools already refuse password, card and one-time
+code fields, so the preview adds no secret-input display path.
 
 The document adapter starts an exact target, accepts a rendered snapshot and
 agent mutation evidence, reconciles a settled save, and disposes all watches,
