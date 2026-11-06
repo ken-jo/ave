@@ -15,6 +15,9 @@ describe("settings search", () => {
     expect(searchSettings(" LINE HEIGHT ", translate(en)).map((result) => result.section)).toContain("appearance-terminal");
     expect(searchSettings("줄 높이", translate(ko)).map((result) => result.section)).toContain("appearance-terminal");
     expect(searchSettings("색상 스킴", translate(ko)).map((result) => result.section)).toContain("appearance-theme");
+    for (const query of ["glass", "transparency", "유리", "투명도"]) {
+      expect(searchSettings(query, translate(query.match(/[a-z]/) ? en : ko)).map((result) => result.section)).toContain("appearance-theme");
+    }
     for (const [key, section] of [["privacyTab.piiRedactToggleLabel", "chat-privacy"], ["documentSettings.link", "chat-documents"], ["localApiSurfaces.a2aRemoteReceiverLabel", "remote-local-api"], ["tailnetObserver.portLabel", "remote-tailnet-observer"]]) {
       expect(searchSettings(en[key]!, translate(en)).map((result) => result.section)).toContain(section);
       expect(searchSettings(ko[key]!, translate(ko)).map((result) => result.section)).toContain(section);

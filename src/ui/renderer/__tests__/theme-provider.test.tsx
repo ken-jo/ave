@@ -71,3 +71,34 @@ describe("appearance provider", () => {
     error.mockRestore();
   });
 });
+
+describe("glass tint token", () => {
+  it("writes --glass-tint-alpha for the painted shell from the one setting", () => {
+    const root = document.documentElement;
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light" });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.749");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark" });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.598");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark", glassTint: 100 });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("1");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light", glassTint: 0 });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.625");
+  });
+
+  it("previews a tint without saving and saves it on commit", () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "dark" } } });
+    function Tint() {
+      const theme = useTheme();
+      return <>
+        <button onClick={() => theme.setGlassTint(80, false)}>Preview</button>
+        <button onClick={() => theme.setGlassTint(80, true)}>Commit</button>
+      </>;
+    }
+    render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "dark" }}><Tint /></ThemeProvider>);
+    fireEvent.click(screen.getByText("Preview"));
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.88");
+    expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 80 } });
+    fireEvent.click(screen.getByText("Commit"));
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 80 } });
+  });
+});

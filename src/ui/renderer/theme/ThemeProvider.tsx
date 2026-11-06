@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AveApi } from "../types.js";
-import { DEFAULT_APPEARANCE, type AppearanceSettings, type AppearanceMode } from "../../../shared/appearance-settings.js";
+import { DEFAULT_APPEARANCE, isGlassTint, type AppearanceSettings, type AppearanceMode } from "../../../shared/appearance-settings.js";
 import { applyAppearance, resolveAppearanceScheme, resolveTheme } from "./resolve-theme.js";
 import { requireScheme } from "./schemes/index.js";
 import { schemeToHostTokens } from "./host-theme-tokens.js";
@@ -64,24 +64,28 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
       .catch((error: unknown) => console.error("Theme notification failed", error));
   }, [api, applied]);
 
-  const update = useCallback((patch: Partial<AppearanceSettings>) => {
+  const update = useCallback((patch: Partial<AppearanceSettings>, persist = true) => {
     touchedRef.current = true;
     const next = { ...appearanceRef.current, ...patch };
     // Validate mode/selection at the same boundary that resolves the document.
     resolveAppearanceScheme(next, prefersDark);
     appearanceRef.current = next;
     setAppearance(next);
-    if (api) void api.updateSettings({ appearance: patch }).catch((error: unknown) => console.error("Appearance settings could not be saved", error));
+    if (persist && api) void api.updateSettings({ appearance: patch }).catch((error: unknown) => console.error("Appearance settings could not be saved", error));
   }, [api, prefersDark]);
   const setMode = useCallback((mode: AppearanceMode) => update({ mode }), [update]);
   const setScheme = useCallback((shell: ResolvedShell, id: string) => {
     if (requireScheme(id).shell !== shell) throw new Error(`Color scheme does not match mode: ${id}`);
     update(shell === "dark" ? { darkScheme: id as AppearanceSettings["darkScheme"] } : { lightScheme: id as AppearanceSettings["lightScheme"] });
   }, [update]);
+  const setGlassTint = useCallback((tint: number, persist: boolean) => {
+    if (!isGlassTint(tint)) throw new Error(`Invalid glass tint: ${tint}`);
+    update({ glassTint: tint }, persist);
+  }, [update]);
   const value = useMemo<ThemeContextValue>(() => ({
     appearance, mode: appearance.mode, darkScheme: appearance.darkScheme, lightScheme: appearance.lightScheme,
-    setMode, setScheme, resolved: scheme.shell, scheme, appliedTheme: applied.theme, appliedRevision: applied.revision,
-  }), [appearance, setMode, setScheme, scheme, applied]);
+    setMode, setScheme, setGlassTint, resolved: scheme.shell, scheme, appliedTheme: applied.theme, appliedRevision: applied.revision,
+  }), [appearance, setMode, setScheme, setGlassTint, scheme, applied]);
   const hostAppearance = useMemo(() => ({
     shell: applied.theme.shell,
     tokens: schemeToHostTokens(applied.theme),

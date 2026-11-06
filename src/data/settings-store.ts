@@ -42,7 +42,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import { resolveRouteModelRetirement } from "../shared/context-budget.js";
-import { isAppearanceMode, isDarkSchemeId, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, type AppearanceSettings } from "../shared/appearance-settings.js";
+import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, type AppearanceSettings } from "../shared/appearance-settings.js";
 export type { AppearanceSettings } from "../shared/appearance-settings.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -1074,6 +1074,7 @@ export class SettingsService {
       acceptField(nextAppearance, "mode", patch.mode, isAppearanceMode, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "glassTint", patch.glassTint, isGlassTint, "appearance", PATCHED_FIELD);
       if ("language" in patch) nextAppearance.language = normalizeLocaleSetting(patch.language);
       const fontPatch = patch.font;
       if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {

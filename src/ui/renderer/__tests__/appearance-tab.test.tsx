@@ -124,3 +124,54 @@ it("moves one tab stop through mode, scheme and font radio groups with the keybo
   expect(within(sizes).getAllByRole("radio")[0]).toHaveFocus();
   expect(within(sizes).getAllByRole("radio")[0]).toHaveAttribute("aria-checked", "true");
 });
+
+describe("Window glass tint", () => {
+  function stubReducedTransparency(reduced: boolean) {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-transparency") ? reduced : false,
+      media: query, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {},
+    }));
+  }
+  function renderOnMac(initial: AppearanceSettings, glass: boolean) {
+    (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: true };
+    if (glass) document.documentElement.setAttribute("data-glass", "");
+    const { api } = makeMockAveApi({ settings: { appearance: initial } });
+    const view = render(<SavedToastProvider value={() => {}}><ThemeProvider api={api as never} initialAppearance={initial}><AppearanceTab /></ThemeProvider></SavedToastProvider>);
+    return { api, view };
+  }
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).avePlatform;
+    document.documentElement.removeAttribute("data-glass");
+  });
+
+  it("is absent off macOS", () => {
+    const { queryByTestId } = renderAppearance();
+    expect(queryByTestId("appearance-glass-tint")).toBeNull();
+  });
+
+  it("previews while dragging and saves when the drag ends", () => {
+    stubReducedTransparency(false);
+    const { api, view } = renderOnMac({ ...DEFAULT_APPEARANCE, mode: "light" }, true);
+    const slider = view.getByRole("slider", { name: "창 유리 틴트" }) as HTMLInputElement;
+    expect(slider.disabled).toBe(false);
+    expect(slider.value).toBe("33");
+    fireEvent.change(slider, { target: { value: "90" } });
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.963");
+    expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 90 } });
+    fireEvent.pointerUp(slider);
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 90 } });
+  });
+
+  it("is disabled with the reason when reduce transparency is on", () => {
+    stubReducedTransparency(true);
+    const { view } = renderOnMac(DEFAULT_APPEARANCE, true);
+    expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
+    expect(view.getByText(/투명도 줄이기/)).toBeTruthy();
+  });
+
+  it("is disabled when the window was created without the material", () => {
+    stubReducedTransparency(false);
+    const { view } = renderOnMac(DEFAULT_APPEARANCE, false);
+    expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
+  });
+});

@@ -1203,14 +1203,9 @@
  * The rules sit outside every cascade layer so they outrank the `bg-*`
  * utilities on the same elements without `!important`.
  *
- * `--glass-tint-alpha` is the one value to choose per shell: how much of the
- * card colour covers the material. */
-:root {
-  --glass-tint-alpha: 0.75;
-}
-:root[data-shell="dark"] {
-  --glass-tint-alpha: 0.6;
-}
+ * `--glass-tint-alpha` — how much of the card colour covers the material —
+ * is set by `applyAppearance` from the user's `appearance.glassTint` slider,
+ * mapped onto the painted shell's range (`glassTintAlpha`). */
 html[data-glass],
 html[data-glass] body,
 html[data-glass] .ave-glass-clear {

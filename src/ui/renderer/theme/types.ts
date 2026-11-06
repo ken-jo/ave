@@ -27,6 +27,8 @@ export interface ThemeContextValue {
   lightScheme: string;
   setMode: (mode: AppearanceMode) => void;
   setScheme: (shell: ResolvedShell, id: string) => void;
+  /** Paint a glass tint now; `persist` also saves it. A slider previews on every step and persists when the drag ends. */
+  setGlassTint: (tint: number, persist: boolean) => void;
   resolved: ResolvedShell;
   scheme: ColorScheme;
   appliedTheme: ResolvedTheme;
