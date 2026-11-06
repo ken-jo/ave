@@ -71,6 +71,7 @@
     "check:sandboxed-preloads": "node scripts/check-sandboxed-preloads.mjs",
     "check:source-text-safe": "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/source-text-safe.test.mjs && node scripts/check-source-text-safe.mjs",
     "check:knip": "node scripts/check-knip-baseline.mjs",
+    "report:biome": "biome lint --max-diagnostics=20",
     "check:knip:engine": "knip --config config/knip.jsonc --reporter json",
     "check:knip:update": "node scripts/check-knip-baseline.mjs --update-baseline",
     "check:typecheck-tests": "node scripts/check-test-typecheck-baseline.mjs",
@@ -163,6 +164,7 @@
   },
   "devDependencies": {
     "@ai-sdk/devtools": "^1.0.58",
+    "@biomejs/biome": "2.6.2",
     "@electron/asar": "4.3.1",
     "@electron/rebuild": "^4.2.1",
     "@playwright/test": "^1.64.1",

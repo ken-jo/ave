@@ -456,7 +456,7 @@ describe("installer smoke and packaging discipline", () => {
       const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
       return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
     });
-    expect(reachable).toEqual(["ci.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
+    expect(reachable).toEqual(["ci.yml", "codeql.yml", "naming-gate.yml", "report-lint.yml", "web-ci.yml"]);
   });
 
   /** A repository file's content, or undefined when the path is no file. */
