@@ -423,15 +423,7 @@ describe("ConversationLoop.resetAndResume", () => {
 
   it("does not dispatch slash commands from non-keyboard origin", async () => {
     const loop = new ConversationLoop(resumeDeps());
-    const fakeProvider = {
-      vendor: "openai" as const,
-      streamTurn: async function* () {  },
-    };
-    (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
-
-    const result = await loop.runTurn("/compact", undefined, undefined, {
-      inputOrigin: "plugin-emitted",
-    });
+    const result = await loop.handleCommand("compact", "", "plugin-emitted");
 
     expect(result.text).toContain("비키보드 출처의 slash command는 실행하지 않습니다.",
     );
