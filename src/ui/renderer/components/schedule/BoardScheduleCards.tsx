@@ -1,5 +1,6 @@
 // Schedule cards drawn inside the work board's columns. They are read-only summaries: editing happens in the schedule panel,
 // which a card opens.
+import { RunMetrics } from "./RunMetrics.js";
 import { useEffect, useState } from "react";
 import { AlarmClock, AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
@@ -118,6 +119,11 @@ export function ScheduleWeekBundle({ week, onOpen }: { week: BoardScheduleCards[
             <li key={row.routine.id} className="flex items-center gap-2" data-testid={`board-schedule-week-row-${row.routine.id}`}>
               <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => onOpen?.(row.routine.id)}>
                 {routineTitle(row.routine)}
+                {row.latestRun?.metrics && (
+                  <span className="block truncate text-muted-foreground">
+                    {formatMediumDateTime(row.latestRun.firedAt)} · <RunMetrics metrics={row.latestRun.metrics} className="inline" />
+                  </span>
+                )}
               </button>
               <span className="shrink-0 tabular-nums text-muted-foreground">{t("workBoard.scheduleRunCount", { count: String(row.count) })}</span>
               {row.failed > 0 && (

@@ -1,3 +1,12 @@
+import { ConversationLoop } from "../../../engine/conversation-loop.js";
+import { RoutineEngine, type Routine } from "../../../routines/routine-engine.js";
+import { ScriptedTurnProvider, makeBasicConversationLoopDeps } from "../../../engine/__tests__/support/conversation-loop-fixtures.js";
+import { ToolRegistry } from "../../../tools/registry.js";
+import { createDynamicTool } from "../../../tools/base.js";
+import { MemoryManager } from "../../../memory/memory-manager.js";
+import { withRoutinesStore } from "../../../main/__tests__/support/routines-store.js";
+import { TEST_OWNER, futureIso } from "../../../main/__tests__/routines-fixture.js";
+import type { StreamEvent } from "../../../engine/llm/types.js";
 /** Create and promote the Suggestions conversation before sending scheduled routine cards. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { wireRoutinesScheduler } from "../routines-wiring.js";
@@ -16,9 +25,11 @@ type Handler = (event: { routine: Record<string, unknown> }) => void;
 function wire(
   runRoutine: (input: Record<string, unknown>) => Promise<{ summary: string; sessionId?: string; skipped?: "chat-busy" }>,
   chats: Record<string, { projectRoot?: string; noTranscript?: true }> = {},
+  persistedStore?: BootContext["routinesStore"],
 ) {
   const handlers: { llm?: Handler; notification?: Handler } = {};
   const routinesStore = {
+    recordNotificationRunMetrics: vi.fn(async () => ({})),
     update: vi.fn(async () => ({})), recordRunOutcome: vi.fn(async () => ({})),
     markOrphaned: vi.fn(async () => 1), markChatBusy: vi.fn(async () => ({})),
   };
@@ -31,13 +42,14 @@ function wire(
     markRunning: vi.fn(),
     markStopped: vi.fn(),
   };
+  const notificationService = { fire: vi.fn() };
   const ctx = {
     routinesScheduler,
     routineEngine: { runRoutine: vi.fn(runRoutine) },
-    routinesStore,
+    routinesStore: persistedStore ?? routinesStore,
     getMainWindow: () => window,
     host: { desktop: { getAppWindows: () => [window] } },
-    notificationService: { fire: vi.fn() },
+    notificationService,
     memoryManager: {
       touchSessionTranscript,
       loadSessionMetadata: (id: string) => chats[id] ?? null,
@@ -45,7 +57,7 @@ function wire(
     },
   } as unknown as BootContext;
   wireRoutinesScheduler(ctx);
-  return { handlers, send, touchSessionTranscript, routinesStore, routinesScheduler };
+  return { handlers, send, touchSessionTranscript, routinesStore, routinesScheduler, notificationService };
 }
 
 const routine = { id: "routine-a", trigger: { kind: "manual" }, execution: "llm-session", title: "Morning", lastFiredAt: "2026-11-04T01:00:00.000Z" };
@@ -74,9 +86,10 @@ describe("routine cards and the Suggestions conversation", () => {
     expectTouchedBefore(send, touchSessionTranscript, ROUTINES.failed);
   });
 
-  it("and for a notification-only routine's card", () => {
+  it("and for a notification-only routine's card", async () => {
     const { handlers, send, touchSessionTranscript } = wire(async () => ({ summary: "" }));
     handlers.notification!({ routine: { ...routine, execution: "notification-only" } });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
     expectTouchedBefore(send, touchSessionTranscript, ROUTINES.fired);
   });
 });
@@ -90,6 +103,8 @@ describe("routine run outcome persistence", () => {
       "routine-a",
       "2026-11-04T01:00:00.000Z",
       { ok: false, kind: "error", reason: "boom" },
+      expect.objectContaining({ startedAt: expect.any(String), durationMs: expect.any(Number) }),
+      undefined,
     );
   });
 
@@ -97,7 +112,7 @@ describe("routine run outcome persistence", () => {
     const { handlers, send, routinesStore } = wire(async () => ({ summary: "done", sessionId: "s-1" }));
     handlers.llm!({ routine });
     await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
-    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", "2026-11-04T01:00:00.000Z", { ok: true });
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", "2026-11-04T01:00:00.000Z", { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), "s-1");
   });
 
   it("still sends the result card when persisting the outcome fails", async () => {
@@ -142,7 +157,7 @@ describe("a schedule connected to a chat", () => {
     expect(wakes[0]).toMatchObject({ sessionId: TARGET, input: "check the build", withheld: true });
     expect(wakes[0]!.displayText).toContain("Morning");
     expect(wakes[0]!.displayText).toContain("check the build");
-    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", routine.lastFiredAt, { ok: true });
+    expect(routinesStore.recordRunOutcome).toHaveBeenCalledWith("routine-a", routine.lastFiredAt, { ok: true }, expect.objectContaining({ durationMs: expect.any(Number) }), TARGET);
     expect(routinesScheduler.markStopped).toHaveBeenCalledWith("routine-a");
     // Outside the wake the flag is gone again: the next ordinary turn reads its allows.
     expect(sessionAuthorityWithheld()).toBe(false);
@@ -246,4 +261,47 @@ describe("a connected schedule's withheld session, outside the turn's async cont
     expect(await outside()).toBe("session");
     expect(turnExtensionPolicyContext.exit(() => sessionAuthorityWithheld(TARGET))).toBe(false);
   });
+});
+
+
+it("records a recovered child stream-error and parent end_turn as done with both turns' tokens", withRoutinesStore(async ({ store }) => {
+  const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "Recover the child result", schedule: { at: futureIso() } });
+  const fired = await store.markFired(item.id);
+  const memoryManager = new MemoryManager();
+  const createLoop = (events: StreamEvent[][], registry: ToolRegistry) => {
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({ memoryManager, toolRegistry: registry }));
+    loop.provider = new ScriptedTurnProvider(events);
+    return loop;
+  };
+  const childRegistry = new ToolRegistry();
+  childRegistry.register(createDynamicTool({ name: "read_child_report", description: "Read child report", source: "builtin", category: "read", jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true, execute: async () => ({ output: "report", isError: false }) }));
+  const child = createLoop([
+    [{ type: "tool_call", id: "child-read", name: "read_child_report", input: {} }, { type: "message_complete", stopReason: "tool_use", usage: { inputTokens: 100, outputTokens: 20 } }],
+    [{ type: "error", error: "synthetic child failure" }],
+  ], childRegistry);
+  const parentRegistry = new ToolRegistry();
+  parentRegistry.register(createDynamicTool({ name: "recover_child", description: "Recover child result", source: "builtin", category: "read", jsonSchema: { type: "object", properties: {} }, isReadOnly: () => true, execute: async () => {
+    const result = await child.runTurn("Read the report", undefined, undefined, { inputOrigin: "plugin-emitted" });
+    expect(result.stopReason).toBe("stream-error");
+    return { output: "Child failed; continue with the available report", isError: false };
+  } }));
+  const parent = createLoop([
+    [{ type: "tool_call", id: "parent-recover", name: "recover_child", input: {} }, { type: "message_complete", stopReason: "tool_use", usage: { inputTokens: 40, outputTokens: 5 } }],
+    [{ type: "text_delta", text: "<summary>Recovered</summary>" }, { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } }],
+  ], parentRegistry);
+  const engine = new RoutineEngine({ createConversationLoop: () => parent });
+  const { handlers, send } = wire((input) => engine.runRoutine(input as unknown as Routine), {}, store);
+  handlers.llm!({ routine: fired! as unknown as Record<string, unknown> });
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+  expect(store.list()[0]!.lastFailure).toBeUndefined();
+  expect(store.list()[0]!.runs![0]).toMatchObject({ status: "done", metrics: { tokens: { input: 200, output: 35, total: 235 } } });
+}));
+
+it("does not create failure attention when scheduled notification delivery throws", async () => {
+  const { handlers, send, routinesStore, notificationService } = wire(async () => ({ summary: "" }));
+  notificationService.fire.mockImplementationOnce(() => { throw new Error("notification delivery failed"); });
+  handlers.notification!({ routine: { ...routine, execution: "notification-only" } });
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+  expect(routinesStore.recordRunOutcome).not.toHaveBeenCalled();
+  expect(routinesStore.recordNotificationRunMetrics).toHaveBeenCalledWith(routine.id, routine.lastFiredAt, expect.objectContaining({ durationMs: expect.any(Number) }));
 });

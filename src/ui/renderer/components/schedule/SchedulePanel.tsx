@@ -1,5 +1,7 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
+import { RunMetrics } from "./RunMetrics.js";
+import type { RoutineRunMetrics } from "../../../../shared/routines-types.js";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
@@ -46,6 +48,7 @@ interface ScheduleEntry {
   routine: RoutineRecord;
   atMs: number;
   status: EntryStatus;
+  metrics?: RoutineRunMetrics;
   sessionId?: string;
 }
 
@@ -196,7 +199,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
       if (!visible(run.routineId)) continue;
       const isRunning = running.get(run.routineId) === run.firedAt;
       out.push({ key: `run:${run.routineId}:${run.firedAt}`, routine: byId.get(run.routineId)!, atMs: Date.parse(run.firedAt),
-        status: isRunning ? "running" : run.status, ...(run.sessionId ? { sessionId: run.sessionId } : {}) });
+        status: isRunning ? "running" : run.status, ...(!isRunning && run.metrics ? { metrics: run.metrics } : {}), ...(run.sessionId ? { sessionId: run.sessionId } : {}) });
     }
     for (const [routineId, firedAt] of running) {
       if (!visible(routineId) || runs.some((r) => r.routineId === routineId && r.firedAt === firedAt)) continue;
@@ -361,9 +364,10 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
           <StatusIcon status={entry.status} />
           {entry.routine.targetSessionId && <AlarmClock className="h-3 w-3 shrink-0 text-info" aria-hidden="true" />}
           <span className="shrink-0 tabular-nums">{hhmm(entry.atMs)}</span>
-          {!twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
+          {(!twoLine || entry.metrics !== undefined) && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
         </span>
-        {twoLine && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
+        {twoLine && entry.metrics === undefined && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
+        <RunMetrics metrics={entry.metrics} className="text-[10px] text-inherit" />
       </button>
     ));
 
@@ -520,6 +524,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                       </span>
                     )}
                   </span>
+                  <RunMetrics metrics={e.metrics} />
                   <span className="block truncate text-muted-foreground">
                     {e.routine.execution === "notification-only" ? t("schedulePanel.runsAsNotification")
                       : e.routine.targetSessionId ? t("schedulePanel.connectedTo", { chat: chatTitle(chats, e.routine.targetSessionId) })

@@ -1,5 +1,6 @@
 // The body of a schedule item's popover: provenance, the editable fields, next run, the missed-run rule, recent runs and the
 // item's own actions. Every action is the user's own and applies at once; 삭제 is undone from the panel's toast, not confirmed.
+import { RunMetrics } from "./RunMetrics.js";
 import { useState } from "react";
 import { AlertCircle, Check, Pause, Play, Trash2, X } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
@@ -290,7 +291,7 @@ export function ScheduleItemPopover(props: ScheduleItemPopoverProps) {
                 {run.status === "failed"
                   ? <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
                   : <Check className="h-3.5 w-3.5 shrink-0 text-success" />}
-                <span className="min-w-0 flex-1 truncate">{formatMediumDateTime(run.firedAt)}</span>
+                <span className="min-w-0 flex-1 truncate">{formatMediumDateTime(run.firedAt)}<RunMetrics metrics={run.metrics} /></span>
                 <span className={run.status === "failed" ? "text-destructive" : "text-muted-foreground"}>
                   {t(run.status === "failed" ? "schedulePanel.runFailed" : "schedulePanel.runDone")}
                 </span>
