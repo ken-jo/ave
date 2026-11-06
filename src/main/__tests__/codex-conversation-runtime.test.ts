@@ -40,7 +40,8 @@ import type { ProviderTransportDiagnostics } from "../../engine/llm/provider-err
 import * as managedChildProcesses from "../managed-child-processes.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
-import { createTracer, type TraceEntry } from "../../observability/conversation-trace.js";
+import { createStepTracer } from "../../engine/telemetry/tracing.js";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TIMEOUT_MS, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../codex-executable-location.js";
 import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "../codex-executable-artifact.js";
@@ -337,20 +338,22 @@ describe("native RPC timeout context", () => {
         : getSetting(key));
       const loop = new ConversationLoop(deps);
       (loop as { provider: LLMProvider | null }).provider = provider;
-      const tracer = createTracer("rpc-timeout", { enabled: true, traceDir: join(harness.runtimeRoot, "traces") });
+      const exporter = new InMemorySpanExporter();
+      const spanProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+      const tracer = createStepTracer("rpc-timeout", spanProvider.getTracer("test"));
       loop.setTracer(tracer);
       const pending = loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
       await waitOnRealClock(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
       await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS, signal);
       await expect(pending).resolves.toMatchObject({ stopReason: "stream-error" });
-      const raw = readFileSync(tracer.filePath!, "utf8");
-      const entries = raw.trim().split("\n").map((line) => JSON.parse(line) as TraceEntry);
-      expect(entries.find((entry) => entry.step === "LLM_STREAM_ERROR")?.meta).toMatchObject({
-        classification: "unknown", providerError: {
-          transport: { phase: "rpc-timeout", kind: "timeout", operation: "turn/start" },
-        },
-      });
+      const events = exporter.getFinishedSpans().flatMap(span => span.events);
+      expect(events).toContainEqual(expect.objectContaining({
+        name: "ave.step", attributes: expect.objectContaining({ "ave.step": "LLM_STREAM_ERROR" }),
+      }));
+      const raw = JSON.stringify(events);
+      expect(raw).not.toContain("providerError");
       expect(raw).not.toContain("private-user-input");
+      await spanProvider.shutdown();
       expect(audit).toHaveBeenCalledExactlyOnceWith({ provider: "codex", outcome: "session-failed" });
       expect(harness.child.kill).toHaveBeenCalledWith("SIGKILL");
     } finally {

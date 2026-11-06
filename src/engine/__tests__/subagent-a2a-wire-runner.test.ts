@@ -23,13 +23,6 @@ import {
 import type { TurnResult } from "../turn/types.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-vi.mock("../../observability/conversation-trace.js", () => ({
-  createTracer: () => ({
-    enabled: false,
-    step: () => undefined,
-  }),
-}));
-
 const COMPLETED_TURN: TurnResult = {
   text: "done",
   toolCalls: [],

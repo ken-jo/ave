@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ConversationTracer, TraceStepName } from "../../../observability/conversation-trace.js";
+import type { ConversationTracer, TraceStepName } from "../../telemetry/tracing.js";
 import { getModelPreflightThreshold } from "../../auto-compact.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import {
@@ -60,8 +60,6 @@ describe("preflight reasoning projection", () => {
       await loop.resetAndResume(sessionId);
       const steps: Array<{ name: TraceStepName; meta?: Record<string, unknown> }> = [];
       const tracer: ConversationTracer = {
-        enabled: true,
-        filePath: undefined,
         step: (name, meta) => { steps.push({ name, meta }); },
       };
       loop.setTracer(tracer);

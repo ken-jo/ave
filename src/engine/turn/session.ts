@@ -5,7 +5,6 @@ import type { WorkspaceRootRevocationOptions } from "./types.js";
 import { normalizeToolPairInvariant } from "../conversation-history.js";
 import { endShellSession } from "../../tools/shell-tools.js";
 import { disposeSessionFileReads } from "../../tools/file-read-state.js";
-import { createTracer } from "../../observability/conversation-trace.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
 import { withSummaryBoundary } from "../structured-compact.js";
 import { createLogger } from "../../lib/logger.js";
@@ -117,7 +116,7 @@ function applyFreshSessionState(
   // The next turn awaits the rebuild through whenProviderReady and reports a failure with providerBuildError.
   void self.resetSessionModelOverride().catch(() => undefined);
   self.gitIgnoreVerdicts.clear();
-  self.tracer = createTracer(self.sessionId);
+  self.rebindTracer();
 }
 
 /**
@@ -352,7 +351,7 @@ async function loadHeldSession(
       (max, c) => Math.max(max, c.compactNum ?? 0),
       0,
     ) ?? 0;
-    self.tracer = createTracer(self.sessionId);
+    self.rebindTracer();
     return true;
   }
 

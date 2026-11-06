@@ -37,7 +37,7 @@ import {
 } from "../shared/turn-extension-policy.js";
 import { isToolResultStubContent } from "../shared/tool-result-stub.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
-import { createTracer, type ConversationTracer } from "../observability/conversation-trace.js";
+import { createStepTracer, type ConversationTracer } from "./telemetry/tracing.js";
 import { t } from "../i18n/index.js";
 import { selectedCompactionModel } from "../shared/compaction-model.js";
 import { buildProvider, cleanModelOverride, generateText, resolveVendorName } from "./turn/provider.js";
@@ -173,7 +173,7 @@ export class ConversationLoop {
   sessionLoadTarget: string | null = null;
   sessionSource: "startup" | "resume" | "clear" = "startup";
 
-  tracer: ConversationTracer = createTracer(this.sessionId);
+  tracer: ConversationTracer;
   cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
 
   lastRoundProviderInputTokens = 0;
@@ -224,6 +224,7 @@ export class ConversationLoop {
   private readonly sessionTransitionSettledListeners = new Set<() => void>();
 
   constructor(deps: ConversationLoopDeps) {
+    this.tracer = createStepTracer(this.sessionId, deps.tracer);
     this.deps = deps;
     this.constructedModelOverride = deps.modelOverride;
     this.history = new ConversationHistory();
@@ -730,9 +731,9 @@ export class ConversationLoop {
     };
   }
 
-  /** Rebind tracing after direct sessionId changes so trace files name the addressable session. */
+  /** Rebind standalone step spans after direct sessionId changes. */
   rebindTracer(): void {
-    this.tracer = createTracer(this.sessionId);
+    this.tracer = createStepTracer(this.sessionId, this.deps.tracer);
   }
 
   getSessionRoutineTitle(): string | null {
@@ -759,10 +760,6 @@ export class ConversationLoop {
 
   getSessionRoutineId(): string | null {
     return this.sessionRoutineId;
-  }
-
-  getTraceFilePath(): string | undefined {
-    return this.tracer.filePath;
   }
 
   setTracer(tracer: ConversationTracer): void {
