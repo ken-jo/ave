@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFil
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { canonicalizePathForMatch, createPermissionPathEvidence, criticalDeleteTargetFor, isAdmissionDeniedPath, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { evaluateScopedRules } from "../rules/scoped-rule-matcher.js";
@@ -96,7 +97,7 @@ describe("permission path facts", () => {
         paths: [path], projectRulesCwd: project,
       });
       const shell = manager.checkDetailed("powershell", "builtin", "shell", null, {
-        ruleSubject: { kind: "shell", dialect: "powershell", command: `Get-Content -LiteralPath '${lexical}'`, cwd: project },
+        ruleSubject: { kind: "shell", dialect: "powershell", command: `Get-Content -LiteralPath ${quotePowerShell(lexical)}`, cwd: project },
         shellExecution: { runsSandboxed: true, environmentSnapshot: {} }, projectRulesCwd: project,
       });
       for (const outcome of [result, shell]) {
