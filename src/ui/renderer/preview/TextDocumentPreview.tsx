@@ -5,8 +5,9 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { ObservationBinding, AgentObservationEvent, DocumentObservationStatus } from "../../../shared/agent-observation.js";
 import type { ChatPreviewTarget } from "./preview-targets.js";
 import { defaultAppOpenErrorKey, resolveIpcErrorKey } from "../format-ipc-error.js";
+import { FileInfoCard } from "./FileInfoCard.js";
 import { PreviewContent, resolvePreviewRenderer } from "./preview-renderers.js";
-import { PreviewDocumentFooter, PreviewDocumentHeader, PreviewDocumentLiveStrip, previewFormatLabel } from "./preview-document-chrome.js";
+import { PreviewDocumentFooter, PreviewDocumentHeader, PreviewDocumentLiveStrip, pathParts, previewFormatLabel, workspaceRelativePath } from "./preview-document-chrome.js";
 import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
 
 type ReadError = NonNullable<Awaited<ReturnType<typeof window.ave.preview.readFile>>["error"]>;
@@ -166,6 +167,9 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
       error={openFailed ? t(openFailed) : undefined} />
     {inlineText !== undefined ? <PreviewContent descriptor={{ text: inlineText, path: target.path }} />
       : state.phase === "loading" ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">{t("chatPreviewRail.filePreviewLoading")}</div>
+      : state.phase === "error" && !selected && (state.code === "binary-file" || state.code === "too-large")
+        ? <FileInfoCard name={pathParts(target.path).name} kindLabel={previewFormatLabel(target.path)}
+          location={workspaceRelativePath(target.path, target.workspaceRoot)} reason={state.code} />
       : state.phase === "error" ? <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>
       : state.image ? <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
       : sourceVisible ? <pre className="max-h-(--preview-block-max-height) overflow-auto border-t py-2 font-mono text-xs"

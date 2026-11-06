@@ -8,11 +8,15 @@ import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 import { canOpenInDefaultApp } from "../../../shared/preview-external-open.js";
 
-function pathParts(path: string, workspaceRoot?: string): { name: string; parent: string } {
+/** `path` relative to `workspaceRoot` when it lies inside it, so a label never shows the absolute (home) prefix. */
+export function workspaceRelativePath(path: string, workspaceRoot?: string): string {
   const normalized = path.replace(/\\/g, "/");
   const root = workspaceRoot?.replace(/\\/g, "/").replace(/\/$/, "");
-  const relative = root && normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
-  const parts = relative.split("/").filter(Boolean);
+  return root && normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
+}
+
+export function pathParts(path: string, workspaceRoot?: string): { name: string; parent: string } {
+  const parts = workspaceRelativePath(path, workspaceRoot).split("/").filter(Boolean);
   const name = parts.pop() ?? path;
   const parent = parts.length > 3 ? `…/${parts.slice(-2).join("/")}/` : parts.length ? `${parts.join("/")}/` : "";
   return { name, parent };
