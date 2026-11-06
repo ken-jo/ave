@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, matchesGlob, relative } from "node:path";
 import { SettingsService } from "../../data/settings-store.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -251,5 +252,39 @@ describe("the dock window paints the host theme main sends (real preload, host t
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("");
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("the dock window ships with the app stylesheet its panel cards are written in", () => {
+  const srcRoot = join(__dirname, "..", "..");
+  const repoRoot = join(srcRoot, "..");
+  const html = readFileSync(join(srcRoot, "floating-dock-window.html"), "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+    build: { files: string[] };
+  };
+  const { resolveBuildAssets } = createRequire(import.meta.url)("../../../scripts/lib/build-assets.mjs") as {
+    resolveBuildAssets(root: string, category: string): Array<{ out: string }>;
+  };
+
+  it("links ./styles.css, which build:styles writes next to the built dock html and the packaged app keeps", () => {
+    expect(head).toMatch(/<link rel="stylesheet" href="\.\/styles\.css" \/>/u);
+    expect(head).toMatch(/style-src 'self'/u);
+    const [dockAsset] = resolveBuildAssets(repoRoot, "floating-dock");
+    const stylesOut = /--output\s+(\S+)/u.exec(pkg.scripts["build:styles"] ?? "")?.[1];
+    expect(stylesOut).toBeDefined();
+    expect(join(repoRoot, stylesOut!)).toBe(join(dirname(dockAsset!.out), "styles.css"));
+    const packaged = relative(repoRoot, join(repoRoot, stylesOut!)).replaceAll("\\", "/");
+    const included = pkg.build.files.filter((pattern) => !pattern.startsWith("!"));
+    const excluded = pkg.build.files.filter((pattern) => pattern.startsWith("!")).map((pattern) => pattern.slice(1));
+    expect(included.some((pattern) => matchesGlob(packaged, pattern))).toBe(true);
+    expect(excluded.filter((pattern) => matchesGlob(packaged, pattern))).toEqual([]);
+  });
+
+  it("leaves the box reset to the stylesheet's preflight so card utility spacing survives", () => {
+    // Unlayered rules beat every @layer, so a page-level `*` margin/padding reset would zero mt-2/px-2/py-1 on the cards.
+    const inline = head.slice(head.indexOf("<style>"), head.indexOf("</style>"));
+    expect(inline).not.toMatch(/(^|[\s}])\*\s*\{[^}]*\b(margin|padding)\s*:/u);
   });
 });

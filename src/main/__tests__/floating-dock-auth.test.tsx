@@ -90,3 +90,24 @@ describe("dock host auth observation", () => {
     unsubscribe();
   });
 });
+
+describe("dock slot chrome", () => {
+  it("draws each slot's host title inside the .slot-head drag band and retitles it in place", async () => {
+    document.body.innerHTML = '<div id="slots"></div><div id="activity"></div><div id="bar"><i></i></div><div id="conversation"></div><div id="summary"></div><div id="detail"></div><button id="close"></button>';
+    vi.resetModules();
+    await import("../../floating-dock-preload.js");
+    await import("../../floating-dock-window.js");
+    await act(async () => listeners.get(CHANNELS.dock.mount)?.({}, {
+      panelId: "panel", title: "Recorder", height: 200,
+      payload: { serverId: "fixture", generationId: "generation", resourceUri: "ui://fixture/panel" },
+    }));
+    const slot = document.getElementById("slot-panel");
+    const head = slot?.firstElementChild;
+    // The html stylesheet gives `.slot-head` the padding and the drag region; the title alone only truncates.
+    expect(head?.className).toBe("slot-head");
+    expect(head?.querySelector(":scope > .slot-title")?.textContent).toBe("Recorder");
+    await act(async () => listeners.get(CHANNELS.dock.retitle)?.({}, { panelId: "panel", title: "Renamed" }));
+    expect(head?.querySelector(".slot-title")?.textContent).toBe("Renamed");
+    expect(slot?.querySelectorAll(".slot-head")).toHaveLength(1);
+  });
+});

@@ -54,8 +54,11 @@ dock.onMount((value) => {
   container.className = "slot";
   container.style.height = `${slot.height}px`;
   const header = document.createElement("div");
-  header.className = "slot-title";
-  header.textContent = slot.title;
+  header.className = "slot-head";
+  const title = document.createElement("span");
+  title.className = "slot-title";
+  title.textContent = slot.title;
+  header.appendChild(title);
   container.appendChild(header);
   const body = document.createElement("div");
   container.appendChild(body);

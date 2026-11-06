@@ -25,8 +25,13 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ave</title>
+    <!-- The app stylesheet carries the Tailwind utilities and semantic tokens the
+         panel cards (McpAppView) are written in; without it their chrome renders
+         as raw text. Its preflight (@layer base) is also the box/margin reset, so
+         the unlayered rules below must not re-zero margin or padding: unlayered
+         CSS beats every layer and would strip the cards' utility spacing. -->
+    <link rel="stylesheet" href="./styles.css" />
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body { height: 100%; width: 100%; background: transparent; }
       body {
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
