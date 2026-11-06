@@ -492,42 +492,11 @@
    *  syntax keeps working (e.g. `bg-primary/30`).
    */
   :root {
-    /* Brand / accent — blue (default accent in dark) */
-    --p-blue-400: 217.2 91.2% 67%;
+    /* Fixed accents behind the reasoning ramp, the brand gradients and the
+       sidebar terminal preview. */
     --p-blue-500: 217.2 91.2% 59.8%;
-    --p-blue-600: 224.3 76.3% 48%;
-    --p-blue-700: 224.3 76.3% 38%;
-
-    /* Chat-theme accents — purple */
-    --p-purple-400: 270 95% 75%;
     --p-purple-500: 262 83% 58%;
-    --p-purple-600: 263 70% 50%;
-    --p-purple-700: 263 69% 42%;
-
-    /* Chat-theme accents — orange */
-    --p-orange-400: 27 96% 61%;
     --p-orange-500: 25 95% 53%;
-    --p-orange-600: 21 90% 48%;
-    --p-orange-700: 17 88% 40%;
-
-    /* Neutral grays */
-    --p-slate-0:   0 0% 100%;
-    --p-slate-50:  210 40% 98%;
-    --p-slate-100: 210 40% 96%;
-    --p-slate-200: 214 32% 91%;
-    --p-slate-300: 213 27% 84%;
-    --p-slate-400: 215 20% 65%;
-    --p-slate-500: 215 16% 47%;
-    --p-slate-600: 215 19% 35%;
-    --p-slate-700: 215 25% 27%;
-    --p-slate-800: 217 33% 17%;
-    --p-slate-900: 222 47% 11%;
-    --p-slate-950: 222.2 84% 4.9%;
-    --p-slate-card-dark: 222.2 84% 7%;
-
-    /* Status colors */
-    --p-red-500:    0 84% 60%;
-    --p-red-700:    0 62.8% 30.6%;
     --p-yellow-100: 48 96% 89%;
     --p-yellow-200: 48 97% 77%;
     /* The middle and deep ends of the same ramp. Hue drifts only 48 → 42, so
@@ -536,18 +505,8 @@
     --p-yellow-400: 45 96% 58%;
     --p-yellow-600: 42 96% 45%;
     --p-yellow-700: 42 96% 33%;
-    --p-yellow-800: 30 80% 25%;
-    --p-green-500: 142 71% 45%;
-
-    /* Code-surface palette — light variant */
-    --p-code-light-bg:     210 40% 98%;
-    --p-code-light-fg:     222 47% 11%;
-    --p-code-light-border: 214 32% 88%;
-
-    /* Code-surface palette — dark variant */
-    --p-code-dark-bg:     222 47% 9%;
-    --p-code-dark-fg:     210 40% 96%;
-    --p-code-dark-border: 217 33% 22%;
+    --p-code-dark-bg: 222 47% 9%;
+    --p-code-dark-fg: 210 40% 96%;
 
     /* Static shape, typography and motion values are applied from theme/design-tokens.ts. */
     --message-user-border: var(--message-user-fg);
