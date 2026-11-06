@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 // The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, matchesGlob, relative } from "node:path";
 import { SettingsService } from "../../data/settings-store.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
+import { FONT_SIZE_SCALE_DEFAULT } from "../../shared/appearance-font.js";
 import { emitEvent } from "../../boot/types.js";
 import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
 
@@ -148,9 +150,14 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     const sent = win.send.mock.calls.length;
     await service.patch({ appearance: { terminalFont: { size: 18 } } });
     expect(win.send).toHaveBeenCalledTimes(sent);
+    // The UI font is the snapshot's other settings-owned part: a family or size-scale change repaints the dock too.
+    await service.patch({ appearance: { font: { family: "Dock Sans", sizeScale: 1.125 } } });
+    expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
+    });
     dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
     expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
-      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono", font: { family: "Dock Sans", sizeScale: 1.125 },
     }]);
   });
 
@@ -213,6 +220,8 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   async function openWindow(_args: string[]) {
     document.documentElement.removeAttribute("style");
+    document.documentElement.removeAttribute("data-scheme");
+    document.documentElement.removeAttribute("data-shell");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
     vi.resetModules();
     await import("../../floating-dock-preload.js");
@@ -243,6 +252,37 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   });
 
+  it("paints the cards' stylesheet tokens on its root from the same scheme, dark and then light", async () => {
+    const { resolveTheme } = await import("../../ui/renderer/theme/resolve-theme.js");
+    const { requireScheme } = await import("../../ui/renderer/theme/schemes/index.js");
+    await openWindow([]);
+    // What main's dock.theme post delivers to the dock preload (see the surface tests above for the main side).
+    const deliver = (bundleId: string, shell: "light" | "dark") =>
+      rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId, shell, tokens: THEME.tokens }, terminalFontFamily: "Dock Mono" }));
+    const root = document.documentElement;
+    const token = (name: string) => root.style.getPropertyValue(`--${name}`);
+
+    deliver("nord", "dark");
+    const nord = resolveTheme(requireScheme("nord"));
+    expect(root.getAttribute("data-scheme")).toBe("nord");
+    expect(root.getAttribute("data-shell")).toBe("dark");
+    expect(root.style.colorScheme).toBe("dark");
+    for (const name of ["background", "foreground", "muted", "muted-foreground", "border"] as const) expect(token(name)).toBe(nord.tokens[name]);
+    expect(bg()).toBe(THEME.tokens["--ave-bg"]);
+
+    deliver("github-light", "light");
+    const light = resolveTheme(requireScheme("github-light"));
+    expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe(String(FONT_SIZE_SCALE_DEFAULT));
+    expect(root.style.getPropertyValue("--ave-font-family")).toBe("");
+    rendererListeners.get(CHANNELS.dock.theme)?.forEach((listener) => listener({}, { theme: { bundleId: "github-light", shell: "light", tokens: THEME.tokens }, terminalFontFamily: "Dock Mono", font: { family: "Dock Sans", sizeScale: 1.125 } }));
+    // The same font write the main window makes, so the cards' rem utilities and font stack follow the user's choice.
+    expect(root.style.getPropertyValue("--ave-font-size-scale")).toBe("1.125");
+    expect(root.style.getPropertyValue("--ave-font-family")).toBe("Dock Sans");
+    expect(root.getAttribute("data-shell")).toBe("light");
+    expect(token("background")).toBe(light.tokens.background);
+    expect(token("background")).not.toBe(nord.tokens.background);
+  });
+
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
     const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
@@ -250,6 +290,41 @@ describe("the dock window paints the host theme main sends (real preload, host t
     await openWindow(windows[0]!.args);
     windows[0]!.fire("ready-to-show");
     expect(bg()).toBe("");
+    expect(document.documentElement.hasAttribute("data-scheme")).toBe(false);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("the dock window ships with the app stylesheet its panel cards are written in", () => {
+  const srcRoot = join(__dirname, "..", "..");
+  const repoRoot = join(srcRoot, "..");
+  const html = readFileSync(join(srcRoot, "floating-dock-window.html"), "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+    build: { files: string[] };
+  };
+  const { resolveBuildAssets } = createRequire(import.meta.url)("../../../scripts/lib/build-assets.mjs") as {
+    resolveBuildAssets(root: string, category: string): Array<{ out: string }>;
+  };
+
+  it("links ./styles.css, which build:styles writes next to the built dock html and the packaged app keeps", () => {
+    expect(head).toMatch(/<link rel="stylesheet" href="\.\/styles\.css" \/>/u);
+    expect(head).toMatch(/style-src 'self'/u);
+    const [dockAsset] = resolveBuildAssets(repoRoot, "floating-dock");
+    const stylesOut = /--output\s+(\S+)/u.exec(pkg.scripts["build:styles"] ?? "")?.[1];
+    expect(stylesOut).toBeDefined();
+    expect(join(repoRoot, stylesOut!)).toBe(join(dirname(dockAsset!.out), "styles.css"));
+    const packaged = relative(repoRoot, join(repoRoot, stylesOut!)).replaceAll("\\", "/");
+    const included = pkg.build.files.filter((pattern) => !pattern.startsWith("!"));
+    const excluded = pkg.build.files.filter((pattern) => pattern.startsWith("!")).map((pattern) => pattern.slice(1));
+    expect(included.some((pattern) => matchesGlob(packaged, pattern))).toBe(true);
+    expect(excluded.filter((pattern) => matchesGlob(packaged, pattern))).toEqual([]);
+  });
+
+  it("leaves the box reset to the stylesheet's preflight so card utility spacing survives", () => {
+    // Unlayered rules beat every @layer, so a page-level `*` margin/padding reset would zero mt-2/px-2/py-1 on the cards.
+    const inline = head.slice(head.indexOf("<style>"), head.indexOf("</style>"));
+    expect(inline).not.toMatch(/(^|[\s}])\*\s*\{[^}]*\b(margin|padding)\s*:/u);
   });
 });
