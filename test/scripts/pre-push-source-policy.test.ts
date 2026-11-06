@@ -282,6 +282,7 @@ describe("pre-push fast source tier", () => {
         "resources/",
         "src/lib/log-file-sink.ts",
         "src/main/ave-protocol-registration.ts",
+        "src/shared/ipc-channels.ts",
       ],
       "src/__tests__/preload-shape.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
       "src/__tests__/preload.test.ts": ["src/contract/", "src/preload", "src/shared/ipc-channels.ts", "src/ui/renderer/types.ts"],
@@ -358,6 +359,7 @@ describe("pre-push fast source tier", () => {
   it("keeps the IPC lock suites when src/shared/ipc-channels.ts changes alone", () => {
     // Preserve transitive lock suites when narrowing a large related-test set to direct importers.
     expect(selectTriggeredLockSuites(["src/shared/ipc-channels.ts"]).map(({ suite }) => suite)).toEqual([
+      "src/__tests__/packaging-discipline-source.test.ts",
       "src/__tests__/preload-shape.test.ts",
       "src/__tests__/preload.test.ts",
       "src/ipc/__tests__/channel-inventory.test.ts",

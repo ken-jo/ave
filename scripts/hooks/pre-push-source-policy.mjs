@@ -57,6 +57,7 @@ export const AVE_APP_LOCK_SUITE_TRIGGERS = Object.freeze({
     "resources/",
     "src/lib/log-file-sink.ts",
     "src/main/ave-protocol-registration.ts",
+    "src/shared/ipc-channels.ts",
   ]),
   "src/__tests__/preload-shape.test.ts": Object.freeze([
     "src/contract/",
