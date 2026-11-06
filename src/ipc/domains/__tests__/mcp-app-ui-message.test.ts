@@ -56,7 +56,6 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
     settingsService: { get: vi.fn(() => ({})) },
     auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
-    refreshPluginEventBridge: vi.fn(),
     conversationLoop,
     findLoopBySessionId: vi.fn((sessionId: string) => {
       if (sessionId === primarySession) return conversationLoop;
@@ -103,12 +102,12 @@ describe("ave:mcp:ui-message — sender gate", () => {
     expect(deps.auditLogger.log).toHaveBeenCalled(); // auditUnauthorized
   });
 
-  it("rejects a plugin-ui-shell frame (mutating channel ⇒ host-renderer-only)", async () => {
+  it("rejects an app proxy frame on the host-renderer-only channel", async () => {
     const { serverId, queueGuidance } = await setup();
     const handler = handlers.get(CHANNEL)!;
 
     const result = await handler(
-      { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+      { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html" } } as never,
       serverId,
       SESSION,
       textParams("hello"),

@@ -100,49 +100,21 @@ ThemeProvider (src/ui/renderer/theme/ThemeProvider.tsx)
 
 ## How plugin UIs receive the host theme
 
-Plugin webviews do not share the host stylesheet. They receive a flat map of
-`--ave-*` custom properties.
+Plugin panels are MCP Apps with their own per-server origin and stylesheet. They read the initial host context with `app.getHostContext()` and handle changes with `onhostcontextchanged`.
 
-1. On each applied bundle change the provider calls
-   `bundleToPluginTokens(bundle)` (`src/ui/renderer/theme/plugin-token-map.ts`)
-   and sends `{ bundleId, shell, tokens }` with `api.notifyPluginTheme`.
-   Values are full CSS values (`hsl(...)`, `hsla(...)`, `color-mix(...)`,
-   lengths, durations, easings), not bare triples.
-2. Main validates the payload (`validateThemePayload` in
-   `src/shared/plugin-theme-cache.ts`): the bundle id must be compiled or
-   installed, the shell `light` or `dark`, token names must be in
-   `AVE_TOKEN_NAMES` (`src/shared/plugin-ui-tokens.ts`), and each value must
-   match a strict grammar (color, single `color-mix` of two colors, length,
-   weight, duration, `cubic-bezier`). Invalid tokens are dropped. The result is
-   cached and broadcast as the `host.theme.changed` event to every registered
-   plugin webview and to host-side event subscribers
-   (`src/ipc/domains/plugins.ts`).
-3. A webview registered later gets the cached payload replayed. The plugin
-   preload (`src/plugin-preload.ts`) buffers the latest `host.theme.changed`
-   and replays it to any `onEvent` subscriber that attaches afterwards.
-4. Before importing the plugin entry, `src/plugin-ui-shell.js` pulls
-   `avePlugin.getTheme()`, sets `data-theme-bundle`, `data-shell` and
-   `color-scheme` on `documentElement` as the host renderer does on its own
-   root, and writes the `--ave-*` tokens inline, so the first plugin paint uses
-   host colors (`src/__tests__/plugin-ui-shell-theme.test.ts`). `getTheme`
-   returns `null` only before the host's first broadcast; plugins keep their
-   own static fallback CSS for that window.
-5. Fonts are not broadcast. `src/plugin-ui-shell.html` mirrors the host font
-   stack (`src/shared/host-font-stack.ts`).
+`McpAppView` builds context from the applied host theme tokens and locale. `src/ui/renderer/components/mcp-app-host-context.ts` maps those tokens into the standard `theme` and `styles.variables` fields; panels do not receive the host's private `--ave-*` vocabulary. The floating dock receives host-owned theme data for its chrome and passes the same standard context to its app views.
 
-A plugin consumes `var(--ave-*)` in its CSS and, for live changes, subscribes
-to `host.theme.changed`. Prefer the derived tokens over local mixes:
+Use the standard variables that express the panel's purpose:
 
-| Token | Intent | Mix (light / dark / high contrast) |
-|---|---|---|
-| `--ave-primary-bg-subtle` | Tinted primary surface | primary over card, 14% / 18% / 24% |
-| `--ave-primary-bg-strong` | Hover/active of subtle | 28% / 32% / 40% |
-| `--ave-danger-bg-subtle`, `--ave-warning-bg-subtle`, `--ave-success-bg-subtle` | Status tints | over transparent, 14% (24% high contrast) |
-| `--ave-surface-hover` | Hover highlight | foreground over secondary, 6% / 10% / 14% |
-| `--ave-focus-shadow` | Focus ring color | ring over transparent, 62% |
+| Variable | Intent |
+|---|---|
+| `--color-background-primary`, `--color-background-secondary` | Main and secondary surfaces |
+| `--color-text-primary`, `--color-text-secondary` | Main and secondary text |
+| `--color-background-danger`, `--color-background-warning`, `--color-background-success` | Status surfaces |
+| `--color-ring-primary` | Focus indicator |
+| `--font-sans`, `--font-mono` | Host font preferences |
 
-The floating dock and MCP app cards follow the same applied theme through their
-own channels; see [Process Boundaries](../architecture/architecture.md#process-boundaries).
+The app owns when to apply context updates and may keep its own styles for variables the host does not supply. See the [MCP Apps authoring guide](../guides/mcp-app-authoring.md#realtime-state-without-a-private-push-channel) and [Process Boundaries](../architecture/architecture.md#process-boundaries).
 
 ## Adding a semantic token
 
@@ -154,8 +126,9 @@ own channels; see [Process Boundaries](../architecture/architecture.md#process-b
 3. Add a literal triple to every `:root[data-theme-bundle]` block and to the
    pre-hydration `:root` block in `src/styles.css`.
 4. Expose it in `@theme inline`: `--color-info: hsl(var(--info));`.
-5. If it must reach plugins, add an `--ave-*` name to `AVE_TOKEN_NAMES` and map
-   it in `bundleToPluginTokens`.
+5. If it must reach app panels, map the host token to a standard style variable
+   in `mcp-app-host-context.ts`. Internal dock chrome tokens remain in
+   `bundleToPluginTokens`; they are not a plugin-facing style contract.
 6. Add a rule to `THEME_CONTRAST_RULES` when it is a text/background pair.
 
 ## Adding a compiled bundle

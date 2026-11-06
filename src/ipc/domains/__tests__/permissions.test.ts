@@ -18,7 +18,7 @@ import {
   framelessEvent,
   hostFrameEvent,
   invokeRegisteredHandlerWithEvent,
-  pluginShellFrameEvent,
+  isolatedAppFrameEvent,
 } from "../../../__tests__/test-helpers.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -1071,10 +1071,10 @@ describe("state-mutating permission channels refuse non-host frames", () => {
     ],
   ];
 
-  it.each(MUTATING)("%s refuses a plugin-ui-shell frame", async (channel, payload) => {
+  it.each(MUTATING)("%s refuses a isolated app-resource frame", async (channel, payload) => {
     const { deps, permissionManager } = await setup();
 
-    const result = await invokeRegisteredHandlerWithEvent(handlers, channel, pluginShellFrameEvent(), payload);
+    const result = await invokeRegisteredHandlerWithEvent(handlers, channel, isolatedAppFrameEvent(), payload);
 
     expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(permissionManager.setModePersist).not.toHaveBeenCalled();
@@ -1682,7 +1682,7 @@ describe("upstream proxy in Settings", () => {
 
   it("refuses a read from a plugin frame", async () => {
     await setupUpstream();
-    expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, pluginShellFrameEvent(), undefined)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, isolatedAppFrameEvent(), undefined)).toEqual(UNAUTHORIZED_FRAME);
     expect(await invokeRegisteredHandlerWithEvent(handlers, PERMISSIONS.upstreamProxyGet, foreignFrameEvent("https://attacker.example/"), undefined)).toEqual(UNAUTHORIZED_FRAME);
   });
 });
@@ -1707,7 +1707,7 @@ describe("home content review IPC", () => {
     try {
       const { deps } = await setup();
       for (const channel of [PERMISSIONS.homeTrustReview, PERMISSIONS.homeTrustApprove, PERMISSIONS.homeTrustRemove]) {
-        expect(await invokeRegisteredHandlerWithEvent(handlers, channel, pluginShellFrameEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
+        expect(await invokeRegisteredHandlerWithEvent(handlers, channel, isolatedAppFrameEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
         expect(await invokeRegisteredHandlerWithEvent(handlers, channel, framelessEvent(), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
       }
       const review = await invoke(PERMISSIONS.homeTrustReview) as { snapshotId: string; rows: { key: string }[] };

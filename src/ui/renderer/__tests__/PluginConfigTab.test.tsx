@@ -1086,7 +1086,6 @@ describe("PluginConfigTab — auth UI", () => {
     Object.defineProperty(window, "aveApi", {
       value: {
         callPluginMethod,
-        onPluginEvent: vi.fn(() => () => undefined),
         onPluginEnabledChanged: vi.fn(() => () => undefined),
         setPluginEnabled: vi.fn(async () => ({ ok: true as const })),
         listPluginUiExtensions: vi.fn(async () => []),
@@ -1143,7 +1142,6 @@ describe("PluginConfigTab — auth UI", () => {
     });
     Object.defineProperty(window, "aveApi", {
       value: {
-        onPluginEvent: vi.fn(() => () => undefined),
         onPluginEnabledChanged: vi.fn(() => () => undefined),
         setPluginEnabled,
         listPluginUiExtensions: vi.fn(async () => []),
@@ -1199,7 +1197,6 @@ describe("PluginConfigTab — auth UI", () => {
     });
     Object.defineProperty(window, "aveApi", {
       value: {
-        onPluginEvent: vi.fn(() => () => undefined),
         onPluginEnabledChanged: vi.fn(() => () => undefined),
         listPluginUiExtensions: vi.fn(async () => []),
       },
@@ -1252,7 +1249,6 @@ describe("PluginConfigTab — auth UI", () => {
     Object.defineProperty(window, "aveApi", {
       value: {
         callPluginMethod,
-        onPluginEvent: vi.fn(() => () => undefined),
         listPluginUiExtensions: vi.fn(async () => []),
       },
       writable: true,

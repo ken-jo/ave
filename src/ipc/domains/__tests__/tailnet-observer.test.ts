@@ -124,7 +124,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
 
     const handler = handlers.get(CHANNELS.tailnetObserver.apply)!;
     await expect(Promise.resolve(handler(
-      { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+      { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
       { intent, config: CONFIG },
     ))).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
 
@@ -197,7 +197,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
 
       const handler = handlers.get(CHANNELS.tailnetObserver.configureServe)!;
       await expect(Promise.resolve(handler(
-        { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+        { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
         { intent },
       ))).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
 
@@ -262,7 +262,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
 
       const handler = handlers.get(CHANNELS.tailnetObserver.guidedSetup)!;
       await expect(Promise.resolve(handler(
-        { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+        { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
         { intent },
       ))).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
 
@@ -343,7 +343,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
 
       const handler = handlers.get(channel)!;
       await expect(Promise.resolve(handler(
-        { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+        { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
         { intent, enabled: true },
       ))).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
 

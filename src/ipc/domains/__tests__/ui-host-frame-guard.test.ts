@@ -61,8 +61,8 @@ describe("UI context-menu channels — host renderer frames only", () => {
     await setup();
   });
 
-  it("refuses a plugin UI shell frame on both channels", () => {
-    const shell = "file:///dist/src/plugin-ui-shell.html";
+  it("refuses a isolated app-resource frame on both channels", () => {
+    const shell = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
     expect(invoke(DYNAMIC_CHANNEL, shell, dynamicPayload)).toEqual({
       ok: false,
       error: "unauthorized-frame",

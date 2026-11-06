@@ -93,7 +93,6 @@ async function setup() {
       setSecret,
     },
     auditLogger: { log: vi.fn() },
-    refreshPluginEventBridge: vi.fn(),
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
     pluginBundleLifecycle,
@@ -140,11 +139,11 @@ beforeEach(() => {
 });
 
 describe("ave:plugins:call", () => {
-  it("rejects plugin UI shell frames from the host renderer call channel", async () => {
+  it("rejects isolated app-resource frames from the host renderer call channel", async () => {
     const { deps, callFromUi } = await setup();
     const handler = handlers.get("ave:plugins:call");
     expect(handler).toBeDefined();
-    const pluginShellEvent = { senderFrame: { url: "file:///dist/src/plugin-ui-shell.html" } };
+    const pluginShellEvent = { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } };
 
     const res = await handler!(pluginShellEvent, "sample_ui_action", undefined, {
       userAction: true,
@@ -295,7 +294,7 @@ describe("ave:plugins:set-enabled", () => {
     const { deps, setPluginEnabled } = await setup();
     const handler = handlers.get("ave:plugins:set-enabled");
     expect(handler).toBeDefined();
-    const pluginShellEvent = { senderFrame: { url: "file:///dist/src/plugin-ui-shell.html" } };
+    const pluginShellEvent = { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } };
     const res = await handler!(pluginShellEvent, "com.example.meeting", false);
     expect(res).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(setPluginEnabled).not.toHaveBeenCalled();

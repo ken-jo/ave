@@ -96,8 +96,6 @@ describe("registerWindowEventListeners", () => {
       "getLastThemePayload",
       "registerIpcHandlers",
       "registerWindowEventListeners",
-      "unregisterPluginWebview",
-      "validatePluginFrame",
       "validateSender",
     ]);
   });

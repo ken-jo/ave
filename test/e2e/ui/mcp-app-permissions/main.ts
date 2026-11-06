@@ -1,6 +1,6 @@
 // Use production protocol, policy and relay modules for permission probes.
 import { app, BrowserWindow, protocol } from "electron";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,10 @@ import type { McpUiResourcePermissions } from "../../../../src/mcp/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-perm-server";
+const outputArgument = process.argv.find((argument) => argument.startsWith("--probe-output="))?.slice("--probe-output=".length);
+if (!outputArgument) throw new Error("Permission probe output directory is required");
+const outputDirectory = outputArgument;
+mkdirSync(outputDirectory, { recursive: true });
 
 // Declarations are inputs; probes determine which capabilities the host actually honors.
 const ALL_FOUR: McpUiResourcePermissions = {
@@ -120,7 +124,7 @@ async function runCard(
   await done;
   await reportFrame(win, card.label);
   const screenshot = await win.webContents.capturePage();
-  writeFileSync(join(HERE, `mcp-app-permissions-${card.label}.png`), screenshot.toPNG());
+  writeFileSync(join(outputDirectory, `mcp-app-permissions-${card.label}.png`), screenshot.toPNG());
   win.destroy();
 }
 

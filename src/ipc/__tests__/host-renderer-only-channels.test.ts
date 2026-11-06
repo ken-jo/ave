@@ -1,35 +1,15 @@
 /**
- * The plugin UI shell is a `file://` frame, so the base sender validator admits
- * it. That validator is the protocol allow-list, not a trust decision: the only
- * IPC a plugin is meant to reach is the `pluginBridge.*` bridge, which has its
- * own validator. Every other host channel therefore takes
- * `validateHostRendererSender`, which rejects the shell.
+ * Host-only channels reject isolated app-resource origins and admit host renderer frames.
+ * Each channel is driven from both to ensure a guard that refuses everyone cannot pass.
  *
- * The narrow `window.avePlugin` preload is not what enforces this — it only
- * shapes what plugin authors can call. A compromised plugin renderer holds
- * `ipcRenderer` itself and can invoke any channel name, so the main-side frame
- * check is the only thing that holds.
- *
- * Each channel in the table is driven from BOTH frames, and what the table
- * asserts is the guard's reject branch: an `ipc-guard` audit row appears for
- * the plugin shell and does not appear for the host renderer. Driving only the
- * plugin direction would stay green if a channel started refusing everyone.
- *
- * The audit row is the table's observable because the rejection sentinels
- * differ per handler (some return `UNAUTHORIZED_FRAME`, some a domain-shaped
- * empty result, some nothing at all) while `auditUnauthorized` is one shared
- * call site. It is a proxy, and worth naming as one: it shows the guard took
- * its reject branch, not that the handler returned nothing afterwards. A
- * handler that audited and then answered anyway would keep the table green.
- *
- * `ave:app:info` is additionally asserted by return value at the bottom of
- * this file, where "refused" means the caller got `UNAUTHORIZED_FRAME` and none
- * of the host fields.
+ * The shared ipc-guard audit row records the reject branch because refusal results differ
+ * between handlers. A separate return-value assertion for ave:app:info also checks that a
+ * refused caller receives no host fields.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
 import type { IpcMainInvokeEvent } from "electron";
-import { hostFrameEvent, pluginShellFrameEvent } from "../../__tests__/test-helpers.js";
+import { hostFrameEvent, isolatedAppFrameEvent } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
 
 const { CHANNELS } = await import("../../contract/app-contract.js");
@@ -277,7 +257,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.llm.getModelCatalog, []],
   // The preflight override is a developer switch over host behaviour.
   ["dev", CHANNELS.dev.getPreflightStatus, []],
-  // Window controls act on the host BrowserWindow the shell is embedded in.
+  // Window controls belong to the registered host BrowserWindow.
   ["window", CHANNELS.window.minimize, []],
   ["window", CHANNELS.window.openHtmlPreview, [{ html: "<p>x</p>" }]],
   // The update scheduler's status and *Check now* (design §18.9): a check syncs every source.
@@ -374,10 +354,10 @@ beforeEach(async () => {
 
 describe("host-renderer-only IPC channels", () => {
   it.each(HOST_ONLY_CHANNELS.filter(([domain]) => domain === "preview"))(
-    "%s %s refuses a file-backed webview and an app-window subframe",
+    "%s %s refuses an app-resource webview and an app-window subframe",
     async (_domain, channel, args) => {
       const webview = registeredHostEvent();
-      Object.assign(webview.senderFrame!, { url: "file:///plugins/plugin-ui-shell.js" });
+      Object.assign(webview.senderFrame!, { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" });
       Object.assign(webview.sender, { getType: () => "webview", session: {} });
       expect(await invoke(channel, webview, args)).toMatchObject({ ok: false, error: "unauthorized" });
       const subframe = registeredHostEvent();
@@ -386,8 +366,8 @@ describe("host-renderer-only IPC channels", () => {
       expect(guardRowsFor(channel)).toHaveLength(2);
     },
   );
-  it.each(HOST_ONLY_CHANNELS)("%s %s refuses a plugin shell frame", async (_domain, channel, args) => {
-    await invoke(channel, pluginShellFrameEvent(), args);
+  it.each(HOST_ONLY_CHANNELS)("%s %s refuses an isolated app-resource frame", async (_domain, channel, args) => {
+    await invoke(channel, isolatedAppFrameEvent(), args);
     expect(guardRowsFor(channel).length).toBeGreaterThan(0);
     if (channel === CHANNELS.workspace.searchFiles) {
       expect(searchWorkspaceFiles).not.toHaveBeenCalled();
@@ -410,8 +390,8 @@ describe("host-renderer-only IPC channels", () => {
 describe("side-chat child transcript sender refusal", () => {
   const request = { originSessionId: "test-session", childSessionId: "child-session" };
 
-  it("returns unauthorized-frame to a plugin shell before checking side-chat availability", async () => {
-    const result = await invoke(CHANNELS.sidechat.getSubAgentTranscript, pluginShellFrameEvent(), [request]);
+  it("returns unauthorized-frame to an isolated app-resource frame before checking side-chat availability", async () => {
+    const result = await invoke(CHANNELS.sidechat.getSubAgentTranscript, isolatedAppFrameEvent(), [request]);
 
     expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(guardRowsFor(CHANNELS.sidechat.getSubAgentTranscript)).toHaveLength(1);
@@ -428,8 +408,8 @@ describe("side-chat child transcript sender refusal", () => {
 describe("document observation sender refusal", () => {
   const request = { action: "rendered", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", seq: 0 };
 
-  it("returns unauthorized to a plugin shell before consuming an observation identity", async () => {
-    expect(await invoke(CHANNELS.preview.observationAck, pluginShellFrameEvent(), [request]))
+  it("returns unauthorized to an app-resource frame before consuming an observation identity", async () => {
+    expect(await invoke(CHANNELS.preview.observationAck, isolatedAppFrameEvent(), [request]))
       .toEqual({ ok: false, error: "unauthorized" });
     expect(guardRowsFor(CHANNELS.preview.observationAck)).toHaveLength(1);
   });
@@ -449,11 +429,11 @@ describe("document observation sender refusal", () => {
     expect(guardRowsFor(CHANNELS.preview.observationAck)).toEqual([]);
   });
 
-  it("refuses a webview after navigation between the shell assets", async () => {
+  it("refuses an app webview after navigation within its origin", async () => {
     const event = registeredHostEvent();
     Object.assign(event.sender, { getType: () => "webview", session: {} });
     for (const extension of ["html", "js"]) {
-      Object.assign(event.senderFrame!, { url: `file:///plugins/plugin-ui-shell.${extension}` });
+      Object.assign(event.senderFrame!, { url: `ave-mcp-app://s-66697874757265/${extension}?t=fixture` });
       expect(await invoke(CHANNELS.preview.observationAck, event, [request]))
         .toEqual({ ok: false, error: "unauthorized" });
     }
@@ -465,9 +445,9 @@ describe("document observation sender refusal", () => {
     expect(handleMap.has(CHANNELS.preview.observationPreviewFrames)).toBe(false);
   });
 
-  it("refuses a browser preview request from a plugin shell and an unissued preview target from the host", async () => {
+  it("refuses a browser preview request from an isolated app-resource frame and an unissued preview target from the host", async () => {
     const preview = { action: "start", targetId: "11111111-1111-4111-8111-111111111111", sessionId: "session", tabId: "tab-1", frame: 0 };
-    expect(await invoke(CHANNELS.preview.observationPreview, pluginShellFrameEvent(), [preview]))
+    expect(await invoke(CHANNELS.preview.observationPreview, isolatedAppFrameEvent(), [preview]))
       .toEqual({ ok: false, error: "unauthorized" });
     expect(guardRowsFor(CHANNELS.preview.observationPreview)).toHaveLength(1);
     expect(await invoke(CHANNELS.preview.observationPreview, registeredHostEvent(), [preview]))
@@ -486,8 +466,8 @@ describe("document observation sender refusal", () => {
  * is the one channel where the refusal itself is pinned.
  */
 describe("ave:app:info — refusal by returned value, not only by audit row", () => {
-  it("answers a plugin shell frame with UNAUTHORIZED_FRAME and no host fields", async () => {
-    const result = await invoke(CHANNELS.app.info, pluginShellFrameEvent(), []);
+  it("answers an isolated app-resource frame frame with UNAUTHORIZED_FRAME and no host fields", async () => {
+    const result = await invoke(CHANNELS.app.info, isolatedAppFrameEvent(), []);
     expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(Object.keys(result as Record<string, unknown>)).toEqual(["ok", "error"]);
   });

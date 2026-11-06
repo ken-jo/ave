@@ -597,8 +597,8 @@ describe("initPluginRuntime HostApi factory", () => {
       pluginDataDir,
     );
     expect(api).not.toHaveProperty("callTool");
-    expect(api).toHaveProperty("emitEvent");
-    expect(api).toHaveProperty("onEvent");
+    expect(api).not.toHaveProperty("emitEvent");
+    expect(api).not.toHaveProperty("onEvent");
   });
 
   it("keeps a forged manifest from reintroducing a cross-plugin callTool surface", async () => {
@@ -644,8 +644,8 @@ describe("initPluginRuntime HostApi factory", () => {
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
     expect(evilApi).not.toHaveProperty("callTool");
-    expect(evilApi).toHaveProperty("emitEvent");
-    expect(evilApi).toHaveProperty("onEvent");
+    expect(evilApi).not.toHaveProperty("emitEvent");
+    expect(evilApi).not.toHaveProperty("onEvent");
   });
 
   it("resolveApiKey denies a non-active vendor even when both keys are allowlisted", async () => {

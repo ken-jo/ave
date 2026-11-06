@@ -645,8 +645,7 @@ export const CHANNELS = {
   // user-chosen file — it must never be reachable from an external origin
   // (local-api / cli / plugin frame). The fail-closed default
   // (isPublicChannel === false) enforces that; each invoke additionally gates
-  // on validateHostRendererSender so a plugin-ui-shell frame cannot reach them
-  // either.
+  // on validateHostRendererSender to refuse app-resource and remote frames.
   diagnostics: {
     export: "ave:diagnostics:export", // invoke renderer→main → { ok, path } | { ok:false, error }
     crashList: "ave:diagnostics:crash-list", // invoke → crash-dump metadata list
@@ -752,8 +751,8 @@ export const CHANNELS = {
   // EXTERNAL_MUTATION_CHANNELS. A terminal spawns arbitrary user commands, so
   // it must be unreachable from any external origin (local-api / cli / plugin
   // frame) — the fail-closed default (isPublicChannel === false) enforces that.
-  // Each invoke handler additionally gates on validateHostRendererSender so a
-  // plugin-ui-shell frame cannot reach them either. data/exit are main→renderer
+  // Each invoke handler additionally gates on validateHostRendererSender to refuse
+  // app-resource and remote frames. data/exit are main→renderer
   // events sent via safe-send/sendToWindow.
   terminal: {
     spawn: "ave:terminal:spawn", // invoke renderer→main → { ok, tabId } | { ok:false, reason }

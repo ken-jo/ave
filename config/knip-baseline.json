@@ -150,11 +150,6 @@
     {
       "type": "exports",
       "file": "src/ipc/index.ts",
-      "name": "validatePluginFrame"
-    },
-    {
-      "type": "exports",
-      "file": "src/ipc/index.ts",
       "name": "validateSender"
     },
     {

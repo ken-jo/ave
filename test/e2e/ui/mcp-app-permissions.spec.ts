@@ -50,8 +50,8 @@ test.beforeAll(async () => {
 
 test.setTimeout(180_000);
 
-test("MCP-App permissions: what the host can actually deliver, measured in a real <webview>", async () => {
-  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox"], timeout: 30_000 });
+test("MCP-App permissions: what the host can actually deliver, measured in a real <webview>", async ({}, testInfo) => {
+  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox", `--probe-output=${testInfo.outputPath("permissions")}`], timeout: 30_000 });
 
   const lines: string[] = [];
   app.process().stdout?.on("data", (d: Buffer) => {

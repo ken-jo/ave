@@ -5,7 +5,7 @@ useConfigurationOwner();
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS, CHANNEL_GESTURE, isPublicChannel } from "../../../contract/app-contract.js";
-import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
+import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-helpers.js";
 import { beginAppUpdateInstallRequest, clearAppUpdateInstallRequested } from "../../../main/app-update-install-intent.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import { registerAppHandlers } from "../app.js";
@@ -447,7 +447,7 @@ describe("app relaunch boundary", () => {
   });
 
   it("audits and refuses a plugin frame before considering consent", () => {
-    expect(invoke(pluginShellFrameEvent())).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(invoke(isolatedAppFrameEvent())).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "ipc-guard", input: expect.stringContaining(CHANNELS.app.relaunch) }));
     expect(relaunchApp).not.toHaveBeenCalled();
   });

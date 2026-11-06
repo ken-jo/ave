@@ -1,7 +1,6 @@
 import type { IpcMainInvokeEvent } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { redactFsPath } from "../audit/dlp-filter.js";
-import { isPluginShellFrameUrl } from "../shared/plugin-shell-frame.js";
 
 // Accept only trusted packaged or local-dev frames; missing frames fail closed after navigation or destruction.
 export function validateSender(event: IpcMainInvokeEvent | null | undefined): boolean {
@@ -19,13 +18,9 @@ export function validateSender(event: IpcMainInvokeEvent | null | undefined): bo
   }
 }
 
-// Reject plugin shells explicitly; a narrow preload cannot stop raw IPC against host channels.
+// Host controls share the protocol and frame-presence boundary; app resources have a separate per-server origin.
 export function validateHostRendererSender(event: IpcMainInvokeEvent | null | undefined): boolean {
-  // The shared sender guard validates protocol and frame presence; this check additionally rejects plugin shells.
-  if (!validateSender(event)) return false;
-  const rawUrl = event?.senderFrame?.url ?? "";
-  if (!rawUrl) return false;
-  return !isPluginShellFrameUrl(rawUrl);
+  return validateSender(event);
 }
 
 export const UNAUTHORIZED_FRAME = { ok: false, error: "unauthorized-frame" as const };
@@ -45,11 +40,4 @@ export function auditUnauthorized(
       frameUrl: redactFsPath(event?.senderFrame?.url ?? ""),
     }),
   });
-}
-
-// Plugin calls require a live frame loaded from the plugin shell; missing frames fail closed.
-export function validatePluginFrame(event: IpcMainInvokeEvent | null | undefined): boolean {
-  const frame = event?.senderFrame;
-  if (!frame) return false;
-  return isPluginShellFrameUrl(frame.url ?? "");
 }

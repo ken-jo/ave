@@ -416,9 +416,9 @@ export interface Tool {
   icons?: Array<{ src: string; mimeType?: string; sizes?: string }>;
   /**
    * Surface visibility + Ave restriction metadata. Recognized keys: the
-   * standard `ui` visibility block, `ave/pathFields`, and the signed
-   * `ave/operationPolicy`. Any other key — including the removed legacy reverse-DNS
-   * spelling of `ave/pathFields` — is rejected by the manifest schema (fail-closed). @optional
+   * standard `ui` visibility block, `ai.agent-connector.ave/pathFields`, and the signed
+   * `ai.agent-connector.ave/operationPolicy`. Any other key, including the removed
+   * `ave/*` spelling, is rejected by the manifest schema (fail-closed). @optional
    */
   _meta?: {
     /** SEP-1865 surface visibility. @optional */

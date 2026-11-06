@@ -24,7 +24,7 @@ import {
   isAppUpdateInstallRequested,
   markAppUpdateInstallPrepared,
 } from "./main/app-update-install-intent.js";
-import { distRoot, projectRoot } from "./main/main-paths.js";
+import { projectRoot } from "./main/main-paths.js";
 import { applyRuntimeAppIcon, runEarlyBootEnv } from "./main/early-boot-env.js";
 import { defaultAveHome } from "./shared/ave-home.js";
 import { ensureCorporateCaInjected } from "./main/corp-ca-runtime.js";
@@ -676,7 +676,6 @@ app.on("web-contents-created", (_event, contents) => {
     if (shouldBlockGlobalWebviewNavigation({
       url,
       currentUrl,
-      distRoot,
       authOwned: isAuthOwned(contents),
       linkOwned: isLinkOwned(contents),
     })) {

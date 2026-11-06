@@ -684,12 +684,12 @@ describe("read-only observation sender boundary", () => {
     event.sender.emit("destroyed");
   });
 
-  it.each(["plugin-ui-shell.html", "plugin-ui-shell.js"])("refuses a navigated webview at %s for reads and observation", async (asset) => {
+  it.each(["untrusted-frame.html", "untrusted-frame.js"])("refuses a navigated webview at %s for reads and observation", async (asset) => {
     const owner = documentEvent(OK_FRAME);
     const binding = await observedPreview(owner);
     const plugin = documentEvent(`file:///app/${asset}`, 42);
     Object.assign(plugin.sender, { getType: () => "webview", session: {} });
-    if (asset.endsWith(".js")) expect(validateHostRendererSender(plugin as never)).toBe(true);
+    expect(validateHostRendererSender(plugin as never)).toBe(true);
     expect(await readFromSender(plugin, join(root, "data", "book.xlsx"), 0, "session-one"))
       .toMatchObject({ ok: false, error: "unauthorized" });
     expect(await handlers.get(CHANNELS.preview.readFile)!(plugin, join(root, "notes.txt"), { sessionId: "session-one" }))

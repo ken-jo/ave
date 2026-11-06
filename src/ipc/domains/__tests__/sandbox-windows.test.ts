@@ -170,7 +170,7 @@ describe("extension isolation session approval", () => {
       extraPrincipals: [{ sid: "S-1-5-18" }] });
     return path;
   }
-  it.each([undefined, foreignFrameEvent("https://evil.example"), foreignFrameEvent("file:///app/plugin-ui-shell.html")])("rejects an untrusted sender %j", async (event) => {
+  it.each([undefined, foreignFrameEvent("https://evil.example"), foreignFrameEvent("ave-mcp-app://s-66697874757265/proxy.html?t=fixture")])("rejects an untrusted sender %j", async (event) => {
     failPrivacy(); await setup();
     expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, event, { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
     expect(areExtensionsWithoutIsolationApproved()).toBe(false);

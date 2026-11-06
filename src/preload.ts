@@ -1,6 +1,5 @@
 // Named imports — esbuild bundles these as direct property access on the CJS
-// module (no `__toESM` wrapper, no `.default` indirection). Aligned with
-// plugin-preload.ts for the same reason: Electron 41 sandboxed webview preload
+// module (no `__toESM` wrapper, no `.default` indirection). Sandboxed preload
 // contexts fail silently when the bundled output goes through
 // `__toESM(require("electron"), 1).default.contextBridge`.
 import { contextBridge } from "electron";

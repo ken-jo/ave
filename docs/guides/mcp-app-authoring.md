@@ -235,11 +235,22 @@ reset such as `{ cursor: "57", reset: true, snapshot: { status: "done" } }`.
 The cursor and change/reset payloads are your tool's contract, not a new host
 protocol; validate them and scope each stream to the authorized account.
 
-Enforce the wait bound on the server and resolve outstanding waits when it stops. The bound must fit within the host's tool-call ceiling.
-Keep one request outstanding per view and repeat through
-`app.callServerTool()` after applying each response. Stop scheduling requests
-when the view is disposed; handle cancellation and errors without a busy loop.
-Do not invent vendor notifications from the plugin into its view.
+Enforce the wait bound on the server and resolve outstanding waits when it stops. The host's tool execution ceiling is **120,000 ms (120 seconds)**. External MCP tool requests default to **60,000 ms (60 seconds)** and are capped at 120,000 ms; the source of these values is [`TOOL_TIMEOUT_POLICY`](../../src/shared/tool-timeout-policy.ts). Keep the server's `waitMs` comfortably below the applicable timeout; the example's 10,000 ms cap fits both.
+
+Keep one request outstanding per view and repeat through `app.callServerTool()` after applying each response. On view unmount, stop scheduling requests and cancel the in-flight request when the transport supports cancellation. The installed app client accepts an `AbortSignal`:
+
+```ts
+const controller = new AbortController();
+const pending = app.callServerTool(
+  { name: "my_plugin_wait_changes", arguments: { cursor, waitMs: 10000 } },
+  { signal: controller.signal },
+);
+// Run during view cleanup, then dispose the app connection.
+controller.abort();
+await pending.catch(() => undefined);
+```
+
+The current host app bridge does not forward request cancellation to an executing backend tool. Other transports may support it. In that case, the server-enforced `waitMs` cap bounds the remaining in-flight wait; unmounting must still stop retries. Handle cancellation and errors without a busy loop. Do not invent vendor notifications from the plugin into its view.
 
 Authentication changes invalidate the host's view instance: the host remounts
 it, and its new instance reloads state through its own tools. Theme and locale
@@ -267,7 +278,7 @@ expose a narrow declared tool when a view needs one of those operations.
 
 ## 5. Test it
 
-- The host renders your card in a sandboxed webview whose inner frame is `sandbox="allow-scripts"` only — **no same-origin, no storage, no cookies**. `localStorage`/`sessionStorage` throw. Keep state in the app, or push it to your plugin with a tool call.
+- The host renders your card in a sandboxed webview whose inner frame uses `sandbox="allow-scripts allow-same-origin"`. The frame shares the host-owned proxy's **per-server origin**, not the main app's origin or another server's origin. The webview partition is ephemeral; storage and cookies, when available, stay within that server's partition. Node integration is disabled and the isolated relay exposes no host globals to the app. Keep durable state server-side through declared tools.
 - Your card's network access is exactly `csp.connectDomains`. If a fetch fails silently, check the manifest before you check your code.
 - Nothing in the card can inject a CSP or a sandbox attribute — those are host-computed and host-owned. If you need a domain, declare it.
 

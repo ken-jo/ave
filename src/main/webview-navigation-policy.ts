@@ -3,7 +3,6 @@ import { MCP_APP_SCHEME } from "../shared/mcp-app-partition.js";
 export interface GlobalWebviewNavigationDecisionInput {
   url: string;
   currentUrl: string;
-  distRoot: string;
   authOwned: boolean;
   linkOwned: boolean;
 }

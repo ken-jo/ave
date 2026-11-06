@@ -280,7 +280,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   emitRoutineFired: (r: unknown) => void;
   /** The spinner a routine shows while it runs, before its result replaces it. */
   emitRoutineRunningStarted: (p: unknown) => void;
-  emitPluginEvent: (eventType: string, payload: unknown) => void;
   emitWorkBoardItemChanged: (p: unknown) => void;
   /** `settingsTab` mirrors the main process's `ave:view:activate` payload for settings opens. */
   emitViewActivate: (v: string, settingsTab?: string) => void;
@@ -372,7 +371,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const overlayDismissHandlers = new Set<(id: string) => void>();
   const routineFiredHandlers = new Set<(r: unknown) => void>();
   const routineRunningHandlers = new Set<(p: unknown) => void>();
-  const pluginEventHandlers = new Map<string, Set<(p: unknown) => void>>();
   const workBoardItemChangedHandlers = new Set<(p: unknown) => void>();
   const viewHandlers = new Set<(v: string, settingsTab?: string) => void>();
   const settingsUpdatedHandlers = new Set<(settings: unknown) => void>();
@@ -785,15 +783,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       ok: false,
       error: "production-disabled",
     })),
-    onPluginEvent: vi.fn((eventType: string, handler: (p: unknown) => void) => {
-      let set = pluginEventHandlers.get(eventType);
-      if (!set) {
-        set = new Set();
-        pluginEventHandlers.set(eventType, set);
-      }
-      set.add(handler);
-      return () => set!.delete(handler);
-    }),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     window: {
       openHtmlPreview: vi.fn(async () => ({ ok: true, windowId: 2 })),
@@ -998,8 +987,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     emitOverlayDismiss: (id) => overlayDismissHandlers.forEach((h) => h(id)),
     emitRoutineFired: (r) => routineFiredHandlers.forEach((h) => h(r)),
     emitRoutineRunningStarted: (p) => routineRunningHandlers.forEach((h) => h(p)),
-    emitPluginEvent: (eventType, payload) =>
-      pluginEventHandlers.get(eventType)?.forEach((h) => h(payload)),
     emitWorkBoardItemChanged: (p) => workBoardItemChangedHandlers.forEach((h) => h(p)),
     emitViewActivate: (v, settingsTab) => viewHandlers.forEach((h) => h(v, settingsTab)),
     emitAskUserQuestion: (r) => askUserQuestionHandlers.forEach((h) => h(r)),

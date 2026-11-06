@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
-import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
+import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-helpers.js";
 import { ALERTS } from "../../../shared/ipc-channels.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
@@ -77,7 +77,7 @@ describe("alerts IPC", () => {
   ])("refuses a plugin frame before reaching the service on %s", async (channel, args) => {
     const reached = vi.fn();
     register({ listKinds: reached, listOpen: reached, setKind: reached, setOsNotificationsEnabled: reached, cardClosed: reached });
-    expect(await handlers.get(channel)!(pluginShellFrameEvent(), ...args)).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(await handlers.get(channel)!(isolatedAppFrameEvent(), ...args)).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(reached).not.toHaveBeenCalled();
   });
 

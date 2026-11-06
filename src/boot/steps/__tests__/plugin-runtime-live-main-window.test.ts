@@ -532,16 +532,10 @@ describe("hostApi.raiseAlert and host theme events", () => {
     await expect(api.raiseAlert({ kind: "reply", key: "mail-1" })).rejects.toThrow(/alerts service is not constructed/);
   });
 
-  it("delivers host theme changes without plugin alert bus delivery", async () => {
+  it("does not expose the removed view event API", async () => {
     const api = await overlayHostApi({ bootWindow: null, pluginId: "fixturemail" });
-    const heard: unknown[] = [];
-    const unsubscribe = api.onEvent("host.theme.changed", (data) => { heard.push(data); });
-    emitEvent("alert.raised", { pluginId: "otherfixture", kind: "reply", alertId: "x" });
-    emitEvent("alert.raised", { pluginId: "fixturemail", kind: "reply", alertId: "z" });
-    expect(heard).toEqual([]);
-    emitEvent("host.theme.changed", { theme: "dark" });
-    expect(heard).toEqual([{ theme: "dark" }]);
-    unsubscribe();
+    expect(api).not.toHaveProperty("onEvent");
+    expect(api).not.toHaveProperty("emitEvent");
   });
 });
 

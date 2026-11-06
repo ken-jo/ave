@@ -26,7 +26,7 @@ const HOST_EVENT = {
   senderFrame: { url: "file:///Applications/Ave.app/dist/src/index.html" },
 } as unknown as IpcMainInvokeEvent;
 const PLUGIN_EVENT = {
-  senderFrame: { url: "file:///Applications/Ave.app/dist/src/plugin-ui-shell.html" },
+  senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" },
 } as unknown as IpcMainInvokeEvent;
 const REMOTE_EVENT = {
   senderFrame: { url: "https://evil.example.com/" },

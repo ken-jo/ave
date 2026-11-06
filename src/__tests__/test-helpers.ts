@@ -33,8 +33,8 @@ export function sentApprovalCards<T>(
 
 export const HOST_FRAME_URL = "file:///Applications/Ave.app/dist/index.html";
 
-export const PLUGIN_SHELL_FRAME_URL =
-  "file:///Applications/Ave.app/dist/plugin-ui-shell.html";
+export const ISOLATED_APP_FRAME_URL =
+  "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
 
 /** Trusted IPC events require a valid host frame; missing frames must fail closed. */
 export function hostFrameEvent(): IpcMainInvokeEvent {
@@ -52,9 +52,9 @@ export function untrustedEvent(): IpcMainInvokeEvent {
   return foreignFrameEvent("https://evil.example.com/");
 }
 
-/** Plugin-shell file frames must not gain host-channel authority. */
-export function pluginShellFrameEvent(): IpcMainInvokeEvent {
-  return foreignFrameEvent(PLUGIN_SHELL_FRAME_URL);
+/** Isolated app-resource frames must not gain host-channel authority. */
+export function isolatedAppFrameEvent(): IpcMainInvokeEvent {
+  return foreignFrameEvent(ISOLATED_APP_FRAME_URL);
 }
 
 /** A destroyed or navigated-away sender frame must be refused. */

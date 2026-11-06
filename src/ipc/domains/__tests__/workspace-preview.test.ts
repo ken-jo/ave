@@ -4,7 +4,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { PLUGIN_SHELL_FRAME_URL } from "../../../__tests__/test-helpers.js";
+import { ISOLATED_APP_FRAME_URL } from "../../../__tests__/test-helpers.js";
 
 const {
   handlers,
@@ -125,7 +125,7 @@ function invokeFrom(senderId: number, channel: string, url: string, ...args: unk
 
 const OK_FRAME = "file:///app/index.html";
 const EVIL_FRAME = "https://evil.example.com/x";
-const PLUGIN_SHELL_FRAME = PLUGIN_SHELL_FRAME_URL;
+const PLUGIN_SHELL_FRAME = ISOLATED_APP_FRAME_URL;
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
 let root: string;
@@ -1888,7 +1888,7 @@ describe("workspace:drop-prepare handler (#1458 drag-drop add-root)", () => {
 });
 
 // Root mutation and shell access require the host-renderer guard, not the base file-frame check.
-describe("workspace channels refuse a plugin-ui-shell frame", () => {
+describe("workspace channels refuse a isolated app-resource frame", () => {
   it("pickRoot refuses", async () => {
     const res = (await invoke(CHANNELS.workspace.pickRoot, PLUGIN_SHELL_FRAME)) as {
       ok: boolean;

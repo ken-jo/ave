@@ -12,7 +12,6 @@ export {
   validateSender,
   UNAUTHORIZED_FRAME,
   auditUnauthorized,
-  validatePluginFrame,
 } from "./ipc/gated.js";
 
 export {
