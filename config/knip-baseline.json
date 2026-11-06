@@ -890,16 +890,6 @@
     {
       "type": "types",
       "file": "src/shared/plugin-ui-tokens.ts",
-      "name": "AveThemePayload"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/plugin-ui-tokens.ts",
-      "name": "AveThemeTokens"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/plugin-ui-tokens.ts",
       "name": "AveTokenMap"
     },
     {

@@ -8,6 +8,6 @@ export interface DockAppearance {
   terminalFontFamily: string;
   /** The user's UI font (family and size scale), applied to the dock root exactly as the main window applies it. */
   font: AppearanceSettings["font"];
-  /** Main's process-local UI locale: the user's language as boot and the settings domain resolved and loaded it. */
+  /** The user's language as main resolved it, limited to a built-in catalog the dock can render (see `dockLocale` in floating-dock-surface.ts). */
   locale: Locale;
 }

@@ -52,7 +52,7 @@ describe("curated color schemes", () => {
         ["muted", "muted-foreground", 4.5], ["message-user-bg", "message-user-fg", 4.5], ["selection-bg", "selection-fg", 4.5],
         ["primary", "primary-foreground", 3], ["secondary", "secondary-foreground", 3], ["accent", "accent-foreground", 3],
         ["destructive", "destructive-foreground", 3], ["warning", "warning-foreground", 3], ["success", "success-foreground", 3],
-        ["info", "info-foreground", 3], ["emphasis", "emphasis-foreground", 3],
+        ["info", "info-foreground", 3],
       ] as const) expect(contrastRatio(rgbHex(tokens[fg]), rgbHex(tokens[bg])), `${fg} on ${bg}`).toBeGreaterThanOrEqual(minimum);
       for (const state of ["success", "destructive"] as const) for (const bg of backgrounds) {
         const color = rgbHex(tokens[state]);

@@ -100,7 +100,8 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     })).toBe('Standard app ready');
     const dock = app.windows().find((window) => window.url().includes('floating-dock-window.html'));
     if (!dock) throw new Error('Dock window not found');
-    const applied = await dock.evaluate(() => ({ background: document.documentElement.style.getPropertyValue('--dock-bg') }));
+    // The host chrome paints from the same scheme tokens as the cards.
+    const applied = await dock.evaluate(() => ({ background: getComputedStyle(document.getElementById('dock')!).backgroundColor }));
     // The card chrome is Tailwind: without the app stylesheet its title and sandbox badge run together as bare text.
     const chrome = await dock.evaluate(() => {
       const sheet = [...document.styleSheets].find((candidate) => candidate.href?.endsWith('/styles.css'));
@@ -166,7 +167,7 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     expect(evidence.sends.length).toBeGreaterThan(0);
     expect(evidence.sends.every((send) => send.theme.bundleId === 'nord' && send.cache?.bundleId === 'nord')).toBe(true);
     const tokens = evidence.samples[0].cache!.tokens;
-    expect(applied.background).toBe(tokens['--ave-bg']);
+    expect(applied.background).toBe(chrome.schemeBackground);
     expect(contexts.length).toBeGreaterThan(0);
     for (const context of contexts) {
       expect(context.theme).toBe('dark');
@@ -184,12 +185,13 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
       const scheme = getComputedStyle(probe).backgroundColor;
       probe.remove();
       const card = document.querySelector('.slot .rounded.border');
-      return { shell: document.documentElement.getAttribute('data-shell'), card: card ? getComputedStyle(card).backgroundColor : null, scheme };
+      return { shell: document.documentElement.getAttribute('data-shell'), card: card ? getComputedStyle(card).backgroundColor : null, dock: getComputedStyle(document.getElementById('dock')!).backgroundColor, scheme };
     });
     writeFileSync(testInfo.outputPath('dock-light-card.json'), JSON.stringify(lightCard, null, 2));
     expect(lightCard.shell).toBe('light');
     expect(lightCard.card).toBe(lightCard.scheme);
     expect(lightCard.card).not.toBe(chrome.cardBackground);
+    expect(lightCard.dock).toBe(lightCard.scheme);
     await dock.screenshot({ path: testInfo.outputPath('dock-light.png') });
     // Language: the dock follows the saved language — its badge and the app's host context both switch to Korean. Host context
     // updates carry only the fields that changed, so the latest one naming a locale is the app's current locale.

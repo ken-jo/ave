@@ -184,8 +184,6 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
   ["--ave-danger", "--color-ring-danger"],
   ["--ave-success", "--color-ring-success"],
   ["--ave-warning", "--color-ring-warning"],
-  // A configured font overrides the host stack below.
-  ["--ave-font-family", "--font-sans"],
 ];
 
 const STATIC_STYLE_SOURCES = {

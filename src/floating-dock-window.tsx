@@ -76,15 +76,10 @@ dock.onTheme((value) => {
   const scheme = requireScheme(theme.bundleId);
   if (!isLocale(language)) throw new Error(`Unknown dock locale: ${JSON.stringify(language)}`);
   appearance = { ...theme, terminalFontFamily };
-  // The cards' stylesheet tokens and rem scale follow the same snapshot as the dock chrome and HostAppearance.
+  // The dock chrome, the cards' stylesheet tokens and the rem scale all follow this one snapshot, as does HostAppearance.
   applySchemeColors(scheme, document);
   applyUiFont(font, document);
   applyLocale(language);
-  const pick = { "--dock-fg": "--ave-fg", "--dock-bg": "--ave-bg-elevated", "--dock-border": "--ave-border", "--dock-accent": "--ave-accent" };
-  for (const [name, key] of Object.entries(pick)) {
-    const token = theme.tokens[key] ?? (key === "--ave-bg-elevated" ? theme.tokens["--ave-bg"] : undefined);
-    if (token) document.documentElement.style.setProperty(name, token);
-  }
 });
 dock.onMount((value) => {
   const slot = value as { panelId: string; title: string; payload: McpUiPayload; authStatusTool?: string; height: number };
