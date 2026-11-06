@@ -165,7 +165,7 @@ function writePluginModule(): { dir: string; entryPath: string } {
     entryPath,
     `export const createPlugin = async (context) => {
   const seen = [];
-  context.hostApi.onEvent("host:ping", (data) => seen.push(data));
+  context.hostApi.config.onChange("ping", (data) => seen.push(data));
   return {
     handlers: {
       pilot_echo: async (payload) => ({
@@ -177,7 +177,7 @@ function writePluginModule(): { dir: string; entryPath: string } {
       pilot_reach_host: async () => await context.hostApi.callLlm("say hello"),
       pilot_throw: async () => { throw new Error("the handler exploded"); },
     },
-    start: async () => { context.hostApi.emitEvent("sampleassistant.lifecycle.started", { ok: true }); },
+    start: async () => undefined,
     stop: async () => undefined,
   };
 };
@@ -188,18 +188,14 @@ function writePluginModule(): { dir: string; entryPath: string } {
 }
 
 function fakeHostApi(): PluginHostApi & {
-  emitted: Array<[string, unknown]>;
   logged: Array<[string, string]>;
   setHostConfig: (key: string, value: unknown) => void;
 } {
-  const emitted: Array<[string, unknown]> = [];
   const logged: Array<[string, string]> = [];
-  const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
   // The fixture bus must notify wildcard snapshot watchers as the real change bus does.
   const configValues = new Map<string, unknown>([["domains", ["portal.example.com"]]]);
   const configListeners = new Map<string, Set<(value: unknown) => void>>();
   const hostApi = {
-    emitted,
     logged,
     storage: {
       resolve: (...segments: string[]) => segments.join("/"),
@@ -237,18 +233,6 @@ function fakeHostApi(): PluginHostApi & {
     hasRoutineBySource: vi.fn(async () => false),
     probePrivateHost: vi.fn(),
     resolveApiKey: vi.fn(),
-    emitEvent: vi.fn((type: string, data?: unknown) => {
-      emitted.push([type, data]);
-    }),
-    onEvent: vi.fn((type: string, handler: (data: unknown) => void) => {
-      let set = eventHandlers.get(type);
-      if (!set) {
-        set = new Set();
-        eventHandlers.set(type, set);
-      }
-      set.add(handler);
-      return () => set?.delete(handler);
-    }),
     callLlm: vi.fn(async () => "the host answered"),
     hostFetch: vi.fn(),
     spawnWorker: vi.fn(),
@@ -258,7 +242,6 @@ function fakeHostApi(): PluginHostApi & {
     clearAuthPartition: vi.fn(),
     triggerConversation: vi.fn(async () => ({ accepted: true })),
   } as unknown as PluginHostApi & {
-    emitted: Array<[string, unknown]>;
     logged: Array<[string, string]>;
     setHostConfig: (key: string, value: unknown) => void;
   };
@@ -375,7 +358,7 @@ describe("the pilot, out of process", () => {
       for (let index = 0; index < 220; index += 1) {
         paired.sendAsChild({
           jsonrpc: "2.0", id: `flood-${index}`,
-          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+          method: "ai.agent-connector.ave/host/hasRoutineBySource", params: { source: "nightly" },
         });
       }
       for (let turn = 0; turn < 10 && auditLog.mock.calls.length === 0; turn += 1) {
@@ -470,7 +453,6 @@ describe("the pilot, out of process", () => {
       });
       const instance = await factory(hostContext(hostApi));
       await instance.start?.();
-      expect(hostApi.emitted).toContainEqual(["sampleassistant.lifecycle.started", { ok: true }]);
       await instance.stop?.();
       expect(hostApi.logged).toEqual([]);
     } finally {
@@ -591,8 +573,8 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
     const { dir, entryPath } = writePluginModule();
     const hostApi = fakeHostApi();
     const unsubscribe = vi.fn();
-    (hostApi.onEvent as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-      () => unsubscribe,
+    vi.mocked(hostApi.config.onChange).mockImplementation(
+      (key: string) => key === "ping" ? unsubscribe : () => {},
     );
     const { child, kill } = pairedChild();
     try {
@@ -604,7 +586,7 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
       const instance = await factory(hostContext(hostApi));
       // Wait for factory-time subscriptions because their synchronous contract cannot await the round trip.
       await instance.handlers.pilot_echo!({});
-      expect(hostApi.onEvent).toHaveBeenCalledWith("host:ping", expect.any(Function));
+      expect(hostApi.config.onChange).toHaveBeenCalledWith("ping", expect.any(Function));
       expect(unsubscribe).not.toHaveBeenCalled();
 
       kill("child crashed");
@@ -677,7 +659,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
   const MODULE = `export const createPlugin = async (context) => {
   const refusal = (error) => ({ name: error.name, code: error.code ?? null });
   const seen = [];
-  context.hostApi.onEvent("board.changed", (data) => seen.push(data));
+  context.hostApi.config.onChange("board", (data) => seen.push(data));
   return {
     handlers: {
       events_seen: async () => ({ seen }),
@@ -726,8 +708,8 @@ describe("a message too large to frame fails its call, not the channel", () => {
     const hostApi = fakeHostApi();
     const { dir, instance, terminate } = await construct(hostApi);
     try {
-      await vi.waitFor(() => expect(hostApi.onEvent).toHaveBeenCalledWith("board.changed", expect.any(Function)));
-      const deliver = vi.mocked(hostApi.onEvent).mock.calls.find(([type]) => type === "board.changed")![1];
+      await vi.waitFor(() => expect(hostApi.config.onChange).toHaveBeenCalledWith("board", expect.any(Function)));
+      const deliver = vi.mocked(hostApi.config.onChange).mock.calls.find(([type]) => type === "board")![1];
       transportWarnings.length = 0;
       // Host bus listeners must not throw into the event emitter.
       expect(() => deliver({ blob: "x".repeat(46 * MiB) })).not.toThrow();
@@ -737,7 +719,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
       expect(transportWarnings).toHaveLength(1);
       expect(transportWarnings[0]![0]).toMatchObject({
         pluginId: PLUGIN_ID,
-        method: "notifications/ave/subscription",
+        method: "notifications/ai.agent-connector.ave/subscription",
         subscriptionId: expect.any(String),
         byteLength: expect.any(Number),
         limit: FRAME_BYTES_MAX,
@@ -1076,10 +1058,10 @@ describe("construct negotiates the host protocol", () => {
       };
       expect(hostProtocol.version).toBe("5");
       // Advertise capabilities from the actual bound table.
-      expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
-      expect(hostProtocol.capabilities).not.toContain("ave/host/hostFetch");
+      expect(hostProtocol.capabilities).toContain("ai.agent-connector.ave/host/callLlm");
+      expect(hostProtocol.capabilities).not.toContain("ai.agent-connector.ave/host/hostFetch");
       // Child-local members are not wire capabilities.
-      expect(hostProtocol.capabilities).not.toContain("ave/host/config/get");
+      expect(hostProtocol.capabilities).not.toContain("ai.agent-connector.ave/host/config/get");
       expect(hostProtocol.capabilities).toEqual([...hostProtocol.capabilities].sort());
       await instance.stop?.();
     } finally {
@@ -1092,7 +1074,7 @@ describe("construct negotiates the host protocol", () => {
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     const { child, terminated } = scriptedChild({
       ...CONSTRUCTED,
-      pluginProtocol: { requires: ["ave/host/callLlm", "ave/host/hostFetch"] },
+      pluginProtocol: { requires: ["ai.agent-connector.ave/host/callLlm", "ai.agent-connector.ave/host/hostFetch"] },
     });
     const factory = sessionFactory({
       manifest: MANIFEST,
@@ -1102,7 +1084,7 @@ describe("construct negotiates the host protocol", () => {
     const refused = factory(hostContext(hostApi));
     await expect(refused).rejects.toBeInstanceOf(IncompatibleHostProtocolError);
     await expect(refused).rejects.toMatchObject({
-      detail: { missingCapabilities: ["ave/host/hostFetch"] },
+      detail: { missingCapabilities: ["ai.agent-connector.ave/host/hostFetch"] },
     });
     expect(terminated()).toMatch(/startup failed/);
   });
@@ -1110,7 +1092,7 @@ describe("construct negotiates the host protocol", () => {
   it("accepts the same requirement from a host that serves it", async () => {
     const { child, terminated } = scriptedChild({
       ...CONSTRUCTED,
-      pluginProtocol: { requires: ["ave/host/hostFetch"] },
+      pluginProtocol: { requires: ["ai.agent-connector.ave/host/hostFetch"] },
     });
     const factory = sessionFactory({
       manifest: MANIFEST,

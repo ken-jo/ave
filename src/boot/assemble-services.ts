@@ -97,10 +97,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     startRoutinesScheduler: () => ctx.routinesScheduler.start(),
     startWorkBoardDueSoon: ctx.startWorkBoardDueSoon,
     startAlerts: () => ctx.alertsService.start(),
-    refreshPluginEventBridge: () => {
-      ctx.refreshPluginEventBridges();
-    },
-    registerPluginEventBridge: ctx.addPluginEventBridgeWindow,
     shutdown: () => {
       if (shutdownPromise) return shutdownPromise;
       shutdownPromise = (async () => {
@@ -123,7 +119,6 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         };
 
         attempt(disposeActiveLlmWildcard);
-        attempt(() => ctx.disposePluginEventBridge());
         attempt(() => ctx.autoUpdaterStop?.());
         attempt(() => ctx.telemetry?.stop());
         attempt(() => ctx.pluginTelemetry?.stop());

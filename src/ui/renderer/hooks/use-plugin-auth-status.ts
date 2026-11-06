@@ -7,7 +7,7 @@ export type PluginAuthState =
   | { kind: "unauthed" }
   | { kind: "error"; message: string };
 
-function parseStatusResult(raw: unknown): PluginAuthState {
+export function parsePluginAuthStatus(raw: unknown): PluginAuthState {
   // Defensive parse — plugin may return additional fields; we only consume two. architecture.md §9.4a Host UI Surface
   // contract; outputSchema validation is a separate cross-cutting follow-up.
   if (raw && typeof raw === "object") {
@@ -25,15 +25,29 @@ function parseStatusResult(raw: unknown): PluginAuthState {
   return { kind: "unauthed" };
 }
 
+/** Keep app lifetimes tied to authentication and account identity, never transient loading or error text. */
+export function usePluginAuthRevision(status: PluginAuthState | undefined): number {
+  const identityRef = useRef<string | undefined>(undefined);
+  const revisionRef = useRef(0);
+  const identity = status?.kind === "authed" ? JSON.stringify([true, status.account ?? null])
+    : status?.kind === "unauthed" ? JSON.stringify([false]) : undefined;
+  if (identity !== undefined) {
+    if (identityRef.current !== undefined && identityRef.current !== identity) revisionRef.current += 1;
+    identityRef.current = identity;
+  }
+  return revisionRef.current;
+}
+
 function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
 }
 
-/** Fetch auth status on mount and auth-change events, filtering callable runtimes; key subscriptions by auth-bearing
- * entries, not array identity. */
+/** Observe auth through the status tool; refresh focused hosts without an app push channel. */
+const AUTH_STATUS_REFRESH_INTERVAL_MS = 5_000;
 export function usePluginAuthStatuses(
   api: AveApi | null,
   plugins: PluginCardSummary[],
+  mountedPluginIds: readonly string[] = [],
 ): {
   statuses: Map<string, PluginAuthState>;
   refresh: (pluginId: string) => void;
@@ -42,6 +56,7 @@ export function usePluginAuthStatuses(
 
   // Always-current view of which plugins declare auth, so callbacks captured in the effect closure don't need to be re-bound
   // when `plugins` changes.
+  const pendingRef = useRef(new Set<string>());
   const pluginsRef = useRef(plugins);
   pluginsRef.current = plugins;
 
@@ -64,6 +79,10 @@ export function usePluginAuthStatuses(
       .join(";");
   }, [plugins]);
 
+  const mountedKey = [...new Set(mountedPluginIds)].sort().join(";");
+  const mountedIdsRef = useRef(mountedPluginIds);
+  mountedIdsRef.current = mountedPluginIds;
+
   const refresh = useCallback(
     (pluginId: string) => {
       if (!api) return;
@@ -78,13 +97,15 @@ export function usePluginAuthStatuses(
         });
         return;
       }
-      // Fire and forget — error path lands in setStatuses.
+      if (pendingRef.current.has(pluginId)) return;
+      pendingRef.current.add(pluginId);
+      // One status request per plugin at a time; the tool executor owns its timeout.
       void (async () => {
         try {
           const raw = await api.callPluginMethod(auth.statusTool);
           setStatuses((prev) => {
             const next = new Map(prev);
-            next.set(pluginId, parseStatusResult(raw));
+            next.set(pluginId, parsePluginAuthStatus(raw));
             return next;
           });
         } catch (err) {
@@ -100,6 +121,8 @@ export function usePluginAuthStatuses(
             next.set(pluginId, { kind: "error", message });
             return next;
           });
+        } finally {
+          pendingRef.current.delete(pluginId);
         }
       })();
     },
@@ -132,22 +155,24 @@ export function usePluginAuthStatuses(
     });
 
     for (const p of authPlugins) refresh(p.id);
-
-    const unsubs: Array<() => void> = [];
-    if (typeof api.onPluginEvent === "function") {
-      for (const p of authPlugins) {
-        const eventType = `${p.id}.auth.changed`;
-        const unsub = api.onPluginEvent(eventType, () => refresh(p.id));
-        if (typeof unsub === "function") unsubs.push(unsub);
-      }
-    }
-    return () => {
-      for (const u of unsubs) u();
-    };
-    // Deliberate: depend on the cache key (not `plugins`) so this effect
-    // only re-runs when the auth-bearing set changes shape.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // A returning auth window may complete a pending login before its panel is mounted.
+    const handleFocus = () => { for (const plugin of authPlugins) refresh(plugin.id); };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, [api, authCacheKey, refresh]);
+
+  useEffect(() => {
+    if (!api) return;
+    const refreshAll = () => { for (const pluginId of mountedIdsRef.current) refresh(pluginId); };
+    if (mountedIdsRef.current.length === 0) return;
+    refreshAll();
+    const timer = window.setInterval(refreshAll, AUTH_STATUS_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+    // Depend on mounted ids rather than transient array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, mountedKey, refresh]);
 
   return { statuses, refresh };
 }

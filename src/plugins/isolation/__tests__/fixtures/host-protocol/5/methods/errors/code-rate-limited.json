@@ -2,7 +2,7 @@
   "request": {
     "id": "budget-219",
     "jsonrpc": "2.0",
-    "method": "ave/host/hasRoutineBySource",
+    "method": "ai.agent-connector.ave/host/hasRoutineBySource",
     "params": {
       "source": "nightly"
     }

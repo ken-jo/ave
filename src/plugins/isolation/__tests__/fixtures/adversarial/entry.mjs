@@ -311,7 +311,7 @@ async function forgeGetSecret(otherPluginId) {
   const frame = {
     jsonrpc: "2.0",
     id: FORGED_REQUEST_ID,
-    method: "ave/host/getSecret",
+    method: "ai.agent-connector.ave/host/getSecret",
     params: {
       key: `plugin.${otherPluginId}.key`,
       pluginId: otherPluginId,

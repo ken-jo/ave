@@ -31,9 +31,9 @@ import { fixtureSecret } from "../../../audit/__tests__/secret-fixtures.js";
 let tmp: string;
 let auditLogger: AuditLogger;
 const REJECT_EVENT = { senderFrame: { url: "https://evil.example.com" } };
-// Plugin shells pass the base sender check but must fail the host-renderer guard.
+// App resources use a per-server origin and must fail the host-renderer guard.
 const PLUGIN_SHELL_EVENT = {
-  senderFrame: { url: "file:///C:/app/resources/plugin-ui-shell.html" },
+  senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" },
 };
 const ACCEPT_EVENT = { senderFrame: { url: "file:///C:/app/resources/index.html" } };
 
@@ -89,7 +89,7 @@ describe("diagnostics IPC — fail-closed sender guard", () => {
     expect(r).toEqual({ ok: false, error: "unauthorized-frame" });
   });
 
-  it("rejects a plugin-ui-shell frame on all 3 channels (m1: validateHostRendererSender)", async () => {
+  it("rejects a isolated app-resource frame on all 3 channels (m1: validateHostRendererSender)", async () => {
     const exp = await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.export, PLUGIN_SHELL_EVENT, {});
     const crash = await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.crashList, PLUGIN_SHELL_EVENT);
     const tail = await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.logs.tail, PLUGIN_SHELL_EVENT, {});

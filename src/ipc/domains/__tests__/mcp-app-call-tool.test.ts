@@ -88,7 +88,6 @@ async function setup() {
     settingsService: { get: vi.fn(() => ({})) },
     auditLogger: { log: vi.fn() },
     pluginMarketplace: { list: vi.fn(async () => []) },
-    refreshPluginEventBridge: vi.fn(),
     getMainWindow: vi.fn(() => null),
     getAppWindows: vi.fn(() => []),
   };
@@ -120,12 +119,12 @@ describe("ave:mcp:call-tool — sender gate", () => {
     expect(deps.auditLogger.log).toHaveBeenCalled(); // auditUnauthorized
   });
 
-  it("rejects a plugin-ui-shell frame (mutating channel ⇒ host-renderer-only)", async () => {
+  it("rejects a isolated app-resource frame (mutating channel ⇒ host-renderer-only)", async () => {
     const { callFromApp } = await setup();
     const handler = handlers.get(CHANNEL)!;
 
     const result = await handler(
-      { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+      { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
       "acme-cards",
       "acme_open",
       {},

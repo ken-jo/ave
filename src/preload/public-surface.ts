@@ -60,12 +60,14 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       ...(personaPromptId ? { personaPromptId } : {}),
       // One Enter gesture authorizes abort-and-send together; consume its intent once.
       ...(options?.interrupt === true ? { interrupt: true } : {}),
-      ...(inputOrigin === "user-keyboard"
+      ...((inputOrigin === "user-keyboard" || (inputOrigin === "app-emitted" && options?.interrupt === true))
         ? { userActivation: consumeUserKeyboardIntent(userIntent) }
         : {}),
     }, chatGroupId),
   // The same one-shot keyboard intent chatSend consumes; a guide without one (a queue flush) carries none, so main treats it as another principal's.
-  chatGuide: async (input: string, userIntent?: UserKeyboardIntentSnapshot) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId, {
+  chatGuide: async (input: string, userIntent?: UserKeyboardIntentSnapshot, appSource?: string) => ipcRenderer.invoke(CHANNELS.chat.guide, input, chatGroupId, appSource !== undefined ? {
+    inputOrigin: "app-emitted", appSource,
+  } : {
     inputOrigin: "user-keyboard",
     userActivation: consumeUserKeyboardIntent(userIntent),
   }),

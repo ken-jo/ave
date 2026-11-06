@@ -59,7 +59,7 @@ beforeAll(() => {
   handlers: {
     raise: async () => context.hostApi.raiseAlert({ kind: "reply", key: "now" }),
     subscribe: async () => {
-      context.hostApi.onEvent("probe.event", () => undefined);
+      context.hostApi.config.onChange("probe", () => undefined);
       return "subscribed";
     },
     raise_after_return: async () => {
@@ -135,7 +135,7 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
     watcherFailure = false;
     throw new Error("watcher cleanup failed");
   });
-  const watch = () => stopWatcher;
+  const watch = (key: string) => key === "*" ? stopWatcher : stopSubscription;
   const stopSubscription = vi.fn(() => {
     if (options.subscriptionFailure) throw new Error("subscription cleanup failed");
   });
@@ -144,7 +144,6 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
 
 
     config: { get: () => undefined, set: async () => undefined, onChange: watch },
-    onEvent: () => stopSubscription,
     raiseAlert: async (input: { key?: unknown }) => {
       raised.push({ key: input.key, toolName: currentEffectGateContext()?.toolName });
       return { status: "raised", alertId: `alert-${String(input.key)}` };

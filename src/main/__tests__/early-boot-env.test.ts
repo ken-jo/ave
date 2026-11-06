@@ -91,8 +91,9 @@ describe("runEarlyBootEnv", () => {
     expect(mockedElectron.ensureWorkspaceCwd).toHaveBeenCalledOnce();
     // Electron takes the privileged schemes in one call.
     expect(mockedElectron.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
-    expect(mockedElectron.protocol.registerSchemesAsPrivileged.mock.calls[0]![0].map((entry: { scheme: string }) => entry.scheme))
-      .toEqual(["ave-plugin", "ave-mcp-app", "ave-content"]);
+    const schemes = mockedElectron.protocol.registerSchemesAsPrivileged.mock.calls[0]![0].map((entry: { scheme: string }) => entry.scheme);
+    expect(schemes).toEqual(["ave-mcp-app", "ave-content"]);
+    expect(schemes).not.toContain("ave-plugin");
     expect(mockedElectron.app.setName).toHaveBeenCalledWith("Ave");
     expect(mockedElectron.app.setAppUserModelId).toHaveBeenCalledWith("ai.agent-connector.ave.dev");
     // net.request and hostFetch use the default session, which takes this fallback.

@@ -21,8 +21,8 @@ export const createPlugin = async (context) => {
         };
         process.stdin.on("data", receive);
       });
-      writeSync(1, JSON.stringify({ jsonrpc: "2.0", id: "forged-native-owner", method: "ave/host/raiseAlert",
-        params: { input: { kind: "reply", key: "probe" }, pluginId: "foreign-owner", generationId: "foreign-generation", _meta: { "ave/invocation": "never-issued" } } }) + "\n");
+      writeSync(1, JSON.stringify({ jsonrpc: "2.0", id: "forged-native-owner", method: "ai.agent-connector.ave/host/raiseAlert",
+        params: { input: { kind: "reply", key: "probe" }, pluginId: "foreign-owner", generationId: "foreign-generation", _meta: { "ai.agent-connector.ave/invocation": "never-issued" } } }) + "\n");
       return await reply;
     },
     overflow: async () => {

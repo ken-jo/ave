@@ -199,7 +199,6 @@ export const CHANNELS = {
     setEnabled: "ave:plugins:set-enabled",
     installLocal: "ave:plugins:install-local",
     uiList: "ave:plugins:ui:list",
-    uiReadModule: "ave:plugins:ui:read-module",
     cards: "ave:plugins:cards",
     configGet: "ave:plugins:config:get",
     configSet: "ave:plugins:config:set",
@@ -397,7 +396,7 @@ export const CHANNELS = {
     // any host tool call.
     callTool: "ave:mcp:call-tool",
     // MCP Apps `onmessage` (`ui/message`) — the app asks for its text to enter the
-    // conversation, or (with `_meta["ave/notification"]`) the notification surface.
+    // conversation, or (with `_meta["ai.agent-connector.ave/notification"]`) the notification surface.
     // The renderer binds the card's `serverId` AND its origin session id; the app
     // supplies neither. INTERNAL, same posture as `callTool`: absent from
     // PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS / CHANNEL_GESTURE (fail-closed
@@ -482,35 +481,7 @@ export const CHANNELS = {
     // token 404s a dead card's reload.
     disposeUiSession: "ave:mcp:dispose-ui-session",
   },
-  /** Plugin webview bridge (ave:plugin:*) — sandboxed plugin-frame origin. */
-  pluginBridge: {
-    // Renderer → main BEFORE a plugin panel's <webview> exists: install the
-    // partition's session policy (preload, network gate, asset scheme) so the
-    // guest frame is never the thing that creates the partition. A frame binds
-    // its URL loaders once, at first load, so a scheme installed after that
-    // point is unreachable from it for the frame's whole life.
-    ensurePartition: "ave:plugin:ensure-partition",
-    registerWebview: "ave:plugin:register-webview",
-    getEntryUrl: "ave:plugin:get-entry-url",
-    getTheme: "ave:plugin:get-theme",
-    callTool: "ave:plugin:call-tool",
-    requestOperationGrant: "ave:plugin:request-operation-grant",
-    configGet: "ave:plugin:config:get",
-    configSet: "ave:plugin:config:set",
-    storageGet: "ave:plugin:storage:get",
-    storageSet: "ave:plugin:storage:set",
-    emitEvent: "ave:plugin:emit-event",
-    // Fan-out to plugin webviews (main → plugin frame).
-    event: "ave:plugin:event",
-  },
-  /**
-   * Floating dock (ave:dock:*) — the host's always-on-top window.
-   *
-   * Main-to-dock unless the comment says otherwise. Separate from
-   * `pluginBridge` because these are the HOST's channels: the plugin cards
-   * inside the dock talk over `pluginBridge` exactly as sidebar cards do, and
-   * nothing here is reachable from a plugin frame.
-   */
+  /** Host-owned floating dock window channels. */
   dock: {
     /** Replace the host's activity line. `null` clears it. */
     activity: "ave:dock:activity",
@@ -675,8 +646,7 @@ export const CHANNELS = {
   // user-chosen file — it must never be reachable from an external origin
   // (local-api / cli / plugin frame). The fail-closed default
   // (isPublicChannel === false) enforces that; each invoke additionally gates
-  // on validateHostRendererSender so a plugin-ui-shell frame cannot reach them
-  // either.
+  // on validateHostRendererSender to refuse app-resource and remote frames.
   diagnostics: {
     export: "ave:diagnostics:export", // invoke renderer→main → { ok, path } | { ok:false, error }
     crashList: "ave:diagnostics:crash-list", // invoke → crash-dump metadata list
@@ -782,8 +752,8 @@ export const CHANNELS = {
   // EXTERNAL_MUTATION_CHANNELS. A terminal spawns arbitrary user commands, so
   // it must be unreachable from any external origin (local-api / cli / plugin
   // frame) — the fail-closed default (isPublicChannel === false) enforces that.
-  // Each invoke handler additionally gates on validateHostRendererSender so a
-  // plugin-ui-shell frame cannot reach them either. data/exit are main→renderer
+  // Each invoke handler additionally gates on validateHostRendererSender to refuse
+  // app-resource and remote frames. data/exit are main→renderer
   // events sent via safe-send/sendToWindow.
   terminal: {
     spawn: "ave:terminal:spawn", // invoke renderer→main → { ok, tabId } | { ok:false, reason }

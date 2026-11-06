@@ -2,7 +2,7 @@
   "request": {
     "id": "construct-1",
     "jsonrpc": "2.0",
-    "method": "ave/instance/construct",
+    "method": "ai.agent-connector.ave/instance/construct",
     "params": {
       "hostProtocol": {
         "version": "999"

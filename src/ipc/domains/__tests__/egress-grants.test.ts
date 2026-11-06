@@ -43,10 +43,10 @@ describe("domain grant management boundary", () => {
       expect(await ask(destination, { attributionKey: first.token, identity: "listener", phase: "resolved", addresses: ["93.184.215.14"], resolution: "pinned" })).toBe(true);
       const target = { scope: "always", origin: "shell", ...destination, network: "public" };
       expect(await call(PERMISSIONS.egressGrantsList)).toEqual({ ok: true, grants: [expect.objectContaining(target)] });
-      expect(await call(PERMISSIONS.egressGrantsList, undefined, foreignFrameEvent("file:///dist/src/plugin-ui-shell.html"))).toMatchObject({ error: "unauthorized-frame" });
+      expect(await call(PERMISSIONS.egressGrantsList, undefined, foreignFrameEvent("ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))).toMatchObject({ error: "unauthorized-frame" });
       expect(await call(PERMISSIONS.egressGrantRevoke, target)).toMatchObject({ error: "user-keyboard-required" });
       const intent = { inputOrigin: "user-keyboard", userActivation: true };
-      expect(await call(PERMISSIONS.egressGrantRevoke, { ...target, intent }, foreignFrameEvent("file:///dist/src/plugin-ui-shell.html"))).toMatchObject({ error: "unauthorized-frame" });
+      expect(await call(PERMISSIONS.egressGrantRevoke, { ...target, intent }, foreignFrameEvent("ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))).toMatchObject({ error: "unauthorized-frame" });
       for (const override of [{ host: "Downloads.example.com" }, { port: 0 }, { port: 65536 }, { network: "reserved" }, { scope: "once" }, { origin: "worker" }]) {
         expect(await call(PERMISSIONS.egressGrantRevoke, { ...target, ...override, intent })).toMatchObject({ ok: false });
       }

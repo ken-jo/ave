@@ -4,6 +4,7 @@ import { render, screen, waitFor, act, fireEvent } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppView } from "../McpAppView.js";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
+import { HostAppearanceProvider } from "../../theme/HostAppearanceProvider.js";
 import { ThemeProvider, useTheme } from "../../theme/index.js";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme, resolveTheme, schemeToHostTokens } from "../../theme/index.js";
@@ -22,7 +23,7 @@ vi.mock("../mcp-app-bridge.js", () => ({
 }));
 
 it("requires an applied theme provider", () => {
-  expect(() => render(<McpAppView payload={payload("missing-provider")} />)).toThrow("useTheme() must be used inside <ThemeProvider>");
+  expect(() => render(<McpAppView payload={payload("missing-provider")} />)).toThrow("useHostAppearance() must be used inside <HostAppearanceProvider>");
 });
 
 const renderCard = (payload: McpUiPayload) =>
@@ -272,6 +273,68 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
     expect(told.length).toBeGreaterThan(0);
     expect(told.every((entry) => entry.shell === "dark" && entry.root === "github-dark" && entry.background === background)).toBe(true);
     expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("McpAppView host theme snapshots", () => {
+  it("maps dock host tokens and the configured monospace font to standard styles", async () => {
+    const hostTheme = {
+      shell: "dark" as const,
+      tokens: { ...schemeToHostTokens(resolveTheme(requireScheme("nord"))), "not-a-token": "injected" },
+    };
+    const appearance = { ...hostTheme, terminalFontFamily: "Dock Mono, monospace" };
+    const dockPayload = payload("dock");
+    const view = render(<HostAppearanceProvider value={appearance}><McpAppView payload={dockPayload} /></HostAppearanceProvider>);
+    await waitFor(() => expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1));
+    const context = createMcpAppBridgeMock.mock.calls[0]![3] as {
+      theme: string;
+      styles: { variables: Record<string, string> };
+    };
+    expect(context.theme).toBe("dark");
+    expect(context.styles.variables["--color-background-primary"]).toBe(hostTheme.tokens["--ave-bg"]);
+    expect(context.styles.variables["--font-mono"]).toBe("Dock Mono, monospace");
+    view.rerender(<HostAppearanceProvider value={{ ...appearance, terminalFontFamily: "Updated Dock Mono" }}><McpAppView payload={dockPayload} /></HostAppearanceProvider>);
+    const bridge = createMcpAppBridgeMock.mock.results[0]!.value.bridge;
+    await waitFor(() => expect(bridge.setHostContext).toHaveBeenLastCalledWith(expect.objectContaining({
+      styles: expect.objectContaining({ variables: expect.objectContaining({ "--font-mono": "Updated Dock Mono" }) }),
+    })));
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+    expect(Object.keys(context.styles.variables).some((key) => key.startsWith("--ave-") || key === "not-a-token")).toBe(false);
+  });
+
+  it("mounts during a scheme change with the shell and colors already applied to the document", async () => {
+    let release!: (resource: { proxyUrl: string; html: string }) => void;
+    readUiResource.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const observed: Array<{ shell: string; root: string; background: string }> = [];
+    const observe = (context: { theme: string; styles: { variables: Record<string, string> } }) => {
+      observed.push({
+        shell: context.theme,
+        root: document.documentElement.getAttribute("data-scheme")!,
+        background: context.styles.variables["--color-background-primary"]!,
+      });
+    };
+    createMcpAppBridgeMock.mockImplementation((...args: unknown[]) => {
+      observe(args[3] as Parameters<typeof observe>[0]);
+      return { bridge: { setHostContext: vi.fn(observe) }, transport: { close: vi.fn() }, connected: Promise.resolve() };
+    });
+    const view = render(
+      <ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}>
+        <ThemeToggleButton /><McpAppView payload={payload("pending")} />
+      </ThemeProvider>,
+    );
+    await act(async () => {});
+    expect(createMcpAppBridgeMock).not.toHaveBeenCalled();
+    await act(async () => {
+      release({ proxyUrl: "ave-mcp-app://s-70656e64696e67/proxy.html?t=fixture", html: "<html><body>card</body></html>" });
+      fireEvent.click(view.getByTestId("theme-toggle"));
+    });
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
+    expect(observed.length).toBeGreaterThan(0);
+    for (const entry of observed) {
+      const theme = resolveTheme(requireScheme(entry.root));
+      expect(entry.shell).toBe(theme.shell);
+      expect(entry.background).toBe(schemeToHostTokens(theme)["--ave-bg"]);
+    }
   });
 });
 

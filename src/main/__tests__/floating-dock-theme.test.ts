@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 // The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { SettingsService } from "../../data/settings-store.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { emitEvent } from "../../boot/types.js";
-import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
+import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
   windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[]; attach(prefs: Record<string, unknown>, params: Record<string, string>): boolean; prefs: Record<string, unknown> }>,
@@ -62,6 +63,15 @@ vi.mock("electron", () => {
 });
 vi.mock("../main-paths.js", () => ({ runtimeAssetPath: (name: string) => `/assets/${name}` }));
 
+const settingsHome = useTempDirs("dock-settings-");
+const settings = {
+  get: (key: string) => {
+    if (key !== "appearance") throw new Error(`Unexpected settings key: ${key}`);
+    return { terminalFont: { family: "Dock Mono" } };
+  },
+  onChanged: () => () => {},
+} as unknown as Pick<SettingsService, "get" | "onChanged">;
+
 const THEME = { bundleId: "harbor", shell: "dark", tokens: { "--ave-fg": "hsl(0, 0%, 100%)", "--ave-bg": "hsl(210, 40%, 12%)", "--ave-border": "hsl(210, 20%, 30%)", "--ave-accent": "hsl(200, 80%, 50%)" } };
 
 afterEach(() => {
@@ -82,12 +92,12 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     const dock = new ElectronFloatingDockSurface({
       onThemeChanged: (next) => { listener = next; return () => {}; },
       currentTheme: () => current,
-    });
+    }, settings);
     // As the host does: the cache holds a theme before the broadcast carries it.
     return { dock, emit: (theme: unknown) => { current = theme; listener!(theme); } };
   }
   const themesSent = (win: (typeof windows)[number]) =>
-    win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).map(([, theme]) => theme);
+    win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme).map(([, appearance]) => appearance.theme);
 
   it("sends the theme current when the window opens, then each later one, in order once it is ready", async () => {
     const { dock, emit } = await surface(THEME);
@@ -120,6 +130,55 @@ describe("ElectronFloatingDockSurface sends host themes to its window", () => {
     expect(themesSent(second)).toEqual([NEXT]);
   });
 
+  it("sends a real durable terminal font change to the dock and replays it on attach", async () => {
+    const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
+    const service = new SettingsService({ userDataPath: settingsHome(), encryption: {
+      isAsyncEncryptionAvailable: async () => false, getSelectedStorageBackend: () => "gnome_libsecret",
+      encryptStringAsync: vi.fn(), decryptStringAsync: vi.fn(),
+    } });
+    recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, service);
+    dock.show(BOUNDS);
+    const win = windows[0]!;
+    win.fire("ready-to-show");
+    await service.patch({ appearance: { terminalFont: { family: "Changed Mono" } } });
+    expect(win.send).toHaveBeenLastCalledWith(CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+    });
+    const sent = win.send.mock.calls.length;
+    await service.patch({ appearance: { terminalFont: { size: 18 } } });
+    expect(win.send).toHaveBeenCalledTimes(sent);
+    dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
+    expect(win.send.mock.calls.at(-2)).toEqual([CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Changed Mono",
+    }]);
+  });
+
+  it("opens with the current terminal font after it changes before the dock window exists", async () => {
+    const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
+    const service = new SettingsService({ userDataPath: settingsHome(), encryption: {
+      isAsyncEncryptionAvailable: async () => false, getSelectedStorageBackend: () => "gnome_libsecret",
+      encryptStringAsync: vi.fn(), decryptStringAsync: vi.fn(),
+    } });
+    recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: THEME.tokens });
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, service);
+    await service.patch({ appearance: { terminalFont: { family: "Before Opening Mono" } } });
+    expect(windows).toHaveLength(0);
+
+    dock.show(BOUNDS);
+    dock.mountSlot("panel", { pluginId: "fixture", title: "Panel", payload: {} } as never, 200);
+    const win = windows[0]!;
+    expect(win.send).not.toHaveBeenCalled();
+    win.fire("ready-to-show");
+
+    const snapshots = win.send.mock.calls.filter(([channel]) => channel === CHANNELS.dock.theme);
+    expect(snapshots[0]).toEqual([CHANNELS.dock.theme, {
+      theme: getLastThemePayload(), terminalFontFamily: "Before Opening Mono",
+    }]);
+    expect(snapshots.every(([, appearance]) => appearance.terminalFontFamily === "Before Opening Mono")).toBe(true);
+    expect(win.send.mock.calls[0]).toEqual(snapshots[0]);
+  });
+
   it("sends no opening theme before the host has published one", async () => {
     const { dock } = await surface(null);
     dock.show(BOUNDS);
@@ -132,15 +191,15 @@ describe("the dock window's preload, sandbox and guests", () => {
   it("runs its preload in the sandbox the preload table gives it, and attaches only guarded plugin guests", async () => {
     const { ElectronFloatingDockSurface } = await import("../floating-dock-surface.js");
     const { PRELOAD_BUNDLES } = await import("../../shared/preload-bundles.js");
-    const { pluginPartitionName } = await import("../../shared/plugin-partition.js");
-    new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }).show(BOUNDS);
+    const { mcpAppPartitionName, MCP_APP_PARTITION_PREFIX } = await import("../../shared/mcp-app-partition.js");
+    new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }, settings).show(BOUNDS);
     const win = windows[0]!;
     expect(win.prefs).toMatchObject({ preload: `/assets/${PRELOAD_BUNDLES.floatingDockPreload.file}`, sandbox: PRELOAD_BUNDLES.floatingDockPreload.sandbox });
     expect(win.prefs.sandbox).toBe(true);
 
     // A plugin card's guest: let through, with main's preferences whatever the element asked.
     const prefs: Record<string, unknown> = { sandbox: false, nodeIntegration: true, webviewTag: true };
-    expect(win.attach(prefs, { partition: pluginPartitionName("meeting"), src: "file:///assets/plugin-ui-shell.html" })).toBe(true);
+    expect(win.attach(prefs, { partition: mcpAppPartitionName("meeting"), src: `ave-mcp-app://${mcpAppPartitionName("meeting").slice(MCP_APP_PARTITION_PREFIX.length)}/proxy.html?t=token` })).toBe(true);
     expect(prefs).toMatchObject({ sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false });
     // Anything else is refused.
     expect(win.attach({}, { partition: "persist:elsewhere", src: "https://example.test/" })).toBe(false);
@@ -150,28 +209,14 @@ describe("the dock window's preload, sandbox and guests", () => {
 describe("the dock window paints the host theme main sends (real preload, host theme feed)", () => {
   const root = join(__dirname, "..", "..");
   const html = readFileSync(join(root, "floating-dock-window.html"), "utf8");
-  const script = readFileSync(join(root, "floating-dock-window.js"), "utf8");
 
-  let preloadBridge: unknown = null;
-  // The dock window as it opens: its preload's bridge, then its script.
-  async function openWindow(args: string[]) {
+
+  async function openWindow(_args: string[]) {
     document.documentElement.removeAttribute("style");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
-    // Imported once (it exposes the bridge at load); each window gets that bridge.
-    const w = window as unknown as Record<string, unknown>;
-    if (!preloadBridge) {
-      // The sandboxed preload reads its asset URLs from the arguments main gave the window.
-      const argv = process.argv;
-      process.argv = [...argv, ...args];
-      try {
-        await import("../../floating-dock-preload.js");
-      } finally {
-        process.argv = argv;
-      }
-      preloadBridge = w.aveDock;
-    }
-    w.aveDock = preloadBridge;
-    new Function(script)();
+    vi.resetModules();
+    await import("../../floating-dock-preload.js");
+    await import("../../floating-dock-window.js");
   }
   // What the host renderer's theme notify does in main: validate the replay payload, then broadcast (plugins.ts).
   function publish(theme: unknown) {
@@ -183,7 +228,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
 
   it("opens in the theme published before it, repaints for each later one, and asks main for nothing", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
-    const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
     publish({ bundleId: "github-dark", shell: "dark", tokens: THEME.tokens });
 
     dock.show(BOUNDS);
@@ -195,16 +240,12 @@ describe("the dock window paints the host theme main sends (real preload, host t
     publish({ bundleId: "github-dark", shell: "dark", tokens: NEXT.tokens });
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
-    // The asset URLs main resolved reach the bridge (the preload resolves nothing itself). The mocked asset paths become file URLs the platform's way: a
-    // rooted `/assets/...` path carries the current drive on Windows.
-    const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
-    expect(bridge.pluginShellUrl).toBe(pathToFileURL("/assets/plugin-ui-shell.html").href);
-    expect(bridge.pluginPreloadUrl).toBe(pathToFileURL("/assets/plugin-preload.cjs").href);
+
   });
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {
     const { ElectronFloatingDockSurface, hostDockThemeSource } = await import("../floating-dock-surface.js");
-    const dock = new ElectronFloatingDockSurface(hostDockThemeSource);
+    const dock = new ElectronFloatingDockSurface(hostDockThemeSource, settings);
     dock.show(BOUNDS);
     await openWindow(windows[0]!.args);
     windows[0]!.fire("ready-to-show");

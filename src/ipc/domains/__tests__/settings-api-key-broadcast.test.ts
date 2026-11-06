@@ -1409,6 +1409,21 @@ describe("the server marketplace's theme and language lists", () => {
 });
 
 describe("the renderer settings snapshot", () => {
+  it.each(["file:///app/index.html", "file:///app/link-window.html", "http://localhost:3000", "http://127.0.0.1:3000"])("accepts a legitimate host settings reader at %s", async (url) => {
+    const deps = makeDeps([makeWindow()]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await handlers.get("ave:settings:get")!({ senderFrame: { url } })).toHaveProperty("llm");
+  });
+
+  it.each([undefined, "ave-mcp-app://server/proxy.html", "https://untrusted.test"])("refuses a non-host settings reader at %s", async (url) => {
+    const deps = makeDeps([makeWindow()]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await handlers.get("ave:settings:get")!(url ? { senderFrame: { url } } : {})).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(deps.settingsService.getAll).not.toHaveBeenCalled();
+  });
+
   it("leaves out the upstream proxy, which crosses only through its own permissions channels", async () => {
     const deps = makeDeps([makeWindow()]);
     deps.settingsService.getAll.mockReturnValue({

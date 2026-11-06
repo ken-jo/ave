@@ -11,7 +11,7 @@ import {
 import type { PluginManifest, RuntimePlugin } from "../../types.js";
 import { PluginRuntime } from "../index.js";
 import { createNoopHostApiForTests } from "../sandbox.js";
-import { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
+import type { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 
@@ -402,18 +402,6 @@ describe("generation dispatch readiness", () => {
 });
 
 describe("post-publish fault ownership", () => {
-  function throwingHostEffect(pluginId: string, lifecycle: PluginRuntimeGenerationLifecycle) {
-    // Use the real preparing scope and replay so replacing postPublish with inert behavior cannot pass.
-    const scope = new HostApiGenerationScope(pluginId);
-    const api = scope.wrapHostApi({
-      emitEvent: () => { throw new Error("generation fence signal failed"); },
-      logEvent: vi.fn(),
-      config: { get: vi.fn(), set: vi.fn(), onChange: vi.fn() },
-    } as never);
-    api.emitEvent("ready", {});
-    return { scope, bind: (generationId: string) => { scope.bindGeneration(lifecycle, generationId); } };
-  }
-
   async function commitCandidate(
     runtime: PluginRuntime,
     coordinator: PluginGenerationCoordinator<HostPluginGenerationState>,
@@ -463,52 +451,4 @@ describe("post-publish fault ownership", () => {
     }));
   });
 
-  it("still refuses dispatch when the host's own generation fence fails", async () => {
-    const { coordinator, runtime, lifecycle } = runtimeFixture();
-    const effect = throwingHostEffect(TARGET_ID, lifecycle);
-    const candidate = projection({
-      activationId: "b".repeat(64),
-      manifest: targetManifest("1.0.0"),
-      instance: { handlers: {} },
-      methods: new Map([[MODEL_TOOL, async () => "reached the plugin"]]),
-      hostEffects: effect.scope,
-    });
-    effect.bind(candidate.activationId);
-    const transition = await commitCandidate(runtime, coordinator, candidate, "b");
-
-    await expect(runtime.postPublishRuntimeGeneration(candidate))
-      .rejects.toThrow(/host generation effects failed to publish/);
-
-    transition.markDispatchUnavailable(new Error("host generation effects failed to publish"));
-    await expect(runtime.call(MODEL_TOOL)).rejects.toThrow(/dispatch blocked/);
-  });
-
-  it("does not fold a plugin startup failure back into the host fence faults", async () => {
-    // Keep plugin errors separate from host AggregateErrors so plugin text cannot leak into host fault records.
-    const audit: Array<{ level: string; message: string; data?: unknown }> = [];
-    const { coordinator, runtime, lifecycle } = runtimeFixture(audit);
-    const effect = throwingHostEffect(TARGET_ID, lifecycle);
-    const candidate = projection({
-      activationId: "c".repeat(64),
-      manifest: targetManifest("1.0.0"),
-      instance: {
-        handlers: {},
-        onPublished: async () => { throw new Error("plugin startup blew up"); },
-      },
-      methods: new Map([[MODEL_TOOL, async () => "reached the plugin"]]),
-      hostEffects: effect.scope,
-    });
-    effect.bind(candidate.activationId);
-    await commitCandidate(runtime, coordinator, candidate, "c");
-
-    const failure = await runtime.postPublishRuntimeGeneration(candidate).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(AggregateError);
-    const errors = (failure as AggregateError).errors as Error[];
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toBe("generation fence signal failed");
-    // Record plugin failure through its own diagnostic channel.
-    expect(audit).toContainEqual(expect.objectContaining({
-      message: "plugin_post_publish_startup_degraded",
-    }));
-  });
 });

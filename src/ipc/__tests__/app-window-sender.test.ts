@@ -35,13 +35,13 @@ describe("registered app window sender identity", () => {
     expect(validateAppWindowMainFrameSender(fixture.event, { getMainWindow: fixture.deps.getMainWindow })).toBe(true);
   });
 
-  it("keeps a registered plugin webview refused after its URL changes from shell HTML to script", () => {
+  it("keeps a registered app webview refused after navigation to a local file", () => {
     const fixture = appWindow();
     fixture.sender.getType.mockReturnValue("webview");
-    fixture.frame.url = "file:///app/plugin-ui-shell.html";
+    fixture.frame.url = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
     expect(validateHostRendererSender(fixture.event)).toBe(false);
     expect(validateAppWindowMainFrameSender(fixture.event, fixture.deps)).toBe(false);
-    fixture.frame.url = "file:///app/plugin-ui-shell.js";
+    fixture.frame.url = "file:///app/untrusted-frame.html";
     expect(validateHostRendererSender(fixture.event)).toBe(true);
     expect(validateAppWindowMainFrameSender(fixture.event, fixture.deps)).toBe(false);
   });

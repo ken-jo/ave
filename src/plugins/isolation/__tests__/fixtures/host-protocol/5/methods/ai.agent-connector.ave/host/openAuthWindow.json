@@ -1,0 +1,36 @@
+{
+  "request": {
+    "id": 22,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/openAuthWindow",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "options": {
+        "completionUrlPatterns": [
+          "https://login.example.com/done*"
+        ],
+        "cookieHosts": [
+          "login.example.com"
+        ],
+        "returnFinalUrl": true,
+        "url": "https://login.example.com/authorize"
+      }
+    }
+  },
+  "response": {
+    "id": 22,
+    "jsonrpc": "2.0",
+    "result": {
+      "cookies": [
+        {
+          "domain": "login.example.com",
+          "name": "session",
+          "value": "cookie-value"
+        }
+      ],
+      "finalUrl": "https://login.example.com/done?state=ok"
+    }
+  }
+}

@@ -11,7 +11,7 @@ stdin and stdout.
   user site directory) on `plugin.py`. The test harness writes
   `bin/python-path` and `vendor/` into its temporary copy of this directory;
   neither is committed.
-- `plugin.py` routes `ave/instance/*` to its own handlers and serves the MCP
+- `plugin.py` routes `ai.agent-connector.ave/instance/*` to its own handlers and serves the MCP
   half with the stock `mcp` library, pinned at **2.2.0**, in memory, one
   message at a time. It answers `-32602` to any MCP request whose `_meta` lacks
   `io.modelcontextprotocol/protocolVersion` or

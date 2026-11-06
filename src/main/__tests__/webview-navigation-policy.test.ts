@@ -12,7 +12,6 @@ function decision(overrides: Partial<Parameters<typeof shouldBlockGlobalWebviewN
   return shouldBlockGlobalWebviewNavigation({
     url: "https://example.com/",
     currentUrl: "about:blank",
-    distRoot,
     authOwned: false,
     linkOwned: false,
     ...overrides,
@@ -30,40 +29,26 @@ describe("global webview navigation policy", () => {
     expect(decision({ url: "https://example.com/", linkOwned: true })).toBe(false);
   });
 
-  it("allows plugin shell file navigations only inside dist/src", () => {
+  it("refuses local file navigation from an unowned preview", () => {
     expect(decision({
-      currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
-      url: fileUrlInDistSrc("plugin-entry.js"),
-    })).toBe(false);
+      currentUrl: fileUrlInDistSrc("preview.html"),
+      url: fileUrlInDistSrc("entry.js"),
+    })).toBe(true);
     expect(decision({
-      currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
+      currentUrl: fileUrlInDistSrc("preview.html"),
       url: "file:///etc/passwd",
     })).toBe(true);
   });
 
-  // Grant plugin-shell file navigation only for the actual shell path, never a query containing its filename.
-  it("grants the dist/src allowance only to the real shell document", () => {
-    const targetInDistSrc = fileUrlInDistSrc("plugin-entry.js");
-    // Genuine shell frame — allowance applies.
-    expect(decision({
-      currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
-      url: targetInDistSrc,
-    })).toBe(false);
-    // Host renderer whose query merely names the shell — no allowance.
-    expect(decision({
-      currentUrl: `${fileUrlInDistSrc("index.html")}?next=plugin-ui-shell.html`,
-      url: targetInDistSrc,
-    })).toBe(true);
-    // Remote page serving the shell filename — no allowance.
-    expect(decision({
-      currentUrl: "https://evil.example.com/plugin-ui-shell.html",
-      url: targetInDistSrc,
-    })).toBe(true);
-    // A filename that merely ends with the shell name — no allowance.
-    expect(decision({
-      currentUrl: fileUrlInDistSrc("evil-plugin-ui-shell.html"),
-      url: targetInDistSrc,
-    })).toBe(true);
+  it("refuses local file navigation regardless of the current document", () => {
+    for (const currentUrl of [
+      fileUrlInDistSrc("preview.html"),
+      `${fileUrlInDistSrc("index.html")}?next=preview.html`,
+      "https://untrusted.example/preview.html",
+      fileUrlInDistSrc("other-preview.html"),
+    ]) {
+      expect(decision({ currentUrl, url: fileUrlInDistSrc("entry.js") })).toBe(true);
+    }
   });
 
   it("keeps data and about navigations available for non-plugin preview frames", () => {

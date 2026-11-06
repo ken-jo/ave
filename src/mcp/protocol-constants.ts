@@ -17,11 +17,11 @@ export const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilit
 export const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
 /** Shared metadata key preserves structured plugin results across transports. */
-export const RAW_RESULT_META = "ave/rawResult";
+export const RAW_RESULT_META = "ai.agent-connector.ave/rawResult";
 
 /** Opaque invocation tokens bind child host calls to host approval, origin and effect context.
  * Keep context resolvable after tool completion for background work; missing tokens have no invocation. */
-export const INVOCATION_META = "ave/invocation";
+export const INVOCATION_META = "ai.agent-connector.ave/invocation";
 
 export const RPC_INVALID_PARAMS = -32602;
 export const RPC_METHOD_NOT_FOUND = -32601;

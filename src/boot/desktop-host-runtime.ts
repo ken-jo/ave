@@ -12,9 +12,6 @@ import { openAuthWindow, clearAuthPartition, openOAuthInAuthWindow } from "../ma
 import { installOAuthLoginOpener, type OpenOAuthLogin } from "../main/oauth-login.js";
 import { openLinkWindow } from "../main/link-window-service.js";
 import { openAuthPartitionViewer } from "../main/auth-partition-viewer-service.js";
-import { installPluginPartitionPolicy } from "../main/html-preview-partition.js";
-import { pluginPartitionName } from "../shared/plugin-partition.js";
-import { revokePluginWebviewsForPlugin } from "../ipc/domains/plugins.js";
 import { ElectronAudioCaptureSurface } from "../main/audio-capture-surface.js";
 import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floating-dock-surface.js";
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
@@ -55,10 +52,6 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       openAuthPartitionViewerService: (_parent, options) => openAuthPartitionViewer(options),
       clearAuthPartitionService: clearAuthPartition,
       shellOpenExternal: (url) => shell.openExternal(url),
-      installPluginPartition: (pluginId, pluginRoot) => {
-        installPluginPartitionPolicy(pluginPartitionName(pluginId), { pluginRoot });
-      },
-      revokePluginWebviews: revokePluginWebviewsForPlugin,
       onBootShutdown: (run, needed) => {
         app.once("before-quit", (event) => {
           if (isAppUpdateInstallRequested() || isAppShutdownStarted() || !needed()) return;
@@ -80,7 +73,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       },
       powerMonitor: adaptPowerMonitor(powerMonitor),
       createAudioCaptureSurface: () => new ElectronAudioCaptureSurface(),
-      createFloatingDockSurface: () => new ElectronFloatingDockSurface(hostDockThemeSource),
+      createFloatingDockSurface: (settings) => new ElectronFloatingDockSurface(hostDockThemeSource, settings),
       pickFolders: (pluginId, parentWindow) => pickFoldersForPlugin(pluginId, { parentWindow }),
       pickBrowserUploadFiles: async (request) => {
         const owner = getMainWindows().find((window) => window.id === request.windowId && !window.isDestroyed());

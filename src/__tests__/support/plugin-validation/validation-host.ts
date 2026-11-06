@@ -25,9 +25,6 @@ const INITIAL_CONFIG: ReadonlyArray<readonly [string, unknown]> = [
   ["region", "north"],
 ];
 
-/** Keep scripted payloads stable because golden transcripts include them. */
-const FIRED_EVENT_DATA = { fired: "by the golden host" } as const;
-
 type Listener<T> = (value: T) => void;
 
 /** Use fixed synthetic host roots so golden construct frames remain machine-independent. */
@@ -48,23 +45,13 @@ export interface ValidationHost {
   readonly roots: ValidationHostRoots;
   /** Deliver scripted registrations once in registration order for deterministic transcripts. */
   fireAll(): void;
-  readonly emitted: Array<readonly [string, unknown]>;
 }
 
 /** Override only the intended member so failure cases keep every other scripted answer identical. */
 export function createValidationHost(overrides: ValidationHostOverrides = {}): ValidationHost {
-  const emitted: Array<readonly [string, unknown]> = [];
   const config = new Map<string, unknown>(INITIAL_CONFIG);
   const configListeners: Array<{ key: string; listener: Listener<unknown> }> = [];
   const firing: Array<() => void> = [];
-
-  const register = <T>(listeners: Set<Listener<T>>, listener: Listener<T>, fire: () => void) => {
-    listeners.add(listener);
-    firing.push(() => {
-      if (listeners.has(listener)) fire();
-    });
-    return () => void listeners.delete(listener);
-  };
 
   const scriptedWorker = (spec: { workerId: string; control: PluginWorkerControl }): SpawnedPluginWorker => {
     const stdout: Array<Listener<string>> = [];
@@ -107,8 +94,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
     };
   };
 
-  const eventListeners = new Set<Listener<unknown>>();
-
   const api = {
     storage: {
       resolve: (...segments: string[]) => segments.join("/"),
@@ -142,13 +127,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
           if (index !== -1) configListeners.splice(index, 1);
         };
       },
-    },
-    emitEvent: (type: string, data?: unknown) => void emitted.push([type, data]),
-    onEvent: (type: string, handler: Listener<unknown>) => {
-      if (type !== "host.theme.changed") {
-        throw new Error("Validation plugins may subscribe only to host.theme.changed");
-      }
-      return register(eventListeners, handler, () => handler(FIRED_EVENT_DATA));
     },
     getSecret: async () => "the-stored-secret",
     resolveApiKey: async () => ({
@@ -246,7 +224,6 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
   return {
     api,
     roots: VALIDATION_HOST_ROOTS,
-    emitted,
     fireAll: () => {
       for (const fire of firing.splice(0)) fire();
     },

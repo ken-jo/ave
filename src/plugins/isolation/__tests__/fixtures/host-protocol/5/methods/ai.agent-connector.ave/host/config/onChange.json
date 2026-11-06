@@ -1,0 +1,21 @@
+{
+  "request": {
+    "id": 13,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/config/onChange",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "callback": "<uuid-2>",
+      "key": "region"
+    }
+  },
+  "response": {
+    "id": 13,
+    "jsonrpc": "2.0",
+    "result": {
+      "handleId": "<uuid-2>"
+    }
+  }
+}

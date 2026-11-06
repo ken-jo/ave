@@ -15,7 +15,7 @@ import {
   mcpAppCardSeedHeight,
   type McpAppCardSize,
 } from "../../../shared/mcp-app-card-size.js";
-import { useTheme, schemeToHostTokens } from "../theme/index.js";
+import { useHostAppearance } from "../theme/HostAppearanceProvider.js";
 // The host-side wiring lives in its own React-free module so the real-<webview> e2e gate can import and exercise THE
 // SHIPPING WIRING rather than a look-alike copy.
 import { createMcpAppBridge } from "./mcp-app-bridge.js";
@@ -81,10 +81,7 @@ export function McpAppView({
 }) {
   const { t, locale } = useTranslation();
   // Translate the applied theme without exposing host tokens.
-  const themeCtx = useTheme();
-  const appliedTheme = themeCtx.appliedTheme;
-  const appliedRevision = themeCtx.appliedRevision;
-  const terminalFontFamily = themeCtx.appearance.terminalFont.family;
+  const appearance = useHostAppearance();
 
   // Latch the card's origin session; stale-card messages must not enter a newly selected conversation. Missing origin never
   // matches a live session.
@@ -185,7 +182,7 @@ export function McpAppView({
   const timeZone = useMemo(() => hostTimeZone(), []);
 
   const buildHostContext = useCallback(() => {
-    const tokens = schemeToHostTokens(appliedTheme);
+    const tokens: Record<string, string> = { ...appearance.tokens };
 
     // Read the live custom-font override from root styles; absent an override, guests keep their own default font.
     if (typeof document !== "undefined") {
@@ -198,14 +195,14 @@ export function McpAppView({
     // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a presentation it is not in (a mode
     // change moves the card to the other mount instead).
     return buildMcpAppHostContext({
-      shell: appliedTheme.shell,
+      shell: appearance.shell,
       tokens,
-      terminalFontFamily,
+      terminalFontFamily: appearance.terminalFontFamily,
       locale,
       timeZone,
       displayMode: mountDisplayMode,
     });
-  }, [appliedTheme, terminalFontFamily, locale, timeZone, mountDisplayMode]);
+  }, [appearance, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle (`attachWebview`, keyed only on [payload, bundle])
   // can seed the initial context at mount without re-subscribing on every theme/locale change.
@@ -324,13 +321,12 @@ export function McpAppView({
     }
   }, [payload, bundle, handleResize, getDisplayMode, applyDisplayMode]);
 
-  // Push context after appliedRevision so shell and tokens come from the same theme; locale may change, but a mount's mode
-  // cannot.
+  // Each applied snapshot carries its shell, tokens and font together; the mount's display mode stays fixed.
   useEffect(() => {
     const current = bridgeRef.current;
     if (!current) return;
     current.bridge.setHostContext(buildHostContextRef.current());
-  }, [appliedRevision, terminalFontFamily, locale]);
+  }, [appearance, locale]);
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">

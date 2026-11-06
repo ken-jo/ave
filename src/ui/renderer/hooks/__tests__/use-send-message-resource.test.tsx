@@ -258,6 +258,37 @@ describe("handleAsk — a turn carrying an attached resource", () => {
     expect(restoredParts([RESOURCE])).toEqual([RESOURCE]);
   });
 
+  it("acknowledges staged composer history only after host admission", async () => {
+    const onAccepted = vi.fn();
+    const s = setup({ attachments: [], settingsReady: false });
+    await act(async () => s.result.current.handleAsk('<app-message source="app:fixture">review</app-message>', "app-message", undefined, { onAccepted }));
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(s.chatSend).not.toHaveBeenCalled();
+  });
+
+  it("notifies the staged composer to restore plain draft text after a refusal", async () => {
+    const onAccepted = vi.fn();
+    const onRefused = vi.fn();
+    const s = setup({ attachments: [], chatSend: vi.fn(async () => ({ ok: false, error: "streaming-active" })) });
+    await act(async () => s.result.current.handleAsk('<app-message source="app:fixture">review</app-message>', "app-message", undefined, { onAccepted, onRefused }));
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledOnce();
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+  });
+
+  it("keeps queued app input app-emitted and leaves a newer composer draft untouched", async () => {
+    const onAccepted = vi.fn();
+    const s = setup({ attachments: [] });
+    const envelope = '<app-message source="app:fixture">queued app draft</app-message>';
+    await act(async () => s.result.current.handleAsk(envelope, "app-message", undefined, {
+      inputOrigin: "queue-auto", appSource: "app:fixture", onAccepted,
+    }));
+    expect(s.chatSend.mock.calls[0]?.[0]).toBe(envelope);
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+    expect(s.setQuestion).not.toHaveBeenCalled();
+    expect(onAccepted).toHaveBeenCalledOnce();
+  });
+
   it("never puts a staged envelope in the composer when a staged send throws", async () => {
     // For a staged mode the first argument IS the provenance envelope, not anything the
     // user typed. Handing it back as a draft would offer server-authored text as the
@@ -475,6 +506,23 @@ describe("handleAsk — the host refuses the send with a resolved value", () => 
 });
 
 describe("handleAsk — a send while a turn is still running", () => {
+  it("interrupts an explicitly submitted app draft while preserving its envelope and provenance", async () => {
+    const s = setup({ streaming: true, attachments: [] });
+    const intent = { inputOrigin: "user-keyboard" as const, token: "gesture" };
+    const envelope = '<app-message source="app:fixture">new direction</app-message>';
+    await act(async () => s.result.current.handleAsk(envelope, "app-message", intent, { injectHint: "interrupt" }));
+    expect(s.chatSend).toHaveBeenCalledWith(envelope, [], "app-emitted", intent, undefined, { interrupt: true });
+    expect(s.markLastAssistantInterrupted).toHaveBeenCalledOnce();
+  });
+
+  it("does not interrupt an app draft without explicit keyboard authority", async () => {
+    const s = setup({ streaming: true, attachments: [] });
+    await act(async () => s.result.current.handleAsk("app text", "app-message", undefined, { injectHint: "interrupt" }));
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+    expect(s.chatSend.mock.calls[0]?.[5]).toBeUndefined();
+    expect(s.markLastAssistantInterrupted).not.toHaveBeenCalled();
+  });
+
   it("asks the host to interrupt inside the same call instead of awaiting an abort first", async () => {
     const { result, chatSend, chatAbort, resetStreamAccumulators, markLastAssistantInterrupted } = setup({
       streaming: true,

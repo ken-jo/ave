@@ -1,15 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { dirname, resolve } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
 import { mcpAppPartitionName, MCP_APP_PARTITION_PREFIX } from "../../shared/mcp-app-partition.js";
 import {
   createMcpAppProxySession,
   _resetMcpAppProxySessions,
 } from "../mcp-app-protocol.js";
-
-const __dirnameLocal = dirname(fileURLToPath(import.meta.url));
-const pluginShellHtmlUrl = pathToFileURL(resolve(__dirnameLocal, "..", "..", "plugin-ui-shell.html")).toString();
-const pluginShellJsUrl = pathToFileURL(resolve(__dirnameLocal, "..", "..", "plugin-ui-shell.js")).toString();
 
 const mockOnBeforeRequest = vi.fn();
 const mockOnBeforeRequestMcp = vi.fn();
@@ -50,7 +44,6 @@ const mockPluginSession = {
 import {
   installHtmlPreviewPartitionBlock,
   installMcpAppPartitionPolicy,
-  installPluginPartitionPolicy,
 } from "../html-preview-partition.js";
 
 const mockSessionApi = {
@@ -73,7 +66,6 @@ function invokeRegisteredHandler(mock: typeof mockOnBeforeRequest, url: string):
 
 const invokeHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequest, url);
 const invokeMcpHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestMcp, url);
-const invokePluginHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestPlugin, url);
 
 describe("installHtmlPreviewPartitionBlock", () => {
   beforeEach(() => {
@@ -191,57 +183,5 @@ describe("installMcpAppPartitionPolicy (#885 b1 — lazy per-server partition po
     expect(partitions).toContain(mcpAppPartitionName("srv-x"));
     expect(partitions).toContain(mcpAppPartitionName("srv-y"));
     expect(mcpAppPartitionName("srv-x")).not.toBe(mcpAppPartitionName("srv-y"));
-  });
-});
-
-describe("installPluginPartitionPolicy", () => {
-  beforeEach(() => {
-    mockOnBeforeRequestPlugin.mockClear();
-    mockRegisterPreloadScriptPlugin.mockClear();
-    mockProtocolHandlePlugin.mockClear();
-    mockSessionApi.fromPartition.mockClear();
-  });
-
-  it("registers plugin-preload.cjs as a session frame preload (sandboxed <webview> requirement)", () => {
-    installPluginPartitionPolicy("persist:plugin:abc123", {}, mockSessionApi);
-
-    expect(mockSessionApi.fromPartition).toHaveBeenCalledWith("persist:plugin:abc123");
-    expect(mockRegisterPreloadScriptPlugin).toHaveBeenCalledOnce();
-    expect(mockRegisterPreloadScriptPlugin).toHaveBeenCalledWith({
-      type: "frame",
-      filePath: expect.stringMatching(/plugin-preload\.cjs$/),
-    });
-  });
-
-  it("also installs the webRequest allowlist on the plugin partition session", () => {
-    installPluginPartitionPolicy("persist:plugin:def456", {}, mockSessionApi);
-    expect(mockOnBeforeRequestPlugin).toHaveBeenCalledOnce();
-    expect(mockOnBeforeRequestPlugin.mock.calls[0][0]).toBeTypeOf("function");
-  });
-
-  it("allows the ave-plugin asset protocol on plugin partitions", () => {
-    installPluginPartitionPolicy("persist:plugin:aveasset", {}, mockSessionApi);
-    expect(invokePluginHandler("ave-plugin://asset/dist/ui/panel.js")).toEqual({ cancel: false });
-  });
-
-  it("allows only host-owned plugin shell file URLs on plugin partitions", () => {
-    installPluginPartitionPolicy("persist:plugin:shellfiles", {}, mockSessionApi);
-
-    expect(invokePluginHandler("file:///etc/passwd")).toEqual({ cancel: true });
-    expect(invokePluginHandler("file:///plugins/samplehub/dist/ui.js")).toEqual({ cancel: true });
-    expect(invokePluginHandler(pluginShellHtmlUrl)).toEqual({ cancel: false });
-    expect(invokePluginHandler(pluginShellJsUrl)).toEqual({ cancel: false });
-  });
-
-  it("registers the ave-plugin handler when a plugin root is provided", () => {
-    installPluginPartitionPolicy("persist:plugin:withroot", { pluginRoot: "/plugins/samplehub" }, mockSessionApi);
-    expect(mockProtocolHandlePlugin).toHaveBeenCalledWith("ave-plugin", expect.any(Function));
-  });
-
-  it("is idempotent: re-installing the same partition does not re-register the preload", () => {
-    installPluginPartitionPolicy("persist:plugin:idempotent", {}, mockSessionApi);
-    installPluginPartitionPolicy("persist:plugin:idempotent", {}, mockSessionApi);
-    expect(mockRegisterPreloadScriptPlugin).toHaveBeenCalledOnce();
-    expect(mockOnBeforeRequestPlugin).toHaveBeenCalledOnce();
   });
 });

@@ -127,7 +127,7 @@ describe("ave:attach:discardClipboardImage", () => {
     const pluginFilePath = await saveOwnedClipboardImage();
     expect(await invokeWithSenderFrame(
       CHANNELS.attach.discardClipboardImage,
-      "file:///app/plugin-ui-shell.html",
+      "ave-mcp-app://s-66697874757265/proxy.html?t=fixture",
       pluginFilePath,
     )).toEqual({ ok: false, error: "unauthorized" });
     expect(await invoke(CHANNELS.attach.readImage, pluginFilePath)).toMatchObject({ ok: true });

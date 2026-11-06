@@ -1,4 +1,4 @@
-/** Share locale fallback derivation across main, renderer, and plugin-shell consumers. */
+/** Share locale fallback derivation across main and renderer consumers. */
 import { describe, it, expect } from "vitest";
 import {
   getPluginViewDescription,
@@ -7,7 +7,7 @@ import {
   type PluginViewLabelSource,
 } from "../plugin-view-label.js";
 import { normalizePluginLocaleTag } from "../plugin-localized-text.js";
-import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
+import type { PluginUiExtensionView } from "../plugin-ui-view.js";
 import type { PluginUiExtension } from "../../ui/renderer/types.js";
 
 // Type checks pin both consumer shapes to the shared helper’s parameter contract.

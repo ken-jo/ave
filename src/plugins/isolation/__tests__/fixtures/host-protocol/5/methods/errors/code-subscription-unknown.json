@@ -2,13 +2,13 @@
   "request": {
     "id": 1,
     "jsonrpc": "2.0",
-    "method": "ave/host/onEvent",
+    "method": "ai.agent-connector.ave/host/config/onChange",
     "params": {
       "_meta": {
-        "ave/invocation": "<uuid-1>"
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
       },
-      "eventType": "host.theme.changed",
-      "handler": "<uuid-2>"
+      "callback": "<uuid-2>",
+      "key": "region"
     }
   },
   "response": {
@@ -23,5 +23,5 @@
     "id": 1,
     "jsonrpc": "2.0"
   },
-  "trigger": "a host event bus that delivers to a listener before its registration is adopted"
+  "trigger": "a config source that delivers before its registration is adopted"
 }

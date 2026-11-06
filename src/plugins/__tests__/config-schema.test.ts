@@ -140,7 +140,7 @@ describe("US-B1 — host plugin.schema.json declares configSchema", () => {
   });
 });
 
-// Authority metadata belongs in tool._meta["ave/pathFields"]; the host classifies risk.
+// Authority metadata belongs in tool._meta["ai.agent-connector.ave/pathFields"]; the host classifies risk.
 describe("pure Tool authority metadata — no toolSchemas, category, or workerId", () => {
   it("end-to-end: parsePluginJson loads a category-less manifest on the host", async () => {
     const { buildManifestValidator, parsePluginJson } = await import(

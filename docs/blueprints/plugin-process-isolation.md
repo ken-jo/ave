@@ -2,6 +2,12 @@
 
 The code packages described here are called extensions in user-facing copy.
 
+The UI bridge and event examples below describe the earlier isolation migration.
+The current view contract is MCP Apps, including secondary panels; private module
+mounts and plugin-to-view push are removed. The
+[protocol design §5](../design/plugin-hostapi-protocol.md#5-ui-surfaces-which-process-owns-what)
+and [authoring guide](../guides/mcp-app-authoring.md) own that contract.
+
 Status: Stages 1-8 shipped — the five first-party plugins run in a confined child
 process (`src/plugins/isolation/out-of-process-plugins.ts`). Stage 9 (third-party
 admission) and Stage 10 (removing the in-process loader) are not implemented; their
@@ -99,17 +105,17 @@ The `PluginRuntimeContext` handed to (1) carries: `pluginId`, `pluginRoot`,
 `applyConfigDefaults`), `log` (a **function**), and `hostApi` (the object below).
 
 **On the wire** (`docs/design/plugin-hostapi-protocol.md` §3.2): (1)–(4) are the
-`ave/instance/construct`, `start`, `onPublished` and `stop` requests, (5) is MCP
+`ai.agent-connector.ave/instance/construct`, `start`, `onPublished` and `stop` requests, (5) is MCP
 `tools/call`, and (6) is MCP `resources/read` for a `ui://` URI the manifest
 declares, answered by the child's own MCP server — the verb a plugin in any
 language serves its card with; the host still applies the manifest's policy to
 the HTML that comes back. `construct` reports a card only when the plugin has the
 hook *and* declares a card, so the host is never handed a read the child refuses.
-The fifth instance method, `ave/instance/shutdown`, runs one registered
+The fifth instance method, `ai.agent-connector.ave/instance/shutdown`, runs one registered
 `onShutdown` handler (§3.1).
 
 `construct` is also the negotiation. Its params carry `hostProtocol.version` and
-`hostProtocol.capabilities`, the `ave/host/*` methods this host answers — read
+`hostProtocol.capabilities`, the `ai.agent-connector.ave/host/*` methods this host answers — read
 off the dispatcher's **bound** table, so a host build without `hostFetch`,
 `spawnWorker` or `resolveApiKey` does not advertise it, and what is advertised is
 what the dispatcher serves. The reply carries `pluginProtocol.requires`, the
@@ -141,9 +147,9 @@ IPC contract afterwards.
 
 **agentApproval (2)** — `agentApproval.request`, `agentApproval.respond`
 
-**top level (19)** — `getSecret`, `getInstalledPluginIds`, `hasRoutineBySource`,
-`getAppPreference`, `probePrivateHost`, `resolveApiKey`, `emitEvent`,
-`onEvent`, `onPluginsChanged`, `onShutdown`, `logEvent`, `callLlm`, `hostFetch`,
+**top level (17)** — `getSecret`, `getInstalledPluginIds`, `hasRoutineBySource`,
+`getAppPreference`, `probePrivateHost`, `resolveApiKey`,
+`onPluginsChanged`, `onShutdown`, `logEvent`, `callLlm`, `hostFetch`,
 `spawnWorker`, `openExternalUrl`, `openAuthWindow`, `openAuthPartitionViewer`,
 `clearAuthPartition`, `triggerConversation`
 
@@ -152,10 +158,10 @@ carry. (36, not 37, once the `callTool` drift in §2.3 is closed.)
 
 **On the wire** (`docs/design/plugin-hostapi-protocol.md` §3): each path the host
 answers is a JSON-RPC 2.0 request on the child's own stdio stream, beside the MCP
-traffic. The method is `ave/host/` followed by the path with `.` spelled `/`
-(`storage.read` is `ave/host/storage/read`); the paths whose contract answers
+traffic. The method is `ai.agent-connector.ave/host/` followed by the path with `.` spelled `/`
+(`storage.read` is `ai.agent-connector.ave/host/storage/read`); the paths whose contract answers
 `child-local` are never methods, and a method is recognised only in that one
-spelling (`ave/host/storage.read` names nothing). Params are an object keyed by the member's
+spelling (`ai.agent-connector.ave/host/storage.read` names nothing). Params are an object keyed by the member's
 parameter names, in declaration order — the `params` axis of
 `HOSTAPI_PATH_CONTRACTS` in `src/plugins/isolation/host-api-wire.ts`, which
 `host-api-path-params.test.ts` holds to the signatures in `public-contract.ts` with
@@ -171,7 +177,7 @@ reports per connection with each name cut to 64 characters, then one line saying
 the rest are suppressed — the child chooses those strings. The plugin's `AbortSignal` becomes
 `notifications/cancelled` naming the in-flight request id, and subscriptions,
 their release and revocation, `context.log` and the three host snapshots are the
-`notifications/ave/*` messages. The goldens under
+`notifications/ai.agent-connector.ave/*` messages. The goldens under
 `src/plugins/isolation/__tests__/fixtures/host-protocol/1/` pin one request and
 reply per method, one reply per error code, one frame per notification and the
 whole conversation of each installed plugin's surface, recorded against the real
@@ -180,7 +186,7 @@ child runtime (`host-protocol-golden.test.ts`).
 The published form of all of this is `schemas/plugin-host-protocol/1/protocol.schema.json`:
 one entry per method (`params`, `result`, `errors`, and `events` for a member
 whose registration or handle outlives the reply — the `payload` of each
-`notifications/ave/subscription` frame, read from `HostApiEventPayloads`, the
+`notifications/ai.agent-connector.ave/subscription` frame, read from `HostApiEventPayloads`, the
 type the dispatcher's `deliver` accepts), one per notification, the
 closed error set, and the capabilities a host with every optional member bound
 advertises. It is generated, not written —
@@ -200,14 +206,11 @@ implementation raises, not a narrowing of the reply.
 
 Both are small; both would silently corrupt the enumeration if left.
 
-- **`callTool` is in the effect SOT but is not on `PluginHostApi` and is not
-  constructed by `createHostApi`.** The live `callTool` is the *plugin UI webview*
-  bridge — `src/plugin-preload.ts:94` → `CHANNELS.pluginBridge.callTool` →
-  `PluginRuntime.callDeclaredAppOnlyTool`. That is a renderer→main path, not a
-  plugin-JS→host path, and it is unaffected by this work. Decision: remove the entry
-  from `HOSTAPI_EFFECT_BY_PATH` (its effect is recorded on the executor path it
-  actually takes) and record the webview bridge as a separate, already-isolated
-  surface. Leaving it inflates the contract by a member that cannot be implemented.
+- **App tool calls are not members of `PluginHostApi`.** A view calls standard
+  MCP Apps `tools/call` through `McpAppView`; main binds the request to that
+  view's server and generation, then `PluginRuntime.callFromApp` enforces tool
+  visibility and the executor's permission gates. The effect belongs to this
+  renderer-to-main executor path, not `HOSTAPI_EFFECT_BY_PATH`.
 - **`showOverlay?` is declared in `PluginHostApi` (`public-contract.ts:1358`) but is
   in neither the effect SOT nor `createHostApi`.** It is dead surface. It is also
   the single worst-shaped member for a process boundary (takes `onPrimaryAction` /
@@ -228,7 +231,7 @@ misses. Each needs a decided fate.
 | `incarnation.trackOperation(promise)` | Host tracks every returned promise so teardown can drain in-flight work | Survives unchanged. The host still holds the promise; it is now the RPC promise. |
 | `runWithCeiling` detached settlement (`runtime/index.ts:~400`) | A hung handler's work stays detached **in main**, holding a generation lease indefinitely (`PluginRuntimeDetachedOperationError`) | Becomes recoverable: kill the child, the lease releases. Real win. |
 | `withPinnedGeneration` lease | Pins the active generation across a handler call | Stays host-side. No generation crosses: each incarnation spawns its own child, so the connection is the generation, and a child that outlived its incarnation has no pipe left to send on. |
-| `_meta["ave/rawResult"]` | `plugin-runtime-delegate.ts` puts the plugin's **raw return value** into the MCP result | **This is the hazard.** See §3.6. |
+| `_meta["ai.agent-connector.ave/rawResult"]` | `plugin-runtime-delegate.ts` puts the plugin's **raw return value** into the MCP result | **This is the hazard.** See §3.6. |
 | `context.log` | A host closure the plugin calls directly | Becomes a notification. |
 | `perf.beginCall` stats | Host-side timing around the handler | Unchanged; now measures RPC round-trip too. |
 
@@ -255,12 +258,10 @@ stack, and its ability to crash the host). So each sync member gets a real decis
 | `getInstalledPluginIds()` | `string[]` | **Host-pushed snapshot**, re-sent on the same events `onPluginsChanged` already fires. |
 | `getAppPreference(key)` | `T \| undefined` | **Host-pushed snapshot.** The allow-listed key set is small and host-known. |
 | `getSecret(key)` | `string \| null` | **Contract change: becomes `Promise<string \| null>`.** No alternative exists. It cannot be snapshot-pushed — eagerly shipping secrets into the child is the exact opposite of the goal, and `runSecretGate` is a per-call four-tier decision, not a static grant. This is the one place the migration cannot avoid a flag-day. See Stage 4. |
-| `emitEvent(type, data)` | `void` | **Notification**, fire-and-forget. But it can *throw synchronously today* on a denied event (`canEmitEvent` + `auditPluginEmitDenial`). Decision: the host pushes the plugin's declared emittable set (derived from its own manifest, which the child already holds) at construction; the child stub checks locally and throws synchronously, and the host re-checks authoritatively and writes the denial audit. Both run. The host check is the control; the child check only preserves the synchronous throw the contract promises. This is not a fallback — neither side is a degraded substitute for the other. |
 | `logEvent(level, msg, data)` | `void` | **Notification.** No return, nothing lost. |
-| `onEvent(type, handler)` | `() => void` | Handler stays in the child. The child sends `subscribe(type)`, stores the handler in a child-local map, and returns a **local** disposer that sends `unsubscribe`. The host delivers matching events as notifications. Only strings and JSON payloads cross. |
-| `config.onChange(key, cb)` | `() => void` | Same pattern. |
+| `config.onChange(key, cb)` | `() => void` | The callback stays in the child under a subscription id. Host notifications carry JSON values; the child invokes its local callback. The returned local disposer releases the subscription. |
 | `onPluginsChanged(handler)` | `() => void` | Same pattern. |
-| `onShutdown(handler)` | `void` | Child registers locally under a subscription id. The host runs it with the `ave/instance/shutdown` **request** naming that id and awaits the reply, bounded by `TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs` — the same bound the host's shutdown step gives an in-process handler — plus `pluginShutdownKillGraceMs`, so the shutdown step's own timeout is the one reported. A handler that overruns the request deadline gets the transport closed and the child killed; one that throws is the request's error, which the host logs beside every other plugin's shutdown failure. This preserves today's "host awaits the handler's promise" semantics; the kill is new and is an improvement (in-process, an overrunning handler is only abandoned). |
+| `onShutdown(handler)` | `void` | Child registers locally under a subscription id. The host runs it with the `ai.agent-connector.ave/instance/shutdown` **request** naming that id and awaits the reply, bounded by `TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs` — the same bound the host's shutdown step gives an in-process handler — plus `pluginShutdownKillGraceMs`, so the shutdown step's own timeout is the one reported. A handler that overruns the request deadline gets the transport closed and the child killed; one that throws is the request's error, which the host logs beside every other plugin's shutdown failure. This preserves today's "host awaits the handler's promise" semantics; the kill is new and is an improvement (in-process, an overrunning handler is only abandoned). |
 
 ### 3.2 Async members returning non-clonable values
 
@@ -292,11 +293,11 @@ functions in a return value.
 
 - The host replies with `{ ok, vendor, baseUrl?, key, handleId }`; the child stub
   closes over `key` and synthesizes `bearer()` / `release()` locally. `release()`
-  drops the child's copy and sends `notifications/ave/subscription/release` for
+  drops the child's copy and sends `notifications/ai.agent-connector.ave/subscription/release` for
   `handleId` so the host drops its own. `bearer()` after release throws, per the
   existing contract.
 - *The other direction is a message too.* A host-side revocation reaches the child
-  as `notifications/ave/subscription/closed`, and the child's lease stub drops its copy of the key on
+  as `notifications/ai.agent-connector.ave/subscription/closed`, and the child's lease stub drops its copy of the key on
   it — otherwise the credential outlives the host's decision to take it back. That
   notification is sent from the dispatcher's release path and from nowhere else,
   for exactly one of the three close reasons: `disposed` came from the child so
@@ -341,7 +342,7 @@ earlier `socketPath`; the worker channel is its own stdio
   the wrapped-worker registry (`markPluginWorkerWrapped`), the Windows holder-PID
   ACL lifecycle, and `trackManagedChildProcess` all live in main.
 - Reply: `{ handleId, control, pid }`. Control traffic from the child is the
-  notification `notifications/ave/subscription/send` on the same handle. The child stub's `stop()` sends a
+  notification `notifications/ai.agent-connector.ave/subscription/send` on the same handle. The child stub's `stop()` sends a
   notification; `onStdout` / `onStderr` / `onExit` register **child-local**
   listeners fed by host notifications keyed by `handleId`.
 - Both sides derive the internal `handleId` as `worker_<request id>` from the
@@ -443,13 +444,11 @@ host's floating dock, and a handle for the same reason the two above are.
   host checks the panel against the CALLING plugin's slots; another plugin's
   id gets the same answer a stale one does, because distinguishing them would
   tell one plugin about another's.
-- *No `context` payload.* An attached card is served by the same
-  `plugin-ui-shell.html` and the same `ave:plugin:*` bridge a sidebar card
-  gets, so it already has `callTool`, `emitEvent`, config, storage and theme. A
-  card that needs to know what it is showing asks its own plugin. Carrying a
-  host-opaque payload would have invented a second delivery channel for
-  plugin-to-plugin data that the host cannot read or validate and would then
-  have to marshal.
+- *No `context` payload.* An attached card loads its declared `ui://` resource
+  through the same MCP Apps bridge as a sidebar panel. It reads plugin state
+  through declared app-visible tools and receives theme through standard host
+  context. A card that needs to know what it is showing asks its own plugin;
+  there is no second host-opaque channel for plugin-to-plugin data.
 - *What the host deliberately does not decide:* what the card renders. The
   slot's title comes from the manifest and is placed as TEXT inside host
   chrome; everything below it is the plugin's.
@@ -523,7 +522,7 @@ directions must become JSON.
 `src/mcp/loopback-transport.ts` calls `this.server.handle(...)` **directly** and
 passes `response.result` through by reference. There is no JSON round-trip. Combined
 with `plugin-runtime-delegate.ts` placing the plugin's raw return value into
-`_meta["ave/rawResult"]`, this means:
+`_meta["ai.agent-connector.ave/rawResult"]`, this means:
 
 > Today a plugin may return a `Date`, a `Map`, a `Set`, a class instance, a
 > function, or a live mutable object, and the host will receive that exact
@@ -748,7 +747,7 @@ Named rather than hidden, because each one can move a stage estimate.
    the foreground ask and the headless deny, including for work a handler leaves
    running after it returns. It also pins that a child spawned inside a tool call does
    not run its own lifecycle work in that call.
-6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ave/category"]` as
+6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ai.agent-connector.ave/category"]` as
    the policy SOT and `plugin-tool-from-mcp.ts` as failing closed on a missing
    category, while per-tool `category` was removed from the manifest and the host now
    classifies risk per invocation.** This drift is adjacent to, not part of, this
@@ -816,23 +815,18 @@ the real hostApi and asserts, per path, whether its arguments and return values 
 JSON-representable — with the non-representable members named explicitly as
 requiring a decided representation rather than being silently allowed.
 
-*Correction from doing it.* That set is **ten**, not eight — **eleven** once
-audio capture landed, and **twelve** with the floating dock. Alongside `hostFetch`,
+The members requiring an explicit representation include `hostFetch`,
 `resolveApiKey`, `spawnWorker`, `startAudioCapture`, `attachFloatingPanel`,
-`storage.read`, `storage.write` and the three
-disposer-returning subscriptions (`onEvent`, `onPluginsChanged`,
-`config.onChange`), the criterion "arguments **and** return values" also catches:
+`storage.read`, `storage.write` and the disposer-returning subscriptions
+`onPluginsChanged` and `config.onChange`. Checking both arguments and return
+values also catches:
 
-- `onShutdown`, whose argument is a handler function. It differs from the three
-  subscriptions only in returning `void` instead of a disposer, which is not a
-  difference the wire cares about. §3.1 already decided it.
-- `callLlm`, whose `options.signal` is an `AbortSignal`. Its return (`string`) is
-  fine, which is why counting by return value alone missed it. §3.2 already decided
-  it.
+- `onShutdown`, whose argument is a handler function. It returns `void`
+  instead of a disposer; §3.1 defines its lifetime and wire representation.
+- `callLlm`, whose `options.signal` is an `AbortSignal`. Its return
+  (`string`) is JSON-representable; §3.2 defines its argument adaptation.
 
-Neither is a new design question — both already have a decided representation
-above; the Stage 1 enumeration simply undercounted. The conformance test pins all
-ten.
+The conformance test pins the members requiring these representations.
 
 *What proves it.* The existing completeness test stays green; the new conformance
 test fails if a member is added without a marshalling decision. It also asserts the
@@ -848,7 +842,7 @@ against.
 *Scope.* `LoopbackTransport` JSON-round-trips its messages (or asserts
 serializability on every hop) instead of passing object references. Everything stays
 in-process. Fix whatever this surfaces in the six plugins' tool results and
-`_meta["ave/rawResult"]` payloads.
+`_meta["ai.agent-connector.ave/rawResult"]` payloads.
 
 *What proves it.* Full vitest suite plus the app e2e, with all six plugins loaded and
 each of their tools invoked. Any `Date` / `Map` / class instance / function in a
@@ -899,8 +893,8 @@ that **ships empty**. Nothing routes to it; the app is unchanged.
 *What proves it.* The child runtime driven over in-memory paired streams, following
 the pattern `stdio-server-loop`'s own tests already use. A contract test that every
 one of the 36 paths dispatches, marshals per §3, and reconstructs the right error
-class per §3.3. A leak test for each of the four subscription members
-(`onEvent`, `config.onChange`, `onPluginsChanged`, `onShutdown`): subscribe,
+class per §3.3. A leak test for each retained subscription member
+(`config.onChange`, `onPluginsChanged`, `onShutdown`): subscribe,
 dispose, assert both sides released.
 
 *Risk: this is where the real difficulty concentrates, and it is not close.* No
@@ -1087,9 +1081,9 @@ three requests wearing one coat:
    sandbox does not wrap**, and its preload holds an `ipcRenderer` channel to main.
    The boundary exists because plugin JS should not run beside host authority;
    re-admitting it through a window is the same defect at a different address.
-   The host already has the safe version of this: `ui[]` `embedded-module` slots,
-   loaded by the renderer out of the plugin root, which is why the recorder's
-   sidebar entry is unaffected by the move at all.
+   The host provides declared `ui[]` MCP Apps slots backed by served `ui://`
+   resources. These render under a per-server origin through the host-owned
+   sandbox proxy; the plugin supplies no preload or host renderer module.
 3. **System-audio capture** — a partition-bound session whose display-media request
    handler the plugin installs, plus the platform flag for the OS audio tap. This is
    not windowing in any sense. The display-media handler decides *what the user's
@@ -1234,18 +1228,18 @@ All three are closed, in that order and by separate releases:
   captures as first-party code and the plugin receives PCM as data, so
   `push-chunk` — the one channel that carried anything — stopped existing
   before the window did.
-- (1) and (3) went together in plugin 0.7.0: `hostApi.attachFloatingPanel`.
-  The remaining eleven channels became ordinary tools on the bridge every
-  plugin card already has, and the renderer became an `embedded-module`
-  served by the host's own `plugin-ui-shell.html`.
+- (1) and (3) went together in plugin 0.7.0 through
+  `hostApi.attachFloatingPanel`. Floating panels now serve a declared MCP Apps
+  resource and use app-visible tools through the standard bridge, matching
+  sidebar panels.
 
 **This is not the windowing wire the paragraph below warns against**, and the
 two are close enough that the difference is worth stating. The plugin does not
 get a window; it gets a SLOT in the one dock the host owns. Frameless,
 transparent, always-on-top, screen position, and how large the dock may grow
 are the host's and reach no parameter — so (1) was not handed over as data, it
-was **taken away**. The card loads through the HOST's shell and the HOST's
-preload, never the plugin's, which is (3). And the height cap is on the whole
+was **taken away**. The host loads the declared app resource through its
+sandbox proxy and relay preload; the plugin cannot supply a preload. The height cap is on the whole
 dock rather than per slot, because per-slot caps alone would let several slots
 add up to a full-height overlay.
 

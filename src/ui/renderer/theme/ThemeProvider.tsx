@@ -7,6 +7,8 @@ import { requireScheme } from "./schemes/index.js";
 import { schemeToHostTokens } from "./host-theme-tokens.js";
 import type { ThemeContextValue, ResolvedShell } from "./types.js";
 
+import { HostAppearanceProvider } from "./HostAppearanceProvider.js";
+
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 declare global {
@@ -14,7 +16,7 @@ declare global {
 }
 
 export interface ThemeProviderProps {
-  api?: AveApi;
+  api?: Pick<AveApi, "getSettings" | "onSettingsUpdated" | "notifyPluginTheme" | "updateSettings">;
   initialAppearance?: AppearanceSettings;
   children: ReactNode;
 }
@@ -80,7 +82,12 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
     appearance, mode: appearance.mode, darkScheme: appearance.darkScheme, lightScheme: appearance.lightScheme,
     setMode, setScheme, resolved: scheme.shell, scheme, appliedTheme: applied.theme, appliedRevision: applied.revision,
   }), [appearance, setMode, setScheme, scheme, applied]);
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  const hostAppearance = useMemo(() => ({
+    shell: applied.theme.shell,
+    tokens: schemeToHostTokens(applied.theme),
+    terminalFontFamily: appearance.terminalFont.family,
+  }), [applied, appearance.terminalFont.family]);
+  return <ThemeContext.Provider value={value}><HostAppearanceProvider value={hostAppearance}>{children}</HostAppearanceProvider></ThemeContext.Provider>;
 }
 
 export function useTheme(): ThemeContextValue {

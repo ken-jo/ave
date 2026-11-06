@@ -12,13 +12,11 @@ export {
   validateSender,
   UNAUTHORIZED_FRAME,
   auditUnauthorized,
-  validatePluginFrame,
 } from "./ipc/gated.js";
 
 export {
   registerIpcHandlers,
   registerWindowEventListeners,
-  unregisterPluginWebview,
 } from "./ipc/index.js";
 
 // Preserve the public compatibility facade while keeping main-process callers

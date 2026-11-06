@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 11,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/storage/readEncrypted",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "relPath": "tokens/cache.bin"
+    }
+  },
+  "response": {
+    "id": 11,
+    "jsonrpc": "2.0",
+    "result": "the decrypted text"
+  }
+}

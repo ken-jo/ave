@@ -19,7 +19,6 @@ export interface LifecycleDeps {
   getMainWindow?: () => BrowserWindow | null;
   mainWindow: BrowserWindow | null;
   pythonRuntime?: PythonRuntimeBootstrapper;
-  installLoadedPluginPartitionPolicy: (pluginId: string) => void;
   getBundleLifecycle: () => PluginBundleLifecycleHandler | undefined;
 }
 
@@ -31,7 +30,6 @@ export function createLifecycleCallbacks(
     getMainWindow,
     mainWindow,
     pythonRuntime,
-    installLoadedPluginPartitionPolicy,
   } = deps;
 
   const reconcileAlerts = () => {
@@ -90,8 +88,6 @@ export function createLifecycleCallbacks(
     // Resync tools on enable; a sync failure must not turn a successful reload into a runtime failure.
     onEnable: (pluginId) => {
       reconcileAlerts();
-      // Re-register partition preloads on every enable so refreshed views receive their bridge.
-      installLoadedPluginPartitionPolicy(pluginId);
       // All plugin tool registration goes through loopback discovery.
       // Renderer refresh is best-effort; closed windows must not fail runtime reload.
       fanOutToAllWindows(deps.getAppWindows(), "ave:plugins:runtime-updated", { pluginId }, { logger: log });

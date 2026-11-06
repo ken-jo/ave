@@ -98,7 +98,7 @@ describe("Tailnet sharing owner IPC boundary", () => {
 
     const handler = handlers.get(CHANNELS.tailnetSharing.createCurrentConversationShare)!;
     await expect(Promise.resolve(handler(
-      { senderFrame: { url: "file:///app/plugin-ui-shell.html" } } as never,
+      { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } } as never,
       { intent, pairingId: PAIRING_ID, permission: "observe" },
     ))).resolves.toEqual({ ok: false, error: "unauthorized-frame" });
 

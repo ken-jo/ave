@@ -4,12 +4,38 @@ import { HOST_FONT_STACK } from "../../../../shared/host-font-stack.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../../../shared/host-theme-replay.js";
 import { buildMcpAppHostContext } from "../mcp-app-host-context.js";
 import { MCP_APP_AVAILABLE_DISPLAY_MODES } from "../../../../shared/mcp-app-display-mode.js";
 // Compare shipped declaration text because extensionless package imports fail member resolution under NodeNext; omit
 // fixture tokens to test partial maps.
 const TERMINAL_FONT_FAMILY = "Example Mono, monospace";
+
+afterEach(() => resetLastThemePayloadForTests());
+
+describe("host theme replay into app context", () => {
+  it("copies and freezes validated tokens before translating them for a view", () => {
+    const tokens = schemeToHostTokens(resolveTheme(SCHEMES.find((scheme) => scheme.id === "nord")!));
+    expect(recordValidatedTheme({ bundleId: "nord", shell: "dark", tokens: { ...tokens, "not-a-token": "injected" } }).ok).toBe(true);
+    const cached = getLastThemePayload()!;
+    expect(Object.isFrozen(cached)).toBe(true);
+    expect(Object.isFrozen(cached.tokens)).toBe(true);
+    expect(Reflect.set(cached.tokens!, "--ave-bg", "#fff")).toBe(false);
+    expect(getLastThemePayload()).not.toBe(cached);
+    const context = buildMcpAppHostContext({ shell: cached.shell, tokens: cached.tokens!, terminalFontFamily: TERMINAL_FONT_FAMILY, locale: "en", timeZone: "UTC", displayMode: "inline" });
+    expect(context.theme).toBe("dark");
+    expect(context.styles?.variables?.["--color-background-primary"]).toBe(tokens["--ave-bg"]);
+    expect(Object.keys(context.styles?.variables ?? {}).some((key) => key === "not-a-token" || key.startsWith("--ave-"))).toBe(false);
+  });
+
+  it("retains the last valid view theme after an invalid notification", () => {
+    expect(recordValidatedTheme({ bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#fff" } }).ok).toBe(true);
+    const before = getLastThemePayload();
+    expect(recordValidatedTheme({ bundleId: "github-dark", shell: "dark" }).ok).toBe(false);
+    expect(getLastThemePayload()).toEqual(before);
+  });
+});
 
 const LIGHT_TOKENS: Record<string, string> = {
   "--ave-bg": "hsl(0, 0%, 100%)",

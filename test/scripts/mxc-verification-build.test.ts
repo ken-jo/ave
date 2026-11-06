@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error standalone build utilities have no declaration output
 import { assertMxcVerificationPayload, assertMxcVerificationPublish, mxcVerificationBuild, mxcVerificationEntries } from "../../scripts/lib/mxc-verification-build.mjs";
 
+// Plain script fixtures use the interpreter supplied by the suite launcher.
+const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function output(enabled: boolean) {
@@ -45,7 +48,7 @@ describe("explicit native verification build", () => {
         return nextLoad(url, context);
       }});
     `);
-    const result = spawnSync(process.execPath, ["--import", pathToFileURL(guard).href, path.resolve("scripts/build-installers.mjs"), ...publishArgs], {
+    const result = spawnSync(nodeCommand, ["--import", pathToFileURL(guard).href, path.resolve("scripts/build-installers.mjs"), ...publishArgs], {
       cwd: root,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_MXC_VERIFICATION_BUILD: "1" },
       encoding: "utf8",

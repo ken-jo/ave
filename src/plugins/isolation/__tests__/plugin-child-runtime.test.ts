@@ -15,7 +15,7 @@ import {
   PluginHostApiError,
   type HostApiNotification,
   type HostApiRequest,
-  type HostEventDelivery,
+  type WireConfigChangeEvent,
 } from "../host-api-wire.js";
 import {
   createChildHostApiStub,
@@ -386,7 +386,7 @@ describe("a hostApi call crosses the reverse channel and settles", () => {
       {
         jsonrpc: "2.0",
         id: 1,
-        method: "ave/host/hasRoutineBySource",
+        method: "ai.agent-connector.ave/host/hasRoutineBySource",
         params: { source: "digest" },
       },
     ]);
@@ -397,7 +397,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
   function subscriptionTable(teardown: () => void) {
     return {
       ...HOSTAPI_DISPATCH_TABLE,
-      onEvent: defineHostApiPath("onEvent", async (invocation, scope) => {
+      "config.onChange": defineHostApiPath("config.onChange", async (invocation, scope) => {
         const subscriptionId = invocation.args[1] as string;
         scope.adopt(subscriptionId, teardown);
         return { handleId: subscriptionId };
@@ -408,22 +408,22 @@ describe("a subscription releases on both sides, whichever side dies", () => {
   async function subscribe(teardown: () => void) {
     const wired = await harness({ table: subscriptionTable(teardown) });
     const received: unknown[] = [];
-    const subscription = wired.child.openSubscription("onEvent", (payload) =>
+    const subscription = wired.child.openSubscription("config.onChange", (payload) =>
       received.push(payload),
     );
-    await wired.call("onEvent", ["task.created", subscription.subscriptionId]);
+    await wired.call("config.onChange", ["task.created", subscription.subscriptionId]);
     expect(wired.child.openSubscriptionCount).toBe(1);
     expect(wired.host.openSubscriptionCount).toBe(1);
     return { ...wired, subscription, received };
   }
 
-  it("delivers host events to the plugin's handler", async () => {
+  it("keeps unrelated subscription releases away from the handler", async () => {
     const { host, subscription, received } = await subscribe(() => {});
     const table = HOSTAPI_DISPATCH_TABLE;
-    expect(table.onEvent.status).toBe("unimplemented");
+    expect(table["config.onChange"].status).toBe("unimplemented");
     host.handleNotification({
       jsonrpc: "2.0",
-      method: "notifications/ave/subscription/release",
+      method: "notifications/ai.agent-connector.ave/subscription/release",
       params: {
         subscriptionId: `${subscription.subscriptionId}-nope`,
       },
@@ -442,7 +442,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     expect(teardown).toHaveBeenCalledTimes(1);
     expect(childNotifications.at(-1)).toEqual({
       jsonrpc: "2.0",
-      method: "notifications/ave/subscription/release",
+      method: "notifications/ai.agent-connector.ave/subscription/release",
       params: { subscriptionId: subscription.subscriptionId },
     });
 
@@ -484,7 +484,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     expect(
       child.deliver({
         jsonrpc: "2.0",
-        method: "notifications/ave/subscription/closed",
+        method: "notifications/ai.agent-connector.ave/subscription/closed",
         params: {
           subscriptionId: subscription.subscriptionId,
           reason: "revoked",
@@ -502,7 +502,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     // Report notifications racing release; silent drops can mask leaks or mis-keyed IDs.
     const outcome: NotificationOutcome = child.deliver({
       jsonrpc: "2.0",
-      method: "notifications/ave/subscription",
+      method: "notifications/ai.agent-connector.ave/subscription",
       params: {
         subscriptionId: subscription.subscriptionId,
         payload: { late: true },
@@ -513,10 +513,10 @@ describe("a subscription releases on both sides, whichever side dies", () => {
 
   it("carries a payload from the host handler to the plugin's callback", async () => {
     const delivered: unknown[] = [];
-    let push: ((payload: HostEventDelivery) => void) | undefined;
+    let push: ((payload: WireConfigChangeEvent) => void) | undefined;
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
-      onEvent: defineHostApiPath("onEvent", async (invocation, scope) => {
+      "config.onChange": defineHostApiPath("config.onChange", async (invocation, scope) => {
         const subscriptionId = invocation.args[1] as string;
         scope.adopt(subscriptionId, () => {});
         push = (payload) => scope.deliver(subscriptionId, payload);
@@ -524,16 +524,16 @@ describe("a subscription releases on both sides, whichever side dies", () => {
       }),
     };
     const wired = await harness({ table });
-    const subscription = wired.child.openSubscription("onEvent", (payload) =>
+    const subscription = wired.child.openSubscription("config.onChange", (payload) =>
       delivered.push(payload),
     );
-    await wired.call("onEvent", ["task.created", subscription.subscriptionId]);
+    await wired.call("config.onChange", ["task.created", subscription.subscriptionId]);
 
-    push?.({ data: { taskId: "t1" } });
-    expect(delivered).toEqual([{ data: { taskId: "t1" } }]);
+    push?.({ key: "theme", value: { taskId: "t1" } });
+    expect(delivered).toEqual([{ key: "theme", value: { taskId: "t1" } }]);
 
     subscription.dispose();
-    expect(() => push?.({ data: { taskId: "t2" } })).toThrow(/no open subscription/u);
+    expect(() => push?.({ key: "theme", value: { taskId: "t2" } })).toThrow(/no open subscription/u);
   });
 });
 

@@ -144,9 +144,6 @@ describe("IPC domain runtime named-export lock", () => {
           "publishHostThemeChanged",
           "recordValidatedTheme",
           "registerPluginsHandlers",
-          "replayThemeToWebview",
-          "revokePluginWebviewsForPlugin",
-          "unregisterPluginWebview",
           "validateThemePayload",
         ],
         "prompts": [

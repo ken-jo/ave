@@ -22,7 +22,7 @@ export function hostApiRequest(
   return {
     jsonrpc: "2.0",
     id,
-    method: `ave/host/${path.replaceAll(".", "/")}`,
+    method: `ai.agent-connector.ave/host/${path.replaceAll(".", "/")}`,
     params: isHostApiPath(path) ? hostApiParamsOf(path, args) : {},
   };
 }
@@ -37,7 +37,7 @@ export function argsOfRequest(request: HostApiRequest): unknown[] {
 }
 
 export function pathOfRequest(request: HostApiRequest): HostApiPath {
-  const path = request.method.slice("ave/host/".length).replaceAll("/", ".");
+  const path = request.method.slice("ai.agent-connector.ave/host/".length).replaceAll("/", ".");
   if (!isHostApiPath(path)) throw new Error(`not a hostApi request: ${request.method}`);
   return path;
 }

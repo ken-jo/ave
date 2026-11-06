@@ -1337,8 +1337,9 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    if (partial.permissions) {
-      for (const listener of this.changeListeners.get("permissions") ?? []) {
+    for (const key of ["permissions", "appearance"] as const) {
+      if (!partial[key]) continue;
+      for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
     }

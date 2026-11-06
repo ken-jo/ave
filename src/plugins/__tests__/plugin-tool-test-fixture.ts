@@ -7,7 +7,7 @@ import type { Tool } from "../../tools/base.js";
 import type { PluginRuntime } from "../runtime.js";
 import type { PluginManifest } from "../types.js";
 
-const RAW_RESULT_META = "ave/rawResult";
+const RAW_RESULT_META = "ai.agent-connector.ave/rawResult";
 
 export function buildPluginToolsForTest(
   pluginRuntime: PluginRuntime,

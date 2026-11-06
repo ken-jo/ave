@@ -24,15 +24,13 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   /** The live terminal tab owner's renderer, or null; never fall back to another window. */
   findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
-  installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
-  revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
   onBootShutdown(run: () => Promise<void>, needed: () => boolean): void;
   /** Initialize once before cues; Windows persisted-toast activation requires the shortcut and activator registration. */
   initializeNotificationPresenter(): boolean;
   notificationOptions: Partial<NotificationServiceOptions>;
   powerMonitor: PowerMonitorLike;
   createAudioCaptureSurface(): AudioCaptureSurface;
-  createFloatingDockSurface(): FloatingDockSurface;
+  createFloatingDockSurface(settings: import("../data/settings-store.js").SettingsService): FloatingDockSurface;
   pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
   pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
   browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;

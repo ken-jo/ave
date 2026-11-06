@@ -16,7 +16,6 @@ describe("assembleAppServices rationale shutdown", () => {
     };
     const ctx = {
       disposeRefreshActiveLlmWildcard: mark("active-llm-wildcard"),
-      disposePluginEventBridge: mark("plugin-event-bridge"),
       preferenceRefreshService: { stop: mark("preference") },
       memoryMaintenanceCoordinator: { stop: mark("memory-maintenance") },
       idleScheduler: { stop: mark("idle") },
@@ -61,7 +60,6 @@ describe("assembleAppServices rationale shutdown", () => {
     await expect(shutdown).rejects.toThrow("application service shutdown failed");
     expect(order).toEqual([
       "active-llm-wildcard",
-      "plugin-event-bridge",
       "memory-maintenance",
       "preference",
       "idle",

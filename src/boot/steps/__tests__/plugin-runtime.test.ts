@@ -124,8 +124,6 @@ import {
   initPluginRuntime,
   sanitizePluginPendingPrompt,
 } from "../plugin-runtime.js";
-import { installPluginPartitionPolicy } from "../../../main/html-preview-partition.js";
-import { pluginPartitionName } from "../../../shared/plugin-partition.js";
 import { emitEvent } from "../../types.js";
 import { setAppShutdownStarted } from "../../../main/app-state.js";
 import { createHash } from "node:crypto";
@@ -175,7 +173,6 @@ function invokeHostApiFactory<TArgs extends unknown[], TResult>(
 function createRuntimeHost() {
   return createBootHostFixture({ desktop: createDesktopHostFixture({
     getAppWindows: () => runtimeTestState.browserWindows as never[],
-    installPluginPartition: (pluginId, pluginRoot) => installPluginPartitionPolicy(pluginPartitionName(pluginId), { pluginRoot }),
     onBootShutdown: runtimeTestState.onBootShutdown,
   }) });
 }
@@ -336,113 +333,6 @@ describe("deriveOverlaySummaryForDisplay", () => {
     expect(summary.length).toBeLessThanOrEqual(2_000);
     expect(summary).toContain("[잘림");
     expect(summary).toContain("확인하기");
-  });
-});
-
-describe("initPluginRuntime partition policy", () => {
-
-
-  it("registers plugin webview preload policy from onEnable after a live reload", async () => {
-    runtimeTestState.capturedRuntimeOptions = null;
-    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
-    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
-    runtimeTestState.runtime.getPluginRoot.mockImplementation(
-      (pluginId: string) => `/tmp/ave-test/plugins/${pluginId}`,
-    );
-    const installPolicy = vi.mocked(installPluginPartitionPolicy);
-    installPolicy.mockClear();
-
-    await initPluginRuntime({
-    host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      inputClassifier: {
-        unregisterByPlugin: vi.fn(),
-        hasPluginKeywords: vi.fn(() => false),
-      } as never,
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      shellOpenExternal: vi.fn(),
-      approvalGate: {} as never,
-      routinesStore: { list: () => [] } as never,
-      getAlertsService: () => undefined,
-    });
-
-    const onEnable = runtimeTestState.capturedRuntimeOptions?.onEnable as
-      | ((pluginId: string) => void)
-      | undefined;
-    expect(onEnable).toBeDefined();
-
-    // Broadcast enablement to live windows so plugin views remount with the new runtime revision.
-    const liveSend = vi.fn();
-    const destroyedSend = vi.fn();
-    runtimeTestState.browserWindows = [
-      { isDestroyed: () => false, webContents: { send: liveSend } },
-      { isDestroyed: () => true, webContents: { send: destroyedSend } },
-    ];
-
-    onEnable!("managed-plugin");
-
-    expect(installPolicy).toHaveBeenCalledWith(
-      pluginPartitionName("managed-plugin"),
-      { pluginRoot: "/tmp/ave-test/plugins/managed-plugin" },
-    );
-    expect(liveSend).toHaveBeenCalledWith("ave:plugins:runtime-updated", {
-      pluginId: "managed-plugin",
-    });
-    expect(destroyedSend).not.toHaveBeenCalled();
-    runtimeTestState.browserWindows = [];
-  });
-
-  /** Boot is the sole partition-filter installer; installed and attached partition names must match. */
-  it("installs the partition filter for every started plugin and every later install", async () => {
-    runtimeTestState.capturedRuntimeOptions = null;
-    runtimeTestState.runtime.listPluginIds.mockReturnValue(["alpha", "beta"]);
-    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
-    runtimeTestState.runtime.getPluginRoot.mockImplementation(
-      (pluginId: string) => `/tmp/ave-test/plugins/${pluginId}`,
-    );
-    const installPolicy = vi.mocked(installPluginPartitionPolicy);
-    installPolicy.mockClear();
-
-    await initPluginRuntime({
-    host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      clearAuthPartitionService: vi.fn(),
-      networkFetch: vi.fn() as never,
-      shellOpenExternal: vi.fn(),
-      approvalGate: {} as never,
-      routinesStore: { list: () => [] } as never,
-      getAlertsService: () => undefined,
-    });
-
-    for (const pluginId of ["alpha", "beta"]) {
-      expect(installPolicy).toHaveBeenCalledWith(pluginPartitionName(pluginId), {
-        pluginRoot: `/tmp/ave-test/plugins/${pluginId}`,
-      });
-    }
-
-    // Post-boot installs need the install subscription because they missed the initial filter pass.
-    installPolicy.mockClear();
-    emitEvent("plugin.installed", { pluginId: "gamma" });
-    expect(installPolicy).toHaveBeenCalledWith(pluginPartitionName("gamma"), {
-      pluginRoot: "/tmp/ave-test/plugins/gamma",
-    });
   });
 });
 
@@ -707,8 +597,8 @@ describe("initPluginRuntime HostApi factory", () => {
       pluginDataDir,
     );
     expect(api).not.toHaveProperty("callTool");
-    expect(api).toHaveProperty("emitEvent");
-    expect(api).toHaveProperty("onEvent");
+    expect(api).not.toHaveProperty("emitEvent");
+    expect(api).not.toHaveProperty("onEvent");
   });
 
   it("keeps a forged manifest from reintroducing a cross-plugin callTool surface", async () => {
@@ -754,8 +644,8 @@ describe("initPluginRuntime HostApi factory", () => {
       pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
     );
     expect(evilApi).not.toHaveProperty("callTool");
-    expect(evilApi).toHaveProperty("emitEvent");
-    expect(evilApi).toHaveProperty("onEvent");
+    expect(evilApi).not.toHaveProperty("emitEvent");
+    expect(evilApi).not.toHaveProperty("onEvent");
   });
 
   it("resolveApiKey denies a non-active vendor even when both keys are allowlisted", async () => {

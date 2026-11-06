@@ -3,7 +3,7 @@
  * (`docs/blueprints/plugin-process-isolation.md` §2, §3), and the reverse
  * channel of the published host protocol
  * (`docs/design/plugin-hostapi-protocol.md` §3): every hostApi member is a
- * JSON-RPC 2.0 method named `ave/host/<path>`, sharing the stream with the
+ * JSON-RPC 2.0 method named `ai.agent-connector.ave/host/<path>`, sharing the stream with the
  * MCP half the plugin serves.
  *
  * Behind a process boundary each member becomes a message, and a message is
@@ -216,19 +216,19 @@ export function fromHostApiRpcError(error: unknown): HostApiWireError {
  * The method prefix of every member the plugin calls on the host. Ave-owned,
  * which is what keeps these names apart from every name MCP defines (§3.1).
  */
-const HOST_METHOD_PREFIX = "ave/host/";
+const HOST_METHOD_PREFIX = "ai.agent-connector.ave/host/";
 
-/** `storage.read` → `ave/host/storage/read`. Total over {@link HostApiPath}. */
+/** `storage.read` → `ai.agent-connector.ave/host/storage/read`. Total over {@link HostApiPath}. */
 export function hostApiMethodOf(path: HostApiPath): string {
   return `${HOST_METHOD_PREFIX}${path.replaceAll(".", "/")}`;
 }
 
 /**
- * `ave/host/storage/read` → `storage.read`, or `undefined` for a method that
+ * `ai.agent-connector.ave/host/storage/read` → `storage.read`, or `undefined` for a method that
  * names no member. Total over strings, and the exact inverse of
  * {@link hostApiMethodOf}: a method is accepted only in the one spelling that
- * function produces, so `ave/host/storage.read` names nothing rather than
- * being a silent alias of `ave/host/storage/read`.
+ * function produces, so `ai.agent-connector.ave/host/storage.read` names nothing rather than
+ * being a silent alias of `ai.agent-connector.ave/host/storage/read`.
  */
 export function hostApiPathOf(method: string): HostApiPath | undefined {
   if (!method.startsWith(HOST_METHOD_PREFIX)) return undefined;
@@ -293,12 +293,12 @@ export type SubscriptionCloseReason = "disposed" | "peer-gone" | "revoked";
 
 /** The notification names both directions use (§3.4, §3.5). */
 export const HOST_PROTOCOL_NOTIFICATIONS = {
-  subscription: "notifications/ave/subscription",
-  subscriptionClosed: "notifications/ave/subscription/closed",
-  subscriptionRelease: "notifications/ave/subscription/release",
-  subscriptionSend: "notifications/ave/subscription/send",
+  subscription: "notifications/ai.agent-connector.ave/subscription",
+  subscriptionClosed: "notifications/ai.agent-connector.ave/subscription/closed",
+  subscriptionRelease: "notifications/ai.agent-connector.ave/subscription/release",
+  subscriptionSend: "notifications/ai.agent-connector.ave/subscription/send",
   cancelled: "notifications/cancelled",
-  configSnapshot: "notifications/ave/config/snapshot",
+  configSnapshot: "notifications/ai.agent-connector.ave/config/snapshot",
 } as const;
 
 /** One notification frame: JSON-RPC with no `id`, never answered. */
@@ -351,7 +351,7 @@ export type HostApiNotification =
       { readonly subscriptionId: string; readonly payload: WireWorkerSend }
     >
   /**
-   * child → host: cancel an in-flight `ave/host/*` request.
+   * child → host: cancel an in-flight `ai.agent-connector.ave/host/*` request.
    *
    * An `AbortSignal` cannot cross, so the child names the REQUEST the signal
    * belonged to and the host aborts the controller it holds for that request.
@@ -799,7 +799,6 @@ function assertWithinWireBytesMax(byteLength: number, label: string): void {
   );
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────
 // The path SOT: one entry per hostApi member
 // ─────────────────────────────────────────────────────────────────────────
@@ -992,22 +991,6 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "child-disposable",
     errors: [],
   },
-  // The child preserves synchronous ownership rejection; the host independently
-  // rechecks identity before forwarding an event to this plugin’s own UI.
-  emitEvent: {
-    params: ["eventType", "data"],
-    arguments: "plain-json",
-    result: "void",
-    lifetime: "none",
-    errors: [],
-  },
-  onEvent: {
-    params: ["eventType", "handler"],
-    arguments: "handler-registration",
-    result: "handle",
-    lifetime: "child-disposable",
-    errors: [],
-  },
   // `options.signal` is an `AbortSignal`, which cancels the request with
   // `notifications/cancelled` rather than crossing. The return is a plain
   // string, which is why counting non-representable members by return value
@@ -1045,7 +1028,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
   // managed-child registry all live in main. The child receives
   // `{ handleId, control, pid }`, registers child-local listeners fed by host
   // notifications, and sends stdio-control traffic with
-  // `notifications/ave/subscription/send`. The isolated plugin
+  // `notifications/ai.agent-connector.ave/subscription/send`. The isolated plugin
   // must NOT be permitted to spawn its own worker: a grandchild would sit
   // outside the grants keyed to host-allocated paths.
   spawnWorker: {
@@ -1228,7 +1211,6 @@ export function isHostApiPath(value: unknown): value is HostApiPath {
   return typeof value === "string" && Object.hasOwn(HOSTAPI_PATH_CONTRACTS, value);
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────
 // The path partitions each handler group carries
 // ─────────────────────────────────────────────────────────────────────────
@@ -1257,7 +1239,6 @@ export const SERVICE_HOSTAPI_PATHS = [
   "raiseAlert",
   "probePrivateHost",
   "resolveApiKey",
-  "emitEvent",
   "callLlm",
   "hostFetch",
   "spawnWorker",
@@ -1269,7 +1250,6 @@ export const SERVICE_HOSTAPI_PATHS = [
 
 /** One service member. */
 export type ServiceHostApiPath = (typeof SERVICE_HOSTAPI_PATHS)[number];
-
 
 /** The members the storage handler group carries. */
 export const STORAGE_HOSTAPI_PATHS = [
@@ -1308,8 +1288,7 @@ export type DispatchedStorageHostApiPath = Exclude<
 export type ConfigSubscriptionPath =
   | "config.get"
   | "config.set"
-  | "config.onChange"
-  | "onEvent";
+  | "config.onChange";
 
 /**
  * The members that reach the host. `config.get` is excluded by NAME here and by
@@ -1360,11 +1339,6 @@ export interface ConfigChangeEvent {
   readonly value?: unknown;
 }
 
-/** What `onEvent` puts on the wire. Wrapped for the same reason. */
-export interface HostEventDelivery {
-  readonly data?: unknown;
-}
-
 /**
  * What `config.onChange` puts on the wire: the new value, or in its place the
  * flag that stands for {@link SECRET_REDACTED_SENTINEL} (see
@@ -1375,7 +1349,7 @@ export type WireConfigChangeEvent =
   | { readonly key: string; readonly secretRedacted: true };
 
 /**
- * The `payload` of each `notifications/ave/subscription` frame, by the member
+ * The `payload` of each `notifications/ai.agent-connector.ave/subscription` frame, by the member
  * whose registration or handle it is for.
  *
  * One table serves both ends of the claim: the dispatcher's
@@ -1388,15 +1362,13 @@ export type WireConfigChangeEvent =
 export interface HostApiEventPayloads {
   /** One per change of the watched key. */
   readonly "config.onChange": WireConfigChangeEvent;
-  /** One per event of the subscribed type. */
-  readonly onEvent: HostEventDelivery;
   /** Output and control traffic as it arrives, then one `exit`. */
   readonly spawnWorker: WireWorkerEvent;
   /** PCM frames in order, then one `end`. */
   readonly startAudioCapture: WireAudioCaptureEvent;
   /** One `detached` when the slot goes away. */
   readonly attachFloatingPanel: WireFloatingPanelEvent;
-  /** Pushes nothing: a lease is only ever closed, by `notifications/ave/subscription/closed`. */
+  /** Pushes nothing: a lease is only ever closed, by `notifications/ai.agent-connector.ave/subscription/closed`. */
   readonly resolveApiKey: never;
 }
 
@@ -1491,11 +1463,6 @@ export function decodeConfigChange(payload: unknown): ConfigChangeEvent {
     return { key, value: SECRET_REDACTED_SENTINEL };
   }
   return { key, value: record.value };
-}
-
-/** Take an `onEvent` event off the wire. */
-export function decodeHostEvent(payload: unknown): HostEventDelivery {
-  return { data: asEventRecord(payload, "onEvent").data };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

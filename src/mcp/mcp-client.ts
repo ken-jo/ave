@@ -523,7 +523,7 @@ export class McpClient {
           "initialize",
           {
             protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
-            capabilities: {},
+            capabilities: this.clientCapabilities(),
             clientInfo: CLIENT_INFO,
           },
           HANDSHAKE_TIMEOUT_MS,
@@ -1313,7 +1313,14 @@ export class McpClient {
    * `mrtr-input-loop`/`governance-per-request` milestones derive it from the active turn's consent state + #811 policy (design §3.6). `elicitation` declares the host CAN gather approvals. */
   private clientCapabilities(): McpClientCapabilities {
     // Per-request when a provider is wired (the active turn decides); otherwise a fixed sound default. `withRequestMeta` calls this on every request.
-    return this.capabilityProvider?.() ?? { elicitation: { form: {}, url: {} }, extensions: {} };
+    const capabilities = this.capabilityProvider?.() ?? { elicitation: { form: {}, url: {} } };
+    return {
+      ...capabilities,
+      extensions: {
+        ...capabilities.extensions,
+        [MCP_APPS_UI_EXTENSION]: { mimeTypes: ["text/html;profile=mcp-app"] },
+      },
+    };
   }
 
   /** Stamp the three required RC reserved `_meta` keys (protocolVersion, clientInfo, clientCapabilities) onto a request's params. In the

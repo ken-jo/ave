@@ -1,5 +1,4 @@
 /** Child HostApi stubs own marshalling and local handles; imports must remain free of host state. */
-import { canEmitEvent } from "../capabilities.js";
 import { resolvePluginStoragePath } from "../plugin-storage-containment.js";
 import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
 import type {
@@ -25,7 +24,6 @@ import {
   STORAGE_HOSTAPI_PATHS,
   asWireWorkerEvent,
   decodeConfigChange,
-  decodeHostEvent,
   decodeWireBinary,
   decodeWireHttpResponse,
   encodeWireBytes,
@@ -103,7 +101,7 @@ export interface ServiceChildMemberDeps {
   ) => () => void;
   /** Report asynchronous void-member refusals without unhandled rejections. */
   readonly report: (message: string, meta?: unknown) => void;
-  /** Send `notifications/ave/subscription/send` for a handle that accepts it. */
+  /** Send `notifications/ai.agent-connector.ave/subscription/send` for a handle that accepts it. */
   readonly send: (subscriptionId: string, payload: WireWorkerSend) => void;
 }
 
@@ -126,17 +124,11 @@ function requireHandle(value: unknown, path: HostApiPath): HostApiHandle {
   return handle;
 }
 
-/** Preserve sync/async signatures so void calls report late errors without returning ignored promises. */
+/** Preserve the host member signatures across the process boundary. */
 export function createServiceChildMembers(
   deps: ServiceChildMemberDeps,
 ): Record<ServiceHostApiPath, ChildHostApiMember> {
-  const { call, pluginId } = deps;
-
-  const reportDetached = (path: HostApiPath, error: unknown): void => {
-    deps.report(`hostApi.${path} failed after returning`, {
-      error: errorMessage(error),
-    });
-  };
+  const { call } = deps;
 
   return {
     getSecret: async (...args) =>
@@ -158,19 +150,6 @@ export function createServiceChildMembers(
 
     resolveMappedDriveRoot: async (...args) =>
       call("resolveMappedDriveRoot", positional(args[0])) as Promise<string | null>,
-
-    /** Recheck emit policy locally only for synchronous-throw timing; the host still decides access and audit. */
-    emitEvent: (...args) => {
-      const eventType = args[0] as string;
-      if (!canEmitEvent(eventType, pluginId)) {
-        throw new Error(
-          `Plugin '${pluginId}' may emit only its own UI event '${String(eventType)}'`,
-        );
-      }
-      call("emitEvent", positional(eventType, args[1])).catch((error: unknown) => {
-        reportDetached("emitEvent", error);
-      });
-    },
 
     callLlm: async (...args) => {
       const options = args[1] as { signal?: AbortSignal; maxTokens?: number; systemPrompt?: string } | undefined;
@@ -602,22 +581,6 @@ export function createConfigSubscriptionChildMembers(
             deps.config[change.key] = change.value;
           }
           callback(change.value);
-        },
-      );
-      return () => {
-        subscription.dispose();
-      };
-    },
-
-    onEvent: (...args) => {
-      const eventType = requireStringArgument(pluginId, "onEvent", "eventType", args[0]);
-      const handler = requireFunctionArgument(pluginId, "onEvent", "handler", args[1]);
-      const subscription = subscribe(
-        deps,
-        "onEvent",
-        (subscriptionId) => [eventType, subscriptionId],
-        (payload) => {
-          handler(decodeHostEvent(payload).data);
         },
       );
       return () => {

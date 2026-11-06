@@ -380,12 +380,12 @@ not be drawn with the same value.
   - Theme bundles own palette choices, not component behavior.
 
 ## Plugin surfaces (shared guide for plugin authors)
-Plugin UIs are **free**: the host contract provides no UI components, tokens, or style checks. This section is the philosophy and the small set of hard boundaries that keep a free plugin UI feeling native inside the workbench.
+Plugin UIs own their components and styles. The host provides standard MCP Apps context and a small set of hard boundaries for panels inside the workbench.
 
 ### What crosses the webview boundary today
-- Plugin panels render in isolated webviews. The shell injects **only the shared font stack** (`plugin-ui-shell.html`, mirroring `src/shared/host-font-stack.ts`). The app's semantic tokens (`bg-card` etc.), Tailwind setup, and theme bundles do **not** reach plugin webviews — bring your own styling.
-- Host theme IS available, as an **opt-in event**: the host broadcasts the sticky `host.theme.changed` event carrying the `--ave-*` token payload (replayed on subscribe — `src/plugin-preload.ts`; payload contract `src/shared/plugin-ui-tokens.ts`). A plugin may subscribe and apply those variables to follow the host theme, or ignore it and ship a self-contained palette that holds up on any host theme — both are legitimate. Vendor your own subscriber helper if you opt in.
-- UI language is **not signaled** across the boundary (open design item — see Open questions). Keep your strings externalized so a locale signal can be adopted later.
+- Plugin panels render served MCP Apps HTML through `McpAppView` in a per-server origin. The host stylesheet and components do not cross that boundary.
+- Read the initial theme and standard `styles.variables` from `app.getHostContext()`; handle subsequent changes with `onhostcontextchanged`. The host maps its existing theme tokens to that standard vocabulary in `mcp-app-host-context.ts`. See the [authoring guide](guides/mcp-app-authoring.md#realtime-state-without-a-private-push-channel).
+- Host context also carries `locale`. Keep strings externalized and use that value to select the panel's UI language.
 
 ### Chrome ownership
 - The host draws the page chrome: sidebar entry, `PageShell` title/back control for plugin pages, and panel framing. **Do not draw a second page title bar or back button inside your panel** — your surface starts inside the content area.
@@ -500,5 +500,4 @@ determine whether a tile can split or a panel can dock.
 
 ## Open questions
 - Should typography scale tokens be promoted once Japanese/Chinese visual QA identifies repeated density adjustments?
-- Plugin webview theme signal, long-term shape: the sticky `host.theme.changed` event already carries the full `--ave-*` token payload (opt-in, see Plugin surfaces). Open: is that full token payload the stable long-term contract, or should it narrow to a minimal light/dark + semantic-variable signal? Design pending.
-- Plugin locale signal (i18n wiring): plugins should be able to FOLLOW the host UI language (strings externalized; no language is mandated), but no locale getter/change signal crosses the runtime or webview boundary yet. Wiring design pending; reviewed 2026-07-10.
+- Plugin UI localization coverage: host context supplies locale changes; each panel owns its translations and locale coverage.

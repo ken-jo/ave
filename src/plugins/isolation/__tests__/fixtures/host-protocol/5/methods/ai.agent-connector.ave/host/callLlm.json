@@ -1,0 +1,21 @@
+{
+  "request": {
+    "id": 18,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/callLlm",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "options": {
+        "maxTokens": 16
+      },
+      "prompt": "say hello"
+    }
+  },
+  "response": {
+    "id": 18,
+    "jsonrpc": "2.0",
+    "result": "the host answered"
+  }
+}

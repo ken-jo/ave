@@ -4,7 +4,7 @@ import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
+import { isComposerDraftEmpty, parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
 import { GalleryVerticalEnd, PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -37,6 +37,8 @@ import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 import { useCurrentSession } from "../hooks/use-sessions.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { isSecondaryMainWindow } from "../utils/main-window-role.js";
+import { useComposerDraft } from "../hooks/use-composer-draft.js";
+import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -363,7 +365,8 @@ export function ChatGroupSession({
     onToastDismiss: (toast: { id: string }) => removeTileNotice(toast.id),
   }), [tileNoticePersistent, tileNoticeVisible, tileNoticePending, removeTileNotice]);
 
-  const [question, setQuestion] = useState("");
+  const { draft: composerDraft, draftRef: composerDraftRef, setDraft: setComposerDraft, setQuestion, stageAppMessage, acceptPendingAppDraft, dismissPendingAppDraft } = useComposerDraft();
+  const question = composerDraft.text;
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentNCounter = useRef(0);
@@ -437,10 +440,14 @@ export function ChatGroupSession({
   // conversation is being replaced, not left, so its text belongs to the one that replaces it.
   const draftCarryFromRef = useRef<string | null>(null);
   // Text a new chat opens with (startNewChat's `opening.draft`), waiting for the tile to switch to that conversation.
-  const newChatDraftRef = useRef<{ sessionId: string; text: string } | null>(null);
+  const newChatDraftRef = useRef<{ sessionId: string; text: string; appSource?: string } | null>(null);
   // The memory a "Ave 에게 고치기" chat was opened for, shown above that conversation's composer until it is sent.
   const [memoryFix, setMemoryFix] = useState<{ sessionId: string; memory: MemoryFixTarget } | null>(null);
   useLayoutEffect(() => {
+    const restoreDraft = () => {
+      const draft = takeComposerDraft(currentSessionId);
+      setComposerDraft(draft);
+    };
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
     draftSessionIdRef.current = currentSessionId;
@@ -450,7 +457,14 @@ export function ChatGroupSession({
     if (opening && opening.sessionId === currentSessionId) {
       newChatDraftRef.current = null;
       if (previous && !carry) {
-        parkComposerDraft(previous, questionRef.current);
+        parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
+        setComposerDraft({ text: "" });
+      }
+      if (opening.appSource) {
+        stageAppMessage(opening.text, opening.appSource);
+        return;
+      }
+      if (previous && !carry) {
         setQuestion(opening.text);
       } else {
         // Text typed into the conversation being replaced arrives with it, as on the ordinary path, after the opening text.
@@ -463,15 +477,15 @@ export function ChatGroupSession({
     // conversation that is arriving, so it stays, and a parked draft only
     // fills an empty composer (otherwise it stays parked).
     if (!previous || carry) {
-      if (!questionRef.current) setQuestion(takeComposerDraft(currentSessionId));
+      if (isComposerDraftEmpty(composerDraftRef.current)) restoreDraft();
       return;
     }
-    parkComposerDraft(previous, questionRef.current);
-    setQuestion(takeComposerDraft(currentSessionId));
+    parkComposerDraft(previous, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
+    restoreDraft();
   }, [currentSessionId]);
   useEffect(() => () => {
     const sessionId = draftSessionIdRef.current;
-    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current);
+    if (sessionId !== null) parkComposerDraft(sessionId, composerDraftRef.current.text, composerDraftRef.current.appSource, composerDraftRef.current.pendingAppDrafts);
     draftSessionIdRef.current = null;
   }, []);
 
@@ -608,22 +622,27 @@ export function ChatGroupSession({
   const handleGuide = useCallback(async (
     text: string,
     intent?: UserKeyboardIntentSnapshot,
+    appSource?: string,
   ): Promise<{ ok: true } | { ok: false; error: string }> => {
     if (text.trim().length === 0) return { ok: false, error: "empty-text" };
     try {
-      const result = await api.chatGuide(text, intent);
+      const result = await api.chatGuide(text, intent, appSource);
       // Main-process handler returns `{ ok: boolean, error?: string }`. Type-narrow defensively since the IPC boundary is
       // `Promise<unknown>`.
       if (result && typeof result === "object" && "ok" in result) {
         const r = result as { ok: boolean; error?: string };
-        if (r.ok) return { ok: true };
+        if (r.ok) {
+          if (appSource) insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource,
+            prompt: formatAppMessageEnvelope(text, appSource), summary: text });
+          return { ok: true };
+        }
         return { ok: false, error: r.error ?? "unknown-error" };
       }
       return { ok: false, error: "invalid-response" };
     } catch (err) {
       return { ok: false, error: (err as Error)?.message ?? "ipc-error" };
     }
-  }, [api]);
+  }, [api, insertImportedTriggerEntry]);
 
   const handleFeedback = useCallback(
     async (messageIdx: number, rating: "up" | "down", reason?: string) => {
@@ -663,8 +682,11 @@ export function ChatGroupSession({
       if (opening !== undefined && applied !== null) {
         // The new conversation opens with this text in its composer: set it if the tile already switched (keeping what the
         // switch carried over), otherwise hand it to the switch.
-        if (draftSessionIdRef.current === applied) setQuestion(withOpeningText(opening.draft, questionRef.current));
-        else newChatDraftRef.current = { sessionId: applied, text: opening.draft };
+        if (draftSessionIdRef.current === applied) {
+          if (opening.appSource) stageAppMessage(opening.draft, opening.appSource);
+          else setQuestion(withOpeningText(opening.draft, questionRef.current));
+        }
+        else newChatDraftRef.current = { sessionId: applied, text: opening.draft, appSource: opening.appSource };
         setMemoryFix(opening.fixMemory ? { sessionId: applied, memory: opening.fixMemory } : null);
       }
       await env.refreshSessions();
@@ -882,6 +904,7 @@ export function ChatGroupSession({
     currentSessionProject,
     loadSession: async (sessionId: string) => (await handleLoadSessionAndRefresh(sessionId)) !== false,
     prefillComposer: setQuestion,
+    stageAppMessage,
     appendSystemEntry,
     startNewChat,
   });
@@ -956,7 +979,7 @@ export function ChatGroupSession({
   const dismissMemoryFix = useCallback(() => setMemoryFix(null), []);
   const chatContextValue = useMemo<ChatContextValue>(() => ({
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, setQuestion, chatEndRef, currentSessionId, hidden,
+    question, appSource: composerDraft.appSource, draftIdentity: composerDraft, setQuestion, chatEndRef, currentSessionId, hidden,
     publishSideChatSurface: setSideChatSurface,
     hasApiKey: env.effectiveLlmReady, settingsLoaded: env.settingsLoaded,
     onOpenSettings: env.onOpenSettings,
@@ -986,12 +1009,13 @@ export function ChatGroupSession({
     llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
   }), [
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
-    question, currentSessionId, hidden, env, memoryFix, dismissMemoryFix,
+    question, composerDraft, currentSessionId, hidden, env, memoryFix, dismissMemoryFix,
     contextOverflowPct, usedTokens, contextBudget, effectiveBudget,
     tpmLimit, tpmPct, isTpmOverflow,
     attachments, costEstimate, costBadgeClass,
   ]);
 
+  const pendingAppDraft = composerDraft.pendingAppDrafts?.[0];
   const content = (
     <ChatContextProvider value={chatContextValue}>
       <ChatView
@@ -1002,6 +1026,17 @@ export function ChatGroupSession({
         onAsk={(q, intent, opts) => {
           // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
           if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);
+          const appSource = opts?.appSource;
+          if (appSource) {
+            const envelope = formatAppMessageEnvelope(q, appSource);
+            return handleAsk(envelope, "app-message", intent, {
+              ...opts,
+              onRefused: () => setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource }),
+              onAccepted: () => {
+                insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource, prompt: envelope, summary: q });
+              },
+            });
+          }
           return handleAsk(q, "default", intent, opts);
         }}
         /** opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째 인자로 전달 — queue-auto inject path 활성. */
@@ -1050,6 +1085,13 @@ export function ChatGroupSession({
         onNewChatForProject={env.onNewChatForProject}
         onRefreshProjects={env.onRefreshProjects}
         onProjectError={env.onProjectError}
+        appDraftSuggestion={pendingAppDraft ? {
+          appName: env.plugins.find((plugin) => plugin.pluginId === pendingAppDraft.appSource.slice(4))?.label
+            ?? pendingAppDraft.appSource.slice(4),
+          text: pendingAppDraft.text,
+          onReplace: acceptPendingAppDraft,
+          onDismiss: dismissPendingAppDraft,
+        } : undefined}
       />
       {/* The arguments form belongs to the tile that asked for the prompt:
           a window-level dialog would send the result to whichever tile

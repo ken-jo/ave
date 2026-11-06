@@ -214,7 +214,7 @@ describe("ui IPC handlers", () => {
     const wellFormed = { requestId: "req-4", x: 1, y: 2, kind: "message", commands: ["message.copy"] };
     const pluginResult = invoke(
       UI.nativeContextMenu,
-      makeEvent("file:///app/plugin-ui-shell.html"),
+      makeEvent("ave-mcp-app://s-66697874757265/proxy.html?t=fixture"),
       wellFormed,
     );
     expect(pluginResult).toEqual({ ok: false, error: "unauthorized-frame" });

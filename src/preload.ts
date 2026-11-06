@@ -1,11 +1,8 @@
 // Named imports — esbuild bundles these as direct property access on the CJS
-// module (no `__toESM` wrapper, no `.default` indirection). Aligned with
-// plugin-preload.ts for the same reason: Electron 41 sandboxed webview preload
+// module (no `__toESM` wrapper, no `.default` indirection). Sandboxed preload
 // contexts fail silently when the bundled output goes through
 // `__toESM(require("electron"), 1).default.contextBridge`.
 import { contextBridge } from "electron";
-import { resolve as pathResolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { buildPublicSurface } from "./preload/public-surface.js";
 import type { AveApi } from "./ui/renderer/types.js";
 import { prepareFileDrop, resolveDroppedPaths } from "./preload/webutils-bridge.js";
@@ -18,22 +15,7 @@ import {
   buildAveWindowWorld,
   readInitialAppearance,
 } from "./preload/internal-surface.js";
-import { LINK_WINDOW_SHELL_ARGUMENT, PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
-
-// ─── Deterministic plugin webview asset URLs ────────────────────────────────
-// `__dirname` here resolves to the host preload's bundled location
-// (`dist/src/`). These MUST be computed in this entry module (not a submodule)
-// so `__dirname` points at `dist/src/`; the host renderer reads them directly
-// when mounting the plugin <webview>, and they survive splash-phase data: URLs.
-function safeResolveFileUrl(relative: string): string {
-  try {
-    return pathToFileURL(pathResolve(__dirname, relative)).toString();
-  } catch {
-    return "";
-  }
-}
-const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
-const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
+import { LINK_WINDOW_SHELL_ARGUMENT } from "./shared/preload-bundles.js";
 
 // Only the app renderer and splash consume appearance; link shells use their own titlebar tokens.
 const aveInitialAppearance = process.argv.includes(LINK_WINDOW_SHELL_ARGUMENT) ? null : readInitialAppearance();
@@ -42,8 +24,6 @@ applyInitialAppearance(aveInitialAppearance);
 // ─── Composed host API surface ──────────────────────────────────────────────
 // The public + internal builders partition the methods; the exposed
 // `window.aveApi` object is their union (byte-identical name + shape). The
-// plugin webview asset URLs are added here because they depend on this module's
-// `__dirname`.
 // `satisfies` is the drift gate: the renderer declares AveApi and this is
 // the one place the whole surface is assembled, so a member the renderer
 // expects and no builder provides fails to compile here (each builder checks
@@ -51,8 +31,6 @@ applyInitialAppearance(aveInitialAppearance);
 const api = {
   ...buildPublicSurface(),
   ...buildInternalApiSurface(),
-  pluginPreloadUrl,
-  pluginShellUrl,
 } satisfies AveApi;
 
 // Seed the provider with the appearance already painted by preload.

@@ -37,7 +37,7 @@ export function isAppOnlyRuntimeInvocation(
   // Tool visibility is authoritative; any model-visible tool stays on the governed executor.
   const tool = manifest.tools.find((t) => t.name === toolName);
   // Operation-governed tools stay on the executor even when visible only in apps.
-  if (tool?._meta?.["ave/operationPolicy"]) return false;
+  if (tool?._meta?.["ai.agent-connector.ave/operationPolicy"]) return false;
   return tool != null && isUiOnly(tool);
 }
 

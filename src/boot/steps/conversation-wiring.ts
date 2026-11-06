@@ -1,5 +1,4 @@
 /** Wire loop-dependent services late; retain the event-bridge disposer for refresh and shutdown. */
-import type { BrowserWindow } from "electron";
 import { openOAuthLogin, type OpenOAuthLogin } from "../../main/oauth-login.js";
 import { createRoutineEngine } from "../routine.js";
 import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
@@ -13,7 +12,6 @@ import {
 } from "../conversation.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
-import { registerPluginEventBridge } from "./ipc-bridge.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { retainedDescendantWorkspaceRoots } from "../../permissions/workspace-root-reconciler.js";
@@ -263,26 +261,6 @@ export async function wireConversation(
       ),
     });
   }
-
-  // Maintain one event bridge per live window; adding a window must not dispose other bridges.
-  const pluginEventBridges = new Map<BrowserWindow, () => void>();
-  ctx.addPluginEventBridgeWindow = (win: BrowserWindow | null) => {
-    if (!win) return;
-    pluginEventBridges.get(win)?.();
-    pluginEventBridges.delete(win);
-    if (win.isDestroyed()) return;
-    const dispose = registerPluginEventBridge(pluginRuntime, win,
-    );
-    pluginEventBridges.set(win, dispose);
-  };
-  ctx.refreshPluginEventBridges = () => {
-    for (const win of [...pluginEventBridges.keys()]) ctx.addPluginEventBridgeWindow(win);
-  };
-  ctx.disposePluginEventBridge = () => {
-    for (const dispose of pluginEventBridges.values()) dispose();
-    pluginEventBridges.clear();
-  };
-  ctx.addPluginEventBridgeWindow(mainWindow);
 
   const { postTurnHookChain } = createPostTurnHookChain({
     memoryManager,

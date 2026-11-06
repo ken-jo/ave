@@ -112,7 +112,6 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     auditLogger: {
       log: vi.fn(),
     },
-    refreshPluginEventBridge: vi.fn(),
     pluginPaths: { cacheRoot: join(cleanupRoot, ".cache") },
     clearAuthPartitionService: vi.fn(async () => undefined),
     listPluginAuthPartitionsService: vi.fn((pluginId: string) => [
@@ -473,7 +472,7 @@ describe("plugins IPC lifecycle broadcast", () => {
     expect(handler).toBeDefined();
 
     const result = await Promise.resolve(handler!(
-      { senderFrame: { url: "file:///tmp/ave/plugin-ui-shell.html" } },
+      { senderFrame: { url: "ave-mcp-app://s-66697874757265/proxy.html?t=fixture" } },
       { kind: "ask-user", contextRef: { questionId: "q-1" } },
     ));
 

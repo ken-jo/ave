@@ -33,11 +33,11 @@ function curlCode(url, cb) {
     { timeout: 12000 }, (err, stdout) => cb(err ? null : (stdout || "").trim()));
 }
 function handle(frame) {
-  if (frame.method === "$/ave/hello") {
+  if (frame.method === "$/ai.agent-connector.ave/hello") {
     return send({ id: frame.id, result: { protocol: frame.params.protocol, version: "1" } });
   }
-  if (frame.method === "$/ave/shutdown") process.exit(0);
-  if (frame.method === "$/ave/cancel") return;
+  if (frame.method === "$/ai.agent-connector.ave/shutdown") process.exit(0);
+  if (frame.method === "$/ai.agent-connector.ave/cancel") return;
   if (frame.method === undefined) {
     // A response to a request this worker sent to its plugin.
     const original = asked.get(frame.id);

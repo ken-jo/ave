@@ -234,7 +234,7 @@ describe("git marketplace IPC boundary", () => {
     await expect(invokeFileIpcHandler(handlers, channels.bootInstallsNotice)).resolves.toEqual({ ok: true, value: null });
 
     state.setPendingGitMarketplaceLink({ action: "add", url: "acme/tools" });
-    await expect(invokeAppIpcHandlerFromFrame(handlers, channels.deepLinkTake, "file:///app/plugin-ui-shell.html"))
+    await expect(invokeAppIpcHandlerFromFrame(handlers, channels.deepLinkTake, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
       .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
     await expect(invokeFileIpcHandler(handlers, channels.deepLinkTake)).resolves.toEqual({ ok: true, value: { action: "add", url: "acme/tools" } });
     expect(create).not.toHaveBeenCalled();
@@ -259,7 +259,7 @@ describe("git marketplace IPC boundary", () => {
 
     await expect(invokeFileIpcHandler(handlers, CHANNELS.bootstrap.retry)).resolves.toEqual({ ok: true });
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
-    await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.bootstrap.retry, "file:///app/plugin-ui-shell.html"))
+    await expect(invokeAppIpcHandlerFromFrame(handlers, CHANNELS.bootstrap.retry, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
       .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.applyBootInstalls).toHaveBeenCalledTimes(2);
   });
@@ -329,7 +329,7 @@ describe("git marketplace IPC boundary", () => {
     expect(JSON.parse(readFileSync(join(home, "marketplaces", "updates.json"), "utf8"))).toMatchObject({ version: 1, discovery: { result: "ok" } });
 
     for (const channel of [channels.updatesStatus, channels.updatesCheck]) {
-      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "file:///app/plugin-ui-shell.html"))
+      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
         .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
     }
     expect(service.discover).toHaveBeenCalledTimes(2);
@@ -397,7 +397,7 @@ describe("git marketplace IPC boundary", () => {
     expect(service.updates).toHaveBeenCalledTimes(2);
     await expect(invokeFileIpcHandler(handlers, channels.updatesApplyNow)).resolves.toMatchObject({ ok: true, value: { waitingSince: null, escalated: false } });
     for (const channel of [channels.updatesApplyNow, channels.componentsApprove]) {
-      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "file:///app/plugin-ui-shell.html"))
+      await expect(invokeAppIpcHandlerFromFrame(handlers, channel, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
         .resolves.toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
     }
   });
@@ -431,7 +431,7 @@ describe("git marketplace IPC boundary", () => {
     }
   });
 
-  it("lets a plugin install that lands after the shutdown hook finish, without telling the host or refreshing the bridge", async () => {
+  it("lets a plugin install that lands after the shutdown hook finish, without telling the host", async () => {
     shutdownHooks.clear();
     const { lifetime } = await setup();
     const { onEvent } = await import("../../../boot/types.js");
@@ -455,7 +455,6 @@ describe("git marketplace IPC boundary", () => {
         listPluginIds: () => ["calendar"],
         activatePreparedArtifact: vi.fn(),
       },
-      refreshPluginEventBridge: vi.fn(),
     };
     const port = pluginInstaller(deps as never, whileRunning(lifetime.signal));
     const plan = { name: "calendar" } as never;
@@ -465,7 +464,6 @@ describe("git marketplace IPC boundary", () => {
       land();
       await expect(first).resolves.toEqual({ action: "install", staged: false });
       expect(announced).toHaveBeenCalledTimes(1);
-      expect(deps.refreshPluginEventBridge).toHaveBeenCalledTimes(1);
 
       const second = port.install(plan, { stage: false, switchSource: false } as never);
       await vi.waitFor(() => expect(installGitPlugin).toHaveBeenCalledTimes(2));
@@ -474,7 +472,6 @@ describe("git marketplace IPC boundary", () => {
       land();
       await expect(second).resolves.toEqual({ action: "install", staged: false });
       expect(announced).toHaveBeenCalledTimes(1);
-      expect(deps.refreshPluginEventBridge).toHaveBeenCalledTimes(1);
     } finally {
       off();
     }
@@ -497,7 +494,7 @@ describe("git marketplace IPC boundary", () => {
 
   it("refuses plugin frames without building the service", async () => {
     const { create, service } = await setup();
-    const answer = await invokeAppIpcHandlerFromFrame(handlers, channels.installExecute, "file:///app/plugin-ui-shell.html", "p1");
+    const answer = await invokeAppIpcHandlerFromFrame(handlers, channels.installExecute, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture", "p1");
     expect(answer).toEqual({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
     expect(parseGitMarketplaceResult(answer)).toMatchObject({ ok: false, code: "unauthorized-frame" });
     expect(create).not.toHaveBeenCalled();
@@ -1397,7 +1394,7 @@ describe("a package installed from a source stored under a credential-shaped id 
 });
 
 describe("folder dialogs (§18.9)", () => {
-  const PLUGIN_FRAME = "file:///app/plugin-ui-shell.html";
+  const PLUGIN_FRAME = "ave-mcp-app://s-66697874757265/proxy.html?t=fixture";
 
   it("answers the chosen folder, null on cancel, and builds no marketplace for it", async () => {
     const { create } = await setup();

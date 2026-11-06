@@ -1,12 +1,8 @@
 // The main-process request gate protects LLM-authored HTML even if renderer CSP is bypassed. Untrusted MCP apps use separate lazy per-server partitions,
 // opened only to origins declared by that server’s resources.
 import { createRequire } from "node:module";
-import { normalize } from "node:path";
-import { fileURLToPath } from "node:url";
 import { RENDER_HTML_PARTITION } from "../shared/render-html-preview.js";
 import { mcpAppPartitionName } from "../shared/mcp-app-partition.js";
-import { runtimeAssetPath } from "./main-paths.js";
-import { installPluginAssetProtocolHandler, PLUGIN_ASSET_SCHEME } from "./plugin-asset-protocol.js";
 import { preloadBundlePath } from "./preload-bundles.js";
 import {
   installMcpAppProtocolHandler,
@@ -17,9 +13,6 @@ import {
 
 const require = createRequire(import.meta.url);
 // This module may be emitted into `dist/src/main/chunks/*.js`; asset paths must stay anchored at the real `dist/src` directory rather than this chunk.
-const pluginShellHtmlPath = normalize(runtimeAssetPath("plugin-ui-shell.html"));
-const pluginShellJsPath = normalize(runtimeAssetPath("plugin-ui-shell.js"));
-const pluginPreloadPath = preloadBundlePath("pluginPreload");
 const mcpAppPreloadPath = preloadBundlePath("mcpAppPreload");
 
 type SessionApi = { fromPartition(partition: string): Electron.Session };
@@ -92,9 +85,6 @@ function installDeclaredPermissionGate(ses: Electron.Session): void {
   );
 }
 
-// Block plugin UI network requests; tools use the bridge. Track installed partition policies so reattachment cannot stack handlers.
-const installedPluginPartitions = new Set<string>();
-
 // Install each server partition policy once so card rerenders cannot stack request handlers.
 const installedMcpAppPartitions = new Set<string>();
 
@@ -120,51 +110,6 @@ export function installMcpAppPartitionPolicy(
   // Register a host-resolved session frame preload before guest loading; sandboxed webviews ignore element preloads and attach hooks strip them.
   // Servers must never nominate executable preloads; resolve assets independently of bundled chunk depth.
   ses.registerPreloadScript({ type: "frame", filePath: mcpAppPreloadPath });
-}
-
-function isAllowedPluginShellFile(url: URL): boolean {
-  if (url.protocol !== "file:") return false;
-  try {
-    const filePath = normalize(fileURLToPath(url));
-    return filePath === pluginShellHtmlPath || filePath === pluginShellJsPath;
-  } catch {
-    return false;
-  }
-}
-
-export function installPluginPartitionPolicy(
-  partitionName: string,
-  options: { pluginRoot?: string } = {},
-  sessionApi: SessionApi = getElectronSession(),
-): void {
-  const ses = sessionApi.fromPartition(partitionName);
-  // Unconditional: the scheme has to be on the session before the partition's first frame loads, and the root is allowed to arrive later. See
-  // `installPluginAssetProtocolHandler`.
-  installPluginAssetProtocolHandler(partitionName, ses, options.pluginRoot);
-  if (installedPluginPartitions.has(partitionName)) return;
-  installedPluginPartitions.add(partitionName);
-
-  // Register the frame preload before sandboxed webviews load; the preload attribute alone is silently ignored.
-  ses.registerPreloadScript({ type: "frame", filePath: pluginPreloadPath });
-
-  ses.webRequest.onBeforeRequest((details, callback) => {
-    try {
-      const url = new URL(details.url);
-      if (
-        isAllowedPluginShellFile(url) ||
-        url.protocol === `${PLUGIN_ASSET_SCHEME}:` ||
-        url.protocol === "data:" ||
-        url.protocol === "blob:" ||
-        url.protocol === "about:"
-      ) {
-        callback({ cancel: false });
-        return;
-      }
-      callback({ cancel: true });
-    } catch {
-      callback({ cancel: true });
-    }
-  });
 }
 
 export function installHtmlPreviewPartitionBlock(sessionApi: SessionApi = getElectronSession()): void {

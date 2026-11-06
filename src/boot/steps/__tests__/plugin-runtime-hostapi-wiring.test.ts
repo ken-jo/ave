@@ -4,7 +4,7 @@ useConfigurationOwner();
 
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
-/** Drive the captured boot HostApi factory so config precedence and event identity are tested at their producer. */
+/** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,8 +51,6 @@ const runtimeTestState = vi.hoisted(() => ({
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
     isShuttingDown: vi.fn(() => false),
-    assertPluginEventAccess: vi.fn(),
-    assertPluginEventEmitAccess: vi.fn(),
     resolveToolOwner: vi.fn((toolName: string) => `${toolName}-owner`),
     setConfigOverride: vi.fn(),
     mergeConfigOverride: vi.fn(),
@@ -131,8 +129,6 @@ const OFFICIAL_ORIGIN = {
 };
 
 import { initPluginRuntime } from "../plugin-runtime.js";
-import { emitEvent as emitHostEvent } from "../../types.js";
-import { subscribeOwnPluginUiEvents } from "../../../plugins/ui-events.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
@@ -154,9 +150,8 @@ type ConfigHostApi = {
   config: {
     get: <T = unknown>(key: string) => T | undefined;
     set: <T = unknown>(key: string, value: T) => Promise<void>;
+    onChange: (key: string, callback: (value: unknown) => void) => () => void;
   };
-  emitEvent: (type: string, data?: unknown) => void;
-  onEvent: (type: string, handler: (data: unknown) => void) => () => void;
   getSecret: (key: string) => string | undefined | null;
   storage: {
     readText: (rel: string) => Promise<string>;
@@ -663,28 +658,7 @@ describe("HostApi.config.set round-trip", () => {
   });
 });
 
-describe("HostApi emitEvent/onEvent round-trip", () => {
-  it("binds host theme subscriptions to the candidate incarnation", async () => {
-    const createHostApi = await initAndGetFactory(
-      makeSettingsService(new Map()),
-    );
-    const api = createHostApi(
-      "samplemail",
-      { id: "samplemail", config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-candidate-event-grant-"))),
-      activeIncarnation(),
-      "samplemail",
-      { installSource: "admin", manifestSha256: "candidate-sha" },
-    );
-
-    api.onEvent("host.theme.changed", vi.fn());
-
-    expect(runtimeTestState.runtime.assertPluginEventAccess).toHaveBeenCalledWith(
-      "samplemail",
-      "host.theme.changed",
-    );
-  });
-
+describe("HostApi incarnation authority", () => {
   it("uses the raw registry install identity for canonical alias HostApi provenance", async () => {
     const installAlias = "marketplace-install-alias";
     // The registry alias must not change grant provenance.
@@ -1046,58 +1020,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(await call(manifest, manifestSha256)).toMatchObject({ ok: true, exposure: "lease" });
     // A manifest not read from a document matches no pin, not even one taken over its projection.
     expect(await call(unread, projectionSha256)).toMatchObject({ ok: false, reason: "not-whitelisted" });
-  });
-
-  it("delivers an emitted event only to the emitting plugin UI and unsubscribe stops delivery", async () => {
-    const createHostApi = await initAndGetFactory(
-      makeSettingsService(new Map()),
-    );
-    const api = createHostApi(
-      "plugin-a",
-      { id: "plugin-a", config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-evt-"))),
-      activeIncarnation(),
-      "plugin-a",
-    );
-
-    const handler = vi.fn();
-    const unsubscribe = subscribeOwnPluginUiEvents("plugin-a", handler);
-
-    api.emitEvent("plugin-a.updated", { value: 7 });
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(handler).toHaveBeenCalledWith("plugin-a.updated", { value: 7 });
-
-    unsubscribe();
-    api.emitEvent("plugin-a.updated", { value: 8 });
-    expect(handler).toHaveBeenCalledTimes(1);
-  });
-
-  it("stops delivering host notifications into a live incarnation once the runtime begins shutting down", async () => {
-    const createHostApi = await initAndGetFactory(
-      makeSettingsService(new Map()),
-    );
-    const api = createHostApi(
-      "plugin-a",
-      { id: "plugin-a", config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-evt-shutdown-"))),
-      activeIncarnation(),
-      "plugin-a",
-    );
-    const eventHandler = vi.fn();
-    const unsubscribe = api.onEvent("host.theme.changed", eventHandler);
-
-    emitHostEvent("host.theme.changed", { theme: "dark" });
-    expect(eventHandler).toHaveBeenCalledTimes(1);
-
-    // The incarnation is still active; only the runtime's shutdown has begun.
-    runtimeTestState.runtime.isShuttingDown.mockReturnValue(true);
-    try {
-      emitHostEvent("host.theme.changed", { theme: "light" });
-    } finally {
-      runtimeTestState.runtime.isShuttingDown.mockReturnValue(false);
-    }
-    expect(eventHandler).toHaveBeenCalledTimes(1);
-    unsubscribe();
   });
 
   it("gives a worker only the floor pierces its plugin's reviewed declaration asked for", async () => {
@@ -1478,20 +1400,6 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     await key.release();
   });
 
-  it("rejects events outside the caller's UI namespace", async () => {
-    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
-    const api = createHostApi(
-      "plugin-a",
-      { id: "plugin-a", config: {}, capabilities: ["mail-source"] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-emit-denied-"))),
-      activeIncarnation(),
-      "plugin-a",
-    );
-    expect(() => api.emitEvent("email.new", { subject: "hi" })).toThrow(/may emit only its own UI events/);
-    expect(() => api.emitEvent("plugin-b.updated", {})).toThrow(/may emit only its own UI events/);
-    expect(() => api.emitEvent("plugin-a.updated", { value: 1 })).not.toThrow();
-  });
-
   it("revokes every callable HostApi surface when its incarnation is deactivated", async () => {
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
@@ -1518,10 +1426,7 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(() => api.getSecret("token")).toThrow(
       /plugin instance is no longer active/,
     );
-    expect(() => api.emitEvent("plugin-a.updated", {})).toThrow(
-      /plugin instance is no longer active/,
-    );
-    expect(() => api.onEvent("plugin-a.updated", vi.fn())).toThrow(
+    expect(() => api.config.onChange("after", vi.fn())).toThrow(
       /plugin instance is no longer active/,
     );
   });

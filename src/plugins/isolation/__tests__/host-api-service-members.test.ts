@@ -214,13 +214,6 @@ function wireArg<T>(harness: ServiceHarness, path: string, index: number): T {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-/** Require exactly one failure diagnostic; duplicate and missing reports both mislead operators. */
-function detachedLog(harness: ServiceHarness): { message: string; meta?: unknown } {
-  expect(harness.diagnostics).toHaveLength(1);
-  const line = harness.diagnostics[0].trimEnd();
-  const metaAt = line.indexOf(" {");
-  return metaAt < 0 ? { message: line } : { message: line.slice(0, metaAt), meta: JSON.parse(line.slice(metaAt + 1)) as unknown };
-}
 
 describe("this group implements exactly the members left after the other three", () => {
   it("binds every service-reaching member, and only against a real hostApi", () => {
@@ -439,7 +432,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     const onMalformedCredentialSelector = vi.fn();
     const harness = await createServiceHarness({ hostFetch }, MANIFEST, onMalformedCredentialSelector);
     const reply = await harness.host.handle({
-      jsonrpc: "2.0", id: "malformed-auth", method: "ave/host/hostFetch",
+      jsonrpc: "2.0", id: "malformed-auth", method: "ai.agent-connector.ave/host/hostFetch",
       params: { input: "https://example.test/a", init: { auth: { lease: 7 } } },
     });
     expect(reply).toMatchObject({ error: { data: { code: "credential-conflict" } } });
@@ -977,7 +970,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     for (let index = 0; index < 300; index += 1) {
       expect(harness.child.deliver({
         jsonrpc: "2.0",
-        method: "notifications/ave/subscription",
+        method: "notifications/ai.agent-connector.ave/subscription",
         params: { subscriptionId: `worker_unknown_${index}`, payload: { kind: "stdout", chunk: "queued" } },
       })).toBe("unknown-subscription");
     }
@@ -1020,7 +1013,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       await expect(harness.child.hostApi.spawnWorker!({ workerId: "rejected", control: "output-only-v1", command: "/bin/true" })).rejects.toMatchObject({ code: "host-internal" });
       const request = harness.requests.at(-1)!;
-      expect(harness.child.deliver({ jsonrpc: "2.0", method: "notifications/ave/subscription", params: {
+      expect(harness.child.deliver({ jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription", params: {
         subscriptionId: `worker_${request.id}`, payload: { kind: "stdout", chunk: "late" },
       } })).toBe("unknown-subscription");
       expect(harness.child.openSubscriptionCount).toBe(0);
@@ -1272,13 +1265,13 @@ function makeFakeControlWorker(): StdioControlPluginWorker & {
 function sendFromChild(harness: ServiceHarness, subscriptionId: string, payload: unknown): void {
   harness.host.handleNotification({
     jsonrpc: "2.0",
-    method: "notifications/ave/subscription/send",
+    method: "notifications/ai.agent-connector.ave/subscription/send",
     params: { subscriptionId, payload },
   } as HostApiNotification);
 }
 
 function workerEventsTo(harness: ServiceHarness, handleId: string): unknown[] {
-  return harness.pushed.flatMap((frame) => frame.method === "notifications/ave/subscription"
+  return harness.pushed.flatMap((frame) => frame.method === "notifications/ai.agent-connector.ave/subscription"
     && (frame.params as { subscriptionId?: string }).subscriptionId === handleId
     ? [(frame.params as { payload?: unknown }).payload]
     : []);
@@ -1683,55 +1676,6 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
   });
 });
 
-describe("emitEvent keeps its synchronous throw and its host-side authority", () => {
-  it("throws in the child, before any round trip, on another namespace", async () => {
-    const emit = vi.fn();
-    const harness = await createServiceHarness({ emitEvent: emit });
-    expect(() => harness.child.hostApi.emitEvent("audit.tampered")).toThrow(
-      /may emit only its own UI event/u,
-    );
-    expect(harness.requests).toHaveLength(0);
-    expect(emit).not.toHaveBeenCalled();
-  });
-
-  it("reaches the host — which re-decides and writes the denial audit", async () => {
-    const emit = vi.fn();
-    const harness = await createServiceHarness({ emitEvent: emit });
-    expect(harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`, { n: 1 })).toBeUndefined();
-    await settle();
-    expect(emit).toHaveBeenCalledWith(`${PLUGIN_ID}.ping`, { n: 1 });
-  });
-
-  it("reports a host refusal on stderr instead of dropping it", async () => {
-    // Fire-and-forget emit refusals need diagnostics without unhandled rejection.
-    const harness = await createServiceHarness({
-      emitEvent: () => {
-        throw new Error("host says no");
-      },
-    });
-    harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`);
-    await settle();
-    expect(detachedLog(harness)).toMatchObject({
-      message: "hostApi.emitEvent failed after returning",
-      meta: { error: "Host request failed." },
-    });
-  });
-});
-
-describe("a void-declared member that drifts is refused, not absorbed", () => {
-  it("surfaces the dispatcher's void check when the host returns a value", async () => {
-    // Return host results unchanged so void-contract checks can detect drift.
-    const harness = await createServiceHarness({
-      emitEvent: (() => "surprise") as unknown as PluginHostApi["emitEvent"],
-    });
-    harness.child.hostApi.emitEvent(`${PLUGIN_ID}.ping`);
-    await settle();
-    expect(detachedLog(harness).meta).toMatchObject({
-      error: expect.stringContaining("declares no result but returned one") as string,
-    });
-  });
-});
-
 function handleIdOf(harness: ServiceHarness, path: string): string {
   const index = harness.requests.findIndex((request) => pathOfRequest(request) === path);
   expect(index, `no '${path}' request was sent`).toBeGreaterThanOrEqual(0);
@@ -1742,7 +1686,7 @@ function handleIdOf(harness: ServiceHarness, path: string): string {
 
 function closures(harness: ServiceHarness): { subscriptionId: string; reason: string }[] {
   return harness.pushed.flatMap((notification) =>
-    notification.method === "notifications/ave/subscription/closed"
+    notification.method === "notifications/ai.agent-connector.ave/subscription/closed"
       ? [{ ...notification.params }]
       : [],
   );
@@ -2066,7 +2010,7 @@ describe("a revoked key lease closes in the child", () => {
     const handleId = handleIdOf(harness, "resolveApiKey");
     harness.child.deliver({
       jsonrpc: "2.0",
-      method: "notifications/ave/subscription/closed",
+      method: "notifications/ai.agent-connector.ave/subscription/closed",
       params: {
         subscriptionId: handleId,
         reason: "revoked",

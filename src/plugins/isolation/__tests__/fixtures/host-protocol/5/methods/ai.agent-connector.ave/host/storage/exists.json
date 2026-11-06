@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/storage/exists",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "relPath": "state.json"
+    }
+  },
+  "response": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "result": true
+  }
+}

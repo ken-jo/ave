@@ -70,8 +70,6 @@ const TABLE: Table = JSON.parse(readFileSync(resolve(ROOT, "src/shared/preload-b
 
 // A null row denotes guests whose preloads are stripped and whose sandbox is enforced.
 const WEBVIEW_SITES: Record<string, string | null> = {
-  "src/plugin-ui-host.tsx": "pluginPreload",
-  "src/floating-dock-window.js": "pluginPreload",
   "src/ui/renderer/components/McpAppView.tsx": "mcpAppPreload",
   "src/ui/renderer/components/ChatSidePanelPreview.tsx": null,
   // Browser tabs use the preview guest partition and sandbox policy.
@@ -85,7 +83,7 @@ const GUARDED_ELECTRON_TYPES = new Set([...WINDOW_CLASSES, "Session", "WebConten
 const ELECTRON_DTS = "/node_modules/electron/electron.d.ts";
 const PRELOAD_HELPERS = "src/main/preload-bundles.ts";
 const PRELOAD_TABLE_MODULE = "src/shared/preload-bundles.ts";
-const ATTACH_GUARDS = "src/main/plugin-webview-attach.ts";
+const ATTACH_GUARDS = "src/main/webview-attach.ts";
 const HTML_SINK_PROPERTIES = new Set(["innerHTML", "outerHTML"]);
 const HTML_SINK_CALLS: Record<string, number> = { insertAdjacentHTML: 1, write: 0, writeln: 0, parseFromString: 0, createContextualFragment: 0, setHTMLUnsafe: 0 };
 
@@ -864,7 +862,7 @@ export const install = (method: "setPreloads" | "getPreloads") => (session.defau
     source: `import { createElement } from "react";
 export const View = () => createElement("webview", { src: "about:blank", webpreferences: "contextIsolation=yes, sandbox=no" });
 `,
-    problem: "a <webview> requests sandbox=no, but pluginPreload runs with sandbox: true",
+    problem: "a <webview> requests sandbox=no, but mcpAppPreload runs with sandbox: true",
   },
   "src/probes/unmapped-webview.tsx": {
     source: `export const View = () => <webview src="about:blank" webpreferences="sandbox=yes" />;
@@ -984,9 +982,9 @@ export const plain = () => new BrowserWindow({ show: false, webPreferences: { sa
 };
 
 const PROBE_WEBVIEW_SITES: Record<string, string | null> = {
-  "src/probes/dynamic-webview.tsx": "pluginPreload",
-  "src/probes/spread-webview.tsx": "pluginPreload",
-  "src/probes/dom-webview.ts": "pluginPreload",
+  "src/probes/dynamic-webview.tsx": "mcpAppPreload",
+  "src/probes/spread-webview.tsx": "mcpAppPreload",
+  "src/probes/dom-webview.ts": "mcpAppPreload",
 };
 
 describe("preload sites follow the preload table", () => {
@@ -1009,7 +1007,6 @@ describe("preload sites follow the preload table", () => {
       .sort();
     expect(preloadSites).toEqual([
       "session src/main/html-preview-partition.ts mcpAppPreload",
-      "session src/main/html-preview-partition.ts pluginPreload",
       "window src/main/audio-capture-surface.ts audioCaptureWindowPreload",
       "window src/main/floating-dock-surface.ts floatingDockPreload",
       "window src/main/link-window-service.ts preload",
@@ -1019,7 +1016,7 @@ describe("preload sites follow the preload table", () => {
     expect(Object.keys(TABLE).filter((id) => !used.has(id))).toEqual([]);
     expect(real.sites.filter((site) => site.guard !== undefined).map((site) => `${site.file} ${site.guard}`).sort()).toEqual([
       "src/main/auth-window-service.ts configureAuthWebviewAttach",
-      "src/main/floating-dock-surface.ts configurePluginWebviewAttach",
+      "src/main/floating-dock-surface.ts configureMcpAppWebviewAttach",
       "src/main/link-window-service.ts inline: strips the preload, sandbox true",
       "src/main/main-window.ts configureMainWindowWebviewAttach",
     ]);
@@ -1038,8 +1035,6 @@ describe("preload sites follow the preload table", () => {
     expect(webviews).toEqual([
       "html-webview src/main/auth-window-content.ts null",
       "html-webview src/main/link-window-service.ts null",
-      "webview src/floating-dock-window.js pluginPreload",
-      "webview src/plugin-ui-host.tsx pluginPreload",
       "webview src/ui/renderer/components/ChatSidePanelPreview.tsx null",
       "webview src/ui/renderer/components/McpAppView.tsx mcpAppPreload",
       "webview src/ui/renderer/components/WebSurfaceLayer.tsx null",
@@ -1049,11 +1044,10 @@ describe("preload sites follow the preload table", () => {
 
   it("fails when a row's sandbox flips without the sites that request it following", () => {
     const flipped: Table = structuredClone(TABLE);
-    flipped.pluginPreload.sandbox = false;
+    flipped.mcpAppPreload.sandbox = false;
     const audit = auditPreloadSites(ROOT, flipped);
-    expect(audit.problems).toContain("src/plugin-ui-host.tsx: a <webview> requests sandbox=yes, but pluginPreload runs with sandbox: false");
-    expect(audit.problems).toContain("src/floating-dock-window.js: a <webview> requests sandbox=yes, but pluginPreload runs with sandbox: false");
-    expect(audit.problems.some((problem) => problem.startsWith("src/main/html-preview-partition.ts:") && problem.endsWith("session preload pluginPreload runs in sandboxed <webview> guests, but its row says sandbox: false"))).toBe(true);
+    expect(audit.problems).toContain("src/ui/renderer/components/McpAppView.tsx: a <webview> requests sandbox=yes, but mcpAppPreload runs with sandbox: false");
+    expect(audit.problems.some((problem) => problem.startsWith("src/main/html-preview-partition.ts:") && problem.endsWith("session preload mcpAppPreload runs in sandboxed <webview> guests, but its row says sandbox: false"))).toBe(true);
   }, 120_000);
 
   describe("the round-5 probes, each refused", () => {

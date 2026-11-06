@@ -167,7 +167,6 @@ export function pluginInstaller(deps: IpcDeps, gated: ReturnType<typeof whileRun
         }
         gated(() => {
           emitHostEvent("plugin.installed", { pluginId: result.pluginId, source: "marketplace" });
-          deps.refreshPluginEventBridge?.();
         })();
         return { action: result.action, staged: result.staged };
       });

@@ -125,8 +125,6 @@ export function createNoopHostApi(
       },
       onChange: () => () => {},
     },
-    emitEvent: () => {},
-    onEvent: () => () => {},
     getSecret: async () => null,
     callLlm: async () => {
       throw new Error("LLM not available in noop context");

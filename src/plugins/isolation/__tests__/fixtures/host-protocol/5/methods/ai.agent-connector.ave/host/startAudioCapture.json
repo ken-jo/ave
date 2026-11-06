@@ -1,0 +1,30 @@
+{
+  "request": {
+    "id": 31,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/startAudioCapture",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "request": {
+        "frameMs": 200,
+        "microphone": true,
+        "sampleRate": 16000,
+        "systemAudio": false
+      }
+    }
+  },
+  "response": {
+    "id": 31,
+    "jsonrpc": "2.0",
+    "result": {
+      "captureId": "capture-1",
+      "handleId": "<uuid-2>",
+      "opened": {
+        "microphone": true,
+        "systemAudio": false
+      }
+    }
+  }
+}

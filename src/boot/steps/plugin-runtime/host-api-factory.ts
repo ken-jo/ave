@@ -67,8 +67,6 @@ import type {
 } from "../../../plugins/types.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 import type { RoutinesStore } from "../../../main/routines-store.js";
-import { onEvent } from "../../types.js";
-import { emitPluginUiEvent } from "../../../plugins/ui-events.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
@@ -170,10 +168,10 @@ function audioCaptureService(host: BootHost): AudioCaptureService {
 
 /** Create one dock lazily and resolve its surface through the runtime getter after binding. */
 let sharedFloatingDock: FloatingDock | null = null;
-function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime): FloatingDock {
+function floatingDock(host: BootHost, getPluginRuntime: () => PluginRuntime, settings: SettingsService): FloatingDock {
   if (!sharedFloatingDock) {
     const dock = new FloatingDock(
-      requireDesktopHost(host).createFloatingDockSurface(),
+      requireDesktopHost(host).createFloatingDockSurface(settings),
       (pluginId, extensionId) => getPluginRuntime().resolveFloatingSurface(pluginId, extensionId),
     );
     // Locale changes rerun full surface lookup, including entry containment checks and refusal audits.
@@ -573,17 +571,6 @@ export function createHostApiFactory(
           // Remove config listeners when the plugin is disabled.
           return registerOwnedDisposer(unsubscribe);
         },
-      },
-      emitEvent: (type, data) => {
-        emitPluginUiEvent(pluginId, type, data);
-      },
-      onEvent: (type, handler) => {
-        pluginRuntime.assertPluginEventAccess(pluginId, type);
-        const dispatch = (data: unknown) => {
-          if (acceptsHostNotification()) handler(data);
-        };
-        const guarded = hostEffects ? hostEffects.wrapListener(dispatch) : dispatch;
-        return registerOwnedDisposer(onEvent(type, (data) => { guarded(data); }));
       },
       // Return opaque host leases unless raw exposure was explicitly reviewed.
       resolveApiKey: async (opts) => {
@@ -1011,7 +998,7 @@ export function createHostApiFactory(
         audioCaptureService(deps.host).start(request),
       /** The host owns dock placement and flags; plugins may attach only their own declared surface at a clamped height. */
       attachFloatingPanel: async (request: AttachFloatingPanelRequest) =>
-        floatingDock(deps.host, deps.getPluginRuntime).attach(pluginId, request),
+        floatingDock(deps.host, deps.getPluginRuntime, settingsService).attach(pluginId, request),
       openAuthWindow: (async (opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean }) => {
         const safeUrlForLog = (() => {
           try {

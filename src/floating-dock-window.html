@@ -3,17 +3,17 @@
   Floating dock — the host's always-on-top window.
 
   Draws its own header and activity line, and hosts plugin cards as <webview>
-  guests pointed at plugin-ui-shell.html. The host chrome is ALWAYS around a
+  guests loaded through the standard app proxy. The host chrome is ALWAYS around a
   guest: that framing is the reason a plugin surface can float above every
   other application without being able to impersonate one.
 
   window.aveDock is injected by floating-dock-preload.ts before this script.
-  window.aveApi is unreachable here.
+  The preload exposes only dock chrome and app bridge operations.
 -->
 <html lang="ko">
   <head>
     <meta charset="utf-8" />
-    <!-- No 'unsafe-inline' and no nonce, matching plugin-ui-shell.html: the
+    <!-- No script 'unsafe-inline' and no nonce: the
          bootstrap is an external sibling file so it loads under
          `script-src 'self'`. An inline block here would be refused and leave
          a transparent window with nothing painted and no error text.

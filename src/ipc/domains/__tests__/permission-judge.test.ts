@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("judge settings host boundary", () => {
   it.each([PERMISSIONS.judgeGet, PERMISSIONS.judgeSet])("refuses foreign and plugin senders on %s", async (channel) => {
-    for (const url of ["https://untrusted.example/", "file:///dist/src/plugin-ui-shell.html"]) {
+    for (const url of ["https://untrusted.example/", "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"]) {
       expect(await handlers.get(channel)!(foreignFrameEvent(url), { intent, settings: { chain: [] } })).toEqual({ ok: false, error: "unauthorized-frame" });
     }
     expect(deps.auditLogger.log).toHaveBeenCalledTimes(2);

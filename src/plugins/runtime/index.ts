@@ -1,7 +1,6 @@
 /** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
-import { canEmitEvent } from "../capabilities.js";
 import { parsePluginJson, buildManifestValidator, recordManifestDocument } from "./manifest-validation.js";
 import { flattenAgentPluginsManifest, pluginEntryKind } from "../public-contract.js";
 import { isModelVisible } from "./tool-visibility.js";
@@ -50,7 +49,7 @@ import { revocationRegistry } from "../revocation/revocation-registry.js";
 import { isPluginRuntimeDetachedOperationError, PluginRuntimeDetachedOperationError } from "./detached-operation.js";
 import { isCommittedPluginGenerationPublicationError } from "../committed-generation-publication-error.js";
 import { ensurePluginDataDir, resolvePluginDataDir, resolveEntryPath, buildPluginContext, resolveRealEntryPath } from "./sandbox.js";
-import { buildImportUrl, buildMethodMap, declaredAppVisibleToolMethods } from "./plugin-loader.js";
+import { buildMethodMap, declaredAppVisibleToolMethods } from "./plugin-loader.js";
 import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginInstallLockHeld, withAllPluginInstallLocks, withResolvedPluginInstallLocks } from "../install-lifecycle.js";
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
@@ -230,42 +229,6 @@ export interface PluginRuntimeOptions {
   ) => Promise<void> | void;
   /** Dependency preparation defers startup without blocking boot; calls fail as preparing until it resolves. */
   preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
-}
-
-/** Plugin event boundaries share one permission and audit policy. */
-
-type AuditLog = (
-  level: "info" | "warn" | "error",
-  message: string,
-  data?: unknown,
-) => void;
-
-/** Only theme notifications remain available to a plugin process. */
-export function assertEventSubscribeAccess(opts: {
-  callerPluginId: string;
-  eventType: string;
-  auditLog?: AuditLog;
-}): void {
-  if (opts.eventType === "host.theme.changed") return;
-  opts.auditLog?.("error", "plugin_event_access_denied", {
-    callerPluginId: opts.callerPluginId,
-    eventType: opts.eventType,
-  });
-  throw new Error(`Plugin '${opts.callerPluginId}' may subscribe only to host.theme.changed`);
-}
-
-/** Event names must identify their own UI owner. */
-export function assertEventEmitAccess(opts: {
-  callerPluginId: string;
-  eventType: string;
-  auditLog?: AuditLog;
-}): void {
-  if (canEmitEvent(opts.eventType, opts.callerPluginId)) return;
-  opts.auditLog?.("error", "plugin_event_emit_denied", {
-    callerPluginId: opts.callerPluginId,
-    eventType: opts.eventType,
-  });
-  throw new Error(`Plugin '${opts.callerPluginId}' may emit only its own UI events`);
 }
 
 /** Renderer calls require explicit app visibility in the tool declaration. */
@@ -1935,13 +1898,6 @@ abstract class PluginRuntimeState {
     return this.pluginUiRevisions.get(pluginId) ?? this.markPluginUiRevision(pluginId);
   }
 
-  protected buildPluginUiEntryUrl(pluginId: string, manifest: PluginManifest, entryPath: string): string {
-    const url = new URL(buildImportUrl(entryPath));
-    url.searchParams.set("avePluginVersion", manifest.version ?? "0");
-    url.searchParams.set("aveRuntimeRevision", String(this.getPluginUiRevision(pluginId)));
-    return url.href;
-  }
-
   protected async resolveManifestLoadPlanInternal(onRefused?: (refusal: RegistryLoadRefusal) => void): Promise<ManifestLoadPlan[]> {
     return resolveManifestLoadPlan({
       manifestPaths: this.manifestPaths,
@@ -3251,13 +3207,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     });
   }
 
-  /** Host post-publication fence failures and plugin startup failures have different owners; startup degradation still permits dispatch. */
+  /** Startup failure is recorded after publication without withdrawing the active generation. */
   async postPublishRuntimeGeneration(runtime: PluginRuntimeGenerationProjection): Promise<void> {
-    const hostFaults: Error[] = [];
-    for (const error of runtime.hostEffects?.postPublish() ?? []) {
-      log.error(`generation post-publish signal failed for ${runtime.manifest.id}: %s`, error.message);
-      hostFaults.push(error);
-    }
     try {
       await runtime.instance.onPublished?.();
     } catch (error) {
@@ -3268,12 +3219,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
       });
     }
-    if (hostFaults.length > 0) {
-      throw new AggregateError(
-        hostFaults,
-        `plugin '${runtime.manifest.id}' host generation effects failed to publish`,
-      );
-    }
+
   }
 
   publishRuntimeGeneration(
@@ -6422,22 +6368,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.methodMap.get(method)?.pluginId ?? this.knownToolOwners.get(method);
   }
 
-  assertPluginEventAccess(callerPluginId: string, eventType: string): void {
-    assertEventSubscribeAccess({
-      callerPluginId,
-      eventType,
-      auditLog: this.auditLog,
-    });
-  }
-
-  assertPluginEventEmitAccess(callerPluginId: string, eventType: string): void {
-    assertEventEmitAccess({
-      callerPluginId,
-      eventType,
-      auditLog: this.auditLog,
-    });
-  }
-
   // Only trusted-panel origin may use this app-visible bypass; untrusted cards always use governed execution.
   // Enforce the shared tool ceiling here and retain the immutable generation lease until detached handler work settles.
   async callDeclaredAppOnlyTool(
@@ -7110,68 +7040,30 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     const extension = (plugin.manifest.ui ?? []).find((candidate) => candidate.id === extensionId);
     if (!extension) return "surface-not-declared";
 
-    // The dock imports module entry URLs; unsupported declaration kinds have nothing the shell can render.
-    if (extension.slot !== "floating") return "surface-not-floating";
-    if (extension.kind !== "embedded-module") return "surface-not-floating";
-
-    // Require entry and exportName even though manifest validation also enforces them, preserving a specific refusal reason.
-    const entrySource = extension.entry ?? extension.page;
-    if (!entrySource) return "surface-has-no-entry";
-
-    let entryPath: string;
-    try {
-      entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, entrySource);
-    } catch (err) {
-      // Single-surface lookup must report containment failure instead of silently skipping it as list enumeration does.
-      log.warn(`floating ui entry rejected for '${pluginId}': ${(err as Error).message}`);
-      this.auditLog?.("error", "plugin_ui_entry_path_rejected", {
-        pluginId,
-        entry: entrySource,
-        reason: (err as Error).message,
-      });
-      return "surface-entry-rejected";
-    }
-
+    if (extension.slot !== "floating" || extension.kind !== "mcp-app") return "surface-not-floating";
+    const generation = this.requireGenerationAccess("floating app panel").getActive(pluginId);
+    if (!generation) return "unknown-plugin";
     return {
       pluginId,
       extensionId: extension.id,
-      entryUrl: this.buildPluginUiEntryUrl(pluginId, plugin.manifest, entryPath),
-      // Render plugin titles as text, and re-resolve host placeholders when the UI language changes.
+      payload: { serverId: pluginId, generationId: generation.generationId, resourceUri: extension.resourceUri },
+      ...(plugin.manifest.auth ? { authStatusTool: plugin.manifest.auth.statusTool } : {}),
       title: getPluginViewTitle(extension, getLocale()) ?? pluginId,
     };
   }
 
-  listUiExtensions(): Array<{ pluginId: string; icon?: string; iconText?: string; extension: PluginUiExtension; entryUrl?: string; runtimeRevision?: number }> {
-    const result: Array<{ pluginId: string; icon?: string; iconText?: string; extension: PluginUiExtension; entryUrl?: string; runtimeRevision?: number }> = [];
+  listUiExtensions(): import("../../shared/plugin-ui-view.js").PluginUiExtensionView[] {
+    const result: import("../../shared/plugin-ui-view.js").PluginUiExtensionView[] = [];
     for (const [pluginId, plugin] of this.plugins) {
-      const runtimeRevision = this.getPluginUiRevision(pluginId);
+      const generation = this.requireGenerationAccess("app panel listing").getActive(pluginId);
+      if (!generation) continue;
       for (const extension of plugin.manifest.ui ?? []) {
-        // Sidebar enumeration excludes floating surfaces; the dock resolves its own slot separately.
         if (extension.slot !== "sidebar") continue;
-        const entrySource = extension.entry ?? extension.page;
-        let entryPath: string | undefined;
-        if (entrySource) {
-          try {
-            entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, entrySource);
-          } catch (err) {
-            log.warn(
-              `ui entry rejected for '${pluginId}': ${(err as Error).message}`,
-            );
-            this.auditLog?.("error", "plugin_ui_entry_path_rejected", {
-              pluginId,
-              entry: entrySource,
-              reason: (err as Error).message,
-            });
-            continue;
-          }
-        }
         result.push({
-          pluginId,
-          icon: plugin.manifest.icon,
-          iconText: plugin.manifest.iconText,
-          extension,
-          entryUrl: entryPath ? this.buildPluginUiEntryUrl(pluginId, plugin.manifest, entryPath) : undefined,
-          runtimeRevision,
+          pluginId, icon: plugin.manifest.icon, iconText: plugin.manifest.iconText,
+          extension: { ...extension, slot: "sidebar" },
+          payload: { serverId: pluginId, generationId: generation.generationId, resourceUri: extension.resourceUri },
+          runtimeRevision: this.getPluginUiRevision(pluginId),
         });
       }
     }

@@ -2,10 +2,10 @@
   "request": {
     "id": 1,
     "jsonrpc": "2.0",
-    "method": "ave/host/spawnWorker",
+    "method": "ai.agent-connector.ave/host/spawnWorker",
     "params": {
       "_meta": {
-        "ave/invocation": "<uuid-1>"
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
       },
       "spec": {
         "args": [

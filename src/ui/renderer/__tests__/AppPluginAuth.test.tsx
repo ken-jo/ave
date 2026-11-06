@@ -1,10 +1,14 @@
 import "../../../../test/renderer/setup.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import { makePluginCard } from "./support/plugin-card.js";
+
+vi.mock("../components/McpAppView.js", () => ({
+  McpAppView: () => <div data-testid="standard-app-panel" />,
+}));
 
 function preparingIndexer() {
   return makePluginCard({
@@ -22,9 +26,9 @@ function preparingIndexer() {
     uiExtensions: [{
       id: "local-indexer-control",
       slot: "sidebar",
-      kind: "embedded-module",
+      kind: "mcp-app",
       title: "로컬 인덱서",
-      entry: "dist/ui/indexer-control.js",
+      resourceUri: "ui://local-indexer/control",
     }],
   });
 }
@@ -69,11 +73,12 @@ describe("App plugin auth routing", () => {
         extension: {
           id: "main",
           slot: "sidebar",
-          kind: "embedded-module",
+          kind: "mcp-app",
           title: "Token Plugin",
-          entry: "dist/ui.js",
+          resourceUri: "ui://token-plugin/main",
         },
-        entryUrl: "file:///token-plugin/dist/ui.js",
+        payload: { serverId: "token-plugin", generationId: "generation", resourceUri: "ui://token-plugin/main" },
+        runtimeRevision: 1,
       },
     ],
   };
@@ -110,7 +115,7 @@ describe("App plugin auth routing", () => {
 
     // The panel surface is on screen, showing the host's loading state rather than "플러그인 뷰를 찾을 수 없습니다." — which is what a
     // missing view means.
-    expect(await screen.findByText("로딩 중...")).toBeInTheDocument();
+    expect(await screen.findByText("익스텐션 화면을 로딩합니다.")).toBeInTheDocument();
     expect(screen.queryByText("플러그인 뷰를 찾을 수 없습니다.")).toBeNull();
   });
 
@@ -154,7 +159,7 @@ describe("App plugin auth routing", () => {
 
   it("login completes → navigates the deferred inline panel on the unauthed→authed transition", async () => {
     const user = makeUser();
-    const { api, emitPluginEvent } = await renderApp(authPluginFixture);
+    const { api } = await renderApp(authPluginFixture);
     // Start unauthenticated.
     let authed = false;
     api.callPluginMethod.mockImplementation(async (tool: string) =>
@@ -172,10 +177,10 @@ describe("App plugin auth routing", () => {
     // Deferred: the inline view is NOT navigated yet (still unauthed).
     expect(screen.queryByRole("heading", { name: "Token Plugin" })).not.toBeInTheDocument();
 
-    // Login completes: status flips to authed and the plugin emits `<pluginId>.auth.changed`, which re-fetches status. The
+    // Login completes: status flips to authed and a host refresh re-fetches status. The
     // host's one-shot drain effect then navigates the DEFERRED inline view (login-window-closes → panel-opens).
     authed = true;
-    emitPluginEvent("token-plugin.auth.changed", { authenticated: true });
+    fireEvent(window, new Event("focus"));
 
     // The plugin view host now renders inline — proving the drain effect, not the initial click, performed the navigation.
     expect(await screen.findByRole("heading", { name: "Token Plugin" })).toBeInTheDocument();
@@ -183,7 +188,7 @@ describe("App plugin auth routing", () => {
 
   it("login failure keeps the plugin panel closed and surfaces a safe auth error code as a toast", async () => {
     const user = makeUser();
-    const { api, emitPluginEvent } = await renderApp(authPluginFixture);
+    const { api } = await renderApp(authPluginFixture);
     const nonCorpError = Object.assign(new Error("[non-corp-network] outside corporate network"), {
       code: "non-corp-network",
     });
@@ -208,7 +213,7 @@ describe("App plugin auth routing", () => {
     const statusCallCountBeforeAuthChanged = api.callPluginMethod.mock.calls.filter(
       ([tool]) => tool === "token_status",
     ).length;
-    emitPluginEvent("token-plugin.auth.changed", { authenticated: true });
+    fireEvent(window, new Event("focus"));
     await waitFor(() => {
       expect(
         api.callPluginMethod.mock.calls.filter(([tool]) => tool === "token_status").length,
@@ -242,7 +247,7 @@ describe("App plugin auth routing", () => {
   });
 
   it("auto-calls loginTool for an unauthenticated inline embedded view before navigating", async () => {
-    const { api, emitPluginEvent } = await renderApp({
+    const { api } = await renderApp({
       pluginCards: [
         makePluginCard({
           id: "oauth-plugin",
@@ -260,11 +265,12 @@ describe("App plugin auth routing", () => {
           extension: {
             id: "main",
             slot: "sidebar",
-            kind: "embedded-module",
+            kind: "mcp-app",
             title: "OAuth Plugin",
-            entry: "dist/ui.js",
+            resourceUri: "ui://token-plugin/main",
           },
-          entryUrl: "file:///oauth-plugin/dist/ui.js",
+          payload: { serverId: "oauth-plugin", generationId: "generation", resourceUri: "ui://oauth-plugin/main" },
+          runtimeRevision: 1,
         },
       ],
     });
@@ -283,7 +289,7 @@ describe("App plugin auth routing", () => {
     });
 
     authed = true;
-    emitPluginEvent("oauth-plugin.auth.changed", { authenticated: true });
+    fireEvent(window, new Event("focus"));
 
     // The deferred inline view is navigated once authed (its host renders).
     expect(await screen.findByRole("heading", { name: "OAuth Plugin" })).toBeInTheDocument();
@@ -314,11 +320,12 @@ describe("App plugin auth routing", () => {
           extension: {
             id: "main",
             slot: "sidebar",
-            kind: "embedded-module",
+            kind: "mcp-app",
             title: "No-LoginTool Plugin",
-            entry: "dist/ui.js",
+            resourceUri: "ui://token-plugin/main",
           },
-          entryUrl: "file:///noauthtool-plugin/dist/ui.js",
+          payload: { serverId: "noauthtool-plugin", generationId: "generation", resourceUri: "ui://noauthtool-plugin/main" },
+          runtimeRevision: 1,
         },
       ],
     });

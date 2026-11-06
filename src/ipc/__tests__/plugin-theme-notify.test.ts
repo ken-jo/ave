@@ -1,6 +1,58 @@
-import { describe, it, expect } from "vitest";
-import { validateThemePayload } from "../domains/plugins.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { publishHostThemeChanged, registerPluginsHandlers, validateThemePayload } from "../domains/plugins.js";
+import { onEvent } from "../../boot/types.js";
+import { getLastThemePayload, recordValidatedTheme, resetLastThemePayloadForTests } from "../../shared/host-theme-replay.js";
+import { CHANNELS } from "../../contract/app-contract.js";
 import { schemeToHostTokens, resolveTheme, SCHEMES } from "../../ui/renderer/theme/index.js";
+
+const { handlers } = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => unknown>() }));
+vi.mock("electron", () => ({
+  app: { isPackaged: false, getPath: vi.fn(() => "") },
+  dialog: { showOpenDialog: vi.fn() },
+  ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler) },
+}));
+
+afterEach(() => { resetLastThemePayloadForTests(); handlers.clear(); });
+
+describe("host theme publication", () => {
+  it("broadcasts a frozen copy that cannot corrupt the replay cache", () => {
+    const payload = { bundleId: "nord", shell: "dark" as const, tokens: { "--ave-bg": "#123456" } };
+    recordValidatedTheme(payload);
+    const seen: unknown[] = [];
+    const unsubscribe = onEvent("host.theme.changed", (value) => {
+      expect(value).not.toBe(payload);
+      expect(Object.isFrozen(value)).toBe(true);
+      const theme = value as typeof payload;
+      expect(theme.tokens).not.toBe(payload.tokens);
+      expect(Object.isFrozen(theme.tokens)).toBe(true);
+      expect(Reflect.set(theme.tokens, "--ave-bg", "#fff")).toBe(false);
+      seen.push(value);
+    });
+    try { publishHostThemeChanged(payload); } finally { unsubscribe(); }
+    expect(seen).toEqual([payload]);
+    expect(getLastThemePayload()).toEqual(payload);
+    expect(payload.tokens["--ave-bg"]).toBe("#123456");
+  });
+
+  it("publishes the validated theme through the registered host IPC handler", () => {
+    registerPluginsHandlers({
+      pluginRuntime: { getWildcardConfigOverride: () => undefined },
+      pluginMarketplace: {}, settingsService: { get: () => ({}) },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => null,
+    } as never);
+    const handler = handlers.get(CHANNELS.host.pluginThemeNotify);
+    expect(handler).toBeTypeOf("function");
+    const payload = { bundleId: "nord", shell: "dark", tokens: { "--ave-bg": "#123456" } };
+    const seen: unknown[] = [];
+    const unsubscribe = onEvent("host.theme.changed", (value) => seen.push(value));
+    try {
+      expect(handler!({ senderFrame: { url: "file:///app/index.html" } }, payload)).toEqual({ ok: true });
+    } finally { unsubscribe(); }
+    expect(seen).toEqual([payload]);
+    expect(getLastThemePayload()).toEqual(payload);
+    expect(Object.isFrozen(seen[0])).toBe(true);
+  });
+});
 
 const VALID_PAYLOAD = {
   bundleId: "tokyo-night",

@@ -50,8 +50,6 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     openAuthPartitionViewerService: unavailable,
     clearAuthPartitionService: unavailable,
     shellOpenExternal: unavailable,
-    installPluginPartition: () => {},
-    revokePluginWebviews: unavailable,
     onBootShutdown: () => {},
     initializeNotificationPresenter: () => false,
     notificationOptions: { isReady: () => false, isAnyWindowFocused: () => false, notificationActivationRegistration: null },

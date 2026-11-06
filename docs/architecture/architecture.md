@@ -765,7 +765,7 @@ dynamic import of electron that is not awaited into a binding, and HTML with an
 interpolated tag name or an interpolation that could carry markup. Code that
 reaches Electron outside these forms is not checked; the attach guards in main
 are what enforce a guest's preferences. Each window that hosts `<webview>`s sets
-its guests' preferences in main: the main window routes plugin, MCP app and
+its guests' preferences in main: the main window routes MCP app and
 side-browser partitions to their guards (`configureMainWindowWebviewAttach`) and
 refuses any other partition. The `build` composite's `check-sandboxed-preloads`
 fails when webpack builds a preload the table does not classify, or when a row
@@ -775,11 +775,11 @@ none of the removed globals, and may have no chunks. It does not scan `dist/src`
 for other files.
 
 Every surface that copies theme values follows the theme the host renderer has
-applied, including a theme updated in place under the same id. Plugin webviews
-receive `host.theme.changed` and can query the replay cache through the plugin-only
-`getTheme`, whose guard admits plugin frames only. The floating dock never asks.
-Main sends it the cached theme when its window opens and forwards each later
-`host.theme.changed` on `ave:dock:theme`. MCP app cards build their host context
+applied, including a theme updated in place under the same id. Extension views
+receive standard MCP Apps host-context updates, including theme, locale and
+`styles.variables`; there is no parallel plugin view theme bridge. Main sends
+the floating dock's host chrome a `{ theme, terminalFontFamily }` snapshot on
+mount and forwards theme and terminal font changes on `ave:dock:theme`. MCP app views build their host context
 from the theme already written to `:root` (`appliedTheme` / `appliedRevision`),
 so an app never receives one theme's shell with another theme's tokens. An open
 HTML preview is a snapshot: it keeps the theme it was created with, and the next

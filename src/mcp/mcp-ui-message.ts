@@ -4,7 +4,7 @@ import { isRecord } from "../shared/is-record.js";
 /** Bound app text below the guidance-queue capacity. */
 const MCP_APP_MESSAGE_MAX_CHARS = 4096;
 
-const APP_NOTIFICATION_META_KEY = "ave/notification";
+const APP_NOTIFICATION_META_KEY = "ai.agent-connector.ave/notification";
 
 type AppNotificationSeverity = "info" | "warning" | "critical";
 
@@ -48,8 +48,14 @@ export function parseUiMessageIntent(params: unknown): McpUiMessageIntent {
     if (!isRecord(block)) continue;
     const meta = block._meta;
     if (!isRecord(meta)) continue;
-    const notification = parseNotificationMeta(meta[APP_NOTIFICATION_META_KEY]);
-    if (notification) return { kind: "notification", notification };
+    if (Object.keys(meta).some((key) => key.startsWith("ave/"))) {
+      return { kind: "invalid", error: "unsupported-meta-key", message: "Use ai.agent-connector.ave/ metadata keys" };
+    }
+    if (Object.hasOwn(meta, APP_NOTIFICATION_META_KEY)) {
+      const notification = parseNotificationMeta(meta[APP_NOTIFICATION_META_KEY]);
+      if (!notification) return { kind: "invalid", error: "invalid-notification-meta", message: "Notification metadata requires title and body" };
+      return { kind: "notification", notification };
+    }
   }
 
   const text = content

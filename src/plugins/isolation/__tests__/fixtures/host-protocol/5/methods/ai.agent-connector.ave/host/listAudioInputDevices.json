@@ -1,0 +1,22 @@
+{
+  "request": {
+    "id": 30,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/listAudioInputDevices",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      }
+    }
+  },
+  "response": {
+    "id": 30,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "deviceId": "default",
+        "label": "Built-in Microphone"
+      }
+    ]
+  }
+}

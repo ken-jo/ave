@@ -135,12 +135,20 @@ export const SEND_MODE_ORIGIN: Record<SendMode, ChatSendInputOrigin> = {
   "plugin-prompt": "plugin-prompt-emitted",
 };
 
+export interface ComposerSendOptions {
+  injectHint?: "queue" | "interrupt";
+  inputOrigin?: "queue-auto";
+  appSource?: string;
+  onAccepted?: () => void;
+  onRefused?: () => void;
+}
+
 export interface UseSendMessageResult {
   handleAsk: (
     q: string,
     mode?: SendMode,
     userIntent?: UserKeyboardIntentSnapshot,
-    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+    opts?: ComposerSendOptions,
   ) => Promise<void>;
 }
 
@@ -166,7 +174,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       q: string,
       mode: SendMode = "default",
       userIntent?: UserKeyboardIntentSnapshot,
-      opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+      opts?: ComposerSendOptions,
     ) => {
       // Cache the preload-fixed debug flag per send and skip diagnostic payload allocation when disabled.
       const debugStreamEnabled = isDebugStreamEnabled();
@@ -179,9 +187,9 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // Do not let a fast legacy-key probe race ahead of the authoritative runtime selection. Until settings resolves we cannot
       // know whether a subscription login, rather than an API-key provider, is selected.
       if (!settingsReady) return;
-      // User sends interrupt in the same chatSend IPC so keyboard intent remains valid; staged and queue-auto sends never abort
-      // a running turn.
-      const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt")
+      // Explicit keyboard interruption is independent of the message's app provenance.
+      const appInterrupt = mode === "app-message" && opts?.injectHint === "interrupt" && userIntent !== undefined;
+      const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt" || appInterrupt)
         && streaming
         && opts?.inputOrigin !== "queue-auto";
       // Renderer only performs UX-level shortcuts for typed composer input. Main owns the authoritative trust-origin
@@ -283,7 +291,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // `[Resource #1]` with no attachment behind it: a dangling reference that resends
       // as a marker the model cannot resolve, silently.
       const draftAttachments = attachments;
-      setQuestion("");
+      if (opts?.inputOrigin !== "queue-auto") setQuestion("");
       // Staged modes send the enveloped text VERBATIM — composeOutgoing's composer affordances (attachment markers, persona
       // prompt) belong to typed input only.
       const composed = mode === "default"
@@ -314,11 +322,11 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         const result = await api.chatSend(
           outgoing,
           outgoingAttachments,
-          opts?.inputOrigin === "queue-auto" ? "queue-auto" : SEND_MODE_ORIGIN[mode],
+          mode === "app-message" ? "app-emitted" : opts?.inputOrigin === "queue-auto" ? "queue-auto" : SEND_MODE_ORIGIN[mode],
 
           opts?.inputOrigin === "queue-auto"
             ? undefined
-            : mode === "default" ? userIntent : undefined,
+            : mode === "default" || appInterrupt ? userIntent : undefined,
           opts?.inputOrigin === "queue-auto"
             ? undefined
             : mode === "default" ? composed.personaPromptId : undefined,
@@ -326,6 +334,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         );
         const refusal = chatSendRefusal(result);
         if (refusal !== undefined) throw new ChatSendRefusedError(refusal.code, refusal.interrupted);
+        opts?.onAccepted?.();
         if (debugStreamEnabled) debugLog("handleAsk", "chatSend:resolved", { requestId });
         // After successful send, clear attachments — the textarea was already cleared by setQuestion(""). N counter persists
         // across turns so re-attached items get fresh numbers.
@@ -333,6 +342,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           setAttachments([]);
         }
       } catch (err) {
+        opts?.onRefused?.();
         if (debugStreamEnabled) {
           debugLog("handleAsk", "chatSend:rejected", {
             requestId,

@@ -17,8 +17,6 @@ const CALLS = {
   hasRoutineBySource: (api) => api.hasRoutineBySource("golden:daily"),
   probePrivateHost: (api) => api.probePrivateHost("intranet.example.com", { timeoutMs: 1_500 }),
   resolveApiKey: (api) => api.resolveApiKey({ purpose: "llm", vendor: "openai" }),
-  emitEvent: (api) => api.emitEvent("golden-invoker.ready", { ok: true }),
-  onEvent: (api) => api.onEvent("host.theme.changed", () => undefined),
   callLlm: (api) => api.callLlm("say hello", { maxTokens: 16 }),
   hostFetch: (api) =>
     api.hostFetch("https://api.example.com/ping", {

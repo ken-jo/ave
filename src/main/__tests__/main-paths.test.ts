@@ -26,7 +26,7 @@ describe("resolveRuntimePathsFromModuleUrl", () => {
       distRoot: dirname(distSrcDir),
       projectRoot: dirname(dirname(distSrcDir)),
     });
-    expect(join(paths.distSrcDir, "plugin-preload.cjs")).toBe(join(distSrcDir, "plugin-preload.cjs"));
+    expect(join(paths.distSrcDir, "preload.cjs")).toBe(join(distSrcDir, "preload.cjs"));
     expect(join(paths.distSrcDir, "mcp-app-preload.cjs")).toBe(join(distSrcDir, "mcp-app-preload.cjs"));
   });
 

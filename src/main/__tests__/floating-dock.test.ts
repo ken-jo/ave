@@ -26,7 +26,7 @@ const WORK_AREA: WorkArea = { x: 0, y: 0, width: 1920, height: 1080 };
 const SURFACE: ResolvedFloatingSurface = {
   pluginId: "meeting",
   extensionId: "recorder",
-  entryUrl: "file:///plugins/meeting/dist/ui/recorder.js?aveRuntimeRevision=3",
+  payload: { serverId: "meeting", generationId: "generation", resourceUri: "ui://meeting/recorder" },
   title: "Recorder",
 };
 

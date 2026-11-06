@@ -19,7 +19,6 @@ import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ALERTS } from "../shared/ipc-channels.js";
 import type { AveApi } from "../ui/renderer/types.js";
-import { dockAssetArgs } from "../shared/floating-dock-args.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -413,7 +412,6 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "downloadAppUpdate": "function",
           "e2ePluginBundleSnapshot": "function",
-          "ensurePluginPartition": "function",
           "envForcedSettings": "function",
           "exportUsageCsv": "function",
           "generateWorkBoardReport": "function",
@@ -567,7 +565,6 @@ describe("preload contextBridge world shape lock", () => {
           "onOverlayUpdate": "function",
           "onPersonaPromptsUpdated": "function",
           "onPluginEnabledChanged": "function",
-          "onPluginEvent": "function",
           "onPluginInstallResult": "function",
           "onPluginRuntimeUpdated": "function",
           "onPluginUninstallResult": "function",
@@ -639,8 +636,6 @@ describe("preload contextBridge world shape lock", () => {
             "upstreamProxySet",
           ],
           "pingAiProvider": "function",
-          "pluginPreloadUrl": "string",
-          "pluginShellUrl": "string",
           "pluginStudio": [
             "availableParts",
             "confirmConnectorCopy",
@@ -666,8 +661,6 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "previewClaudeDesktopMcpImport": "function",
-          "readPluginUiModule": "function",
-          "registerPluginWebview": "function",
           "relaunchApp": "function",
           "remoteA2a": [
             "action",
@@ -819,45 +812,41 @@ describe("floating dock preload world shape lock", () => {
   // guard refuses a non-plugin frame).
   it("exposes only aveDock with the dock's API, and forwards each theme without the event object", async () => {
     const before = new Set(exposed.keys());
-    // Main passes the asset URLs; the sandboxed preload cannot resolve files itself.
-    const argv = process.argv;
-    process.argv = [...argv, ...dockAssetArgs({ pluginShellUrl: "file:///app/plugin-ui-shell.html", pluginPreloadUrl: "file:///app/plugin-preload.cjs" })];
-    try {
-      await import("../floating-dock-preload.js");
-    } finally {
-      process.argv = argv;
-    }
+    await import("../floating-dock-preload.js");
     const added = [...exposed.keys()].filter((key) => !before.has(key));
     expect(added).toEqual(["aveDock"]);
-    const dock = exposed.get("aveDock") as Record<string, unknown> & { onTheme(handler: (theme: unknown) => void): () => void };
+    const dock = exposed.get("aveDock") as import("../floating-dock-preload.js").AveDockBridge;
     exposed.delete("aveDock");
+    // Dock chrome observes mounted-panel auth to remount views without making auth tools app-callable.
     expect(deepShape(dock)).toMatchInlineSnapshot(`
       {
-        "ensurePartition": "function",
         "onActivity": "function",
         "onMount": "function",
         "onResize": "function",
         "onRetitle": "function",
         "onTheme": "function",
         "onUnmount": "function",
-        "pluginPreloadUrl": "string",
-        "pluginShellUrl": "string",
-        "registerWebview": "function",
+        "readAuthStatus": "function",
         "reportSlotGone": "function",
         "requestClose": "function",
       }
     `);
 
-    expect(dock.pluginShellUrl).toBe("file:///app/plugin-ui-shell.html");
-    expect(dock.pluginPreloadUrl).toBe("file:///app/plugin-preload.cjs");
+
+    // The dock consumes appearance from main and exposes no settings reads or writes.
+    expect(deepShape(exposed.get("aveApi"))).toEqual({
+      openExternalUrl: "function",
+    });
 
     const handler = vi.fn();
     const dispose = dock.onTheme(handler);
     const listener = mockOn.mock.calls.findLast(([channel]) => channel === "ave:dock:theme")![1];
     const theme = { bundleId: "github-light", shell: "light", tokens: { "--ave-bg": "#ffffff" } };
-    listener({ sender: "not forwarded" }, theme);
-    expect(handler).toHaveBeenCalledExactlyOnceWith(theme);
+    const appearance = { theme, terminalFontFamily: "Dock Mono" };
+    listener({ sender: "not forwarded" }, appearance);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(appearance);
     dispose();
     expect(mockRemoveListener).toHaveBeenCalledWith("ave:dock:theme", listener);
+
   });
 });

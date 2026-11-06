@@ -6,7 +6,6 @@ import {
   validateHostRendererSender,
   UNAUTHORIZED_FRAME,
   auditUnauthorized,
-  validatePluginFrame,
 } from "../gated.js";
 import { foreignFrameEvent } from "../../__tests__/test-helpers.js";
 
@@ -64,8 +63,8 @@ describe("validateHostRendererSender", () => {
     expect(validateHostRendererSender(foreignFrameEvent("http://127.0.0.1:5173/"))).toBe(true);
   });
 
-  it("rejects plugin UI shell file frames", () => {
-    expect(validateHostRendererSender(foreignFrameEvent("file:///dist/src/plugin-ui-shell.html"))).toBe(false);
+  it("rejects isolated app-resource frames", () => {
+    expect(validateHostRendererSender(foreignFrameEvent("ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))).toBe(false);
   });
 
   it("rejects arbitrary remote origins", () => {
@@ -76,37 +75,6 @@ describe("validateHostRendererSender", () => {
     expect(validateHostRendererSender(null)).toBe(false);
     expect(validateHostRendererSender(undefined)).toBe(false);
     expect(validateHostRendererSender({} as IpcMainInvokeEvent)).toBe(false);
-  });
-});
-
-// Sender, plugin-frame, and navigation guards must share the same shell predicate.
-describe("plugin-shell frame predicate — agreement across guards", () => {
-  const HOST_LOOKALIKE = "file:///dist/src/index.html?next=plugin-ui-shell.html";
-  const REMOTE_LOOKALIKE = "https://evil.example.com/plugin-ui-shell.html";
-  const SHELL = "file:///dist/src/plugin-ui-shell.html";
-  const SHELL_MIXED_CASE = "file:///dist/src/Plugin-UI-Shell.HTML";
-  const SHELL_SUFFIX_LOOKALIKE = "file:///dist/src/evil-plugin-ui-shell.html";
-
-  it("treats a host file frame that merely mentions the shell name as the HOST renderer", () => {
-    expect(validateHostRendererSender(foreignFrameEvent(HOST_LOOKALIKE))).toBe(true);
-    expect(validatePluginFrame(foreignFrameEvent(HOST_LOOKALIKE))).toBe(false);
-  });
-
-  it("treats a remote page serving the shell filename as neither host nor plugin", () => {
-    expect(validateHostRendererSender(foreignFrameEvent(REMOTE_LOOKALIKE))).toBe(false);
-    expect(validatePluginFrame(foreignFrameEvent(REMOTE_LOOKALIKE))).toBe(false);
-  });
-
-  it("matches the real shell document, case-folded, on a /-anchored path segment", () => {
-    expect(validatePluginFrame(foreignFrameEvent(SHELL))).toBe(true);
-    expect(validatePluginFrame(foreignFrameEvent(SHELL_MIXED_CASE))).toBe(true);
-    expect(validateHostRendererSender(foreignFrameEvent(SHELL))).toBe(false);
-    expect(validateHostRendererSender(foreignFrameEvent(SHELL_MIXED_CASE))).toBe(false);
-  });
-
-  it("does not accept a filename that merely ENDS with the shell name", () => {
-    expect(validatePluginFrame(foreignFrameEvent(SHELL_SUFFIX_LOOKALIKE))).toBe(false);
-    expect(validateHostRendererSender(foreignFrameEvent(SHELL_SUFFIX_LOOKALIKE))).toBe(true);
   });
 });
 
@@ -134,32 +102,13 @@ describe("auditUnauthorized", () => {
   it("redacts the user's home directory in file:// frame URLs", () => {
     const mockLogger = { log: vi.fn() };
     const home = os.homedir();
-    const event = foreignFrameEvent(`file://${home}/Documents/ave-project/ave/dist/src/plugin-ui-shell.html`) as IpcMainInvokeEvent;
+    const event = foreignFrameEvent(`file://${home}/Documents/ave-project/ave/dist/src/untrusted-frame.html`) as IpcMainInvokeEvent;
     auditUnauthorized(mockLogger as never, "ave:test:channel", event);
     const parsed = JSON.parse(
       mockLogger.log.mock.calls[0][0].input as string,
     );
-    expect(parsed.frameUrl).toBe("file://<home>/Documents/ave-project/ave/dist/src/plugin-ui-shell.html");
+    expect(parsed.frameUrl).toBe("file://<home>/Documents/ave-project/ave/dist/src/untrusted-frame.html");
     expect(parsed.frameUrl).not.toContain(home);
-  });
-});
-
-describe("validatePluginFrame", () => {
-  it("accepts plugin-ui-shell.html", () => {
-    expect(validatePluginFrame(foreignFrameEvent("file:///plugins/slug/plugin-ui-shell.html"))).toBe(true);
-  });
-
-  it("rejects non-shell file URLs", () => {
-    expect(validatePluginFrame(foreignFrameEvent("file:///plugins/slug/index.html"))).toBe(false);
-  });
-
-  it("rejects http:// URLs", () => {
-    expect(validatePluginFrame(foreignFrameEvent("http://localhost:5173/"))).toBe(false);
-  });
-
-  it("refuses a missing frame", () => {
-    expect(validatePluginFrame(null)).toBe(false);
-    expect(validatePluginFrame(undefined)).toBe(false);
   });
 });
 

@@ -1,0 +1,25 @@
+{
+  "request": {
+    "id": 32,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/attachFloatingPanel",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "request": {
+        "extensionId": "golden-card",
+        "height": 240
+      }
+    }
+  },
+  "response": {
+    "id": 32,
+    "jsonrpc": "2.0",
+    "result": {
+      "handleId": "<uuid-2>",
+      "height": 240,
+      "panelId": "panel-1"
+    }
+  }
+}

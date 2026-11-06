@@ -149,7 +149,8 @@
                   "id",
                   "slot",
                   "kind",
-                  "title"
+                  "title",
+                  "resourceUri"
                 ],
                 "properties": {
                   "id": {
@@ -163,9 +164,7 @@
                   },
                   "kind": {
                     "enum": [
-                      "embedded-module",
-                      "embedded-page",
-                      "info-card"
+                      "mcp-app"
                     ]
                   },
                   "displayName": {
@@ -180,17 +179,13 @@
                   "locales": {
                     "$ref": "#/definitions/pluginUiExtensionLocales"
                   },
-                  "defaults": {
-                    "type": "object"
-                  },
-                  "entry": {
-                    "type": "string"
-                  },
-                  "exportName": {
-                    "type": "string"
-                  },
-                  "page": {
-                    "type": "string"
+                  "resourceUri": {
+                    "type": "string",
+                    "pattern": "^ui://",
+                    "maxLength": 512,
+                    "not": {
+                      "pattern": "[\\r\\n]"
+                    }
                   }
                 }
               },
@@ -198,7 +193,7 @@
             },
             "uiResources": {
               "type": "array",
-              "description": "MCP App ui:// resources this plugin serves (distinct from `ui[]`, which declares host-mounted React sidebar panels). DECLARED POLICY, SERVED CONTENT: each entry declares a `ui://<pluginId>/<path>` uri plus that resource's OWN _meta.ui security policy (csp/permissions); the card HTML itself is served by the plugin at read time (`RuntimePlugin.readUiResource(uri)`), exactly as an external MCP server answers resources/read with bytes — the host never reads a plugin-declared disk path. When a tool result carries `_meta.ui.resourceUri` matching one of these uris, the loopback host asks the plugin for the HTML and renders it through the same sandbox-proxy + main-computed CSP path as an external MCP server's ui:// resource. Security (enforced fail-closed at serve time): the uri authority MUST equal the plugin id (own-namespace-only), the uri MUST be declared here (declared-only — this is what binds served content to a reviewed policy), and main COMPUTES the CSP header AND the frame's Permissions-Policy `allow` attribute from csp/permissions — the plugin never supplies a policy header string or an allow-list. csp/permissions stay in the manifest (not on the hook's return) so they are statically reviewable and covered by manifestSha256. See mcpUiResourcePermissions for the accepted permission set (host-honorable, proven end-to-end).",
+              "description": "MCP App ui:// resources this plugin serves as interactive cards and resources placed in host panels by `ui[]`. DECLARED POLICY, SERVED CONTENT: each entry declares a `ui://<pluginId>/<path>` uri plus that resource's OWN _meta.ui security policy (csp/permissions); the card HTML itself is served by the plugin at read time (`RuntimePlugin.readUiResource(uri)`), exactly as an external MCP server answers resources/read with bytes — the host never reads a plugin-declared disk path. When a tool result carries `_meta.ui.resourceUri` matching one of these uris, the loopback host asks the plugin for the HTML and renders it through the same sandbox-proxy + main-computed CSP path as an external MCP server's ui:// resource. Security (enforced fail-closed at serve time): the uri authority MUST equal the plugin id (own-namespace-only), the uri MUST be declared here (declared-only — this is what binds served content to a reviewed policy), and main COMPUTES the CSP header AND the frame's Permissions-Policy `allow` attribute from csp/permissions — the plugin never supplies a policy header string or an allow-list. csp/permissions stay in the manifest (not on the hook's return) so they are statically reviewable and covered by manifestSha256. See mcpUiResourcePermissions for the accepted permission set (host-honorable, proven end-to-end).",
               "maxItems": 64,
               "items": {
                 "type": "object",
@@ -1586,7 +1581,7 @@
                 }
               }
             },
-            "ave/pathFields": {
+            "ai.agent-connector.ave/pathFields": {
               "type": "array",
               "uniqueItems": true,
               "items": {
@@ -1598,7 +1593,7 @@
                 }
               }
             },
-            "ave/operationPolicy": {
+            "ai.agent-connector.ave/operationPolicy": {
               "$ref": "#/definitions/pluginToolOperationPolicy"
             }
           }
@@ -1645,7 +1640,7 @@
       }
     },
     "mcpUiResourcePermissions": {
-      "$comment": "MCP Apps spec `McpUiResourcePermissions`, restricted to what this host can DEMONSTRABLY honor. Main derives the inner iframe's Permissions-Policy `allow` attribute AND the Electron session grant from this; the plugin never supplies either. An ABSENT key is denied. The inner frame carries `allow-same-origin` (spec origin requirement, apps.mdx:474-475), so it inherits the per-server proxy origin and a delegated feature can be honored. SOT for the accepted set: src/shared/mcp-app-permissions.ts MCP_APP_PERMISSION_FEATURES, proven end-to-end in test/e2e/ui/mcp-app-permissions.spec.ts. The spec's `clipboardWrite` is deliberately NOT accepted — measured, a script-initiated clipboard write is denied even when delegated — so declaring it FAILS validation loudly rather than silently doing nothing.",
+      "$comment": "MCP Apps resource permissions honored by the isolated app frame. Main derives iframe delegation and session grants from this declaration. Missing features are denied; clipboard writing requires a user action and clipboard reading is unsupported. The supported set is src/shared/mcp-app-permissions.ts, verified by test/e2e/ui/mcp-app-permissions.spec.ts.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -1662,6 +1657,11 @@
         "geolocation": {
           "type": "object",
           "description": "Request the Geolocation API for this card's frame. Absent means denied.",
+          "additionalProperties": false
+        },
+        "clipboardWrite": {
+          "type": "object",
+          "description": "Request clipboard writing for this app frame after a user action. Clipboard reading remains denied.",
           "additionalProperties": false
         }
       }

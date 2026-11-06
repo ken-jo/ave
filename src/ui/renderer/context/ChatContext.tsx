@@ -26,6 +26,10 @@ export interface ChatContextValue {
   setEditingEntryIdx: (i: number | null) => void;
   editBusy: boolean;
   question: string;
+  /** Provenance of the current composer text, cleared atomically with that text. */
+  appSource?: string;
+  /** Immutable composer snapshot for asynchronous consumption guards. */
+  draftIdentity?: object;
   setQuestion: React.Dispatch<React.SetStateAction<string>>;
   chatEndRef: RefObject<HTMLDivElement | null>;
   /**

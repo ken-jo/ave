@@ -31,7 +31,7 @@ import {
   type UnknownFieldReport,
   type SubscriptionScope,
 } from "../host-api-dispatcher.js";
-import { DISPATCH_SUBSCRIPTION_KIND_MAX, type HostApiBudgetAudit } from "../host-api-budgets.js";
+import { DISPATCH_SUBSCRIPTION_KIND_MAX } from "../host-api-budgets.js";
 import {
   HostApiBoundaryError,
   UNIVERSAL_WIRE_ERROR_CODES,
@@ -327,7 +327,7 @@ describe("main imports no plugin code", () => {
     const runtimeIndex = join(SRC, "plugins", "runtime", "index.ts");
     expect(pluginLoaderImporters()).toContain(runtimeIndex);
     expect(bindingsFromPluginLoader(runtimeIndex)).toEqual(
-      expect.arrayContaining(["buildImportUrl", "buildMethodMap", "declaredAppVisibleToolMethods"]),
+      expect.arrayContaining(["buildMethodMap", "declaredAppVisibleToolMethods"]),
     );
   });
 });
@@ -378,8 +378,8 @@ describe("the dispatcher refuses rather than defaults", () => {
     expect(reply).toEqual({ jsonrpc: "2.0", id: "c1", result: true });
     expect(seen?.args).toEqual(["nightly"]);
     expect(reported).toEqual([
-      ["ave/host/hasRoutineBySource", "pluginId"],
-      ["ave/host/hasRoutineBySource", "generationId"],
+      ["ai.agent-connector.ave/host/hasRoutineBySource", "pluginId"],
+      ["ai.agent-connector.ave/host/hasRoutineBySource", "generationId"],
     ]);
 
     // Deduplicate by method and field for the connection lifetime.
@@ -413,7 +413,7 @@ describe("the dispatcher refuses rather than defaults", () => {
     expect(named).toHaveLength(UNKNOWN_FIELD_REPORTS_MAX);
     expect(named[0]).toEqual({
       kind: "field",
-      method: "ave/host/hasRoutineBySource",
+      method: "ai.agent-connector.ave/host/hasRoutineBySource",
       field: `${"f".repeat(64)}…`,
     });
     expect(reports.filter((report) => report.kind === "suppressed")).toEqual([
@@ -433,7 +433,7 @@ describe("the dispatcher refuses rather than defaults", () => {
     const field = `${"f".repeat(63)}\u{1F600}tail`;
     await host.handle(request({ params: { source: "nightly", [field]: 1 } }));
     expect(reports).toEqual([
-      { kind: "field", method: "ave/host/hasRoutineBySource", field: `${"f".repeat(63)}\u{1F600}…` },
+      { kind: "field", method: "ai.agent-connector.ave/host/hasRoutineBySource", field: `${"f".repeat(63)}\u{1F600}…` },
     ]);
   });
 
@@ -455,14 +455,14 @@ describe("the dispatcher refuses rather than defaults", () => {
   });
 
   it("answers a method only in its one spelling, never a dotted alias", async () => {
-    expect(hostApiPathOf("ave/host/storage/read")).toBe("storage.read");
-    for (const alias of ["ave/host/storage.read", "ave/host/agentApproval.request"]) {
+    expect(hostApiPathOf("ai.agent-connector.ave/host/storage/read")).toBe("storage.read");
+    for (const alias of ["ai.agent-connector.ave/host/storage.read", "ai.agent-connector.ave/host/agentApproval.request"]) {
       expect(hostApiPathOf(alias), alias).toBeUndefined();
     }
     const reply = await dispatcher().handle({
       jsonrpc: "2.0",
       id: "c1",
-      method: "ave/host/storage.read",
+      method: "ai.agent-connector.ave/host/storage.read",
       params: { path: "notes.txt" },
     });
     if (!("error" in reply)) throw new Error("expected a refusal");
@@ -508,13 +508,13 @@ describe("the dispatcher refuses rather than defaults", () => {
   it("refuses a void-declared member that returned a value", async () => {
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
-      emitEvent: defineHostApiPath("emitEvent", async () =>
+      "config.set": defineHostApiPath("config.set", async () =>
         // A nonvoid host reply must expose signature drift rather than be discarded.
         "surprise" as unknown as void,
       ),
     };
     const reply = await dispatcher({ table }).handle(
-      request({ path: "emitEvent", args: ["sample.update", {}] }),
+      request({ path: "config.set", args: ["theme", "dark"] }),
     );
     if (!("error" in reply)) throw new Error("expected a refusal");
     expect(reply.error.data.code).toBe("result-marshalling-rejected");
@@ -722,35 +722,6 @@ describe("dispatcher resource budgets", () => {
     }
   });
 
-  it("drops and counts notification floods, then emits one aggregate", async () => {
-    vi.useFakeTimers();
-    try {
-      const emits = vi.fn();
-      const audits: HostApiBudgetAudit[] = [];
-      const host = dispatcher({
-        reportBudgetAudit: (entry) => audits.push(entry),
-        table: {
-          ...HOSTAPI_DISPATCH_TABLE,
-          emitEvent: defineHostApiPath("emitEvent", async () => { emits(); }),
-        },
-      });
-      for (let index = 0; index < 210; index += 1) {
-        expect(await host.handle(hostApiRequest("emitEvent", ["demo.event"], index)))
-          .toHaveProperty("result", null);
-      }
-      expect(emits).toHaveBeenCalledTimes(200);
-      expect(audits).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: "emitEvent", count: 1, summary: false }),
-      ]));
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(audits).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: "emitEvent", count: 9, summary: true }),
-      ]));
-      host.childGone();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 
   it("preserves service rate-limit verdicts as results", async () => {
     const table = {
@@ -770,7 +741,6 @@ describe("dispatcher resource budgets", () => {
 
   it("pins the per-kind ceilings on every lifetime-bearing kind with one", () => {
     expect(DISPATCH_SUBSCRIPTION_KIND_MAX).toEqual({
-      onEvent: 64,
       "config.onChange": 16,
       spawnWorker: 8,
       startAudioCapture: 2,
@@ -842,7 +812,7 @@ describe("dispatcher resource budgets", () => {
     const first = opened[0];
     if (!("result" in first)) throw new Error("expected a worker handle");
     host.handleNotification({
-      jsonrpc: "2.0", method: "notifications/ave/subscription/release",
+      jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription/release",
       params: { subscriptionId: (first.result as { handleId: string }).handleId },
     });
     expect(stopped).toBe(1);
@@ -859,7 +829,7 @@ describe("removed members are absent from the protocol", () => {
   it.each([
     "getInstalledPluginIds", "onPluginsChanged", "resizeFloatingPanel", "proposeWork",
     "withdrawWorkProposal", "withdrawAlert", "agentApproval.request", "agentApproval.respond",
-    "logEvent", "onShutdown", "getAppPreference",
+    "logEvent", "onShutdown", "getAppPreference", "emitEvent", "onEvent",
   ])("rejects %s with the standard method-not-found response", async (path) => {
     expect(isHostApiPath(path)).toBe(false);
     const reply = await dispatcher().handle(request({ path }));

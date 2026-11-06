@@ -1,6 +1,6 @@
 // Use production protocol, policy and relay modules for permission probes.
 import { app, BrowserWindow, protocol } from "electron";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,10 @@ import type { McpUiResourcePermissions } from "../../../../src/mcp/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-perm-server";
+const outputArgument = process.argv.find((argument) => argument.startsWith("--probe-output="))?.slice("--probe-output=".length);
+if (!outputArgument) throw new Error("Permission probe output directory is required");
+const outputDirectory = outputArgument;
+mkdirSync(outputDirectory, { recursive: true });
 
 // Declarations are inputs; probes determine which capabilities the host actually honors.
 const ALL_FOUR: McpUiResourcePermissions = {
@@ -43,6 +47,11 @@ app.on("web-contents-created", (_e, contents) => {
         : (args[2] as string | undefined);
     if (typeof message !== "string" || !message.startsWith("E2E_")) return;
     process.stdout.write(`${message}\n`);
+    if (/^E2E_PROBE [a-z-]+ READY$/.test(message)) {
+      contents.focus();
+      contents.sendInputEvent({ type: "mouseDown", x: 35, y: 18, button: "left", clickCount: 1 });
+      contents.sendInputEvent({ type: "mouseUp", x: 35, y: 18, button: "left", clickCount: 1 });
+    }
     for (const [label, resolve] of doneWaiters) {
       if (message === `E2E_PROBE ${label} DONE`) {
         doneWaiters.delete(label);
@@ -114,6 +123,8 @@ async function runCard(
   await win.loadFile(hostHtmlPath);
   await done;
   await reportFrame(win, card.label);
+  const screenshot = await win.webContents.capturePage();
+  writeFileSync(join(outputDirectory, `mcp-app-permissions-${card.label}.png`), screenshot.toPNG());
   win.destroy();
 }
 

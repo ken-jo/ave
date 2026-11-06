@@ -21,8 +21,6 @@ const harness = vi.hoisted(() => ({
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
     resolveToolOwner: vi.fn((toolName: string) => `${toolName}-owner`),
-    // Reached by the `onEvent` probe below, which subscribes for real.
-    assertPluginEventAccess: vi.fn(),
   },
 }));
 
@@ -180,17 +178,6 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     returns: "() => void — an unsubscribe disposer, a function",
   },
   // top level
-  emitEvent: {
-    jsonRepresentable: true,
-    contractualPayload: true,
-    args: "eventType: string, data?: unknown",
-    returns: "void",
-  },
-  onEvent: {
-    jsonRepresentable: false,
-    args: "eventType: string, handler: (data) => void — a function",
-    returns: "() => void — an unsubscribe disposer, a function",
-  },
 
   getSecret: {
     jsonRepresentable: true,
@@ -322,7 +309,6 @@ const REQUIRES_DECIDED_REPRESENTATION: readonly string[] = [
   "callLlm",
   "config.onChange",
   "hostFetch",
-  "onEvent",
 
   "resolveApiKey",
   "spawnWorker",
@@ -450,7 +436,6 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
       "ave-hostapi-marshalling-",
     );
     const disposers = [
-      hostApi.onEvent("host.theme.changed", () => {}),
       hostApi.config.onChange("surface-probe-key", () => {}),
     ];
     for (const disposer of disposers) {

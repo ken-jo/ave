@@ -87,6 +87,8 @@ export interface OverlayItem {
   /** Plugin insertion overlay — prompt inserted into the card's origin conversation (the Suggestions conversation for every
    * unrequested card) when the user confirms (primary action). Absent for routine-source items. */
   pendingPrompt?: string;
+  /** A panel message fills the focused composer without starting a turn. */
+  composerDraft?: boolean;
   /** Where an `alert` card sits in the queue: `high` above `normal` above `low`. Read for alert cards only; every other card
    * counts as `normal`. */
   priority?: OverlayPriority;

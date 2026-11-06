@@ -92,7 +92,7 @@ export async function probePluginStreams(owned: OwnedMxcExtensionProcess, direct
       && typeof forgedReply.message === "string" && forgedReply.message.includes("names an invocation this connection does not hold");
     // The forged owner fields are ignored and reported against the real connection, never adopted.
     const forgedFieldsReported = ["pluginId", "generationId"].every((field) => unknownFields.some((entry) =>
-      entry.pluginId === manifest.id && entry.method === "ave/host/raiseAlert" && entry.field === field));
+      entry.pluginId === manifest.id && entry.method === "ai.agent-connector.ave/host/raiseAlert" && entry.field === field));
     const forgedIdentityRejected = forgedTokenRefused && forgedFieldsReported && effects === 0
       && refusalAudit.some((entry) => entry.pluginId === manifest.id && entry.method === "raiseAlert" && entry.code === "argument-marshalling-rejected");
     controller.abort();

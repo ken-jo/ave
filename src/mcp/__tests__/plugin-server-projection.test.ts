@@ -25,7 +25,7 @@ const BASE_MANIFEST: PluginManifest = {
       name: "meeting_export",
       description: "Export the transcript to a path",
       inputSchema: { type: "object", properties: { path: { type: "string" } } },
-      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ai.agent-connector.ave/pathFields": ["path"] },
     },
     {
       // App-only tools still need registry entries so card calls retain governance.
@@ -76,19 +76,19 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
     const tools = manifestToolsToMcpTools(BASE_MANIFEST);
     const start = tools.find((t) => t.name === "meeting_start")!;
     const exp = tools.find((t) => t.name === "meeting_export")!;
-    expect((start._meta as Record<string, unknown>)["ave/pathFields"]).toBeUndefined();
-    expect(exp._meta["ave/pathFields"]).toEqual(["path"]);
+    expect((start._meta as Record<string, unknown>)["ai.agent-connector.ave/pathFields"]).toBeUndefined();
+    expect(exp._meta["ai.agent-connector.ave/pathFields"]).toEqual(["path"]);
     for (const t of tools) {
       const meta = t._meta as Record<string, unknown>;
-      expect(meta["ave/category"]).toBeUndefined();
-      expect(meta["ave/version"]).toBeUndefined();
-      expect(meta["ave/writesToOwnSandbox"]).toBeUndefined();
-      expect(meta["ave/workerId"]).toBeUndefined();
-      expect(meta["ave/deprecatedSince"]).toBeUndefined();
-      expect(meta["ave/replacedBy"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/category"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/version"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/writesToOwnSandbox"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/workerId"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/deprecatedSince"]).toBeUndefined();
+      expect(meta["ai.agent-connector.ave/replacedBy"]).toBeUndefined();
       expect((t as Record<string, unknown>).annotations).toBeUndefined();
       for (const key of Object.keys(meta)) {
-        expect(key === "ui" || key.startsWith("ave/")).toBe(true);
+        expect(key === "ui" || key.startsWith("ai.agent-connector.ave/")).toBe(true);
         expect(key).not.toMatch(/(^|\.)(mcp|modelcontextprotocol)\//);
       }
     }
@@ -116,12 +116,12 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
       },
       _meta: {
         ...manifest.tools[3]._meta,
-        "ave/operationPolicy": policy,
+        "ai.agent-connector.ave/operationPolicy": policy,
       },
     };
 
     const projected = manifestToolsToMcpTools(manifest)[3];
-    expect(projected._meta["ave/operationPolicy"]).toEqual(policy);
+    expect(projected._meta["ai.agent-connector.ave/operationPolicy"]).toEqual(policy);
   });
 
   it("never reads pathFields under an unknown vendor _meta prefix (fail-closed)", () => {
@@ -142,7 +142,7 @@ describe("plugin-server-projection — normalized Tool[] → MCP tools/list (#88
       ],
     };
     const tool = manifestToolsToMcpTools(unknownManifest)[0];
-    expect(tool._meta["ave/pathFields"]).toBeUndefined();
+    expect(tool._meta["ai.agent-connector.ave/pathFields"]).toBeUndefined();
     expect((tool._meta as Record<string, unknown>)[`${UNKNOWN_META_PREFIX}pathFields`]).toBeUndefined();
   });
 
