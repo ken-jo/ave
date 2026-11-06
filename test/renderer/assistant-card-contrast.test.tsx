@@ -182,11 +182,6 @@ describe("ave-prose CSS coverage — markdown tables stay readable", () => {
       },
     },
     {
-      label: "plugin-ui-shell.html body",
-      path: "src/plugin-ui-shell.html",
-      extract: (text) => text.match(/body\s*\{[^{}]*?font-family:\s*([^;}]+)/)?.[1] ?? null,
-    },
-    {
       label: "bootstrap-splash.ts splash inline",
       path: "src/main/bootstrap-splash.ts",
       extract: (text) => text.match(/html,body\s*\{[^{}]*?font-family:\s*([^;}]+)/)?.[1] ?? null,

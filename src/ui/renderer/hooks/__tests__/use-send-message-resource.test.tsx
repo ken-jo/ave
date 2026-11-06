@@ -258,6 +258,24 @@ describe("handleAsk — a turn carrying an attached resource", () => {
     expect(restoredParts([RESOURCE])).toEqual([RESOURCE]);
   });
 
+  it("acknowledges staged composer history only after host admission", async () => {
+    const onAccepted = vi.fn();
+    const s = setup({ attachments: [], settingsReady: false });
+    await act(async () => s.result.current.handleAsk('<app-message source="app:fixture">review</app-message>', "app-message", undefined, { onAccepted }));
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(s.chatSend).not.toHaveBeenCalled();
+  });
+
+  it("notifies the staged composer to restore plain draft text after a refusal", async () => {
+    const onAccepted = vi.fn();
+    const onRefused = vi.fn();
+    const s = setup({ attachments: [], chatSend: vi.fn(async () => ({ ok: false, error: "streaming-active" })) });
+    await act(async () => s.result.current.handleAsk('<app-message source="app:fixture">review</app-message>', "app-message", undefined, { onAccepted, onRefused }));
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledOnce();
+    expect(s.chatSend.mock.calls[0]?.[2]).toBe("app-emitted");
+  });
+
   it("never puts a staged envelope in the composer when a staged send throws", async () => {
     // For a staged mode the first argument IS the provenance envelope, not anything the
     // user typed. Handing it back as a draft would offer server-authored text as the

@@ -240,12 +240,6 @@ vi.mock("../steps/revocation-bootstrap.js", () => ({
   }),
 }));
 
-vi.mock("../steps/ipc-bridge.js", () => ({
-  registerPluginEventBridge: vi.fn(() => {
-    h.rec("pluginEventBridge");
-    return h.disposer();
-  }),
-}));
 
 vi.mock("../steps/post-boot.js", () => ({
   wireReleasePrep: vi.fn((input: { discretionaryEgress: boolean }) => {
@@ -779,9 +773,7 @@ describe("bootstrap() integration lock", () => {
         "pythonPath",
         "pythonRuntime",
         "refreshActiveLlmWildcard",
-        "refreshPluginEventBridge",
         "refreshSandboxNetworkConfig",
-        "registerPluginEventBridge",
         "relaunchApp",
         "releaseChatGroupLoop",
         "remoteA2AActionController",
@@ -860,8 +852,6 @@ describe("bootstrap() integration lock", () => {
     expect(typeof services.shutdown).toBe("function");
     expect(typeof services.startRoutinesScheduler).toBe("function");
     expect(typeof services.startWorkBoardDueSoon).toBe("function");
-    expect(typeof services.registerPluginEventBridge).toBe("function");
-    expect(typeof services.refreshPluginEventBridge).toBe("function");
   });
 
   it("wires the core, conversation, and plugin-runtime seams into the graph", () => {

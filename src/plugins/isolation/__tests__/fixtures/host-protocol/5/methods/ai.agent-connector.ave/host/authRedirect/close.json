@@ -1,0 +1,20 @@
+{
+  "request": {
+    "id": 27,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/authRedirect/close",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "options": {
+        "handle": "redirect-1"
+      }
+    }
+  },
+  "response": {
+    "id": 27,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

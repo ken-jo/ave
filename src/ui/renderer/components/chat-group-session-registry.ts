@@ -24,6 +24,8 @@ const NO_SESSION_IDS: ReadonlySet<string> = new Set();
 /** What a new chat opens with: composer text, and for "Ave 에게 고치기" the memory it is about. */
 export interface NewChatOpening {
   draft: string;
+  /** App-authored opening text retains its source through creation and draft parking. */
+  appSource?: string;
   fixMemory?: MemoryFixTarget;
 }
 
@@ -91,6 +93,8 @@ export interface ChatGroupSessionHandle {
   loadSession: (sessionId: string) => Promise<boolean>;
   /** Put text in this tile's composer without sending it. */
   prefillComposer: (text: string) => void;
+  /** Stage untrusted app text for the user to send from this composer. */
+  stageAppMessage: (text: string, source: string) => void;
   /** Write a system row into this tile's transcript. */
   appendSystemEntry: (message: string) => void;
   /**
@@ -138,6 +142,7 @@ const EMPTY_CHAT_GROUP_SESSION: ChatGroupSessionHandle = Object.freeze({
   currentSessionProject: {},
   loadSession: async () => false,
   prefillComposer: () => {},
+  stageAppMessage: () => {},
   appendSystemEntry: () => {},
   startNewChat: async () => false,
 });
@@ -529,6 +534,7 @@ export class ChatGroupSessionRegistry {
       currentSessionProject: handle.currentSessionProject,
       loadSession: async (sessionId: string) => await live()?.loadSession(sessionId) ?? false,
       prefillComposer: (text: string) => live()?.prefillComposer(text),
+      stageAppMessage: (text: string, source: string) => live()?.stageAppMessage(text, source),
       appendSystemEntry: (message: string) => live()?.appendSystemEntry(message),
       startNewChat: async (project?: { projectRoot?: string; projectName?: string }, opening?: NewChatOpening) =>
         await live()?.startNewChat(project, opening) ?? false,

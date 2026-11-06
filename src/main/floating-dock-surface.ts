@@ -1,15 +1,12 @@
 // The host fixes dock window geometry and privileges; plugins contribute cards through the existing sandboxed UI shell.
 import { BrowserWindow, ipcMain, screen } from "electron";
 import { runtimeAssetPath } from "./main-paths.js";
-import { pluginPartitionName } from "../shared/plugin-partition.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
-import { dockAssetArgs } from "../shared/floating-dock-args.js";
-import { pathToFileURL } from "node:url";
-import { preloadBundlePath, preloadPreferences } from "./preload-bundles.js";
-import { configurePluginWebviewAttach } from "./plugin-webview-attach.js";
+import { preloadPreferences } from "./preload-bundles.js";
+import { configureMcpAppWebviewAttach } from "./webview-attach.js";
 import type {
   DockActivity,
   DockBounds,
@@ -95,11 +92,6 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       webPreferences: {
         // Use the shared sandboxed CommonJS preload: it needs require and hosts plugin guests.
         ...preloadPreferences("floatingDockPreload"),
-        // The sandboxed preload cannot resolve files itself (no `node:path`).
-        additionalArguments: dockAssetArgs({
-          pluginShellUrl: pathToFileURL(runtimeAssetPath("plugin-ui-shell.html")).toString(),
-          pluginPreloadUrl: pathToFileURL(preloadBundlePath("pluginPreload")).toString(),
-        }),
         contextIsolation: true,
         nodeIntegration: false,
         webSecurity: true,
@@ -112,11 +104,12 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     // The dock hosts only plugin cards. Each attaches under the same main-side guard as the main window's plugin frames (sandbox, isolation, no Node, no
     // nested webviews), whatever the element asked for; anything else is refused.
     win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-      const enforced = configurePluginWebviewAttach({
+      const result = configureMcpAppWebviewAttach({
+        event,
         webPreferences: webPreferences as Record<string, unknown>,
         params: params as unknown as Record<string, string>,
       });
-      if (enforced !== "enforced") event.preventDefault();
+      if (result === "ignored") event.preventDefault();
     });
     // The theme current now goes first, queued with anything later until the window is ready, so the chrome paints in it from the first frame it shows.
     const opening = this.#currentTheme();
@@ -176,11 +169,8 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     this.#post(CHANNELS.dock.mount, {
       panelId,
       pluginId: surface.pluginId,
-      // The shell resolves the real module through `getEntryUrl` after `registerWebview`; this is the URL the renderer registers WITH, and main re-validates
-      // it against the install root before minting anything.
-      entryUrl: surface.entryUrl,
-      // Compute the hashed plugin partition in main; renderer reconstruction could open a different session without the asset scheme.
-      partition: pluginPartitionName(surface.pluginId),
+      payload: surface.payload,
+      authStatusTool: surface.authStatusTool,
       title: surface.title,
       height,
     });

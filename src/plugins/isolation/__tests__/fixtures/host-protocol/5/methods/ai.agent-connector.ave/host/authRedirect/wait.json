@@ -1,0 +1,24 @@
+{
+  "request": {
+    "id": 26,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/authRedirect/wait",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "options": {
+        "handle": "redirect-1",
+        "timeoutMs": 1000
+      }
+    }
+  },
+  "response": {
+    "id": 26,
+    "jsonrpc": "2.0",
+    "result": {
+      "code": "the-auth-code",
+      "state": "the-state"
+    }
+  }
+}

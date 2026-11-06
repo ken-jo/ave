@@ -1,8 +1,8 @@
 """The cross-language smoke plugin (plugin-hostapi-protocol-migration.md §9.7 P5).
 
 A `process` plugin in Python that owns its stdin and stdout: one
-newline-delimited JSON-RPC loop. `ave/instance/*` requests go to the handlers
-below, replies to its own `ave/host/*` requests settle its pending table, and
+newline-delimited JSON-RPC loop. `ai.agent-connector.ave/instance/*` requests go to the handlers
+below, replies to its own `ai.agent-connector.ave/host/*` requests settle its pending table, and
 every other request is first held to MCP's per-request metadata and then handed
 to the stock `mcp` server kernel in memory, one message at a time. No stock
 stdio driver runs: each would claim the process's stdin and stdout. Anything
@@ -19,9 +19,9 @@ import sys
 
 PROTOCOL_VERSION_META = "io.modelcontextprotocol/protocolVersion"
 CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
-RAW_RESULT_META = "ave/rawResult"
+RAW_RESULT_META = "ai.agent-connector.ave/rawResult"
 HOST_PROTOCOL_VERSION = "5"
-REQUIRED_HOST_METHODS = ["ave/host/storage/read", "ave/host/storage/write"]
+REQUIRED_HOST_METHODS = ["ai.agent-connector.ave/host/storage/read", "ai.agent-connector.ave/host/storage/write"]
 STATE_KEY = "smoke/state.bin"
 INVALID_PARAMS = -32602
 METHOD_NOT_FOUND = -32601
@@ -172,7 +172,7 @@ class Plugin:
         self.kernel_pending = {}
         self.kernel_turn = anyio.Lock()
 
-    # -- the host half: ave/host/* requests this plugin sends ----------------
+    # -- the host half: ai.agent-connector.ave/host/* requests this plugin sends ----------------
 
     async def host_request(self, method, params):
         if method not in (self.capabilities or []):
@@ -196,7 +196,7 @@ class Plugin:
         entry[1] = frame
         entry[0].set()
 
-    # -- the instance half: ave/instance/* requests the host sends -----------
+    # -- the instance half: ai.agent-connector.ave/instance/* requests the host sends -----------
 
     async def construct(self, params):
         version = (params.get("hostProtocol") or {}).get("version")
@@ -213,9 +213,9 @@ class Plugin:
     async def start(self, _params):
         stored = base64.b64encode(b"python-smoke").decode("ascii")
         await self.host_request(
-            "ave/host/storage/write", {"relPath": STATE_KEY, "data": {"encoding": "base64", "data": stored}}
+            "ai.agent-connector.ave/host/storage/write", {"relPath": STATE_KEY, "data": {"encoding": "base64", "data": stored}}
         )
-        read = await self.host_request("ave/host/storage/read", {"relPath": STATE_KEY})
+        read = await self.host_request("ai.agent-connector.ave/host/storage/read", {"relPath": STATE_KEY})
         log("python-smoke started " + json.dumps({"read": read}))
         return None
 
@@ -255,11 +255,11 @@ class Plugin:
     async def handle_request(self, frame):
         method = frame["method"]
         handlers = {
-            "ave/instance/construct": self.construct,
-            "ave/instance/start": self.start,
-            "ave/instance/stop": self.stop,
+            "ai.agent-connector.ave/instance/construct": self.construct,
+            "ai.agent-connector.ave/instance/start": self.start,
+            "ai.agent-connector.ave/instance/stop": self.stop,
         }
-        if not method.startswith("ave/"):
+        if not method.startswith("ai.agent-connector.ave/"):
             await self.serve_mcp(frame)
             return
         handler = handlers.get(method)

@@ -1,0 +1,21 @@
+{
+  "request": {
+    "id": 23,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/openAuthPartitionViewer",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "opts": {
+        "url": "https://mail.example.com/",
+        "windowTitle": "Mail"
+      }
+    }
+  },
+  "response": {
+    "id": 23,
+    "jsonrpc": "2.0",
+    "result": null
+  }
+}

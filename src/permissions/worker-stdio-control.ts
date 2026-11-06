@@ -29,9 +29,9 @@ export const WORKER_CONTROL_UNCLAIMED_NOTIFICATIONS_MAX = 256;
 export const WORKER_CONTROL_UNCLAIMED_BYTES_MAX = WORKER_CONTROL_QUEUE_BYTES_MAX;
 const log = createLogger("worker-stdio-control");
 const WORKER_CONTROL_HOST_METHODS = {
-  hello: "$/ave/hello",
-  cancel: "$/ave/cancel",
-  shutdown: "$/ave/shutdown",
+  hello: "$/ai.agent-connector.ave/hello",
+  cancel: "$/ai.agent-connector.ave/cancel",
+  shutdown: "$/ai.agent-connector.ave/shutdown",
 } as const;
 const RPC_REQUEST_CANCELLED = -32800;
 const RPC_INTERNAL_ERROR = -32603;

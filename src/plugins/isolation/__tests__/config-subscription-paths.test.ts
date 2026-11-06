@@ -28,7 +28,6 @@ import {
 } from "../plugin-child-runtime.js";
 import {
   decodeConfigChange,
-  decodeHostEvent,
   encodeConfigChange,
   SECRET_REDACTED_SENTINEL,
 } from "../host-api-wire.js";
@@ -51,7 +50,6 @@ const MANIFEST: PluginManifest = {
 /** Replace only the per-incarnation host object; keep dispatch, permissions and restart rules in production code. */
 function fakeHostApi() {
   const configListeners = new Map<string, Set<(value: unknown) => void>>();
-  const eventListeners = new Map<string, Set<(data: unknown) => void>>();
   const written: Array<[string, unknown]> = [];
   let setRejection: Error | undefined;
 
@@ -74,7 +72,6 @@ function fakeHostApi() {
       onChange: (key, callback) =>
         add(configListeners, key, callback as (value: unknown) => void),
     } as PluginHostApi["config"],
-    onEvent: (eventType, handler) => add(eventListeners, eventType, handler),
   };
 
   return {
@@ -84,12 +81,8 @@ function fakeHostApi() {
       setRejection = error;
     },
     configListenerCount: (key: string) => configListeners.get(key)?.size ?? 0,
-    eventListenerCount: (type: string) => eventListeners.get(type)?.size ?? 0,
     emitConfigChange(key: string, value: unknown) {
       for (const listener of configListeners.get(key) ?? []) listener(value);
-    },
-    emitEvent(type: string, data: unknown) {
-      for (const listener of eventListeners.get(type) ?? []) listener(data);
     },
   };
 }
@@ -264,17 +257,6 @@ const DISPOSABLE = [
     hostListenerCount: (api: ReturnType<typeof fakeHostApi>) =>
       api.configListenerCount("theme"),
   },
-  {
-    path: "onEvent" as const,
-    subscribe: (hostApi: PluginHostApi, sink: unknown[]) =>
-      hostApi.onEvent("task.created", (data) => sink.push(data)),
-    wireArgs: (subscriptionId: string) => ["task.created", subscriptionId],
-    fire: (api: ReturnType<typeof fakeHostApi>) =>
-      api.emitEvent("task.created", { taskId: "t1" }),
-    expected: [{ taskId: "t1" }],
-    hostListenerCount: (api: ReturnType<typeof fakeHostApi>) =>
-      api.eventListenerCount("task.created"),
-  },
 ];
 
 describe.each(DISPOSABLE)(
@@ -351,7 +333,7 @@ describe.each(DISPOSABLE)(
       expect(host.openSubscriptionCount).toBe(0);
       expect(hostListenerCount(api)).toBe(0);
       expect(notifications.at(-1)).toMatchObject({
-        method: "notifications/ave/subscription/release",
+        method: "notifications/ai.agent-connector.ave/subscription/release",
       });
       dispose();
       expect(host.openSubscriptionCount).toBe(0);
@@ -387,7 +369,7 @@ describe.each(DISPOSABLE)(
       expect(
         child.deliver({
           jsonrpc: "2.0",
-          method: "notifications/ave/subscription/closed",
+          method: "notifications/ai.agent-connector.ave/subscription/closed",
           params: {
             subscriptionId: subscriptionIdOf(requests, path),
             reason: "revoked",
@@ -412,15 +394,15 @@ describe("a subscribe the host refuses does not leave the plugin holding a live 
     const { hostApi, child, host, api } = await harness({
       isActive: () => false,
     });
-    const dispose = hostApi.onEvent("task.created", () => {});
+    const dispose = hostApi.config.onChange("theme", () => {});
     expect(typeof dispose).toBe("function");
     await flush();
 
     expect(child.openSubscriptionCount).toBe(0);
     expect(host.openSubscriptionCount).toBe(0);
-    expect(api.eventListenerCount("task.created")).toBe(0);
+    expect(api.configListenerCount("theme")).toBe(0);
     expect(stderr.mock.calls.map(([line]) => String(line)).join("")).toContain(
-      "hostApi.onEvent: the host refused the subscription",
+      "hostApi.config.onChange: the host refused the subscription",
     );
   });
 
@@ -477,12 +459,6 @@ describe("the payload codecs both sides share", () => {
         /event payload is not an object|names no key/u,
       );
     }
-    expect(() => decodeHostEvent(null)).toThrow(/not an object/u);
-  });
-
-  it("carries an event payload of undefined without inventing one", () => {
-    expect(decodeHostEvent({}).data).toBeUndefined();
-    expect(decodeHostEvent({ data: { taskId: "t1" } }).data).toEqual({ taskId: "t1" });
   });
 });
 
@@ -493,7 +469,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
     expect(paths).toEqual([
       "config.onChange",
       "config.set",
-      "onEvent",
     ]);
   });
 
@@ -513,7 +488,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
     for (const path of [
       "config.set",
       "config.onChange",
-      "onEvent",
     ] as const) {
       expect(HOSTAPI_DISPATCH_TABLE[path].status, path).toBe("unimplemented");
     }
@@ -527,7 +501,6 @@ describe("the group binds to one incarnation and claims exactly its own members"
         set: async () => "persisted" as unknown as void,
         onChange: () => () => {},
       } as PluginHostApi["config"],
-      onEvent: () => () => {},
     } satisfies ConfigSubscriptionHostApi;
     const host = new HostApiDispatcher({
       pluginId: PLUGIN_ID,
@@ -578,7 +551,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
     expect(
       child.deliver({
         jsonrpc: "2.0",
-        method: "notifications/ave/config/snapshot",
+        method: "notifications/ai.agent-connector.ave/config/snapshot",
         params: {
           keys: ["theme", "locale"],
           values: { theme: "light", locale: "ko" },
@@ -597,7 +570,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
 
     child.deliver({
       jsonrpc: "2.0",
-      method: "notifications/ave/config/snapshot",
+      method: "notifications/ai.agent-connector.ave/config/snapshot",
       params: {
         keys: ["token"],
         values: {},
@@ -615,7 +588,7 @@ describe("the config snapshot the child reads is re-pushed, not frozen at constr
 
     child.deliver({
       jsonrpc: "2.0",
-      method: "notifications/ave/config/snapshot",
+      method: "notifications/ai.agent-connector.ave/config/snapshot",
       params: {
         keys: ["theme"],
         values: { theme: "light" },

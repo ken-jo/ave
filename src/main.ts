@@ -6,7 +6,7 @@ import { app, net, powerMonitor } from "electron";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
 import { writeSync } from "node:fs";
 import { onLocaleChange, t } from "./i18n/index.js";
-import { registerIpcHandlers, unregisterPluginWebview } from "./ipc-bridge.js";
+import { registerIpcHandlers } from "./ipc-bridge.js";
 import { installHtmlPreviewPartitionBlock } from "./main/html-preview-partition.js";
 import { isAuthOwned } from "./main/auth-window-registry.js";
 import { isLinkOwned } from "./main/link-window-registry.js";
@@ -666,49 +666,8 @@ app.on("web-contents-created", (_event, contents) => {
     return;
   }
 
-  // There is deliberately NO attach-time `installPluginPartitionPolicy` call
-  // here (#1953). One used to sit at this point, reading
-  // `contents.session.partition` to recover the partition name — but Electron's
-  // `Session` exposes no `partition` property (verified against the Electron 43
-  // typings; only the *options* interfaces carry one), so the read was always
-  // `undefined` and the branch never ran (#498). Keeping it implied a second
-  // installer of the partition request filter and a fallback for partitions the
-  // lifecycle missed; neither existed.
-  //
-  // `boot/steps/plugin-runtime.ts` is the single installer, covering every
-  // partition a plugin-shell webview can be attached with: the post-`startAll`
-  // loop, the `plugin.installed` event, and the `onEnable` lifecycle hook — all
-  // keyed by the same `pluginPartitionName(pluginId)` the renderer uses for the
-  // `<webview partition=…>` attribute. If a new producer ever attaches a
-  // shell-URL webview with a partition that path does not cover, that partition
-  // has no request filter and `shouldBlockGlobalWebviewNavigation` below becomes
-  // its only gate.
-
-  // Plugin webview lifecycle: clean up the (webContents.id → pluginId)
-  // registry entry on destroy so a stale id can't be reused for an
-  // unrelated future webContents. `render-process-gone` covers the case
-  // where the underlying renderer process crashes (sandbox kill, OOM,
-  // GPU lost) — Electron does not always emit `destroyed` synchronously
-  // afterwards, so we clear the binding eagerly.
-  const dropBinding = () => {
-    const services = getServices();
-    if (!services) return;
-    unregisterPluginWebview(contents.id, services.revokePluginOperationSession);
-  };
-  contents.on("destroyed", dropBinding);
-  contents.on("render-process-gone", dropBinding);
-
   contents.on("will-navigate", (navEvent) => {
-    // Plugin webview policy: allow file:// navigations ONLY into the app's
-    // dist/src directory (plugin-ui-shell.html + plugin entry modules
-    // resolved by the shell). The previous substring match on ".js" or
-    // "plugin-ui-shell" let any local .js file load — treat that as LFI
-    // and reject. LLM-HTML webviews (different consumer) keep the
-    // data:/about: only fallback below.
-    //
-    // URL must come from the canonical `navEvent.url` payload. Electron 41.x
-    // empties the deprecated positional `url` arg, so reading it would crash
-    // here and bypass the security check entirely.
+    // Guest navigation stays within its host-owned proxy or inline document.
     const url = navEvent.url;
     const currentUrl = contents.getURL();
     // Auth and external-link viewer webviews load remote http(s) pages under

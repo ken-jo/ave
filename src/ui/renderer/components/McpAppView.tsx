@@ -73,11 +73,13 @@ export function McpAppView({
   originSessionId,
   /** Home mints a stable location id and passes it to away mounts; per-mount model-context ids are separate. */
   locationId,
+  hostTheme,
 }: {
   payload: McpUiPayload;
   displayMode?: McpUiDisplayMode;
   originSessionId?: string;
   locationId?: string;
+  hostTheme?: { shell: "light" | "dark"; tokens: Record<string, string> };
 }) {
   const { t, locale } = useTranslation();
   // Translate standard theme context without exposing host tokens; isolated mounts without a theme provider use the light
@@ -193,7 +195,7 @@ export function McpAppView({
   // always-resident default bundle, and if even that is missing (never in practice)
   // emit no style variables rather than throw.
   const buildHostContext = useCallback(() => {
-    const tokens: Record<string, string> = appliedBundle ? { ...bundleToPluginTokens(appliedBundle) } : {};
+    const tokens: Record<string, string> = hostTheme ? { ...hostTheme.tokens } : appliedBundle ? { ...bundleToPluginTokens(appliedBundle) } : {};
 
     // Read the live custom-font override from root styles; absent an override, guests keep their own default font.
     if (typeof document !== "undefined") {
@@ -206,13 +208,13 @@ export function McpAppView({
     // `displayMode` is this MOUNT's mode, which never changes — a mount cannot report a presentation it is not in (a mode
     // change moves the card to the other mount instead).
     return buildMcpAppHostContext({
-      shell: appliedBundle?.shell ?? "light",
+      shell: hostTheme?.shell ?? appliedBundle?.shell ?? "light",
       tokens,
       locale,
       timeZone,
       displayMode: mountDisplayMode,
     });
-  }, [appliedBundle, locale, timeZone, mountDisplayMode]);
+  }, [hostTheme, appliedBundle, locale, timeZone, mountDisplayMode]);
 
   // Hold the latest builder in a ref so the ref-callback bridge lifecycle (`attachWebview`, keyed only on [payload, bundle])
   // can seed the initial context at mount without re-subscribing on every theme/locale change.
@@ -337,7 +339,7 @@ export function McpAppView({
     const current = bridgeRef.current;
     if (!current) return;
     current.bridge.setHostContext(buildHostContextRef.current());
-  }, [appliedRevision, locale]);
+  }, [hostTheme, appliedRevision, locale]);
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">

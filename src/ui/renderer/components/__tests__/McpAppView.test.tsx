@@ -332,7 +332,7 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
 
     // The app's resource arrives in the same batch as the switch: it mounts before the new theme is written.
     await act(async () => {
-      release({ proxyUrl: "ave-mcp-app://73616d706c65/proxy.html?t=tok-sample", html: "<html><body>card</body></html>" });
+      release({ proxyUrl: "ave-mcp-app://s-73616d706c65/proxy.html?t=tok-sample", html: "<html><body>card</body></html>" });
       fireEvent.click(view.getByTestId("theme-toggle"));
     });
 

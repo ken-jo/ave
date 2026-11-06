@@ -237,10 +237,6 @@ export async function initPluginRuntime(
   let loopbackManager!: PluginLoopbackManager;
   let bundleLifecycle: PluginBundleLifecycleHandler | undefined;
 
-  const installLoadedPluginPartitionPolicy = (pluginId: string): void => {
-    input.host.desktop?.installPluginPartition(pluginId, pluginRuntime.getPluginRoot(pluginId));
-  };
-
   // Deployment trust comes from install provenance and receipts, not an unsigned-plugin opt-in.
   // Pass runtime and loopback getters because both assignments happen after factory construction.
   // Share one runtime audit transport so storage refusals use the same record contract.
@@ -302,7 +298,6 @@ export async function initPluginRuntime(
       getMainWindow,
       mainWindow,
       pythonRuntime,
-      installLoadedPluginPartitionPolicy,
       getBundleLifecycle: () => bundleLifecycle,
     });
 
@@ -340,30 +335,19 @@ export async function initPluginRuntime(
     noteConfinedProcessesMayRun();
     // Refresh the final durable registry before HostApi creation and trust decisions.
     if (input.deferStart) await refreshRegistryEntryCache();
-    // Install partition handlers before starting plugins; webviews bind URL loaders on first load.
-    // Load manifests cheaply before activation, then repeat policy installation for runtime-resolved roots.
+    // Load manifests before activation so confinement domains cover every declared server.
     await pluginRuntime.load();
-    for (const pluginId of pluginRuntime.listPluginIds()) {
-      installLoadedPluginPartitionPolicy(pluginId);
-    }
     // Refresh confinement domains from loaded manifests before any child can spawn.
     await input.refreshSandboxUnionDomains?.();
     await pluginRuntime.startAll();
     log.info("boot: plugins loaded: %s", pluginRuntime.listToolNames());
-
-    // Sandboxed webviews need session-registered preloads; preload attributes do not apply.
-    for (const pluginId of pluginRuntime.listPluginIds()) {
-      installLoadedPluginPartitionPolicy(pluginId);
-    }
   };
   const startPlugins = (): Promise<void> => preStartPhase.start(startPluginsOnce);
   if (!input.deferStart) await startPlugins();
-  // Install partition policy for post-boot arrivals too; they missed the initial loaded-plugin pass.
-  // Partition policy follows installs; tool resync belongs to runtime activation callbacks.
+  // Refresh installed plugin trust metadata; tool synchronization belongs to activation callbacks.
   onHostEvent("plugin.installed", (data) => {
     const pluginId = (data as { pluginId?: string } | undefined)?.pluginId;
     if (typeof pluginId !== "string") return;
-    installLoadedPluginPartitionPolicy(pluginId);
     // Refresh trust metadata before a new plugin’s first call.
     void refreshRegistryEntryCache();
   });

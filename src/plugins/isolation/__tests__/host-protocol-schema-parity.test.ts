@@ -90,7 +90,7 @@ const DISPATCHABLE = (Object.keys(HOSTAPI_PATH_CONTRACTS) as HostApiPath[]).filt
 describe("the schema names what the host serves, and nothing else", () => {
   it("requires host-issued state in the schema and public contract", () => {
     const result = { handle: "redirect-1", redirectUri: "http://localhost:43110", state: "host-state" } satisfies AuthRedirectOpenResult;
-    const schema = SCHEMA.$defs.methods["ave/host/authRedirect/open"]!.result;
+    const schema = SCHEMA.$defs.methods["ai.agent-connector.ave/host/authRedirect/open"]!.result;
     expect(violations("auth-open", schema, result)).toEqual([]);
     for (const state of [undefined, null, 42]) {
       expect(violations("auth-open", schema, { ...result, state })).not.toEqual([]);
@@ -122,7 +122,7 @@ describe("the schema names what the host serves, and nothing else", () => {
   });
 
   it("has one method entry per dispatchable path and per instance method, and no other", () => {
-    expect(DISPATCHABLE).toHaveLength(37);
+    expect(DISPATCHABLE).toHaveLength(35);
     expect(Object.keys(SCHEMA.$defs.methods).sort()).toEqual(
       [...DISPATCHABLE.map((path) => hostApiMethodOf(path)), ...Object.values(PLUGIN_INSTANCE_METHODS)].sort(),
     );
@@ -260,7 +260,7 @@ describe("every golden frame is valid under the schema", () => {
           ? undefined
           : requests.get(`${from === "host" ? "child" : "host"}:${String(frame.id)}`);
         const method = String(frame.method ?? request?.method ?? "");
-        if (!method.startsWith("ave/") && !method.startsWith("notifications/")) return [];
+        if (!method.startsWith("ai.agent-connector.ave/") && !method.startsWith("notifications/")) return [];
         checked += 1;
         return frameViolations(file, frame, request);
       });
@@ -291,7 +291,7 @@ describe("every golden frame is valid under the schema", () => {
         }
       }
       return recorded.flatMap(({ frame }): string[] => {
-        if (frame.method !== "notifications/ave/subscription") return [];
+        if (frame.method !== "notifications/ai.agent-connector.ave/subscription") return [];
         const params = frame.params as { subscriptionId: string; payload: unknown };
         const method = openedBy.get(params.subscriptionId);
         if (!method) return [`${file}: subscription '${params.subscriptionId}' was not opened by a method with events`];

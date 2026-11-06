@@ -1020,7 +1020,7 @@
   body {
     @apply bg-background text-foreground;
     /* SoT: src/shared/host-font-stack.ts (HOST_FONT_STACK) — mirrored verbatim
-     * here, in plugin-ui-shell.html, main.ts splash, window-titlebar-shell.ts,
+     * here, in main.ts splash, window-titlebar-shell.ts,
      * and tools/render-html.ts. The `assistant-card-contrast` test enforces
      * equality across all 5 mirrors and asserts `grep -rn "Noto Sans KR" src/`
      * returns only the SoT module + mirrors. Korean entries are unicode-range

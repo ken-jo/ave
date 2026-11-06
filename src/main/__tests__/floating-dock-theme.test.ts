@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 // The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -132,7 +131,7 @@ describe("the dock window's preload, sandbox and guests", () => {
   it("runs its preload in the sandbox the preload table gives it, and attaches only guarded plugin guests", async () => {
     const { ElectronFloatingDockSurface } = await import("../floating-dock-surface.js");
     const { PRELOAD_BUNDLES } = await import("../../shared/preload-bundles.js");
-    const { pluginPartitionName } = await import("../../shared/plugin-partition.js");
+    const { mcpAppPartitionName, MCP_APP_PARTITION_PREFIX } = await import("../../shared/mcp-app-partition.js");
     new ElectronFloatingDockSurface({ onThemeChanged: () => () => {}, currentTheme: () => null }).show(BOUNDS);
     const win = windows[0]!;
     expect(win.prefs).toMatchObject({ preload: `/assets/${PRELOAD_BUNDLES.floatingDockPreload.file}`, sandbox: PRELOAD_BUNDLES.floatingDockPreload.sandbox });
@@ -140,7 +139,7 @@ describe("the dock window's preload, sandbox and guests", () => {
 
     // A plugin card's guest: let through, with main's preferences whatever the element asked.
     const prefs: Record<string, unknown> = { sandbox: false, nodeIntegration: true, webviewTag: true };
-    expect(win.attach(prefs, { partition: pluginPartitionName("meeting"), src: "file:///assets/plugin-ui-shell.html" })).toBe(true);
+    expect(win.attach(prefs, { partition: mcpAppPartitionName("meeting"), src: `ave-mcp-app://${mcpAppPartitionName("meeting").slice(MCP_APP_PARTITION_PREFIX.length)}/proxy.html?t=token` })).toBe(true);
     expect(prefs).toMatchObject({ sandbox: true, nodeIntegration: false, contextIsolation: true, webviewTag: false });
     // Anything else is refused.
     expect(win.attach({}, { partition: "persist:elsewhere", src: "https://example.test/" })).toBe(false);
@@ -150,28 +149,14 @@ describe("the dock window's preload, sandbox and guests", () => {
 describe("the dock window paints the host theme main sends (real preload, host theme feed)", () => {
   const root = join(__dirname, "..", "..");
   const html = readFileSync(join(root, "floating-dock-window.html"), "utf8");
-  const script = readFileSync(join(root, "floating-dock-window.js"), "utf8");
 
-  let preloadBridge: unknown = null;
-  // The dock window as it opens: its preload's bridge, then its script.
-  async function openWindow(args: string[]) {
+
+  async function openWindow(_args: string[]) {
     document.documentElement.removeAttribute("style");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
-    // Imported once (it exposes the bridge at load); each window gets that bridge.
-    const w = window as unknown as Record<string, unknown>;
-    if (!preloadBridge) {
-      // The sandboxed preload reads its asset URLs from the arguments main gave the window.
-      const argv = process.argv;
-      process.argv = [...argv, ...args];
-      try {
-        await import("../../floating-dock-preload.js");
-      } finally {
-        process.argv = argv;
-      }
-      preloadBridge = w.aveDock;
-    }
-    w.aveDock = preloadBridge;
-    new Function(script)();
+    vi.resetModules();
+    await import("../../floating-dock-preload.js");
+    await import("../../floating-dock-window.js");
   }
   // What the host renderer's theme notify does in main: validate into the cache, then broadcast (plugins.ts).
   function publish(theme: unknown) {
@@ -195,11 +180,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     publish({ bundleId: "moonstone", shell: "dark", tokens: NEXT.tokens });
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
-    // The asset URLs main resolved reach the bridge (the preload resolves nothing itself). The mocked asset paths become file URLs the platform's way: a
-    // rooted `/assets/...` path carries the current drive on Windows.
-    const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
-    expect(bridge.pluginShellUrl).toBe(pathToFileURL("/assets/plugin-ui-shell.html").href);
-    expect(bridge.pluginPreloadUrl).toBe(pathToFileURL("/assets/plugin-preload.cjs").href);
+
   });
 
   it("stays in the stylesheet's colours when no theme has been published", async () => {

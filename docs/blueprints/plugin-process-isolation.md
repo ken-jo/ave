@@ -2,6 +2,12 @@
 
 The code packages described here are called extensions in user-facing copy.
 
+The UI bridge and event examples below describe the earlier isolation migration.
+The current view contract is MCP Apps, including secondary panels; private module
+mounts and plugin-to-view push are removed. The
+[protocol design §5](../design/plugin-hostapi-protocol.md#5-ui-surfaces-which-process-owns-what)
+and [authoring guide](../guides/mcp-app-authoring.md) own that contract.
+
 Status: Stages 1-8 shipped — the five first-party plugins run in a confined child
 process (`src/plugins/isolation/out-of-process-plugins.ts`). Stage 9 (third-party
 admission) and Stage 10 (removing the in-process loader) are not implemented; their
@@ -99,17 +105,17 @@ The `PluginRuntimeContext` handed to (1) carries: `pluginId`, `pluginRoot`,
 `applyConfigDefaults`), `log` (a **function**), and `hostApi` (the object below).
 
 **On the wire** (`docs/design/plugin-hostapi-protocol.md` §3.2): (1)–(4) are the
-`ave/instance/construct`, `start`, `onPublished` and `stop` requests, (5) is MCP
+`ai.agent-connector.ave/instance/construct`, `start`, `onPublished` and `stop` requests, (5) is MCP
 `tools/call`, and (6) is MCP `resources/read` for a `ui://` URI the manifest
 declares, answered by the child's own MCP server — the verb a plugin in any
 language serves its card with; the host still applies the manifest's policy to
 the HTML that comes back. `construct` reports a card only when the plugin has the
 hook *and* declares a card, so the host is never handed a read the child refuses.
-The fifth instance method, `ave/instance/shutdown`, runs one registered
+The fifth instance method, `ai.agent-connector.ave/instance/shutdown`, runs one registered
 `onShutdown` handler (§3.1).
 
 `construct` is also the negotiation. Its params carry `hostProtocol.version` and
-`hostProtocol.capabilities`, the `ave/host/*` methods this host answers — read
+`hostProtocol.capabilities`, the `ai.agent-connector.ave/host/*` methods this host answers — read
 off the dispatcher's **bound** table, so a host build without `hostFetch`,
 `spawnWorker` or `resolveApiKey` does not advertise it, and what is advertised is
 what the dispatcher serves. The reply carries `pluginProtocol.requires`, the
@@ -152,10 +158,10 @@ carry. (36, not 37, once the `callTool` drift in §2.3 is closed.)
 
 **On the wire** (`docs/design/plugin-hostapi-protocol.md` §3): each path the host
 answers is a JSON-RPC 2.0 request on the child's own stdio stream, beside the MCP
-traffic. The method is `ave/host/` followed by the path with `.` spelled `/`
-(`storage.read` is `ave/host/storage/read`); the paths whose contract answers
+traffic. The method is `ai.agent-connector.ave/host/` followed by the path with `.` spelled `/`
+(`storage.read` is `ai.agent-connector.ave/host/storage/read`); the paths whose contract answers
 `child-local` are never methods, and a method is recognised only in that one
-spelling (`ave/host/storage.read` names nothing). Params are an object keyed by the member's
+spelling (`ai.agent-connector.ave/host/storage.read` names nothing). Params are an object keyed by the member's
 parameter names, in declaration order — the `params` axis of
 `HOSTAPI_PATH_CONTRACTS` in `src/plugins/isolation/host-api-wire.ts`, which
 `host-api-path-params.test.ts` holds to the signatures in `public-contract.ts` with
@@ -171,7 +177,7 @@ reports per connection with each name cut to 64 characters, then one line saying
 the rest are suppressed — the child chooses those strings. The plugin's `AbortSignal` becomes
 `notifications/cancelled` naming the in-flight request id, and subscriptions,
 their release and revocation, `context.log` and the three host snapshots are the
-`notifications/ave/*` messages. The goldens under
+`notifications/ai.agent-connector.ave/*` messages. The goldens under
 `src/plugins/isolation/__tests__/fixtures/host-protocol/1/` pin one request and
 reply per method, one reply per error code, one frame per notification and the
 whole conversation of each installed plugin's surface, recorded against the real
@@ -180,7 +186,7 @@ child runtime (`host-protocol-golden.test.ts`).
 The published form of all of this is `schemas/plugin-host-protocol/1/protocol.schema.json`:
 one entry per method (`params`, `result`, `errors`, and `events` for a member
 whose registration or handle outlives the reply — the `payload` of each
-`notifications/ave/subscription` frame, read from `HostApiEventPayloads`, the
+`notifications/ai.agent-connector.ave/subscription` frame, read from `HostApiEventPayloads`, the
 type the dispatcher's `deliver` accepts), one per notification, the
 closed error set, and the capabilities a host with every optional member bound
 advertises. It is generated, not written —
@@ -228,7 +234,7 @@ misses. Each needs a decided fate.
 | `incarnation.trackOperation(promise)` | Host tracks every returned promise so teardown can drain in-flight work | Survives unchanged. The host still holds the promise; it is now the RPC promise. |
 | `runWithCeiling` detached settlement (`runtime/index.ts:~400`) | A hung handler's work stays detached **in main**, holding a generation lease indefinitely (`PluginRuntimeDetachedOperationError`) | Becomes recoverable: kill the child, the lease releases. Real win. |
 | `withPinnedGeneration` lease | Pins the active generation across a handler call | Stays host-side. No generation crosses: each incarnation spawns its own child, so the connection is the generation, and a child that outlived its incarnation has no pipe left to send on. |
-| `_meta["ave/rawResult"]` | `plugin-runtime-delegate.ts` puts the plugin's **raw return value** into the MCP result | **This is the hazard.** See §3.6. |
+| `_meta["ai.agent-connector.ave/rawResult"]` | `plugin-runtime-delegate.ts` puts the plugin's **raw return value** into the MCP result | **This is the hazard.** See §3.6. |
 | `context.log` | A host closure the plugin calls directly | Becomes a notification. |
 | `perf.beginCall` stats | Host-side timing around the handler | Unchanged; now measures RPC round-trip too. |
 
@@ -260,7 +266,7 @@ stack, and its ability to crash the host). So each sync member gets a real decis
 | `onEvent(type, handler)` | `() => void` | Handler stays in the child. The child sends `subscribe(type)`, stores the handler in a child-local map, and returns a **local** disposer that sends `unsubscribe`. The host delivers matching events as notifications. Only strings and JSON payloads cross. |
 | `config.onChange(key, cb)` | `() => void` | Same pattern. |
 | `onPluginsChanged(handler)` | `() => void` | Same pattern. |
-| `onShutdown(handler)` | `void` | Child registers locally under a subscription id. The host runs it with the `ave/instance/shutdown` **request** naming that id and awaits the reply, bounded by `TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs` — the same bound the host's shutdown step gives an in-process handler — plus `pluginShutdownKillGraceMs`, so the shutdown step's own timeout is the one reported. A handler that overruns the request deadline gets the transport closed and the child killed; one that throws is the request's error, which the host logs beside every other plugin's shutdown failure. This preserves today's "host awaits the handler's promise" semantics; the kill is new and is an improvement (in-process, an overrunning handler is only abandoned). |
+| `onShutdown(handler)` | `void` | Child registers locally under a subscription id. The host runs it with the `ai.agent-connector.ave/instance/shutdown` **request** naming that id and awaits the reply, bounded by `TOOL_TIMEOUT_POLICY.pluginShutdownHandlerMs` — the same bound the host's shutdown step gives an in-process handler — plus `pluginShutdownKillGraceMs`, so the shutdown step's own timeout is the one reported. A handler that overruns the request deadline gets the transport closed and the child killed; one that throws is the request's error, which the host logs beside every other plugin's shutdown failure. This preserves today's "host awaits the handler's promise" semantics; the kill is new and is an improvement (in-process, an overrunning handler is only abandoned). |
 
 ### 3.2 Async members returning non-clonable values
 
@@ -292,11 +298,11 @@ functions in a return value.
 
 - The host replies with `{ ok, vendor, baseUrl?, key, handleId }`; the child stub
   closes over `key` and synthesizes `bearer()` / `release()` locally. `release()`
-  drops the child's copy and sends `notifications/ave/subscription/release` for
+  drops the child's copy and sends `notifications/ai.agent-connector.ave/subscription/release` for
   `handleId` so the host drops its own. `bearer()` after release throws, per the
   existing contract.
 - *The other direction is a message too.* A host-side revocation reaches the child
-  as `notifications/ave/subscription/closed`, and the child's lease stub drops its copy of the key on
+  as `notifications/ai.agent-connector.ave/subscription/closed`, and the child's lease stub drops its copy of the key on
   it — otherwise the credential outlives the host's decision to take it back. That
   notification is sent from the dispatcher's release path and from nowhere else,
   for exactly one of the three close reasons: `disposed` came from the child so
@@ -341,7 +347,7 @@ earlier `socketPath`; the worker channel is its own stdio
   the wrapped-worker registry (`markPluginWorkerWrapped`), the Windows holder-PID
   ACL lifecycle, and `trackManagedChildProcess` all live in main.
 - Reply: `{ handleId, control, pid }`. Control traffic from the child is the
-  notification `notifications/ave/subscription/send` on the same handle. The child stub's `stop()` sends a
+  notification `notifications/ai.agent-connector.ave/subscription/send` on the same handle. The child stub's `stop()` sends a
   notification; `onStdout` / `onStderr` / `onExit` register **child-local**
   listeners fed by host notifications keyed by `handleId`.
 - Both sides derive the internal `handleId` as `worker_<request id>` from the
@@ -523,7 +529,7 @@ directions must become JSON.
 `src/mcp/loopback-transport.ts` calls `this.server.handle(...)` **directly** and
 passes `response.result` through by reference. There is no JSON round-trip. Combined
 with `plugin-runtime-delegate.ts` placing the plugin's raw return value into
-`_meta["ave/rawResult"]`, this means:
+`_meta["ai.agent-connector.ave/rawResult"]`, this means:
 
 > Today a plugin may return a `Date`, a `Map`, a `Set`, a class instance, a
 > function, or a live mutable object, and the host will receive that exact
@@ -748,7 +754,7 @@ Named rather than hidden, because each one can move a stage estimate.
    the foreground ask and the headless deny, including for work a handler leaves
    running after it returns. It also pins that a child spawned inside a tool call does
    not run its own lifecycle work in that call.
-6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ave/category"]` as
+6. **`mcp-alignment-design.md` §3.3 still describes `_meta["ai.agent-connector.ave/category"]` as
    the policy SOT and `plugin-tool-from-mcp.ts` as failing closed on a missing
    category, while per-tool `category` was removed from the manifest and the host now
    classifies risk per invocation.** This drift is adjacent to, not part of, this
@@ -848,7 +854,7 @@ against.
 *Scope.* `LoopbackTransport` JSON-round-trips its messages (or asserts
 serializability on every hop) instead of passing object references. Everything stays
 in-process. Fix whatever this surfaces in the six plugins' tool results and
-`_meta["ave/rawResult"]` payloads.
+`_meta["ai.agent-connector.ave/rawResult"]` payloads.
 
 *What proves it.* Full vitest suite plus the app e2e, with all six plugins loaded and
 each of their tools invoked. Any `Date` / `Map` / class instance / function in a

@@ -58,7 +58,7 @@ describe("PluginMcpServer — RC server methods (#1230 §3.1)", () => {
     expect(res.cacheScope).toBe("private");
     expect(res.tools.map((t) => t.name)).toEqual(["fs_read"]);
     expect((res.tools[0]._meta as { ui: { visibility: string[] } }).ui.visibility).toEqual(["model"]);
-    expect(res.tools[0]._meta["ave/category"]).toBeUndefined();
+    expect(res.tools[0]._meta["ai.agent-connector.ave/category"]).toBeUndefined();
   });
 
   it("dispatches tools/call to the delegate and wraps a complete CallToolResult", async () => {

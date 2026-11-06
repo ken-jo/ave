@@ -35,7 +35,7 @@ async function constructedChild() {
   const service = servePluginChild(input, output);
   const reply = nextFramedMessage(output);
   input.write(frameMessage({
-    jsonrpc: "2.0", id: "construct", method: "ave/instance/construct",
+    jsonrpc: "2.0", id: "construct", method: "ai.agent-connector.ave/instance/construct",
     params: {
       hostProtocol: { version: HOST_PROTOCOL_VERSION, capabilities: [] },
       manifest: { id: "channel-probe", name: "Channel probe", version: "1.0.0", entry: "entry.mjs", description: "Channel lifecycle", tools: [] },
@@ -55,13 +55,13 @@ describe("worker request preregistration on the framed channel", () => {
     const request = await requestFrame;
     const subscriptionId = `worker_${request.id}`;
     expect(runtime.openSubscriptionCount).toBe(1);
-    const notification = (payload: unknown) => ({ jsonrpc: "2.0", method: "notifications/ave/subscription", params: { subscriptionId, payload } });
+    const notification = (payload: unknown) => ({ jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription", params: { subscriptionId, payload } });
     input.write(Buffer.concat([
       frameMessage({ jsonrpc: "2.0", id: request.id, result: { handleId: subscriptionId, control: "output-only-v1", pid: 4242 } }),
       frameMessage(notification({ kind: "stdout", chunk: "final result" })),
       frameMessage(notification({ kind: "stderr", chunk: "final warning" })),
       frameMessage(notification({ kind: "exit", code: 7, signal: null, reason: "exited" })),
-      frameMessage({ jsonrpc: "2.0", method: "notifications/ave/subscription/closed", params: { subscriptionId, reason: "revoked" } }),
+      frameMessage({ jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription/closed", params: { subscriptionId, reason: "revoked" } }),
     ]));
     const handle = await pending;
     if (handle.control !== "output-only-v1") throw new Error("expected an output-only handle");

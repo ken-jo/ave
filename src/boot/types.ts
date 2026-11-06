@@ -193,7 +193,6 @@ export interface AppServices {
   agentProfileStore?: import("../main/agent-profile-store.js").AgentProfileStore;
   personaPromptStore?: import("../main/persona-prompt-store.js").PersonaPromptStore;
   /** Rebuild plugin event bridge subscriptions after install or removal. */
-  refreshPluginEventBridge?: () => void;
   /** SoT; canonical plugin install/cache paths. */
   pluginPaths?: ReturnType<typeof import("../plugins/plugin-paths.js").resolvePluginPaths>;
   /** Host-owned wipe for persistent plugin auth sessions. */
@@ -204,7 +203,6 @@ export interface AppServices {
   forgetPluginAuthPartitionsService?: (pluginId: string) => void | Promise<void>;
   /** Issue 5: Bridge plugin events to a newly created main window. Called for every main window opened
    * after boot (macOS `activate`, tray, "New Window", a second launch); other windows keep their own bridges. */
-  registerPluginEventBridge?: (win: import("electron").BrowserWindow) => void;
   /** Release-prep; anonymous telemetry service. Retained here so the shutdown hook can run a
    * final flush + stop() before the process exits (otherwise queued events are lost on shutdown). */
   telemetry?: TelemetryService;

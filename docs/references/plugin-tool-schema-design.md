@@ -35,8 +35,8 @@ action, or governance map.
 | `outputSchema` | Optional structured output schema. |
 | `title` / `icons` | Optional standard MCP display metadata. |
 | `_meta.ui.visibility` | Optional model/app surface declaration; absent uses the SEP-1865 dual default. |
-| `_meta["ave/pathFields"]` | Optional input fields that represent file or directory paths. |
-| `_meta["ave/operationPolicy"]` | Optional signed restrictions for a discriminated composite Tool. |
+| `_meta["ai.agent-connector.ave/pathFields"]` | Optional input fields that represent file or directory paths. |
+| `_meta["ai.agent-connector.ave/operationPolicy"]` | Optional signed restrictions for a discriminated composite Tool. |
 
 `inputSchema.type` must be `"object"`. App-only Tools use
 `_meta.ui.visibility: ["app"]`; model-only Tools use `["model"]`; dual Tools use
@@ -55,7 +55,7 @@ action allow-list.
 
 ## Path Fields
 
-Tools that accept paths declare them in `_meta["ave/pathFields"]`. The
+Tools that accept paths declare them in `_meta["ai.agent-connector.ave/pathFields"]`. The
 permission manager uses these selectors to detect workspace scope,
 out-of-directory access, sensitive paths, and sandbox requirements. Dotted
 selectors address nested object fields.

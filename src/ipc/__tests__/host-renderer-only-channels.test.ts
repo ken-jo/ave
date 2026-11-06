@@ -212,10 +212,6 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["plugins", CHANNELS.runtime.counts, []],
   ["plugins", CHANNELS.mcp.servers, []],
   ["plugins", CHANNELS.mcp.authenticate, ["server-a"]],
-  // The host renderer registers plugin webviews on the shell's behalf, so this
-  // one lives on the bridge channel prefix but is host-only: a shell that could
-  // call it would be minting its own plugin binding.
-  ["plugins", CHANNELS.pluginBridge.registerWebview, [{ webContentsId: 1, pluginId: "p", entryUrl: "file:///x" }]],
   ["plugins", CHANNELS.host.pluginThemeNotify, [{}]],
   // Draft bytes, local package selection and installation stay in the host renderer.
   ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),

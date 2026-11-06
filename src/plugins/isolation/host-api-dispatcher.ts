@@ -133,7 +133,7 @@ export interface SubscriptionScope<Event = unknown> {
   deliver(subscriptionId: string, payload: Event): number | undefined;
   /** Host closure releases its registration and tells the child to clear local handle or credential state. */
   release(subscriptionId: string): boolean;
-  /** Route `notifications/ave/subscription/send` for this registration to `receive` until it closes. */
+  /** Route `notifications/ai.agent-connector.ave/subscription/send` for this registration to `receive` until it closes. */
   accept(subscriptionId: string, receive: (payload: unknown) => void): void;
   /** See {@link ChildNotificationSink.whenDrained}; false where the wire cannot pace. */
   whenDrained(ready: () => void): boolean;
@@ -252,8 +252,6 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   raiseAlert: unimplementedHostApiPath("raiseAlert"),
   probePrivateHost: unimplementedHostApiPath("probePrivateHost"),
   resolveApiKey: unimplementedHostApiPath("resolveApiKey"),
-  emitEvent: unimplementedHostApiPath("emitEvent"),
-  onEvent: unimplementedHostApiPath("onEvent"),
   callLlm: unimplementedHostApiPath("callLlm"),
   hostFetch: unimplementedHostApiPath("hostFetch"),
   spawnWorker: unimplementedHostApiPath("spawnWorker"),
@@ -344,7 +342,6 @@ export type ServiceHostApi = Pick<
   | "raiseAlert"
   | "probePrivateHost"
   | "resolveApiKey"
-  | "emitEvent"
   | "callLlm"
   | "hostFetch"
   | "spawnWorker"
@@ -930,11 +927,6 @@ function spawnWorkerPath(
 }
 
 /** The host rechecks emit authorization and audits refusal; return its result so void drift remains detectable. */
-function emitEventPath(hostApi: ServiceHostApi): HostApiPathHandler {
-  return defineHostApiPath("emitEvent", async (call) =>
-    hostApi.emitEvent(requireString(call, 0, "eventType"), call.args[1]),
-  );
-}
 
 /** Caller-specific routine prefixes belong to host policy; do not duplicate them here. */
 function hasRoutineBySourcePath(hostApi: ServiceHostApi): HostApiPathHandler {
@@ -969,7 +961,6 @@ export function createServiceHostApiPaths(
     probePrivateHost: probePrivateHostPath(hostApi),
     resolveApiKey: bindOptional("resolveApiKey", hostApi.resolveApiKey, () =>
       resolveApiKeyPath(hostApi)),
-    emitEvent: emitEventPath(hostApi),
     callLlm: callLlmPath(hostApi),
     hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
       hostFetchPath(hostApi, onMalformedCredentialSelector)),
@@ -1130,7 +1121,7 @@ export function createStorageHostApiPaths(
 
 export type ConfigSubscriptionHostApi = Pick<
   PluginHostApi,
-  "config" | "onEvent"
+  "config"
 >;
 
 /** Validate string arguments before config calls can persist a literal "undefined" key. */
@@ -1203,18 +1194,6 @@ export function createConfigSubscriptionHostApiPaths(
       const unsubscribe = hostApi.config.onChange(key, (value) => {
         // Encode secret changes explicitly because stringify silently drops Symbols.
         scope.deliver(subscriptionId, encodeConfigChange(key, value));
-      });
-      adoptOrUndo(scope, subscriptionId, unsubscribe);
-      return { handleId: subscriptionId };
-    }),
-
-    onEvent: defineHostApiPath("onEvent", async (call, scope) => {
-      requireArity(call, 2);
-      const eventType = stringArgument(call, 0, "eventType");
-      const subscriptionId = stringArgument(call, 1, "subscriptionId");
-      // Keep event authorization in the host implementation; the child does not prefilter.
-      const unsubscribe = hostApi.onEvent(eventType, (data) => {
-        scope.deliver(subscriptionId, { data });
       });
       adoptOrUndo(scope, subscriptionId, unsubscribe);
       return { handleId: subscriptionId };
@@ -1403,20 +1382,13 @@ export class HostApiDispatcher {
         path,
       );
     }
-    if (path === "emitEvent") {
-      if (this.budgets.take(path) > 0 || this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
-        this.budgets.deny(path, "rate-limited", path);
-        return { jsonrpc: "2.0", id, result: null };
-      }
-    } else {
-      if (this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
-        return this.errorReply(id, this.rateLimited(path, 100, "in-flight"), path);
-      }
-      if (path !== undefined) {
-        const retryAfterMs = this.budgets.take(path);
-        if (retryAfterMs > 0) {
-          return this.errorReply(id, this.rateLimited(path, retryAfterMs, path), path);
-        }
+    if (this.inFlight.size >= DISPATCH_IN_FLIGHT_MAX) {
+      return this.errorReply(id, this.rateLimited(path, 100, "in-flight"), path);
+    }
+    if (path !== undefined) {
+      const retryAfterMs = this.budgets.take(path);
+      if (retryAfterMs > 0) {
+        return this.errorReply(id, this.rateLimited(path, retryAfterMs, path), path);
       }
     }
     const controller = new AbortController();

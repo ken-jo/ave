@@ -54,7 +54,7 @@ const STABLE_SEMVER_RE =
 
 const HOST_PROTOCOL_VERSION_RE = /^[1-9][0-9]*$/;
 // Reuse the metadata key in both policy lookup and diagnostic paths.
-const OPERATION_POLICY_META_KEY = "ave/operationPolicy" as const;
+const OPERATION_POLICY_META_KEY = "ai.agent-connector.ave/operationPolicy" as const;
 
 // Use the shared host-secret key predicate so schema defense in depth cannot drift.
 const log = createLogger("plugin-runtime");
@@ -670,24 +670,15 @@ export async function parsePluginJson(
       }
       const ext = rawExt as Record<string, unknown>;
       const kind = ext.kind;
-      const missing: string[] = [];
-      if (kind === "embedded-module") {
-        if (typeof ext.entry !== "string" || ext.entry.length === 0)
-          missing.push("entry");
-        if (typeof ext.exportName !== "string" || ext.exportName.length === 0)
-          missing.push("exportName");
-      } else if (kind === "embedded-page") {
-        if (typeof ext.page !== "string" || ext.page.length === 0)
-          missing.push("page");
-      }
-      if (missing.length > 0) {
+      if (kind !== "mcp-app") {
         fail(
-          `ui[${i}]`,
-          `kind="${String(kind)}" missing required field(s): ${missing.join(", ")}`,
-          kind === "embedded-module"
-            ? `"ui": [{ "kind": "embedded-module", "entry": "dist/ui.js", "exportName": "PluginUi" }]`
-            : `"ui": [{ "kind": "embedded-page", "page": "settings" }]`,
+          `ui[${i}].kind`,
+          `removed UI kind "${String(kind)}"; use "mcp-app" with a declared resourceUri`,
+          '"ui": [{ "id": "panel", "slot": "sidebar", "kind": "mcp-app", "title": "Panel", "resourceUri": "ui://plugin-id/panel" }]',
         );
+      }
+      if (typeof ext.resourceUri !== "string" || !ext.resourceUri.startsWith(`ui://${pid}/`) || !(parsed.uiResources ?? []).some((resource) => resource.uri === ext.resourceUri)) {
+        fail(`ui[${i}].resourceUri`, "must name a resource declared in uiResources", '"uiResources": [{ "uri": "ui://plugin-id/panel" }]');
       }
     }
   }

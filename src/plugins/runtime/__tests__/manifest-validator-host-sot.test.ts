@@ -188,7 +188,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           required: ["operation"],
         },
         _meta: {
-          "ave/operationPolicy": {
+          "ai.agent-connector.ave/operationPolicy": {
             discriminant: "operation",
             appAllowed: ["status"],
             operations: {
@@ -574,8 +574,8 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     ).toBe(true);
   });
 
-  it("REJECTS a uiResources[] `permissions` key the host cannot honor (clipboardWrite / unknown) — fails LOUDLY", async () => {
-    // Reject unsupported clipboardWrite rather than promise permission the browser cannot honor.
+  it("accepts clipboard write and rejects clipboard read and unknown permissions", async () => {
+    // The standard resource declaration grants writing only.
     const validator = await buildManifestValidator();
     const withPermission = (permissions: Record<string, unknown>) =>
       validator(agentPluginsDocument({
@@ -589,7 +589,8 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           { uri: "ui://ui-resource-plugin/card.html", permissions },
         ],
       }));
-    expect(withPermission({ clipboardWrite: {} })).toBe(false);
+    expect(withPermission({ clipboardWrite: {} })).toBe(true);
+    expect(withPermission({ clipboardRead: {} })).toBe(false);
     expect(withPermission({ notARealFeature: {} })).toBe(false);
   });
 
@@ -600,9 +601,8 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     ).sort();
     const sotKeys = MCP_APP_PERMISSION_FEATURES.map((f) => f.key).sort();
     expect(schemaKeys).toEqual(sotKeys);
-    // Pin the supported set, including excluded clipboardWrite.
-    expect(sotKeys).toEqual(["camera", "geolocation", "microphone"]);
-    expect(schemaKeys).not.toContain("clipboardWrite");
+    expect(sotKeys).toEqual(["camera", "clipboardWrite", "geolocation", "microphone"]);
+    expect(schemaKeys).not.toContain("clipboardRead");
   });
 
   it("accepts a uiResources[] entry declaring only its uri (policy is optional)", async () => {
@@ -750,9 +750,9 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
           {
             id: "main",
             slot: "sidebar",
-            kind: "embedded-page",
+            kind: "mcp-app",
             title: "Main",
-            page: "main",
+            resourceUri: "ui://ui-window-hints-plugin/main",
             window: { width: 640 },
           },
         ],
@@ -772,10 +772,10 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     const uiEntry = (locales: unknown) => ({
       id: "panel",
       slot: "sidebar",
-      kind: "embedded-page",
+      kind: "mcp-app",
       displayName: "미팅",
       title: "회의 기록",
-      page: "panel",
+      resourceUri: "ui://ui-locales-plugin/panel",
       locales,
     });
     const withUi = (locales: unknown) => agentPluginsDocument({
@@ -786,6 +786,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       entry: "dist/index.js",
       tools: [],
       ui: [uiEntry(locales)],
+      uiResources: [{ uri: "ui://ui-locales-plugin/panel" }],
     });
     const withConfigProperty = (locales: unknown) => agentPluginsDocument({
       id: "config-locales-plugin",
@@ -916,7 +917,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
     version: "1.2.3",
     description:
       "A representative manifest exercising every host-required field.",
-    packageName: "@ave/full-featured-plugin",
+    packageName: "@ai.agent-connector.ave/full-featured-plugin",
     author: { name: "Ave Team" },
     uiSlots: ["sidebar"],
     entry: "dist/index.js",
@@ -931,7 +932,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
         },
         _meta: {
           ui: { visibility: ["model", "app"] },
-          "ave/pathFields": ["path"],
+          "ai.agent-connector.ave/pathFields": ["path"],
         },
       },
       {
@@ -971,10 +972,10 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       {
         id: "settings-page",
         slot: "sidebar",
-        kind: "embedded-page",
+        kind: "mcp-app",
         title: "Settings",
         locales: { ko: { title: "설정", description: "플러그인 설정" } },
-        page: "settings",
+        resourceUri: "ui://full-featured-plugin/card.html",
       },
     ],
     uiResources: [
@@ -1022,7 +1023,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       expect(parsed.id).toBe("full-featured-plugin");
       expect(parsed.auth?.statusTool).toBe("ff_status");
       expect(parsed.auth?.logoutTool).toBe("ff_logout");
-      expect(parsed.packageName).toBe("@ave/full-featured-plugin");
+      expect(parsed.packageName).toBe("@ai.agent-connector.ave/full-featured-plugin");
       // Assert portable metadata is accepted but never leaks into the host projection.
       expect("author" in parsed).toBe(false);
       expect(parsed.uiSlots).toEqual(["sidebar"]);
@@ -1043,7 +1044,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
 
       const search = parsed.tools.find((t) => t.name === "ff_search");
       expect(search?._meta?.ui?.visibility).toEqual(["model", "app"]);
-      expect(search?._meta?.["ave/pathFields"]).toEqual(["path"]);
+      expect(search?._meta?.["ai.agent-connector.ave/pathFields"]).toEqual(["path"]);
 
       const status = parsed.tools.find((t) => t.name === "ff_status");
       expect(status?._meta?.ui?.visibility).toEqual(["app"]);
@@ -1117,7 +1118,7 @@ describe("colocated operation policy cross-field contract", () => {
         },
         _meta: {
           ui: { visibility: ["model", "app"] },
-          "ave/operationPolicy": {
+          "ai.agent-connector.ave/operationPolicy": {
             discriminant: "operation",
             operations: {
               status: {
@@ -1141,7 +1142,7 @@ describe("colocated operation policy cross-field contract", () => {
         },
         _meta: {
           ui: { visibility: ["model", "app"] },
-          "ave/operationPolicy": {
+          "ai.agent-connector.ave/operationPolicy": {
             discriminant: "operation",
             operations: {
               save: {
@@ -1187,7 +1188,7 @@ describe("colocated operation policy cross-field contract", () => {
 
     const noRead = structuredClone(governed);
     delete (
-      noRead.tools[1]._meta["ave/operationPolicy"].operations.save as {
+      noRead.tools[1]._meta["ai.agent-connector.ave/operationPolicy"].operations.save as {
         requiresRead?: unknown;
       }
     ).requiresRead;
@@ -1203,7 +1204,7 @@ describe("colocated operation policy cross-field contract", () => {
   it("rejects read-result success statuses on a write operation", async () => {
     const invalid = structuredClone(governed);
     (
-      invalid.tools[1]._meta["ave/operationPolicy"].operations.save as {
+      invalid.tools[1]._meta["ai.agent-connector.ave/operationPolicy"].operations.save as {
         successfulResultStatuses?: string[];
       }
     ).successfulResultStatuses = ["success"];
@@ -1211,7 +1212,7 @@ describe("colocated operation policy cross-field contract", () => {
       /valid only for a read operation/,
     );
     await expect(parse(invalid)).rejects.toThrow(
-      /\._meta\.ave\/operationPolicy\.operations\.save\.successfulResultStatuses'/,
+      /\._meta\.ai\.agent-connector\.ave\/operationPolicy\.operations\.save\.successfulResultStatuses'/,
     );
   });
 });

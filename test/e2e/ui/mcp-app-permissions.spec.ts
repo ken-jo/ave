@@ -84,7 +84,7 @@ test("MCP-App permissions: what the host can actually deliver, measured in a rea
       .toBe(true);
 
     console.log(`\n─── MCP-App permissions, measured ───`);
-    for (const feature of ["camera", "microphone", "geolocation", "clipboardWrite"] as const) {
+    for (const feature of ["camera", "microphone", "geolocation", "clipboardWrite", "clipboardRead"] as const) {
       console.log(
         `  ${feature.padEnd(15)} declared=${outcome("declared", feature)}\n` +
           `  ${" ".repeat(15)} absent  =${outcome("absent", feature)}\n` +
@@ -99,8 +99,8 @@ test("MCP-App permissions: what the host can actually deliver, measured in a rea
     }
 
     // Delegate only host-supported declared capabilities; absent declarations get no allow attribute.
-    expect(frame("declared").allow).toBe("camera; microphone; geolocation");
-    expect(frame("declared").meta).toBe("camera; microphone; geolocation");
+    expect(frame("declared").allow).toBe("camera; microphone; geolocation; clipboard-write");
+    expect(frame("declared").meta).toBe("camera; microphone; geolocation; clipboard-write");
     expect(frame("absent").allow).toBeNull();
     expect(frame("absent").meta).toBeNull();
     expect(frame("mic-only").allow).toBe("microphone");
@@ -117,7 +117,7 @@ test("MCP-App permissions: what the host can actually deliver, measured in a rea
 
     // Revoke the session after policy delegation so denial proves the runtime handler is installed.
     expect(lines).toContain("E2E_PROBE revoked SESSION_REVOKED");
-    expect(frame("revoked").allow).toBe("camera; microphone; geolocation");
+    expect(frame("revoked").allow).toBe("camera; microphone; geolocation; clipboard-write");
     expect(mediaDenied(outcome("revoked", "camera"))).toBe(true);
     expect(mediaDenied(outcome("revoked", "microphone"))).toBe(true);
     expect(geoDenied(outcome("revoked", "geolocation"))).toBe(true);
@@ -127,9 +127,12 @@ test("MCP-App permissions: what the host can actually deliver, measured in a rea
     expect(mediaDenied(outcome("mic-only", "camera"))).toBe(true);
     expect(geoDenied(outcome("mic-only", "geolocation"))).toBe(true);
 
-    // Clipboard writes remain unavailable and must be denied on every card.
+    expect(outcome("declared", "clipboardWrite")).toBe("ok");
+    for (const label of ["absent", "revoked", "mic-only"] as const) {
+      expect(outcome(label, "clipboardWrite")).toMatch(/^fail:NotAllowedError/);
+    }
     for (const label of ["declared", "absent", "revoked", "mic-only"] as const) {
-      expect(outcome(label, "clipboardWrite")).toMatch(/^fail:/);
+      expect(outcome(label, "clipboardRead")).toMatch(/^fail:NotAllowedError/);
     }
 
     expect(lines.join("\n")).not.toContain("BRIDGE_CONNECT_FAILED");

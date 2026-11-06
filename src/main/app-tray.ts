@@ -5,7 +5,6 @@ import { getMainWindow, getMainWindows, getPrimaryMainWindow, getTray, isRendere
 import {
   createWindow,
   loadMainInterface,
-  registerMainWindowPluginEventBridge,
   showMainWindow,
 } from "./main-window.js";
 import { createAlwaysOnTopMenuItem, createSettingsMenuItem, refreshApplicationMenu } from "./app-menu.js";
@@ -42,7 +41,6 @@ export function openNewMainWindow(reason: string): void {
 
 function createAndLoadMainWindow(reason: string): void {
   const win = createWindow({ showBootstrapSplash: false });
-  if (win) registerMainWindowPluginEventBridge(win);
   if (win && isRendererReloadReady()) {
     void loadMainInterface(win, reason).finally(() => {
       refreshApplicationMenu();

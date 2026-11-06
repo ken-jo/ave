@@ -1,0 +1,11 @@
+{
+  "frame": {
+    "jsonrpc": "2.0",
+    "method": "notifications/ai.agent-connector.ave/subscription/closed",
+    "params": {
+      "reason": "revoked",
+      "subscriptionId": "<uuid-1>"
+    }
+  },
+  "from": "host"
+}

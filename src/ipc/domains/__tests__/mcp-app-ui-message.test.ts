@@ -23,7 +23,7 @@ const invoke = makeAppIpcInvoker(handlers);
 const textParams = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
 const notificationParams = (meta: unknown) => ({
   role: "user",
-  content: [{ type: "text", text: "popup body in content", _meta: { "ave/notification": meta } }],
+  content: [{ type: "text", text: "popup body in content", _meta: { "ai.agent-connector.ave/notification": meta } }],
 });
 
 async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }) {
@@ -120,7 +120,7 @@ describe("ave:mcp:ui-message — sender gate", () => {
 });
 
 describe("ave:mcp:ui-message — path A: notification meta", () => {
-  it("routes `ave/notification` to NotificationService, NOT the transcript", async () => {
+  it("routes `ai.agent-connector.ave/notification` to NotificationService, NOT the transcript", async () => {
     const { serverId, fire, queueGuidance, send } = await setup({ queueGuidance: () => "queued" });
 
     const result = await invoke(
@@ -136,6 +136,15 @@ describe("ave:mcp:ui-message — path A: notification meta", () => {
       title: `app:${serverId} · Build failed`,
       body: "3 tests red",
     });
+    expect(queueGuidance).not.toHaveBeenCalled();
+    expect(stagedCards(send)).toHaveLength(0);
+  });
+
+  it("rejects malformed notification metadata rather than treating it as conversation text", async () => {
+    const { serverId, fire, queueGuidance, send } = await setup();
+    expect(await invoke(CHANNEL, serverId, SESSION, notificationParams({ title: "missing body" })))
+      .toMatchObject({ ok: false, error: "invalid-notification-meta" });
+    expect(fire).not.toHaveBeenCalled();
     expect(queueGuidance).not.toHaveBeenCalled();
     expect(stagedCards(send)).toHaveLength(0);
   });
@@ -165,6 +174,28 @@ describe("ave:mcp:ui-message — path A: notification meta", () => {
 });
 
 describe("ave:mcp:ui-message — path B: turn policy", () => {
+  it("stages a panel message into the composer even during an active conversation turn", async () => {
+    const { serverId, send, queueGuidance, fire } = await setup({ queueGuidance: () => "queued" });
+    const result = await invoke(CHANNEL, serverId, "", textParams("review this item"));
+    expect(result).toEqual({ ok: true, disposition: "staged" });
+    expect(stagedCards(send)).toHaveLength(1);
+    expect(stagedCards(send)[0]).toMatchObject({ composerDraft: true });
+    expect(stagedCards(send)[0]).not.toHaveProperty("originSessionId");
+    expect(queueGuidance).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+  });
+
+  it("refuses retired metadata without delivering text", async () => {
+    const { serverId, send, queueGuidance, fire } = await setup();
+    const result = await invoke(CHANNEL, serverId, "", {
+      content: [{ type: "text", text: "hello", _meta: { "ave/notification": { title: "x", body: "y" } } }],
+    });
+    expect(result).toMatchObject({ ok: false, error: "unsupported-meta-key" });
+    expect(stagedCards(send)).toHaveLength(0);
+    expect(queueGuidance).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+  });
+
   it("ACTIVE turn → queueGuidance carrying the app-emitted envelope (not the user's guide)", async () => {
     const { serverId, queueGuidance, send } = await setup({ queueGuidance: () => "queued" });
 

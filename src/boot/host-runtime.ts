@@ -24,8 +24,6 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   /** The live terminal tab owner's renderer, or null; never fall back to another window. */
   findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
-  installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
-  revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
   onBootShutdown(run: () => Promise<void>, needed: () => boolean): void;
   /** Initialize once before cues; Windows persisted-toast activation requires the shortcut and activator registration. */
   initializeNotificationPresenter(): boolean;

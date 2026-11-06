@@ -140,7 +140,7 @@ export interface UseSendMessageResult {
     q: string,
     mode?: SendMode,
     userIntent?: UserKeyboardIntentSnapshot,
-    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+    opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto"; onAccepted?: () => void; onRefused?: () => void },
   ) => Promise<void>;
 }
 
@@ -166,7 +166,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       q: string,
       mode: SendMode = "default",
       userIntent?: UserKeyboardIntentSnapshot,
-      opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+      opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto"; onAccepted?: () => void; onRefused?: () => void },
     ) => {
       // Cache the preload-fixed debug flag per send and skip diagnostic payload allocation when disabled.
       const debugStreamEnabled = isDebugStreamEnabled();
@@ -326,6 +326,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         );
         const refusal = chatSendRefusal(result);
         if (refusal !== undefined) throw new ChatSendRefusedError(refusal.code, refusal.interrupted);
+        opts?.onAccepted?.();
         if (debugStreamEnabled) debugLog("handleAsk", "chatSend:resolved", { requestId });
         // After successful send, clear attachments — the textarea was already cleared by setQuestion(""). N counter persists
         // across turns so re-attached items get fresh numbers.
@@ -333,6 +334,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           setAttachments([]);
         }
       } catch (err) {
+        opts?.onRefused?.();
         if (debugStreamEnabled) {
           debugLog("handleAsk", "chatSend:rejected", {
             requestId,

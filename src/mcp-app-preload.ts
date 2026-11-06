@@ -2,7 +2,7 @@
  * MCP-App sandbox-proxy relay preload (host-owned).
  *
  * Runs in the isolated world of the sandbox-proxy document
- * (`ave-mcp-app://<hex(serverId)>/proxy.html`) inside each MCP-app <webview>.
+ * (`ave-mcp-app://s-<hex(serverId)>/proxy.html`) inside each MCP-app <webview>.
  * Installed via `session.registerPreloadScript()` on the per-server partition — the
  * `preload=` ATTRIBUTE is silently ignored under `sandbox=yes` and is stripped by
  * the `will-attach-webview` guards anyway, so the session preload is the only
@@ -25,7 +25,7 @@
  * sandboxed iframe.
  *
  * That inner frame carries `allow-same-origin`, so it inherits the PROXY's per-server
- * origin (`ave-mcp-app://<hex(serverId)>`) — the spec's requirement, and what lets a
+ * origin (`ave-mcp-app://s-<hex(serverId)>`) — the spec's requirement, and what lets a
  * declared `permissions` feature actually be delegated. Same-origin does NOT let it
  * reach this preload: `contextIsolation` is true, so this relay runs in an isolated
  * world that same-origin DOM access cannot cross, and `nodeIntegrationInSubFrames` is
@@ -35,7 +35,7 @@
  * relay from anywhere but the proxy top frame.
  */
 // Named import — `import electron from "electron"` breaks in sandboxed webview
-// preload contexts (see the note in `plugin-preload.ts`).
+// preload contexts.
 import { ipcRenderer } from "electron";
 import {
   INNER_SANDBOX_ATTR,

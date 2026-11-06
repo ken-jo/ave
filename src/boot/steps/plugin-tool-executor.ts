@@ -252,7 +252,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
       const governedAuthInvocation =
         authInvocation !== undefined &&
         !appOnlyRuntimeInvocation &&
-        invocationManifestTool?._meta?.["ave/operationPolicy"] !== undefined;
+        invocationManifestTool?._meta?.["ai.agent-connector.ave/operationPolicy"] !== undefined;
       if (authInvocation && !appOnlyRuntimeInvocation && !governedAuthInvocation) {
         throw new Error(
           "plugin auth invocation reached executor without an operation policy",

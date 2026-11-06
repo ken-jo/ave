@@ -106,7 +106,7 @@ describe("loopback marshalling — the boundary has to behave like a wire", () =
 
   const rawResult = (value: unknown) => ({
     content: [{ type: "text", text: "ok" }],
-    _meta: { "ave/rawResult": { value } },
+    _meta: { "ai.agent-connector.ave/rawResult": { value } },
   });
 
   it.each([
@@ -174,11 +174,11 @@ describe("loopback marshalling — the boundary has to behave like a wire", () =
     });
     await new Promise((resolve) => queueMicrotask(() => resolve(null)));
 
-    const delivered = received[0] as { _meta: { "ave/rawResult": { value: { items: { id: number }[] } } } };
-    expect(delivered._meta["ave/rawResult"].value.items[0]!.id).toBe(1);
+    const delivered = received[0] as { _meta: { "ai.agent-connector.ave/rawResult": { value: { items: { id: number }[] } } } };
+    expect(delivered._meta["ai.agent-connector.ave/rawResult"].value.items[0]!.id).toBe(1);
 
     live.items[0]!.id = 999;
-    expect(delivered._meta["ave/rawResult"].value.items[0]!.id).toBe(1);
+    expect(delivered._meta["ai.agent-connector.ave/rawResult"].value.items[0]!.id).toBe(1);
 
     await transport.close();
   });

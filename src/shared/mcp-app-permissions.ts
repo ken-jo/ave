@@ -10,11 +10,12 @@ export interface McpAppPermissionFeature {
   readonly electronMediaKind?: "video" | "audio";
 }
 
-/** Advertise only features verified end to end. Clipboard writing stays excluded because delegation cannot grant it without activation. */
+/** Delegate declared features through both the frame policy and session gate. Clipboard access is write-only. */
 export const MCP_APP_PERMISSION_FEATURES: readonly McpAppPermissionFeature[] = [
   { key: "camera", allowToken: "camera", electronPermission: "media", electronMediaKind: "video" },
   { key: "microphone", allowToken: "microphone", electronPermission: "media", electronMediaKind: "audio" },
   { key: "geolocation", allowToken: "geolocation", electronPermission: "geolocation" },
+  { key: "clipboardWrite", allowToken: "clipboard-write", electronPermission: "clipboard-sanitized-write" },
 ];
 
 export function declaredFeatures(

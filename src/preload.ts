@@ -4,8 +4,6 @@
 // contexts fail silently when the bundled output goes through
 // `__toESM(require("electron"), 1).default.contextBridge`.
 import { contextBridge } from "electron";
-import { resolve as pathResolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { buildPublicSurface } from "./preload/public-surface.js";
 import type { AveApi } from "./ui/renderer/types.js";
 import { prepareFileDrop, resolveDroppedPaths } from "./preload/webutils-bridge.js";
@@ -18,23 +16,6 @@ import {
   buildAveWindowWorld,
   readInitialThemeArg,
 } from "./preload/internal-surface.js";
-import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
-
-// ─── Deterministic plugin webview asset URLs ────────────────────────────────
-// `__dirname` here resolves to the host preload's bundled location
-// (`dist/src/`). These MUST be computed in this entry module (not a submodule)
-// so `__dirname` points at `dist/src/`; the host renderer reads them directly
-// when mounting the plugin <webview>, and they survive splash-phase data: URLs.
-function safeResolveFileUrl(relative: string): string {
-  try {
-    return pathToFileURL(pathResolve(__dirname, relative)).toString();
-  } catch {
-    return "";
-  }
-}
-const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
-const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
-
 // ─── Initial theme prime ───────────────────────────────────────────────────
 // Read the argv-injected primes and paint the theme onto documentElement before
 // React mounts (frame-0 correct paint). See internal-surface.ts for the SoT.
@@ -53,8 +34,6 @@ applyInitialThemePrime(aveInitialTheme);
 const api = {
   ...buildPublicSurface(),
   ...buildInternalApiSurface(),
-  pluginPreloadUrl,
-  pluginShellUrl,
 } satisfies AveApi;
 
 // Expose the theme prime payload so ThemeProvider (renderer) can read it

@@ -30,11 +30,11 @@ describe("global webview navigation policy", () => {
     expect(decision({ url: "https://example.com/", linkOwned: true })).toBe(false);
   });
 
-  it("allows plugin shell file navigations only inside dist/src", () => {
+  it("refuses local file navigations from removed plugin shells", () => {
     expect(decision({
       currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
       url: fileUrlInDistSrc("plugin-entry.js"),
-    })).toBe(false);
+    })).toBe(true);
     expect(decision({
       currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
       url: "file:///etc/passwd",
@@ -42,13 +42,13 @@ describe("global webview navigation policy", () => {
   });
 
   // Grant plugin-shell file navigation only for the actual shell path, never a query containing its filename.
-  it("grants the dist/src allowance only to the real shell document", () => {
+  it("refuses every shell-shaped local file navigation", () => {
     const targetInDistSrc = fileUrlInDistSrc("plugin-entry.js");
     // Genuine shell frame — allowance applies.
     expect(decision({
       currentUrl: fileUrlInDistSrc("plugin-ui-shell.html"),
       url: targetInDistSrc,
-    })).toBe(false);
+    })).toBe(true);
     // Host renderer whose query merely names the shell — no allowance.
     expect(decision({
       currentUrl: `${fileUrlInDistSrc("index.html")}?next=plugin-ui-shell.html`,

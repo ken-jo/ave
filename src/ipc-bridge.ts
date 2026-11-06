@@ -18,7 +18,6 @@ export {
 export {
   registerIpcHandlers,
   registerWindowEventListeners,
-  unregisterPluginWebview,
 } from "./ipc/index.js";
 
 // Preserve the public compatibility facade while keeping main-process callers

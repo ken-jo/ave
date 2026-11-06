@@ -644,11 +644,6 @@ export async function bootstrap(
     // Alerts channel for `hostApi.raiseAlert`, read lazily for the same reason:
     // setupAlerts() runs below this call, before plugins start.
     getAlertsService: () => ctx.alertsService,
-    onPluginUiRevisionChange: (pluginId) => {
-      host.desktop?.revokePluginWebviews(pluginId, (appSessionId) =>
-        ctx.revokePluginOperationSession?.(appSessionId),
-      );
-    },
     deferStart: true,
     // Lazily reads ctx: setupMarketplace() installs the closure AFTER this
     // call, but startPluginsOnce only fires at startPlugins() further below.

@@ -1,0 +1,21 @@
+{
+  "request": {
+    "id": 16,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/probePrivateHost",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "host": "intranet.example.com",
+      "opts": {
+        "timeoutMs": 1500
+      }
+    }
+  },
+  "response": {
+    "id": 16,
+    "jsonrpc": "2.0",
+    "result": true
+  }
+}

@@ -190,14 +190,6 @@ describe("preload — plugin webview asset URLs", () => {
     }
   });
 
-  it("exposes pluginPreloadUrl as a file:// string under dist/src/", async () => {
-    const api = await loadAveApi();
-    const url = api["pluginPreloadUrl"];
-
-    expect(typeof url).toBe("string");
-    expect(url as string).toMatch(/^file:\/\//);
-    expect(url as string).toMatch(/\/(dist\/)?src\/plugin-preload\.cjs$/i);
-  });
 
   it("bridges the private Studio domain through its declared channels", async () => {
     mockInvoke.mockResolvedValue({ ok: true, value: [] });
@@ -422,14 +414,6 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.getTurnReview, "expected-session", chatGroupId);
   });
 
-  it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
-    const api = await loadAveApi();
-    const url = api["pluginShellUrl"];
-
-    expect(typeof url).toBe("string");
-    expect(url as string).toMatch(/^file:\/\//);
-    expect(url as string).toMatch(/\/plugin-ui-shell\.html$/i);
-  });
 
   it("bridges render_html previews through the exact window IPC channel", async () => {
     mockInvoke.mockResolvedValueOnce({ ok: true, windowId: 9 });
@@ -447,14 +431,6 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith("ave:window:open-html-preview", payload);
   });
 
-  it("plugin asset URLs are static strings, not functions", async () => {
-    const api = await loadAveApi();
-
-    expect(typeof api["pluginPreloadUrl"]).toBe("string");
-    expect(typeof api["pluginShellUrl"]).toBe("string");
-    expect(typeof api["pluginPreloadUrl"]).not.toBe("function");
-    expect(typeof api["pluginShellUrl"]).not.toBe("function");
-  });
 
   it("exposes chat user-intent capture through preload", async () => {
     const api = await loadAveApi();

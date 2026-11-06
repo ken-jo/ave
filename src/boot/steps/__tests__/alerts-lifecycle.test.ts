@@ -11,7 +11,7 @@ describe("alert inheritance lifecycle wakeups", () => {
       getAlertsService: () => ({ reconcileMigration }) as never,
       getAppWindows: () => [], mainWindow: null,
       lateBinding: { conversationLoopRef: { fn: undefined } } as never,
-      installLoadedPluginPartitionPolicy: vi.fn(), getBundleLifecycle: () => undefined,
+      getBundleLifecycle: () => undefined,
     });
     expect(callbacks.onEnable!("successor")).toBeUndefined();
     expect(reconcileMigration).toHaveBeenCalledTimes(1);

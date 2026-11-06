@@ -1060,7 +1060,7 @@ the successors without the host naming any plugin.
 | Validation | `src/plugins/runtime/manifest-validation.ts`, `src/marketplace/repository-check.ts` | `getDeclaredAlertKinds` (all-or-nothing), template/slot/locale checks, `alerts.suggestions` (≤ 4 sources), `configInherits` shape, reserved package id `host` in both, warn on `notificationEvents` + `alerts` and on `inherits` without successor authorisation |
 | HostApi | `src/boot/steps/plugin-runtime/host-api-factory.ts`, `isolation/host-api-wire.ts`, `host-api-dispatcher.ts`, `host-api-child.ts`, `runtime/sandbox.ts`, `src/permissions/effect-kind.ts` | the alert-raising method; `triggerConversation` rejects `--` in `source` and, for plugins declaring `alerts`, accepts only declared suggestion sources with the per-source acceptance limit |
 | Pipeline | `src/alerts/*`, `src/boot/steps/alerts-setup.ts`, `src/boot.ts`, `src/boot/types.ts` (`startAlerts`), `src/main.ts` | pipeline, deferred start beside `startWorkBoardDueSoon` |
-| Host protocol | `src/plugins/isolation/host-api-wire.ts` (`HOSTAPI_PATH_CONTRACTS`), `host-api-dispatcher.ts`, `schemas/plugin-host-protocol/5/protocol.schema.json`, `src/plugins/isolation/__tests__/fixtures/host-protocol/5/` | `raiseAlert` as an `ave/host/*` method with `params`, advertised in the `construct` capabilities, the regenerated schema (the `build` gate fails on drift) and a method/reply golden pair |
+| Host protocol | `src/plugins/isolation/host-api-wire.ts` (`HOSTAPI_PATH_CONTRACTS`), `host-api-dispatcher.ts`, `schemas/plugin-host-protocol/5/protocol.schema.json`, `src/plugins/isolation/__tests__/fixtures/host-protocol/5/` | `raiseAlert` as an `ai.agent-connector.ave/host/*` method with `params`, advertised in the `construct` capabilities, the regenerated schema (the `build` gate fails on drift) and a method/reply golden pair |
 | Overlay | `src/ui/renderer/context/OverlayContext.tsx`, `OverlayCard.tsx`, `use-routine-overlay.ts`, `TranscriptRenderer.tsx` | `alert` source kind, priority ordering, accept → `alert.withdrawn` |
 | Notifications | `src/main/notification-service.ts`, `src/ui/renderer/types.ts:377` | kind `"alert"` in both copies |
 | Events | `src/plugins/capabilities.ts`, `src/plugins/runtime/index.ts`, `src/boot/__tests__/event-namespace-policy.test.ts` | host-internal alert lifecycle events; extension subscriptions accept only the host theme event |
@@ -1340,7 +1340,7 @@ ave:
 3. **Contract, validation and pipeline** — `public-contract.ts`, schema,
    `getDeclaredAlertKinds`, `configInherits`, `src/alerts/*`, `alerts-setup`,
    the HostApi method across the isolation wire (`raiseAlert`
-   becomes an `ave/host/*` method: a `HOSTAPI_PATH_CONTRACTS` entry with its
+   becomes an `ai.agent-connector.ave/host/*` method: a `HOSTAPI_PATH_CONTRACTS` entry with its
    `params`, the dispatcher table and therefore the `construct` capabilities,
    the regenerated `schemas/plugin-host-protocol/5/protocol.schema.json` —
    the build gate fails otherwise — and a method/reply golden pair under

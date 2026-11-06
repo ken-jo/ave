@@ -39,7 +39,7 @@
 | Topology | How plugins run as MCP servers | **Hybrid** — out-of-process **stdio** for marketplace/untrusted plugins (real OS isolation, layer Ave's existing bubblewrap/sandbox-exec); **in-process loopback** for first-party/trusted plugins (perf, signed-zip `entry`/factory artifact unchanged). |
 | HostApi | What replaces the host-call surface | **No "Host Services MCP server."** The remaining HostApi maps onto **standard MCP client-features** the host advertises per-request (`sampling` for `callLlm`, `elicitation` for approvals), **MCP authorization** (OAuth) for secrets, **MCP Apps** for UI; Ave-only surfaces (storage/config/triggerConversation/event bus) stay **host-internal**. Audit & remove any already-moved-out leftovers. |
 | External MCP servers | Old-revision external server compat | **Documented dual-era exception in `mcp-client.ts` only** — probe `server/discover`, fall back to `initialize` for pre-RC external servers. Ave's **own** plugins are always RC (no fallback). This is the one explicit, documented exception to No-Fallback, scoped to external interop. |
-| UI events | Fate of extension-owned panel updates | `emitEvent` delivers only to the emitting extension’s panels. Cross-plugin event delivery and grants are removed. Standard list-change notifications remain available for MCP discovery. |
+| UI events | Fate of extension-owned panel updates | Views use standard app-visible tools, including bounded cursor-based long polling. Private plugin-to-view push and theme events are removed; theme and style updates use MCP Apps host context. Standard list-change notifications remain available for MCP discovery. |
 
 **Correction to the research:** `HostApi.addTask`/`saveNote` are **already removed** from the app (they were moved plugin-side) — they are not live surfaces and need no MCP home. The live HostApi surface is the generic set in §3.5.
 
@@ -47,7 +47,7 @@
 
 ## 1. Executive summary
 
-The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plugin**, and **each plugin is an MCP _server_** speaking the stateless `2026-07-28` protocol. Marketplace/untrusted plugins run **out-of-process over stdio** (a normal MCP server); first-party plugins run **in-process behind a loopback transport** (today's `entry`/factory model, MCP-framed). The plugin's `plugin.json` projects to `server/discover`'s `DiscoverResult` (serverInfo + capabilities + `extensions`). `toolSchemas[*]` project to MCP `Tool`s; Ave's `read|write|shell|network` **category stays the authoritative policy SOT** carried under vendor-prefixed `_meta["ave/category"]`, projected to (untrusted, interop-only) MCP `ToolAnnotations`. The host caches **nothing** on the connection: every host→plugin request carries `protocolVersion`+`clientInfo`+`clientCapabilities` in `_meta`, and every result is wrapped with a `resultType` discriminator. The remaining HostApi maps onto **standard MCP client-features** (sampling/elicitation), **MCP authorization**, and **MCP Apps** — **no bespoke host server**; Ave-only platform surfaces (storage, config, triggerConversation, the domain event bus) stay host-internal. **#811 command-hooks stay 100% host-side** — MCP has no host-side tool-call veto, so hooks remain a host policy layer wrapped around the host's `tools/call` invocation, re-anchored to that boundary.
+The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plugin**, and **each plugin is an MCP _server_** speaking the stateless `2026-07-28` protocol. Marketplace/untrusted plugins run **out-of-process over stdio** (a normal MCP server); first-party plugins run **in-process behind a loopback transport** (today's `entry`/factory model, MCP-framed). The plugin's `plugin.json` projects to `server/discover`'s `DiscoverResult` (serverInfo + capabilities + `extensions`). `toolSchemas[*]` project to MCP `Tool`s; Ave's `read|write|shell|network` **category stays the authoritative policy SOT** carried under vendor-prefixed `_meta["ai.agent-connector.ave/category"]`, projected to (untrusted, interop-only) MCP `ToolAnnotations`. The host caches **nothing** on the connection: every host→plugin request carries `protocolVersion`+`clientInfo`+`clientCapabilities` in `_meta`, and every result is wrapped with a `resultType` discriminator. The remaining HostApi maps onto **standard MCP client-features** (sampling/elicitation), **MCP authorization**, and **MCP Apps** — **no bespoke host server**; Ave-only platform surfaces (storage, config, triggerConversation, the domain event bus) stay host-internal. **#811 command-hooks stay 100% host-side** — MCP has no host-side tool-call veto, so hooks remain a host policy layer wrapped around the host's `tools/call` invocation, re-anchored to that boundary.
 
 ---
 
@@ -56,9 +56,9 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 | Ave element | MCP `2026-07-28` equivalent | Required change |
 |---|---|---|
 | `PluginManifest` (id/name/version/entry/tools[]/description) (`src/plugins/types.ts:175`) | `DiscoverResult` { supportedVersions, serverInfo:Implementation, capabilities, instructions? } | Manifest is a static file; MCP needs a live `server/discover` handler. Add manifest→`DiscoverResult` projection. `entry` becomes the server process (stdio) or loopback module. |
-| `toolSchemas[name]` (inputSchema **draft-07** + category/pathFields/writesToOwnSandbox/version/deprecatedSince/replacedBy) (`src/plugins/types.ts:268-306`) | `Tool` { name, title?, description?, inputSchema(**2020-12**, type:object), outputSchema?, annotations?, icons?, _meta? } via `tools/list`; `tools/call`→`CallToolResult{content[],structuredContent?,isError?}` | (a) dialect draft-07 → 2020-12. (b) category/pathFields/writesToOwnSandbox/version/deprecatedSince/replacedBy → `_meta["ave/*"]` (vendor prefix; second label MUST NOT be `mcp`/`modelcontextprotocol`). (c) project category → `ToolAnnotations` hints (interop only). |
+| `toolSchemas[name]` (inputSchema **draft-07** + category/pathFields/writesToOwnSandbox/version/deprecatedSince/replacedBy) (`src/plugins/types.ts:268-306`) | `Tool` { name, title?, description?, inputSchema(**2020-12**, type:object), outputSchema?, annotations?, icons?, _meta? } via `tools/list`; `tools/call`→`CallToolResult{content[],structuredContent?,isError?}` | (a) dialect draft-07 → 2020-12. (b) category/pathFields/writesToOwnSandbox/version/deprecatedSince/replacedBy → `_meta["ai.agent-connector.ave/*"]` (vendor prefix; second label MUST NOT be `mcp`/`modelcontextprotocol`). (c) project category → `ToolAnnotations` hints (interop only). |
 | `PluginHostApi` (generic surface: storage/config/callLlm/resolveApiKey/openAuthWindow/triggerConversation/UI events/getSecret) | **Split** (no single equivalent; **no host server** — §0) | See §3.5. LLM access stays host-internal; permission asks use the host permission gate; openAuthWindow/secrets→**authorization** (OAuth) + url-elicitation; showOverlay→**Apps**; storage/config/triggerConversation/events→**host-internal**. |
-| Plugin UI events `${id}.verb.noun` (`src/plugins/ui-events.ts`) | **No MCP equivalent** for an extension’s own panel updates | Route only to the emitting extension’s UI. Cross-plugin event delivery is removed; expose only `tools`/`resources` list changes through MCP notifications. |
+| Plugin view state | App-visible MCP tools | Cursor-based bounded long polling replaces private view push. Theme and style updates use MCP Apps host context. |
 | Permission categories `read\|write\|shell\|network` (authoritative SOT) (`src/plugins/types.ts:18`) | `ToolAnnotations` (hints, explicitly **untrusted**) + host obtains explicit consent before any `tools/call` | Category stays the authoritative `_meta` SOT; **host policy MUST NOT trust inbound annotations** for permission decisions (matches MCP's own "annotations untrusted unless trusted server"). |
 | Hooks (Layer-6 shell pre/post/perm, deny-only, TOFU lockfile) (`src/hooks/*`, fire points in `src/tools/invocation-authorization.ts` and `src/tools/invocation-execution.ts`) | **No equivalent** (MCP has no host-side tool-call veto) | Remain a pure host policy layer; re-anchor fire points to the host's `tools/call` boundary (§4). |
 | MCP client (pins `2024-11-05`, empty `capabilities:{}` `initialize`, no `resultType`) (`src/mcp/mcp-client.ts:116,80-110`) | Stateless `2026-07-28`: no `initialize`; per-request `_meta`; `server/discover`; `resultType`; MRTR; `subscriptions/listen` | Rewrite handshake → stateless request builder + `server/discover` + `resultType` branch + MRTR loop + error mapping + HTTP headers. **Dual-era exception** (§0) only for external servers. |
@@ -98,18 +98,18 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 > (recorded in git history) **deleted** the `toolSchemas` map — each tool is a pure MCP `Tool`
 > object — and **removed** per-tool `category` from the manifest entirely (Q3: host-classifies-risk;
 > a plugin grading its own danger is not a control). `pathFields` is the sole surviving Ave key, at
-> `_meta["ave/pathFields"]`. Read the mapping below as historical.
+> `_meta["ai.agent-connector.ave/pathFields"]`. Read the mapping below as historical.
 
 - `name` keeps the existing underscore LLM tool name. `inputSchema` migrates draft-07 → 2020-12.
-- **Category** (this sketch kept it as SOT under `_meta["ave/category"]`; **superseded** — removed in #885 Phase R); interop `ToolAnnotations` (`readOnlyHint`/`destructiveHint`/`openWorldHint`) are host-derived — host policy reads `_meta`, never inbound annotations.
-- `pathFields`/`writesToOwnSandbox`/`version`/`deprecatedSince`/`replacedBy` → `_meta["ave/*"]`.
+- **Category** (this sketch kept it as SOT under `_meta["ai.agent-connector.ave/category"]`; **superseded** — removed in #885 Phase R); interop `ToolAnnotations` (`readOnlyHint`/`destructiveHint`/`openWorldHint`) are host-derived — host policy reads `_meta`, never inbound annotations.
+- `pathFields`/`writesToOwnSandbox`/`version`/`deprecatedSince`/`replacedBy` → `_meta["ai.agent-connector.ave/*"]`.
 - `tools/call`→`CallToolResult{content[],structuredContent?,isError?}` wrapped `resultType:"complete"`; tool failures use `isError:true` (not JSON-RPC errors) — matches Ave's executor result model.
 - **No-Fallback field-sweep:** `toolSchemas` entries are `additionalProperties:false` (M4 fixture contract). Adding `outputSchema`/`_meta` carriers means SDK schema + host validator + fixtures move in **one PR** (repo field-addition-sweep + No-Fallback rules).
 
 ### 3.4 Events (hybrid)
 
 - **List-change** (`tools`/`resources`/`prompts` set changed) → MCP `notifications/*/list_changed` via `subscriptions/listen` opt-in (ecosystem interop).
-- **Extension UI events** (`${id}.verb.noun`) stay host-internal and reach only the emitting extension’s UI. Cross-plugin grants and event delivery are removed. The host theme event remains available to each extension.
+- **Extension view updates** use app-visible tools for data and MCP Apps host context for theme and styles. There is no private event subscription into a view. Cross-plugin grants and event delivery remain removed.
 
 ### 3.5 HostApi → MCP (no host server)
 
@@ -120,7 +120,7 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 | `openAuthWindow`, `getSecret` | **MCP authorization** (OAuth 2.1 + PKCE + RFC 8707) for HTTP plugins; env-injected creds for stdio plugins; `url`-mode elicitation drives interactive consent |
 | `showOverlay`, UI | **MCP Apps** (`_meta.ui.resourceUri`→`ui://` resource) |
 | `storage`, `config` | **host-internal** (MCP is stateless — no config/storage RPC). Storage stays the sandboxed per-plugin data dir via `createPluginStorage(pluginId, pluginDataDir)` rooted at `<pluginsRoot>/<pluginId>/data/` (`src/plugins/runtime/sandbox.ts`); this is the plugin path, distinct from `openFeatureNamespace`'s single-segment `~/.ave/<featureId>/` host namespaces. |
-| `triggerConversation`, own-UI events, theme notifications | **host-internal** platform surfaces. Extension diagnostics use stderr; discovery, lifecycle subscriptions and in-protocol logging are removed. |
+| `triggerConversation` | Host-owned platform surface; view messages use MCP Apps `ui/message`. Extension diagnostics use stderr. |
 
 The host, as MCP host, advertises `sampling`/`elicitation` as per-request `clientCapabilities` — **that is the standard path** for a plugin-server to "call back" to the host. No bespoke server.
 
@@ -143,7 +143,7 @@ Tool sets `_meta.ui.resourceUri:"ui://<plugin>/<view>"`; host `resources/read` f
 | `PreToolUse` (blocking) | fires in the host **before the client emits `tools/call`** to the plugin-server |
 | `PermissionRequest` | unchanged host gate; **distinct** from any MRTR `elicitation` the *plugin* later requests |
 | `PostToolUse` (informational) | observes the `CallToolResult` returned by the plugin-server |
-| `ScriptHookStdin.source`/`category` | `source` = plugin-via-MCP; `category` read from the tool's authoritative `_meta["ave/category"]`; add plugin-server identity + per-request protocol version so hooks can policy on it |
+| `ScriptHookStdin.source`/`category` | `source` = plugin-via-MCP; `category` read from the tool's authoritative `_meta["ai.agent-connector.ave/category"]`; add plugin-server identity + per-request protocol version so hooks can policy on it |
 | deny | host **declines to send `tools/call`** / aborts MRTR retry — still a host veto, never an MCP message |
 | TOFU lockfile / quarantine / `/permission hooks accept` | unchanged (pure host trust model) |
 | future generic hooks + `mcp__.*` matcher | the matcher matches the host's `tools/call` by tool name; an "MCP-handler hook" is itself a host policy MCP client — a clean fit, but a *host policy server*, not a protocol veto |
@@ -161,7 +161,7 @@ Ordered; each *change → unblocks → gate*. Because each plugin gets its own c
 3. **`plugin-loopback-server`** — define the in-process loopback transport + the stdio transport; project `PluginManifest`/`toolSchemas` → `server/discover`+`tools/list`+`tools/call`; run **one first-party plugin** as a loopback MCP server behind a per-plugin client; route `ToolRegistry` registration through MCP discovery instead of `pluginToolsForRegistration`; dialect draft-07→2020-12; category/etc. in `_meta`. *Gate:* SDK schema + validator + fixtures in **one PR** (No-Fallback); migrated plugin passes the full permission pipeline identically (category SOT from `_meta`).
 4. **`untrusted-stdio-isolation`** — out-of-process stdio runtime for marketplace plugins (+ bubblewrap/sandbox-exec), spawn/lifecycle, the spawnable-server artifact format. *Gate:* a marketplace plugin runs isolated; crash/hang containment test; artifact re-sign + installed-plugin migration path.
 5. **`governance-per-request`** — move governance from static `allowedCapabilities` whitelist to per-request capability declaration + per-request gating; keep deny-by-default, namespace, max-tools. *Advisory:* record proportionate owner architecture, critique, and security consideration for the permissions area; this never blocks merge.
-6. **`hooks-on-mcp-calls`** (#811 continuation) — re-anchor `PreToolUse`/`PermissionRequest`/`PostToolUse` to the host's `tools/call`; hook stdin reads `_meta["ave/category"]` + per-request identity; add the `mcp__.*` matcher; then continue the #811 generic-command-hooks milestone in this frame. *Gate:* deny still blocks the call; fail-closed preserved; audit HMAC chain intact.
+6. **`hooks-on-mcp-calls`** (#811 continuation) — re-anchor `PreToolUse`/`PermissionRequest`/`PostToolUse` to the host's `tools/call`; hook stdin reads `_meta["ai.agent-connector.ave/category"]` + per-request identity; add the `mcp__.*` matcher; then continue the #811 generic-command-hooks milestone in this frame. *Gate:* deny still blocks the call; fail-closed preserved; audit HMAC chain intact.
 7. **`tasks-extension`** — adopt `io.modelcontextprotocol/tasks` for long-running plugin tools (verified: separate `experimental-ext-tasks` repo; `tasks/get`/`tasks/update`/`tasks/cancel`; `notifications/tasks` carries the full `DetailedTask`; `CreateTaskResult` sets `resultType:"task"`). *Gate:* pin the extension's draft schema at the milestone (it versions independently of the core RC); durable task store survives restart.
 8. **`apps-and-skills-extensions`** — `io.modelcontextprotocol/ui` (Apps; native-host iframe) and `io.modelcontextprotocol/skills` (skills as `skill://` Resources). *Gate:* CSP/permission enforcement per `_meta.ui`; skill digest verification; per-skill opt-in before any skill-declared code execution. Treat Apps/Skills version axes as independent of the core RC.
 9. **`legacy-removal`** — delete the now-unused HostApi surfaces replaced by MCP primitives and the `2024-11-05` client path (keep only the documented external dual-era exception). *Gate:* grep-clean of removed surfaces; all first-party plugins migrated; artifact format finalized.
@@ -187,7 +187,7 @@ not-yet (Ave plugin servers don't elicit yet).
 
 Built + tested (one module each, all green under `bun run test:vitest -- run src/mcp/`):
 - `plugin-server-projection.ts` — manifest/`toolSchemas` → `server/discover` +
-  `tools/list` (dialect → 2020-12; authority under `ave/*` `_meta`).
+  `tools/list` (dialect → 2020-12; authority under `ai.agent-connector.ave/*` `_meta`).
 - `plugin-mcp-server.ts` — the RC server methods (`server/discover`/`tools/list`/
   `tools/call`); thrown delegate → `isError` CallToolResult; `-32022` on bad version.
 - `loopback-transport.ts` — in-process `McpTransport` (client ↔ server, no socket).
@@ -200,7 +200,7 @@ Built + tested (one module each, all green under `bun run test:vitest -- run src
 - `plugin-runtime-delegate.ts` — `pluginRuntimeToolDelegate`, reproducing
   `buildPluginTool`'s fail-closed execute gates (inactive / integrity-disabled /
   `ManifestIntegrityError` record) at the MCP boundary, with the raw return
-  value carried via `_meta["ave/rawResult"]`.
+  value carried via `_meta["ai.agent-connector.ave/rawResult"]`.
 - `plugin-loopback-manager.ts` — `PluginLoopbackManager`, the boot seam owning
   host lifecycle (`start`/`stop`/`stopAll`, idempotent reload).
 
@@ -214,7 +214,7 @@ Decisions ratified during implementation:
   because the trust models differ.
 - **Structured tool output rides `_meta`.** MCP's content model is text-first, so
   the plugin's raw (non-text) return value is carried as
-  `_meta["ave/rawResult"]` (boxed to preserve present-but-`undefined`) and
+  `_meta["ai.agent-connector.ave/rawResult"]` (boxed to preserve present-but-`undefined`) and
   re-surfaced as `metadata.rawResult` for the `executor.ts`/`boot.ts` consumers.
 - **The provider-strict lint is a client concern** → it lives in `PluginMcpHost`
   registration, not the server projection (the server exposes its real tools; the
@@ -242,7 +242,7 @@ whitelist) + the exact deriving signals (§6 open decision).
 
 **`hooks-on-mcp-calls` (6, #811) — category-from-`_meta` already transitively
 satisfied.** The reverse projection (`mcpToolToPluginTool`) lands
-`_meta["ave/category"]` onto `tool.category`, and the executor's hook stdin
+`_meta["ai.agent-connector.ave/category"]` onto `tool.category`, and the executor's hook stdin
 (`ScriptHookStdin.category`) already reads `tool.category` — so a loopback plugin
 tool's hook already sees the authoritative MCP category, no extra wiring. Remaining
 #811 work: the `mcp__.*` tool-name matcher + per-request identity in hook stdin +
@@ -524,7 +524,7 @@ RequestMetaObject {
 
 **Tool:** `{ name, title?, icons?, description?, inputSchema:{type:"object", $schema?}, outputSchema?, annotations?:ToolAnnotations, _meta? }`. **JSON Schema dialect = 2020-12** (default when no `$schema`). `ToolAnnotations { title?; readOnlyHint?=false; destructiveHint?=true; idempotentHint?=false; openWorldHint?=true }`.
 
-**`_meta` namespacing:** prefix = dot-separated labels + `/`; a short vendor label is recommended; **any prefix whose second label is `mcp` or `modelcontextprotocol` is RESERVED for MCP** (so Ave uses e.g. `ave/…`, never `*.mcp/…`).
+**`_meta` namespacing:** prefix = dot-separated labels + `/`; a short vendor label is recommended; **any prefix whose second label is `mcp` or `modelcontextprotocol` is RESERVED for MCP** (so Ave uses e.g. `ai.agent-connector.ave/…`, never `*.mcp/…`).
 
 **Tasks (`experimental-ext-tasks`):** methods `tasks/get` / `tasks/update {taskId, inputResponses}` / `tasks/cancel {taskId}`; `CreateTaskResult = Result & Task` with `resultType:"task"`; `Task {taskId, status: "working"|"input_required"|"completed"|"failed"|"cancelled", createdAt, lastUpdatedAt, ttlMs|null, pollIntervalMs?}`; `notifications/tasks` carries the full `DetailedTask`; subscribe via `subscriptions/listen` + `{taskIds}`.
 

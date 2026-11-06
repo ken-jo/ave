@@ -101,13 +101,10 @@ function scriptedChild(): { link: ChildLink; sent: Frame[]; send: (frame: Frame)
 }
 
 describe("the validation session's authority", () => {
-  it("keeps scripted subscriptions scoped to host theme notifications", () => {
+  it("does not expose the removed plugin UI event bridge", () => {
     const host = createValidationHost();
-    expect(() => host.api.onEvent("other-plugin.changed", () => {})).toThrow(/host.theme.changed/);
-    const receive = vi.fn();
-    host.api.onEvent("host.theme.changed", receive);
-    host.fireAll();
-    expect(receive).toHaveBeenCalledExactlyOnceWith({ fired: "by the golden host" });
+    expect(host.api).not.toHaveProperty("onEvent");
+    expect(host.api).not.toHaveProperty("emitEvent");
   });
 
   it("does not restore a removed floating-panel handle method", async () => {
@@ -150,7 +147,7 @@ describe("the validation session's authority", () => {
       child.send({
         jsonrpc: "2.0",
         id: "into-approved",
-        method: "ave/host/spawnWorker",
+        method: "ai.agent-connector.ave/host/spawnWorker",
         params: { spec: { workerId: "into-approved", command: "/usr/bin/true", control: "output-only-v1", allowWritePaths: [approved] } },
       });
       await vi.waitFor(() => expect(child.sent.find((frame) => frame.id === "into-approved")).toBeDefined());

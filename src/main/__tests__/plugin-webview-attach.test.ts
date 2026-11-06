@@ -8,9 +8,7 @@ import {
   configureAuthWebviewAttach,
   configureMainWindowWebviewAttach,
   configureMcpAppWebviewAttach,
-  configurePluginWebviewAttach,
-} from "../plugin-webview-attach.js";
-import { pluginPartitionName } from "../../shared/plugin-partition.js";
+} from "../webview-attach.js";
 import { MCP_APP_PARTITION_PREFIX, mcpAppPartitionName } from "../../shared/mcp-app-partition.js";
 import { PRELOAD_BUNDLES } from "../../shared/preload-bundles.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
@@ -27,88 +25,6 @@ function weakRequest(): Record<string, unknown> {
     webviewTag: true,
   };
 }
-
-describe("plugin webview attach", () => {
-  it("overrides every weakened preference on a plugin partition", () => {
-    const webPreferences = weakRequest();
-    const result = configurePluginWebviewAttach({
-      webPreferences,
-      params: { partition: pluginPartitionName("meeting") },
-    });
-
-    expect(result).toBe("enforced");
-    expect(webPreferences).toMatchObject({
-      nodeIntegration: false,
-      nodeIntegrationInWorker: false,
-      nodeIntegrationInSubFrames: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      webviewTag: false,
-    });
-  });
-
-  it("closes node reachability in all three forms, not just the headline one", () => {
-    // `nodeIntegration: false` alone still leaves workers and subframes, which are separate preferences with their own defaults.
-    const webPreferences = weakRequest();
-    configurePluginWebviewAttach({
-      webPreferences,
-      params: { partition: pluginPartitionName("local-indexer") },
-    });
-    expect(webPreferences.nodeIntegrationInWorker).toBe(false);
-    expect(webPreferences.nodeIntegrationInSubFrames).toBe(false);
-  });
-
-  it("stops a plugin frame from embedding further guest views", () => {
-    // A nested webview would attach with preferences this guard has no branch for, which is how enforcement gets skipped one level down.
-    const webPreferences = weakRequest();
-    configurePluginWebviewAttach({
-      webPreferences,
-      params: { partition: pluginPartitionName("samplemail") },
-    });
-    expect(webPreferences.webviewTag).toBe(false);
-  });
-
-  it("enforces for every plugin id, not a fixed list", () => {
-    for (const pluginId of ["meeting", "samplemail", "sampleportal", "sampleassistant", "unknown-future"]) {
-      const webPreferences = weakRequest();
-      const result = configurePluginWebviewAttach({
-        webPreferences,
-        params: { partition: pluginPartitionName(pluginId) },
-      });
-      expect(result, pluginId).toBe("enforced");
-      expect(webPreferences.contextIsolation, pluginId).toBe(true);
-    }
-  });
-
-  describe("partitions it must not claim", () => {
-    it.each([
-      [AVE_SIDE_BROWSER_PARTITION, "the side browser, which has its own handler"],
-      ["", "no partition at all"],
-      ["persist:plugin:", "the prefix with no hash"],
-      ["persist:plugin:XYZ", "a non-hex hash"],
-      ["persist:plugin:abc", "a hash of the wrong length"],
-      ["persist:plugin:0123456789ab", "a hash that is too long"],
-      ["persist:evil:00000000", "a lookalike namespace"],
-    ])("ignores %s (%s)", (partition) => {
-      const webPreferences = weakRequest();
-      const result = configurePluginWebviewAttach({ webPreferences, params: { partition } });
-
-      expect(result).toBe("ignored");
-      // Untouched, so the handler that DOES own this partition still sees the request as it arrived.
-      expect(webPreferences).toEqual(weakRequest());
-    });
-  });
-
-  it("recognises exactly what pluginPartitionName produces", () => {
-    // The predicate and the constructor drifting apart would turn enforcement off silently, which is the failure this whole module exists to prevent.
-    const partition = pluginPartitionName("some-plugin");
-    expect(partition).toMatch(/^persist:plugin:[0-9a-f]{8}$/);
-    expect(
-      configurePluginWebviewAttach({ webPreferences: weakRequest(), params: { partition } }),
-    ).toBe("enforced");
-  });
-});
 
 const attachEvent = () => ({ preventDefault: vi.fn() });
 const proxyUrl = (serverId: string) => `ave-mcp-app://${mcpAppPartitionName(serverId).slice(MCP_APP_PARTITION_PREFIX.length)}/proxy.html?t=abc`;
@@ -165,10 +81,20 @@ describe("MCP app webview attach", () => {
     expect(webPreferences.sandbox).toBe(true);
   });
 
+  it.each(["ep", "git", "viewfixture"])("attaches a URL-safe proxy for %s", (serverId) => {
+    const event = attachEvent();
+    expect(configureMcpAppWebviewAttach({
+      event, webPreferences: weakRequest(),
+      params: { partition: mcpAppPartitionName(serverId), src: proxyUrl(serverId) },
+    })).toBe("enforced");
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["another server's proxy", mcpAppPartitionName("weather"), proxyUrl("calendar")],
     ["a web page", mcpAppPartitionName("weather"), "https://example.com/"],
     ["no first URL", mcpAppPartitionName("weather"), ""],
+    ["an unprefixed authority", `${MCP_APP_PARTITION_PREFIX}6162`, "ave-mcp-app://6162/proxy.html"],
     ["a partition token that is not hex", `${MCP_APP_PARTITION_PREFIX}zz`, "ave-mcp-app://zz/proxy.html"],
   ])("refuses %s", (_label, partition, src) => {
     const event = attachEvent();
@@ -180,7 +106,7 @@ describe("MCP app webview attach", () => {
   it("ignores partitions that are not MCP app partitions", () => {
     const webPreferences = weakRequest();
     const event = attachEvent();
-    expect(configureMcpAppWebviewAttach({ event, webPreferences, params: { partition: pluginPartitionName("meeting"), src: "" } })).toBe("ignored");
+    expect(configureMcpAppWebviewAttach({ event, webPreferences, params: { partition: "persist:plugin:removed", src: "" } })).toBe("ignored");
     expect(webPreferences).toEqual(weakRequest());
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
@@ -199,10 +125,6 @@ describe("main window webview attach", () => {
   };
 
   it("hands each guest to the guard that owns its partition", () => {
-    const plugin = attach(pluginPartitionName("meeting"), "file:///plugin-ui-shell.html");
-    expect(plugin.result).toEqual({ owner: "plugin", result: "enforced" });
-    expect(plugin.webPreferences.sandbox).toBe(true);
-
     const mcpApp = attach(mcpAppPartitionName("weather"), proxyUrl("weather"));
     expect(mcpApp.result).toEqual({ owner: "mcp-app", result: "enforced" });
     expect(mcpApp.webPreferences.sandbox).toBe(true);
@@ -210,7 +132,7 @@ describe("main window webview attach", () => {
 
     const side = attach(AVE_SIDE_BROWSER_PARTITION, "https://example.com/");
     expect(side.result).toEqual({ owner: "side-browser", result: "accepted" });
-    for (const guest of [plugin, mcpApp, side]) expect(guest.event.preventDefault).not.toHaveBeenCalled();
+    for (const guest of [mcpApp, side]) expect(guest.event.preventDefault).not.toHaveBeenCalled();
   });
 
   it.each([

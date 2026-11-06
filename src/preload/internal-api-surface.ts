@@ -41,7 +41,6 @@ import { buildGitRuntimeApiSurface } from "./git-runtime-api-surface.js";
 import { buildInstalledContentApiSurface } from "./installed-content-api-surface.js";
 import { buildTailnetSharingApiSurface } from "./tailnet-sharing-api-surface.js";
 import { buildDocumentEngineApiSurface } from "./document-engine-api-surface.js";
-import { classifySubscription } from "../plugins/capabilities.js";
 import type {
   PermissionReviewSuggestionPayload,
   UserApprovalHitPayload,
@@ -504,14 +503,6 @@ export function buildInternalApiSurface() {
   listAgentProfiles: async () => ipcRenderer.invoke(CHANNELS.agents.list),
   listSkills: async () => ipcRenderer.invoke(CHANNELS.skills.list),
   listPluginUiExtensions: async () => ipcRenderer.invoke(CHANNELS.plugins.uiList),
-  // #237; host renderer pre-binds (webContents.id → pluginId, entryUrl) before each plugin webview navigates. Main rejects unknown pluginId and any non-host frame.
-  registerPluginWebview: async (payload: { webContentsId: number; pluginId: string; entryUrl: string }) =>
-    ipcRenderer.invoke(CHANNELS.pluginBridge.registerWebview, payload) as Promise<{ ok: boolean; error?: string }>,
-  // Awaited before the panel renders its <webview>; see the channel comment.
-  ensurePluginPartition: async (pluginId: string) =>
-    ipcRenderer.invoke(CHANNELS.pluginBridge.ensurePartition, { pluginId }) as Promise<{ ok: boolean; error?: string }>,
-  readPluginUiModule: async (pluginId: string, viewId: string) =>
-    ipcRenderer.invoke(CHANNELS.plugins.uiReadModule, { pluginId, viewId }) as Promise<string>,
   // #1176; toggle a plugin active/inactive. Returns the IPC result frame ({ ok, pluginId, enabled } | { ok:false, error, message }).
   setPluginEnabled: async (pluginId: string, enabled: boolean) =>
     ipcRenderer.invoke(CHANNELS.plugins.setEnabled, pluginId, enabled),
@@ -725,23 +716,6 @@ export function buildInternalApiSurface() {
       arch: string;
       userDataPath: string;
     }>,
-
-  onPluginEvent: (
-    eventType: string,
-    handler: (data: unknown) => void,
-  ): (() => void) => {
-    // Reject private subscriptions at preload using classifySubscription, the shared event authority.
-    // Do not reconstruct namespace rules here; exact host event types and sensitive state must follow the same classifier.
-    if (classifySubscription(eventType) === "private") {
-      // Return a no-op unsubscribe; the subscription is silently rejected.
-      return () => undefined;
-    }
-    const listener = (_event: unknown, type: string, data: unknown) => {
-      if (type === eventType) handler(data);
-    };
-    ipcRenderer.on(CHANNELS.pluginBridge.event, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.pluginBridge.event, listener);
-  },
 
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,

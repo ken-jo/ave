@@ -110,6 +110,25 @@ describe("usePluginAuthStatuses", () => {
     expect(api.callPluginMethod).not.toHaveBeenCalled();
   });
 
+  it("polls auth through the status tool at a bounded cadence", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const callPluginMethod = vi.fn()
+      .mockResolvedValueOnce({ authenticated: false })
+      .mockResolvedValueOnce({ authenticated: true, account: "signed-in" });
+    const api = { callPluginMethod } as unknown as AveApi;
+    const { result, unmount } = renderHook(() => usePluginAuthStatuses(api, [makePlugin("samplemail", true)]));
+    try {
+      await act(async () => {});
+      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(result.current.statuses.get("samplemail")).toEqual({ kind: "authed", account: "signed-in" });
+      expect(callPluginMethod).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("manual refresh does not invoke statusTool for a non-callable runtime", async () => {
     const api = {
       callPluginMethod: vi.fn(),
@@ -174,33 +193,15 @@ describe("usePluginAuthStatuses", () => {
     });
   });
 
-  it("subscribes to <pluginId>.auth.changed and re-invokes statusTool on emit", async () => {
-    let onAuthChanged: ((data: unknown) => void) | undefined;
-    const callPluginMethod = vi
-      .fn()
-      .mockResolvedValueOnce({ authenticated: false }) // initial
+  it("refreshes auth status on host focus without a plugin event channel", async () => {
+    const callPluginMethod = vi.fn()
+      .mockResolvedValueOnce({ authenticated: false })
       .mockResolvedValueOnce({ authenticated: true, account: "post-login@x" });
-    const api = {
-      callPluginMethod,
-      onPluginEvent: vi.fn((eventType: string, handler: (d: unknown) => void) => {
-        if (eventType === "samplemail.auth.changed") onAuthChanged = handler;
-        return () => undefined;
-      }),
-    } as unknown as AveApi;
-
-    const { result } = renderHook(() =>
-      usePluginAuthStatuses(api, [makePlugin("samplemail", true)]),
-    );
-    await waitFor(() => {
-      expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed");
-    });
-
-    expect(onAuthChanged).toBeDefined();
-    act(() => onAuthChanged?.(undefined));
-
-    await waitFor(() => {
-      expect(result.current.statuses.get("samplemail")?.kind).toBe("authed");
-    });
+    const api = { callPluginMethod } as unknown as AveApi;
+    const { result } = renderHook(() => usePluginAuthStatuses(api, [makePlugin("samplemail", true)]));
+    await waitFor(() => expect(result.current.statuses.get("samplemail")?.kind).toBe("unauthed"));
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(result.current.statuses.get("samplemail")?.kind).toBe("authed"));
     expect(callPluginMethod).toHaveBeenCalledTimes(2);
   });
 

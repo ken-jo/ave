@@ -30,7 +30,7 @@ describe("the frame bound", () => {
     expect(violations).toEqual(["Plugin output queue exceeds limit"]);
     stream.forward(frameMessage({ id: 1, result: null }));
     expect(output.writableLength).toBe(queued);
-    input.write(frameMessage({ id: 2, method: "ave/host/logEvent", params: {} }));
+    input.write(frameMessage({ id: 2, method: "ai.agent-connector.ave/host/logEvent", params: {} }));
     expect(received).toEqual([]);
     input.destroy(); output.destroy();
   });
@@ -150,7 +150,7 @@ describe("pacing a producer against the output", () => {
     const output = new Writable({ write() { /* never drains */ } });
     const stream = new FramedMessageStream(input, output, () => {}, () => {}, () => {});
     stream.start();
-    const message = { jsonrpc: "2.0", method: "notifications/ave/subscription", params: { text: "\uD55C\uAE00" } };
+    const message = { jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription", params: { text: "\uD55C\uAE00" } };
     expect(stream.send(message)).toBe(Buffer.byteLength(`${JSON.stringify(message)}\n`, "utf8"));
     expect(stream.send(message)).toBe(output.writableLength / 2);
     for (let index = 0; index < 4; index += 1) stream.forward(lineOf(FRAME_BYTES_MAX));
@@ -202,7 +202,7 @@ describe("the host, reading a child that breaks the bound", () => {
       link,
     });
     transport.start();
-    const pending = transport.request("ave/instance/start", {});
+    const pending = transport.request("ai.agent-connector.ave/instance/start", {});
     childStdout.write(Buffer.alloc(FRAME_BYTES_MAX + 1, 0x78));
     await expect(pending).rejects.toThrow(/exceeded .* bytes/);
     expect(terminated).toHaveLength(1);

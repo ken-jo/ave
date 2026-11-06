@@ -1,7 +1,7 @@
 /** Verify natural-name plugin tool registration and delegated calls through the production loopback host. */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { LoopbackTransport } from "../loopback-transport.js";
-import { META_CLIENT_INFO } from "../protocol-constants.js";
+import { META_CLIENT_INFO, META_CLIENT_CAPABILITIES } from "../protocol-constants.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createPluginUiResourceProvider } from "../plugin-ui-resource-provider.js";
@@ -29,7 +29,7 @@ const MANIFEST: PluginManifest = {
       name: "notes_read",
       description: "Read a note",
       inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ai.agent-connector.ave/pathFields": ["path"] },
     },
     {
       name: "notes_save",
@@ -39,7 +39,7 @@ const MANIFEST: PluginManifest = {
         properties: { path: { type: "string" }, body: { type: "string" } },
         required: ["path"],
       },
-      _meta: { ui: { visibility: ["model"] }, "ave/pathFields": ["path"] },
+      _meta: { ui: { visibility: ["model"] }, "ai.agent-connector.ave/pathFields": ["path"] },
     },
   ],
 };
@@ -100,7 +100,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     const manifest = structuredClone(MANIFEST);
     manifest.tools[0]._meta = {
       ...manifest.tools[0]._meta,
-      "ave/operationPolicy": {
+      "ai.agent-connector.ave/operationPolicy": {
         discriminant: "operation",
         operations: { read: { kind: "read", minimumRisk: "read", appVisible: true } },
       },
@@ -111,7 +111,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
       async () => ({ content: [{ type: "text", text: "ok" }] }),
       registry,
     );
-    manifest.tools[0]._meta!["ave/operationPolicy"] = {
+    manifest.tools[0]._meta!["ai.agent-connector.ave/operationPolicy"] = {
       discriminant: "operation",
       operations: { write: { kind: "write", minimumRisk: "write", appVisible: true } },
     };
@@ -143,7 +143,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
       _meta: {
         ...manifest.tools[0]._meta,
         ui: { visibility: ["model", "app"] },
-        "ave/operationPolicy": policy,
+        "ai.agent-connector.ave/operationPolicy": policy,
       },
     };
     const registry = new ToolRegistry();
@@ -158,7 +158,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(registry.findByName("notes_read")?.operationPolicy).toEqual(policy);
   });
 
-  it("IGNORES a rawResult under an unknown vendor _meta prefix — only ave/rawResult is read", async () => {
+  it("IGNORES a rawResult under an unknown vendor _meta prefix — only ai.agent-connector.ave/rawResult is read", async () => {
     // Read raw result data only from the owned metadata key.
     const delegate: PluginToolDelegate = vi.fn(async () => ({
       content: [{ type: "text", text: "ok" }],
@@ -172,11 +172,11 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(result.metadata).toBeUndefined();
   });
 
-  it("reads ave/rawResult (and ignores a stray unknown-vendor key)", async () => {
+  it("reads ai.agent-connector.ave/rawResult (and ignores a stray unknown-vendor key)", async () => {
     const delegate: PluginToolDelegate = vi.fn(async () => ({
       content: [{ type: "text", text: "ok" }],
       _meta: {
-        "ave/rawResult": { from: "new" },
+        "ai.agent-connector.ave/rawResult": { from: "new" },
         [`${UNKNOWN_META_PREFIX}rawResult`]: { from: "unknown" },
       },
     }));
@@ -341,6 +341,12 @@ describe("PluginMcpHost — RC request meta", () => {
       for (const [message] of send.mock.calls) {
         const params = (message as { params?: { _meta?: Record<string, unknown> } }).params;
         expect(params?._meta?.[META_CLIENT_INFO]).toEqual({ name: "ave", version: getAveAppVersion() });
+        expect(params?._meta?.[META_CLIENT_CAPABILITIES]).toMatchObject({
+          extensions: {
+            "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+            "ai.agent-connector.ave/host": { version: "5" },
+          },
+        });
       }
     } finally {
       send.mockRestore();

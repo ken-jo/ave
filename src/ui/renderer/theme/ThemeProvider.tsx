@@ -250,11 +250,7 @@ export function ThemeProvider({
     setApplied((previous) => ({ bundle: activeBundle, revision: previous.revision + 1 }));
   }, [activeBundle, effectiveBundleId]);
 
-  // Propagate bundle tokens to plugin webviews whenever active bundle changes.
-  // Font stack is NOT broadcast — `AveHostThemeEvent` has no `fonts` channel,
-  // and the plugin webview body letterform is unified via the static
-  // `plugin-ui-shell.html` mirror of `HOST_FONT_STACK` instead. Re-introducing
-  // a `fonts.family` payload here would be dead code that plugins cannot use.
+  // Publish active tokens for host-owned dock chrome; app bridges map these tokens into standard host context.
   useEffect(() => {
     if (!api) return;
     if (activeBundle.id !== effectiveBundleId) return;

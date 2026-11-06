@@ -33,8 +33,8 @@ export interface McpToolProjection {
   icons?: McpTool["icons"];
   _meta: {
     ui: { visibility: Array<"model" | "app"> };
-    "ave/pathFields"?: string[];
-    "ave/operationPolicy"?: PluginToolOperationPolicy;
+    "ai.agent-connector.ave/pathFields"?: string[];
+    "ai.agent-connector.ave/operationPolicy"?: PluginToolOperationPolicy;
   };
 }
 
@@ -55,13 +55,13 @@ export interface McpDiscoverProjection {
 function toWireTool(tool: McpTool): McpToolProjection {
   const meta: McpToolProjection["_meta"] = { ui: { visibility: toolVisibility(tool) } };
   // Reject misplaced authority at schema admission rather than silently erasing its constraints.
-  const pathFields = tool._meta?.["ave/pathFields"];
+  const pathFields = tool._meta?.["ai.agent-connector.ave/pathFields"];
   if (pathFields !== undefined) {
-    meta["ave/pathFields"] = pathFields;
+    meta["ai.agent-connector.ave/pathFields"] = pathFields;
   }
-  const operationPolicy = tool._meta?.["ave/operationPolicy"];
+  const operationPolicy = tool._meta?.["ai.agent-connector.ave/operationPolicy"];
   if (operationPolicy !== undefined) {
-    meta["ave/operationPolicy"] = operationPolicy;
+    meta["ai.agent-connector.ave/operationPolicy"] = operationPolicy;
   }
   return {
     name: tool.name,

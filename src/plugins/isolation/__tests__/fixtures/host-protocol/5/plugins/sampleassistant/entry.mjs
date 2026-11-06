@@ -6,7 +6,6 @@ export const createPlugin = async (context) => {
   return {
     handlers: {
       exercise_host: async () => {
-        disposers.push(api.onEvent("host.theme.changed", (data) => seen.events.push(data)));
         disposers.push(
           api.config.onChange("osNotificationsEnabled", (value) => seen.configChanges.push(value ?? null)),
         );

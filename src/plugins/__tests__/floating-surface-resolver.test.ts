@@ -17,16 +17,13 @@ type UiEntry = {
   slot: string;
   kind: string;
   title: string;
-  entry?: string;
-  exportName?: string;
-  page?: string;
+  resourceUri?: string;
   locales?: Record<string, { displayName?: string; title?: string; description?: string }>;
 };
 
 function writePlugin(root: string, id: string, ui: UiEntry[]): string {
   const dir = join(root, id);
-  mkdirSync(join(dir, "dist"), { recursive: true });
-  writeFileSync(join(dir, "dist", "card.js"), "export const Card = () => null;");
+  mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, "plugin.json"),
     JSON.stringify(servedAgentPluginsDocument({
@@ -37,6 +34,7 @@ function writePlugin(root: string, id: string, ui: UiEntry[]): string {
       entry: "index.mjs",
       tools: [pureTool(`${id}_noop`, ["model"])],
       ui,
+      uiResources: [...new Set(ui.map((extension) => extension.resourceUri).filter(Boolean))].map((uri) => ({ uri })),
     })));
   writeFileSync(join(dir, "index.mjs"), "export default () => ({ handlers: {} });");
   return join(dir, "plugin.json");
@@ -45,10 +43,9 @@ function writePlugin(root: string, id: string, ui: UiEntry[]): string {
 const FLOATING: UiEntry = {
   id: "recorder",
   slot: "floating",
-  kind: "embedded-module",
+  kind: "mcp-app",
   title: "Recorder",
-  entry: "dist/card.js",
-  exportName: "Card",
+  resourceUri: "ui://dockfixture/recorder",
 };
 
 describe("resolveFloatingSurface", () => {
@@ -73,7 +70,7 @@ describe("resolveFloatingSurface", () => {
     return runtime;
   }
 
-  it("resolves a declared floating module surface", async () => {
+  it("resolves a declared floating app resource", async () => {
     const runtime = await runtimeWith([FLOATING]);
 
     const resolved = runtime.resolveFloatingSurface("dockfixture", "recorder");
@@ -83,8 +80,7 @@ describe("resolveFloatingSurface", () => {
       extensionId: "recorder",
       title: "Recorder",
     });
-    // Revision-stamped imports prevent a reloaded card from serving the previous module.
-    expect((resolved as { entryUrl: string }).entryUrl).toMatch(/aveRuntimeRevision=\d+/u);
+    expect(resolved).toMatchObject({ payload: { serverId: "dockfixture", resourceUri: "ui://dockfixture/recorder", generationId: expect.any(String) } });
   });
 
   it("refuses an unknown plugin", async () => {
@@ -104,28 +100,27 @@ describe("resolveFloatingSurface", () => {
   });
 
   it.each([
-    ["embedded-page", { kind: "embedded-page", page: "dist/card.js", entry: undefined, exportName: undefined }],
+    ["embedded-page", { kind: "embedded-page" }],
     ["info-card", { kind: "info-card" }],
   ])("refuses kind=%s", async (_name, override) => {
-    // The dock imports an entry module; embedded-page and info-card declarations cannot render there.
-    // Fixtures must pass manifest validation so the refusal comes from this resolver.
+    // Retired UI kinds are rejected during manifest admission.
     const runtime = await runtimeWith([{ ...FLOATING, ...override } as UiEntry]);
-    expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("surface-not-floating");
+    expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("unknown-plugin");
   });
 
-  it("never sees an entry-less module surface, because the manifest is refused first", async () => {
-    // Manifest validation requires embedded-module entry and exportName before floating admission.
+  it("refuses an app surface without a resource URI", async () => {
+    // Standard app panels must name a declared resource before admission.
     const runtime = await runtimeWith([
-      { id: "recorder", slot: "floating", kind: "embedded-module", title: "Recorder" },
+      { id: "recorder", slot: "floating", kind: "mcp-app", title: "Recorder" },
     ]);
     expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("unknown-plugin");
     expect(runtime.listPluginCards()).toHaveLength(0);
   });
 
-  it("refuses an entry that escapes the install root", async () => {
-    // A single-surface lookup must report containment violations rather than silently skip them.
-    const runtime = await runtimeWith([{ ...FLOATING, entry: "../../../etc/passwd" }]);
-    expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("surface-entry-rejected");
+  it("refuses a resource URI that escapes the plugin namespace", async () => {
+    // Resource ownership is validated before the plugin enters the registry.
+    const runtime = await runtimeWith([{ ...FLOATING, resourceUri: "ui://another-plugin/recorder" }]);
+    expect(runtime.resolveFloatingSurface("dockfixture", "recorder")).toBe("unknown-plugin");
   });
 
   it("keeps a floating surface out of the sidebar list", async () => {

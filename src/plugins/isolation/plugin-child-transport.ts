@@ -188,7 +188,7 @@ export class PluginChildTransport {
   ): Promise<unknown> {
     if (!PLUGIN_INSTANCE_METHOD_SET.has(method)) {
       throw new Error(
-        `[plugin-child-transport] '${String(method)}' is not an ave/instance method; `
+        `[plugin-child-transport] '${String(method)}' is not an ai.agent-connector.ave/instance method; `
           + "MCP requests go through requestMcp",
       );
     }

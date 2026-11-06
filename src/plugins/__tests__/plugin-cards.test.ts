@@ -23,11 +23,10 @@ function writePlugin(root: string, id: string, opts: {
   ui?: Array<{
     id: string;
     slot: "sidebar";
-    kind: "embedded-module" | "embedded-page" | "info-card" | "action";
+    kind: "mcp-app";
     title: string;
     displayName?: string;
-    entry?: string;
-    exportName?: string;
+    resourceUri: string;
   }>;
     toolMetadata?: Record<string, {
     description: string;
@@ -57,6 +56,7 @@ function writePlugin(root: string, id: string, opts: {
       }),
     ),
     ui: opts.ui,
+    uiResources: opts.ui?.map((extension) => ({ uri: extension.resourceUri })),
   };
   writeFileSync(join(dir, "plugin.json"), JSON.stringify(servedAgentPluginsDocument(manifest)));
   const handlers = opts.tools
@@ -172,10 +172,9 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
         {
           id: "local-indexer-control",
           slot: "sidebar",
-          kind: "embedded-module",
+          kind: "mcp-app",
           title: "Local Indexer",
-          entry: "dist/ui/indexer-control.js",
-          exportName: "PluginUi",
+          resourceUri: "ui://example-indexer/control",
         },
       ],
     });
@@ -193,10 +192,9 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
       expect.objectContaining({
         id: "local-indexer-control",
         slot: "sidebar",
-        kind: "embedded-module",
+        kind: "mcp-app",
         title: "Local Indexer",
-        entry: "dist/ui/indexer-control.js",
-        exportName: "PluginUi",
+        resourceUri: "ui://example-indexer/control",
       }),
     ]);
   });
@@ -223,7 +221,7 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
     });
   });
 
-  it("adds a runtime revision cache key to loaded plugin UI entry URLs", async () => {
+  it("binds loaded app panels to the exact runtime generation", async () => {
     const manifestA = writePlugin(tmp, "example-indexer", {
       name: "Local Indexer",
       tools: ["index_scan"],
@@ -231,19 +229,12 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
         {
           id: "local-indexer-control",
           slot: "sidebar",
-          kind: "embedded-module",
+          kind: "mcp-app",
           title: "Local Indexer",
-          entry: "dist/ui/indexer-control.js",
-          exportName: "PluginUi",
+          resourceUri: "ui://example-indexer/control",
         },
       ],
     });
-    mkdirSync(join(tmp, "example-indexer", "dist", "ui"), { recursive: true });
-    writeFileSync(
-      join(tmp, "example-indexer", "dist", "ui", "indexer-control.js"),
-      "export default function mount() {}\n",
-    );
-
     const runtime = new PluginRuntime({
       hostRoot: tmp,
       manifestPaths: [manifestA],
@@ -252,21 +243,15 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
 
     const first = runtime.listUiExtensions()[0];
     expect(first.runtimeRevision).toBeGreaterThan(0);
-    expect(first.entryUrl).toBeTruthy();
-    const firstUrl = new URL(first.entryUrl!);
-    expect(firstUrl.searchParams.get("avePluginVersion")).toBe("1.0.0");
-    expect(firstUrl.searchParams.get("aveRuntimeRevision")).toBe(
-      String(first.runtimeRevision),
-    );
+    expect(first.payload).toMatchObject({ serverId: "example-indexer", resourceUri: "ui://example-indexer/control" });
+    expect(first.payload.generationId).toBeTruthy();
 
     await runtime.reloadPlugin("example-indexer");
 
     const second = runtime.listUiExtensions()[0];
     expect(second.runtimeRevision).toBeGreaterThan(first.runtimeRevision!);
-    expect(second.entryUrl).not.toBe(first.entryUrl);
-    expect(
-      new URL(second.entryUrl!).searchParams.get("aveRuntimeRevision"),
-    ).toBe(String(second.runtimeRevision));
+    expect(second.payload.generationId).not.toBe(first.payload.generationId);
+    expect(second.payload.resourceUri).toBe(first.payload.resourceUri);
   });
 
   it("uses manifest description when tools use default descriptions", async () => {
@@ -388,33 +373,4 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
     ]);
   });
 
-  it("keeps event ownership on the manifest id when the registry id is an install alias", async () => {
-    const manifestPath = writePlugin(tmp, "manifest-event-owner", {
-      name: "Alias Event Fixture",
-      tools: ["alias_event_ping"],
-    });
-    const registryPath = writeRegistry(tmp, [
-      { id: "marketplace-event-slug", manifestPath, enabled: true },
-    ]);
-
-    const runtime = new PluginRuntime({
-      hostRoot: tmp,
-      registryPath,
-      pluginsRoot: tmp,
-    });
-    await runtime.load();
-
-    expect(() =>
-      runtime.assertPluginEventEmitAccess(
-        "manifest-event-owner",
-        "manifest-event-owner.changed",
-      ),
-    ).not.toThrow();
-    expect(() =>
-      runtime.assertPluginEventEmitAccess(
-        "unrelated-plugin",
-        "manifest-event-owner.changed",
-      ),
-    ).toThrow(/only its own UI events/);
-  });
 });

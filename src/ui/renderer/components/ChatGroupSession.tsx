@@ -37,6 +37,7 @@ import { useCostEstimate } from "../hooks/use-cost-estimate.js";
 import { useCurrentSession } from "../hooks/use-sessions.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../contract/app-contract.js";
 import { isSecondaryMainWindow } from "../utils/main-window-role.js";
+import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -430,6 +431,12 @@ export function ChatGroupSession({
   // under the conversation it was written for and handed back when that
   // conversation returns to a tile (this one or another). Layout timing so the
   // previous conversation's text never paints over the next one.
+  const appDraftSourcesRef = useRef(new Map<string, { source: string }>());
+
+  const stageAppMessage = useCallback((text: string, source: string) => {
+    appDraftSourcesRef.current.set(currentSessionId, { source });
+    setQuestion((current) => current ? current + "\n\n" + text : text);
+  }, [currentSessionId]);
   const questionRef = useRef(question);
   questionRef.current = question;
   const draftSessionIdRef = useRef<string | null>(null);
@@ -437,10 +444,16 @@ export function ChatGroupSession({
   // conversation is being replaced, not left, so its text belongs to the one that replaces it.
   const draftCarryFromRef = useRef<string | null>(null);
   // Text a new chat opens with (startNewChat's `opening.draft`), waiting for the tile to switch to that conversation.
-  const newChatDraftRef = useRef<{ sessionId: string; text: string } | null>(null);
+  const newChatDraftRef = useRef<{ sessionId: string; text: string; appSource?: string } | null>(null);
   // The memory a "Ave 에게 고치기" chat was opened for, shown above that conversation's composer until it is sent.
   const [memoryFix, setMemoryFix] = useState<{ sessionId: string; memory: MemoryFixTarget } | null>(null);
   useLayoutEffect(() => {
+    const restoreDraft = () => {
+      const draft = takeComposerDraft(currentSessionId);
+      if (draft.appSource) appDraftSourcesRef.current.set(currentSessionId, { source: draft.appSource });
+      else appDraftSourcesRef.current.delete(currentSessionId);
+      setQuestion(draft.text);
+    };
     const previous = draftSessionIdRef.current;
     if (previous === currentSessionId) return;
     draftSessionIdRef.current = currentSessionId;
@@ -449,8 +462,9 @@ export function ChatGroupSession({
     const opening = newChatDraftRef.current;
     if (opening && opening.sessionId === currentSessionId) {
       newChatDraftRef.current = null;
+      if (opening.appSource) appDraftSourcesRef.current.set(currentSessionId, { source: opening.appSource });
       if (previous && !carry) {
-        parkComposerDraft(previous, questionRef.current);
+        parkComposerDraft(previous, questionRef.current, appDraftSourcesRef.current.get(previous)?.source);
         setQuestion(opening.text);
       } else {
         // Text typed into the conversation being replaced arrives with it, as on the ordinary path, after the opening text.
@@ -462,16 +476,20 @@ export function ChatGroupSession({
     // an empty one being replaced: whatever was typed belongs to the
     // conversation that is arriving, so it stays, and a parked draft only
     // fills an empty composer (otherwise it stays parked).
+    if (carry && previous) {
+      const source = appDraftSourcesRef.current.get(previous);
+      if (source) appDraftSourcesRef.current.set(currentSessionId, source);
+    }
     if (!previous || carry) {
-      if (!questionRef.current) setQuestion(takeComposerDraft(currentSessionId));
+      if (!questionRef.current) restoreDraft();
       return;
     }
-    parkComposerDraft(previous, questionRef.current);
-    setQuestion(takeComposerDraft(currentSessionId));
+    parkComposerDraft(previous, questionRef.current, appDraftSourcesRef.current.get(previous)?.source);
+    restoreDraft();
   }, [currentSessionId]);
   useEffect(() => () => {
     const sessionId = draftSessionIdRef.current;
-    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current);
+    if (sessionId !== null) parkComposerDraft(sessionId, questionRef.current, appDraftSourcesRef.current.get(sessionId)?.source);
     draftSessionIdRef.current = null;
   }, []);
 
@@ -661,10 +679,11 @@ export function ChatGroupSession({
       // along then.
       if (applied === null || applied === currentSessionId) draftCarryFromRef.current = null;
       if (opening !== undefined && applied !== null) {
+        if (opening.appSource) appDraftSourcesRef.current.set(applied, { source: opening.appSource });
         // The new conversation opens with this text in its composer: set it if the tile already switched (keeping what the
         // switch carried over), otherwise hand it to the switch.
         if (draftSessionIdRef.current === applied) setQuestion(withOpeningText(opening.draft, questionRef.current));
-        else newChatDraftRef.current = { sessionId: applied, text: opening.draft };
+        else newChatDraftRef.current = { sessionId: applied, text: opening.draft, appSource: opening.appSource };
         setMemoryFix(opening.fixMemory ? { sessionId: applied, memory: opening.fixMemory } : null);
       }
       await env.refreshSessions();
@@ -882,6 +901,7 @@ export function ChatGroupSession({
     currentSessionProject,
     loadSession: async (sessionId: string) => (await handleLoadSessionAndRefresh(sessionId)) !== false,
     prefillComposer: setQuestion,
+    stageAppMessage,
     appendSystemEntry,
     startNewChat,
   });
@@ -1002,6 +1022,18 @@ export function ChatGroupSession({
         onAsk={(q, intent, opts) => {
           // The fix card has done its job once the request is sent; keeping it would refocus the composer on every return.
           if (memoryFix?.sessionId === currentSessionId) setMemoryFix(null);
+          const appDraft = appDraftSourcesRef.current.get(currentSessionId);
+          const appSource = appDraft?.source;
+          if (appSource && opts?.inputOrigin !== "queue-auto") {
+            const envelope = formatAppMessageEnvelope(q, appSource);
+            return handleAsk(envelope, "app-message", undefined, {
+              onRefused: () => setQuestion((current) => current || q),
+              onAccepted: () => {
+                if (appDraftSourcesRef.current.get(currentSessionId) === appDraft) appDraftSourcesRef.current.delete(currentSessionId);
+                insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource, prompt: envelope, summary: q });
+              },
+            });
+          }
           return handleAsk(q, "default", intent, opts);
         }}
         /** opts 의 inputOrigin / injectHint 가 그대로 handleAsk 4번째 인자로 전달 — queue-auto inject path 활성. */

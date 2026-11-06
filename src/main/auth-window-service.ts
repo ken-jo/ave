@@ -7,7 +7,7 @@ import { attachAuthWindowContent, authWindowChromeOptions, buildAuthWindowShellH
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { AuthWindowEndedError, isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
-import { configureAuthWebviewAttach } from "./plugin-webview-attach.js";
+import { configureAuthWebviewAttach } from "./webview-attach.js";
 import {
   withAuthPartitionViewersClosed,
 } from "./auth-partition-viewer-service.js";

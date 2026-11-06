@@ -27,7 +27,7 @@ function manifestTool(
       name,
       inputSchema: { type: "object", properties: {} },
       _meta: { ui: { visibility },
-      ...(operationPolicy ? { "ave/operationPolicy": operationPolicy } : {}),
+      ...(operationPolicy ? { "ai.agent-connector.ave/operationPolicy": operationPolicy } : {}),
     },
   };
   }

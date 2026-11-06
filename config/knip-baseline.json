@@ -279,11 +279,6 @@
     },
     {
       "type": "exports",
-      "file": "src/shared/plugin-partition.ts",
-      "name": "pluginPartitionHash"
-    },
-    {
-      "type": "exports",
       "file": "src/ui/renderer/components/InputActionBar.tsx",
       "name": "makeBottomActionSendHandler"
     },
@@ -341,16 +336,6 @@
       "type": "files",
       "file": "src/data/__tests__/fixtures/secret-store-process-child.ts",
       "name": "src/data/__tests__/fixtures/secret-store-process-child.ts"
-    },
-    {
-      "type": "files",
-      "file": "src/floating-dock-window.js",
-      "name": "src/floating-dock-window.js"
-    },
-    {
-      "type": "files",
-      "file": "src/plugin-ui-shell.js",
-      "name": "src/plugin-ui-shell.js"
     },
     {
       "type": "files",

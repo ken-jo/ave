@@ -21,6 +21,7 @@ const identity = readRepositoryIdentity(root);
 // Exclusions must match tracked paths; a trailing slash denotes a prefix.
 const NOT_CHECKED: ReadonlyArray<readonly [string, string]> = [
   ["CHANGELOG.md", "release history"],
+  ["web/public/schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json", "immutable released protocol artifact"],
   ["docs/architecture/", "historical design records, including consumed ones"],
   ["docs/blueprints/", "historical design records"],
   ["docs/design/", "historical design records"],
@@ -197,7 +198,7 @@ describe("repository identity source of truth", () => {
   });
 
   it("reads a quoted repository path but not a quoted protocol name", () => {
-    expect(NOTIFICATION_NAMESPACES).toEqual(["notifications/ave/"]);
+    expect(NOTIFICATION_NAMESPACES).toEqual(["notifications/ai.agent-connector.ave/"]);
     expect(repositoryReferences(`const old = "ave-project/ave/releases/latest";`)).toEqual([
       { named: "ave-project/ave", index: 12 },
     ]);
@@ -206,7 +207,7 @@ describe("repository identity source of truth", () => {
     ]);
     expect(repositoryReferences(`method: "${HOST_PROTOCOL_NOTIFICATIONS.subscription}"`)).toEqual([]);
     expect(repositoryReferences("const target = `refs/ave/${localRef}`;")).toEqual([]);
-    expect(repositoryReferences(`join(ROOT, "methods/ave/host/storage/read.json")`)).toEqual([]);
+    expect(repositoryReferences(`join(ROOT, "methods/ai.agent-connector.ave/host/storage/read.json")`)).toEqual([]);
     // A golden-directory prefix does not exempt paths outside method fixtures.
     expect(repositoryReferences(`"methods/ave/releases"`)).toEqual([{ named: "methods/ave", index: 0 }]);
   });

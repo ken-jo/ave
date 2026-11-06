@@ -62,7 +62,6 @@ interface RecordedFrame {
 /** The transcript must call every surveyed wire member; child-local methods produce no frames. */
 const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
   "sampleassistant": [
-    "onEvent",
     "config.onChange",
     "config.set",
     "hasRoutineBySource",
@@ -322,7 +321,7 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
 });
 
 describe("one request/response pair per method", () => {
-  it("covers every ave/host method and every ave/instance method, and nothing else", async () => {
+  it("covers every ai.agent-connector.ave/host method and every ai.agent-connector.ave/instance method, and nothing else", async () => {
     const frames = await recordInvokerConversation();
 
     const methods = [
@@ -378,15 +377,15 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     overrides: {
       getSecret: throwing(() => new HostApiBoundaryError("plugin-inactive", inactiveHostApiMessage("golden-invoker", "hostApi.getSecret"))),
     },
-    provoke: byHand("ave/host/getSecret", { key: "service.token" }),
+    provoke: byHand("ai.agent-connector.ave/host/getSecret", { key: "service.token" }),
   },
   "path-unknown": {
     trigger: "a method no hostApi member is spelled as",
-    provoke: byHand("ave/host/noSuchMember", {}),
+    provoke: byHand("ai.agent-connector.ave/host/noSuchMember", {}),
   },
   "path-not-dispatchable": {
     trigger: "a child-local member sent as a request",
-    provoke: byHand("ave/host/config/get", { key: "region" }),
+    provoke: byHand("ai.agent-connector.ave/host/config/get", { key: "region" }),
   },
   "path-not-implemented": {
     trigger: "a host build without the optional hostFetch member",
@@ -395,7 +394,7 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
   },
   "argument-marshalling-rejected": {
     trigger: "params sent as an array instead of an object",
-    provoke: byHand("ave/host/getSecret", ["service.token"]),
+    provoke: byHand("ai.agent-connector.ave/host/getSecret", ["service.token"]),
   },
   "result-marshalling-rejected": {
     trigger: "a void member whose host implementation returned a value",
@@ -408,14 +407,14 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     provoke: throughStub("hostFetch"),
   },
   "subscription-unknown": {
-    trigger: "a host event bus that delivers to a listener before its registration is adopted",
+    trigger: "a config source that delivers before its registration is adopted",
     overrides: {
-      onEvent: (_type: string, handler: (data: unknown) => void) => {
+      "config.onChange": (_key: string, handler: (data: unknown) => void) => {
         handler({ replayed: true });
         return () => undefined;
       },
     },
-    provoke: throughStub("onEvent"),
+    provoke: throughStub("config.onChange"),
   },
   "rate-limited": {
     trigger: "the in-flight ceiling was exhausted before the host method ran",
@@ -423,11 +422,11 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
       for (let index = 0; index < 220; index += 1) {
         session.sendAsChild({
           jsonrpc: "2.0", id: `budget-${index}`,
-          method: "ave/host/hasRoutineBySource", params: { source: "nightly" },
+          method: "ai.agent-connector.ave/host/hasRoutineBySource", params: { source: "nightly" },
         });
       }
       await settle();
-      return lastRequest(session.frames, "ave/host/hasRoutineBySource");
+      return lastRequest(session.frames, "ai.agent-connector.ave/host/hasRoutineBySource");
     },
   },
   "effect-boundary-denied": {
@@ -447,13 +446,13 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
   "worker-control-failed": {
     trigger: "a stdio-control worker that never answered the hello",
     overrides: {
-      spawnWorker: throwing(() => new WorkerControlFailedError("[worker-spawn] worker:golden-invoker:indexer: no answer to $/ave/hello within 60000ms")),
+      spawnWorker: throwing(() => new WorkerControlFailedError("[worker-spawn] worker:golden-invoker:indexer: no answer to $/ai.agent-connector.ave/hello within 60000ms")),
     },
     provoke: throughStub("spawnWorker"),
   },
   "credential-conflict": {
     trigger: "a malformed credential selector",
-    provoke: byHand("ave/host/hostFetch", { input: "https://example.com", init: { auth: { token: "x" } } }),
+    provoke: byHand("ai.agent-connector.ave/host/hostFetch", { input: "https://example.com", init: { auth: { token: "x" } } }),
   },
   "lease-unavailable": {
     trigger: "a lease that is no longer live",
@@ -760,7 +759,7 @@ describe("one conversation per installed plugin's surface", () => {
         frames
           .filter((recorded) => recorded.from === "child" && "id" in recorded.frame)
           .map((recorded) => String(recorded.frame.method))
-          .filter((method) => method.startsWith("ave/host/")),
+          .filter((method) => method.startsWith("ai.agent-connector.ave/host/")),
       );
       expect([...reached].sort()).toEqual(survey.map((path) => hostApiMethodOf(path)).sort());
       await expect(goldenJsonl(frames)).toMatchFileSnapshot(join(dir, "expected.jsonl"));
@@ -902,7 +901,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
       expect((frame.params as { _meta?: unknown })._meta).toEqual({
         "io.modelcontextprotocol/clientCapabilities": {},
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-        ...(frame.method === "tools/call" ? { "ave/invocation": expect.stringMatching(/^<uuid-\d+>$/u) } : {}),
+        ...(frame.method === "tools/call" ? { "ai.agent-connector.ave/invocation": expect.stringMatching(/^<uuid-\d+>$/u) } : {}),
       });
       const reply = recorded.find((candidate) => candidate.from === "child" && candidate.frame.id === frame.id);
       expect(reply?.frame, String(frame.method)).toHaveProperty("result");
@@ -956,7 +955,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
         expect((replies.get(id) as { error?: { code?: number } } | undefined)?.error?.code, id).toBe(-32602);
       }
       expect(replies.get("both")).toMatchObject({
-        result: { _meta: { "ave/rawResult": { echoed: { said: "both" } } }, isError: false },
+        result: { _meta: { "ai.agent-connector.ave/rawResult": { echoed: { said: "both" } } }, isError: false },
       });
     } finally {
       rmSync(pluginRoot, { recursive: true, force: true });

@@ -14,11 +14,10 @@ const BASE_FILES = [
   "src/api/index.ts",
   "src/sdk/index.ts",
   "src/cli/index.ts",
-  "src/plugin-preload.ts",
+  "src/mcp-app-preload.ts",
   "src/floating-dock-preload.ts",
   "src/boot/bootstrap-status.ts",
   "src/boot/plugins.ts",
-  "src/boot/steps/ipc-bridge.ts",
   "src/boot/steps/post-boot.ts",
 ] as const;
 
@@ -45,7 +44,7 @@ afterEach(() => {
 describe("check-no-inline-channels", () => {
   it("accepts contract constant references", () => {
     const root = createRoot();
-    write(root, "src/plugin-preload.ts", "ipcRenderer.invoke(CHANNELS.pluginBridge.callTool);\n");
+    write(root, "src/mcp-app-preload.ts", "ipcRenderer.invoke(CHANNELS.mcp.callTool);\n");
 
     const result = runGateScript(SCRIPT, root);
 
@@ -54,7 +53,7 @@ describe("check-no-inline-channels", () => {
   });
 
   it.each([
-    ["src/plugin-preload.ts", "ave:plugin:call-tool"],
+    ["src/mcp-app-preload.ts", "ave:plugin:call-tool"],
     ["src/preload/internal-surface.ts", "marketplace:updates-available"],
     ["src/preload/internal-surface.ts", "marketplace:future-event"],
     ["src/ipc/domains/example.ts", "window:minimize"],
@@ -70,7 +69,7 @@ describe("check-no-inline-channels", () => {
 
   it("rejects no-substitution and interpolated template channel literals", () => {
     const root = createRoot();
-    write(root, "src/plugin-preload.ts", [
+    write(root, "src/mcp-app-preload.ts", [
       "const direct = `ave:plugin:event`;",
       "const dynamic = `ave:plugin:${kind}`;",
       "const marketplace = `marketplace:${kind}`;",
@@ -80,22 +79,22 @@ describe("check-no-inline-channels", () => {
     const result = runGateScript(SCRIPT, root);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr.match(/src\/plugin-preload\.ts:\d+ inline channel literal/g)).toHaveLength(3);
+    expect(result.stderr.match(/src\/mcp-app-preload\.ts:\d+ inline channel literal/g)).toHaveLength(3);
   });
 
   it("rejects statically concatenated channel literals", () => {
     const root = createRoot();
-    write(root, "src/plugin-preload.ts", "const channel = 'ave' + ':plugin:event';\n");
+    write(root, "src/mcp-app-preload.ts", "const channel = 'ave' + ':plugin:event';\n");
 
     const result = runGateScript(SCRIPT, root);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("src/plugin-preload.ts:1 inline channel literal");
+    expect(result.stderr).toContain("src/mcp-app-preload.ts:1 inline channel literal");
   });
 
   it("ignores channel-like text in comments", () => {
     const root = createRoot();
-    write(root, "src/plugin-preload.ts", "// `ave:plugin:event` is documented here.\n");
+    write(root, "src/mcp-app-preload.ts", "// `ave:plugin:event` is documented here.\n");
 
     expect(runGateScript(SCRIPT, root).status).toBe(0);
   });

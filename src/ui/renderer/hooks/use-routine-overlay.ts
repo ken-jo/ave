@@ -16,6 +16,7 @@ import type { TranslateFn } from "../../../i18n/translate.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { isSuggestionsSession } from "../../../shared/suggestions-session.js";
 import { parseSettingsPath, type SettingsPath } from "../../../shared/settings-tabs.js";
+import { parseStagedEnvelopePayload } from "../../../shared/staged-origins.js";
 import type { OnboardingProposalDisposition } from "../../../main/onboarding-proposal-store.js";
 
 type Api = ReturnType<typeof getApi>;
@@ -50,6 +51,7 @@ export function useRoutineOverlay({
   registry,
   onNavigateToSettings,
   onSuggestionStaged,
+  getFocusedChatGroupId,
 }: {
   api: Api;
   t: TranslateFn;
@@ -62,6 +64,7 @@ export function useRoutineOverlay({
   /** A card addressed to the dedicated Suggestions conversation arrived. Main made that conversation exist (or moved it up)
    * before sending, so the window re-reads its list: the row has to be listed for the card to mark it. */
   onSuggestionStaged: () => void;
+  getFocusedChatGroupId?: () => string;
 }): UseRoutineOverlayResult {
   // runningRoutines tracks in-flight LLM sessions.
   const [runningRoutines, setRunningRoutines] = useState<Set<string>>(new Set());
@@ -70,6 +73,8 @@ export function useRoutineOverlay({
   // prop-drilling
   const addFireRef = useRef<OverlayContextValue["addFire"] | null>(null);
   const dismissRef = useRef<OverlayContextValue["dismiss"] | null>(null);
+  const focusedGroupReaderRef = useRef(getFocusedChatGroupId);
+  focusedGroupReaderRef.current = getFocusedChatGroupId;
   const onSuggestionStagedRef = useRef(onSuggestionStaged);
   useEffect(() => {
     onSuggestionStagedRef.current = onSuggestionStaged;
@@ -165,6 +170,24 @@ export function useRoutineOverlay({
   useEffect(() => {
     if (typeof api.onOverlayShow !== "function") return;
     const show = (incoming: OverlayItem): void => {
+      if (incoming.source.kind === "app" && incoming.composerDraft === true) {
+        const groupId = focusedGroupReaderRef.current?.();
+        const tile = groupId ? registry.read(groupId) : undefined;
+        const envelope = incoming.pendingPrompt && parseStagedEnvelopePayload(incoming.pendingPrompt);
+        if (!tile || !envelope || envelope.kind.inputOrigin !== "app-emitted") {
+          console.warn("[ave] app draft has no valid composer target");
+          return;
+        }
+        const stageDraft = async () => {
+          if (!tile.currentSessionId) {
+            await tile.startNewChat(undefined, { draft: envelope.body, appSource: envelope.source });
+            return;
+          }
+          tile.stageAppMessage(envelope.body, envelope.source);
+        };
+        void stageDraft().catch((err) => console.warn("[ave] app draft failed:", errorMessage(err)));
+        return;
+      }
       // The lookup handlePluginPrimaryAction reads by id; the queue takes the same (routed) object, so the confirm resolves the
       // same conversation the card is drawn in.
       const item = stage(incoming);
@@ -203,7 +226,7 @@ export function useRoutineOverlay({
       finishPull();
     }
     return () => { pulled = false; finishPull(); unsubShow(); unsubDismiss(); };
-  }, [api, stage]);
+  }, [api, stage, registry]);
 
   // User confirmation gates staged plugin and app prompts; preserve envelope provenance and retain the item lookup after
   // queue dismissal.

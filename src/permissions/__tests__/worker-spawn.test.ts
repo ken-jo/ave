@@ -302,7 +302,7 @@ describe("spawnWorker — gate OFF (default)", () => {
         while ((newline = pending.indexOf("\n")) >= 0) {
           const frame = JSON.parse(pending.slice(0, newline)) as { id?: number; method?: string; params?: unknown };
           pending = pending.slice(newline + 1);
-          if (frame.method === "$/ave/hello") {
+          if (frame.method === "$/ai.agent-connector.ave/hello") {
             child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: { protocol: "ave-worker-stdio-control", version: "1" } })}\n`);
           } else if (frame.method === "echo") {
             child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: frame.params })}\n`);
@@ -556,7 +556,7 @@ describe("spawnWorker — control mode", () => {
       for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
         const frame = JSON.parse(line) as Record<string, unknown>;
         hostFrames.push(frame);
-        if (frame.method === "$/ave/hello") {
+        if (frame.method === "$/ai.agent-connector.ave/hello") {
           child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: { protocol: "ave-worker-stdio-control", version: "1" } })}\n`);
         } else if (frame.method === "echo") {
           child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: frame.id, result: frame.params })}\n`);
@@ -567,7 +567,7 @@ describe("spawnWorker — control mode", () => {
     const worker = await spawnWorker({ ...workerOptions(), control: "stdio-control-v1" });
 
     expect(worker.control).toBe("stdio-control-v1");
-    expect(hostFrames[0]).toMatchObject({ jsonrpc: "2.0", id: 0, method: "$/ave/hello", params: { protocol: "ave-worker-stdio-control", versions: ["1"] } });
+    expect(hostFrames[0]).toMatchObject({ jsonrpc: "2.0", id: 0, method: "$/ai.agent-connector.ave/hello", params: { protocol: "ave-worker-stdio-control", versions: ["1"] } });
     await expect(worker.request("echo", { n: 1 })).resolves.toEqual({ n: 1 });
     expect("onStdout" in worker).toBe(false);
     worker.stop();
@@ -948,7 +948,7 @@ describe("spawnWorker — Windows with gate ON", () => {
 
     const pluginDataDir = join(aveHome(), "plugins", "local-indexer", "data");
     const indexDir = join(pluginDataDir, "index");
-    const workerScript = "C:/ave/local-indexer/dist/worker/local_indexer_worker.py";
+    const workerScript = "C:/ai.agent-connector.ave/local-indexer/dist/worker/local_indexer_worker.py";
     const pythonExecutable = "C:/Python/python.exe";
     const worker = await (async () => {
       try {

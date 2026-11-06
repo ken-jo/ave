@@ -2,10 +2,10 @@
   "request": {
     "id": 1,
     "jsonrpc": "2.0",
-    "method": "ave/host/hostFetch",
+    "method": "ai.agent-connector.ave/host/hostFetch",
     "params": {
       "_meta": {
-        "ave/invocation": "<uuid-1>"
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
       },
       "init": {
         "body": {

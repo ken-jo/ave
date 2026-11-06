@@ -1,0 +1,21 @@
+{
+  "request": {
+    "id": 25,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/authRedirect/open",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      }
+    }
+  },
+  "response": {
+    "id": 25,
+    "jsonrpc": "2.0",
+    "result": {
+      "handle": "redirect-1",
+      "redirectUri": "http://127.0.0.1:43110/callback",
+      "state": "the-state"
+    }
+  }
+}

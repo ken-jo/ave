@@ -2,7 +2,7 @@
   "request": {
     "id": "hand-built",
     "jsonrpc": "2.0",
-    "method": "ave/host/config/get",
+    "method": "ai.agent-connector.ave/host/config/get",
     "params": {
       "key": "region"
     }

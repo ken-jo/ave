@@ -67,8 +67,6 @@ import type {
 } from "../../../plugins/types.js";
 import type { SettingsService } from "../../../data/settings-store.js";
 import type { RoutinesStore } from "../../../main/routines-store.js";
-import { onEvent } from "../../types.js";
-import { emitPluginUiEvent } from "../../../plugins/ui-events.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
 import { incrementHostSecretCounter, sanitizeKeyPrefix } from "../../../telemetry/host-secret-counters.js";
@@ -573,17 +571,6 @@ export function createHostApiFactory(
           // Remove config listeners when the plugin is disabled.
           return registerOwnedDisposer(unsubscribe);
         },
-      },
-      emitEvent: (type, data) => {
-        emitPluginUiEvent(pluginId, type, data);
-      },
-      onEvent: (type, handler) => {
-        pluginRuntime.assertPluginEventAccess(pluginId, type);
-        const dispatch = (data: unknown) => {
-          if (acceptsHostNotification()) handler(data);
-        };
-        const guarded = hostEffects ? hostEffects.wrapListener(dispatch) : dispatch;
-        return registerOwnedDisposer(onEvent(type, (data) => { guarded(data); }));
       },
       // Return opaque host leases unless raw exposure was explicitly reviewed.
       resolveApiKey: async (opts) => {

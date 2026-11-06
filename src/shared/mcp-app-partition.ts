@@ -46,7 +46,7 @@ export function isMcpAppUiUri(value: unknown): value is string {
   return !hasUnsafeUriChars(value);
 }
 
-/** Hex-encode UTF-8 injectively and reject empty or oversized ids. */
+/** Prefix injective UTF-8 hex tokens so numeric ids remain valid URL authorities. */
 export function encodeMcpServerId(serverId: string): string {
   if (typeof serverId !== "string" || serverId.length === 0) {
     throw new Error("[mcp-app-partition] serverId must be a non-empty string");
@@ -61,7 +61,7 @@ export function encodeMcpServerId(serverId: string): string {
   for (const b of bytes) {
     hex += b.toString(16).padStart(2, "0");
   }
-  return hex;
+  return `s-${hex}`;
 }
 
 /** Per-server ephemeral session partition (no `persist:` ⇒ in-memory). */

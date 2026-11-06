@@ -9,14 +9,14 @@ import {
 import type { McpUiResourcePermissions } from "../../mcp/types.js";
 
 describe("the host capability table", () => {
-  it("carries ONLY the features proven to work end-to-end (camera, microphone, geolocation)", () => {
+  it("carries the supported declared features, including write-only clipboard access", () => {
     expect(MCP_APP_PERMISSION_FEATURES.map((f) => f.key)).toEqual([
       "camera",
       "microphone",
       "geolocation",
+      "clipboardWrite",
     ]);
-    // clipboardWrite is deliberately excluded — measured denied even when delegated.
-    expect(MCP_APP_PERMISSION_FEATURES.some((f) => f.key === "clipboardWrite")).toBe(false);
+    expect(MCP_APP_PERMISSION_FEATURES.some((f) => f.key === "clipboardWrite")).toBe(true);
   });
 });
 
@@ -33,9 +33,9 @@ describe("buildMcpAppAllowAttr — the host-computed inner-frame allow-list", ()
     expect(buildMcpAppAllowAttr({})).toBe("");
   });
 
-  it("a spec feature the host cannot honor (clipboardWrite) is NEVER delegated, even if declared", () => {
-    expect(buildMcpAppAllowAttr({ clipboardWrite: {} })).toBe("");
-    expect(buildMcpAppAllowAttr({ camera: {}, clipboardWrite: {} })).toBe("camera");
+  it("delegates clipboard writing only when declared", () => {
+    expect(buildMcpAppAllowAttr({ clipboardWrite: {} })).toBe("clipboard-write");
+    expect(buildMcpAppAllowAttr({ camera: {}, clipboardWrite: {} })).toBe("camera; clipboard-write");
   });
 });
 
@@ -51,9 +51,15 @@ describe("isElectronPermissionGranted — the fail-closed session decision", () 
     expect(isElectronPermissionGranted(undefined, "geolocation")).toBe(false);
     expect(isElectronPermissionGranted({}, "geolocation")).toBe(false);
     expect(isElectronPermissionGranted({ geolocation: {} }, "notifications")).toBe(false);
-    expect(isElectronPermissionGranted({ clipboardWrite: {} }, "clipboard-sanitized-write")).toBe(
-      false,
-    );
+    expect(isElectronPermissionGranted({}, "clipboard-sanitized-write")).toBe(false);
+  });
+
+  it("grants declared clipboard writes while refusing every clipboard read permission", () => {
+    const permissions = { clipboardWrite: {} };
+    expect(isElectronPermissionGranted(permissions, "clipboard-sanitized-write")).toBe(true);
+    expect(isElectronPermissionGranted(permissions, "clipboard-read")).toBe(false);
+    expect(isElectronPermissionGranted(permissions, "deprecated-sync-clipboard-read")).toBe(false);
+    expect(buildMcpAppAllowAttr(permissions)).not.toContain("clipboard-read");
   });
 
   it("media-kind split: a mic-only card gets its mic and is DENIED the camera (and vice versa)", () => {
@@ -93,9 +99,10 @@ describe("isElectronPermissionGranted — the fail-closed session decision", () 
 });
 
 describe("declaredFeatures", () => {
-  it("filters to declared, table-known keys (drops clipboardWrite and unknowns)", () => {
+  it("filters to declared, table-known keys", () => {
     expect(declaredFeatures({ camera: {}, clipboardWrite: {} }).map((f) => f.key)).toEqual([
       "camera",
+      "clipboardWrite",
     ]);
     expect(declaredFeatures(undefined)).toEqual([]);
     expect(declaredFeatures({})).toEqual([]);

@@ -20,28 +20,10 @@ test("resolveBuildAssets exposes one SOT for build and dev watched assets", () =
       [
         ["app-shell", "index.html", "src/index.html", "dist/src/index.html"],
         [
-          "plugin-shell",
-          "plugin-ui-shell.html",
-          "src/plugin-ui-shell.html",
-          "dist/src/plugin-ui-shell.html",
-        ],
-        [
-          "plugin-shell",
-          "plugin-ui-shell.js",
-          "src/plugin-ui-shell.js",
-          "dist/src/plugin-ui-shell.js",
-        ],
-        [
           "floating-dock",
           "floating-dock-window.html",
           "src/floating-dock-window.html",
           "dist/src/floating-dock-window.html",
-        ],
-        [
-          "floating-dock",
-          "floating-dock-window.js",
-          "src/floating-dock-window.js",
-          "dist/src/floating-dock-window.js",
         ],
         [
           "audio-capture",

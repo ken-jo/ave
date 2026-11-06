@@ -1,38 +1,7 @@
-/**
- * Preload for the floating dock's own window.
- *
- * DELIBERATELY NOT the host preload. `preload.ts` composes the full host API —
- * settings, conversations, secrets, the lot — because the app window needs it.
- * The dock needs six things, and giving a persistent always-on-top window the
- * whole surface because it happens to be first-party is how a small window
- * quietly becomes a second app.
- *
- * What it exposes, and why each one is here:
- *
- *   `pluginShellUrl` / `pluginPreloadUrl` — the dock mounts plugin cards as
- *     `<webview>`s pointed at the same shell the sidebar uses. Main resolves
- *     them (`runtimeAssetPath`) and passes them as window arguments, because
- *     this sandboxed preload cannot load `node:path` to resolve them itself.
- *   `ensurePartition` / `registerWebview` — the existing plugin-UI handshake,
- *     unchanged. Main re-validates the entry URL against the install root, so
- *     the dock renderer asking is not the dock renderer being trusted.
- *   `onTheme` — the dock's own chrome paints from the theme main sends: the
- *     current one when the window opens, then each later one. Not the plugin
- *     `getTheme` query, whose guard admits plugin frames only.
- *   the dock channels — the host's activity line, slot lifecycle and slot titles.
- *
- * What it does NOT expose: any way to move, resize or re-level the window. The
- * dock's geometry is main's, and a renderer that could change it would undo
- * the bound that makes an always-on-top plugin surface safe to offer.
- */
+/** Narrow host chrome API for standard app panels in the floating dock. */
 import { contextBridge, ipcRenderer } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
-import { readDockAssetArgs } from "./shared/floating-dock-args.js";
-
-// The window is sandboxed: this preload may require only `electron` (no
-// `node:path`), so main resolves the asset URLs and passes them as arguments
-// (`floating-dock-args.ts`).
-const assets = readDockAssetArgs(process.argv);
+import { mcpApiSurface } from "./preload/mcp-api-surface.js";
 
 /** One main-to-dock subscription, returning its own unsubscribe. */
 function subscribe<T>(channel: string, handler: (payload: T) => void): () => void {
@@ -42,26 +11,6 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 }
 
 const dockBridge = {
-  pluginShellUrl: assets.pluginShellUrl,
-  pluginPreloadUrl: assets.pluginPreloadUrl,
-
-  /**
-   * Install a plugin partition's session policy BEFORE its `<webview>` exists.
-   *
-   * A frame binds its URL loader table once, at first load, so the
-   * `ave-plugin:` asset scheme has to be on the session before the guest is
-   * created — installing it afterwards leaves the frame unable to fetch its
-   * own assets for its whole life, with no retry that can help.
-   */
-  ensurePartition: (pluginId: string): Promise<unknown> =>
-    ipcRenderer.invoke(CHANNELS.pluginBridge.ensurePartition, { pluginId }),
-
-  registerWebview: (payload: {
-    webContentsId: number;
-    pluginId: string;
-    entryUrl: string;
-  }): Promise<unknown> => ipcRenderer.invoke(CHANNELS.pluginBridge.registerWebview, payload),
-
   onActivity: (handler: (activity: unknown) => void) =>
     subscribe(CHANNELS.dock.activity, handler),
   onMount: (handler: (slot: unknown) => void) => subscribe(CHANNELS.dock.mount, handler),
@@ -93,3 +42,17 @@ const dockBridge = {
 contextBridge.exposeInMainWorld("aveDock", dockBridge);
 
 export type AveDockBridge = typeof dockBridge;
+
+const appMcp = {
+  readUiResource: mcpApiSurface.readUiResource,
+  callTool: mcpApiSurface.callTool,
+  postUiMessage: mcpApiSurface.postUiMessage,
+  downloadFile: mcpApiSurface.downloadFile,
+  postUiModelContext: mcpApiSurface.postUiModelContext,
+  disposeUiSession: mcpApiSurface.disposeUiSession,
+  onServerDisconnected: mcpApiSurface.onServerDisconnected,
+};
+contextBridge.exposeInMainWorld("ave", { mcp: appMcp });
+contextBridge.exposeInMainWorld("aveApi", {
+  openExternalUrl: (url: string) => ipcRenderer.invoke(CHANNELS.shell.openExternal, url),
+});

@@ -84,6 +84,7 @@ const renderer = {
   target: ["web", "es2022"],
   entry: {
     renderer: path.resolve(rootDir, "src/renderer.tsx"),
+    "floating-dock-window": path.resolve(rootDir, "src/floating-dock-window.tsx"),
   },
   experiments: {
     outputModule: true,

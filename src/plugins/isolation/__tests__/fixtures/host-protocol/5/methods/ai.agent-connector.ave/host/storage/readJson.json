@@ -1,0 +1,20 @@
+{
+  "request": {
+    "id": 3,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/storage/readJson",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "relPath": "state.json"
+    }
+  },
+  "response": {
+    "id": 3,
+    "jsonrpc": "2.0",
+    "result": {
+      "stored": true
+    }
+  }
+}

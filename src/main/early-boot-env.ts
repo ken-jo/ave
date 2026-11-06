@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { app, protocol, shell } from "electron";
 import { createLogger } from "../lib/logger.js";
 import { ensureWorkspaceCwd } from "./ensure-workspace-cwd.js";
-import { PLUGIN_ASSET_CUSTOM_SCHEME } from "./plugin-asset-protocol.js";
 import { MCP_APP_CUSTOM_SCHEME } from "./mcp-app-protocol.js";
 import { CONTENT_ASSET_CUSTOM_SCHEME } from "./content-asset-protocol.js";
 import { scrubPackagedProcessEnv } from "./packaged-env-scrub.js";
@@ -62,7 +61,7 @@ export function runEarlyBootEnv(): void {
 
   // Electron takes the privileged schemes in a single call before `app.ready`. The MCP-app sandbox-proxy document needs `standard: true` for a real
   // origin; installed fonts and theme previews load from `ave-content:`.
-  protocol.registerSchemesAsPrivileged([PLUGIN_ASSET_CUSTOM_SCHEME, MCP_APP_CUSTOM_SCHEME, CONTENT_ASSET_CUSTOM_SCHEME]);
+  protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME, CONTENT_ASSET_CUSTOM_SCHEME]);
 
   if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
     app.commandLine.appendSwitch("enable-features", "UseOzonePlatform");

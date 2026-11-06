@@ -7,7 +7,7 @@ import { mainDir } from "./main-paths.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
-import { configureMainWindowWebviewAttach } from "./plugin-webview-attach.js";
+import { configureMainWindowWebviewAttach } from "./webview-attach.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
 import { getLastThemePayload } from "../shared/plugin-theme-cache.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
@@ -290,8 +290,4 @@ export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidde
 // Every open main window — the broadcast target set (see `app-state.ts`).
 export function getAppWindows(): BrowserWindow[] {
   return getMainWindows();
-}
-
-export function registerMainWindowPluginEventBridge(win: BrowserWindow): void {
-  getServices()?.registerPluginEventBridge?.(win);
 }
