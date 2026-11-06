@@ -10,8 +10,8 @@ export function windowsProfileEnv(profile: string | undefined, platform: NodeJS.
   return { APPDATA: appData };
 }
 
-/** The env a launch passes on: the defined entries of `env`, never LOCALAPPDATA on Windows. Without it srt-win refuses to start; started, it would
- * stamp the real account profile (policyHomeAnchors includes accountHome). */
+/** The env a launch passes on: the defined entries of `env`, never LOCALAPPDATA on Windows. srt-win keeps its state DB under it and refuses to start
+ * without it; started, it would stamp the real account profile (policyHomeAnchors includes accountHome). */
 export function launchBaseEnv(env: Record<string, string | undefined>, platform: NodeJS.Platform = process.platform): Record<string, string> {
   const base: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
