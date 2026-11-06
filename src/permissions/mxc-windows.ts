@@ -4,6 +4,7 @@ import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
+import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
 
@@ -622,7 +623,7 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
 // The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.
 export function powerShellMxcCommandLine(systemRoot: string, command: string): string {
   const encoded = Buffer.from(command, "utf16le").toString("base64");
-  return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand ${encoded}`;
+  return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" ${WIN32_POWERSHELL_STARTUP_ARGS.join(" ")} -EncodedCommand ${encoded}`;
 }
 
 // Why the Bash tool does not run under MXC, for the tool result.

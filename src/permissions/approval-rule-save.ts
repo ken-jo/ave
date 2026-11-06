@@ -77,7 +77,7 @@ function decidesRequest(target: Target, pattern: string, action: "allow" | "deny
     const command = target.snapshot.args && typeof target.snapshot.args === "object"
       ? (target.snapshot.args as Record<string, unknown>).command : undefined;
     if (typeof command !== "string") return false;
-    return shellRuleCoversCommand(target.context.dialect, pattern, action, command, target.context.projectCwd, target.snapshot.verifiedShellCommand);
+    return shellRuleCoversCommand(target.context.dialect, pattern, action, command, target.context.projectCwd, target.snapshot.verifiedShellCommand, target.snapshot.hostShellExecutionPlan);
   }
   if (maskSensitiveData(pattern).masked !== pattern) return false;
   const spec = parseRuleSpecifier(pattern);

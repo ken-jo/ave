@@ -45,7 +45,7 @@ const NATIVE_GRAMMARS: Readonly<Record<string, ArgumentGrammar>> = Object.freeze
   rm: { flags: ["-r", "-R", "-f", "-i", "-v", "-d", "--recursive", "--force"], minimum: 1, changesState: true },
   curl: { configuration: { disabledByFirstArgument: ["-q", "--disable"] }, flags: ["-s", "-S", "-f", "-L", "-k", "-v", "-i", "-I", "-N", "-q", "-g", "--disable", "--silent", "--show-error", "--fail", "--location", "--insecure", "--head"], values: ["-X", "-H", "-d", "-F", "-T", "-o", "-u", "-w", "--request", "--header", "--proxy-header", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--upload-file", "--output", "--user", "--write-out", "--url", "--proxy", "--connect-timeout", "--max-time"], minimum: 1, changesState: true },
 });
-interface CmdletGrammar extends ArgumentGrammar { numeric?: readonly string[] }
+interface CmdletGrammar extends ArgumentGrammar { numeric?: readonly string[]; literals?: Readonly<Record<string, readonly string[]>> }
 const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.freeze({
   "write-output": { flags: ["noenumerate"], values: ["inputobject"] },
   "write-host": { flags: ["nonewline"], values: ["separator", "foregroundcolor", "backgroundcolor", "object"] },
@@ -58,6 +58,7 @@ const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.free
   "test-path": { flags: ["isvalid"], values: ["path", "literalpath", "pathtype"], maximum: 1, required: [["path", "literalpath", "#0"]] },
   "select-string": { flags: ["simplematch", "casesensitive", "quiet", "list", "notmatch", "allmatches"], values: ["pattern", "path", "literalpath", "encoding"], required: [["pattern", "#0"]] },
   "set-content": { flags: ["force", "nonewline", "passthru"], values: ["path", "literalpath", "value", "encoding"], minimum: 0, maximum: 2, changesState: true, required: [["path", "literalpath", "#0"], ["value", "#1"]] },
+  "new-item": { values: ["path", "itemtype"], literals: { itemtype: ["directory"] }, maximum: 1, changesState: true, required: [["path", "#0"], ["itemtype"]] },
   "add-content": { flags: ["force", "nonewline", "passthru"], values: ["path", "literalpath", "value", "encoding"], maximum: 2, changesState: true, required: [["path", "literalpath", "#0"], ["value", "#1"]] },
   "out-file": { flags: ["append", "force", "noclobber", "nonewline"], values: ["filepath", "literalpath", "encoding", "width", "inputobject"], maximum: 1, changesState: true, required: [["filepath", "literalpath", "#0"]] },
   "copy-item": { flags: ["recurse", "force", "passthru"], values: ["path", "literalpath", "destination"], maximum: 2, changesState: true, required: [["path", "literalpath", "#0"]] },
@@ -99,6 +100,8 @@ function matchArgumentGrammar(argv: readonly (string | undefined)[], from: numbe
       const value = attached ?? read(++index);
       if (value === undefined || (attached === undefined && isParameter(index, value) && !/^-?\d+$/.test(value))) return false;
       if ((grammar as CmdletGrammar).numeric?.includes(name) && !/^-?\d+$/.test(value)) return false;
+      const literals = (grammar as CmdletGrammar).literals?.[name];
+      if (literals !== undefined && !literals.includes(value.toLowerCase())) return false;
       continue;
     }
     const equal = token.indexOf("="), flag = equal < 0 ? token : token.slice(0, equal);

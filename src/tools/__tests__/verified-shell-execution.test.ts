@@ -33,7 +33,9 @@ vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
-vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true }));
+vi.mock("../../shared/powershell-startup-policy.js", async original => ({
+  ...await original<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => true,
+}));
 
 const ORIGINAL_PLATFORM = process.platform;
 const nativeChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");

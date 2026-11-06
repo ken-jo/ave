@@ -733,6 +733,8 @@ jobs:
           src/permissions/__tests__/shell-native-path-floors.test.ts
           src/shared/__tests__/shell-native-path.test.ts
           src/permissions/__tests__/powershell-exfiltration.test.ts
+          src/permissions/__tests__/powershell-mxc-startup-decisions.test.ts
+          src/permissions/__tests__/powershell-decision-matrix.test.ts
           src/tools/__tests__/powershell-exfiltration-gate.test.ts
           src/permissions/__tests__/powershell-unc-write-boundary.test.ts
           src/permissions/__tests__/encoded-bypass-battery.test.ts

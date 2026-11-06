@@ -18,11 +18,12 @@ import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
-import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildIssuedHostShellExecutionPlan as buildHostShellExecutionPlan } from "../../__tests__/support/issued-host-shell-plan.js";
 import { mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { definitelyTraversesPowerShellRecursively, mayTraversePowerShellRecursively } from "../rules/powershell-exfiltration.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+
 
 let root: string;
 let dir: string;
@@ -241,7 +242,7 @@ describe("shell confinement and escape rules", () => {
       expect(mayTraversePowerShellRecursively(command)).toBe(true);
       const result = checkPowerShell(command);
       const staticGrammar = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2", "Copy-Item src out -Recurse"].includes(command);
-      const staticConfined = staticGrammar && process.platform !== "win32";
+      const staticConfined = staticGrammar;
       const readOnlyListing = ["Get-ChildItem -Recurse src", "Get-ChildItem src -Depth 2"].includes(command);
       expect(result).toMatchObject(readOnlyListing ? { decision: "allow", reasonCode: "read-only-shell" } : staticConfined
         ? { decision: "allow", reasonCode: "sandboxed-shell" }
