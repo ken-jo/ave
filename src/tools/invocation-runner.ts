@@ -1722,6 +1722,16 @@ export async function runToolInvocation(
               : suggestedParent ?? outOfAllowedTarget.filePath)
           : outOfAllowedTarget.filePath;
         if (decision.choice === "allow-always" && !persistRefused) {
+          // Persist no folder rule unless its grant audit is durable.
+          await services.auditWriter.auditPermissionGrant({
+            toolName: toolUse.name,
+            source,
+            category: invocationCategory,
+            directory: approvedDirectory,
+            grantLifetime: "always",
+            permissionContext: invocationPermissionContext,
+            audit: currentAuditMetadata(),
+          });
           let lifecycle: PermissionDirectoryLifecycle | undefined;
           try {
             lifecycle = services.workspaceRootLifecycleProvider();
@@ -1845,11 +1855,7 @@ export async function runToolInvocation(
         await emitGrantAudit("session");
         return;
       }
-      // "always" — dispatchPermissionDirCommand already persisted the rule
-      // inside requestOutOfAllowedDirectoryAccess; emit the audit row here
-      // so forensic replay sees a unified grant timeline across all three
-      // lifetimes.
-      await emitGrantAudit("always");
+      // Persistent grants were audited before the folder rule was saved.
     };
 
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined

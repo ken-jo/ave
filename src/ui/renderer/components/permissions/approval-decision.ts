@@ -148,8 +148,8 @@ export function exactDecisionModel(input: {
   };
 }
 
-/** A folder-access card: always allowing the parent folder is its one remembering allow (when the host found a safe parent), labelled for the folder. Always deny is an exact deny of this request, edited in Settings, as for an exact tool approval, and refused where the exact-approval store records nothing (`denyRefusalKey`). */
-export function pathGrantDecisionModel(parent: string | null, parentReasonKey: string, settingsEditing: boolean, denyRefusalKey: string | null): ApprovalDecisionModel {
+/** Folder grants cover the host-resolved parent for the session or persistently. Always deny records an exact deny where that store is available. */
+export function pathGrantDecisionModel(parent: string | null, parentReasonKey: string, settingsEditing: boolean, denyRefusalKey: string | null, sessionParent: string | null = null): ApprovalDecisionModel {
   const notFolder = (choice: RememberingChoice) => refused("toolApprovalDialog.pathGrantOnlyFolder", label(choice));
   return {
     variant: "path-grant",
@@ -157,11 +157,12 @@ export function pathGrantDecisionModel(parent: string | null, parentReasonKey: s
       "deny-always": denyRefusalKey !== null
         ? refused(denyRefusalKey, label("deny-always"))
         : offered(null, settingsEditing ? "settings" : null, label("deny-always")),
-      "allow-session": notFolder("allow-session"),
+      "allow-session": sessionParent === null ? refused(parentReasonKey, label("allow-session")) : offered(sessionParent, null, label("allow-session")),
       "allow-project": notFolder("allow-project"),
       "allow-everywhere": parent === null ? refused(parentReasonKey, FOLDER_ALLOW_LABEL_KEY) : offered(parent, null, FOLDER_ALLOW_LABEL_KEY),
     },
     warnsOnWildcardAllow: false,
+    allowChoices: ["allow-everywhere", "allow-session", "allow-project"],
   };
 }
 

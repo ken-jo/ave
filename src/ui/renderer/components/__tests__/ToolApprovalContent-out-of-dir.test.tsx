@@ -69,12 +69,13 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(screen.getByTestId("approval-decision-bar")).toHaveAttribute("data-approval-variant", "path-grant");
   });
 
-  it.each([['ko', '쓰기'], ['en', 'Write']] as const)("describes an outside write as a write in %s", async (locale, action) => {
+  it.each([['ko', '쓰기'], ['en', 'write']] as const)("describes an outside write as a write in %s", async (locale, action) => {
     await loadLocaleMessages(locale);
     setLocale(locale);
     renderCard(makeRequest({ toolName: "write_file", toolCategory: "write", args: { path: TARGET, content: "approved" } }));
     const summary = screen.getByTestId("approval-impact-summary");
     expect(summary).toHaveTextContent(action);
+    expect(summary).toHaveTextContent(locale === "ko" ? "허용된 디렉터리 밖" : "outside the allowed directories");
     expect(summary).not.toHaveTextContent(locale === "ko" ? "읽으려" : "trying to read");
   });
 
@@ -199,6 +200,31 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(document.activeElement).toBe(always);
     expect(targetLine()).toContain(PARENT);
     expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("a proposed session choice selects the session folder without deciding", async () => {
+    const { onDecide } = renderCard(makeRequest(), { proposedChoice: "allow-session" });
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    const session = screen.getByTestId(TEST_IDS.allowSessionButton);
+    expect(session).toHaveTextContent("세션");
+    expect(document.activeElement).toBe(session);
+    expect(targetLine()).toContain(PARENT);
+    expect(onDecide).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(session); });
+    expect(onDecide).toHaveBeenCalledWith("allow-session", PARENT);
+  });
+
+  it("offers a host-authorized session folder when persistent allow is withheld", async () => {
+    const { onDecide } = renderCard(makeRequest({ allowedChoices: ["allow-once", "allow-session", "deny-once"] }));
+    const session = screen.getByTestId(TEST_IDS.allowSessionButton);
+    expect(session).toBeEnabled();
+    expect(session).toHaveTextContent("세션");
+    fireEvent.focus(session);
+    expect(targetLine()).toContain(PARENT);
+    await act(async () => { fireEvent.click(session); });
+    expect(onDecide).toHaveBeenCalledWith("allow-session", PARENT);
   });
 
   it("ignores a proposal for a decision this request does not offer", async () => {

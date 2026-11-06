@@ -574,11 +574,11 @@ export class AuditLogger {
 
   /** Synchronous rollover accepts only an empty new UTC epoch; existing rows require asynchronous re-verification. */
   private ensurePermissionAuditEpochForPreflight(): void {
+    const date = this.currentUtcDate();
+    if (date === this.permissionAuditDate) return;
     if (this.permissionAuditAppendActive > 0) {
       throw new Error("permission audit append is already in progress");
     }
-    const date = this.currentUtcDate();
-    if (date === this.permissionAuditDate) return;
     const nextPath = this.permissionAuditPath(date);
     const nextTail = readLastNonEmptyLineSync(nextPath);
     const nextSeal = this.permissionAuditSealStore?.read(sealKeyName(date), 4 * 1024) ?? null;

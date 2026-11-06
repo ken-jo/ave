@@ -22,6 +22,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "approvalAction.editFile": "{target} 파일 수정",
   "approvalAction.readFile": "{target} 파일 읽기",
   "approvalAction.outsideDirectory": "허용 범위 밖의 {target} 읽기",
+  "approvalAction.outsideDirectoryWrite": "허용 범위 밖의 {target} 쓰기",
   "approvalAction.read": "데이터 읽기",
   "approvalAction.write": "데이터 변경",
   "approvalAction.network": "네트워크 데이터 전송",

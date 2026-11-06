@@ -117,9 +117,10 @@ describe("approval decision models", () => {
     expect(browser.options["deny-always"].editing).toBeNull();
   });
 
-  it("a folder card's only lasting allow is its parent folder, labelled for the folder", () => {
-    const model = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true, null);
-    expect(offeredChoices(model)).toEqual(["deny-always", "allow-everywhere"]);
+  it("a folder card offers its parent for the session or persistently", () => {
+    const model = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true, null, "/Users/me/project");
+    expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-everywhere"]);
+    expect(model.options["allow-session"].rule).toBe("/Users/me/project");
     expect(model.options["allow-everywhere"].rule).toBe("/Users/me/project");
     expect(model.options["allow-everywhere"].labelKey).toBe("toolApprovalDialog.decisionAllowFolder");
     const unrecordable = pathGrantDecisionModel("/Users/me/project", "toolApprovalDialog.persistentUnavailableNoParent", true, "toolApprovalDialog.persistentUnavailableOneShot");
