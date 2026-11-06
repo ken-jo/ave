@@ -23,10 +23,10 @@ function stubApi(
   const noop = () => () => {};
   const api = {
     listWorkBoard: async () => ({ status: "ok" as const, items: [] }),
-    listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
     runWorkBoardBriefing: run,
     onWorkBoardItemChanged: noop,
-    onWorkProposalChanged: noop,
+
     onWorkBoardRunProgress: noop,
     onWorkBoardRunStarted: noop,
     onWorkBoardRunFinished: noop,

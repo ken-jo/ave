@@ -47,7 +47,6 @@ export {
   type WorkItemReopenResult,
   type WorkItemDeleteResult,
   type WorkItemChangedEventPayload,
-  type WorkProposalChangedEventPayload,
 } from "../shared/work-board-types.js";
 
 import {

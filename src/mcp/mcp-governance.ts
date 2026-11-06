@@ -1,7 +1,5 @@
 
 
-
-
 import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { join } from "node:path";
 import type {
@@ -80,8 +78,6 @@ export class McpGovernance {
     this.runtimeApprovals = scopedState?.runtimeApprovals ?? new Map();
   }
 
-
-
   private loadPolicy(): McpGovernancePolicy {
     // A policy pending review in the home content trust manifest reads as missing, which is already deny-by-default.
     const input = readAveHomeInputSync(this.policyPath);
@@ -92,7 +88,6 @@ export class McpGovernance {
     try {
       const raw = input.bytes.toString("utf-8");
       const parsed = JSON.parse(raw) as McpGovernancePolicy;
-
 
       if (parsed.defaultPolicy !== "deny") {
       log.warn("defaultPolicy must be 'deny'. Forcing deny-by-default.");
@@ -152,6 +147,10 @@ export class McpGovernance {
 
   /** Return the specific policy layer refusing a server configuration. */
   validateServer(config: McpServerConfig): ValidationResult {
+    if (config.transport !== "stdio" && config.transport !== "http") {
+      return { valid: false, reason: t("be_mcpClient.unsupportedTransport", { transport: (config as { transport: string }).transport }), layer: 1 };
+    }
+
     if (!this.policy) {
       return { valid: false, reason: t("be_mcpGovernance.policyNotLoaded"), layer: 0 };
     }
@@ -183,11 +182,7 @@ export class McpGovernance {
       if (!apiKeyEnvResult.valid) return apiKeyEnvResult;
     }
 
-    if (
-      config.transport === "http" ||
-      config.transport === "sse" ||
-      config.transport === "websocket"
-    ) {
+    if (config.transport === "http") {
       const urlResult = this.validateUrl(config, approval);
       if (!urlResult.valid) return urlResult;
 
@@ -306,7 +301,6 @@ export class McpGovernance {
     }
     return { valid: true };
   }
-
 
   applyToolNamespace(serverId: string, toolName: string): string {
     const approval = this.findApproval(serverId);
@@ -459,13 +453,11 @@ export class McpGovernance {
       return { valid: false, reason: t("be_mcpGovernance.transportRequiresUrl", { transport: config.transport }), layer: 1 };
     }
 
-
     for (const pattern of this.policy.globalRules.blockedUrlPatterns) {
       if (matchUrlPattern(pattern, config.url)) {
         return { valid: false, reason: t("be_mcpGovernance.blockedUrlPattern", { url: config.url, pattern }), layer: 1 };
       }
     }
-
 
     const allowed = approval.allowedUrls ?? [];
     if (allowed.length > 0) {
@@ -478,7 +470,6 @@ export class McpGovernance {
         };
       }
     }
-
 
     const globalAllowed = this.policy.globalRules.allowedUrlPatterns;
     if (globalAllowed.length > 0) {
@@ -494,9 +485,6 @@ export class McpGovernance {
 
     return { valid: true };
   }
-
-
-
 
   private validateHttpScheme(rawUrl: string): ValidationResult {
     let parsed: URL;
@@ -654,7 +642,6 @@ export class McpGovernance {
 
   private validateConnectionSecurity(config: McpServerConfig, approval: McpServerApproval): ValidationResult {
 
-
     if (
       typeof approval.connectionTimeoutMs === "number"
       && approval.connectionTimeoutMs > TOOL_TIMEOUT_POLICY.mcpRequestMaxMs
@@ -670,14 +657,12 @@ export class McpGovernance {
       };
     }
 
-
     if (approval.tlsRequired && config.url) {
-      const isSecure = config.url.startsWith("https://") || config.url.startsWith("wss://");
+      const isSecure = config.url.startsWith("https://");
       if (!isSecure) {
         return { valid: false, reason: t("be_mcpGovernance.tlsRequired", { url: config.url }), layer: 2 };
       }
     }
-
 
     if (approval.requiredAuth !== "none") {
       if (approval.requiredAuth === "api-key" && !config.apiKey) {

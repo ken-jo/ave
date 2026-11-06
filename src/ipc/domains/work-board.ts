@@ -31,7 +31,6 @@ import type {
   WorkItemChangedEventPayload,
   WorkItemGetResult,
   WorkItemResolved,
-  WorkProposalChangedEventPayload,
 } from "../../main/work-board-store.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 
@@ -415,29 +414,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return { events: await readRunTranscript(storage, itemId, runId) };
   });
 
-  // Plugins propose through HostApi; renderer actions may read and answer proposals but cannot create them.
-
-  const broadcastProposalChanged = (
-    proposalId: string,
-    change: WorkProposalChangedEventPayload["change"],
-  ): void => {
-    const payload: WorkProposalChangedEventPayload = {
-      proposalId,
-      change,
-      changedAt: new Date().toISOString(),
-    };
-    broadcastToAppWindows(deps, WORK_BOARD.proposalChanged, payload);
-  };
-
-  ipcMain.handle(WORK_BOARD.listProposals, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, WORK_BOARD.listProposals, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (!workBoardStore) return NO_STORE;
-    return workBoardStore.listProposals();
-  });
-
   // Resolve the active project when accepting; unscoped proposals do not choose project identity.
   ipcMain.handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string) => {
     if (!validateHostRendererSender(e)) {
@@ -458,7 +434,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     });
     if (result.status === "accepted") {
       broadcastItemChanged(result.itemId, "created");
-      broadcastProposalChanged(proposalId, "accepted");
     }
     return result;
   });
@@ -469,9 +444,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    const result = await workBoardStore.dismissProposal(proposalId);
-    if (result.status === "dismissed") broadcastProposalChanged(proposalId, "dismissed");
-    return result;
+    return workBoardStore.dismissProposal(proposalId);
   });
 
   // Briefing surveys through a read-only child and creates proposals rather than executing work.
@@ -502,11 +475,6 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
           includeUnscoped: resolved.project.isDefault === true,
           approvalSurface: e.sender,
         });
-        if (result.status === "ok") {
-          for (const id of [...result.filed, ...result.refreshed]) {
-            broadcastProposalChanged(id, "posted");
-          }
-        }
         return result;
       } catch (err) {
         const reason = errorMessage(err);

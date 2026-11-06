@@ -54,7 +54,6 @@ import { purgeStaleSessionDiffDirs, clearSessionDiffCache,
 } from "./tools/write-diff-cache.js";
 import { resolvePluginPaths } from "./plugins/plugin-paths.js";
 import { StarredStore } from "./data/starred-store.js";
-import { FeedbackStore } from "./data/feedback-store.js";
 import { forgetTrackedPluginAuthPartitions, getTrackedPluginAuthPartitions } from "./main/plugin-auth-partition-tracker.js";
 import { createPluginRetirementPort } from "./plugins/retired-config.js";
 import { recoverPendingPluginUninstallCleanups } from "./plugins/uninstall-lifecycle.js";
@@ -890,11 +889,10 @@ export async function bootstrap(
       });
   });
 
-  // Starred store + feedback store.
+  // Starred store.
   const starredStore = new StarredStore();
-  const feedbackStore = new FeedbackStore();
+
   ctx.starredStore = starredStore;
-  ctx.feedbackStore = feedbackStore;
 
   // §4.2 Step 8: Post-boot — release prep (telemetry/crash/updater) + plugin update-check.
   const serviceClient = createServiceClient(ctx.singleHopNetworkFetch);

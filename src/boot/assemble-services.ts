@@ -83,7 +83,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     agentProfileStore: ctx.agentProfileStore,
     personaPromptStore: ctx.personaPromptStore,
     starredStore: ctx.starredStore,
-    feedbackStore: ctx.feedbackStore,
+
     notificationService: ctx.notificationService,
     scriptHookManager: ctx.scriptHookManager,
     singleHopNetworkFetch: ctx.singleHopNetworkFetch,

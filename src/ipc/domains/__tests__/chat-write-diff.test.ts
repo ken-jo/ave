@@ -78,13 +78,6 @@ function makeConversationLoop(sessionId: string) {
     loadSession: vi.fn(),
     refreshProvider: vi.fn(),
     abortCurrentTurn: vi.fn(),
-    pingProvider: vi.fn(async () => ({
-      configured: true,
-      online: true,
-      vendor: "openai",
-      model: "gpt-4o",
-      latencyMs: 1,
-    })),
     resetAndResume: vi.fn(),
     manualCompact: vi.fn(),
     startRoutineConversation: vi.fn(),
@@ -125,7 +118,6 @@ function makeMinimalDeps(loop: ReturnType<typeof makeConversationLoop>) {
       loadSessionMetadata: vi.fn(() => null),
     },
     starredStore: null,
-    feedbackStore: null,
     auditLogger: { log: vi.fn() },
     askUserQuestionGate: null,
     preferenceRefreshService: null,
@@ -217,29 +209,6 @@ describe("ave:chat:get-write-diff", () => {
     const result = await invokeRegisteredHandler(handlers, CHANNEL, null);
     expect(result).toBeNull();
     expect(mockReadDiffSidecar).not.toHaveBeenCalled();
-  });
-});
-
-describe("ave:llm:ping", () => {
-  it("rejects an untrusted sender frame and does not ping the provider", async () => {
-    const loop = makeConversationLoop(SESSION_ID);
-    await setupHandlers(loop);
-
-    const result = await invokeRegisteredHandlerWithEvent(handlers,
-      "ave:llm:ping",
-      { senderFrame: { url: "https://evil.example/app" } },
-    );
-    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-    expect(loop.pingProvider).not.toHaveBeenCalled();
-  });
-
-  it("delegates trusted renderer requests to ConversationLoop.pingProvider", async () => {
-    const loop = makeConversationLoop(SESSION_ID);
-    await setupHandlers(loop);
-
-    const result = await invokeRegisteredHandler(handlers, "ave:llm:ping");
-    expect(result).toMatchObject({ configured: true, online: true });
-    expect(loop.pingProvider).toHaveBeenCalledOnce();
   });
 });
 

@@ -2,9 +2,6 @@
 // docs/architecture/proposals/suggested-replies-ghost-text.md.
 import { useEffect, useSyncExternalStore } from "react";
 import { getApi } from "../api-client.js";
-import {
-  recordSuggestedRepliesEvent,
-} from "../../../telemetry/suggested-replies-counter.js";
 
 export interface SuggestedRepliesSnapshot {
   /** The one suggested next input, rendered as ghost text. */
@@ -39,13 +36,6 @@ const subscribers = new Set<() => void>();
 // the next turn's suggestion renders fresh.
 let dismissLatch = false;
 
-// Ignored telemetry: when a new non-empty push arrives while the prior
-// snapshot was *active and unaccepted* (text != null, not dismissed), we
-// record an `ignored` event before overwriting. Tracking the active flag as
-// a separate scalar keeps the bookkeeping outside `snapshot` so it doesn't
-// pollute the public snapshot identity.
-let priorActiveUnused = false;
-
 function notify(): void {
   for (const cb of subscribers) cb();
 }
@@ -72,16 +62,7 @@ export function pushSuggestedReply(reply: string | null): void {
   // Command filter runs *before* the empty-check so a command-prefixed reply correctly collapses to "no suggestion".
   const text = sanitizeReply(reply);
 
-  // Telemetry: if the previous snapshot was still active + unaccepted when a
-  // new push arrives, the user effectively ignored it. Record before we
-  // overwrite (and only on a *fresh* non-empty arrival — an empty push
-  // means "clear" which isn't a user-driven ignore).
-  if (priorActiveUnused && text !== null) {
-    recordSuggestedRepliesEvent("ignored");
-  }
-
   if (text === null) {
-    priorActiveUnused = false;
     if (snapshot === EMPTY_SNAPSHOT) return;
     snapshot = EMPTY_SNAPSHOT;
     notify();
@@ -94,13 +75,6 @@ export function pushSuggestedReply(reply: string | null): void {
     text,
     isDismissed: dismissLatch,
   };
-  // Only count as "shown" when the snapshot is actually visible (not latched into dismissed state).
-  if (!dismissLatch) {
-    recordSuggestedRepliesEvent("shown");
-    priorActiveUnused = true;
-  } else {
-    priorActiveUnused = false;
-  }
   notify();
 }
 
@@ -109,13 +83,12 @@ export function dismissSuggestedReplies(): void {
   if (snapshot.text === null) return;
   snapshot = { ...snapshot, isDismissed: true };
   dismissLatch = true;
-  priorActiveUnused = false;
-  recordSuggestedRepliesEvent("dismissed");
+
   notify();
 }
 
 /**
- * Reset the dismiss latch + telemetry "active" flag. Called by the Composer
+ * Reset the dismiss latch. Called by the Composer
  * when the user sends a new message — at that point the prior turn is over
  * and the next push (next turn) should render fresh.
  *
@@ -123,26 +96,21 @@ export function dismissSuggestedReplies(): void {
  */
 export function clearDismissedReplies(): void {
   dismissLatch = false;
-  // Also clear `priorActiveUnused` — sending the message means the user engaged with the turn, so any prior suggestion
-  // that's about to be replaced shouldn't count as "ignored".
-  priorActiveUnused = false;
 }
 
 export function acceptSuggestedReply(): void {
   if (snapshot === EMPTY_SNAPSHOT) return;
-  recordSuggestedRepliesEvent("accepted");
+
   snapshot = EMPTY_SNAPSHOT;
   // Accept also releases the dismiss latch — the snapshot was consumed, so the next push should render fresh regardless of
   // any prior Escape.
   dismissLatch = false;
-  priorActiveUnused = false;
   notify();
 }
 
-/** Clear singleton suggestions on session replacement or rewind without counting that abandonment as ignored telemetry. */
+/** Clear singleton suggestions on session replacement or rewind. */
 export function resetSuggestedReplies(): void {
   dismissLatch = false;
-  priorActiveUnused = false;
   if (snapshot === EMPTY_SNAPSHOT) return;
   snapshot = EMPTY_SNAPSHOT;
   notify();
@@ -152,7 +120,6 @@ export function resetSuggestedReplies(): void {
 export function __resetSuggestedRepliesStoreForTests(): void {
   snapshot = EMPTY_SNAPSHOT;
   dismissLatch = false;
-  priorActiveUnused = false;
 }
 
 let ipcWired = false;

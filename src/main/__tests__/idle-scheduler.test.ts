@@ -5,63 +5,7 @@ import {
   IdleSchedulerService,
   type IdleState,
   type PowerMonitorLike,
-  type WorkerClientLite,
 } from "../idle-scheduler.js";
-
-interface EnqueueCall {
-  filePath: string;
-  mode: string | undefined;
-  priority: number | undefined;
-}
-
-function makeMockWorker(): WorkerClientLite & {
-  enqueueCalls: EnqueueCall[];
-  processCount: number;
-  failOnEnqueue: boolean;
-  reset(): void;
-} {
-  const state = {
-    enqueueCalls: [] as EnqueueCall[],
-    processCount: 0,
-    failOnEnqueue: false,
-  };
-  return {
-    get enqueueCalls() {
-      return state.enqueueCalls;
-    },
-    get processCount() {
-      return state.processCount;
-    },
-    set failOnEnqueue(v: boolean) {
-      state.failOnEnqueue = v;
-    },
-    get failOnEnqueue() {
-      return state.failOnEnqueue;
-    },
-    reset() {
-      state.enqueueCalls = [];
-      state.processCount = 0;
-      state.failOnEnqueue = false;
-    },
-    async enqueue(filePath: string, mode?: string, priority?: number) {
-      if (state.failOnEnqueue) throw new Error("mock enqueue fail");
-      state.enqueueCalls.push({ filePath, mode, priority });
-      return { queued: true, queue_size: 1 };
-    },
-    async processOne() {
-      state.processCount++;
-      return { processed: true };
-    },
-    async getIndexerState() {
-      return {
-        queue_size: 0,
-        processed: state.processCount,
-        failed: 0,
-        enqueued: state.enqueueCalls.length,
-      };
-    },
-  };
-}
 
 class FakePowerMonitor implements PowerMonitorLike {
   onBatteryPower = false;
@@ -108,50 +52,24 @@ class FakePowerMonitor implements PowerMonitorLike {
 }
 
 function makeService(
-  overrides: { powerMonitor?: FakePowerMonitor; worker?: ReturnType<typeof makeMockWorker> } = {},
+  overrides: { powerMonitor?: FakePowerMonitor } = {},
 ): {
   sched: IdleSchedulerService;
   pm: FakePowerMonitor;
-  worker: ReturnType<typeof makeMockWorker>;
 } {
   const pm = overrides.powerMonitor ?? new FakePowerMonitor();
-  const worker = overrides.worker ?? makeMockWorker();
   const logs: string[] = [];
   const sched = new IdleSchedulerService({
-    workerClient: worker,
+
     powerMonitor: pm,
     tickIntervalMs: 1_000_000,
-    chunkCooldownMs: 0,
-    throttledCooldownMs: 0,
+
     logger: (m) => logs.push(m),
   });
-  return { sched, pm, worker };
+  return { sched, pm };
 }
 
 describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
-  it("case 1: enqueue priority sort — P0 먼저", () => {
-    const { sched } = makeService();
-    sched.enqueue({ filePath: "/a.md", mode: "md", priority: 3 });
-    sched.enqueue({ filePath: "/b.md", mode: "md", priority: 0 });
-    sched.enqueue({ filePath: "/c.md", mode: "md", priority: 1 });
-    const q = sched.peekQueue();
-    expect(q.length).toBe(3);
-    expect(q[0].priority).toBe(0);
-    expect(q[0].filePath).toBe("/b.md");
-    expect(q[1].priority).toBe(1);
-    expect(q[2].priority).toBe(3);
-  });
-
-  it("case 2: enqueue 동일 priority는 enqueuedAt FIFO", () => {
-    const { sched } = makeService();
-    sched.enqueue({ filePath: "/first.md", mode: "md", priority: 2 });
-    sched.enqueue({ filePath: "/second.md", mode: "md", priority: 2 });
-    sched.enqueue({ filePath: "/third.md", mode: "md", priority: 2 });
-    const q = sched.peekQueue();
-    expect(q[0].filePath).toBe("/first.md");
-    expect(q[1].filePath).toBe("/second.md");
-    expect(q[2].filePath).toBe("/third.md");
-  });
 
   it("case 3: signalKeystroke → IDLE_SCAN에서 THROTTLED 전환", () => {
     const { sched } = makeService();
@@ -177,38 +95,11 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
     expect(sched.getState()).toBe("IDLE_SCAN");
   });
 
-  it("case 6: IDLE_SCAN + 빈 큐 → workerClient 미호출", async () => {
-    vi.useFakeTimers();
-    try {
-      const { sched, worker } = makeService();
-      sched._testForceTransition("IDLE_SCAN", "test-case");
-      sched._testTick();
-      await vi.runAllTimersAsync();
-      expect(worker.processCount).toBe(0);
-      expect(worker.enqueueCalls.length).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("case 7: IDLE_SCAN + 큐 존재 → workerClient.enqueue + processOne 호출", async () => {
-    const { sched, worker } = makeService();
-    sched.enqueue({ filePath: "/doc.pdf", mode: "pdf", priority: 0 });
-    sched._testForceTransition("IDLE_SCAN", "test-case");
-    await sched._testProcessOne();
-    expect(worker.enqueueCalls.length).toBe(1);
-    expect(worker.enqueueCalls[0].filePath).toBe("/doc.pdf");
-    expect(worker.enqueueCalls[0].mode).toBe("pdf");
-    expect(worker.enqueueCalls[0].priority).toBe(0);
-    expect(worker.processCount).toBe(1);
-  });
-
   it("case 8: transition same-state는 no-op", () => {
     const logs: string[] = [];
     const pm = new FakePowerMonitor();
-    const worker = makeMockWorker();
     const sched = new IdleSchedulerService({
-      workerClient: worker,
+
       powerMonitor: pm,
       tickIntervalMs: 1_000_000,
       logger: (m) => logs.push(m),
@@ -242,14 +133,12 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
   it("case 11: RESUME_DELAY 타이머 만료 → RUNNING", async () => {
     vi.useFakeTimers();
     const pm = new FakePowerMonitor();
-    const worker = makeMockWorker();
     const sched = new IdleSchedulerService({
-      workerClient: worker,
+
       powerMonitor: pm,
       tickIntervalMs: 1_000_000,
       resumeDelayMs: 30,
-      chunkCooldownMs: 0,
-      throttledCooldownMs: 0,
+
       logger: () => {},
     });
     try {
@@ -286,10 +175,8 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
 
   it("case 14: getMetrics shape", () => {
     const { sched } = makeService();
-    sched.enqueue({ filePath: "/x.md", mode: "md", priority: 2 });
     const m = sched.getMetrics();
     expect(m.state).toBe("RUNNING");
-    expect(m.queueLength).toBe(1);
     expect(typeof m.cpuEma).toBe("number");
     expect(typeof m.lastConversationAt).toBe("number");
     expect(typeof m.lastKeystrokeAt).toBe("number");
@@ -297,9 +184,8 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
 
   it("case 15: stop 후 powerMonitor 리스너 해제", () => {
     const pm = new FakePowerMonitor();
-    const worker = makeMockWorker();
     const sched = new IdleSchedulerService({
-      workerClient: worker,
+
       powerMonitor: pm,
       tickIntervalMs: 1_000_000,
       logger: () => {},
@@ -319,34 +205,6 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
     sched._testSetLastConversation(Date.now() - 10_000);
     sched._testTick();
     expect(sched.getState()).toBe("RUNNING");
-  });
-
-  it("case 17: P0 job이 P3보다 먼저 처리됨", async () => {
-    const { sched, worker } = makeService();
-    sched.enqueue({ filePath: "/low.md", mode: "md", priority: 3 });
-    sched.enqueue({ filePath: "/urgent.md", mode: "md", priority: 0 });
-    sched.enqueue({ filePath: "/mid.md", mode: "md", priority: 2 });
-    sched._testForceTransition("IDLE_SCAN", "test-case");
-    await sched._testProcessOne();
-    await sched._testProcessOne();
-    await sched._testProcessOne();
-    expect(worker.enqueueCalls.length).toBe(3);
-    expect(worker.enqueueCalls[0].filePath).toBe("/urgent.md");
-    expect(worker.enqueueCalls[1].filePath).toBe("/mid.md");
-    expect(worker.enqueueCalls[2].filePath).toBe("/low.md");
-  });
-
-  it("case 18: worker 실패 시 다음 job으로 진행", async () => {
-    const { sched, worker } = makeService();
-    sched.enqueue({ filePath: "/bad.md", mode: "md", priority: 0 });
-    sched.enqueue({ filePath: "/good.md", mode: "md", priority: 1 });
-    worker.failOnEnqueue = true;
-    sched._testForceTransition("IDLE_SCAN", "test-case");
-    await sched._testProcessOne();
-    worker.failOnEnqueue = false;
-    await sched._testProcessOne();
-    expect(worker.enqueueCalls.length).toBe(1);
-    expect(worker.enqueueCalls[0].filePath).toBe("/good.md");
   });
 
   it("case 19: 전체 전이 시퀀스 RUNNING → IDLE_SCAN → THROTTLED → IDLE_SCAN", () => {
@@ -372,8 +230,7 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
     expect(sched.getState()).toBe("RUNNING");
   });
 
-  it("case 21: workerClient 없이 생성 — 상태 머신은 동작, _processOne은 안전한 no-op", async () => {
-    // Idle-state consumers and the dormant queue must work without a workerClient.
+  it("notifies listeners and responds to conversation activity", async () => {
     const pm = new FakePowerMonitor();
     const sched = new IdleSchedulerService({
       powerMonitor: pm,
@@ -390,11 +247,6 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
     sched._testTick();
     expect(sched.getState()).toBe("IDLE_SCAN");
     expect(seen).toContain("IDLE_SCAN");
-
-    // Draining with no workerClient is a safe no-op (no throw, queue untouched).
-    sched.enqueue({ filePath: "/a.md", mode: "md", priority: 0 });
-    await expect(sched._testProcessOne()).resolves.toBeUndefined();
-    expect(sched.getQueueLength()).toBe(1);
 
     // signalConversation still drives the state machine.
     sched.signalConversation();

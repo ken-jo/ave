@@ -43,9 +43,9 @@ function stubApi(initialRunning: Array<{ routineId: string; firedAt: string }> =
   };
   const api = {
     listWorkBoard: vi.fn(async () => ({ status: "ok" as const, items })),
-    listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
     onWorkBoardItemChanged: noop,
-    onWorkProposalChanged: noop,
+
     onWorkBoardRunProgress: noop,
     onWorkBoardRunStarted: noop,
     onWorkBoardRunFinished: noop,
@@ -218,7 +218,6 @@ describe("Work Board — schedule cards", () => {
     await waitFor(() => expect(vi.mocked(api.listRoutineOccurrences).mock.calls.some(([q]) => (q as { from: string }).from === iso("2026-11-09T00:00:00"))).toBe(true));
   });
 });
-
 
 it("shows only the latest dated metrics in a busy weekly group", () => {
   const item = routine("brief", "Morning brief");

@@ -48,13 +48,13 @@ function boardApi({ surface = "chat", items = [runningItem()] }: BoardOptions = 
   const intent = { inputOrigin: "user-keyboard" as const, token: "tok" };
   const api = {
     listWorkBoard: vi.fn(async () => ({ status: "ok" as const, items })),
-    listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: [] })),
     runWorkBoardItem: vi.fn(() => new Promise(() => {})),
     getSettings: vi.fn(async () => ({ workBoard: { toolApprovalSurface: surface } })),
     onSettingsUpdated: noop,
     onWorkBoardItemChanged: noop,
-    onWorkProposalChanged: noop,
+
     onWorkBoardRunProgress: (h: (p: RunProgressEventPayload) => void) => {
       progress.push(h);
       return () => {};

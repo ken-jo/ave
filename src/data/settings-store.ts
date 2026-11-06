@@ -57,7 +57,6 @@ import {
   normalizeLocaleSetting,
   type Locale,
 } from "../i18n/locale.js";
-import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
 import { type InlineViewKey } from "../shared/view-key.js";
 import type { ProjectLastView, ProjectSelection } from "../shared/project-identity.js";
@@ -105,9 +104,6 @@ import {
   normalizeRecentProjectRoots,
   normalizeLastViewByProject,
   normalizeExpandedProjectRoots,
-  withoutMirroredMarketplaceProviderPresetEndpoint,
-  withMarketplaceProviderPresetModelSlot,
-  withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
   normalizeDocuments,
@@ -134,97 +130,54 @@ import {
 } from "./settings-field-accept.js";
 const log = createLogger("settings");
 
-/** Marker for the one-time subAgentAutonomousWake un-fossilize migration in `loadSettings`. Delete together with that block; target 2026-10. */
-const SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION = "subagent-autonomous-wake-default-flip";
-/**
- * One-time cleanup for installs written while a marketplace provider preset's
- * endpoint was mirrored into the generic openai-compatible vendor block. See
- * {@link withoutMirroredMarketplaceProviderPresetEndpoint}.
- */
-const PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION =
-  "marketplace-provider-preset-endpoint-unmirror";
-/**
- * One-time split of the openai-compatible block's single `model` between the
- * generic custom-provider row and the selected marketplace preset. See
- * {@link withMarketplaceProviderPresetModelSlot}.
- */
-const PROVIDER_PRESET_MODEL_SLOT_MIGRATION =
-  "marketplace-provider-preset-model-slot";
-/**
- * One-time rewrite of renamed built-in vendor ids in the stored settings. See
- * {@link withRenamedLlmVendorIds}; the matching API-key move is
- * {@link SettingsService.migrateRenamedVendorSecrets}.
- */
-const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
-/**
- * One-time removal of the server marketplace's settings (design §16.2): the
- * catalog they addressed is gone. The matching secret is deleted by
- * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
- */
-const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
 const SYSTEM_APP_MODE_REMOVED_MIGRATION = "system-app-mode-removed";
 const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
 const MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX = "marketplace-default-model-cleared:";
-/** Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776
- * removed. Only the removed non-empty defaults belong here; live defaults must never change which saved selections this one-time migration clears. */
+/** Non-empty model defaults persisted by v0.14.0; independent of the live catalog. */
 const REMOVED_BUILT_IN_DEFAULT_MODELS: Readonly<Partial<Record<LLMVendor, string>>> = Object.freeze({
-  claude: "claude-sonnet-4-6",
-  openai: "gpt-5.4-mini",
-  gemini: "gemini-3.8-flash",
-  "azure-foundry": "gpt-5.4-mini",
-  "vertex-ai": "gemini-3.5-flash",
-  openrouter: "anthropic/claude-sonnet-4.6",
-  deepseek: "deepseek-flash",
-  xai: "grok-4.20-0309-non-reasoning",
-  together: "Qwen/Qwen3.6-Plus",
-  fireworks: "accounts/fireworks/models/glm-5p3-flash",
-  groq: "openai/gpt-oss-120b",
-  poolside: "poolside/laguna-m.1",
-  cerebras: "gpt-oss-120b",
-  sambanova: "Meta-Llama-3.3-70B-Instruct",
-  nebius: "nvidia/nemotron-3-super-120b-a12b",
-  baseten: "deepseek-ai/DeepSeek-V4.1-Flash",
-  requesty: "openai/gpt-6-luna",
-  litellm: "gpt-5.4",
-  huggingface: "MiniMaxAI/MiniMax-M2.5",
+  "openrouter": "anthropic/claude-sonnet-4.6",
+  "deepseek": "deepseek-flash",
+  "xai": "grok-4.20-0309-non-reasoning",
+  "together": "Qwen/Qwen3.6-Plus",
+  "fireworks": "accounts/fireworks/models/kimi-k2p6",
+  "groq": "moonshotai/kimi-k2-instruct-0905",
+  "poolside": "poolside/laguna-m.1",
+  "cerebras": "zai-glm-4.7",
+  "sambanova": "Meta-Llama-3.3-70B-Instruct",
+  "nebius": "nvidia/nemotron-3-super-120b-a12b",
+  "baseten": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "requesty": "openai/gpt-5.4",
+  "litellm": "gpt-5.4",
+  "huggingface": "MiniMaxAI/MiniMax-M2.5",
   "vercel-ai-gateway": "alibaba/qwen3.6-plus",
   "vercel-v0": "v0-1.5-md",
-  aihubmix: "gpt-5.4-mini",
-  hicap: "hicap-pro",
+  "aihubmix": "gpt-5.4-mini",
+  "hicap": "hicap-pro",
   "nous-research": "DeepHermes-3-Llama-3-3-70B-Preview",
   "huawei-cloud-maas": "DeepSeek-R1",
-  wandb: "deepseek-ai/DeepSeek-V4.1-Flash",
-  xiaomi: "mimo-v2.6-flash",
-  kilo: "openai/gpt-5.4",
-  zai: "glm-5v-turbo",
+  "wandb": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+  "xiaomi": "mimo-v2.6-flash",
+  "kilo": "gpt-5.4",
+  "zai": "glm-5v-turbo",
   "zai-coding-plan": "glm-5.2",
-  qwen: "qwen3.7-plus",
+  "qwen": "qwen-plus-latest",
   "qwen-code": "qwen3-coder-plus",
-  doubao: "doubao-1-5-pro-256k-250115",
-  mistral: "mistral-medium-latest",
-  moonshot: "kimi-k3",
-  asksage: "gpt-5.4-mini",
-  ollama: "llama3.3",
-  lmstudio: "local-model",
-  oca: "anthropic/claude-3-7-sonnet-20250219",
+  "doubao": "doubao-1-5-pro-256k-250115",
+  "mistral": "mistral-medium-latest",
+  "moonshot": "kimi-k2-0905-preview",
+  "asksage": "gpt-5.4-mini",
+  "ollama": "llama3.3",
+  "lmstudio": "local-model",
+  "oca": "anthropic/claude-3-7-sonnet-20250219",
+  "claude": "claude-sonnet-4-6",
+  "openai": "gpt-5.4-mini",
+  "gemini": "gemini-2.5-flash",
+  "azure-foundry": "gpt-5.4-mini",
+  "vertex-ai": "gemini-3.5-flash"
 });
 /** The value every saved vendor block carried before the default stopped being written. A stored `outputTokenLimit` of exactly this, without the `outputTokenLimitSetByUser` stamp this build writes with a user's value, is the default written back and is dropped on every load, so the route reports
  * `host-default`. Every load, not once behind a marker: a build from before the stamp, reinstalled through the updater's downgrade offer, writes 32000 into every block again, and a marker would then leave those values reading as the user's after the re-upgrade. See {@link withoutFossilOutputTokenLimits}. */
 const FOSSIL_OUTPUT_TOKEN_LIMIT = 32_000;
-/** The removed keys, including the `real`-prefixed spellings older builds wrote. */
-const RETIRED_MARKETPLACE_SETTING_KEYS: readonly string[] = [
-  "backend",
-  "cloudBaseUrl",
-  "cloudAllowPrivateNetwork",
-  "real" + "CloudBaseUrl",
-  "real" + "CloudAllowPrivateNetwork",
-];
-/** Built-in vendor ids that were renamed, old → new. Marketplace provider packages are named after the vendor id and package names are lowercase kebab-case of at least
- * three characters, so neither a camelCase id nor one as short as `v0` could ship as a package. Read only by the one-time migrations: nothing resolves an old id at runtime. */
-const RENAMED_LLM_VENDOR_IDS: Readonly<Record<string, LLMVendor>> = {
-  nousResearch: "nous-research",
-  v0: "vercel-v0",
-};
 
 /** The removed vendor a stored `llm` block still names: as its `provider` (a profile written before the removal), or as the marker an earlier load left. */
 function retiredLlmProviderOf(rawLlm: unknown): RetiredLLMVendor | undefined {
@@ -244,11 +197,6 @@ function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
 /** Every global one-time migration this build knows. Fresh-install and corrupt-recovery settings start with ALL of them marked applied: a state built from current defaults is by definition post-migration, and
  * seeding the markers closes the window where a user's first-session opt-out would be silently reverted by a migration re-run on the next boot. Market model migrations instead acquire a marker per id once it resolves. */
 const KNOWN_MIGRATIONS: readonly string[] = [
-  SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION,
-  PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION,
-  PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
-  LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
-  MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
   SYSTEM_APP_MODE_REMOVED_MIGRATION,
   BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
@@ -512,8 +460,6 @@ export interface FeatureFlags {
   /** Enables the P4-5 exact-replay receiver profile after restart. Independent of loopback. */
   a2aRemoteReceiver?: boolean;
 
-
-
   onboardingCompleted?: boolean;
   /** Host risk classification ships on and ignores untrusted declared categories; disabling it restores declared categories (docs/architecture/permission-policy-design.md). */
   hostClassifiesRisk?: boolean;
@@ -616,9 +562,6 @@ export interface WebViewSettings {
   preferredFlow: WebViewPreferredFlow;
 }
 
-
-
-
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
 
 export interface SystemSettings {
@@ -662,10 +605,7 @@ export interface SystemSettings {
    * tab is its address row and page only, so it has no split. Clamped to the [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at drag time in the renderer. Default 45. */
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
-  /** Persisted active sidebar tab ("chats" = the plain ungrouped conversation list, "projects" = named-project groups). Durable
-   * UI preference, same family as `sidebarWidth`. Default "chats". SoT for the value set: `../shared/sidebar-tab.js`. */
-  sidebarActiveTab?: SidebarTab;
-  /** Where the main window was when it last closed, so a restart resumes the user's location instead of always landing on home. Same durable-preference family as `sidebarActiveTab`. Default "home". SoT for the value set: `../shared/view-key.js`. Validation here is
+  /** Where the main window was when it last closed, so a restart resumes the user's location instead of always landing on home. Default "home". SoT for the value set: `../shared/view-key.js`. Validation here is
    * STRUCTURAL only; this process cannot know which plugins are installed, and a `plugin:<id>:<viewId>` key stays well-formed after its plugin is uninstalled. The renderer therefore re-checks a restored plugin key against the views it actually loaded before navigating there. */
   activeView?: InlineViewKey;
   /** The main window's pane layout when it last changed; panes, which show a terminal or web page, open side panels, and terminal/browser side tabs with their last directory or
@@ -702,20 +642,16 @@ export interface UpdateSettings {
   skippedVersion?: string;
 }
 
-/** Production release prep; anonymous opt-in telemetry. Default OFF. Requires explicit user action to enable. -
- * `telemetryPromptAnswered`; true once the user has dismissed the first-boot consent prompt (regardless of Yes/No). Events are NEVER sent before this is true. */
+/** Anonymous opt-in telemetry defaults off. Sending requires both a recorded consent choice and enabled=true. */
 export interface TelemetrySettings {
   enabled: boolean;
   endpoint?: string;
   sentryDsn?: string;
   crashReportEndpoint?: string;
   crashReportingEnabled?: boolean;
-  /** True once the user has answered the one-time opt-in prompt. */
+  /** True once the user records a telemetry choice in settings. */
   telemetryPromptAnswered?: boolean;
 }
-
-
-
 
 /** How the `~/.ave` reference docs follow the shipped ones. Default OFF, and off is the behavior that shipped before this setting: a divergent packaged doc is offered as an upgrade marker and nothing moves until
  * the user answers. Turning it on changes where the user's own content lives, not whether it survives; `agents.custom.md` holds it, and the system prompt reads it after the live doc so it still wins on conflict. */
@@ -789,7 +725,6 @@ export interface SettingsServiceOptions {
    * `normalizeAlertSettings`). Absent, a pre-release build, or anything but a stable `X.Y.Z` release; the resolver's `"unknown"` included; drops nothing. */
   appVersion?: string;
 }
-
 
 /** `current` with the listed provider presets as they were in `previous`: an entry that changed goes back, a removed one returns, one added since goes. */
 function withProviderPresetsFrom(
@@ -932,21 +867,8 @@ export class SettingsService {
     }
   }
 
-
-
-
   async migrateSecrets(): Promise<boolean> {
     return this.secretStore.migrate();
-  }
-
-  /** Delete the server marketplace's API key (design §16.2). Nothing reads it any more; a failure leaves it in the store and is
-   * retried at the next boot. Once it is gone the delete writes nothing, so a store that cannot write reports nothing on the boots after. */
-  async deleteRetiredMarketplaceApiKey(): Promise<void> {
-    try {
-      await this.deleteSecret("marketplace.apiKey");
-    } catch (err) {
-      log.warn("retired marketplace API key delete failed: %s", (err as Error).message);
-    }
   }
 
   /** Delete the API key stored for each removed vendor ({@link RETIRED_LLM_VENDOR_IDS}). Nothing can use it: the vendor's service is gone and no
@@ -958,18 +880,6 @@ export class SettingsService {
       } catch {
         // A secret-store exception can contain credential material.
         log.warn("retired vendor %s API key delete failed; retrying next boot", vendor);
-      }
-    }
-  }
-
-  /** Move each API key stored under a renamed vendor id to the new id's key (see {@link RENAMED_LLM_VENDOR_IDS}). Runs on every boot: it writes only while an old key remains, so a
-   * move that failed is retried next boot. A failure leaves the old key where it is and never fails the boot; the provider then reads as having no key until a later boot moves it. */
-  async migrateRenamedVendorSecrets(): Promise<void> {
-    for (const [from, to] of Object.entries(RENAMED_LLM_VENDOR_IDS)) {
-      try {
-        await this.secretStore.move(`llm.apiKey.${from}`, `llm.apiKey.${to}`);
-      } catch (err) {
-        log.warn("API key move from vendor %s to %s failed: %s", from, to, (err as Error).message);
       }
     }
   }
@@ -1262,7 +1172,6 @@ export class SettingsService {
           normalizeSidePanelSplitPercent, "system", PATCHED_FIELD,
         );
       }
-      acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "sidebarState", partial.system.sidebarState, isSidebarState, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
       acceptNormalizedField(next, "projectSelection", partial.system.projectSelection, normalizeProjectSelection, "system", PATCHED_FIELD);
@@ -1693,19 +1602,16 @@ export class SettingsService {
       if (stored.system !== null && typeof stored.system === "object"
         && Object.hasOwn(stored.system, "sidePanelSplitFilePercent")) migrationWriteBack = true;
 
+      if (stored.system !== null && typeof stored.system === "object"
+        && Object.hasOwn(stored.system, "sidebarActiveTab")) migrationWriteBack = true;
+
       // The system normalizer drops the removed field; persist that cleanup once so it also leaves the saved file.
       if (!appliedMigrations.includes(SYSTEM_APP_MODE_REMOVED_MIGRATION)) {
         appliedMigrations.push(SYSTEM_APP_MODE_REMOVED_MIGRATION);
         migrationWriteBack = true;
       }
 
-      // One-time rename of built-in vendor ids. It has to rewrite the file as read, ahead of everything below: each normalizer drops a vendor id this build does not know.
       let parsed = stored;
-      if (!appliedMigrations.includes(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION)) {
-        parsed = withRenamedLlmVendorIds(stored, RENAMED_LLM_VENDOR_IDS);
-        appliedMigrations.push(LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION);
-        migrationWriteBack = true;
-      }
 
       const withoutFossils = withoutFossilOutputTokenLimits(parsed);
       if (withoutFossils.changed) {
@@ -1746,12 +1652,6 @@ export class SettingsService {
         if (retiredModel) llm = { ...llm, retiredProvider: retiredModel };
       }
       const marketplaceParsed: Record<string, unknown> = { ...(parsed.marketplace ?? {}) };
-      // One-time: drop the server marketplace's settings and write the file back, so they leave settings.json rather than only this process.
-      if (!appliedMigrations.includes(MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION)) {
-        for (const key of RETIRED_MARKETPLACE_SETTING_KEYS) delete marketplaceParsed[key];
-        appliedMigrations.push(MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION);
-        migrationWriteBack = true;
-      }
       const pluginConfigs = sanitizeStoredPluginConfigs(parsed.pluginConfigs);
       // Unknown routine keys are preserved in storage but never read by current code.
       const normalizedRoutine: RoutineSettings = {
@@ -1773,41 +1673,13 @@ export class SettingsService {
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
       needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 
-      // One-time migration: un-fossilize subAgentAutonomousWake. saveSettings() writes the merged settings; defaults included; back to disk, so installs from the era when this flag defaulted to false carry an explicit `false` the user never chose, and the later default flip to `true` can never reach
-      // them (explicit false beats the default merge below). Drop exactly that fossil once. A `false` written AFTER this migration ran is a real opt-out and sticks, because the marker suppresses any re-run. Remove this block (and the marker constant) once no pre-flip installs remain; target 2026-10.
       let normalizedFeatures = normalizeFeatureFlags(parsed.features);
-      if (!appliedMigrations.includes(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION)) {
-        if (normalizedFeatures.subAgentAutonomousWake === false) {
-          delete normalizedFeatures.subAgentAutonomousWake;
-        }
-        appliedMigrations.push(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION);
-        migrationWriteBack = true;
-      }
 
       // The sandbox split: `osToolSandbox` used to confine shells AND workers. Written back, so the worker side
       // of an existing opt-in is the user's own value from here on and a later shell default flip cannot reach it.
       const split = withPluginWorkerConfinementSplit(normalizedFeatures);
       if (split.changed) {
         normalizedFeatures = split.features;
-        migrationWriteBack = true;
-      }
-
-      // One-time cleanup: the generic openai-compatible row's endpoint used to be overwritten with the active marketplace preset's address.
-      // Nothing writes that any more, but an install from before the change still carries it, and it would read as the generic row's own saved endpoint.
-      if (!appliedMigrations.includes(PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION)) {
-        llm = withoutMirroredMarketplaceProviderPresetEndpoint(
-          llm,
-          marketplace.installedProviderPresets,
-        );
-        appliedMigrations.push(PROVIDER_PRESET_ENDPOINT_UNMIRROR_MIGRATION);
-        migrationWriteBack = true;
-      }
-
-      // One-time split: the openai-compatible block's single `model` used to be shared by the generic custom-provider row and
-      // every marketplace preset reached through that vendor. The stored value belongs to whichever row this install is actually on.
-      if (!appliedMigrations.includes(PROVIDER_PRESET_MODEL_SLOT_MIGRATION)) {
-        llm = withMarketplaceProviderPresetModelSlot(llm);
-        appliedMigrations.push(PROVIDER_PRESET_MODEL_SLOT_MIGRATION);
         migrationWriteBack = true;
       }
 

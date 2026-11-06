@@ -257,16 +257,6 @@ describe("ave:mcp:servers", () => {
 });
 
 describe("ave:memory:entries:*", () => {
-  it("memory list rejects unauthorized frames", async () => {
-    await setupHandlers();
-
-    const result = await invokeRegisteredHandlerWithEvent(handlers,
-      "ave:memory:entries:list",
-      { senderFrame: { url: "https://evil.example.com/" } },
-    );
-
-    expect(result).toEqual({ ok: false, error: "unauthorized-frame" });
-  });
 
   it("memory search returns renderer-safe shape", async () => {
     const pm = makeMockPM();

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { resolveApiKey } from "../resolve-api-key.js";
-import { resetHostSecretCountersForTesting } from "../../../telemetry/host-secret-counters.js";
 import type { PluginManifest, PluginRegistryTrust } from "../../../plugins/types.js";
 import type { HostSecretGrantEvidence } from "../../../plugins/secret-access/grants.js";
 import { manifestSha } from "../../../__tests__/support/manifest-sha-fixture.js";
@@ -106,7 +105,7 @@ function makeSettingsService(overrides: SettingsOverrides) {
 }
 
 beforeEach(() => {
-  resetHostSecretCountersForTesting();
+
 });
 
 describe("resolveApiKey — signal.aborted at entry", () => {

@@ -75,10 +75,6 @@ export interface SessionListRow {
   unreadSince?: string;
 }
 
-export interface RoutineRunRow extends SessionListRow {
-  preview: string;
-}
-
 /** Request all kinds at the IPC ceiling; renderer lookup remains capped while engine lookup sees all sessions. */
 export const SESSION_ID_PREFIX_LOOKUP_QUERY = Object.freeze({
   kind: "all",

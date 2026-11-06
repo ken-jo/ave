@@ -18,10 +18,6 @@ interface Options {
 /** Use the channel's shared result type; preparing belongs to install-progress, not install-result. */
 type InstallResultPayload = PluginInstallResultPayload;
 
-function targetLabel(slug: string, label: string): string {
-  return label ? `${slug} ${label}` : slug;
-}
-
 function installToastId(slug: string): string {
   return `install:plugin:${slug}`;
 }
@@ -51,9 +47,8 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
     };
     const handleUninstallResult = (
       { slug, success, error, message }: InstallResultPayload,
-      label = "",
     ) => {
-      const target = targetLabel(sanitizeToastField(slug, 64), label);
+      const target = sanitizeToastField(slug, 64);
       if (success) pushToast({ severity: "success", message: t("useStatusBarInstall.uninstallSuccess", { target }) });
       else pushToast({
         severity: "error",
@@ -69,8 +64,6 @@ export function useStatusBarInstall({ api, pushToast, upsertToast }: Options): v
       unsubs.push(api.onPluginInstallResult(handleInstallResult));
     }
     if (typeof api.onPluginUninstallResult === "function") unsubs.push(api.onPluginUninstallResult((payload) => handleUninstallResult(payload)));
-    if (typeof api.onAgentUninstallResult === "function") unsubs.push(api.onAgentUninstallResult((payload) => handleUninstallResult(payload, t("useStatusBarInstall.labelAgent"))));
-    if (typeof api.onSkillUninstallResult === "function") unsubs.push(api.onSkillUninstallResult((payload) => handleUninstallResult(payload, t("useStatusBarInstall.labelSkill"))));
     return () => {
       for (const u of unsubs) u();
     };

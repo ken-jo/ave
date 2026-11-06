@@ -1,5 +1,5 @@
-/** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external, ave:telemetry:consent-answer */
-import { dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+/** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
+import { dialog, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -43,20 +43,6 @@ import {
   resolveMainActiveChatModel,
   type ActiveChatModelSettingsReader,
 } from "../../engine/turn/active-chat-model.js";
-import type {
-  CodexSubscriptionActionResult,
-  CodexSubscriptionDeviceCodeResult,
-  CodexSubscriptionErrorCode,
-  CodexSubscriptionModelsResult,
-  CodexSubscriptionStatus,
-} from "../../shared/codex-subscription.js";
-import {
-  isAcpSubscriptionProviderId,
-  type AcpSubscriptionActionResult,
-  type AcpSubscriptionErrorCode,
-  type AcpSubscriptionProviderId,
-  type AcpSubscriptionStatus,
-} from "../../shared/acp-subscription.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   isSubscriptionRuntimeId,
@@ -87,143 +73,6 @@ import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
 
 let subscriptionRuntimeStatusRevision = 0;
-
-function codexStatusFromSubscription(status: SubscriptionRuntimeStatus | undefined): CodexSubscriptionStatus {
-  if (!status) {
-    return {
-      runtime: "ready",
-      connection: "signed-out",
-      planType: null,
-      pendingLogin: null,
-      pendingDeviceCode: null,
-      version: null,
-    };
-  }
-  return {
-    runtime: status.runtime === "unavailable" || status.runtime === "not-configured" ? status.runtime : "ready",
-    connection: status.connection === "connected" || status.connection === "pending"
-      ? status.connection
-      : "signed-out",
-    planType: status.planType,
-    pendingLogin: status.pendingLogin === "browser" || status.pendingLogin === "device-code"
-      ? status.pendingLogin
-      : null,
-    pendingDeviceCode: status.pendingDeviceCode,
-    version: status.version,
-  };
-}
-
-function acpStatusFromSubscription(
-  provider: AcpSubscriptionProviderId,
-  status: SubscriptionRuntimeStatus | undefined,
-): AcpSubscriptionStatus {
-  return {
-    provider,
-    runtime: status?.runtime ?? "not-configured",
-    connection: status?.connection ?? "unknown",
-    pendingLogin: status?.pendingLogin === "device-code" ? "device-code" : null,
-    pendingDeviceCode: status?.pendingDeviceCode ?? null,
-    canOpenVerificationUrl: status?.canOpenVerificationUrl ?? false,
-    version: status?.version ?? null,
-    // The legacy ACP status must remain a safe projection of the common runtime contract. Do not expose the
-    // ACP initialize payload here: the common status already reflects host-verified attachment/file flows.
-    promptCapabilities: {
-      image: status?.capabilities.images === true,
-      embeddedContext: status?.capabilities.files === true,
-    },
-  };
-}
-
-function legacyCodexErrorCode(code: SubscriptionRuntimeErrorCode): CodexSubscriptionErrorCode {
-  switch (code) {
-    case "subscription-runtime-not-configured":
-      return "codex-runtime-not-configured";
-    case "subscription-runtime-unavailable":
-      return "codex-runtime-unavailable";
-    case "subscription-runtime-unsafe-location":
-      return "codex-runtime-unsafe-location";
-    case "subscription-runtime-version-unsupported":
-      return "codex-runtime-version-unsupported";
-    case "subscription-runtime-incompatible":
-      return "codex-runtime-incompatible";
-    case "subscription-login-in-progress":
-      return "codex-login-in-progress";
-    case "subscription-login-failed":
-      return "codex-login-failed";
-    default:
-      return "codex-operation-failed";
-  }
-}
-
-function legacyAcpErrorCode(code: SubscriptionRuntimeErrorCode): AcpSubscriptionErrorCode {
-  switch (code) {
-    case "subscription-provider-not-supported":
-      return "acp-provider-not-supported";
-    case "subscription-runtime-not-configured":
-      return "acp-runtime-not-configured";
-    case "subscription-runtime-unavailable":
-      return "acp-runtime-unavailable";
-    case "subscription-login-in-progress":
-      return "acp-login-in-progress";
-    case "subscription-login-failed":
-      return "acp-login-failed";
-    case "subscription-verification-url-unavailable":
-      return "acp-verification-url-unavailable";
-    case "subscription-logout-not-supported":
-      return "acp-logout-not-supported";
-    default:
-      return "acp-operation-failed";
-  }
-}
-
-function legacyCodexActionResult(result: SubscriptionRuntimeActionResult): CodexSubscriptionActionResult {
-  if (result.ok) return { ok: true, status: codexStatusFromSubscription(result.status) };
-  return {
-    ok: false,
-    error: legacyCodexErrorCode(result.error),
-    status: codexStatusFromSubscription(result.status),
-  };
-}
-
-function legacyCodexDeviceCodeResult(
-  result: SubscriptionRuntimeActionResult,
-): CodexSubscriptionDeviceCodeResult {
-  const status = codexStatusFromSubscription(result.status);
-  if (!result.ok) {
-    return { ok: false, error: legacyCodexErrorCode(result.error), status };
-  }
-  if (!result.status.pendingDeviceCode) {
-    return { ok: false, error: "codex-login-failed", status };
-  }
-  return { ok: true, status, userCode: result.status.pendingDeviceCode };
-}
-
-function legacyCodexModelsResult(result: SubscriptionRuntimeModelsResult): CodexSubscriptionModelsResult {
-  if (!result.ok) {
-    return {
-      ok: false,
-      error: legacyCodexErrorCode(result.error),
-      status: codexStatusFromSubscription(result.status),
-    };
-  }
-  return {
-    ok: true,
-    status: codexStatusFromSubscription(result.status),
-    models: result.models.map((model) => ({ ...model, inputModalities: [] })),
-  };
-}
-
-function legacyAcpActionResult(
-  provider: AcpSubscriptionProviderId,
-  result: SubscriptionRuntimeActionResult,
-): AcpSubscriptionActionResult {
-  if (result.ok) return { ok: true, status: acpStatusFromSubscription(provider, result.status) };
-  return {
-    ok: false,
-    error: legacyAcpErrorCode(result.error),
-    ...(result.status ? { status: acpStatusFromSubscription(provider, result.status) } : {}),
-  };
-}
 
 function normalizeSubscriptionLoginMethod(value: unknown): SubscriptionLoginMethod | null {
   return value === "browser" || value === "device-code" ? value : null;
@@ -338,7 +187,6 @@ function activeLlmIdentity(
   });
 }
 
-
 function sameLlmSettings(left: LLMSettings, right: LLMSettings): boolean {
   return canonicalStringify(left) === canonicalStringify(right);
 }
@@ -354,8 +202,8 @@ async function refreshChatRuntimeProviders(
   const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failure) throw failure.reason;
 }
-/** Install or remove marketplace provider presets and run every follow-up a preset change needs (reviewer rewire, chat providers, wildcard, sandbox endpoints, the settings broadcast), reporting a follow-up that
- * fails as `finishError` once `mutate` has saved. The settings IPC and the content store's provider activation both go through here, so a preset installed from a git package behaves exactly like one installed today. */
+/** Run provider preset follow-ups for content activation and deactivation (reviewer rewire, chat providers, wildcard, sandbox endpoints, and the settings broadcast).
+ * Report follow-up failures as `finishError` once `mutate` has saved. */
 export async function mutateMarketplaceProviderPresets(
   deps: IpcDeps,
   mutate: () => Promise<AppSettings>,
@@ -739,36 +587,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       publishSubscriptionSelectionChanged(nextSubscriptionProvider);
     }
   };
-  const hostAcpSubscriptionHandler = (
-    channel: string,
-    action: string,
-    operation: (
-      runtime: SubscriptionRuntimeService,
-      provider: AcpSubscriptionProviderId,
-    ) => Promise<SubscriptionRuntimeStatus>,
-    notifyStatusUpdated = true,
-  ) => async (e: IpcMainInvokeEvent, providerValue: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, channel, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (!isAcpSubscriptionProviderId(providerValue)) {
-      auditSubscriptionMutation(action, "invalid", "rejected", "subscription-provider-not-supported");
-      return { ok: false as const, error: "acp-provider-not-supported" as const };
-    }
-    const run = notifyStatusUpdated ? runSubscriptionMutation : runSubscriptionAction;
-    const result = await run(
-      providerValue,
-      (runtime, runtimeId) => operation(runtime, runtimeId as AcpSubscriptionProviderId),
-    );
-    auditSubscriptionMutation(
-      action,
-      providerValue,
-      result.ok ? "succeeded" : "failed",
-      result.ok ? undefined : result.error,
-    );
-    return legacyAcpActionResult(providerValue, result);
-  };
 
   ipcMain.handle(CHANNELS.settings.get, (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
@@ -974,49 +792,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
     return result;
-  });
-
-  ipcMain.handle(CHANNELS.settings.marketplaceInstallProviderPreset, async (e, preset) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceInstallProviderPreset, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    try {
-      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
-        settingsService.installMarketplaceProviderPreset(preset as MarketplaceInstalledProviderPreset));
-      return finishError ?? result;
-    } catch (err) {
-      return {
-        ok: false,
-        error: "marketplace-provider-preset-install-failed",
-        message: errorMessage(err),
-      };
-    }
-  });
-
-  ipcMain.handle(CHANNELS.settings.marketplaceUninstallProviderPreset, async (e, providerId) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.marketplaceUninstallProviderPreset, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof providerId !== "string") {
-      return {
-        ok: false,
-        error: "invalid-provider-preset-id",
-        message: "Provider preset id must be a string.",
-      };
-    }
-    try {
-      const { result, finishError } = await mutateMarketplaceProviderPresets(deps, () =>
-        settingsService.uninstallMarketplaceProviderPreset(providerId));
-      return finishError ?? result;
-    } catch (err) {
-      return {
-        ok: false,
-        error: "marketplace-provider-preset-uninstall-failed",
-        message: errorMessage(err),
-      };
-    }
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
@@ -1396,111 +1171,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   });
 
-  // Older renderer bundles retain these names, but never get a second client or a bypass around common safety verification and URL validation.
-  const hostCodexSubscriptionHandler = (
-    channel: string,
-    action: string,
-    operation: (runtime: SubscriptionRuntimeService) => Promise<SubscriptionRuntimeStatus>,
-    notifyStatusUpdated = true,
-  ) => async (e: IpcMainInvokeEvent) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, channel, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const run = notifyStatusUpdated ? runSubscriptionMutation : runSubscriptionAction;
-    const result = await run("codex", (runtime) => operation(runtime));
-    auditSubscriptionMutation(action, "codex", result.ok ? "succeeded" : "failed", result.ok ? undefined : result.error);
-    return legacyCodexActionResult(result);
-  };
-  ipcMain.handle(
-    CHANNELS.settings.codexSubscriptionStatus,
-    hostCodexSubscriptionHandler(CHANNELS.settings.codexSubscriptionStatus, "legacy-status", (runtime) => runtime.getStatus("codex"), false),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.codexSubscriptionStartBrowserLogin,
-    hostCodexSubscriptionHandler(CHANNELS.settings.codexSubscriptionStartBrowserLogin, "legacy-start-login", (runtime) => runtime.startLogin("codex", "browser")),
-  );
-  ipcMain.handle(CHANNELS.settings.codexSubscriptionStartDeviceCodeLogin, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.codexSubscriptionStartDeviceCodeLogin, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    const result = await runSubscriptionMutation("codex", (runtime) => runtime.startLogin("codex", "device-code"));
-    auditSubscriptionMutation("legacy-start-login", "codex", result.ok ? "succeeded" : "failed", result.ok ? undefined : result.error);
-    return legacyCodexDeviceCodeResult(result);
-  });
-  ipcMain.handle(
-    CHANNELS.settings.codexSubscriptionCancelLogin,
-    hostCodexSubscriptionHandler(CHANNELS.settings.codexSubscriptionCancelLogin, "legacy-cancel-login", (runtime) => runtime.cancelLogin("codex")),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.codexSubscriptionLogout,
-    hostCodexSubscriptionHandler(CHANNELS.settings.codexSubscriptionLogout, "legacy-logout", (runtime) => runtime.logout("codex")),
-  );
-  ipcMain.handle(CHANNELS.settings.codexSubscriptionListModels, async (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.settings.codexSubscriptionListModels, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    return legacyCodexModelsResult(await runSubscriptionModels("codex"));
-  });
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionStatus,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionStatus, "legacy-status", (runtime, provider) => runtime.getStatus(provider), false),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionChooseRuntime,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionChooseRuntime, "legacy-choose-runtime", async (runtime, provider) => {
-      const selected = await dialog.showOpenDialog({
-        title: provider === "kimi-code" ? "Select Kimi Code executable" : "Select Grok Build executable",
-        properties: ["openFile", "dontAddToRecent"],
-        ...(process.platform === "win32"
-          ? { filters: [{ name: "Executable", extensions: ["exe"] }] }
-          : {}),
-      });
-      const executable = selected.filePaths[0];
-      return selected.canceled || !executable
-        ? runtime.getStatus(provider)
-        : runtime.chooseExecutable(provider, executable);
-    }),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionForgetRuntime,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionForgetRuntime, "legacy-forget-runtime", (runtime, provider) => runtime.forgetExecutable(provider)),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionVerify,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionVerify, "legacy-verify-runtime", (runtime, provider) => runtime.verify(provider)),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionStartLogin,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionStartLogin, "legacy-start-login", (runtime, provider) => runtime.startLogin(provider, "device-code")),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionOpenLoginBrowser,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionOpenLoginBrowser, "legacy-open-login-browser", (runtime, provider) => runtime.openPendingVerificationUrl(provider, openSubscriptionLogin)),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionCancelLogin,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionCancelLogin, "legacy-cancel-login", (runtime, provider) => runtime.cancelLogin(provider)),
-  );
-  ipcMain.handle(
-    CHANNELS.settings.acpSubscriptionLogout,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionLogout, "legacy-logout", async (runtime, provider) => {
-      if (provider === "grok-build") {
-        const confirmation = await dialog.showMessageBox({
-          type: "warning",
-          buttons: ["Cancel", "Sign out"],
-          defaultId: 0,
-          cancelId: 0,
-          message: "Sign out of Grok Build?",
-          detail: "This clears only Ave's isolated Grok Build session. Other provider sessions are unchanged.",
-        });
-        if (confirmation.response !== 1) return runtime.getStatus(provider);
-      }
-      return runtime.logout(provider);
-    }),
-  );
   ipcMain.handle(CHANNELS.shell.openExternal, async (e, url: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.shell.openExternal, e); return UNAUTHORIZED_FRAME; }
     const { shell } = await import("electron");
@@ -1537,16 +1207,5 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
   ipcMain.handle(CHANNELS.telemetry.allowedHosts, () => telemetryAllowedHosts());
 
-  ipcMain.handle(CHANNELS.telemetry.consentAnswer, async (e, accepted: boolean) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.telemetry.consentAnswer, e); return UNAUTHORIZED_FRAME; }
-    await settingsService.patch({
-      telemetry: {
-        ...settingsService.get("telemetry"),
-        telemetryPromptAnswered: true,
-        enabled: accepted === true,
-      },
-    });
-    return { ok: true };
-  });
   return stopAutoVerifiedListener;
 }

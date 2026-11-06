@@ -24,7 +24,7 @@ import { SettingsService, settingsFilePath, type AppSettings } from "../../../da
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { hasMarketplaceInstallInFlight } from "../../../marketplace/app/install-lifecycle.js";
-import { registerSettingsHandlers } from "../settings.js";
+import { mutateMarketplaceProviderPresets } from "../settings.js";
 
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
@@ -35,6 +35,7 @@ const intent = { intent: { inputOrigin: "user-keyboard", userActivation: true } 
 let mainEvent: IpcMainInvokeEvent;
 let marketplace: FolderServiceHarness | undefined;
 let settingsRoot: string | undefined;
+let presetDeps: IpcDeps;
 
 beforeEach(() => {
   clearAppUpdateInstallRequested();
@@ -77,18 +78,18 @@ async function providerPresetSettings() {
   await settingsService.patch({});
   const refreshProvider = vi.fn();
   const refreshSandboxNetworkConfig = vi.fn(async () => undefined);
-  registerSettingsHandlers({ settingsService, auditLogger, getAppWindows: () => [],
-    conversationLoop: { refreshProvider }, refreshSandboxNetworkConfig } as unknown as IpcDeps);
+  presetDeps = { settingsService, auditLogger, getAppWindows: () => [],
+    conversationLoop: { refreshProvider }, refreshSandboxNetworkConfig } as unknown as IpcDeps;
   return { settingsService, refreshProvider, refreshSandboxNetworkConfig,
     stored: () => readFileSync(settingsFilePath(settingsRoot!), "utf8") };
 }
 
 function invokePresetInstall(preset = PROVIDER_PRESET) {
-  return handlers.get(CHANNELS.settings.marketplaceInstallProviderPreset)!(mainEvent, preset);
+  return mutateMarketplaceProviderPresets(presetDeps, () => presetDeps.settingsService.installMarketplaceProviderPreset(preset));
 }
 
 function invokePresetRemove() {
-  return handlers.get(CHANNELS.settings.marketplaceUninstallProviderPreset)!(mainEvent, PROVIDER_PRESET.providerId);
+  return mutateMarketplaceProviderPresets(presetDeps, () => presetDeps.settingsService.uninstallMarketplaceProviderPreset(PROVIDER_PRESET.providerId));
 }
 
 function holdSettingsSave(service: SettingsService) {
@@ -151,34 +152,30 @@ function revokeLanguage(root: string) {
 }
 
 describe("app relaunch boundary", () => {
-  it("refuses preset install IPC after accepted relaunch without changing stored settings", async () => {
+  it("refuses preset install mutation after accepted relaunch without changing stored settings", async () => {
     const { settingsService, stored, refreshProvider } = await providerPresetSettings();
     const before = stored();
     expect(invoke()).toEqual({ ok: true });
-    const result = await invokePresetInstall();
-    expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ error: "marketplace-provider-preset-install-failed", message: "Installed package changes are paused while Ave is restarting." });
+    await expect(invokePresetInstall()).rejects.toThrow("Installed package changes are paused while Ave is restarting.");
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual([]);
     expect(stored()).toBe(before);
     expect(refreshProvider).not.toHaveBeenCalled();
   });
 
-  it("refuses preset remove IPC after accepted relaunch without changing stored settings", async () => {
+  it("refuses preset remove mutation after accepted relaunch without changing stored settings", async () => {
     const { settingsService, stored, refreshProvider } = await providerPresetSettings();
     await settingsService.installMarketplaceProviderPreset(PROVIDER_PRESET);
     const before = stored();
     const presets = settingsService.get("marketplace").installedProviderPresets;
     expect(presets).toHaveLength(1);
     expect(invoke()).toEqual({ ok: true });
-    const result = await invokePresetRemove();
-    expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ error: "marketplace-provider-preset-uninstall-failed", message: "Installed package changes are paused while Ave is restarting." });
+    await expect(invokePresetRemove()).rejects.toThrow("Installed package changes are paused while Ave is restarting.");
     expect(settingsService.get("marketplace").installedProviderPresets).toEqual(presets);
     expect(stored()).toBe(before);
     expect(refreshProvider).not.toHaveBeenCalled();
   });
 
-  it("refuses relaunch while preset install IPC holds a settings save", async () => {
+  it("refuses relaunch while preset install mutation holds a settings save", async () => {
     const { settingsService, stored } = await providerPresetSettings();
     const before = stored();
     const hold = holdSettingsSave(settingsService);
@@ -199,7 +196,7 @@ describe("app relaunch boundary", () => {
     expect(invoke()).toEqual({ ok: true });
   });
 
-  it("refuses relaunch while preset remove IPC holds a settings save", async () => {
+  it("refuses relaunch while preset remove mutation holds a settings save", async () => {
     const { settingsService, stored } = await providerPresetSettings();
     await settingsService.installMarketplaceProviderPreset(PROVIDER_PRESET);
     const before = stored();

@@ -3,7 +3,7 @@
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
-import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
+import { readJsonFileOrEmpty, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 
@@ -22,7 +22,6 @@ interface SkillApprovalsFile {
 
 const FEATURE_ID = "skills";
 const FILE_NAME = "approvals.json";
-const LEGACY_ROOT_FILE = "skill-approvals.json";
 
 const defaultPath = (): string => resolve(aveHome(), FEATURE_ID, FILE_NAME);
 
@@ -78,11 +77,7 @@ export class SkillApprovalsStore {
   }
 
   async load(): Promise<void> {
-    // Only when this store is on its default path: a caller that passed an explicit path (tests, fixtures) is not talking about `~/.ave` at all, and
-    // migrating the real user's file underneath such a call would be a side effect nobody asked for.
-    if (this.filePath === defaultPath()) {
-      adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
-    }
+
     this.cacheFromPending = (await readAveHomeInput(this.filePath)).status === "untrusted";
     const file = await readFileOrEmpty(this.filePath);
     this.cache = new Map(file.approvedSkills.map((r) => [r.name, r.sha256]));

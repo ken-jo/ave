@@ -77,10 +77,6 @@ export type AcpSubscriptionErrorCode =
   | "acp-logout-not-supported"
   | "acp-operation-failed";
 
-export type AcpSubscriptionActionResult =
-  | { ok: true; status: AcpSubscriptionStatus }
-  | { ok: false; error: AcpSubscriptionErrorCode; status?: AcpSubscriptionStatus };
-
 export function acpSubscriptionStatus(
   provider: AcpSubscriptionProviderId,
   runtime: AcpSubscriptionRuntimeState,

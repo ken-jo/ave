@@ -25,7 +25,6 @@ describe("useMemorySearch", () => {
   it("queries memorySearchEntries for note results after debounce", async () => {
     vi.useFakeTimers();
     const api = {
-      memoryListEntries: vi.fn().mockResolvedValue([]),
       memoryGetIndex: vi.fn().mockResolvedValue("# Ave Memory Index\n\n## Saved Memories\n- indexed 기억"),
       memoryListSessions: vi.fn().mockResolvedValue([]),
       memorySearchEntries: vi.fn().mockResolvedValue([
@@ -65,7 +64,6 @@ describe("useMemorySearch", () => {
   it("does not call memorySearchEntries before debounce delay elapses", async () => {
     vi.useFakeTimers();
     const api = {
-      memoryListEntries: vi.fn().mockResolvedValue([]),
       memoryGetIndex: vi.fn().mockResolvedValue(""),
       memoryListSessions: vi.fn().mockResolvedValue([]),
       memorySearchEntries: vi.fn().mockResolvedValue([]),

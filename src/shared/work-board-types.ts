@@ -498,10 +498,3 @@ export type WorkProposalAcceptResult =
 export type WorkProposalDismissResult =
   | { status: "dismissed"; proposalId: string }
   | { status: "not_found"; proposalId: string };
-
-/** Proposal changes emit pointers so renderer windows refresh without polling. */
-export interface WorkProposalChangedEventPayload {
-  proposalId: string;
-  change: "posted" | "dismissed" | "accepted";
-  changedAt: string;
-}

@@ -26,7 +26,6 @@ import { contentLedgerOrigins } from "../../marketplace/content/ledger.js";
 import { MarketplaceError, scrubMarketplaceErrorDetail, scrubMarketplaceStrings } from "../../marketplace/errors.js";
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
-import { migrateLegacyPlugins } from "../../marketplace/migration/legacy-plugins.js";
 import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
 import { installerGitRoot } from "../../marketplace/git/installer-git.js";
 import { updateHistoryStore } from "../../marketplace/updates/history.js";
@@ -392,14 +391,7 @@ async function createGitMarketplaceService(
     log: { warn: (message) => log.warn(message) },
     legacyMigration: {
       markerPath: join(packagesRoot, "legacy-migration.json"),
-      plugins: (officialPlugin, applied) =>
-        migrateLegacyPlugins({
-          paths: pluginPaths,
-          officialPlugin,
-          applied,
-          now: () => new Date(),
-          log: { warn: (message) => log.warn(message) },
-        }),
+
       content: (ports) => migrateLegacyContent({ ...ports, ...legacyContentSettings(deps), log: { warn: (message) => log.warn(message) } }),
     },
     revocations: revocationSink(content, events.onCatalogChanged),

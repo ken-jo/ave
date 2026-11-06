@@ -5,7 +5,7 @@ import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type PackageKeyVi
 import { MarketplaceError } from "../errors.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
-import type { LegacyPluginReport } from "../migration/legacy-plugins.js";
+
 import type { InstalledPackage } from "../resolve/identity.js";
 import type { MarketplacePolicy, PackageKey } from "../sources/policy.js";
 import type { SourceOrigin } from "../sources/registry.js";
@@ -38,16 +38,13 @@ const LISTABLE_ORIGINS = new Set<SourceOrigin>(["official", "managed"]);
 export function bootInstallNoticeFrom(
   report: BootInstallReport,
   policy: MarketplacePolicy,
-  legacy: Pick<LegacyPluginReport, "unmanaged" | "lostGrants"> | null,
   revoked: readonly RevokedPackageView[],
 ): BootInstallNoticeView | null {
   const view = (key: PackageKey): PackageKeyView => ({ sourceId: key.source, kind: key.kind, name: key.name });
   const required = (key: PackageKey) => requiredByPolicy(policy, key.kind, key.name) !== undefined;
   const forYou = report.installed.filter((key) => !required(key)).map(view);
   const requiredKeys = report.installed.filter(required).map(view);
-  const unmanaged = [...(legacy?.unmanaged ?? [])];
-  const lostGrants = (legacy?.lostGrants ?? []).map((item) => ({ plugin: item.plugin, keys: [...item.keys] }));
-  const notice = { forYou, required: requiredKeys, unmanaged, lostGrants, revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
+  const notice = { forYou, required: requiredKeys, unmanaged: [], lostGrants: [], revoked: revoked.map((item) => ({ ...item, key: { ...item.key } })), autoUpdated: [] };
   return bootInstallNoticeIsEmpty(notice) ? null : notice;
 }
 

@@ -95,7 +95,6 @@ describe("Renderer source has no hardcoded color escapes", async () => {
   const ALLOW = [
     "theme/schemes/",
     "__tests__/",
-    "components/AveLogo.tsx",   /* brand gradient — not theme-bound */
     "test/",
   ];
 

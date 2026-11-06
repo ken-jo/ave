@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { t } from "../../i18n/index.js";
 import { McpGovernance } from "../mcp-governance.js";
-import type { McpGovernancePolicy, McpServerApproval } from "../types.js";
+import type { McpGovernancePolicy, McpServerApproval, McpServerConfig } from "../types.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { buildPolicy, governanceWithPolicy, stdioApproval } from "./test-helpers.js";
 
@@ -575,5 +576,15 @@ describe("McpGovernance.validateServer — http scheme", () => {
     expect(validateUrl("http://127.0.0.1.evil.com/mcp").valid).toBe(false);
     expect(validateUrl("http://ollama.localhost/mcp").valid).toBe(false);
     expect(validateUrl("https://example.com/mcp").valid).toBe(true);
+  });
+});
+
+describe("McpGovernance transport validation", () => {
+  it.each(["sse", "websocket"])("rejects unsupported transport %s", (transport) => {
+    const gov = governanceWithPolicy(basePolicy({ transport: transport as McpServerApproval["transport"] }));
+    const result = gov.validateServer({ id: "browser-use", transport } as unknown as McpServerConfig);
+    expect(result).toMatchObject({ valid: false, layer: 1 });
+    if (result.valid) throw new Error("Unsupported transport was accepted");
+    expect(result.reason).toBe(t("be_mcpClient.unsupportedTransport", { transport }));
   });
 });

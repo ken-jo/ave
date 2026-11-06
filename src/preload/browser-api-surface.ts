@@ -34,8 +34,6 @@ export function buildBrowserTabsApiSurface(): BrowserTabsApi {
     stop: (tabId) => ipcRenderer.invoke(CHANNELS.browser.stop, { tabId }),
     pause: (tabId) => ipcRenderer.invoke(CHANNELS.browser.pause, { tabId }),
     resume: (tabId) => ipcRenderer.invoke(CHANNELS.browser.resume, { tabId }),
-    pausePopup: (tabId) => ipcRenderer.invoke(CHANNELS.browser.pausePopup, { tabId }),
-    resumePopup: (tabId) => ipcRenderer.invoke(CHANNELS.browser.resumePopup, { tabId }),
     onTabOp: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const request = parseBrowserTabOpRequest(payload);

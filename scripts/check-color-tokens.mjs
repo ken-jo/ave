@@ -16,7 +16,6 @@ const PATTERNS = [
 // Keep this migration allow-list shrink-only.
 // Contract examples and fixed brand gradients are theme-independent exceptions.
 const GRANDFATHERED_FILES = new Set([
-  "src/ui/renderer/components/AveLogo.tsx",
 ]);
 
 // Palette data and color derivation are the sources behind semantic tokens.

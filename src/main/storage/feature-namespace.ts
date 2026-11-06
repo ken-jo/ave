@@ -1,6 +1,6 @@
 /** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
-import { chmodSync, constants, promises as fs, linkSync, mkdirSync, rmSync } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import { join, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
@@ -268,47 +268,4 @@ export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle 
     },
     createFile: (name) => createNamespaceFile(resolveDir(), name),
   };
-}
-
-/** Migrate by hard-linking then unlinking; existing destinations are the idempotency marker and must never be overwritten.
- * Failures are non-fatal; remove this migration when pre-move installations are unsupported, tracked for the release after 2026-11-01. */
-export function adoptLegacyRootFileSync(
-  featureId: string,
-  destinationName: string,
-  legacyRootFileName: string,
-): void {
-  if (!featureId || featureId.includes("/") || featureId.includes("\\") || featureId.includes("..")) {
-    throw new Error(`adoptLegacyRootFileSync: invalid featureId "${featureId}"`);
-  }
-  const home = aveHome();
-  const legacyPath = join(home, legacyRootFileName);
-  const destinationPath = join(home, featureId, destinationName);
-  const boundaryExists = assertProtectedBoundary(join(home, featureId));
-  try {
-    if (!boundaryExists) mkdirSync(join(home, featureId), { recursive: true, mode: PRIVATE_DIR_MODE });
-    linkSync(legacyPath, destinationPath);
-  } catch (err) {
-    // ENOENT; no legacy file, which is the steady state from the second run onward. EEXIST; the destination already owns the name. Both
-    // are the ordinary outcome, and neither needed a stat to discover: asking is what creates the window between the answer and the act.
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST") return;
-    log.warn(
-      `storage migration: ${legacyRootFileName} -> ${featureId}/${destinationName} could not be linked: %s`,
-      (err as Error).message,
-    );
-    return;
-  }
-  try {
-    // The link published the legacy INODE under the new name, so it published the legacy mode
-    // with it. Restore the namespace's own file mode while the two names still share the inode.
-    chmodSync(destinationPath, PRIVATE_FILE_MODE);
-    rmSync(legacyPath, { force: true });
-    log.info(`storage migration: adopted ${legacyRootFileName} as ${featureId}/${destinationName}`);
-  } catch (err) {
-    // The data is already safe under the new name; only the tidying failed.
-    log.warn(
-      `storage migration: ${legacyRootFileName} -> ${featureId}/${destinationName} linked, but could not be tidied: %s`,
-      (err as Error).message,
-    );
-  }
 }

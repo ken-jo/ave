@@ -30,10 +30,10 @@ describe("Work Board — live execute session id", () => {
     const noop = () => () => {};
     const api = {
       listWorkBoard: async () => ({ status: "ok" as const, items: [ITEM] }),
-      listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
       getWorkBoardItem: async () => ({ status: "found" as const, item: ITEM }),
       onWorkBoardItemChanged: noop,
-      onWorkProposalChanged: noop,
+
       onWorkBoardRunProgress: (cb: (ev: RunProgressEventPayload) => void) => {
         progress = cb;
         return () => {};
@@ -62,9 +62,9 @@ describe("Work Board — live execute session id", () => {
     const noop = () => () => {};
     const api = {
       listWorkBoard: async () => ({ status: "ok" as const, items: [ITEM] }),
-      listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
       onWorkBoardItemChanged: noop,
-      onWorkProposalChanged: noop,
+
       onWorkBoardRunProgress: (cb: (ev: RunProgressEventPayload) => void) => { progress = cb; return () => {}; },
       onWorkBoardRunStarted: noop,
       onWorkBoardRunFinished: (cb: (typeof finished)[number]) => { finished.push(cb); return () => {}; },

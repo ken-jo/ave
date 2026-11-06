@@ -20,9 +20,7 @@ import {
   ROUTINES,
   WORK_BOARD,
   WORK_APPROVALS,
-  type AgentInstallResultPayload,
   type PluginInstallResultPayload,
-  type SkillInstallResultPayload,
 } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import type {
@@ -54,7 +52,6 @@ import {
 import type { MarketplaceAnnouncementPayload } from "../shared/marketplace-announcements.js";
 import { isMemorySaveResultEvent, type MemorySaveResultEvent } from "../shared/memory-save-result.js";
 import type { PackageUpdateView } from "../shared/git-marketplace.js";
-import type { AiProviderPingIpcResult } from "../shared/ai-provider-ping.js";
 import type { ModelCatalogIpcResult } from "../shared/model-catalog/types.js";
 import type {
   OpenHtmlPreviewWindowPayload,
@@ -76,11 +73,6 @@ import type {
   AveApi,
   NotificationClickPayload,
   NotificationToastPayload,
-  OverlayTriggerCompletedPayload,
-  OverlayTriggerExpiredPayload,
-  OverlayTriggerFailedPayload,
-  OverlayTriggerImportedPayload,
-  OverlayTriggerStartedPayload,
 } from "../ui/renderer/types.js";
 import {
   isSubscriptionRuntimeStatusUpdatedEvent,
@@ -214,12 +206,7 @@ export function buildInternalApiSurface() {
   hasApiKey: async (vendor?: string) => ipcRenderer.invoke(CHANNELS.settings.hasApiKey, vendor) as Promise<boolean>,
   deleteApiKey: async (vendor: string) => ipcRenderer.invoke(CHANNELS.settings.deleteApiKey, vendor),
   listLlmModels: async (request: unknown) => ipcRenderer.invoke(CHANNELS.settings.listLlmModels, request),
-  codexSubscriptionStatus: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionStatus),
-  codexSubscriptionStartBrowserLogin: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionStartBrowserLogin),
-  codexSubscriptionStartDeviceCodeLogin: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionStartDeviceCodeLogin),
-  codexSubscriptionCancelLogin: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionCancelLogin),
-  codexSubscriptionLogout: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionLogout),
-  codexSubscriptionListModels: async () => ipcRenderer.invoke(CHANNELS.settings.codexSubscriptionListModels),
+
   subscriptionRuntimeStatus: async (provider: unknown, options?: unknown) =>
     options === undefined
       ? ipcRenderer.invoke(CHANNELS.settings.subscriptionRuntimeStatus, provider)
@@ -246,18 +233,7 @@ export function buildInternalApiSurface() {
     ? ipcRenderer.invoke(CHANNELS.settings.subscriptionUseForChat, provider)
     : ipcRenderer.invoke(CHANNELS.settings.subscriptionUseForChat, provider, model),
   subscriptionUseApiForChat: async () => ipcRenderer.invoke(CHANNELS.settings.subscriptionUseApiForChat),
-  acpSubscriptionStatus: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionStatus, provider),
-  acpSubscriptionChooseRuntime: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionChooseRuntime, provider),
-  acpSubscriptionForgetRuntime: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionForgetRuntime, provider),
-  acpSubscriptionVerify: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionVerify, provider),
-  acpSubscriptionStartLogin: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionStartLogin, provider),
-  acpSubscriptionOpenLoginBrowser: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionOpenLoginBrowser, provider),
-  acpSubscriptionCancelLogin: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionCancelLogin, provider),
-  acpSubscriptionLogout: async (provider: unknown) => ipcRenderer.invoke(CHANNELS.settings.acpSubscriptionLogout, provider),
-  installMarketplaceProviderPreset: async (preset: unknown) =>
-    ipcRenderer.invoke(CHANNELS.settings.marketplaceInstallProviderPreset, preset),
-  uninstallMarketplaceProviderPreset: async (providerId: string) =>
-    ipcRenderer.invoke(CHANNELS.settings.marketplaceUninstallProviderPreset, providerId),
+
   setWebApiKey: async (provider: string, apiKey: string) => ipcRenderer.invoke(CHANNELS.settings.setWebApiKey, provider, apiKey),
   hasWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.hasWebApiKey, provider) as Promise<boolean>,
   deleteWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.deleteWebApiKey, provider),
@@ -435,8 +411,7 @@ export function buildInternalApiSurface() {
     opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.summariesGet, opts),
-  memoryListEntries: async (opts?: MemoryProjectOptions) =>
-    invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
+
   memoryDeleteEntry: async (filename: string, opts?: MemoryProjectOptions) =>
     invokeMemoryDelete(CHANNELS.memory.entriesDelete, filename, opts),
   memoryUndo: async (token: string) => ipcRenderer.invoke(CHANNELS.memory.undo, token),
@@ -525,36 +500,6 @@ export function buildInternalApiSurface() {
       skillLocalId,
       hookProbeToolName,
     ) as Promise<unknown>,
-
-  onTriggerStarted: (handler: (payload: OverlayTriggerStartedPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.trigger.started, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.trigger.started, listener);
-  },
-  onTriggerCompleted: (handler: (result: OverlayTriggerCompletedPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.trigger.completed, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.trigger.completed, listener);
-  },
-  onTriggerFailed: (handler: (payload: OverlayTriggerFailedPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.trigger.failed, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.trigger.failed, listener);
-  },
-  onTriggerExpired: (handler: (payload: OverlayTriggerExpiredPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.trigger.expired, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.trigger.expired, listener);
-  },
-  onTriggerImported: (handler: (payload: OverlayTriggerImportedPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.trigger.imported, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.trigger.imported, listener);
-  },
-  dismissTrigger: async (sessionId: string) =>
-    ipcRenderer.invoke(CHANNELS.trigger.dismiss, sessionId) as ReturnType<AveApi["dismissTrigger"]>,
-  importTrigger: async (sessionId: string) =>
-    ipcRenderer.invoke(CHANNELS.trigger.import, sessionId) as ReturnType<AveApi["importTrigger"]>,
 
   onMarketplaceUpdatesAvailable: (handler: (updates: PackageUpdateView[]) => void) => {
     const listener = (_event: unknown, updates: Parameters<typeof handler>[0]) => handler(updates);
@@ -657,17 +602,6 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.prompts.updated, listener);
   },
 
-  onAgentUninstallResult: (handler: (payload: AgentInstallResultPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.agents.uninstallResult, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.agents.uninstallResult, listener);
-  },
-  onSkillUninstallResult: (handler: (payload: SkillInstallResultPayload) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(CHANNELS.skills.uninstallResult, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.skills.uninstallResult, listener);
-  },
-
   // Status bar; aggregated runtime counters (tools / plugins / mcps).
   getRuntimeCounts: async () =>
     ipcRenderer.invoke(CHANNELS.runtime.counts) as Promise<{
@@ -675,18 +609,7 @@ export function buildInternalApiSurface() {
       plugins: number;
       mcps: number;
     }>,
-  // Status bar; static environment info (platform / hostname / user). Static enough to fetch once on mount; values don't change
-  // while the process is alive. Cwd is intentionally NOT exposed; least-privilege for plugin UI panels that share this contextBridge.
-  getRuntimeEnv: async () =>
-    ipcRenderer.invoke(CHANNELS.runtime.env) as Promise<{
-      platform: string;
-      hostname: string;
-      user: string;
-    }>,
-  // Status bar; active LLM provider reachability probe. This performs a tiny one-shot model call from the main
-  // process so "connected" means the provider itself answered, not only that the marketplace backend is online.
-  pingAiProvider: async () =>
-    ipcRenderer.invoke(CHANNELS.llm.ping) as Promise<AiProviderPingIpcResult>,
+
   // The model catalog main resolves against; the renderer installs it before it mounts (`src/ui/renderer/model-catalog-bootstrap.ts`).
   getModelCatalog: async () =>
     ipcRenderer.invoke(CHANNELS.llm.getModelCatalog) as Promise<ModelCatalogIpcResult>,
@@ -967,7 +890,7 @@ export function buildInternalApiSurface() {
   // routine_schedule; persistent routine list + lifecycle
   // With a project, only that project's items plus the unscoped ones stored before projects existed.
   listRoutines: async (filter?: { projectRoot?: string }) => ipcRenderer.invoke(ROUTINES.list, filter),
-  dismissRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.dismiss, id),
+
   removeRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.remove, id),
   triggerRoutineNow: async (id: string) => ipcRenderer.invoke(ROUTINES.triggerNow, id),
   listPendingRoutineResults: async () =>
@@ -1022,11 +945,6 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(ROUTINES.failed, listener);
     return () => ipcRenderer.removeListener(ROUTINES.failed, listener);
   },
-  // Routine session history; the same conversation rows the sidebar lists, scoped by routineId, plus the opening snippet the panel shows.
-  listRoutineSessions: async (routineId: string, limit?: number) =>
-    ipcRenderer.invoke(ROUTINES.listSessions, routineId, limit) as Promise<
-      import("../shared/session-lookup.js").RoutineRunRow[]
-    >,
 
   // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.* channel; the main-process store returns discriminated `status` envelopes (or `{ ok:false, error }` for
   // unauthorized-frame / no-store), forwarded verbatim; no fallback / re-shaping. Shared payload + result types come from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
@@ -1106,13 +1024,7 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardBriefingResult
       | { ok: false; error: string }
     >,
-  // Read the open proposals, promote one into a work item, or close it. There is no renderer path that
-  // CREATES a proposal; a proposal is a plugin's claim, and the user's own additions are ordinary work items.
-  listWorkProposals: async () =>
-    ipcRenderer.invoke(WORK_BOARD.listProposals) as Promise<
-      | import("../shared/work-board-types.js").WorkProposalListResult
-      | { ok: false; error: string }
-    >,
+
   acceptWorkProposal: async (proposalId: string, projectRoot?: string) =>
     ipcRenderer.invoke(WORK_BOARD.acceptProposal, proposalId, projectRoot) as Promise<
       | import("../shared/work-board-types.js").WorkProposalAcceptResult
@@ -1123,13 +1035,7 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkProposalDismissResult
       | { ok: false; error: string }
     >,
-  onWorkProposalChanged: (
-    handler: (payload: import("../shared/work-board-types.js").WorkProposalChangedEventPayload) => void,
-  ) => {
-    const listener = (_e: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
-    ipcRenderer.on(WORK_BOARD.proposalChanged, listener);
-    return () => ipcRenderer.removeListener(WORK_BOARD.proposalChanged, listener);
-  },
+
   // Steer the item's running execute child at its next round boundary. The snapshot was minted at the user's gesture and is consumed here
   // once, so a replayed or scripted call reaches main without userActivation and is refused (no downgrade to another principal).
   steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot) =>
@@ -1215,11 +1121,7 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(OVERLAY_V1.show, listener);
     return () => ipcRenderer.removeListener(OVERLAY_V1.show, listener);
   },
-  onOverlayUpdate: (handler: Parameters<AveApi["onOverlayUpdate"]>[0]) => {
-    const listener = (_e: unknown, id: string, patch: Parameters<typeof handler>[1]) => handler(id, patch);
-    ipcRenderer.on(OVERLAY_V1.update, listener);
-    return () => ipcRenderer.removeListener(OVERLAY_V1.update, listener);
-  },
+
   onOverlayDismiss: (handler: (id: string) => void) => {
     const listener = (_e: unknown, id: string) => handler(id);
     ipcRenderer.on(OVERLAY_V1.dismiss, listener);

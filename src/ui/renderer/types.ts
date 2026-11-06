@@ -12,18 +12,14 @@ import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 
 import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
 import type { PluginUiExtensionView } from "../../shared/plugin-ui-view.js";
-import type {
-  AgentInstallResultPayload,
-  PluginInstallResultPayload,
-  SkillInstallResultPayload,
-} from "../../contract/app-contract.js";
+import type { PluginInstallResultPayload } from "../../contract/app-contract.js";
 import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
-import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
+import type { SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
 import type { McpAuthErrorCode, McpAuthenticationResult, McpConfigMutationResult, McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
 import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
@@ -31,16 +27,6 @@ import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.j
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 import type { PluginConfigRecord } from "../../shared/plugin-config.js";
-import type { MarketplaceInstalledProviderPreset } from "../../shared/marketplace-package-assets.js";
-import type {
-  CodexSubscriptionActionResult,
-  CodexSubscriptionDeviceCodeResult,
-  CodexSubscriptionModelsResult,
-} from "../../shared/codex-subscription.js";
-import type {
-  AcpSubscriptionActionResult,
-  AcpSubscriptionProviderId,
-} from "../../shared/acp-subscription.js";
 import type {
   SubscriptionLoginMethod,
   SubscriptionRuntimeActionResult,
@@ -70,7 +56,6 @@ import type {
   DynamicNativeMenuAction,
   DynamicNativeMenuPayload,
 } from "../../shared/native-context-menu.js";
-import type { AiProviderPingIpcResult } from "../../shared/ai-provider-ping.js";
 import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
 import type {
   OpenHtmlPreviewWindowPayload,
@@ -443,47 +428,6 @@ export type NotificationToastPayload = {
   sticky?: true;
 };
 
-/** An overlay trigger began running — main → renderer, before any item is shown. */
-export type OverlayTriggerStartedPayload = {
-  sessionId: string;
-  pluginId: string;
-  source: string;
-  visibility: "silent" | "summary-only" | "user-visible";
-  priority: "low" | "normal" | "high";
-  startedAt: string;
-};
-
-export type OverlayTriggerCompletedPayload = {
-  sessionId: string;
-  pluginId: string;
-  source: string;
-  visibility: "silent" | "summary-only" | "user-visible";
-  priority: "low" | "normal" | "high";
-  prompt: string;
-  summary: string;
-  completedAt: string;
-};
-
-export type OverlayTriggerExpiredPayload = { sessionId: string; pluginId: string; source: string };
-
-export type OverlayTriggerFailedPayload = {
-  sessionId: string;
-  pluginId: string;
-  source: string;
-  reason: "provider_error" | "tool_error" | "abort" | "unknown";
-  errorId: string;
-};
-
-export type OverlayTriggerImportedPayload = {
-  sessionId: string;
-  source: string;
-  prompt: string;
-  summary: string;
-  toolCallCount: number;
-  importedAt: string;
-  wrappedPrompt: string;
-};
-
 export type NotificationClickPayload = {
   kind: NotificationKind;
   contextRef?: NotificationContextRef;
@@ -548,12 +492,7 @@ export type AveApi = {
   hasApiKey: (vendor?: string) => Promise<boolean>;
   deleteApiKey: (vendor: string) => Promise<{ ok: true }>;
   listLlmModels: (request: LlmModelListRequest) => Promise<LlmModelListResult>;
-  codexSubscriptionStatus: () => Promise<CodexSubscriptionActionResult>;
-  codexSubscriptionStartBrowserLogin: () => Promise<CodexSubscriptionActionResult>;
-  codexSubscriptionStartDeviceCodeLogin: () => Promise<CodexSubscriptionDeviceCodeResult>;
-  codexSubscriptionCancelLogin: () => Promise<CodexSubscriptionActionResult>;
-  codexSubscriptionLogout: () => Promise<CodexSubscriptionActionResult>;
-  codexSubscriptionListModels: () => Promise<CodexSubscriptionModelsResult>;
+
   /** `refresh` re-runs discovery instead of reusing main's settled status. */
   subscriptionRuntimeStatus: (provider: SubscriptionRuntimeId, options?: { refresh?: boolean }) => Promise<SubscriptionRuntimeActionResult>;
   subscriptionChooseRuntime: (provider: SubscriptionRuntimeId) => Promise<SubscriptionRuntimeActionResult>;
@@ -571,20 +510,7 @@ export type AveApi = {
     | { ok: true }
     | { ok: false; error: SubscriptionRuntimeErrorCode }
   >;
-  acpSubscriptionStatus: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionChooseRuntime: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionForgetRuntime: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionVerify: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionStartLogin: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionOpenLoginBrowser: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionCancelLogin: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  acpSubscriptionLogout: (provider: AcpSubscriptionProviderId) => Promise<AcpSubscriptionActionResult>;
-  installMarketplaceProviderPreset: (
-    preset: MarketplaceInstalledProviderPreset,
-  ) => Promise<SettingsUpdateResult>;
-  uninstallMarketplaceProviderPreset: (
-    providerId: string,
-  ) => Promise<SettingsUpdateResult>;
+
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
   deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
@@ -749,8 +675,7 @@ export type AveApi = {
       }
     | { ok: false; error: string }
   >;
-  // Provider-auth bridge methods are plugin-owned.
-  chatHasProvider: () => Promise<boolean>;
+
   /** Custom slash commands visible from this tile's session project. */
   chatListCustomCommands?: () => Promise<{ commands: import("../../shared/custom-command.js").CustomCommandEntry[] }>;
   captureUserKeyboardIntent: () => import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot;
@@ -885,7 +810,7 @@ export type AveApi = {
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryGetDetail: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryDetailResult>;
   memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
-  memoryListEntries: (opts?: ProjectQueryOptions) => Promise<MemoryEntry[]>;
+
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;
   memoryUndo: (token: string) => Promise<MemoryUndoIpcResult>;
   onMemorySaveResult: (handler: (event: MemorySaveResultEvent) => void) => () => void;
@@ -983,7 +908,7 @@ export type AveApi = {
   >;
   // routine_schedule — persistent routine list + lifecycle
   listRoutines: (filter?: { projectRoot?: string }) => Promise<import("../../shared/routines-types.js").RoutineListResult>;
-  dismissRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
+
   removeRoutine: (id: string) => Promise<{ ok: boolean; error?: string }>;
   triggerRoutineNow: (id: string) => Promise<{ ok: boolean; error?: string }>;
   listPendingRoutineResults: () => Promise<import("../../shared/routines-types.js").RoutineFiredPayload[]>;
@@ -1044,25 +969,9 @@ export type AveApi = {
   };
   /** The same store `window.ave.userApproval` fronts. */
   userApproval: AveUserApprovalApi;
-  // ─── Overlay trigger lifecycle ────────────────────────────────────────
-  dismissTrigger: (sessionId: string) => Promise<{
-  ok: boolean;
-  removed?: boolean;
-  error?: string;
-}>;
-  importTrigger: (sessionId: string) => Promise<{
-  ok: boolean;
-  imported?: number;
-  reason?: string;
-  error?: string;
-}>;
-  onTriggerStarted: (handler: (payload: OverlayTriggerStartedPayload) => void) => () => void;
-  onTriggerCompleted: (handler: (result: OverlayTriggerCompletedPayload) => void) => () => void;
-  onTriggerExpired: (handler: (payload: OverlayTriggerExpiredPayload) => void) => () => void;
-  onTriggerFailed: (handler: (payload: OverlayTriggerFailedPayload) => void) => () => void;
-  onTriggerImported: (handler: (payload: OverlayTriggerImportedPayload) => void) => () => void;
+
   onOverlayShow: (handler: (item: import("./context/OverlayContext.js").OverlayItem) => void) => () => void;
-  onOverlayUpdate: (handler: (id: string, patch: Partial<import("./context/OverlayContext.js").OverlayItem>) => void) => () => void;
+
   onOverlayDismiss: (handler: (id: string) => void) => () => void;
   /** Plugin alert cards: report the user's answer, and pull the cards staged before this window listened. */
   alerts?: {
@@ -1074,11 +983,7 @@ export type AveApi = {
     cardClosed: (alertId: string, reason: import("../../shared/alerts-types.js").AlertCardClosedReason) => Promise<{ ok: boolean; error?: string }>;
     listOpen: () => Promise<import("../../shared/alerts-types.js").AlertCard[]>;
   };
-  // Routine session history
-  listRoutineSessions: (
-    routineId: string,
-    limit?: number,
-  ) => Promise<RoutineRunRow[]>;
+
   // ─── Work Board — personal board CRUD + lifecycle ───
   // Result envelopes are the store's discriminated `status` unions (or
   // `{ ok:false, error }` for unauthorized-frame / no-store). Shared types come
@@ -1168,13 +1073,7 @@ export type AveApi = {
     | import("../../shared/work-board-types.js").WorkBoardBriefingResult
     | { ok: false; error: string }
   >;
-  // ─── Recommended work (plugin-proposed cards) ────
-  // Read-only from the renderer's side plus the two answers the user can give.
-  // Plugins post and withdraw over HostApi; there is no renderer create path.
-  listWorkProposals?: () => Promise<
-    | import("../../shared/work-board-types.js").WorkProposalListResult
-    | { ok: false; error: string }
-  >;
+
   acceptWorkProposal?: (
     proposalId: string,
     projectRoot?: string,
@@ -1188,9 +1087,7 @@ export type AveApi = {
     | import("../../shared/work-board-types.js").WorkProposalDismissResult
     | { ok: false; error: string }
   >;
-  onWorkProposalChanged?: (
-    handler: (payload: import("../../shared/work-board-types.js").WorkProposalChangedEventPayload) => void,
-  ) => () => void;
+
   // Work-level decisions ("확인 필요") for one project, or for every authorized project, plus the all-project badge total.
   // Tool-execution approvals are not included.
   listWorkApprovals?: (
@@ -1300,8 +1197,7 @@ export type AveApi = {
   onPluginEnabledChanged?: (h: (payload: { pluginId: string; enabled: boolean }) => void) => () => void;
   /** Fires after a loaded plugin runtime is restarted/reloaded without a full app restart. */
   onPluginRuntimeUpdated?: (h: (payload: { pluginId: string }) => void) => () => void;
-  onAgentUninstallResult: (h: (payload: AgentInstallResultPayload) => void) => () => void;
-  onSkillUninstallResult: (h: (payload: SkillInstallResultPayload) => void) => () => void;
+
   /**
    * Dev-only: open a folder picker and install a local plugin directory.
    *
@@ -1313,8 +1209,7 @@ export type AveApi = {
    */
   installLocalPlugin: () => Promise<{ pluginId: string; installed: true } | null>;
   getRuntimeCounts: () => Promise<{ tools: number; plugins: number; mcps: number }>;
-  getRuntimeEnv: () => Promise<{ platform: string; hostname: string; user: string }>;
-  pingAiProvider: () => Promise<AiProviderPingIpcResult>;
+
   getModelCatalog: () => Promise<ModelCatalogIpcResult>;
 
   getAppInfo: () => Promise<{
@@ -1328,7 +1223,7 @@ export type AveApi = {
     userDataPath: string;
   }>;
   onViewActivate: (h: (k: string, settingsTab?: string) => void) => () => void;
-  getUsageSummary: (days?: number) => Promise<UsageSummaryShape>;
+
   getUsageRange: (opts: { dateFrom: string; dateTo: string }) => Promise<UsageSummaryShape>;
   getUsageDailySummary: (input: UsageDailySummaryInput) => Promise<UsageDailySummaryResult>;
   /** The price corrections in force; untrusted until `normalizePricingOverrides` reads it. */

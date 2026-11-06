@@ -46,11 +46,11 @@ function stubApi(items: WorkItemResolved[], transcript: RunTranscriptEvent[] = T
   const noop = () => () => {};
   const api = {
     listWorkBoard: list,
-    listWorkProposals: async () => ({ status: "ok" as const, proposals: [] }),
+
     getWorkBoardRunTranscript: vi.fn(async () => ({ events: transcript })),
     runWorkBoardItem: vi.fn(() => new Promise(() => {})),
     onWorkBoardItemChanged: noop,
-    onWorkProposalChanged: noop,
+
     onWorkBoardRunProgress: (h: (p: RunProgressEventPayload) => void) => {
       progress.push(h);
       return () => {};

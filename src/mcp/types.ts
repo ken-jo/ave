@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 import type { ToolSurface } from "../plugins/runtime/tool-visibility.js";
 
 export interface McpGovernancePolicy {
@@ -36,14 +29,11 @@ export interface McpServerApproval {
   bundled?: { package: string; server: string; fingerprint: string };
   revokedAt?: string;
 
-
   transport: McpTransportKind;
 
   allowedCommands?: string[];
 
   allowedUrls?: string[];
-
-
 
   requiredAuth: "sso" | "api-key" | "oauth" | "mtls" | "none";
   /** For stdio API-key servers, the exact environment variable name that may receive the user-supplied key at process launch. */
@@ -53,19 +43,11 @@ export interface McpServerApproval {
 
   tlsRequired: boolean;
 
-
-
   allowedCapabilities: McpCapability[];
 
   maxTools: number;
 
   toolNamePrefix: string;
-
-
-
-
-
-
 
   connectionTimeoutMs: number;
 
@@ -93,8 +75,8 @@ export interface McpGlobalRules {
 }
 
 /** MCP transport types. - `stdio` : local subprocess with newline-delimited JSON-RPC on stdin/stdout. - `http` : MCP Streamable HTTP transport (final `2026-07-28` revision). Single POST endpoint that returns either `application/json` for single responses or
- * `text/event-stream` for streaming. - `sse` : legacy HTTP+SSE dual-endpoint transport. Governance layer only (validation path); runtime client is not implemented; prefer `http`. - `websocket`: not implemented at the client layer; governance validation only. */
-type McpTransportKind = "stdio" | "http" | "sse" | "websocket";
+ * `text/event-stream` for streaming. */
+type McpTransportKind = "stdio" | "http";
 export type McpCapability = "tools" | "resources" | "prompts";
 
 interface McpServerConfigBase {
@@ -162,24 +144,9 @@ export interface McpHttpServerConfig extends McpServerConfigBase {
   apiKeyEnv?: never;
 }
 
-/** Legacy / not-yet-implemented transports. Kept on the discriminated union so governance validation
- * paths that branch on `config.transport === "sse"` or `"websocket"` continue to type-check unchanged. */
-export interface McpLegacyRemoteServerConfig extends McpServerConfigBase {
-  transport: "sse" | "websocket";
-  url: string;
-  headers?: Record<string, string>;
-  apiKeyHeader?: string;
-  command?: never;
-  args?: never;
-  env?: never;
-  apiKeyEnv?: never;
-  allowPrivateNetworks?: never;
-}
-
 export type McpServerConfig =
   | McpStdioServerConfig
-  | McpHttpServerConfig
-  | McpLegacyRemoteServerConfig;
+  | McpHttpServerConfig;
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 

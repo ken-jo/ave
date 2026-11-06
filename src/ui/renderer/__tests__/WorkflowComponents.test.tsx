@@ -32,9 +32,9 @@ function fakeApi(overrides: Partial<AveApi> = {}): AveApi {
   return {
     // Only methods used by the components under test need real impls; the rest are stubbed minimally to satisfy the type.
     listRoutines: () => Promise.resolve({ routines: [], invalid: [] }),
-    dismissRoutine: stub as never,
+
     removeRoutine: stub as never,
-    listRoutineSessions: () => Promise.resolve([]),
+
     onRoutineFired: noopUnsub as never,
     listSessionTasks: () => Promise.resolve([]),
     onSessionTasksChanged: noopUnsub as never,

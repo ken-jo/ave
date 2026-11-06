@@ -193,9 +193,7 @@ export async function folderService(options: {
     ...(options.onPackageTransactionsIdle ? { onPackageTransactionsIdle: options.onPackageTransactionsIdle } : {}),
     legacyMigration: {
       markerPath: join(options.root, "legacy-migration.json"),
-      plugins: async () => {
-        throw new Error("no legacy migration in folder tests");
-      },
+
       content: async () => {
         throw new Error("no legacy migration in folder tests");
       },
