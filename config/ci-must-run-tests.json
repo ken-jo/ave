@@ -74,8 +74,7 @@
       "src/tools/__tests__/xlsx-edit-skill.test.ts",
       "test/scripts/ave-home-guard-bundle.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
-      "test/scripts/preview-document-bundle.test.ts",
-      "test/scripts/protocol-client-check.test.ts"
+      "test/scripts/preview-document-bundle.test.ts"
     ],
     "tree-invariants": [
       "test/scripts/pre-push-markdown-policy.test.ts",

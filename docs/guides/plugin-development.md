@@ -18,7 +18,7 @@ host APIs or tool execution.
 Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
 authoring contract in `src/plugins/public-contract.ts`. Vendor those two files
-and the released host protocol schema `schemas/plugin-host-protocol/3/protocol.schema.json`
+and the released host protocol schema `schemas/plugin-host-protocol/5/protocol.schema.json`
 unchanged into `contract/` at an app release tag, and record their hashes in
 `contract/sources.json`. Published extensions for currently released hosts declare
 `extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
@@ -161,7 +161,7 @@ or spoof another extension id.
 A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
 handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
 extension's own stdio, and `schemas/plugin-host-protocol/3/protocol.schema.json`
-(protocol `3`, the released contract) describes every method, notification
+(protocol `5`, the current build contract) describes every method, notification
 and error code of that channel. The file is generated from the host's own sources
 at each app release, so it describes what the host actually serves. To validate a frame, compile a method's `params`,
 `result`, `errors` or `events` sub-schema (for example
@@ -172,21 +172,8 @@ request id, a nullable value) is a type array. The host does not yet admit a
 extension that speaks the protocol without its JavaScript runtime; every extension
 today is a JavaScript `entry`.
 
-Beside the schema, `schemas/plugin-host-protocol/3/protocol-client.ts` is the same
-protocol as TypeScript: every named type and every method's params and result,
-the `HostMethod`, `InstanceMethod`, `HostNotification` and `HostProtocolErrorCode`
-unions, and `createHostClient(transport)`, which has one typed method per
-`ave/host/*` request named by its path (`ave/host/storage/read` is
-`client.storage.read(params)`). It is generated from the committed schema, imports
-nothing and names no app version; pin it by sha256 from the release tag, as you
-pin the schema. A JavaScript author who does not use the reference runtime pairs it
-with their own stdio loop: implement `HostClientTransport` so that `request`
-writes one newline-delimited JSON-RPC request with a fresh `id` to stdout and
-resolves with the matching reply's `result` (or rejects with its `error`), and
-`notify` writes a frame with no `id`; then, for each line read from stdin, answer
-`ave/instance/*` and MCP requests yourself, hand a reply to the pending `request`
-with its `id`, and route `isHostNotification(frame)` frames to the plugin. The client does
-not validate replies; validate with the schema where you need to.
+Authors implementing their own transport use the JSON schema directly. The host
+does not maintain a generated TypeScript protocol client.
 
 ### Loopback OAuth with PKCE
 

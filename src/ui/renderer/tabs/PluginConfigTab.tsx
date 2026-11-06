@@ -23,8 +23,6 @@ import {
   type PluginProtocolUpdatePath,
 } from "./plugin-doctor-match.js";
 import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
-import { requestNewChatDraft } from "../chat-draft-request.js";
-import { buildHostProtocolMigrationPrompt } from "./plugin-migration-prompt.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
@@ -916,16 +914,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           }}
                         >
                           {t("pluginConfigTab.protocolUpdateButton", { version: protocolUpdatePath.version })}
-                        </Button>
-                      ) : selectedPlugin.installFailureKind === "incompatible-host-protocol" ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs px-2"
-                          data-testid={`plugin-config:doctor-migrate:${selectedPlugin.id}`}
-                          onClick={() => requestNewChatDraft(buildHostProtocolMigrationPrompt(selectedPlugin, protocolUpdatePath))}
-                        >
-                          {t("pluginConfigTab.doctorMigrateButton")}
                         </Button>
                       ) : (
                         <Button

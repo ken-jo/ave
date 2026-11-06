@@ -56,9 +56,8 @@ import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import {
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
-  isServedHostProtocolVersion,
 } from "../isolation/host-api-wire.js";
 import { createPluginStorage, createPluginStorageAuditSink } from "../storage.js";
 import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
@@ -2653,7 +2652,7 @@ abstract class PluginRuntimeState {
   /** Refuse unserved host protocols on every load path; a newer app may also have dropped that protocol. */
   protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
     const declared = manifest.requires?.hostProtocol;
-    if (isServedHostProtocolVersion(declared)) return false;
+    if (declared === HOST_PROTOCOL_VERSION) return false;
     this.refuseIncompatibleHostProtocol(
       manifest,
       new IncompatibleHostProtocolError(manifest.id, { declared: declared ?? null }),
@@ -2685,7 +2684,7 @@ abstract class PluginRuntimeState {
       this.auditLog?.("error", "plugin_incompatible_host_protocol", {
         pluginId: manifest.id,
         ...error.detail,
-        served: [...HOST_PROTOCOL_VERSIONS_SERVED],
+        served: [HOST_PROTOCOL_VERSION],
       });
       return { kind: "incompatible-host-protocol", summary: error.message };
     }

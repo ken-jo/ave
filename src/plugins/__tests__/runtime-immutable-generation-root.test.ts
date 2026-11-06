@@ -11,7 +11,7 @@ import type {
 } from "../plugin-host-generation.js";
 import { agentPluginsDocument, servedAgentPluginsDocument, makeTestTreeWritable } from "./test-helpers.js";
 import {
-  HOST_PROTOCOL_VERSIONS_SERVED,
+  HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
 } from "../isolation/host-api-wire.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
@@ -265,7 +265,7 @@ export default async function createPlugin(ctx) {
     expect(audit.filter((entry) => entry.message === "plugin_incompatible_host_protocol")).toEqual([{
       level: "error",
       message: "plugin_incompatible_host_protocol",
-      data: { pluginId, declared: null, served: [...HOST_PROTOCOL_VERSIONS_SERVED] },
+      data: { pluginId, declared: null, served: [HOST_PROTOCOL_VERSION] },
     }]);
     const card = runtime.listPluginCards().find((entry) => entry.id === pluginId);
     expect(card?.loadStatus).toBe("loaded");

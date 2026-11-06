@@ -41,7 +41,7 @@ function isMissing(head) {
 }
 
 // Distinguish absent objects from failed lookups; lookup failures throw.
-export async function existingObject(aws, bucket, key, path, tag) {
+async function existingObject(aws, bucket, key, path, tag) {
   const head = aws(["head-object", "--bucket", bucket, "--key", key]);
   if (head.status === 0) {
     const etag = JSON.parse(head.stdout).ETag?.replaceAll('"', "");

@@ -40,7 +40,7 @@ import type {
 } from "../plugin-host-generation.js";
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
+import { HOST_PROTOCOL_VERSION } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
@@ -378,7 +378,7 @@ export function servedAgentPluginsDocument(
   }
   return agentPluginsDocument({
     ...manifest,
-    requires: { hostProtocol: HOST_PROTOCOL_VERSIONS_SERVED[0], ...requires },
+    requires: { hostProtocol: HOST_PROTOCOL_VERSION, ...requires },
   });
 }
 
