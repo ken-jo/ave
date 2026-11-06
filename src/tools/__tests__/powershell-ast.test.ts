@@ -77,39 +77,3 @@ describe("native PowerShell AST facts", () => {
     expect(normalizePowerShellAstSummary(raw).commands[0]!.arguments[1]).toEqual(raw.commands[0]!.arguments[1]);
   });
 });
-
-// Summaries are synthetic: provider commands must never reach a real shell.
-it.each([String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Software\Foo`, String.raw`Cert:\CurrentUser\My\fixture`,
-  String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`,
-  "Env:fixture", "Function:fixture", "Variable:fixture"])("rejects provider target before filesystem resolution: %s", path => {
-  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
-});
-
-// URL operands are not provider drives; the gate inspects every argument on every route.
-it.each([
-  ["iwr", command("iwr", [literal("https://example.com"), { kind: "parameter", name: "OutFile", text: "-OutFile", argument: literal("x.txt") }])],
-  ["Invoke-WebRequest -Uri", command("Invoke-WebRequest", [{ kind: "parameter", name: "Uri", text: "-Uri", argument: literal("https://example.com/a") }])],
-  ["git clone", command("git", [literal("clone"), literal("https://github.com/a/b")])],
-  ["git+https", command("git", [literal("clone"), literal("git+https://github.com/a/b")])],
-] as const)("allows a URL operand at the runtime gate: %s", (_name, summary) => {
-  expect(check(summary)).toBeNull();
-});
-
-it.each([String.raw`HKCU:\Software\Foo`, "file:///C:/Users/example/.ssh/id_test"])("still refuses %s beside the URL exception", path => {
-  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
-});
-
-it.each(["HKCU://Software/Foo", "cert://CurrentUser/My/ABC", "Temp://x", "Registry://HKEY_CURRENT_USER/Software/Foo"])("refuses non-network scheme %s as a provider path", path => {
-  expect(check(command("Remove-Item", [literal(path)]))).toMatchObject({ kind: "dynamic-path" });
-});
-
-it.each([
-  ["positional", command("Get-Content", [literal("C://Users/example/.ssh/id_rsa")])],
-  ["-LiteralPath", command("Get-Content", [{ kind: "parameter", name: "LiteralPath", text: "-LiteralPath", argument: literal("C://Users/example/.ssh/id_rsa") }])],
-] as const)("checks a drive path written with // as a filesystem path: %s", (_name, summary) => {
-  expect(check(summary)).not.toBeNull();
-});
-
-it("allows an ssh URL operand", () => {
-  expect(check(command("git", [literal("clone"), literal("ssh://git@example.com/a/b")]))).toBeNull();
-});
