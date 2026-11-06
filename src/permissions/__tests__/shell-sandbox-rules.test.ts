@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, getSandboxGeneration, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { approvalCacheKeyIdentity, canonicalStringify, captureApprovalWorkingDirectory, lookupApproval, recordApproval, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { ToolExecutor } from "../../tools/executor.js";
@@ -28,7 +28,7 @@ import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 // Plans as the host provider issues them; startup proof trusts only issued plans.
 function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
   const plan = buildPlan(input);
-  recordIssuedHostShellExecutionPlan(plan, "fixture");
+  recordIssuedHostShellExecutionPlan(plan, getSandboxGeneration());
   return plan;
 }
 

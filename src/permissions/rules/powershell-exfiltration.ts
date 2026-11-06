@@ -1295,9 +1295,13 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   let currentDirectory: string | null = cwd;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
     let value = binding.value;
-    if (!isPowerShellFilesystemSyntax(value)) { unproven = true; return; }
     if (effect === "write" && (binding.dynamic || !literalPath && /[*?\[\]]/.test(value))) {
       unknownProtectedWrite ??= "The shell write target may resolve to a protected path.";
+    }
+    if (!isPowerShellFilesystemSyntax(value)) {
+      unproven = true;
+      // A drive- or provider-qualified target names no project file; a colon after a separator still gets the floor checks.
+      if (/^[^\\/]{2,}:/.test(value) || value.includes("::")) return;
     }
     unproven ||= binding.dynamic;
     value = value.replace(/^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i, homedir());

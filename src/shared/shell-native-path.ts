@@ -54,9 +54,10 @@ function windowsVolumeRoot(path: string): string {
 }
 
 // Filesystem syntax is defined positively: no `:`, a drive-absolute path, or UNC. Every other colon form (provider
-// drives, `Provider::`, module-qualified providers, drive-relative `C:x`) gets no filesystem authority.
+// drives, `Provider::`, module-qualified providers, drive-relative `C:x`, a drive path with a stream suffix) gets no
+// filesystem authority.
 export function isPowerShellFilesystemSyntax(path: string): boolean {
-  return !path.includes(":") || /^[A-Za-z]:[\\/]/.test(path) || /^[\\/]{2}/.test(path);
+  return !path.includes(":") || /^[A-Za-z]:[\\/][^:]*$/.test(path) || /^[\\/]{2}/.test(path);
 }
 
 export function modelShellPath(path: string, model: ShellPathModel): NativeShellPath {

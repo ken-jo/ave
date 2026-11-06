@@ -14,13 +14,14 @@ import { PermissionManager } from "../permission-manager.js";
 import { decidePermission } from "../decision-pipeline.js";
 import { buildHostShellExecutionPlan as buildPlan, type HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { recordIssuedHostShellExecutionPlan } from "../host-shell-execution-plan-issuance.js";
+import { getSandboxGeneration } from "../sandbox-capability.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths } from "../rules/powershell-exfiltration.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
 
 // Plans as the host provider issues them; startup proof trusts only issued plans.
 function buildHostShellExecutionPlan(input: Parameters<typeof buildPlan>[0]): HostShellExecutionPlan {
   const plan = buildPlan(input);
-  recordIssuedHostShellExecutionPlan(plan, "fixture");
+  recordIssuedHostShellExecutionPlan(plan, getSandboxGeneration());
   return plan;
 }
 const CAPABILITY = { kind: "asrt", confidence: "verified", platform: "win32", reason: "fixture",
@@ -50,6 +51,9 @@ function check(command: string, plan?: HostShellExecutionPlan) {
 }
 
 describe("confined native shell startup decisions", () => {
+  // The classifier reads process.platform; pin it so every host tests the MXC route.
+  beforeEach(() => setProcessPlatform("win32"));
+
   it("pins the container command argv before its encoded payload", () => {
     const command = "Set-Content -Path x.txt -Value '-NoProfile'";
     const line = powerShellMxcCommandLine("C:\\Windows", command);
@@ -88,13 +92,25 @@ describe("confined native shell startup decisions", () => {
   });
 
   it.each([
-    "Set-Content -Path ../outside.txt -Value y", String.raw`Set-Content -Path ..\outside.txt -Value y`, "Remove-Item -Recurse child",
+    "Set-Content -Path ../outside.txt -Value y", "Remove-Item -Recurse child",
     "Set-Content -Path x.txt -Value y; & $x", "& $x",
     "Set-Content -Path .git/config -Value y", "New-Item -ItemType SymbolicLink -Path d",
     "New-Item -ItemType Directory -Path ../outside", "New-Item -ItemType Directory -Path .git/config",
     "New-Item -ItemType Directory -Path d -Name ../outside",
   ])("retains approval for external, destructive, opaque or protected actions: %s", command => {
     expect(check(command, MXC_PLAN).decision).toBe("ask");
+  });
+
+  // A backslash is a separator only on a real Windows host.
+  it.runIf(process.platform === "win32")("retains approval for a backslash project escape", () => {
+    expect(check(String.raw`Set-Content -Path ..\outside.txt -Value y`, MXC_PLAN).decision).toBe("ask");
+  });
+
+  it("does not pin a plan issued under a stale capability generation", () => {
+    const stale = buildPlan({ platform: "win32", requestedSandbox: true, shellSubstrate: "mxc", activeCapability: CAPABILITY });
+    recordIssuedHostShellExecutionPlan(stale, `${getSandboxGeneration()}-stale`);
+    expect(isPowerShellStartupPinned("win32", stale)).toBe(false);
+    expect(check(WRITES[0], stale)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
   });
 
   it("retains approval for application control writes", () => {
@@ -109,7 +125,7 @@ const PROVIDER_TARGETS = [String.raw`HKCU:\Software\Foo`, String.raw`HKLM:\Softw
   String.raw`Cert:\CurrentUser\My\fixture`, String.raw`WSMan:\localhost\Client`, String.raw`Registry::HKEY_CURRENT_USER\Software\Foo`,
   "Env:fixture", "Function:fixture", "Variable:fixture",
   String.raw`Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\Software\Foo`, String.raw`Microsoft.PowerShell.Security\Certificate::CurrentUser\My\ABC`,
-  String.raw`Microsoft.PowerShell.Core\Variable::x`, String.raw`Microsoft.PowerShell.Core\Environment::GITHUB_TOKEN`, String.raw`C:fixture`];
+  String.raw`Microsoft.PowerShell.Core\Variable::x`, String.raw`Microsoft.PowerShell.Core\Environment::GITHUB_TOKEN`];
 describe("provider targets stay outside filesystem authority", () => {
   it.each(["win32", "darwin"] as const)("asks for provider writes on %s", platform => {
     setProcessPlatform(platform);

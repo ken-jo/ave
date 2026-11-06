@@ -1,14 +1,14 @@
 import { resolveTrustedPowerShellExecutable } from "./powershell-executable.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { issuedHostShellExecutionPlanGeneration } from "../permissions/host-shell-execution-plan-issuance.js";
+import { isCurrentIssuedHostShellExecutionPlan } from "../permissions/host-shell-execution-plan-issuance.js";
 
 export const POWERSHELL_STARTUP_ARGS = Object.freeze(["-NoLogo", "-NoProfile", "-NonInteractive"]);
 export const WIN32_POWERSHELL_STARTUP_ARGS = Object.freeze([...POWERSHELL_STARTUP_ARGS, "-ExecutionPolicy", "RemoteSigned"]);
 
 // The container route uses the fixed startup argv above, proven only by a
-// plan the host provider issued. Other Windows paths remain unproven; supported POSIX hosts also isolate configuration at startup.
+// plan the host provider issued under the live capability generation. Other Windows paths remain unproven; supported POSIX hosts also isolate configuration at startup.
 export function isPowerShellStartupPinned(platform: NodeJS.Platform = process.platform, plan?: HostShellExecutionPlan): boolean {
-  if (platform === "win32") return plan !== undefined && issuedHostShellExecutionPlanGeneration(plan) !== undefined && plan.platform === "win32" && plan.requestedSandbox
+  if (platform === "win32") return plan !== undefined && isCurrentIssuedHostShellExecutionPlan(plan) && plan.platform === "win32" && plan.requestedSandbox
     && plan.executionRequest === "default" && plan.mode === "asrt" && plan.sandboxed && plan.substrate === "mxc";
   if (platform !== "darwin" && platform !== "linux") return false;
   const installation = resolveTrustedPowerShellExecutable(platform);
