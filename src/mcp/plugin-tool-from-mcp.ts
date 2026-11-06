@@ -74,6 +74,10 @@ export function mcpToolToPluginTool(
       || Array.isArray(tool.annotations) || Object.keys(tool.annotations).some((key) => key !== "readOnlyHint"))) {
     throw new Error(`Plugin tool '${tool.name}' has unsupported annotations; only readOnlyHint is allowed`);
   }
+  if (tool.annotations !== undefined && Object.hasOwn(tool.annotations, "readOnlyHint")
+      && typeof tool.annotations.readOnlyHint !== "boolean") {
+    throw new Error(`Plugin tool '${tool.name}' has invalid readOnlyHint; expected a boolean`);
+  }
   const readOnly = tool.annotations?.readOnlyHint === true
     && Object.values(operationPolicy?.operations ?? {}).every(
       (rule) => rule.kind === "read" && rule.minimumRisk === "read",

@@ -198,12 +198,17 @@ describe("plugin read declaration", () => {
     expect(tool.isReadOnly({})).toBe(true);
     expect(tool.pathFields).toEqual(["path"]);
   });
-  it.each([undefined, false, "true", 1])("does not accept a missing or non-true declaration: %s", (readOnlyHint) => {
+  it.each([false])("keeps an explicit false declaration write-equivalent: %s", (readOnlyHint) => {
     const tool = mcpToolToPluginTool(PLUGIN_ID, {
       ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint } as { readOnlyHint?: boolean },
     }, async () => ({ text: "read" }));
     expect(tool.category).toBe("write");
     expect(tool.isReadOnly({})).toBe(false);
+  });
+  it.each([undefined, null, "true", "false", 0, 1, {}, []])("rejects a non-boolean readOnlyHint %j", (readOnlyHint) => {
+    expect(() => mcpToolToPluginTool(PLUGIN_ID, {
+      ...manifestToolsToMcpTools(MANIFEST)[0], annotations: { readOnlyHint } as never,
+    }, async () => ({ text: "read" }))).toThrow("invalid readOnlyHint; expected a boolean");
   });
   it.each([null, [], true, "readOnlyHint"])("rejects malformed wire annotations %j", (annotations) => {
     expect(() => mcpToolToPluginTool(PLUGIN_ID, {

@@ -10,7 +10,7 @@ import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketpla
 export type MainWindowRole = "primary" | "secondary";
 
 // Capture native identities while the window is live; closed handlers cannot read them.
-const mainWindows = new Map<BrowserWindow, { id: number; surface: WebContents }>();
+const mainWindows = new Map<BrowserWindow, { id: number; surface: WebContents; onDestroyed: () => void }>();
 let focusedMainWindowId: number | null = null;
 let primaryMainWindowId: number | null = null;
 // Main window ids, least to most recently focused (opening counts as focus).
@@ -57,14 +57,18 @@ export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): vo
     if (getPrimaryMainWindow() !== null) throw new Error("main-window-primary-already-claimed");
     primaryMainWindowId = id;
   }
-  mainWindows.set(win, { id, surface });
+  const onDestroyed = (): void => unregisterMainWindow(win);
+  mainWindows.set(win, { id, surface, onDestroyed });
+  // Publish the successor before any per-request destruction listener hands off cards.
+  surface.once?.("destroyed", onDestroyed);
   recordFocus(id);
 }
 
 export function unregisterMainWindow(win: BrowserWindow): void {
   const entry = mainWindows.get(win);
   if (!entry) return;
-  const { id, surface } = entry;
+  const { id, surface, onDestroyed } = entry;
+  surface.off?.("destroyed", onDestroyed);
   mainWindows.delete(win);
   const historyIndex = focusHistory.indexOf(id);
   if (historyIndex >= 0) focusHistory.splice(historyIndex, 1);
@@ -147,7 +151,10 @@ export function sideChatOwnerWindow(): BrowserWindow | null {
 
 // @internal test-only reset for isolated module-state tests.
 export function resetMainWindowsForTests(): void {
-  for (const { surface } of mainWindows.values()) updateApprovalSurface({ kind: "release-owner", surface });
+  for (const { surface, onDestroyed } of mainWindows.values()) {
+    surface.off?.("destroyed", onDestroyed);
+    updateApprovalSurface({ kind: "release-owner", surface });
+  }
   updateApprovalSurface({ kind: "attach-unattributed", surface: null });
   mainWindows.clear();
   focusHistory.length = 0;

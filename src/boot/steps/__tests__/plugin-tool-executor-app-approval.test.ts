@@ -190,6 +190,35 @@ describe("app tool approvals through production executor wiring", () => {
     expect(h.cards[3].reason).toMatch(/paused/i);
     expect(h.handler).not.toHaveBeenCalled();
   });
+  it("routes a late breaker approval to the main window and rejects other owners", async () => {
+    const h = await harness({ mode: "auto", reviewLevel: "low" });
+    const recheck = h.manager.recheckPermission.bind(h.manager);
+    const admission = vi.spyOn(h.manager, "recheckPermission").mockImplementationOnce((result) => {
+      expect(result.decision).toBe("allow");
+      for (let index = 0; index < 3; index++) {
+        h.manager.getJudgeBreaker().record("plugin-mcp-app-sample-panel", "deny", `sibling-block-${index}`);
+      }
+      return recheck(result);
+    });
+    const pending = h.runtime.callFromApp("panel_status");
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1));
+    expect(admission).toHaveBeenCalled();
+    expect(h.review).toHaveBeenCalledOnce();
+    expect(h.classify).toHaveBeenCalledOnce();
+    const card = h.cards[0];
+    expect(card.sessionId).toBeUndefined();
+    expect(card.sourcePluginId).toBe("sample-panel");
+    expect(card.reason).toMatch(/paused/i);
+    expect(h.handler).not.toHaveBeenCalled();
+    const foreign = { id: 204, isDestroyed: () => false } as WebContents;
+    expect(h.gate.resolveFromDesktopRenderer(card.id, {
+      requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
+    }, foreign)).toBeNull();
+    expect(h.gate.pendingCount).toBe(1);
+    h.allow();
+    await expect(pending).resolves.toBe("panel result");
+    expect(h.handler).toHaveBeenCalledOnce();
+  });
   it("denies without a main-window surface", async () => {
     const h = await harness({ mainWindow: false });
     await expect(h.call()).rejects.toThrow("Nobody can approve this request; do not retry.");
