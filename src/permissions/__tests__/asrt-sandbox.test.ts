@@ -21,7 +21,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
@@ -77,7 +77,7 @@ it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const { simulatedConfigurationFs } = await import("../../__tests__/support/simulated-win32-drive.js");
-  return { ...simulatedConfigurationFs(actual), lstatSync: vi.fn(actual.lstatSync) };
+  return { ...simulatedConfigurationFs(actual), lstatSync: vi.fn(actual.lstatSync), readdirSync: vi.fn(actual.readdirSync) };
 });
 
 vi.mock("node:os", async (importOriginal) => {
@@ -1819,6 +1819,13 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       }
       return nativeLstat(path, options);
     }) as typeof lstatSync);
+    const nativeReaddir = vi.mocked(readdirSync).getMockImplementation()!;
+    vi.mocked(readdirSync).mockImplementation(((path, options) => {
+      if (/^\\\\server\\profiles(?:\\|$)/i.test(resolve(String(path)))) {
+        throw Object.assign(new Error("Synthetic network entry is absent"), { code: "ENOENT" });
+      }
+      return nativeReaddir(path, options);
+    }) as typeof readdirSync);
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
       /^\\\\server\\profiles\\tester(?:\\|$)/i.test(path) ? { status: "missing" } : currentEvidence(path, snapshot));
@@ -1835,6 +1842,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     } finally {
       pin.mockRestore();
       vi.mocked(lstatSync).mockImplementation(nativeLstat);
+      vi.mocked(readdirSync).mockImplementation(nativeReaddir);
       realpath.mockRestore();
       evidence.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);

@@ -1089,9 +1089,10 @@ function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
     const names: string[] = [];
     for (const entry of entries) {
       if (isAveHomeReadReallowed([caseFoldForMatch(entry.name)])) continue;
-      const kind = entry.isSymbolicLink() || entry.isDirectory() || entry.isFile() ? entry : lstatOrRefuse(join(root, entry.name));
-      if (kind.isSymbolicLink()) throw new AveHomeBoundaryUnverifiedError(`${join(root, entry.name)} is a link or reparse point`);
+      // The listing types every reparse point as a link; lstat keeps only links and junctions out of the plain kinds.
+      const kind = entry.isDirectory() || entry.isFile() ? entry : lstatOrRefuse(join(root, entry.name));
       if (kind.isDirectory()) names.push(entry.name);
+      else if (!kind.isFile()) throw new AveHomeBoundaryUnverifiedError(`${join(root, entry.name)} is a link or reparse point`);
     }
     children.set(caseFoldForMatch(resolve(root)), names);
   }
