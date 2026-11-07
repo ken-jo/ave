@@ -1048,9 +1048,36 @@ describe("powershell tool", () => {
       "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
       "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       "/usr/local/bin/pwsh",
+      "pwsh-preview", "powershell.exe.", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe. .", "pwsh. ",
     ])("blocks the nested shell spelling %s", (name) => {
       expect(validatePowerShellAst(ast([{ name }]))).toBe("nested PowerShell shells are not allowed");
     });
+
+    it("gates the Get- spelling PowerShell retries for a bare unresolved name", () => {
+      expect(validatePowerShellAst(ast([{ name: "WmiObject", arguments: [psLiteral("WmiObject"), psLiteral("Win32_Process")] }])))
+        .toBe("WMI command invocation is not allowed");
+      expect(validatePowerShellAst(ast([{ name: "ChildItem", arguments: [psLiteral("ChildItem"), psLiteral("x"), psParameter("Recurse")] }])))
+        .toContain("recursive shell filesystem traversal");
+      expect(validatePowerShellAst(ast([{ name: "Item", arguments: [psLiteral("Item"), psDynamic("($HOME + '/.ssh')")] }])))
+        .toContain("dynamic path argument");
+      const outside = join(process.cwd(), "..", "outside-ps-qualifier");
+      const violation = (name: string) =>
+        findPowerShellAstPathViolation(ast([{ name, arguments: [psLiteral(name), psLiteral(outside)] }]), process.cwd(), process.cwd(), [], false);
+      expect(violation("Get-ChildItem")).toBeNull();
+      expect(violation("ChildItem")).not.toBeNull();
+      expect(violation("ChildItem")).toEqual(violation("Evil-Command"));
+    });
+
+    it.each(["Import-Alias", "ipal", "IPAL", "Microsoft.PowerShell.Utility\\Import-Alias"])("blocks alias import through %s", (name) => {
+      expect(validatePowerShellAst(ast([{ name, arguments: [psLiteral(name), psLiteral("./aliases.csv")] }]))).toBe("alias mutation is not allowed");
+    });
+
+    it.each(["Import-Module", "ipmo", "Remove-Module", "rmo", "Microsoft.PowerShell.Core\\ipmo", "chdir", "cd", "sl"])(
+      "refuses command-identity or location change through %s in the same invocation", (name) => {
+        const violation = findPowerShellAstPathViolation(ast([{ name, arguments: [psLiteral(name), psLiteral("./x")] }]),
+          process.cwd(), process.cwd(), [], false);
+        expect(violation?.reason).toContain("location or command-identity changes");
+      });
 
     it("fails closed when the parser reports syntax errors or dynamic dispatch", () => {
       expect(validatePowerShellAst(ast([], ["Unexpected token"]))).toContain("parse error");
