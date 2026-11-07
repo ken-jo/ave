@@ -102,7 +102,8 @@ import type {
   RuntimePlugin,
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { createOutOfProcessPluginFactory, PluginSandboxGrantError, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -1769,6 +1770,25 @@ describe("on Windows a confined child holds a grant on its own directories for e
       spawnConfinedChild.mockReset();
       rmSync(layout.home, { recursive: true, force: true });
     }
+  });
+
+  it("budgets a sandboxed child's factory for its setup, connect and construct, and leaves an unsandboxed one at the fallback", async () => {
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
+    });
+    const policy = TOOL_TIMEOUT_POLICY;
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      // Setup, the 30 s channel connect, then import and factory.
+      expect(pluginFactoryDeadlineMs(factory, policy.pluginFactoryMs)).toBe(
+        policy.windowsSrtPluginSetupMs + 30_000 + policy.pluginImportMs + policy.pluginFactoryMs);
+    });
+    await asWindows(aveLayout(), async () => {
+      expect(pluginFactoryDeadlineMs(factory, policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
+    }, { sandboxActive: false });
+    // Only the factory this module built gets the budget.
+    expect(pluginFactoryDeadlineMs(async () => ({ handlers: {} }), policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
   });
 });
 

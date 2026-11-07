@@ -54,6 +54,9 @@ export const TOOL_TIMEOUT_POLICY = {
   terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
+  // Host-side setup of an srt-win plugin child (grant turn, wrap), which has no deadline of its own. Measured 8-10 s idle,
+  // srt-win itself ~0.1 s, and slower while the incumbent of an update still holds its grant.
+  windowsSrtPluginSetupMs: 30_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
   // Allow retiring generations to drain existing calls before shutdown aborts their scope.
