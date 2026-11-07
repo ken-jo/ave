@@ -1,10 +1,20 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+const readdirFault = vi.hoisted(() => ({ path: undefined as string | undefined, code: "EACCES" }));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original());
+  const readdirSync = ((...args: Parameters<typeof fs.readdirSync>) => {
+    if (readdirFault.path !== undefined && String(args[0]) === readdirFault.path) {
+      throw Object.assign(new Error(`${readdirFault.code}: simulated readdir failure`), { code: readdirFault.code });
+    }
+    return Reflect.apply(fs.readdirSync, undefined, args);
+  }) as typeof fs.readdirSync;
+  return { ...fs, readdirSync };
+});
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -225,9 +235,64 @@ describe("a profile-child Ave home on Windows", () => {
     setProcessPlatform("win32");
   });
   afterEach(() => {
+    readdirFault.path = undefined;
     setProcessPlatform(HOST_PLATFORM);
     fakeHome.value = undefined;
     rmSync(profile, { recursive: true, force: true });
+  });
+
+  const refused = expect.objectContaining({ code: "ave-home-boundary-unverified" });
+  // Every composer that projects the boundary: the read floor, the shell policy, a per-command wrap and the shared config.
+  const composers = (): Array<[string, () => unknown]> => [
+    ["read projection", () => getDefaultSensitiveReadDenyPaths()],
+    ["shell read policy", () => getBuiltinShellReadPolicy([join(original, "workspace", "alice-project")], profile)],
+    ["per-command wrap", () => buildPerCommandSandboxCustomConfig({ allowRead: [join(original, "workspace", "alice-project")] })],
+    ["per-command wrap with its own floor", () => buildPerCommandSandboxCustomConfig({ denyRead: [join(profile, ".ssh")] })],
+    ["shared config", () => buildSandboxConfig({ allowedDomains: [], strictAllowlist: true })],
+  ];
+  const noProfileRootRow = (paths: readonly unknown[]): void => {
+    expect(spelled(paths).map((path) => path.toLowerCase())).not.toContain(trim(profile).toLowerCase());
+    expect(spelled(paths).map((path) => path.toLowerCase())).not.toContain(trim(original).toLowerCase());
+  };
+
+  it.each(["EACCES", "EPERM", "EIO"])("refuses every composer when the existing home cannot be enumerated (%s)", (code) => {
+    readdirFault.path = original;
+    readdirFault.code = code;
+    for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+  });
+
+  it("refuses when a relocated active home leaves a readable profile home that cannot be enumerated", () => {
+    // The active home is relocated (beforeEach), so only the original profile spelling is enumerated.
+    expect(trim(aveHome()).toLowerCase()).not.toBe(trim(original).toLowerCase());
+    readdirFault.path = original;
+    for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+  });
+
+  it("keeps the absent-home residual when the profile home does not exist", () => {
+    rmSync(original, { recursive: true, force: true });
+    const floor = getDefaultSensitiveReadDenyPaths();
+    noProfileRootRow(floor);
+    for (const row of ["settings.json", "plugins/registry.json"]) expect(floor).toContain(join(original, ...row.split("/")));
+  });
+
+  it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", () => {
+    const target = mkdtempSync(join(tmpdir(), "ave-boundary-link-"));
+    try {
+      symlinkSync(target, join(original, "sandbox"), "junction");
+      const floor = getDefaultSensitiveReadDenyPaths();
+      expect(spelled(floor)).not.toContain(join(original, "sandbox"));
+      symlinkSync(target, join(original, "traces"), "junction");
+      for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("never yields a profile-root or home-root row from any composer", () => {
+    noProfileRootRow(getDefaultSensitiveReadDenyPaths());
+    noProfileRootRow(getBuiltinShellReadPolicy([join(original, "workspace", "alice-project")], profile).denyRead);
+    noProfileRootRow(buildPerCommandSandboxCustomConfig({ allowRead: [join(original, "workspace", "alice-project")] })?.filesystem?.denyRead ?? []);
+    noProfileRootRow(buildSandboxConfig({ allowedDomains: [], strictAllowlist: true }).filesystem.denyRead);
   });
 
   it("denies each existing top-level child as a directory, never the home itself", () => {

@@ -148,7 +148,9 @@ Notes that are part of the contract:
   wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are
   dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by
   their explicit allow exactly as under the relocated root. Every projection re-reads the home's top-level entries (one readdir, no
-  recursion), and per-exec shells stamp the result on each spawn. Residual set: top-level files of the Ave home stay file rows (see the
+  recursion), and per-exec shells stamp the result on each spawn. Only an absent home projects no child: an existing home that
+  cannot be enumerated, or a top-level link or reparse point that is not wholly re-allowed, refuses confinement instead of
+  launching with fewer denies or stamping the link's target. Residual set: top-level files of the Ave home stay file rows (see the
   file-row limit below), and a top-level child created after a spawn is not covered for that spawn's lifetime; the next spawn denies
   it. A relocated Ave home gets the root deny.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):

@@ -13,7 +13,7 @@ import { expandWindowsFsPaths, setWindowsAclRecoveryListener, type WindowsAclRec
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { chmodSync, type Dirent, lstatSync, mkdirSync, readdirSync, realpathSync, type Stats } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -1072,19 +1072,49 @@ function isWindowsProfileChild(root: string): boolean {
 
 // Per profile-child home (keyed by its folded path), the top-level directories that exist now and are not wholly re-allowed: one
 // readdir, no recursion. `plugins`, `mcp` and `runtime` are denied and their re-allowed children granted beneath them, as under a
-// relocated root. Root files keep their file rows; a child created later is denied from the next projection on.
+// relocated root. Root files keep their file rows; a child created later is denied from the next projection on. Only an absent home
+// projects no child: any other enumeration failure, and a linked top-level child that is not wholly re-allowed, refuse confinement,
+// since neither can be denied without a root row and following a link would stamp its target.
 function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
   const children = new Map<string, string[]>();
   for (const root of aveHomeReadBoundaryRoots().filter(isWindowsProfileChild)) {
-    let names: string[] = [];
+    let entries: Dirent[];
     try {
-      names = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch {
-      // An absent or unreadable home has no child to deny; all its file rows stay.
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") throw new AveHomeBoundaryUnverifiedError(`${root} cannot be enumerated (${code ?? "unknown error"})`, { cause: error });
+      entries = [];
     }
-    children.set(caseFoldForMatch(resolve(root)), names.filter((name) => !isAveHomeReadReallowed([caseFoldForMatch(name)])));
+    const names: string[] = [];
+    for (const entry of entries) {
+      if (isAveHomeReadReallowed([caseFoldForMatch(entry.name)])) continue;
+      const kind = entry.isSymbolicLink() || entry.isDirectory() || entry.isFile() ? entry : lstatOrRefuse(join(root, entry.name));
+      if (kind.isSymbolicLink()) throw new AveHomeBoundaryUnverifiedError(`${join(root, entry.name)} is a link or reparse point`);
+      if (kind.isDirectory()) names.push(entry.name);
+    }
+    children.set(caseFoldForMatch(resolve(root)), names);
   }
   return children;
+}
+
+function lstatOrRefuse(path: string): Stats {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    throw new AveHomeBoundaryUnverifiedError(`${path} cannot be classified (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
+  }
+}
+
+// Stable code for a confined launch refused because a profile-child Ave home's read boundary cannot be projected.
+const AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE = "ave-home-boundary-unverified";
+
+class AveHomeBoundaryUnverifiedError extends Error {
+  readonly code = AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE;
+  constructor(detail: string, options?: ErrorOptions) {
+    super(`sandbox: refusing confinement, the Ave home read boundary cannot be projected: ${detail}`, options);
+    this.name = "AveHomeBoundaryUnverifiedError";
+  }
 }
 
 // Each directory root, and each denied top-level child of a profile-child home.
