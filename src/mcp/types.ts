@@ -1,3 +1,4 @@
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../shared/mcp-error-code.js";
 import type { ToolSurface } from "../plugins/runtime/tool-visibility.js";
 
 export interface McpGovernancePolicy {
@@ -273,7 +274,7 @@ export interface McpServerState {
 
 export type ValidationResult =
   | { valid: true }
-  | { valid: false; reason: string; layer: number; reasonCode?: "mcp-governance-unapproved-server" };
+  | { valid: false; reason: string; layer: number; reasonCode?: typeof MCP_GOVERNANCE_UNAPPROVED_SERVER };
 
 // ─── MCP Apps UI Payload (MCP Apps spec 2026-01-26) ─
 

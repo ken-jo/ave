@@ -16,7 +16,8 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { invokeErrorCode } from "../format-ipc-error.js";
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { invokeErrorCode, invokeErrorDetail } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
 type Transport = "stdio" | "http";
@@ -477,8 +478,8 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       notifySaved();
       void fetchAll();
     } catch (e) {
-      const message = errorMessage(e);
-      showBanner("error", message, invokeErrorCode(e) === "mcp-governance-unapproved-server");
+      const message = invokeErrorDetail(e) ?? errorMessage(e);
+      showBanner("error", message, invokeErrorCode(e) === MCP_GOVERNANCE_UNAPPROVED_SERVER);
     } finally {
       setFormBusy(false);
     }
@@ -513,7 +514,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
             {banner.msg}
             {banner.policyApprovalRequired && (
               <div className="mt-2 space-y-2">
-                <p>{t("mcpTab.policyApprovalGuidance", { homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>
+                <p>{t("mcpTab.policyApprovalGuidance", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>
                 {onNavigate && (
                   <Button size="sm" variant="outline" onClick={() => onNavigate("permissions")}>
                     {t("mcpTab.openPermissionsButton")}

@@ -1,3 +1,4 @@
+import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -1353,7 +1354,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
               id: entry.id,
               action: "failed",
               failure: importFailureKind(err),
-              reason: (err as Error).message ?? "remove failed",
+              reason: stripMcpErrorCode((err as Error).message ?? "remove failed"),
             });
             continue;
           }
@@ -1372,7 +1373,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
             id: entry.id,
             action: "failed",
             failure: importFailureKind(err),
-            reason: (err as Error).message ?? "addConfig failed",
+            reason: stripMcpErrorCode((err as Error).message ?? "addConfig failed"),
             warning: entry.warning,
           });
         }

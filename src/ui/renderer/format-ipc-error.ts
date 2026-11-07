@@ -1,11 +1,25 @@
 
 
 import { t } from "../../i18n/runtime.js";
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER, stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 
 /** Read a leading machine code after the invoke rejection wrapper, independent of localized detail. */
-export function invokeErrorCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  return /^(?:Error invoking remote method '[^']+': Error: )?([a-z][a-z0-9-]*)(?=: |$)/.exec(error.message)?.[1];
+export function invokeErrorCode(error: unknown): typeof MCP_GOVERNANCE_UNAPPROVED_SERVER | undefined {
+  const message = invokeErrorMessage(error);
+  return message !== undefined && stripMcpErrorCode(message) !== message
+    ? MCP_GOVERNANCE_UNAPPROVED_SERVER : undefined;
+}
+
+/** Preserve ordinary errors; recognized refusals display only their localized detail. */
+export function invokeErrorDetail(error: unknown): string | undefined {
+  const message = invokeErrorMessage(error);
+  return message !== undefined && invokeErrorCode(error) !== undefined
+    ? stripMcpErrorCode(message) : undefined;
+}
+
+function invokeErrorMessage(error: unknown): string | undefined {
+  return error instanceof Error
+    ? error.message.replace(/^Error invoking remote method '[^']+': Error: /, "") : undefined;
 }
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {

@@ -1,3 +1,4 @@
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../shared/mcp-error-code.js";
 /** Config mutation tests use isolated temporary state and never launch real clients. */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
@@ -522,17 +523,17 @@ describe("McpManager — addConfig()", () => {
   });
 
   it.each([
-    [1, "mcp-governance-unapproved-server", true],
-    [0, "mcp-governance-unapproved-server", false],
-    [2, "mcp-governance-unapproved-server", false],
-    [3, "mcp-governance-unapproved-server", false],
+    [1, MCP_GOVERNANCE_UNAPPROVED_SERVER, true],
+    [0, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
+    [2, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
+    [3, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
     [1, undefined, false],
   ] as const)("tags only an unapproved server refusal at layer %s (%s)", async (layer, reasonCode, coded) => {
     mockValidateServer.mockReturnValueOnce({ valid: false as const, layer, reason: "unchanged refusal", reasonCode });
     const mgr = await makeManager();
     const error = await mgr.addConfig({ id: "blocked", transport: "stdio", command: "notes-server" }).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message.startsWith("mcp-governance-unapproved-server: ")).toBe(coded);
+    expect((error as Error).message.startsWith(`${MCP_GOVERNANCE_UNAPPROVED_SERVER}: `)).toBe(coded);
     expect((error as Error).message).toContain("unchanged refusal");
     expect(existsSync(testConfigPath)).toBe(false);
     expect(mockConnect).not.toHaveBeenCalled();

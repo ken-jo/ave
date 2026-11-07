@@ -1,3 +1,4 @@
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../shared/mcp-error-code.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -597,7 +598,7 @@ describe("McpGovernance server refusal codes", () => {
     }));
     const result = gov.validateServer({ id: kind === "missing" ? "unknown" : "browser-use", transport: "stdio", command: "uvx", auth: "api-key", apiKeyEnv: "OPENAI_API_KEY" });
     if (kind === "missing") {
-      expect(result).toMatchObject({ valid: false, layer: 1, reasonCode: "mcp-governance-unapproved-server" });
+      expect(result).toMatchObject({ valid: false, layer: 1, reasonCode: MCP_GOVERNANCE_UNAPPROVED_SERVER });
     } else {
       expect(result).not.toHaveProperty("reasonCode");
     }
