@@ -211,16 +211,16 @@ describe("native plugin child quarantine through the runtime", () => {
     expect(confinement()).toBe("windows-mxc");
   });
 
-  it("refuses admission at the wall-clock deadline without quarantining and permits a fresh attempt", async () => {
+  it("refuses admission at the monotonic deadline without quarantining and permits a fresh attempt", async () => {
     await installPlugin(PONG);
     const child = ownedChild(0);
     spawnNativeChild.mockReset().mockResolvedValue(child.owned);
     const release = vi.fn();
     const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
-    const now = Date.now();
+    const now = performance.now();
     let offset = 0;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now + offset);
-    routeNative(runtime, release, async () => { offset = nativePluginChildFactoryBudgetMs(); });
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now + offset);
+    routeNative(runtime, release, async () => { offset = Math.max(TOOL_TIMEOUT_POLICY.pluginFactoryMs, nativePluginChildFactoryBudgetMs()); });
     await runtime.startAll();
     expect(spawnNativeChild).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledOnce();

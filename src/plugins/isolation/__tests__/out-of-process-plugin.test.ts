@@ -32,6 +32,10 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
 
+function blockMainThread(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Record grant order and holder loss without changing real access lists. */
 const windowsGrant = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
@@ -59,7 +63,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
         await windowsGrant.ahead;
         opts.assertStillValid?.();
         windowsGrant.granted.push(opts.label);
-        if (windowsGrant.blockingMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, windowsGrant.blockingMs);
+        if (windowsGrant.blockingMs > 0) blockMainThread(windowsGrant.blockingMs);
         windowsGrant.events.push("grant");
         await windowsGrant.applying;
         return {
