@@ -333,7 +333,6 @@ interface WindowsLiveGrantCounts {
 
 interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
-  readonly windowsFailedGrantReleases: Map<number, () => void>;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
   windowsDenyRevision: number;
@@ -1985,7 +1984,7 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsFailedGrantReleases: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -2569,9 +2568,10 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
     } catch (err) {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
-      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin }); }
+      let exitedOk = true;
+      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
       catch (error) { cleanupError = error; }
-      if (!hasWindowsGrantCleanup(requests, outcome)) {
+      if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
         // Keep confinement active: disabling it would permit host execution fallback.
         session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
         log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
@@ -2590,18 +2590,18 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   }
 
   let released = false;
-  const revokeGrant = (): void => {
+  const revokeGrant = (): boolean => {
     let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
     let cleanupError: unknown;
-    try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin }); }
+    let exitedOk = true;
+    try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
     catch (error) { cleanupError = error; }
-    if (!hasWindowsGrantCleanup(requests, outcome)) {
-      session.windowsFailedGrantReleases.set(holderPid, revokeGrant);
+    if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
       session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? outcome });
       log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
-      throw session.windowsDenyFailure;
+      return false;
     }
-    session.windowsFailedGrantReleases.delete(holderPid);
+    return true;
   };
   const grant: WindowsWorkerFilesystemGrant = {
     allowRead,
@@ -2616,8 +2616,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
         if (writable.has(path)) counts.write -= 1;
         if (counts.read === 0) session.windowsLiveGrants.delete(path);
       }
-      try { revokeGrant(); }
-      catch { return; }
+      if (!revokeGrant()) return;
       if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
         try {
           SandboxManager.updateConfig(
@@ -2675,9 +2674,21 @@ interface WindowsGrantTarget {
   readonly identity: string;
 }
 
-function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome: unknown): boolean {
-  if (!Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
-    || typeof row.path !== "string" || !["revoked", "stillHeld"].includes(row.status))) return false;
+// Match the runtime's "ACL release outcome" patch; its status sets are not exported.
+const WINDOWS_GRANT_RELEASED_STATUSES = new Set(["revoked", "stillHeld", "downgraded", "relocated", "noRow", "restored", "alreadyOriginal"]);
+const WINDOWS_GRANT_STALE_STATUSES = new Set(["mismatch", "missing"]);
+
+function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome: unknown, exitedOk: boolean): boolean {
+  if (!exitedOk || !Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
+    || typeof row.path !== "string" || (!WINDOWS_GRANT_RELEASED_STATUSES.has(row.status) && !WINDOWS_GRANT_STALE_STATUSES.has(row.status)))) return false;
+  const staleCounts = new Map<string, number>();
+  for (const row of outcome) {
+    if (WINDOWS_GRANT_STALE_STATUSES.has(row.status)) staleCounts.set(row.status, (staleCounts.get(row.status) ?? 0) + 1);
+  }
+  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); next-boot ACL recovery handles leftovers",
+    [...staleCounts].map(([status, count]) => `${status} x${count}`).join(", "));
+  // A clean empty ledger means the holder was already removed or pruned. Dropped release paths require a non-zero exit.
+  if (outcome.length === 0) return true;
   const objects = new Map<string, string[]>();
   for (const request of requests) objects.set(request.identity, [...(objects.get(request.identity) ?? []), request.path]);
   const spellings = [...objects.values()];
@@ -2729,8 +2740,6 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
 export async function resetAsrtSandbox(): Promise<void> {
-  // Retry with each failed holder's original descriptor before forgetting it or permitting host fallback.
-  for (const retry of sandboxSession?.windowsFailedGrantReleases.values() ?? []) retry();
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
