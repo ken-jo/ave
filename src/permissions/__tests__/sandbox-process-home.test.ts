@@ -19,6 +19,7 @@ import { appOwnedSandboxHomeRoot, ensureSandboxTempPrincipalDir } from "../asrt-
 import { sweepSandboxPrivateRoots } from "../../boot/steps/sandbox-init.js";
 import {
   createSandboxProcessHome,
+  readSandboxHomeOwner,
   sandboxProcessHomesInUse,
   sandboxProcessProfileEnvironment,
 } from "../sandbox-process-home.js";
@@ -248,6 +249,33 @@ describe("createSandboxProcessHome", () => {
     try {
       expect(dirname(home.path)).toBe(realpathSync.native(tmpdir()));
       expect(existsSync(appOwnedSandboxHomeRoot())).toBe(false);
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("marks a Windows HOME with the host's pid and start time", async () => {
+    const probe = vi.fn(async (pids: readonly number[]) =>
+      new Map(pids.map((pid) => [pid, { running: true, startTime: "638000000000000000" } as const])));
+    const home = createSandboxProcessHome("win32", rmSync, probe);
+    try {
+      await vi.waitFor(async () => {
+        expect(await readSandboxHomeOwner(home.path)).toEqual({ pid: process.pid, startTime: "638000000000000000" });
+      });
+      expect(probe).toHaveBeenCalledWith([process.pid]);
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown", async () => {
+    const probe = vi.fn(async (pids: readonly number[]) =>
+      new Map(pids.map((pid) => [pid, { running: true, startTime: null } as const])));
+    const home = createSandboxProcessHome("win32", rmSync, probe);
+    try {
+      await vi.waitFor(() => expect(probe).toHaveBeenCalled());
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(existsSync(join(home.path, ".ave-sandbox-owner"))).toBe(false);
     } finally {
       home.cleanup();
     }
