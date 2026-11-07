@@ -46,12 +46,17 @@ export interface SandboxHomeOwner {
 
 const resolvedOwnerMarkers = new WeakMap<ProcessRunStateProbe, string>();
 const pendingOwnerMarkers = new WeakMap<ProcessRunStateProbe, Promise<string | null>>();
+const failedOwnerProbes = new WeakMap<ProcessRunStateProbe, number>();
+// A blocked probe (script policy) would otherwise cost one spawn and timeout per HOME.
+const OWNER_PROBE_FAILURE_BACKOFF_MS = 60_000;
 let ownerProbeFailureLogged = false;
 
-// The host's marker text. Only a success is cached, so a failed probe is retried by the next HOME.
+// The host's marker text. Only a success is cached; a failure is retried by the first HOME after the backoff.
 function resolveHostOwnerMarker(probe: ProcessRunStateProbe): Promise<string | null> {
   const known = resolvedOwnerMarkers.get(probe);
   if (known !== undefined) return Promise.resolve(known);
+  const failedAt = failedOwnerProbes.get(probe);
+  if (failedAt !== undefined && Date.now() - failedAt < OWNER_PROBE_FAILURE_BACKOFF_MS) return Promise.resolve(null);
   let pending = pendingOwnerMarkers.get(probe);
   if (pending === undefined) {
     pending = probe([process.pid]).then((states) => {
@@ -61,7 +66,8 @@ function resolveHostOwnerMarker(probe: ProcessRunStateProbe): Promise<string | n
     }).catch(() => null).then((marker) => {
       pendingOwnerMarkers.delete(probe);
       if (marker !== null) resolvedOwnerMarkers.set(probe, marker);
-      else if (!ownerProbeFailureLogged) {
+      else failedOwnerProbes.set(probe, Date.now());
+      if (marker === null && !ownerProbeFailureLogged) {
         ownerProbeFailureLogged = true;
         log.debug("sandbox process HOME owner start time unavailable; HOMEs stay unmarked until it resolves");
       }
@@ -70,6 +76,11 @@ function resolveHostOwnerMarker(probe: ProcessRunStateProbe): Promise<string | n
     pendingOwnerMarkers.set(probe, pending);
   }
   return pending;
+}
+
+// Boot starts the host start-time probe early so the first HOME is normally marked before it exists.
+export function warmSandboxHomeOwner(): void {
+  void resolveHostOwnerMarker(readWindowsProcessRunStates);
 }
 
 export function _resolveHostOwnerMarkerForTest(probe: ProcessRunStateProbe): Promise<string | null> {

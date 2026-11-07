@@ -488,7 +488,8 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
 /** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
 async function sweepWindowsSandboxHomes(): Promise<void> {
   try {
-    const { sandboxProcessHomesInUse } = await import("../../permissions/sandbox-process-home.js");
+    const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
+    warmSandboxHomeOwner();
     const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
     const { removed, failed } = await sweepStaleWindowsSandboxHomes(
       tmpdir(), sandboxProcessHomesInUse(), readWindowsProcessRunStates);
@@ -547,10 +548,12 @@ export async function sweepStaleWindowsSandboxHomes(
         await removeOwnedPluginTree(home);
         removed += 1;
       } else if ((await lstat(home).catch(() => undefined)) !== undefined) continue;
-      await unlink(`${home}${SANDBOX_HOME_OWNER_SUFFIX}`);
     } catch {
       failed += 1;
+      continue;
     }
+    // A marker left behind is an orphan for the next sweep; the HOME already counts as removed.
+    await unlink(`${home}${SANDBOX_HOME_OWNER_SUFFIX}`).catch(() => undefined);
   }
   return { removed, failed };
 }

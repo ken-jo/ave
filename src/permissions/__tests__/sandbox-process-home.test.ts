@@ -277,15 +277,18 @@ describe("createSandboxProcessHome", () => {
     expect(existsSync(`${second!.path}.owner`)).toBe(false);
   });
 
-  it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown, and retries", async () => {
+  it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown, and retries after a backoff", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
     const probe = vi.fn(async (pids: readonly number[]) =>
       new Map(pids.map((pid) => [pid, { running: true, startTime: null } as const])));
     const first = createSandboxProcessHome("win32", rmSync, probe);
     try {
       expect(await _resolveHostOwnerMarkerForTest(probe)).toBeNull();
       expect(existsSync(`${first.path}.owner`)).toBe(false);
-      const second = createSandboxProcessHome("win32", rmSync, probe);
-      second.cleanup();
+      createSandboxProcessHome("win32", rmSync, probe).cleanup();
+      expect(probe).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(new Date("2026-01-01T00:01:01Z"));
+      createSandboxProcessHome("win32", rmSync, probe).cleanup();
       expect(probe).toHaveBeenCalledTimes(2);
     } finally {
       first.cleanup();
