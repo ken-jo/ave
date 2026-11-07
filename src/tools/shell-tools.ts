@@ -3050,10 +3050,12 @@ export const PowerShellToolInputSchema = z.object({
 }).superRefine(validateHostShellExecutionRequest);
 
 const POWERSHELL_ALIASES = new Map<string, string>([
+  // Windows-only aliases (mount, icim; gwmi and iwmi in Windows PowerShell) are mapped on every platform.
   ["ac", "add-content"],
   ["cat", "get-content"],
   ["clc", "clear-content"],
   ["copy", "copy-item"],
+  ["cvpa", "convert-path"],
   ["cp", "copy-item"],
   ["cpi", "copy-item"],
   ["del", "remove-item"],
@@ -3062,11 +3064,20 @@ const POWERSHELL_ALIASES = new Map<string, string>([
   ["gc", "get-content"],
   ["gci", "get-childitem"],
   ["gi", "get-item"],
+  ["gwmi", "get-wmiobject"],
+  ["icim", "invoke-cimmethod"],
+  ["icm", "invoke-command"],
   ["iex", "invoke-expression"],
+  ["ipal", "import-alias"],
+  ["ipmo", "import-module"],
+  ["iwmi", "invoke-wmimethod"],
   ["ls", "get-childitem"],
   ["mkdir", "new-item"],
   ["md", "new-item"],
+  ["mount", "new-psdrive"],
+  ["ndr", "new-psdrive"],
   ["mi", "move-item"],
+  ["nal", "new-alias"],
   ["move", "move-item"],
   ["mv", "move-item"],
   ["ni", "new-item"],
@@ -3075,7 +3086,11 @@ const POWERSHELL_ALIASES = new Map<string, string>([
   ["ri", "remove-item"],
   ["rm", "remove-item"],
   ["rmdir", "remove-item"],
+  ["rmo", "remove-module"],
   ["rni", "rename-item"],
+  ["rvpa", "resolve-path"],
+  ["sajb", "start-job"],
+  ["sal", "set-alias"],
   ["saps", "start-process"],
   ["sc", "set-content"],
   ["si", "set-item"],
@@ -3092,6 +3107,7 @@ const BLOCKED_COMMANDS = new Map<string, string>([
   ["pause", "interactive prompts are not allowed"],
   ["set-alias", "alias mutation is not allowed"],
   ["new-alias", "alias mutation is not allowed"],
+  ["import-alias", "alias mutation is not allowed"],
   ["join-path", "dynamic path composition is not allowed"],
   ["resolve-path", "dynamic path resolution is not allowed"],
   ["convert-path", "dynamic path resolution is not allowed"],
@@ -3105,6 +3121,8 @@ const BLOCKED_COMMANDS = new Map<string, string>([
   ["powershell", "nested PowerShell shells are not allowed"],
   ["powershell.exe", "nested PowerShell shells are not allowed"],
   ["pwsh", "nested PowerShell shells are not allowed"],
+  ["pwsh.exe", "nested PowerShell shells are not allowed"],
+  ["pwsh-preview", "nested PowerShell shells are not allowed"],
 ]);
 
 const ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc"]);
@@ -3405,19 +3423,20 @@ export function validatePowerShellAstStructure(ast: PowerShellAstSummary): strin
     return `parse error: ${ast.errors[0]}`;
   }
   for (const command of ast.commands) {
-    const rawName = command.name?.trim().toLowerCase() ?? "";
-    const name = canonicalPowerShellCommandName(rawName);
-    if (!name) {
+    const names = gatedPowerShellCommandNames(command.name ?? "");
+    if (!names[0]) {
       return "dynamic command invocation is not allowed";
     }
-    const blocked = BLOCKED_COMMANDS.get(name);
-    if (blocked) return blocked;
+    for (const name of names) {
+      const blocked = BLOCKED_COMMANDS.get(name);
+      if (blocked) return blocked;
+    }
 
     const parameters = command.arguments.filter((argument) => argument.kind === "parameter");
     if (parameters.some((parameter) => ENCODED_COMMAND_FLAGS.has("-" + parameter.name.toLowerCase()))) {
       return "encoded commands are not allowed";
     }
-    if (REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellRecursionParameter(name, parameter))
+    if (names.some((name) => REMOVE_ITEM_COMMANDS.has(name) && parameters.some((parameter) => isPowerShellRecursionParameter(name, parameter)))
       && parameters.some(isPowerShellForce)) {
       return "recursive forced deletion is not allowed";
     }
@@ -3430,9 +3449,9 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   const structural = validatePowerShellAstStructure(ast);
   if (structural) return structural;
   for (const command of ast.commands) {
-    const name = canonicalPowerShellCommandName(command.name?.trim().toLowerCase() ?? "");
-    if (isDefinitePowerShellRecursion(name, command.arguments.slice(1))) return POWERSHELL_RECURSIVE_TRAVERSAL_REASON;
-    if (!FILESYSTEM_COMMANDS.has(name)) continue;
+    const names = gatedPowerShellCommandNames(command.name ?? "");
+    if (names.some((name) => isDefinitePowerShellRecursion(name, command.arguments.slice(1)))) return POWERSHELL_RECURSIVE_TRAVERSAL_REASON;
+    if (!names.some((name) => FILESYSTEM_COMMANDS.has(name))) continue;
     const dynamic = command.arguments.slice(1).find((argument) => argument.kind === "dynamic"
       || (argument.kind === "parameter" && argument.argument?.kind === "dynamic"));
     if (dynamic) return `dynamic path argument is not allowed: ${dynamic.text}`;
@@ -3440,8 +3459,45 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   return null;
 }
 
-function canonicalPowerShellCommandName(name: string): string {
-  return POWERSHELL_ALIASES.get(name) ?? name;
+// Blocking gates read the command leaf: whatever a module or path qualifier
+// selects, a gated leaf is refused. Win32 drops trailing dots and spaces from
+// a file name, so the leaf does too. An unresolved name without `-` or `\`
+// is retried by PowerShell as `Get-<name>` (CommandDiscovery TryNormalSearch),
+// so that spelling is gated as well. Every candidate can only tighten.
+function gatedPowerShellCommandNames(name: string): string[] {
+  const lowered = name.trim().toLowerCase();
+  const rawLeaf = lowered.slice(Math.max(lowered.lastIndexOf("\\"), lowered.lastIndexOf("/")) + 1);
+  const leaf = rawLeaf.replace(/[. ]+$/, "") || rawLeaf;
+  const alias = POWERSHELL_ALIASES.get(leaf);
+  if (alias) return [alias];
+  return leaf && !/[-\\]/.test(lowered) ? [leaf, `get-${leaf}`] : [leaf];
+}
+
+// Modules in both the Microsoft Learn PowerShell 7.5 and 5.1 module references
+// (the Windows runtime is Windows PowerShell 5.1, so ThreadJob is excluded). Only these
+// qualifiers are known to select the built-in cmdlet; any other module may
+// export a same-named function, so it keeps the unknown-command write effect.
+const POWERSHELL_BUILTIN_MODULES = new Set([
+  "cimcmdlets",
+  "microsoft.powershell.archive",
+  "microsoft.powershell.core",
+  "microsoft.powershell.diagnostics",
+  "microsoft.powershell.host",
+  "microsoft.powershell.management",
+  "microsoft.powershell.security",
+  "microsoft.powershell.utility",
+  "microsoft.wsman.management",
+  "psdiagnostics",
+  "psreadline",
+]);
+
+function effectPowerShellCommandName(name: string): string {
+  const lowered = name.trim().toLowerCase();
+  const separator = lowered.indexOf("\\");
+  const bare = separator > 0 && POWERSHELL_BUILTIN_MODULES.has(lowered.slice(0, separator)) && !/[\\/]/.test(lowered.slice(separator + 1))
+    ? lowered.slice(separator + 1)
+    : lowered;
+  return POWERSHELL_ALIASES.get(bare) ?? bare;
 }
 
 type PowerShellParameter = Extract<PowerShellArgument, { kind: "parameter" }>;
@@ -3477,13 +3533,13 @@ export function findPowerShellAstPathViolation(
   };
   for (const redirect of ast.redirections) { const violation = inspect(redirect, "write"); if (violation) return violation; }
   for (const command of ast.commands) {
-    const name = canonicalPowerShellCommandName(command.name!.toLowerCase());
+    const name = effectPowerShellCommandName(command.name!);
     const runtimeReads = powerShellHostScriptReadPaths(ast, source);
     if (runtimeReads.length > 0) {
       const violation = inspect(command.arguments[0]!, "read", true);
       if (violation) return violation;
     }
-    if (["set-location", "cd", "sl", "push-location", "pushd", "pop-location", "popd", "set-alias", "new-alias", "import-module", "remove-module"].includes(name)) {
+    if (["set-location", "cd", "chdir", "sl", "push-location", "pushd", "pop-location", "popd", "set-alias", "new-alias", "import-module", "remove-module"].includes(name)) {
       return { kind: "dynamic-path", reason: "PowerShell location or command-identity changes require a separate invocation", candidate: command.arguments[0]?.text };
     }
     if (["write-output", "echo", "write-host", "write-error", "write-warning", "write-verbose", "write-debug", "write-information", "start-sleep", "select-object", "measure-object", "format-list", "format-table", "out-string"].includes(name)) continue;
