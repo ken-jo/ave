@@ -21,6 +21,7 @@ import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import * as powerShellStartup from "../../shared/powershell-startup-policy.js";
 import { ToolExecutor } from "../executor.js";
+import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolRegistry } from "../registry.js";
 import type { Tool } from "../base.js";
 import type { ToolExecutionContext } from "../types.js";
@@ -117,14 +118,15 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const registry = probe(dialect.create, execute);
     const pm = manager(mode, rules);
     const denied = cardGate("deny-once");
-    const run = (gate: ApprovalGate, id: string) => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
-      [{ id, name: dialect.toolName, input: { command, cwd: testRoot } }],
+    const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+      [{ id, name: dialect.toolName, input: { command } }],
       { sessionId: "boundary-shell", permissionContext: permissionContext() },
-    );
+    ));
 
     const refused = await run(denied.gate, "boundary-deny");
     expect(denied.cards()).toHaveLength(1);
     const card = denied.cards()[0]!;
+    expect(card.kind ?? "tool").toBe("tool");
     expect(card.executionPlan).toMatchObject({ mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
     expect(shellExecutionEnvironmentLines(card.executionPlan!)).toContain(t("shellExecution.sandboxUnavailableAsk"));
@@ -149,16 +151,108 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it.each(DIALECTS)("asks on the out-of-directory card with once-only choices for $toolName, every command", async (dialect) => {
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", [dialect.prefixRule, dialect.toolName]);
+    const run = (gate: ApprovalGate, id: string) => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+      [{ id, name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+      { sessionId: "boundary-directory", permissionContext: permissionContext() },
+    );
+    const denied = cardGate("deny-once");
+    await run(denied.gate, "directory-deny");
+    expect(denied.cards()).toHaveLength(1);
+    expect(denied.cards()[0]).toMatchObject({ kind: "out-of-allowed-dir", allowedChoices: ["allow-once", "deny-once"],
+      executionPlan: { mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
+    expect(execute).not.toHaveBeenCalled();
+    const approved = cardGate("allow-once");
+    await run(approved.gate, "directory-allow");
+    expect(execute).toHaveBeenCalledOnce();
+    const again = cardGate("deny-once");
+    await run(again.gate, "directory-again");
+    expect(again.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  const HOST = { executionMode: "host", justification: "Retry outside the OS sandbox" } as const;
+  const hostCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
+    { category, dialect, mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
+    { category, dialect, mode: "auto" as const, label: "auto review", rules: [] },
+    { category, dialect, mode: "allow" as const, label: "allow mode", rules: [] },
+  ])));
+
+  it.each(hostCases)("$category: explicit-host $dialect.toolName with $label asks every command", async ({ category, dialect, mode, rules }) => {
+    publishBoundary(category);
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager(mode, rules);
+    const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+      [{ id, name: dialect.toolName, input: { command: dialect.command, ...HOST } }],
+      { sessionId: "boundary-host", permissionContext: permissionContext() },
+    ));
+
+    const denied = cardGate("deny-once");
+    const refused = await run(denied.gate, "host-deny");
+    expect(denied.cards()).toHaveLength(1);
+    const card = denied.cards()[0]!;
+    expect(card.executionPlan).toMatchObject({ mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true,
+      capability: { kind: "none" } });
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(refused[0]?.is_error).toBe(true);
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+
+    const approved = cardGate("allow-once");
+    await run(approved.gate, "host-allow");
+    expect(approved.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host", sandboxed: false });
+
+    const again = cardGate("deny-once");
+    await run(again.gate, "host-again");
+    expect(again.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("asks for a background bash command through the same invocation authorization", async () => {
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(DIALECTS[0].create, execute);
+    const approvals = cardGate("deny-once");
+    await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("allow", ["bash"]), undefined, approvals.gate).executeAll(
+      [{ id: "boundary-background", name: "bash", input: { command: "echo boundary", run_in_background: true } }],
+      { sessionId: "boundary-background", permissionContext: permissionContext() },
+    ));
+    expect(approvals.cards()).toHaveLength(1);
+    expect(approvals.cards()[0]!.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("denies a headless shell with no approver", async () => {
     publishBoundary("boundary-link");
     const execute = vi.fn();
     const registry = probe(DIALECTS[0].create, execute);
-    const result = await new ToolExecutor(registry, undefined, manager("allow", ["bash"]), undefined, cardGate("allow-once").gate).executeAll(
-      [{ id: "boundary-headless", name: "bash", input: { command: "echo boundary", cwd: testRoot } }],
+    const result = await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("allow", ["bash"]), undefined, cardGate("allow-once").gate).executeAll(
+      [{ id: "boundary-headless", name: "bash", input: { command: "echo boundary" } }],
       { sessionId: "boundary-headless", permissionContext: permissionContext({ headless: true }) },
-    );
+    ));
     expect(execute).not.toHaveBeenCalled();
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
+  });
+
+  it.each(DIALECTS)("keeps the ordinary explicit-host route for $toolName under any other boot failure", async (dialect) => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const approvals = cardGate("deny-once");
+    await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("allow", []), undefined, approvals.gate).executeAll(
+      [{ id: "other-failure-host", name: dialect.toolName, input: { command: dialect.command, ...HOST } }],
+      { sessionId: "other-failure-host", permissionContext: permissionContext() },
+    ));
+    expect(approvals.cards()).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
   });
 
   it.each(DIALECTS)("keeps the ordinary unavailable-sandbox route for $toolName under any other boot failure", async (dialect) => {
@@ -166,10 +260,10 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
-    const result = await new ToolExecutor(registry, undefined, manager("default", [dialect.prefixRule, dialect.toolName]), undefined, approvals.gate).executeAll(
-      [{ id: "other-failure", name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+    const result = await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("default", [dialect.prefixRule, dialect.toolName]), undefined, approvals.gate).executeAll(
+      [{ id: "other-failure", name: dialect.toolName, input: { command: dialect.command } }],
       { sessionId: "other-failure", permissionContext: permissionContext() },
-    );
+    ));
     expect(approvals.cards()).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
     expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
