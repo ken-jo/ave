@@ -580,6 +580,35 @@ describe("pre-push message catalog selection", () => {
     expect(plan.testFiles).toContain("src/ui/__tests__/dynamic.test.ts");
   });
 
+  it.each([
+    ["computed module specifier", new Map([
+      ["src/ui/lazy-title.ts", 'export const title = async (key: string) => (await import("../i" + "18n/runtime.js")).t(key);'],
+    ])],
+    ["re-exported alias", new Map([
+      ["src/ui/text.ts", 'export { t as text } from "../i18n/runtime.js";'],
+      ["src/ui/lazy-title.ts", 'import { text } from "./text.js"; export const title = (key: string) => text(key);'],
+    ])],
+  ])("keeps full checks for a dynamic consumer that never names the catalog or its runtime: %s", (_kind, extra) => {
+    const tree = new Map([...fixtureTree, ...extra]);
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).reason)
+      .toMatch(/^src\/ui\/(?:lazy-title|text)\.ts has an unresolved dynamic message consumer; full checks required$/);
+  });
+
+  it("keeps full checks for a non-relative value import before the tree is parsed, except in CI", () => {
+    const tree = new Map([...fixtureTree,
+      ["src/ui/note.ts", `export const note = "imported from 'example'";`],
+      ["src/ui/types.ts", 'import type { Clock } from "example"; export const clock = (value: Clock) => value;'],
+    ]);
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree).consumerModules).toContain("src/ui/panel.tsx");
+    tree.set("src/ui/clock.ts", 'import { setTimeout } from "node:timers"; export const wait = setTimeout;');
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
+      reason: "src/ui/clock.ts has an unresolved dynamic message consumer; full checks required",
+    });
+    const plan = selectFixture(catalog("Panel"), catalog("Panel heading"), tree, false, true);
+    expect(plan.reason).toBeUndefined();
+    expect(plan.consumerModules).toContain("src/ui/clock.ts");
+  });
+
   it("allows static key additions and removals only under the explicit CI policy", () => {
     const before = catalog("Panel");
     const after = before.replace('"panel.title": "Panel",', '"panel.title": "Panel", "panel.subtitle": "Subtitle",')
@@ -1114,7 +1143,7 @@ describe("pre-push message catalog selection", () => {
     const path = `${MESSAGES}/en.ts`;
     const after = readFileSync(resolve(root, path), "utf8");
     const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
-    // Parses every tracked module through the hook's compiler service: about 75 s on Windows alone.
+    // Reads every tracked module; a non-relative value import ends the scan before the whole-tree parse.
     const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
       readBlob: (sha) => sha === "base" ? before : after, trackedFiles: tracked, readTrackedFile: readTracked,
     });
