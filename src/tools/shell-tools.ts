@@ -3145,8 +3145,15 @@ const FILESYSTEM_COMMANDS = new Set([
   "test-path",
 ]);
 
-// Filesystem cmdlets never take a URL, so their operands keep path checks.
 const NETWORK_URL_OPERAND = /^(?:https?|wss?|ftps?):\/\/[^/\\?#\s]/i;
+
+// A network URL operand, left to the egress proxy. Any command may still open it as a Win32 path (`curl -o`, `tar -xf`), which
+// resolves under the working directory unless it has a backslash or a segment Win32 collapses: all dots, or ending in a dot or
+// space (`x./..` climbs too). Those stay path-checked, so the operand can at most name a file under the working directory.
+function isNetworkUrlOperand(value: string): boolean {
+  if (!NETWORK_URL_OPERAND.test(value) || value.includes("\\")) return false;
+  return value.slice(value.indexOf("//") + 2).split(/[/?#]/).every((segment) => !/[. ]$/.test(segment));
+}
 
 const canonicalPowerShellTools = new WeakSet<object>();
 
@@ -3523,8 +3530,8 @@ export function findPowerShellAstPathViolation(
     if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath, networkUrls) : null;
     if (argument.kind !== "literal") return { kind: "dynamic-path", reason: "PowerShell path argument is unresolved", candidate: argument.text };
     const path = argument.value;
-    // A network URL names a destination the egress proxy and its card govern, not a file. `file:`, UNC and empty-authority forms stay paths.
-    if (networkUrls && NETWORK_URL_OPERAND.test(path)) return null;
+    // A network URL names a destination the egress proxy and its card govern. `file:`, UNC and empty-authority forms stay paths.
+    if (networkUrls && isNetworkUrlOperand(path)) return null;
     if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || /^[a-z][a-z0-9_-]*:(?![\\/])/i.test(path)) {
       return { kind: "dynamic-path", reason: "PowerShell provider, home or wildcard path requires an explicit ordinary path", candidate: argument.text };
     }

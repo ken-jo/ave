@@ -68,6 +68,22 @@ describe("native PowerShell AST facts", () => {
     expect(check(command("curl.exe", [literal("-o"), literal("../outside/x"), literal("https://example.com/")]))?.kind).toBe("sandbox-boundary");
   });
 
+  it.each([
+    command("curl.exe", [literal("-o"), literal("https://x/../../../escaped")]),
+    command("curl.exe", [literal("-o"), literal("https://x?/../../../escaped")]),
+    command("curl.exe", [literal("-o"), literal("FTP://x/x./../../../../escaped")]),
+    command("Invoke-WebRequest", [{ kind: "parameter", name: "OutFile", text: "-OutFile", argument: literal("https://x/../../../escaped") }]),
+    command("tar.exe", [literal("-xf"), literal("https://x/../../../a.tar")]),
+  ])("path-checks a URL-shaped operand that resolves outside the working directory %#", (summary) => {
+    expect(check(summary)).not.toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32").each(["https://x/..\\..\\..\\secret", "https://x/a\\..\\..\\escaped"])(
+    "path-checks %s, whose backslashes Win32 reads as separators", (operand) => {
+      expect(check(command("curl.exe", [literal("-T"), literal(operand)]))).not.toBeNull();
+    },
+  );
+
   it("keeps URL-shaped operands of filesystem cmdlets and redirects as paths", () => {
     const escaping = "https://x/../../../outside";
     expect(check(command("Copy-Item", [literal("./safe"), literal(escaping)]))).not.toBeNull();
