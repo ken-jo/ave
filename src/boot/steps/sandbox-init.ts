@@ -3,6 +3,7 @@
 
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
@@ -25,11 +26,15 @@ import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { getAveHomePrivacyFailure, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
+import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 
 const log = createLogger("ave");
 
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
+  // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
+  // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
+  if (process.platform === "win32") void sweepWindowsSandboxHomes();
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
     bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
@@ -478,6 +483,79 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
     if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
     await removeOwnedPluginTree(join(root, name));
   }
+}
+
+/** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
+async function sweepWindowsSandboxHomes(): Promise<void> {
+  try {
+    const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
+    warmSandboxHomeOwner();
+    const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
+    const { removed, failed } = await sweepStaleWindowsSandboxHomes(
+      tmpdir(), sandboxProcessHomesInUse(), readWindowsProcessRunStates);
+    if (removed > 0) log.info("boot: removed %d stale Windows sandbox HOME(s)", removed);
+    if (failed > 0) log.warn("boot: could not remove %d stale Windows sandbox HOME(s)", failed);
+  } catch (error) {
+    log.warn("boot: Windows sandbox HOME sweep did not run (%s)", (error as NodeJS.ErrnoException).code ?? "error");
+  }
+}
+
+/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. */
+export async function sweepStaleWindowsSandboxHomes(
+  root: string,
+  inUse: ReadonlySet<string>,
+  probe: ProcessRunStateProbe,
+): Promise<{ removed: number; failed: number }> {
+  const { SANDBOX_HOME_OWNER_SUFFIX, SANDBOX_HOME_PREFIX, readSandboxHomeOwner } =
+    await import("../../permissions/sandbox-process-home.js");
+  checkSandboxSweepRoot(root);
+  const canonicalRoot = await realpath(root);
+  checkSandboxSweepRoot(canonicalRoot);
+  const entries = await readdir(canonicalRoot, { withFileTypes: true });
+  const names = new Set(entries.map(({ name }) => name));
+  const candidates: { home: string; orphan: boolean; pid: number; startTime: string }[] = [];
+  for (const entry of entries) {
+    if (!entry.name.startsWith(SANDBOX_HOME_PREFIX)) continue;
+    let homeName: string;
+    let orphan: boolean;
+    if (entry.isDirectory()) {
+      homeName = entry.name;
+      orphan = false;
+    } else if (entry.isFile() && entry.name.endsWith(SANDBOX_HOME_OWNER_SUFFIX)) {
+      homeName = entry.name.slice(0, -SANDBOX_HOME_OWNER_SUFFIX.length);
+      // A marker beside its HOME is handled with that HOME.
+      if (names.has(homeName)) continue;
+      orphan = true;
+    } else continue;
+    const home = join(canonicalRoot, homeName);
+    if (inUse.has(home) || inUse.has(join(root, homeName))) continue;
+    const owner = await readSandboxHomeOwner(home);
+    if (owner !== null) candidates.push({ home, orphan, ...owner });
+  }
+  let removed = 0;
+  let failed = 0;
+  if (candidates.length === 0) return { removed, failed };
+  const states = await probe([...new Set(candidates.map(({ pid }) => pid))]);
+  for (const { home, orphan, pid, startTime } of candidates) {
+    const state = states.get(pid);
+    const stale = state !== undefined
+      && (!state.running || (state.startTime !== null && state.startTime !== startTime));
+    if (!stale) continue;
+    try {
+      if (!orphan) {
+        const entry = await lstat(home);
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        await removeOwnedPluginTree(home);
+        removed += 1;
+      } else if ((await lstat(home).catch(() => undefined)) !== undefined) continue;
+    } catch {
+      failed += 1;
+      continue;
+    }
+    // A marker left behind is an orphan for the next sweep; the HOME already counts as removed.
+    await unlink(`${home}${SANDBOX_HOME_OWNER_SUFFIX}`).catch(() => undefined);
+  }
+  return { removed, failed };
 }
 
 /** Boot performs static container checks; the slow start probe runs afterward and reports its outcome to Settings. */

@@ -806,6 +806,8 @@ jobs:
           src/permissions/__tests__/egress-grant-class-routing.test.ts
           src/permissions/__tests__/egress-mxc-review-regressions.test.ts
           src/permissions/__tests__/sandbox-process-home.test.ts
+          src/permissions/__tests__/windows-process-start-time.test.ts
+          src/boot/__tests__/windows-sandbox-home-sweep.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/shared/__tests__/shell-execution.test.ts
           src/shared/__tests__/shell-filesystem-path.test.ts

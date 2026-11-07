@@ -31,6 +31,11 @@ const spawnMock = vi.fn<
 vi.mock("node:child_process", () => ({
   spawn: (cmd: string, args?: readonly string[], opts?: unknown) =>
     spawnMock(cmd, args, opts),
+  // Reached through sandbox-process-home's owner start-time probe; failing it leaves HOMEs unmarked.
+  execFile: (...args: unknown[]) => {
+    const callback = args.at(-1);
+    if (typeof callback === "function") callback(new Error("execFile is not faked in mcp-client tests"));
+  },
 }));
 vi.mock("../../main/uv-runtime.js", () => ({
   resolveBundledUvBinaryPath: vi.fn(() => "/test-runtime/uv"),
