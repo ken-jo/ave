@@ -56,12 +56,18 @@ function expectRepairPlanned(name: string): void {
   expect(market.executeInstall).toHaveBeenCalledWith("plan-1");
 }
 
+/** The renderer API a test installs; the tab always reads its plugin cards here, so the shared card mock is the default. */
 function setRendererApi(value: Record<string, unknown>): void {
   Object.defineProperty(window, "aveApi", {
-    value,
+    value: { listPluginCards: mockCards, ...value },
     writable: true,
     configurable: true,
   });
+}
+
+/** Replace the card mock and keep the rest of the renderer API the test installed. */
+function stubPluginCards(cards: unknown): void {
+  setRendererApi({ ...(window.aveApi as unknown as Record<string, unknown>), listPluginCards: cards });
 }
 
 beforeEach(() => {
@@ -88,9 +94,6 @@ beforeEach(() => {
   setRendererApi({ gitMarketplace: market });
   Object.defineProperty(window, "ave", {
     value: {
-      plugins: {
-        cards: mockCards,
-      },
       pluginConfig: {
         get: mockGet,
         set: mockSet,
@@ -249,12 +252,12 @@ describe("PluginConfigTab", () => {
     bind("samplehub");
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
     Object.defineProperty(window, "aveHost", {
       value: {
         takePluginMarketplaceApi: () => ({
@@ -296,12 +299,12 @@ describe("PluginConfigTab", () => {
       bind("samplehub");
       Object.defineProperty(window, "ave", {
         value: {
-          plugins: { cards },
           pluginConfig: { get: mockGet, set: mockSet },
         },
         writable: true,
         configurable: true,
       });
+      stubPluginCards(cards);
 
       render(<PluginConfigTab />);
 
@@ -332,12 +335,12 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -373,12 +376,12 @@ describe("PluginConfigTab", () => {
     bind("samplehub");
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -416,12 +419,12 @@ describe("PluginConfigTab", () => {
       .mockResolvedValueOnce([repaired]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -464,9 +467,10 @@ describe("PluginConfigTab", () => {
       installFailureMessage: "English refusal from main.",
     });
     Object.defineProperty(window, "ave", {
-      value: { plugins: { cards: vi.fn().mockResolvedValue([broken]) }, pluginConfig: { get: mockGet, set: mockSet } },
+      value: { pluginConfig: { get: mockGet, set: mockSet } },
       writable: true, configurable: true,
     });
+    stubPluginCards(vi.fn().mockResolvedValue([broken]));
     render(<PluginConfigTab />);
     await waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
     expect(screen.getByText(detail)).toBeInTheDocument();
@@ -485,12 +489,12 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -532,12 +536,12 @@ describe("PluginConfigTab", () => {
     } });
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab onNavigate={navigate} />);
 
@@ -564,10 +568,11 @@ describe("PluginConfigTab", () => {
       installFailureKind: "incompatible-host-protocol",
     })]);
     Object.defineProperty(window, "ave", {
-      value: { plugins: { cards }, pluginConfig: { get: mockGet, set: mockSet } },
+      value: { pluginConfig: { get: mockGet, set: mockSet } },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
     const doctor = await screen.findByTestId("plugin-config:doctor:meeting");
@@ -583,12 +588,12 @@ describe("PluginConfigTab", () => {
     const navigate = vi.fn();
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({})]) },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(vi.fn().mockResolvedValue([makePluginCard({})]));
 
     render(<PluginConfigTab onNavigate={navigate} />);
     fireEvent.click(await screen.findByTestId("plugin-config:install-folder"));
@@ -605,16 +610,16 @@ describe("PluginConfigTab", () => {
     }] });
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards: vi.fn().mockResolvedValue([makePluginCard({
-          description: "Needs update",
-          loadStatus: "failed",
-          installFailureKind: "incompatible-host-protocol",
-        })]) },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(vi.fn().mockResolvedValue([makePluginCard({
+      description: "Needs update",
+      loadStatus: "failed",
+      installFailureKind: "incompatible-host-protocol",
+    })]));
 
     render(<PluginConfigTab />);
     expect(await screen.findByText("https://example.invalid/plugins/meeting")).toBeInTheDocument();
@@ -632,12 +637,12 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -672,12 +677,12 @@ describe("PluginConfigTab", () => {
     bind("meeting");
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -713,12 +718,12 @@ describe("PluginConfigTab", () => {
     });
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -750,12 +755,12 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn().mockResolvedValue([broken]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -780,12 +785,12 @@ describe("PluginConfigTab", () => {
     mockUninstall.mockResolvedValueOnce({ ok: true as const });
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -816,7 +821,6 @@ describe("PluginConfigTab", () => {
     let installResultHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
@@ -833,6 +837,7 @@ describe("PluginConfigTab", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -876,7 +881,6 @@ describe("PluginConfigTab", () => {
     let installResultHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
@@ -893,6 +897,7 @@ describe("PluginConfigTab", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -930,12 +935,12 @@ describe("PluginConfigTab", () => {
     ]);
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
 
     render(<PluginConfigTab />);
 
@@ -971,7 +976,6 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
 
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards: mockCardsTyped },
         pluginConfig: {
           get: mockGetTyped,
           set: mockSetTyped,
@@ -982,6 +986,7 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(mockCardsTyped);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1029,12 +1034,12 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
     // the parent's hooks.
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards: mockCards },
         pluginConfig: { get: mockGet, set: mockSet },
       },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(mockCards);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1073,7 +1078,6 @@ describe("PluginConfigTab — auth UI", () => {
 
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: {
           get: vi.fn(async () => ({ ok: true as const, config: {} })),
           set: vi.fn(async () => ({ ok: true as const, config: {} })),
@@ -1093,6 +1097,7 @@ describe("PluginConfigTab — auth UI", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1130,7 +1135,6 @@ describe("PluginConfigTab — auth UI", () => {
 
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: {
           get: vi.fn(async () => ({ ok: true as const, config: {} })),
           set: vi.fn(async () => ({ ok: true as const, config: {} })),
@@ -1149,6 +1153,7 @@ describe("PluginConfigTab — auth UI", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1185,7 +1190,6 @@ describe("PluginConfigTab — auth UI", () => {
 
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: {
           get: vi.fn(async () => ({ ok: true as const, config: {} })),
           set: vi.fn(async () => ({ ok: true as const, config: {} })),
@@ -1203,6 +1207,7 @@ describe("PluginConfigTab — auth UI", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1236,7 +1241,6 @@ describe("PluginConfigTab — auth UI", () => {
 
     Object.defineProperty(window, "ave", {
       value: {
-        plugins: { cards },
         pluginConfig: {
           get: vi.fn(async () => ({ ok: true as const, config: {} })),
           set: vi.fn(async () => ({ ok: true as const, config: {} })),
@@ -1254,6 +1258,7 @@ describe("PluginConfigTab — auth UI", () => {
       writable: true,
       configurable: true,
     });
+    stubPluginCards(cards);
     Object.defineProperty(window, "aveHost", {
       value: { takePluginMarketplaceApi: () => null },
       writable: true,
@@ -1456,10 +1461,11 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
 describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
   function showCards(cards: unknown[]): void {
     Object.defineProperty(window, "ave", {
-      value: { plugins: { cards: vi.fn().mockResolvedValue(cards) }, pluginConfig: { get: mockGet, set: mockSet } },
+      value: { pluginConfig: { get: mockGet, set: mockSet } },
       writable: true,
       configurable: true,
     });
+    stubPluginCards(vi.fn().mockResolvedValue(cards));
   }
   const base = { name: "Meeting", description: "Meeting plugin", sampleTools: [], capabilities: [], tools: [] };
 
@@ -1602,7 +1608,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
         live.record({ ...loaded, lastAttemptRefusal: refusalOf("restart", "declares no served protocol") });
         return { ok: false as const, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: declares no served protocol" };
       });
-      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      Object.defineProperty(window, "ave", { value: { pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      stubPluginCards(live.cards);
       render(<PluginConfigTab />);
       await screen.findByTestId("plugin-config:row-arm:meeting");
       expect(screen.queryByTestId("plugin-config:row-refusal:meeting")).toBeNull();
@@ -1617,7 +1624,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
         live.record(loaded);
         return { ok: true as const, config: { apiKey: "abc" } };
       });
-      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      Object.defineProperty(window, "ave", { value: { pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      stubPluginCards(live.cards);
       render(<PluginConfigTab />);
       await screen.findByTestId("plugin-config:row-refusal:meeting");
       fireEvent.click(screen.getByRole("button", { name: "저장" }));
@@ -1632,10 +1640,11 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
         return { ok: false as const, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: schema save refused" };
       });
       Object.defineProperty(window, "ave", {
-        value: { plugins: { cards: live.cards }, pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set, setSecret: vi.fn(), listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
+        value: { pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set, setSecret: vi.fn(), listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
         writable: true,
         configurable: true,
       });
+      stubPluginCards(live.cards);
       render(<PluginConfigTab />);
       await screen.findByTestId("plugin-config-form:meeting");
       fireEvent.change(document.getElementById("pcfg:meeting:mode")!, { target: { value: "slow" } });
@@ -1651,10 +1660,11 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
         return { ok: false as const, error: "plugin-config-secret-save-failed", message: "Plugin secret saved but runtime reload refused: secret save refused" };
       });
       Object.defineProperty(window, "ave", {
-        value: { plugins: { cards: live.cards }, pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set: vi.fn(), setSecret, listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
+        value: { pluginConfig: { get: vi.fn(async () => ({ ok: true as const, config: {} })), set: vi.fn(), setSecret, listSecretKeys: vi.fn(async () => ({ ok: true, keys: [] })) } },
         writable: true,
         configurable: true,
       });
+      stubPluginCards(live.cards);
       render(<PluginConfigTab />);
       fireEvent.change(await screen.findByTestId("pcfg:meeting:apiKey:input"), { target: { value: "sk-live" } });
       fireEvent.click(screen.getByTestId("pcfg:meeting:apiKey:save"));
@@ -1673,7 +1683,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
       const set = vi.fn()
         .mockResolvedValueOnce({ ok: false, error: "plugin-config-save-failed", message: "Plugin config saved but runtime reload refused: older" })
         .mockResolvedValue({ ok: true, config: { apiKey: "abc" } });
-      Object.defineProperty(window, "ave", { value: { plugins: { cards }, pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      Object.defineProperty(window, "ave", { value: { pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+      stubPluginCards(cards);
       render(<PluginConfigTab />);
       await screen.findByTestId("plugin-config:row-arm:meeting");
       fireEvent.click(screen.getByRole("button", { name: "저장" }));
@@ -1694,7 +1705,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
         gitMarketplace: market,
         onPluginInstallResult: (handler: typeof installResult) => { installResult = handler; return () => {}; },
       });
-      Object.defineProperty(window, "ave", { value: { plugins: { cards: live.cards }, pluginConfig: { get: mockGet, set: mockSet } }, writable: true, configurable: true });
+      Object.defineProperty(window, "ave", { value: { pluginConfig: { get: mockGet, set: mockSet } }, writable: true, configurable: true });
+      stubPluginCards(live.cards);
       render(<PluginConfigTab />);
       await screen.findByTestId("plugin-config:row-arm:meeting");
       expect(installResult).toBeDefined();

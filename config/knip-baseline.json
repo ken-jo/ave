@@ -935,11 +935,6 @@
     {
       "type": "types",
       "file": "src/ui/renderer/types.ts",
-      "name": "AvePluginsApi"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
       "name": "AvePolicyApi"
     },
     {

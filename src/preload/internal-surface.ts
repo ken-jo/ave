@@ -117,9 +117,6 @@ export function buildAveWindowWorld() {
 
 export function buildAveNamespaceExtras() {
   return {
-  plugins: {
-    cards: () => ipcRenderer.invoke(CHANNELS.plugins.cards),
-  },
   ui: {
     showNativeContextMenu: (payload: NativeContextMenuPayload) =>
       ipcRenderer.invoke(UI.nativeContextMenu, payload),

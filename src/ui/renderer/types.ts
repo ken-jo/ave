@@ -1617,10 +1617,6 @@ export type AvePluginConfigApi = {
   >;
 };
 
-export type AvePluginsApi = {
-  cards: () => Promise<PluginCardSummary[]>;
-};
-
 /** One installed plugin view as the composer surfaces (slash picker, input bar) list it. */
 export interface PluginEntry {
   viewKey: string;
@@ -2061,7 +2057,6 @@ declare global {
       userApproval: AveUserApprovalApi;
       policy: AvePolicyApi;
       mcp: AveMcpApi;
-      plugins: AvePluginsApi;
       pluginConfig: AvePluginConfigApi;
       ui: AveUiApi;
       attach: AveAttachApi;
