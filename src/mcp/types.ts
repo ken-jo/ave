@@ -273,7 +273,7 @@ export interface McpServerState {
 
 export type ValidationResult =
   | { valid: true }
-  | { valid: false; reason: string; layer: number };
+  | { valid: false; reason: string; layer: number; reasonCode?: "mcp-governance-unapproved-server" };
 
 // ─── MCP Apps UI Payload (MCP Apps spec 2026-01-26) ─
 

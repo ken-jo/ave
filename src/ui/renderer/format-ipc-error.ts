@@ -2,6 +2,12 @@
 
 import { t } from "../../i18n/runtime.js";
 
+/** Read a leading machine code after the invoke rejection wrapper, independent of localized detail. */
+export function invokeErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  return /^(?:Error invoking remote method '[^']+': Error: )?([a-z][a-z0-9-]*)(?=: |$)/.exec(error.message)?.[1];
+}
+
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-shell-action": "formatIpcError.invalidRequest",
   "session-changed": "shellTasks.sessionChanged",

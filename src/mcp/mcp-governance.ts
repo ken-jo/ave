@@ -157,7 +157,7 @@ export class McpGovernance {
 
     const approval = this.findApproval(config.id);
     if (!approval) {
-      return { valid: false, reason: t("be_mcpGovernance.unapprovedServer", { id: config.id }), layer: 1 };
+      return { valid: false, reason: t("be_mcpGovernance.unapprovedServer", { id: config.id }), layer: 1, reasonCode: "mcp-governance-unapproved-server" };
     }
     if (approval.status === "revoked") {
       return { valid: false, reason: t("be_mcpGovernance.revokedServer", { id: config.id, revokedAt: approval.revokedAt ?? "" }), layer: 1 };

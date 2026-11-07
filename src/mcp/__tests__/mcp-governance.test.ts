@@ -588,3 +588,18 @@ describe("McpGovernance transport validation", () => {
     expect(result.reason).toBe(t("be_mcpClient.unsupportedTransport", { transport }));
   });
 });
+
+describe("McpGovernance server refusal codes", () => {
+  it.each(["missing", "pending", "revoked", "transport-mismatch", "approved"] as const)("codes only a missing approval: %s", (kind) => {
+    const gov = governanceWithPolicy(basePolicy({
+      status: kind === "pending" || kind === "revoked" ? kind : "approved",
+      transport: kind === "transport-mismatch" ? "http" : "stdio",
+    }));
+    const result = gov.validateServer({ id: kind === "missing" ? "unknown" : "browser-use", transport: "stdio", command: "uvx", auth: "api-key", apiKeyEnv: "OPENAI_API_KEY" });
+    if (kind === "missing") {
+      expect(result).toMatchObject({ valid: false, layer: 1, reasonCode: "mcp-governance-unapproved-server" });
+    } else {
+      expect(result).not.toHaveProperty("reasonCode");
+    }
+  });
+});

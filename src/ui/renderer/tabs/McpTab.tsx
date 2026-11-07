@@ -16,6 +16,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { invokeErrorCode } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
 type Transport = "stdio" | "http";
@@ -477,12 +478,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       void fetchAll();
     } catch (e) {
       const message = errorMessage(e);
-      // The invoke bridge preserves only the manager's localized exception message.
-      const refusal = t("be_mcpManager.governanceValidationFailed", {
-        layer: "1",
-        reason: t("be_mcpGovernance.unapprovedServer", { id: config.id }),
-      });
-      showBanner("error", message, message.includes(refusal));
+      showBanner("error", message, invokeErrorCode(e) === "mcp-governance-unapproved-server");
     } finally {
       setFormBusy(false);
     }
