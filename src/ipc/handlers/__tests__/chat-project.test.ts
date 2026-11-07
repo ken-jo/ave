@@ -69,10 +69,12 @@ describe("markMainActiveAfterTurn across chat tiles", () => {
         getSessionProjectContext: () => null,
       },
       memoryManager: {
-        loadSessionMetadata: vi.fn(() => ({})),
-        saveSessionMetadata: vi.fn(async () => {}),
-        markMainActiveResume,
-        markMainActiveFresh: vi.fn(async () => {}),
+        sessions: {
+          loadSessionMetadata: vi.fn(() => ({})),
+          saveSessionMetadata: vi.fn(async () => {}),
+          markMainActiveResume,
+          markMainActiveFresh: vi.fn(async () => {}),
+        },
       },
     };
     await markMainActiveAfterTurn({ ...base, chatGroupId: "group-2" } as unknown as IpcDeps, "hello", "user-keyboard");
@@ -99,10 +101,12 @@ describe("markMainActiveAfterTurn project metadata", () => {
         }),
       },
       memoryManager: {
-        loadSessionMetadata: vi.fn(() => ({ title: "Existing title" })),
-        saveSessionMetadata,
-        markMainActiveResume,
-        markMainActiveFresh: vi.fn(async () => {}),
+        sessions: {
+          loadSessionMetadata: vi.fn(() => ({ title: "Existing title" })),
+          saveSessionMetadata,
+          markMainActiveResume,
+          markMainActiveFresh: vi.fn(async () => {}),
+        },
       },
     } as unknown as IpcDeps;
 
@@ -134,10 +138,12 @@ describe("markMainActiveAfterTurn project metadata", () => {
         }),
       },
       memoryManager: {
-        loadSessionMetadata: vi.fn(() => null),
-        saveSessionMetadata,
-        markMainActiveResume,
-        markMainActiveFresh: vi.fn(async () => {}),
+        sessions: {
+          loadSessionMetadata: vi.fn(() => null),
+          saveSessionMetadata,
+          markMainActiveResume,
+          markMainActiveFresh: vi.fn(async () => {}),
+        },
       },
     } as unknown as IpcDeps;
 
@@ -162,10 +168,12 @@ describe("markMainActiveAfterTurn project metadata", () => {
         }),
       },
       memoryManager: {
-        loadSessionMetadata: vi.fn(() => null),
-        saveSessionMetadata,
-        markMainActiveResume,
-        markMainActiveFresh: vi.fn(async () => {}),
+        sessions: {
+          loadSessionMetadata: vi.fn(() => null),
+          saveSessionMetadata,
+          markMainActiveResume,
+          markMainActiveFresh: vi.fn(async () => {}),
+        },
       },
     } as unknown as IpcDeps;
 
@@ -197,7 +205,7 @@ describe("handleChatSessions row state", () => {
     }]);
     const deps = {
       conversationLoop: { getSessionId: () => "session-1" },
-      memoryManager: { listSessionsPage },
+      memoryManager: { sessions: { listSessionsPage } },
     } as unknown as IpcDeps;
 
     const { sessions } = await handleChatSessions(deps, { kind: "main" });
@@ -214,9 +222,7 @@ describe("handleChatSessions project filters", () => {
       conversationLoop: {
         getSessionId: () => "session-1",
       },
-      memoryManager: {
-        listSessionsPage,
-      },
+      memoryManager: { sessions: { listSessionsPage } },
     } as unknown as IpcDeps;
 
     expect(await handleChatSessions(deps, { kind: "main" })).toEqual({
@@ -232,9 +238,7 @@ describe("handleChatSessions project filters", () => {
       conversationLoop: {
         getSessionId: () => "session-1",
       },
-      memoryManager: {
-        listSessionsPage,
-      },
+      memoryManager: { sessions: { listSessionsPage } },
     } as unknown as IpcDeps;
 
     await handleChatSessions(deps, { kind: "main", projectRoot: "C:\\unapproved\\project" });
@@ -262,7 +266,7 @@ describe("handleChatSessions legacy default-root metadata scrub", () => {
       }]);
       const deps = {
         conversationLoop: { getSessionId: () => "legacy-session" },
-        memoryManager: { listSessionsPage },
+        memoryManager: { sessions: { listSessionsPage } },
       } as unknown as IpcDeps;
 
       const result = await handleChatSessions(deps, { kind: "main" });
@@ -288,7 +292,7 @@ describe("handleChatSessions legacy default-root metadata scrub", () => {
       }]);
       const deps = {
         conversationLoop: { getSessionId: () => "explicit-session" },
-        memoryManager: { listSessionsPage },
+        memoryManager: { sessions: { listSessionsPage } },
       } as unknown as IpcDeps;
 
       const result = await handleChatSessions(deps, { kind: "main" });
@@ -347,8 +351,8 @@ describe("handleChatSessions federated families", () => {
     const listSideChatSessionsPage = vi.fn(() => sideChats);
     const deps = {
       conversationLoop: { getSessionId: () => "session-main" },
-      memoryManager: { listSessionsPage },
-      sideChatMemoryManager: { listSessionsPage: listSideChatSessionsPage },
+      memoryManager: { sessions: { listSessionsPage } },
+      sideChatMemoryManager: { sessions: { listSessionsPage: listSideChatSessionsPage } },
       getSubAgentRunner: () => ({ listWorkBoardRunSessions }),
       workBoardStore: { get },
     } as unknown as IpcDeps;
@@ -426,7 +430,7 @@ describe("handleChatSessions federated families", () => {
   it("lists nothing extra when the runner, the board or the side-chat store is not wired", async () => {
     const deps = {
       conversationLoop: { getSessionId: () => "session-main" },
-      memoryManager: { listSessionsPage: vi.fn(() => [main]) },
+      memoryManager: { sessions: { listSessionsPage: vi.fn(() => [main]) } },
     } as unknown as IpcDeps;
     const { sessions } = await handleChatSessions(deps, { families: [...ALL_FAMILIES] });
     expect(sessions.map((s) => s.id)).toEqual(["session-main"]);

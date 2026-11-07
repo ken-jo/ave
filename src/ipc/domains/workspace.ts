@@ -389,7 +389,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         managers.push(candidate as WorkspaceMemoryLifecycle);
       }
     };
-    const primary = deps.memoryManager as unknown as WorkspaceMemoryLifecycle | undefined;
+    const primary = deps.memoryManager?.sessions as unknown as WorkspaceMemoryLifecycle | undefined;
     if (failClosed && typeof primary?.detachSessionsFromProject !== "function") {
       const error = Object.assign(new Error("workspace memory manager unavailable"), {
         code: "MEMORY_MANAGER_UNAVAILABLE",
@@ -402,7 +402,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       const sideLoop = deps.sideChatConversationLoop as
         | { deps?: { memoryManager?: unknown } }
         | undefined;
-      add(sideLoop?.deps?.memoryManager);
+      const sideMemoryManager = sideLoop?.deps?.memoryManager as IpcDeps["memoryManager"] | undefined;
+      add(sideMemoryManager?.sessions);
     } catch (error: unknown) {
       auditLifecycleWarning(source, root, "detach-sessions", error);
       if (failClosed) throw error;
@@ -1051,7 +1052,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const permissionManager = deps.conversationLoop?.permissionManager;
         if (typeof permissionManager?.countPathGrantsUnderRoot !== "function") throw new Error("permission manager unavailable");
         if (typeof deps.routinesStore?.countRoutinesScopedToWorkspaceRoot !== "function") throw new Error("routines store unavailable");
-        const sessionStores = [deps.memoryManager, ...sessionMemoryManagers(CHANNELS.workspace.previewRemoveRoot, runtimePath, true)]
+        const sessionStores = [deps.memoryManager?.sessions, ...sessionMemoryManagers(CHANNELS.workspace.previewRemoveRoot, runtimePath, true)]
           .filter((store, index, all) => all.indexOf(store) === index) as Array<{ countSessionsInProject?: (root: string) => number } | undefined>;
         let detachableSessions = 0;
         for (const store of sessionStores) {

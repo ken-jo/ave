@@ -72,7 +72,7 @@ describe("ConversationLoop.resetAndResume", () => {
 
   it("refuses a session the host reports as held by another loop", async () => {
     const mem = resumeMemory([{ role: "user", content: "hello" }]);
-    const readSession = vi.spyOn(mem, "loadSession");
+    const readSession = vi.spyOn(mem.sessions, "loadSession");
     const held = vi.fn((sessionId: string) => sessionId === RESUME_SESSION_ID);
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, sessionHeldElsewhere: held }));
 
@@ -151,10 +151,11 @@ describe("ConversationLoop.resetAndResume", () => {
 
   it("advances the session epoch for A → B → A, even when the session id repeats", async () => {
     const history: GenericMessage[] = [{ role: "user", content: "resume me" }];
+    const sessionMemory = resumeMemory(history);
     const loop = new ConversationLoop(resumeDeps({
       memoryManager: {
-        ...resumeMemory(history),
-        saveSession: vi.fn(async () => {}),
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSession: vi.fn(async () => {}) },
       } as unknown as ConversationLoopDeps["memoryManager"],
     }));
     const initialEpoch = loop.getSessionEpoch();
@@ -173,10 +174,11 @@ describe("ConversationLoop.resetAndResume", () => {
 
   it("clears prior carried-forward plugin scope when loading or creating a session", async () => {
     const history: GenericMessage[] = [{ role: "user", content: "resume me" }];
+    const sessionMemory = resumeMemory(history);
     const loop = new ConversationLoop(resumeDeps({
       memoryManager: {
-        ...resumeMemory(history),
-        saveSession: vi.fn(async () => {}),
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSession: vi.fn(async () => {}) },
       } as unknown as ConversationLoopDeps["memoryManager"],
     }));
     const state = loop as unknown as { lastTurnScope: Set<string> | null };
@@ -195,22 +197,26 @@ describe("ConversationLoop.resetAndResume", () => {
     ];
     const parentHistory: GenericMessage[] = [{ role: "user", content: "parent should not load" },
     ];
+    const sessionMemory = resumeMemory(null);
     const mem = {
-      ...resumeMemory(null),
-      loadSession: vi.fn((id: string) => {
-        if (id === "3e323a73-28d0-4dce-8229-3b0eca68d32a") return childHistory;
-        if (id === "a1bdc27a-c758-4a74-8955-5e9188412366") return parentHistory;
-        return null;
-      }),
-      loadSessionMetadata: vi.fn((id: string) => {
-        if (id === "3e323a73-28d0-4dce-8229-3b0eca68d32a") {
-          return {
-            parentSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
-            summaryPreamble: "요약된 부모 맥락",
-          };
-        }
-        return null;
-      }),
+      ...sessionMemory,
+      sessions: {
+        ...sessionMemory.sessions,
+        loadSession: vi.fn((id: string) => {
+          if (id === "3e323a73-28d0-4dce-8229-3b0eca68d32a") return childHistory;
+          if (id === "a1bdc27a-c758-4a74-8955-5e9188412366") return parentHistory;
+          return null;
+        }),
+        loadSessionMetadata: vi.fn((id: string) => {
+          if (id === "3e323a73-28d0-4dce-8229-3b0eca68d32a") {
+            return {
+              parentSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
+              summaryPreamble: "요약된 부모 맥락",
+            };
+          }
+          return null;
+        }),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }),
     );
@@ -218,9 +224,9 @@ describe("ConversationLoop.resetAndResume", () => {
     const result = await loop.resetAndResume("3e323a73-28d0-4dce-8229-3b0eca68d32a");
 
     expect(result.ok).toBe(true);
-    expect(mem.loadSession).toHaveBeenCalledTimes(1);
-    expect(mem.loadSession).toHaveBeenCalledWith("3e323a73-28d0-4dce-8229-3b0eca68d32a");
-    expect(mem.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
+    expect(mem.sessions.loadSession).toHaveBeenCalledTimes(1);
+    expect(mem.sessions.loadSession).toHaveBeenCalledWith("3e323a73-28d0-4dce-8229-3b0eca68d32a");
+    expect(mem.sessions.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
     // Reload child rows behind their copied-summary boundary; never merge the parent transcript.
     const [boundary, ...rows] = loop.getHistory().getMessages();
     expect(boundary!.meta?.compactBoundary).toBe(true);
@@ -234,13 +240,17 @@ describe("ConversationLoop.resetAndResume", () => {
       { role: "user", content: "forked question" },
       { role: "assistant", content: "forked answer" },
     ];
+    const sessionMemory = resumeMemory(history);
     const mem = {
-      ...resumeMemory(history),
-      loadSessionMetadata: vi.fn(() => ({
-        summaryPreamble: "FORK-SUMMARY",
-        branchedFromCompactNum: 3,
-        branchedAt: "2026-10-01T00:00:00.000Z",
-      })),
+      ...sessionMemory,
+      sessions: {
+        ...sessionMemory.sessions,
+        loadSessionMetadata: vi.fn(() => ({
+          summaryPreamble: "FORK-SUMMARY",
+          branchedFromCompactNum: 3,
+          branchedAt: "2026-10-01T00:00:00.000Z",
+        })),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
 
@@ -252,7 +262,7 @@ describe("ConversationLoop.resetAndResume", () => {
     expect(loaded.slice(1).map((m) => m.content)).toEqual(["forked question", "forked answer"]);
 
     const again = new ConversationLoop(resumeDeps({
-      memoryManager: { ...mem, loadSession: vi.fn(() => loaded) } as unknown as ConversationLoopDeps["memoryManager"],
+      memoryManager: { ...mem, sessions: { ...mem.sessions, loadSession: vi.fn(() => loaded) } } as unknown as ConversationLoopDeps["memoryManager"],
     }));
     expect((await again.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93")).ok).toBe(true);
     expect(again.getHistory().getMessages()).toHaveLength(3);
@@ -263,9 +273,10 @@ describe("ConversationLoop.resetAndResume", () => {
       { role: "user", content: "[old marker]", meta: { compactBoundary: true, compactNum: 2 } },
       { role: "user", content: "next question" },
     ];
+    const sessionMemory = resumeMemory(history);
     const mem = {
-      ...resumeMemory(history),
-      loadSessionMetadata: vi.fn(() => ({ summaryPreamble: "SUMMARY-OF-REMOVED-TURNS" })),
+      ...sessionMemory,
+      sessions: { ...sessionMemory.sessions, loadSessionMetadata: vi.fn(() => ({ summaryPreamble: "SUMMARY-OF-REMOVED-TURNS" })) },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
 
@@ -490,7 +501,7 @@ describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
   });
 
   it("manualCompact appends a checkpoint and persists summary", async () => {
-    const longHistory = makeConversationLoopLongHistory(40);
+    const longHistory = makeConversationLoopLongHistory(2000);
     const mem = resumeMemory(longHistory);
 
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
@@ -522,15 +533,11 @@ describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
 
     const result = await loop.manualCompact();
 
-    if (result.compacted) {
-      // manualCompact has no callbacks; verify checkpoint persistence instead.
-      expect(result.compacted).toBe(true);
-      expect(result.removedMessageCount).toBeGreaterThan(0);
-      expect((mem as { appendCheckpoint: ReturnType<typeof vi.fn> }).appendCheckpoint,
-      ).toHaveBeenCalled();
-      expect((mem as { saveSessionMetadata: ReturnType<typeof vi.fn> }).saveSessionMetadata,
-      ).toHaveBeenCalled();
-    }
+    // manualCompact has no callbacks; verify checkpoint persistence instead.
+    expect(result.compacted).toBe(true);
+    expect(result.removedMessageCount).toBeGreaterThan(0);
+    expect(mem.sessions.appendCheckpoint).toHaveBeenCalled();
+    expect(mem.sessions.saveSessionMetadata).toHaveBeenCalled();
   });
 });
 

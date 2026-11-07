@@ -49,35 +49,35 @@ afterEach(async () => {
 
 describe("appendSessionProgress", () => {
   it("appends only the new rows after a save, and reports unchanged when nothing is new", async () => {
-    await mm.saveSession(SESSION, [user]);
-    expect(await mm.appendSessionProgress(SESSION, [user, round1])).toBe("appended");
-    expect(await mm.appendSessionProgress(SESSION, [user, round1, result1])).toBe("appended");
-    expect(await mm.appendSessionProgress(SESSION, [user, round1, result1])).toBe("unchanged");
+    await mm.sessions.saveSession(SESSION, [user]);
+    expect(await mm.sessions.appendSessionProgress(SESSION, [user, round1])).toBe("appended");
+    expect(await mm.sessions.appendSessionProgress(SESSION, [user, round1, result1])).toBe("appended");
+    expect(await mm.sessions.appendSessionProgress(SESSION, [user, round1, result1])).toBe("unchanged");
     expect(lines()).toHaveLength(3);
-    expect(mm.loadSession(SESSION)).toEqual([user, round1, result1]);
+    expect(mm.sessions.loadSession(SESSION)).toEqual([user, round1, result1]);
   });
 
   it("rewrites instead of appending when history no longer extends what is on disk", async () => {
-    await mm.saveSession(SESSION, [user, round1]);
+    await mm.sessions.saveSession(SESSION, [user, round1]);
     const compacted = row("u1b", { role: "user", content: "요약된 질문" });
-    expect(await mm.appendSessionProgress(SESSION, [compacted, result1])).toBe("rewritten");
-    expect(mm.loadSession(SESSION)).toEqual([compacted, result1]);
+    expect(await mm.sessions.appendSessionProgress(SESSION, [compacted, result1])).toBe("rewritten");
+    expect(mm.sessions.loadSession(SESSION)).toEqual([compacted, result1]);
   });
 
   it("rewrites when another writer touched the file since this process wrote it", async () => {
-    await mm.saveSession(SESSION, [user]);
+    await mm.sessions.saveSession(SESSION, [user]);
     appendFileSync(transcriptPath(), `${JSON.stringify(row("x1", { role: "assistant", content: "외부" }))}\n`);
-    expect(await mm.appendSessionProgress(SESSION, [user, round1])).toBe("rewritten");
-    expect(mm.loadSession(SESSION)).toEqual([user, round1]);
+    expect(await mm.sessions.appendSessionProgress(SESSION, [user, round1])).toBe("rewritten");
+    expect(mm.sessions.loadSession(SESSION)).toEqual([user, round1]);
   });
 
   it("leaves no duplicate rows when the turn's final save rewrites the appended file", async () => {
-    await mm.saveSession(SESSION, [user]);
-    await mm.appendSessionProgress(SESSION, [user, round1]);
-    await mm.appendSessionProgress(SESSION, [user, round1, result1]);
+    await mm.sessions.saveSession(SESSION, [user]);
+    await mm.sessions.appendSessionProgress(SESSION, [user, round1]);
+    await mm.sessions.appendSessionProgress(SESSION, [user, round1, result1]);
     const final = row("a3", { role: "assistant", content: "끝", meta: { turnSummary: { toolCount: 1 } } });
-    await mm.saveSession(SESSION, [user, round1, result1, final]);
-    const ids = (mm.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId);
+    await mm.sessions.saveSession(SESSION, [user, round1, result1, final]);
+    const ids = (mm.sessions.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId);
     expect(ids).toEqual(["u1", "a1", "r1", "a3"]);
     expect(lines()).toHaveLength(4);
   });
@@ -87,22 +87,22 @@ describe("appendSessionProgress", () => {
     const assistant = row("parallel", { role: "assistant", content: "", toolCalls: calls.map((id) => ({ id, name: "read_file", input: {} })) });
     const results = calls.map((id) => row("result-" + id, { role: "tool_result", toolUseId: id, content: id }));
     const history = [user, assistant];
-    await mm.saveSession(SESSION, history);
+    await mm.sessions.saveSession(SESSION, history);
     for (let i = calls.length - 1; i >= 0; i--) {
       history.splice(2, 0, results[i]);
-      expect(await mm.appendSessionProgress(SESSION, history)).toBe("appended");
-      expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual(history);
+      expect(await mm.sessions.appendSessionProgress(SESSION, history)).toBe("appended");
+      expect(new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION)).toEqual(history);
     }
     expect(lines().slice(2).map((line) => JSON.parse(line).toolUseId)).toEqual([...calls].reverse());
     // A later round must not rewrite the earlier completion-order group.
     history.push(round2, row("next-result", { role: "tool_result", toolUseId: "call-2", content: "next round" }));
-    expect(await mm.appendSessionProgress(SESSION, history)).toBe("appended");
-    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual(history);
+    expect(await mm.sessions.appendSessionProgress(SESSION, history)).toBe("appended");
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION)).toEqual(history);
     expect(existsSync(sidecarPath())).toBe(false);
     // The final save is the normalization point, and later progress remains append-only.
-    await mm.saveSession(SESSION, history);
+    await mm.sessions.saveSession(SESSION, history);
     expect(lines().map((line) => JSON.parse(line))).toEqual(history);
-    expect(await mm.appendSessionProgress(SESSION, history)).toBe("unchanged");
+    expect(await mm.sessions.appendSessionProgress(SESSION, history)).toBe("unchanged");
   });
 
   it("rewrites an open tool tail when an existing result was removed", async () => {
@@ -111,13 +111,13 @@ describe("appendSessionProgress", () => {
       { id: "call-2", name: "read_file", input: {} },
     ] });
     const result2 = row("r2", { role: "tool_result", toolUseId: "call-2", content: "second" });
-    await mm.saveSession(SESSION, [user, assistant, result1, result2]);
-    expect(await mm.appendSessionProgress(SESSION, [user, assistant, result2])).toBe("rewritten");
-    expect(mm.loadSession(SESSION)).toEqual([user, assistant, result2]);
+    await mm.sessions.saveSession(SESSION, [user, assistant, result1, result2]);
+    expect(await mm.sessions.appendSessionProgress(SESSION, [user, assistant, result2])).toBe("rewritten");
+    expect(mm.sessions.loadSession(SESSION)).toEqual([user, assistant, result2]);
   });
 
   it("reads rows and ids together after a supplied history grows during async stat", async () => {
-    await mm.saveSession(SESSION, [user]);
+    await mm.sessions.saveSession(SESSION, [user]);
     const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     let entered!: () => void;
     let release!: () => void;
@@ -129,19 +129,19 @@ describe("appendSessionProgress", () => {
       return Reflect.apply(actual.stat, undefined, args);
     }) as typeof fsPromises.stat);
     const history = [user, round1];
-    const progress = mm.appendSessionProgress(SESSION, history);
+    const progress = mm.sessions.appendSessionProgress(SESSION, history);
     await entering;
     history.push(result1);
     release();
     expect(await progress).toBe("appended");
-    expect(await mm.appendSessionProgress(SESSION, history)).toBe("unchanged");
+    expect(await mm.sessions.appendSessionProgress(SESSION, history)).toBe("unchanged");
     expect(lines().map((line) => JSON.parse(line))).toEqual(history);
   });
 
   it("stores an appended oversized tool_result the way a save does (stub + artifact)", async () => {
-    await mm.saveSession(SESSION, [user, round1]);
+    await mm.sessions.saveSession(SESSION, [user, round1]);
     const huge = row("r-big", { role: "tool_result", toolUseId: "call-1", toolName: "read_file", content: "x".repeat(2_000_000), meta: { truncated: { originalLines: 1, originalTokens: 500_000, originalBytes: 2_000_000, trimmedAt: "2026-10-20T00:00:00.000Z" } } });
-    await mm.appendSessionProgress(SESSION, [user, round1, huge]);
+    await mm.sessions.appendSessionProgress(SESSION, [user, round1, huge]);
     const appendedLine = lines()[2];
     expect(appendedLine.length).toBeLessThan(200_000);
     expect(JSON.parse(appendedLine).meta.serializedStub).toBe(true);
@@ -150,15 +150,15 @@ describe("appendSessionProgress", () => {
 
 describe("torn final line", () => {
   it("skips a half-written last line on load and terminates it before the next append", async () => {
-    await mm.saveSession(SESSION, [user, round1]);
+    await mm.sessions.saveSession(SESSION, [user, round1]);
     appendFileSync(transcriptPath(), '{"role":"tool_result","toolUseId":"call-1","con');
-    expect(mm.loadSession(SESSION)).toEqual([user, round1]);
+    expect(mm.sessions.loadSession(SESSION)).toEqual([user, round1]);
 
     // Repair the torn final line before either a fresh append or a stale-writer rewrite.
     const fresh = new MemoryManager({ aveDir: dir });
-    await fresh.saveSession(SESSION, mm.loadSession(SESSION) ?? []);
-    expect(await fresh.appendSessionProgress(SESSION, [user, round1, result1])).toBe("appended");
-    expect(fresh.loadSession(SESSION)).toEqual([user, round1, result1]);
+    await fresh.sessions.saveSession(SESSION, mm.sessions.loadSession(SESSION) ?? []);
+    expect(await fresh.sessions.appendSessionProgress(SESSION, [user, round1, result1])).toBe("appended");
+    expect(fresh.sessions.loadSession(SESSION)).toEqual([user, round1, result1]);
   });
 
   it("newline-terminates a torn tail before appending, so the next record never fuses with it", async () => {
@@ -174,8 +174,8 @@ describe("torn final line", () => {
 describe("in-flight sidecar recovery", () => {
   // Write an orphan sidecar directly; opening a local journal would register a live owner and suppress recovery.
   async function crashMidTurn(rows: unknown[], partial?: { messageId: string; content: string }): Promise<void> {
-    await mm.saveSession(SESSION, [user]);
-    await mm.appendSessionProgress(SESSION, rows);
+    await mm.sessions.saveSession(SESSION, [user]);
+    await mm.sessions.appendSessionProgress(SESSION, rows);
     await writeTurnInflightRecord(sidecarPath(), {
       v: 1,
       startedAt: 1_000,
@@ -185,7 +185,7 @@ describe("in-flight sidecar recovery", () => {
 
   it("folds the streaming partial into an interrupted host-exit assistant row", async () => {
     await crashMidTurn([user, round1, result1], { messageId: "a2-partial", content: "두 번째 라운드 답변의 앞부분" });
-    const reloaded = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    const reloaded = new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION) as Array<Record<string, any>>;
     expect(reloaded.slice(0, 3)).toEqual([user, round1, result1]);
     expect(reloaded[3]).toMatchObject({
       role: "assistant",
@@ -198,13 +198,13 @@ describe("in-flight sidecar recovery", () => {
   it("never shows a partial beside the committed row that superseded it", async () => {
     const committed = row("a2-partial", { role: "assistant", content: "완성된 두 번째 라운드" });
     await crashMidTurn([user, round1, result1, committed], { messageId: "a2-partial", content: "완성된" });
-    const reloaded = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    const reloaded = new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION) as Array<Record<string, any>>;
     expect(reloaded).toEqual([user, round1, result1, committed]);
   });
 
   it("gives an unanswered tool call an 'interrupted, result unknown' result instead of dropping it", async () => {
     await crashMidTurn([user, round1, result1, round2]);
-    const reloaded = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    const reloaded = new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION) as Array<Record<string, any>>;
     const synthetic = reloaded.find((m) => m.role === "tool_result" && m.toolUseId === "call-2");
     expect(synthetic).toMatchObject({
       isError: true,
@@ -217,7 +217,7 @@ describe("in-flight sidecar recovery", () => {
       content: "",
       meta: { interrupted: true, interruptedBy: "host-exit" },
     });
-    const again = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    const again = new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION) as Array<Record<string, any>>;
     expect(again.map((m) => m.meta.messageId)).toEqual(reloaded.map((m) => m.meta.messageId));
   });
 
@@ -232,7 +232,7 @@ describe("in-flight sidecar recovery", () => {
     });
     const completed = row("done-result", { role: "tool_result", toolUseId: "done", content: "finished output" });
     await crashMidTurn([user, assistant, completed]);
-    const restored = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
+    const restored = new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION) as Array<Record<string, any>>;
     expect(restored.slice(2, 4)).toEqual([
       expect.objectContaining({ toolUseId: "slow", isError: true, meta: expect.objectContaining({ toolDisplay: { cancelled: true } }) }),
       completed,
@@ -241,38 +241,38 @@ describe("in-flight sidecar recovery", () => {
 
   it("leaves a bare question alone when the turn died before producing anything", async () => {
     await crashMidTurn([user]);
-    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual([user]);
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION)).toEqual([user]);
   });
 
   it("does not fold the sidecar of a turn that is still running in this process", async () => {
-    await mm.saveSession(SESSION, [user]);
-    await mm.beginTurnJournal(SESSION, 1_000);
-    await mm.writeTurnPartial(SESSION, 1_000, { messageId: "live", content: "아직 스트리밍 중", updatedAt: 1_500 });
-    expect(mm.loadSession(SESSION)).toEqual([user]);
-    mm.endTurnJournal(SESSION);
+    await mm.sessions.saveSession(SESSION, [user]);
+    await mm.sessions.beginTurnJournal(SESSION, 1_000);
+    await mm.sessions.writeTurnPartial(SESSION, 1_000, { messageId: "live", content: "아직 스트리밍 중", updatedAt: 1_500 });
+    expect(mm.sessions.loadSession(SESSION)).toEqual([user]);
+    mm.sessions.endTurnJournal(SESSION);
     expect(existsSync(sidecarPath())).toBe(true);
-    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual([
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION)).toEqual([
       user,
       expect.objectContaining({ role: "assistant", content: "아직 스트리밍 중" }),
     ]);
-    mm.clearTurnJournal(SESSION);
+    mm.sessions.clearTurnJournal(SESSION);
     expect(existsSync(sidecarPath())).toBe(false);
   });
 
   it("drops the orphaned sidecar once a whole-history save has absorbed the recovered rows", async () => {
     await crashMidTurn([user, round1, result1], { messageId: "p", content: "부분" });
     const next = new MemoryManager({ aveDir: dir });
-    const recovered = next.loadSession(SESSION) ?? [];
-    await next.saveSession(SESSION, recovered);
+    const recovered = next.sessions.loadSession(SESSION) ?? [];
+    await next.sessions.saveSession(SESSION, recovered);
     expect(existsSync(sidecarPath())).toBe(false);
-    expect(next.loadSession(SESSION)).toEqual(recovered);
+    expect(next.sessions.loadSession(SESSION)).toEqual(recovered);
   });
 
   it("ignores a sidecar that is not one this host wrote", async () => {
-    await mm.saveSession(SESSION, [user, round1]);
+    await mm.sessions.saveSession(SESSION, [user, round1]);
     await writeTurnInflightRecord(sidecarPath(), { v: 1, startedAt: 1 });
     writeFileSync(sidecarPath(), JSON.stringify({ v: 1, startedAt: "yesterday" }));
-    expect(new MemoryManager({ aveDir: dir }).loadSession(SESSION)).toEqual([user, round1]);
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION)).toEqual([user, round1]);
   });
 });
 
@@ -285,8 +285,8 @@ describe("Continue after an interrupted turn", () => {
       meta: { displayText: "Continue", resumesInterruptedTurn: true },
     });
     const resumed = row("a4", { role: "assistant", content: "이어서 마무리했습니다" });
-    await mm.saveSession(SESSION, [user, answer, resume, resumed]);
-    const entry = mm.listSessions().find((s) => s.id === SESSION);
+    await mm.sessions.saveSession(SESSION, [user, answer, resume, resumed]);
+    const entry = mm.sessions.listSessions().find((s) => s.id === SESSION);
     expect(entry?.title).toBe("작업해 줘");
     expect(entry?.preview).toBe("이어서 마무리했습니다");
   });

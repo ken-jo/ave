@@ -232,7 +232,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
       truncatedDir: "/tmp/ave-truncated",
     });
     expect(messages[0]?.meta?.checkpointMeta?.contextTokensAfter).toBeGreaterThan(100);
-    expect((mem as { saveCheckpointSnapshot: ReturnType<typeof vi.fn> }).saveCheckpointSnapshot)
+    expect(mem.sessions.saveCheckpointSnapshot)
       .toHaveBeenCalledWith("abe633f3-a47a-4758-874e-abe9160daf36", 1, expect.any(Array));
   });
 });

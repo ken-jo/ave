@@ -23,37 +23,37 @@ afterEach(async () => {
 });
 
 function listedIds(): string[] {
-  return mm.listSessions().map((entry) => entry.id).sort();
+  return mm.sessions.listSessions().map((entry) => entry.id).sort();
 }
 
 describe("hasSessionTranscript", () => {
   it("answers the same question listSessions answers", async () => {
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "first conversation" }]);
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "second conversation" }]);
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "first conversation" }]);
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "second conversation" }]);
     expect(listedIds()).toEqual([SESSION_A, SESSION_B]);
 
     for (const id of listedIds()) {
-      expect(mm.hasSessionTranscript(id)).toBe(true);
+      expect(mm.sessions.hasSessionTranscript(id)).toBe(true);
     }
-    expect(mm.hasSessionTranscript(NEVER_WRITTEN)).toBe(false);
+    expect(mm.sessions.hasSessionTranscript(NEVER_WRITTEN)).toBe(false);
   });
 
   it("stops claiming a conversation the moment its transcript is deleted", async () => {
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "about to be deleted" }]);
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "survives" }]);
-    expect(mm.hasSessionTranscript(SESSION_A)).toBe(true);
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "about to be deleted" }]);
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "survives" }]);
+    expect(mm.sessions.hasSessionTranscript(SESSION_A)).toBe(true);
 
     unlinkSync(join(dir, "sessions", `${SESSION_A}.jsonl`));
 
-    expect(mm.hasSessionTranscript(SESSION_A)).toBe(false);
+    expect(mm.sessions.hasSessionTranscript(SESSION_A)).toBe(false);
     expect(listedIds()).toEqual([SESSION_B]);
-    expect(mm.hasSessionTranscript(SESSION_B)).toBe(true);
+    expect(mm.sessions.hasSessionTranscript(SESSION_B)).toBe(true);
   });
 
   it("answers false for a malformed id instead of throwing at its caller", () => {
     // Snapshot projections return false for invalid ids instead of throwing.
     for (const malformed of ["", "not-a-uuid", "../escape", 42, null, undefined]) {
-      expect(mm.hasSessionTranscript(malformed)).toBe(false);
+      expect(mm.sessions.hasSessionTranscript(malformed)).toBe(false);
     }
   });
 });

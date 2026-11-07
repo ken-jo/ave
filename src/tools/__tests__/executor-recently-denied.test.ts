@@ -174,10 +174,10 @@ describe("executor denial history and manual rerun", () => {
   it("reconstructs a persisted reference after restart and asks the current native user", async () => {
     const current = await subject();
     const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
-    await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+    await memory.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
       id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
     }] }]);
-    await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+    await memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
     await current.denyHeadless();
     const restarted = makeRecentlyDeniedStore(current.historyFile);
     restarted.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory, toolRegistry: current.registry,
@@ -202,10 +202,10 @@ describe("executor denial history and manual rerun", () => {
   it.each(["live", "persisted"] as const)("rejects a root replaced during the %s replay approval card", async (kind) => {
     const current = await subject();
     const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
-    await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+    await memory.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
       id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
     }] }]);
-    await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+    await memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
     await current.denyHeadless();
     const history = kind === "live" ? current.history : makeRecentlyDeniedStore(current.historyFile);
     if (kind === "persisted") history.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory,
@@ -225,10 +225,10 @@ describe("executor denial history and manual rerun", () => {
   it.each(["live", "persisted"] as const)("preserves an other-principal turn and its one-time-only floor in a %s rerun", async (kind) => {
     const current = await subject();
     const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
-    await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+    await memory.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
       id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
     }] }]);
-    await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+    await memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
     await current.denyHeadless({ trustOrigin: "agent-message", otherPrincipal: true });
     const history = kind === "live" ? current.history : makeRecentlyDeniedStore(current.historyFile);
     if (kind === "persisted") history.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory,
@@ -252,10 +252,10 @@ describe("executor denial history and manual rerun", () => {
     it.each(["live", "persisted"] as const)(`retains ${overlayTriggerOrigin} staged provenance in a %s rerun`, async (kind) => {
       const current = await subject();
       const memory = new MemoryManager({ aveDir: join(current.storageRoot, "saved-memory") });
-      await memory.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
+      await memory.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "", toolCalls: [{
         id: "initial-denied-call", name: "send_probe", input: current.input, source: "builtin", category: "network",
       }] }]);
-      await memory.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
+      await memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: current.root });
       await current.denyHeadless({}, overlayTriggerOrigin);
       const history = kind === "live" ? current.history : makeRecentlyDeniedStore(current.historyFile);
       if (kind === "persisted") history.setReplayResolver(createRecentlyDeniedReplayResolver({ memoryManager: memory,

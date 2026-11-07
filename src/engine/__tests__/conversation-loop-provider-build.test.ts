@@ -29,7 +29,7 @@ async function loadLoop() {
     },
     systemPromptBuilder: { build: () => "system" },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   return { loop, issueUnattendedTurnAuthority, setSecret: (next: () => Promise<string | null>) => { getSecret = next; } };
 }

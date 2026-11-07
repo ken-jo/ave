@@ -108,12 +108,14 @@ function makeMainLoop() {
 
 function makeSideChatStore(existing?: Record<string, unknown>) {
   return {
-    loadSessionMetadata: vi.fn((_sessionId: string): Record<string, unknown> | null => existing ?? null),
-    saveSessionMetadata: vi.fn(async (_sessionId: string, _metadata: Record<string, unknown>) => {}),
-    findPaneSession: vi.fn((_tabId: string): string | undefined => undefined),
-    loadSession: vi.fn((_sessionId: string): unknown[] | null => null),
-    hasSessionTranscript: vi.fn((_sessionId: string) => false),
-    updateSessionRowFields: vi.fn(async (_sessionId: string, _fields: Record<string, unknown>) => {}),
+    sessions: {
+      loadSessionMetadata: vi.fn((_sessionId: string): Record<string, unknown> | null => existing ?? null),
+      saveSessionMetadata: vi.fn(async (_sessionId: string, _metadata: Record<string, unknown>) => {}),
+      findPaneSession: vi.fn((_tabId: string): string | undefined => undefined),
+      loadSession: vi.fn((_sessionId: string): unknown[] | null => null),
+      hasSessionTranscript: vi.fn((_sessionId: string) => false),
+      updateSessionRowFields: vi.fn(async (_sessionId: string, _fields: Record<string, unknown>) => {}),
+    },
   };
 }
 
@@ -697,7 +699,7 @@ describe("side-chat IPC domain", () => {
     const side = makeSideLoop();
     const main = makeMainLoop();
     const store = makeSideChatStore();
-    store.saveSessionMetadata.mockReturnValueOnce(originReady.promise);
+    store.sessions.saveSessionMetadata.mockReturnValueOnce(originReady.promise);
     side.runTurn.mockImplementationOnce(async (...args: unknown[]) => {
       (args[1] as { onError: (message: string) => void }).onError("First turn failed");
       throw new Error("First turn failed");
@@ -711,7 +713,7 @@ describe("side-chat IPC domain", () => {
     void Promise.resolve(first).then(() => { firstSettled = true; });
     let next: unknown;
     try {
-      await vi.waitFor(() => expect(store.saveSessionMetadata).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(store.sessions.saveSessionMetadata).toHaveBeenCalledOnce());
       next = handler(ev("file:///index.html"), {
         input: "next", originSessionId: main.getSessionId(), sendRequestId: "next-request",
       });
@@ -742,8 +744,8 @@ describe("side-chat parentage", () => {
     const completion = deferred<void>();
     let metadata: Record<string, unknown> | null = null;
     const store = makeSideChatStore();
-    store.loadSessionMetadata.mockImplementation(() => metadata);
-    store.saveSessionMetadata.mockImplementation(async (_id, next) => {
+    store.sessions.loadSessionMetadata.mockImplementation(() => metadata);
+    store.sessions.saveSessionMetadata.mockImplementation(async (_id, next) => {
       entered.resolve(undefined);
       await completion.promise;
       metadata = next;
@@ -765,7 +767,7 @@ describe("side-chat parentage", () => {
       await Promise.all([first, second]);
     }
     expect(metadata).toMatchObject({ originSessionId: PARENT });
-    expect(store.saveSessionMetadata).toHaveBeenCalledOnce();
+    expect(store.sessions.saveSessionMetadata).toHaveBeenCalledOnce();
   });
 
   it("records the conversation a side chat belongs to on its first turn", async () => {
@@ -775,7 +777,7 @@ describe("side-chat parentage", () => {
 
     await handler(ev("file:///index.html"), { input: "hello", originSessionId: PARENT });
 
-    expect(store.saveSessionMetadata).toHaveBeenCalledWith(
+    expect(store.sessions.saveSessionMetadata).toHaveBeenCalledWith(
       "34fd6270-309d-4e47-878b-75c0742a6ac2",
       expect.objectContaining({ originSessionId: PARENT }),
     );
@@ -788,7 +790,7 @@ describe("side-chat parentage", () => {
 
     await handler(ev("file:///index.html"), { input: "hello", originSessionId: PARENT });
 
-    expect(store.saveSessionMetadata).not.toHaveBeenCalled();
+    expect(store.sessions.saveSessionMetadata).not.toHaveBeenCalled();
   });
 
   it("ignores a parent that is not a session id, and still runs the turn", async () => {
@@ -804,7 +806,7 @@ describe("side-chat parentage", () => {
 
     expect(result).toMatchObject({ ok: true });
     expect(side.runTurn).toHaveBeenCalledTimes(1);
-    expect(store.saveSessionMetadata).not.toHaveBeenCalled();
+    expect(store.sessions.saveSessionMetadata).not.toHaveBeenCalled();
   });
 });
 
@@ -878,15 +880,17 @@ function makePaneStore(files: Record<string, unknown[]>, paneOf: Record<string, 
   );
   return {
     metadata,
-    loadSessionMetadata: vi.fn((id: string) => metadata.get(id) ?? null),
-    saveSessionMetadata: vi.fn(async (id: string, next: Record<string, unknown>) => { metadata.set(id, next); }),
-    findPaneSession: vi.fn((tabId: string) => [...metadata.entries()]
-      .find(([id, row]) => row.paneTabId === tabId && row.archivedAt === undefined && id in files)?.[0]),
-    loadSession: vi.fn((id: string) => files[id] ?? null),
-    hasSessionTranscript: vi.fn((id: string) => id in files),
-    updateSessionRowFields: vi.fn(async (id: string, fields: Record<string, unknown>) => {
-      metadata.set(id, { ...(metadata.get(id) ?? {}), ...fields });
-    }),
+    sessions: {
+      loadSessionMetadata: vi.fn((id: string) => metadata.get(id) ?? null),
+      saveSessionMetadata: vi.fn(async (id: string, next: Record<string, unknown>) => { metadata.set(id, next); }),
+      findPaneSession: vi.fn((tabId: string) => [...metadata.entries()]
+        .find(([id, row]) => row.paneTabId === tabId && row.archivedAt === undefined && id in files)?.[0]),
+      loadSession: vi.fn((id: string) => files[id] ?? null),
+      hasSessionTranscript: vi.fn((id: string) => id in files),
+      updateSessionRowFields: vi.fn(async (id: string, fields: Record<string, unknown>) => {
+        metadata.set(id, { ...(metadata.get(id) ?? {}), ...fields });
+      }),
+    },
   };
 }
 
@@ -1031,7 +1035,7 @@ describe("pane chats are their own conversations", () => {
 
   it("surfaces a session metadata read failure instead of letting the rail take the conversation", async () => {
     const { rail, store } = setup({ [STORED_PANE_SESSION]: [] }, { [STORED_PANE_SESSION]: PANE_A.tabId });
-    vi.spyOn(store, "loadSessionMetadata").mockImplementation(() => { throw new Error("metadata unreadable"); });
+    vi.spyOn(store.sessions, "loadSessionMetadata").mockImplementation(() => { throw new Error("metadata unreadable"); });
     await expect(Promise.resolve().then(() => handlers.get(CHANNELS.sidechat.load)!(ev("file:///index.html"), STORED_PANE_SESSION)))
       .rejects.toThrow("metadata unreadable");
     expect(rail.loadSession).not.toHaveBeenCalled();
@@ -1077,14 +1081,14 @@ describe("pane chats are their own conversations", () => {
     const save = vi.fn(async () => {});
     browserTabRegistry.setBindingPersistence({
       savedWindowId: () => 1, load, save,
-      sessionExists: store.hasSessionTranscript,
+      sessionExists: store.sessions.hasSessionTranscript,
     });
     expect(handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId }))
       .toMatchObject({ ok: true, sessionId: STORED_PANE_SESSION, messages: stored });
     await expect(sendFrom({ input: "continue", surface: PANE_A })).resolves.toMatchObject({ ok: true });
     expect(load).toHaveBeenCalledWith(7);
     expect(load).toHaveBeenCalledWith(1);
-    expect(store.findPaneSession).toHaveBeenCalledWith(PANE_A.tabId);
+    expect(store.sessions.findPaneSession).toHaveBeenCalledWith(PANE_A.tabId);
     expect(pane(PANE_A)!.loadSession).toHaveBeenCalledWith(STORED_PANE_SESSION, expect.anything());
     expect(pane(PANE_A)!.sessionOfTurn).toEqual([STORED_PANE_SESSION]);
     expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBe(STORED_PANE_SESSION);
@@ -1098,7 +1102,7 @@ describe("pane chats are their own conversations", () => {
     files[pane(PANE_A)!.getSessionId()] = [{ role: "user", content: "page" }];
     const read = handlers.get(CHANNELS.sidechat.paneHistory)!(ev("file:///index.html"), { tabId: PANE_A.tabId });
     expect(read).toMatchObject({ ok: true, sessionId: pane(PANE_A)!.getSessionId(), messages: [{ content: "page" }] });
-    expect(store.loadSession).not.toHaveBeenCalled();
+    expect(store.sessions.loadSession).not.toHaveBeenCalled();
   });
 
   it("has no conversation for a pane that never chatted, nor for another window's pane", async () => {
@@ -1118,7 +1122,7 @@ describe("pane chats are their own conversations", () => {
     try {
       expect(read(ev("file:///index.html"), { tabId: PANE_B.tabId })).toEqual({ ok: false, error: "invalid-surface" });
       await expect(end(ev("file:///index.html"), { tabId: PANE_B.tabId, reason: "closed" })).resolves.toEqual({ ok: false, error: "invalid-surface" });
-      expect(store.loadSession).not.toHaveBeenCalled();
+      expect(store.sessions.loadSession).not.toHaveBeenCalled();
     } finally {
       terminalOwners.delete(PANE_B.tabId);
     }
@@ -1147,7 +1151,7 @@ describe("pane chats are their own conversations", () => {
       await vi.waitFor(() => expect(store.metadata.get(first)).toMatchObject({ paneTabId: PANE_A.tabId }));
       await expect(endPane(PANE_A, "new")).resolves.toEqual({ ok: true, sessionId: first });
       expect(store.metadata.get(first)?.paneTabId).toBeUndefined();
-      expect(store.updateSessionRowFields).not.toHaveBeenCalled();
+      expect(store.sessions.updateSessionRowFields).not.toHaveBeenCalled();
       await sendFrom({ input: "again", surface: PANE_A });
       expect(pane(PANE_A)).toBe(loop);
       expect(loop.sessionOfTurn).toEqual([first, loop.getSessionId()]);
@@ -1165,13 +1169,13 @@ describe("pane chats are their own conversations", () => {
       loop.runTurn.mockImplementationOnce(async () => running.promise);
       // Reset waits for durable row writes after the active turn has released the pane.
       const rowWrite = deferred<void>();
-      store.saveSessionMetadata.mockImplementationOnce(async () => rowWrite.promise);
-      const writesBefore = store.saveSessionMetadata.mock.calls.length;
+      store.sessions.saveSessionMetadata.mockImplementationOnce(async () => rowWrite.promise);
+      const writesBefore = store.sessions.saveSessionMetadata.mock.calls.length;
       const turn = sendFrom({ input: "page", surface: PANE_A, originSessionId: RAIL_SESSION });
       await vi.waitFor(() => expect(loop.runTurn).toHaveBeenCalledTimes(2));
       const ending = endPane(PANE_A, "new");
       running.resolve({ route: "chat" });
-      await vi.waitFor(() => expect(store.saveSessionMetadata.mock.calls.length).toBeGreaterThan(writesBefore));
+      await vi.waitFor(() => expect(store.sessions.saveSessionMetadata.mock.calls.length).toBeGreaterThan(writesBefore));
       await expect(sendFrom({ input: "between", surface: PANE_A })).resolves.toEqual({ ok: false, error: "streaming-active" });
       rowWrite.resolve();
       await expect(ending).resolves.toMatchObject({ ok: true });
@@ -1188,7 +1192,7 @@ describe("pane chats are their own conversations", () => {
       const session = pane(PANE_A)!.getSessionId();
       files[session] = [];
       await expect(endPane(PANE_A, "closed")).resolves.toEqual({ ok: true, sessionId: session });
-      expect(store.updateSessionRowFields).toHaveBeenCalledWith(session, { archivedAt: expect.any(String) });
+      expect(store.sessions.updateSessionRowFields).toHaveBeenCalledWith(session, { archivedAt: expect.any(String) });
       expect(panes.get(7, PANE_A.tabId)).toBeUndefined();
       expect(browserTabRegistry.paneConversation(7, PANE_A.tabId)).toBeUndefined();
     });
@@ -1223,10 +1227,10 @@ describe("pane chats are their own conversations", () => {
         await expect(handlers.get(CHANNELS.sidechat.abort)!(ev("file:///index.html"), { sendRequestId: "closer" })).resolves.toEqual({ ok: true });
         await expect(endPane(PANE_A, "closed")).resolves.toMatchObject({ ok: true });
         expect(loop.abortCurrentTurn).not.toHaveBeenCalled();
-        expect(store.updateSessionRowFields).not.toHaveBeenCalled();
+        expect(store.sessions.updateSessionRowFields).not.toHaveBeenCalled();
         running.resolve({ route: "chat" });
         await expect(turn).resolves.toMatchObject({ ok: true });
-        await vi.waitFor(() => expect(store.updateSessionRowFields).toHaveBeenCalledWith(loop.getSessionId(), { archivedAt: expect.any(String) }));
+        await vi.waitFor(() => expect(store.sessions.updateSessionRowFields).toHaveBeenCalledWith(loop.getSessionId(), { archivedAt: expect.any(String) }));
         expect(panes.get(7, PANE_A.tabId)).toBeUndefined();
       } finally {
         closedByAgent.mockRestore();

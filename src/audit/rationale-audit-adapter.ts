@@ -14,7 +14,7 @@ import { isAbsolute, join } from "node:path";
 import { platform } from "node:process";
 import lockfile from "proper-lockfile";
 import { computeLineHmac, GENESIS_MARKER, type SecretStore } from "./hmac-chain.js";
-import { isValidSessionId } from "../memory/memory-manager.js";
+import { isValidSessionId } from "../shared/session-id.js";
 import { assertRationaleCanonicalJson } from "../tools/pipeline/rationale-control.js";
 import {
   validateInvocationAuditRecord,

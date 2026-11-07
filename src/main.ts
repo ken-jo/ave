@@ -365,7 +365,7 @@ async function main() {
       // The same source the conversation list is built from, so the owner is
       // never told a share points at something they cannot see.
       conversationExists: (conversationId: string) =>
-        services.memoryManager.hasSessionTranscript(conversationId),
+        services.memoryManager.sessions.hasSessionTranscript(conversationId),
     });
     const disposeTelegramConnection = telegramConnectionService.dispose;
     registerShutdownHook("telegram-connection-reconnect", () => disposeTelegramConnection());

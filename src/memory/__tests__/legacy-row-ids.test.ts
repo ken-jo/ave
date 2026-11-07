@@ -50,10 +50,10 @@ describe("loadSession — legacy row identity", () => {
       { role: "assistant", content: "nor here" },
     ]);
 
-    const first = idsOf(mm.loadSession(SESSION));
+    const first = idsOf(mm.sessions.loadSession(SESSION));
     expect(first.every((id) => id.startsWith("row-"))).toBe(true);
     expect(new Set(first).size).toBe(2);
-    expect(idsOf(mm.loadSession(SESSION))).toEqual(first);
+    expect(idsOf(mm.sessions.loadSession(SESSION))).toEqual(first);
   });
 
   it("re-mints the second of two rows claiming one id, and leaves the first alone", () => {
@@ -64,12 +64,12 @@ describe("loadSession — legacy row identity", () => {
       { role: "user", content: "no id at all" },
     ]);
 
-    const ids = idsOf(mm.loadSession(SESSION));
+    const ids = idsOf(mm.sessions.loadSession(SESSION));
     expect(ids[0]).toBe("row-collision");
     expect(ids[1]).not.toBe("row-collision");
     expect(ids[1]).toMatch(/^row-[0-9a-f]{32}$/);
     expect(new Set(ids).size).toBe(3);
-    expect(idsOf(mm.loadSession(SESSION))).toEqual(ids);
+    expect(idsOf(mm.sessions.loadSession(SESSION))).toEqual(ids);
   });
 
   it("lets a stored id win over a derived one that wants the same name", () => {
@@ -78,13 +78,13 @@ describe("loadSession — legacy row identity", () => {
       { role: "user", content: "no id" },
       { role: "assistant", content: "b" },
     ]);
-    const derivedForRowZero = idsOf(mm.loadSession(SESSION))[0];
+    const derivedForRowZero = idsOf(mm.sessions.loadSession(SESSION))[0];
 
     writeRawSession([
       { role: "user", content: "no id" },
       { role: "assistant", content: "owns it", meta: { messageId: derivedForRowZero } },
     ]);
-    const ids = idsOf(mm.loadSession(SESSION));
+    const ids = idsOf(mm.sessions.loadSession(SESSION));
 
     expect(ids[1]).toBe(derivedForRowZero);
     expect(ids[0]).not.toBe(derivedForRowZero);
@@ -101,7 +101,7 @@ describe("loadSession — legacy row identity", () => {
       { role: "assistant", content: "the row that has to move" },
     ]);
 
-    const ids = idsOf(mm.loadSession(SESSION));
+    const ids = idsOf(mm.sessions.loadSession(SESSION));
     expect(ids).toHaveLength(9);
     expect(ids.slice(0, 8)).toEqual(squatters);
     expect(ids[8]).toBe(derivedRowId(8, 8));
@@ -114,6 +114,6 @@ describe("loadSession — legacy row identity", () => {
       { role: "assistant", content: "b", meta: { messageId: "row-bbb" } },
     ]);
 
-    expect(idsOf(mm.loadSession(SESSION))).toEqual(["row-aaa", "row-bbb"]);
+    expect(idsOf(mm.sessions.loadSession(SESSION))).toEqual(["row-aaa", "row-bbb"]);
   });
 });

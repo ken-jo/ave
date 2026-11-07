@@ -50,9 +50,9 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       await deps.settingsService.patch({ system: { ...deps.settingsService.get("system"), mainLayout: layout } });
     },
     sessionExists: (sessionId) => [deps.memoryManager, deps.sideChatMemoryManager]
-      .some((store) => store?.hasSessionTranscript(sessionId))
+      .some((store) => store?.sessions.hasSessionTranscript(sessionId))
       || (deps.getSubAgentRunner?.()?.hasPersistedSession(sessionId) ?? false),
-    legacyPaneSession: (tabId) => deps.sideChatMemoryManager?.findPaneSession(tabId),
+    legacyPaneSession: (tabId) => deps.sideChatMemoryManager?.sessions.findPaneSession(tabId),
   });
 
   browserTabRegistry.setRendererLink({

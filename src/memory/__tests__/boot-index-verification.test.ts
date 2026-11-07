@@ -19,7 +19,7 @@ describe("MemoryManager boot index verification", () => {
   it("does not enumerate session JSONL files when the index is healthy and populated", async () => {
     const manager = new MemoryManager({ aveDir });
     const close = vi.fn();
-    const internals = (manager as unknown as { sessionRepository: unknown }).sessionRepository as {
+    const internals = manager.sessions as unknown as {
       searchIndex: {
         open(): boolean;
         rowCount(): number;
@@ -37,7 +37,7 @@ describe("MemoryManager boot index verification", () => {
     });
     internals.listSessionJsonlFiles = listSessionJsonlFiles;
 
-    await expect(manager.verifyOrRebuildSearchIndex()).resolves.toBeUndefined();
+    await expect(manager.sessions.verifyOrRebuildSearchIndex()).resolves.toBeUndefined();
 
     expect(listSessionJsonlFiles).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();

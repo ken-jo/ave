@@ -7,6 +7,7 @@ import { UUID_PATTERN } from "../shared/uuid.js";
 import { isValidSessionId } from "../shared/session-id.js";
 import type { MemoryDetailResult, MemoryOriginSummary, MemoryResolvedOrigin, MemorySummariesResult, MemoryUsageRead, MemoryUsageRow } from "../shared/memory-detail.js";
 import type { MemoryManager, MemoryOriginV1, ProjectScopedMemoryOptions } from "./memory-manager.js";
+import type { SessionRepository } from "./session-repository.js";
 import { MEMORY_USAGE_LOG_FILENAME, type MemoryUseStore } from "./memory-usage-log.js";
 
 const log = createLogger("memory-detail");
@@ -17,7 +18,7 @@ const FILESYSTEM_ERROR_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOTDIR", 
 
 interface MemoryConversationReader {
   /** Persistence is untrusted; source identity is decoded from the stored message metadata below. */
-  loadSession: MemoryManager["loadSession"];
+  loadSession: SessionRepository["loadSession"];
   loadSessionMetadata: (sessionId: string) => { title?: string } | null;
 }
 

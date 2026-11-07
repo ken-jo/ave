@@ -108,8 +108,10 @@ function makeLoop(opts: {
     },
     toolRegistry,
     memoryManager: {
-      saveSession: () => {},
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
     },
     pluginRuntime: {
       listPluginIds: () => [

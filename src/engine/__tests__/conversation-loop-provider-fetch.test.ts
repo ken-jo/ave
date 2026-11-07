@@ -23,7 +23,7 @@ function makeLoopDeps(toolRegistry: ToolRegistry) {
   return {
     systemPromptBuilder: { build: () => "system" },
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
   };
 }
 

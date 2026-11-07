@@ -147,26 +147,28 @@ function makeMinimalDeps(
       patch: vi.fn(async () => undefined),
     } as any,
     memoryManager: {
-      listSessionsPage: vi.fn(() => []),
-      listSessions: vi.fn(() => []),
-      loadSession: vi.fn(),
-      loadToolResultArtifact: vi.fn(() => null),
-      loadSessionMetadata: vi.fn(() => null),
-      listSubAgentSessionsForOrigin: vi.fn(() => []),
-      saveSessionMetadata: vi.fn(),
-      rehydrateToolResultArtifacts: vi.fn((_sessionId: string, messages: unknown[]) => messages),
-      loadMainActiveSessionState: vi.fn(() => null),
-      markMainActiveFresh: vi.fn(async () => undefined),
-      markMainActiveResume: vi.fn(async () => undefined),
-      saveSession: vi.fn(),
+      sessions: {
+        listSessionsPage: vi.fn(() => []),
+        listSessions: vi.fn(() => []),
+        loadSession: vi.fn(),
+        loadToolResultArtifact: vi.fn(() => null),
+        loadSessionMetadata: vi.fn(() => null),
+        listSubAgentSessionsForOrigin: vi.fn(() => []),
+        saveSessionMetadata: vi.fn(),
+        rehydrateToolResultArtifacts: vi.fn((_sessionId: string, messages: unknown[]) => messages),
+        loadMainActiveSessionState: vi.fn(() => null),
+        markMainActiveFresh: vi.fn(async () => undefined),
+        markMainActiveResume: vi.fn(async () => undefined),
+        saveSession: vi.fn(),
+        searchSessions: vi.fn(() => []),
+        listSessionEntries: vi.fn(() => []),
+      },
       listMemoryEntries: vi.fn(() => []),
       saveMemory: vi.fn(),
       deleteMemory: vi.fn(),
       searchMemoryEntries: vi.fn(() => []),
-      searchSessions: vi.fn(() => []),
       getUserPreferences: vi.fn(),
       updateUserPreferences: vi.fn(),
-      listSessionEntries: vi.fn(() => []),
     } as any,
     routineEngine: undefined,
     triggerExecutor: undefined,
@@ -308,7 +310,7 @@ describe("ave:chat:get-verbatim-tool-result", () => {
     ]);
     const deps = await setupHandlers(loop);
     const artifactContent = "artifact line one\nartifact line two";
-    deps.memoryManager.loadToolResultArtifact.mockReturnValue({
+    deps.memoryManager.sessions.loadToolResultArtifact.mockReturnValue({
       toolUseId: "tu-1",
       toolName: "Read",
       content: artifactContent,
@@ -324,7 +326,7 @@ describe("ave:chat:get-verbatim-tool-result", () => {
 
     const result = invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, toolUseId: "tu-1" }, "main");
     expect(result).toEqual({ content: artifactContent, lineCount: 2 });
-    expect(deps.memoryManager.loadToolResultArtifact).toHaveBeenCalledWith(SESSION_ID, "tu-1");
+    expect(deps.memoryManager.sessions.loadToolResultArtifact).toHaveBeenCalledWith(SESSION_ID, "tu-1");
   });
 
   it("returns null for non-compacted tool_result (meta.compactedAt not set)", async () => {
@@ -454,7 +456,7 @@ describe("ave:chat:get-sub-agent-transcript", () => {
     }, "main");
 
     expect(result).toEqual({ ok: false, error: "sub-agent-runner-unavailable" });
-    expect(deps.memoryManager.rehydrateToolResultArtifacts).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.rehydrateToolResultArtifacts).not.toHaveBeenCalled();
   });
 
   function makeAgentSpawnMessages() {
@@ -571,7 +573,7 @@ describe("ave:chat:get-sub-agent-transcript", () => {
     };
     const loop = makeConversationLoop(SESSION_ID, messages);
     const deps = await setupHandlers(loop, { getSubAgentRunner: () => ({ getPersistedTranscript }) });
-    deps.memoryManager.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, raw: unknown[]) =>
+    deps.memoryManager.sessions.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, raw: unknown[]) =>
       raw.map((message) =>
         (message as any).role === "tool_result" && (message as any).toolUseId === "tu-agent"
           ? {
@@ -590,7 +592,7 @@ describe("ave:chat:get-sub-agent-transcript", () => {
       childSessionId: "sub-6e7c039b-5edf391c-3311-4102-8f7e-ff9f491ec606",
     }, "main");
 
-    expect(deps.memoryManager.rehydrateToolResultArtifacts).toHaveBeenCalledWith(SESSION_ID, expect.any(Array));
+    expect(deps.memoryManager.sessions.rehydrateToolResultArtifacts).toHaveBeenCalledWith(SESSION_ID, expect.any(Array));
     expect(result).toEqual({
       ok: true,
       childSessionId: "sub-6e7c039b-5edf391c-3311-4102-8f7e-ff9f491ec606",
@@ -635,7 +637,7 @@ describe("ave:chat active main state", () => {
     await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main");
 
     expect(loop.newConversation).toHaveBeenCalled();
-    expect(deps.memoryManager.markMainActiveFresh).toHaveBeenCalledTimes(1);
+    expect(deps.memoryManager.sessions.markMainActiveFresh).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT persist project metadata for a plain new chat (no explicit project — the default binding)", async () => {
@@ -645,7 +647,7 @@ describe("ave:chat active main state", () => {
 
     await invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main");
 
-    expect(deps.memoryManager.saveSessionMetadata).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSessionMetadata).not.toHaveBeenCalled();
   });
 
   it("persists the resolved project identity when the user explicitly selects a real project", async () => {
@@ -657,8 +659,8 @@ describe("ave:chat active main state", () => {
 
     await invokeRegisteredHandler(handlers, "ave:chat:new", { projectRoot: explicitProjectRoot, projectName: "spoofed-project-name" }, "main");
 
-    expect(deps.memoryManager.saveSessionMetadata).toHaveBeenCalledTimes(1);
-    const [savedId, savedMeta] = (deps.memoryManager.saveSessionMetadata as any).mock.calls[0];
+    expect(deps.memoryManager.sessions.saveSessionMetadata).toHaveBeenCalledTimes(1);
+    const [savedId, savedMeta] = (deps.memoryManager.sessions.saveSessionMetadata as any).mock.calls[0];
     expect(savedId).toBe("d1c00b95-b0af-4bd6-8179-4210161fffc3");
     // Compare roots without slash/case sensitivity because authorization normalizes them.
     expect(savedMeta.sessionKind).toBe("main");
@@ -676,7 +678,7 @@ describe("ave:chat active main state", () => {
 
     await invokeRegisteredHandler(handlers, "ave:chat:session-resume", "8ce2040c-ee54-4799-8044-8683bfd037ae", "main");
 
-    expect(mainDeps.memoryManager.markMainActiveResume).toHaveBeenCalledWith("8ce2040c-ee54-4799-8044-8683bfd037ae");
+    expect(mainDeps.memoryManager.sessions.markMainActiveResume).toHaveBeenCalledWith("8ce2040c-ee54-4799-8044-8683bfd037ae");
 
     const routineLoop = makeConversationLoop("5b31b09a-de06-4171-8492-94fbff746a81", []);
     routineLoop.getSessionKind.mockReturnValue("routine");
@@ -685,7 +687,7 @@ describe("ave:chat active main state", () => {
 
     await invokeRegisteredHandler(handlers, "ave:chat:session-resume", "5b31b09a-de06-4171-8492-94fbff746a81", "main");
 
-    expect(routineDeps.memoryManager.markMainActiveResume).not.toHaveBeenCalled();
+    expect(routineDeps.memoryManager.sessions.markMainActiveResume).not.toHaveBeenCalled();
   });
 
   it("rejects unsafe session ids before resuming", async () => {
@@ -696,7 +698,7 @@ describe("ave:chat active main state", () => {
 
     expect(result.ok).toBe(false);
     expect(loop.resetAndResume).not.toHaveBeenCalled();
-    expect(deps.memoryManager.markMainActiveResume).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.markMainActiveResume).not.toHaveBeenCalled();
   });
 
   it("marks main active after main turns but not after routine turns", async () => {
@@ -710,7 +712,7 @@ describe("ave:chat active main state", () => {
       userActivation: true,
     }, "main");
 
-    expect(mainDeps.memoryManager.markMainActiveResume).toHaveBeenCalledWith("8ce2040c-ee54-4799-8044-8683bfd037ae");
+    expect(mainDeps.memoryManager.sessions.markMainActiveResume).toHaveBeenCalledWith("8ce2040c-ee54-4799-8044-8683bfd037ae");
 
     const routineLoop = makeConversationLoop("5b31b09a-de06-4171-8492-94fbff746a81", [{ role: "user", content: "existing" }]);
     routineLoop.getSessionKind.mockReturnValue("routine");
@@ -723,8 +725,8 @@ describe("ave:chat active main state", () => {
       userActivation: true,
     }, "main");
 
-    expect(routineDeps.memoryManager.markMainActiveResume).not.toHaveBeenCalled();
-    expect(routineDeps.memoryManager.markMainActiveFresh).not.toHaveBeenCalled();
+    expect(routineDeps.memoryManager.sessions.markMainActiveResume).not.toHaveBeenCalled();
+    expect(routineDeps.memoryManager.sessions.markMainActiveFresh).not.toHaveBeenCalled();
   });
 });
 
@@ -732,7 +734,7 @@ describe("ave:chat:session-history parent provenance", () => {
   it("does not load or merge the parent transcript when a child has parentSessionId", async () => {
     const loop = makeConversationLoop("a3386854-f241-42c9-8979-fd37d7cb633f", []);
     const deps = await setupHandlers(loop);
-    deps.memoryManager.loadSession.mockImplementation((sessionId: string) => {
+    deps.memoryManager.sessions.loadSession.mockImplementation((sessionId: string) => {
       if (sessionId === "sub-8410443e-3e323a73-28d0-4dce-8229-3b0eca68d32a") {
         return [{ role: "user", content: "child only" }];
       }
@@ -741,7 +743,7 @@ describe("ave:chat:session-history parent provenance", () => {
       }
       return [];
     });
-    deps.memoryManager.loadSessionMetadata.mockReturnValue({
+    deps.memoryManager.sessions.loadSessionMetadata.mockReturnValue({
       parentSessionId: "a1bdc27a-c758-4a74-8955-5e9188412366",
       summaryPreamble: "요약된 부모 맥락",
       title: "Child",
@@ -756,9 +758,9 @@ describe("ave:chat:session-history parent provenance", () => {
     expect(result.ok).toBe(true);
     expect(result.messages.map((message) => message.content)).toEqual(["child only"]);
     expect(result.preambleChars).toBe("요약된 부모 맥락".length);
-    expect(deps.memoryManager.loadSession).toHaveBeenCalledTimes(1);
-    expect(deps.memoryManager.loadSession).toHaveBeenCalledWith("sub-8410443e-3e323a73-28d0-4dce-8229-3b0eca68d32a");
-    expect(deps.memoryManager.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
+    expect(deps.memoryManager.sessions.loadSession).toHaveBeenCalledTimes(1);
+    expect(deps.memoryManager.sessions.loadSession).toHaveBeenCalledWith("sub-8410443e-3e323a73-28d0-4dce-8229-3b0eca68d32a");
+    expect(deps.memoryManager.sessions.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
   });
 });
 
@@ -770,7 +772,7 @@ describe("ave:chat:fork", () => {
     ]);
     loop.loadSession.mockReturnValue(true);
     const deps = await setupHandlers(loop);
-    deps.memoryManager.loadSessionMetadata.mockReturnValue({
+    deps.memoryManager.sessions.loadSessionMetadata.mockReturnValue({
       sessionKind: "main",
       summaryPreamble: "요약된 이전 맥락",
     });
@@ -779,7 +781,7 @@ describe("ave:chat:fork", () => {
 
     expect(result.ok).toBe(true);
     expect(result.sessionId).toEqual(expect.any(String));
-    expect(deps.memoryManager.saveSessionMetadata).toHaveBeenCalledWith(
+    expect(deps.memoryManager.sessions.saveSessionMetadata).toHaveBeenCalledWith(
       result.sessionId,
       expect.objectContaining({
         sessionKind: "main",
@@ -801,7 +803,7 @@ describe("ave:chat:fork", () => {
     ]);
     loop.loadSession.mockReturnValue(true);
     const deps = await setupHandlers(loop);
-    deps.memoryManager.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, messages: unknown[]) =>
+    deps.memoryManager.sessions.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, messages: unknown[]) =>
       messages.map((message) => {
         if ((message as { role?: string; toolUseId?: string }).role !== "tool_result") return message;
         return {
@@ -822,11 +824,11 @@ describe("ave:chat:fork", () => {
     const result = await invokeRegisteredHandler(handlers, "ave:chat:fork", undefined, "main") as { ok: boolean; sessionId: string | null };
 
     expect(result.ok).toBe(true);
-    expect(deps.memoryManager.rehydrateToolResultArtifacts).toHaveBeenCalledWith(
+    expect(deps.memoryManager.sessions.rehydrateToolResultArtifacts).toHaveBeenCalledWith(
       "02bde5ab-2204-4072-8851-84a51c4ff368",
       expect.arrayContaining([expect.objectContaining({ toolUseId: "tu-art", content: compactedResultText })]),
     );
-    expect(deps.memoryManager.saveSession).toHaveBeenCalledWith(
+    expect(deps.memoryManager.sessions.saveSession).toHaveBeenCalledWith(
       result.sessionId,
       expect.arrayContaining([expect.objectContaining({ toolUseId: "tu-art", content: rawContent })]),
     );
@@ -842,7 +844,7 @@ describe("ave:chat:fork", () => {
     const firstSaveEntered = new SessionMutationGate<void>();
     const firstSaveGate = new SessionMutationGate<void>();
     let saveCallCount = 0;
-    deps.memoryManager.saveSession.mockImplementation(async () => {
+    deps.memoryManager.sessions.saveSession.mockImplementation(async () => {
       saveCallCount += 1;
       if (saveCallCount === 1) {
         firstSaveEntered.resolve(undefined);
@@ -915,7 +917,7 @@ describe("branch auto-continue grant", () => {
       }),
     });
     const deps = await setupHandlers(loop);
-    deps.memoryManager.loadSessionMetadata.mockImplementation((id: string) => (id === TARGET ? { parentSessionId: SOURCE } : null));
+    deps.memoryManager.sessions.loadSessionMetadata.mockImplementation((id: string) => (id === TARGET ? { parentSessionId: SOURCE } : null));
     const branched = await invokeRegisteredHandler(handlers, BRANCH, {
       sessionId: SOURCE, compactNum: 1, intent: options.gesture === false ? { inputOrigin: "user-keyboard", userActivation: false } : KEYBOARD_GESTURE,
     }, "main") as { branchContinuation?: string; newSessionId?: string };
@@ -1905,7 +1907,7 @@ describe("sub-agent parent mailbox on manual turns", () => {
       acknowledgeParentMailbox,
     };
     const deps = await setupHandlers(loop, { getSubAgentRunner: () => runner });
-    deps.memoryManager.markMainActiveResume.mockRejectedValueOnce(
+    deps.memoryManager.sessions.markMainActiveResume.mockRejectedValueOnce(
       new Error("main-active-bookkeeping-failed"),
     );
 
@@ -1920,9 +1922,9 @@ describe("sub-agent parent mailbox on manual turns", () => {
       "a1bdc27a-c758-4a74-8955-5e9188412366",
       ["message-bookkeeping-failure"],
     );
-    expect(deps.memoryManager.markMainActiveResume).toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
+    expect(deps.memoryManager.sessions.markMainActiveResume).toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
     expect(acknowledgeParentMailbox.mock.invocationCallOrder[0])
-      .toBeLessThan(deps.memoryManager.markMainActiveResume.mock.invocationCallOrder[0]!);
+      .toBeLessThan(deps.memoryManager.sessions.markMainActiveResume.mock.invocationCallOrder[0]!);
   });
   it("holds the turn lease from mailbox peek through ACK and blocks session mutation", async () => {
     const loop = makeConversationLoop("a1bdc27a-c758-4a74-8955-5e9188412366", []);
@@ -1968,7 +1970,7 @@ describe("sub-agent parent mailbox on manual turns", () => {
     });
     expect(loop.newConversation).not.toHaveBeenCalled();
     expect(loop.resetAndResume).not.toHaveBeenCalled();
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
 
     peekGate.resolve([{
       id: "message-lease",
@@ -2062,7 +2064,7 @@ describe("sub-agent autonomous parent wake", () => {
       acknowledgeParentMailbox,
     };
     const deps = await setupHandlers(loop, { getSubAgentRunner: () => runner });
-    deps.memoryManager.markMainActiveResume.mockRejectedValueOnce(
+    deps.memoryManager.sessions.markMainActiveResume.mockRejectedValueOnce(
       new Error("wake-bookkeeping-failed"),
     );
 
@@ -2075,9 +2077,9 @@ describe("sub-agent autonomous parent wake", () => {
       "a1bdc27a-c758-4a74-8955-5e9188412366",
       ["message-wake-bookkeeping-failure"],
     );
-    expect(deps.memoryManager.markMainActiveResume).toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
+    expect(deps.memoryManager.sessions.markMainActiveResume).toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
     expect(acknowledgeParentMailbox.mock.invocationCallOrder[0])
-      .toBeLessThan(deps.memoryManager.markMainActiveResume.mock.invocationCallOrder[0]!);
+      .toBeLessThan(deps.memoryManager.sessions.markMainActiveResume.mock.invocationCallOrder[0]!);
   });
   it("single-flights autonomous wake before mailbox peek starts", async () => {
     const loop = makeConversationLoop("a1bdc27a-c758-4a74-8955-5e9188412366", []);
@@ -2232,7 +2234,7 @@ describe("sub-agent autonomous parent wake", () => {
     const deps = await setupHandlers(loop, { getSubAgentRunner: () => runner });
     const mutationGate = new SessionMutationGate<void>();
     const mutationEntered = new SessionMutationGate<void>();
-    deps.memoryManager.markMainActiveFresh.mockImplementation(() => {
+    deps.memoryManager.sessions.markMainActiveFresh.mockImplementation(() => {
       mutationEntered.resolve(undefined);
       return mutationGate.promise;
     });
@@ -2271,7 +2273,7 @@ describe("sub-agent autonomous parent wake", () => {
     const deps = await setupHandlers(loop, { getSubAgentRunner: () => runner });
     const mutationGate = new SessionMutationGate<void>();
     const mutationEntered = new SessionMutationGate<void>();
-    deps.memoryManager.markMainActiveFresh.mockImplementation(() => {
+    deps.memoryManager.sessions.markMainActiveFresh.mockImplementation(() => {
       mutationEntered.resolve(undefined);
       return mutationGate.promise;
     });

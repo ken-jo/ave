@@ -24,7 +24,7 @@ describe("PostTurnHookChain", () => {
 
   it("skips auto-compact when chat.autoCompact is disabled", async () => {
     const saveSession = vi.fn();
-    const memoryManager = { saveSession } as unknown as MemoryManager;
+    const memoryManager = { sessions: { saveSession } } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
         if (key === "llm") return fakeLlmSettings();
@@ -53,9 +53,11 @@ describe("PostTurnHookChain", () => {
     // Rewriting an earlier row after the turn would change the prefix the next request repeats. Stubbing belongs to compaction, not to the turn's end.
     const saveSession = vi.fn();
     const memoryManager = {
-      saveSession,
-      listSessions: vi.fn().mockReturnValue([]),
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession,
+        listSessions: vi.fn().mockReturnValue([]),
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
@@ -100,9 +102,11 @@ describe("PostTurnHookChain", () => {
     const saveSession = vi.fn();
     const saveSessionMetadata = vi.fn();
     const memoryManager = {
-      saveSession,
-      saveSessionMetadata,
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession,
+        saveSessionMetadata,
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
@@ -141,9 +145,11 @@ describe("PostTurnHookChain", () => {
   it("detect-checkpoint: persists marker-only assistant output as an explicit empty response", async () => {
     const saveSession = vi.fn();
     const memoryManager = {
-      saveSession,
-      saveSessionMetadata: vi.fn(),
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession,
+        saveSessionMetadata: vi.fn(),
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
@@ -178,9 +184,11 @@ describe("PostTurnHookChain", () => {
     const saveSessionMetadata = vi.fn();
     const onCheckpointSuggested = vi.fn();
     const memoryManager = {
-      saveSession,
-      saveSessionMetadata,
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession,
+        saveSessionMetadata,
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
@@ -213,8 +221,10 @@ describe("PostTurnHookChain", () => {
   it("detect-checkpoint: checkpointSuggested is false and cleanedText unchanged when no markers", async () => {
     const saveSession = vi.fn();
     const memoryManager = {
-      saveSession,
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession,
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {
@@ -246,7 +256,7 @@ describe("PostTurnHookChain", () => {
     });
     const saveMemory = vi.fn();
     const memoryManager = {
-      saveSession,
+      sessions: { saveSession },
       saveMemory,
     } as unknown as MemoryManager;
     const settingsService = {
@@ -298,7 +308,7 @@ describe("PostTurnHookChain", () => {
     const scheduleFallbackDrain = vi.fn();
     const saveMemory = vi.fn();
     const memoryManager = {
-      saveSession: vi.fn(),
+      sessions: { saveSession: vi.fn() },
       saveMemory,
     } as unknown as MemoryManager;
     const settingsService = {
@@ -340,7 +350,9 @@ describe("PostTurnHookChain", () => {
     const enqueueAutomatic = vi.fn();
     const scheduleFallbackDrain = vi.fn();
     const memoryManager = {
-      saveSession: vi.fn(),
+      sessions: {
+        saveSession: vi.fn(),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => {

@@ -1,5 +1,6 @@
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
-import { isValidSessionId, type SessionKind } from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
+import { type SessionKind } from "../../shared/session-lookup.js";
 import type { GenericMessage } from "../llm/types.js";
 import type { WorkspaceRootRevocationOptions } from "./types.js";
 import { normalizeToolPairInvariant } from "../conversation-history.js";
@@ -222,7 +223,7 @@ export async function newConversation(
     const leavingStartFiredFor = self.sessionStartFiredFor;
     const leavingSessionMeta = self.sessionMetaForLifecycle();
     if (self.history.length > 0) {
-      self.deps.memoryManager.saveSession(outgoingSessionId, self.history.getMessages()).catch((err: unknown) => {
+      self.deps.memoryManager.sessions.saveSession(outgoingSessionId, self.history.getMessages()).catch((err: unknown) => {
         log.warn("newConversation saveSession failed: %s", (err as Error).message);
       });
     }
@@ -280,11 +281,11 @@ async function loadHeldSession(
   leavingSessionMeta: ReturnType<ConversationLoop["sessionMetaForLifecycle"]>,
   lease: SessionTransitionLease,
 ): Promise<boolean> {
-    const messages = self.deps.memoryManager.loadSession(sessionId);
+    const messages = self.deps.memoryManager.sessions.loadSession(sessionId);
     if (!messages) return false;
 
     if (self.history.length > 0) {
-      self.deps.memoryManager.saveSession(outgoingSessionId, self.history.getMessages()).catch((err: unknown) => {
+      self.deps.memoryManager.sessions.saveSession(outgoingSessionId, self.history.getMessages()).catch((err: unknown) => {
         log.warn("loadSession saveSession failed: %s", (err as Error).message);
       });
     }
@@ -294,7 +295,7 @@ async function loadHeldSession(
       log.warn(
         `loadSession: repaired invalid tool history for ${sessionId} (removedMessages=${normalized.removedMessages}, removedToolCalls=${normalized.removedToolCalls})`,
       );
-      void self.deps.memoryManager.saveSession(sessionId, normalized.messages).catch((err: unknown) => {
+      void self.deps.memoryManager.sessions.saveSession(sessionId, normalized.messages).catch((err: unknown) => {
         log.warn("loadSession repair saveSession failed: %s", (err as Error).message);
       });
     }
@@ -314,7 +315,7 @@ async function loadHeldSession(
     self.replaceSessionIdentity(sessionId);
     self.sessionStartFiredFor = null;
     self.sessionSource = "resume";
-    const sessionMeta = self.deps.memoryManager.loadSessionMetadata(sessionId);
+    const sessionMeta = self.deps.memoryManager.sessions.loadSessionMetadata(sessionId);
     self.sessionKind = sessionMeta?.sessionKind ?? "main";
     self.sessionRoutineId = sessionMeta?.routineId ?? null;
     self.sessionRoutineTitle = sessionMeta?.routineTitle ?? null;
@@ -399,8 +400,8 @@ export async function startRoutineConversation(
     await newConversation(self, "routine", project, lease);
     self.sessionRoutineId = routineId;
     self.sessionRoutineTitle = routineTitle;
-    await self.deps.memoryManager.saveSession(self.sessionId, []);
-    await self.deps.memoryManager.saveSessionMetadata(self.sessionId, {
+    await self.deps.memoryManager.sessions.saveSession(self.sessionId, []);
+    await self.deps.memoryManager.sessions.saveSessionMetadata(self.sessionId, {
       sessionKind: "routine",
       routineId,
       routineTitle,
@@ -415,12 +416,12 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
     lastMessageRole: GenericMessage["role"] | null;
     shouldAutoContinue: boolean;
   }> {
-    const checkpoints = self.deps.memoryManager.loadSessionMetadata(self.sessionId)?.checkpoints ?? [];
+    const checkpoints = self.deps.memoryManager.sessions.loadSessionMetadata(self.sessionId)?.checkpoints ?? [];
     const target = checkpoints.find((c) => c.compactNum === compactNum);
     if (!target) throw new Error(`Checkpoint #${compactNum} not found in session ${self.sessionId}`);
 
     // Branch from the pre-compact snapshot; main session files already contain rewritten post-compact history.
-    const snapshotMessages = self.deps.memoryManager.loadCheckpointSnapshot(self.sessionId, compactNum);
+    const snapshotMessages = self.deps.memoryManager.sessions.loadCheckpointSnapshot(self.sessionId, compactNum);
     if (!snapshotMessages) {
       throw new Error(
         `branchFromCheckpoint: no snapshot found for checkpoint #${compactNum} in session ${self.sessionId}. ` +
@@ -444,7 +445,7 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
       );
     }
 
-    const rehydrated = self.deps.memoryManager.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
+    const rehydrated = self.deps.memoryManager.sessions.rehydrateToolResultArtifacts(self.sessionId, repaired) as GenericMessage[];
     const forkMessages = target.summary
       ? withSummaryBoundary(rehydrated, {
           compactNum,
@@ -453,9 +454,9 @@ export async function branchFromCheckpoint(self: ConversationLoop, compactNum: n
           createdAt: target.triggeredAt,
         })
       : rehydrated;
-    await self.deps.memoryManager.saveSession(newSessionId, forkMessages);
+    await self.deps.memoryManager.sessions.saveSession(newSessionId, forkMessages);
 
-    await self.deps.memoryManager.saveSessionMetadata(newSessionId, {
+    await self.deps.memoryManager.sessions.saveSessionMetadata(newSessionId, {
       sessionKind: self.sessionKind,
       ...(self.sessionRoutineId ? { routineId: self.sessionRoutineId } : {}),
       ...(self.sessionRoutineTitle ? { routineTitle: self.sessionRoutineTitle } : {}),

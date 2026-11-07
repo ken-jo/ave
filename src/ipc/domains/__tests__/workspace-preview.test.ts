@@ -86,8 +86,10 @@ const deps = {
   getMainWindow: () => appWindows[0] ?? null,
   getAppWindows: () => appWindows,
   memoryManager: {
-    allowProjectRoot: vi.fn(),
-    detachSessionsFromProject: vi.fn(async () => 0),
+    sessions: {
+      allowProjectRoot: vi.fn(),
+      detachSessionsFromProject: vi.fn(async () => 0),
+    },
   },
   conversationLoop: {
     deps: {},
@@ -443,7 +445,7 @@ describe("workspace handlers", () => {
     const lifecycleDeps = {
       auditLogger: { log },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject },
+      memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
         permissionManager: {
           prunePathGrantsUnderRoot: vi.fn(async () => {
@@ -835,7 +837,7 @@ describe("workspace handlers", () => {
     registerWorkspaceHandlers({
       auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject },
+      memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
         revokeWorkspaceRoot,
@@ -894,8 +896,10 @@ describe("workspace handlers", () => {
       auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
       memoryManager: {
-        allowProjectRoot: vi.fn(),
-        detachSessionsFromProject,
+        sessions: {
+          allowProjectRoot: vi.fn(),
+          detachSessionsFromProject,
+        },
       },
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: vi.fn(async () => []) },
@@ -985,14 +989,14 @@ describe("workspace handlers", () => {
     const lifecycleDeps = {
       auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject: primaryDetach },
+      memoryManager: { sessions: { detachSessionsFromProject: primaryDetach } },
       conversationLoop: {
         deps: {},
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
         revokeWorkspaceRoot: mainRevoke,
       },
       sideChatConversationLoop: {
-        deps: { memoryManager: { detachSessionsFromProject: sideDetach } },
+        deps: { memoryManager: { sessions: { detachSessionsFromProject: sideDetach } } },
         revokeWorkspaceRoot: sideRevoke,
       },
       routineEngine: { revokeWorkspaceRoot: routineRevoke },
@@ -1072,7 +1076,7 @@ describe("workspace handlers", () => {
     registerWorkspaceHandlers({
       auditLogger: { log },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject },
+      memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
         deps: {},
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
@@ -1143,7 +1147,7 @@ describe("workspace handlers", () => {
     const lifecycleDeps = {
       auditLogger: { log: vi.fn() },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject: vi.fn(async () => 0) },
+      memoryManager: { sessions: { detachSessionsFromProject: vi.fn(async () => 0) } },
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: vi.fn(async () => []) },
       },
@@ -1195,7 +1199,7 @@ describe("workspace handlers", () => {
     const lifecycleDeps = {
       auditLogger: { log },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject },
+      memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: prunePathGrants },
         revokeWorkspaceRoot: vi.fn(() => ({
@@ -1253,7 +1257,7 @@ describe("workspace handlers", () => {
     const lifecycleDeps = {
       auditLogger: { log },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject },
+      memoryManager: { sessions: { detachSessionsFromProject } },
       conversationLoop: {
         permissionManager: {
           prunePathGrantsUnderRoot: vi.fn(async () => {
@@ -1314,7 +1318,7 @@ describe("workspace handlers", () => {
     registerWorkspaceHandlers({
       auditLogger: { log },
       getMainWindow: () => null,
-      memoryManager: { allowProjectRoot, detachSessionsFromProject },
+      memoryManager: { sessions: { allowProjectRoot, detachSessionsFromProject } },
       conversationLoop: {
         permissionManager: { prunePathGrantsUnderRoot: vi.fn(async () => []) },
         revokeWorkspaceRoot,
@@ -1384,7 +1388,7 @@ describe("workspace handlers", () => {
     const depsWithPm = {
       auditLogger: { log: auditLog },
       getMainWindow: () => null,
-      memoryManager: { detachSessionsFromProject: vi.fn(async () => 0) },
+      memoryManager: { sessions: { detachSessionsFromProject: vi.fn(async () => 0) } },
       conversationLoop: { permissionManager: { prunePathGrantsUnderRoot: prune } },
       routinesStore: {
         revokeWorkspaceRoot: vi.fn(async () => ({ routinesUpdated: 0, directoriesRemoved: 0 })),
@@ -1449,9 +1453,11 @@ describe("workspace handlers", () => {
         getMainWindow: () => null,
         pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
         memoryManager: {
-          allowProjectRoot: vi.fn(),
-          detachSessionsFromProject: overrides.detachSessionsFromProject ?? vi.fn(async () => 0),
-          countSessionsInProject: overrides.countSessionsInProject ?? vi.fn(() => 0),
+          sessions: {
+            allowProjectRoot: vi.fn(),
+            detachSessionsFromProject: overrides.detachSessionsFromProject ?? vi.fn(async () => 0),
+            countSessionsInProject: overrides.countSessionsInProject ?? vi.fn(() => 0),
+          },
         },
         conversationLoop: {
           ...loopAnswering(main),

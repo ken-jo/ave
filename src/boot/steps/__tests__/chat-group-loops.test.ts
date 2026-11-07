@@ -46,7 +46,7 @@ describe("two loops loading one conversation at once", () => {
     memory.load();
     try {
       const chat = randomUUID();
-      await memory.saveSession(chat, [{ role: "user", content: "hello" }]);
+      await memory.sessions.saveSession(chat, [{ role: "user", content: "hello" }]);
       const loops: InstanceType<typeof ConversationLoop>[] = [];
       const make = () => {
         let self!: InstanceType<typeof ConversationLoop>;
@@ -67,7 +67,7 @@ describe("two loops loading one conversation at once", () => {
       expect(routine.getSessionLoadTarget()).toBeNull();
       expect(tile.getSessionLoadTarget()).toBeNull();
     } finally {
-      memory.closeSearchIndex();
+      memory.sessions.closeSearchIndex();
       await cleanupTmpDir(root);
     }
   });

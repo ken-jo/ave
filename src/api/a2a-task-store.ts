@@ -28,7 +28,7 @@ import {
 } from "../engine/turn/guidance-limits.js";
 import { hasOnlyKeys, isRecord, isStringArray } from "../shared/is-record.js";
 import { isSafeStructuralId } from "../shared/dlp-safe-id.js";
-import { isValidSessionId } from "../memory/memory-manager.js";
+import { isValidSessionId } from "../shared/session-id.js";
 
 const STORE_VERSION = 1;
 const DEFAULT_FILE_NAME = "tasks.json";

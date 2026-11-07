@@ -35,7 +35,7 @@ function makeLoop(): ConversationLoop {
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   loop.initializeConversation("main", { projectRoot: project, projectName: "project" });

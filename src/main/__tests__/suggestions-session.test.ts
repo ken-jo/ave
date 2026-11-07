@@ -25,26 +25,26 @@ afterEach(async () => {
 
 describe("the dedicated Suggestions conversation", () => {
   it("is created on demand as an empty, listed main conversation, with no stored name", () => {
-    expect(mm.hasSessionTranscript(SUGGESTIONS_SESSION_ID)).toBe(false);
+    expect(mm.sessions.hasSessionTranscript(SUGGESTIONS_SESSION_ID)).toBe(false);
     stageInSuggestionsSession(mm);
-    expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
-    const row = mm.listSessions().find((session) => session.id === SUGGESTIONS_SESSION_ID);
+    expect(mm.sessions.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
+    const row = mm.sessions.listSessions().find((session) => session.id === SUGGESTIONS_SESSION_ID);
     expect(row?.sessionKind).toBe("main");
     // Its name is rendered from the catalog by its id, never stored.
-    expect(mm.hasSessionMetadataFile(SUGGESTIONS_SESSION_ID)).toBe(false);
+    expect(mm.sessions.hasSessionMetadataFile(SUGGESTIONS_SESSION_ID)).toBe(false);
   });
 
   it("opens through the real session-history read, with no metadata yet", async () => {
-    mm.touchSessionTranscript(SUGGESTIONS_SESSION_ID, { bump: false });
+    mm.sessions.touchSessionTranscript(SUGGESTIONS_SESSION_ID, { bump: false });
     const history = handleChatSessionHistory({ memoryManager: mm } as never, SUGGESTIONS_SESSION_ID);
     expect(history).toMatchObject({ ok: true, sessionKind: "main", messages: [] });
   });
 
   it("never replaces a transcript the user already has there", async () => {
-    await mm.saveSession(SUGGESTIONS_SESSION_ID, [{ role: "user", content: "kept" }]);
+    await mm.sessions.saveSession(SUGGESTIONS_SESSION_ID, [{ role: "user", content: "kept" }]);
     stageInSuggestionsSession(mm);
     ensureSuggestionsSession(mm);
-    expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([
+    expect(mm.sessions.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([
       expect.objectContaining({ role: "user", content: "kept" }),
     ]);
   });
@@ -62,6 +62,6 @@ describe("the dedicated Suggestions conversation", () => {
   });
 
   it("refuses an id that is not a session id", () => {
-    expect(() => mm.touchSessionTranscript("../escape", { bump: true })).toThrow(/invalid sessionId/);
+    expect(() => mm.sessions.touchSessionTranscript("../escape", { bump: true })).toThrow(/invalid sessionId/);
   });
 });

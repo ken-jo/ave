@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeSubagentLoopDeps } from "./support/subagent-loop-fixtures.js";
 import { createDlpSafeUuid, isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import * as structuralIds from "../../shared/dlp-safe-id.js";
-import { MemoryManager, type SessionMetadata,
-} from "../../memory/memory-manager.js";
+import { MemoryManager } from "../../memory/memory-manager.js";
+import { type SessionMetadata } from "../../memory/session-repository.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { readShellSessionCwd, recordShellSessionCwd } from "../../tools/shell-session-cwd.js";
@@ -162,7 +162,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     originSessionId: string,
     extra: Record<string, unknown>,
   ): Promise<void> {
-    await store.saveSessionMetadata(resumeId, {
+    await store.sessions.saveSessionMetadata(resumeId, {
       sessionKind: "subagent",
       sourceTools: ["noop"],
       originSessionId,
@@ -234,9 +234,9 @@ describe("SubAgentRunner A2A wire security contract", () => {
     }
     const events: string[] = [];
     const binding = makeBinding();
-    const originalSave = store.saveSessionMetadata.bind(store);
+    const originalSave = store.sessions.saveSessionMetadata.bind(store.sessions);
     let saveCount = 0;
-    vi.spyOn(store, "saveSessionMetadata").mockImplementation(
+    vi.spyOn(store.sessions, "saveSessionMetadata").mockImplementation(
       async (...args) => {
         saveCount += 1;
         if (saveCount === 1) events.push("metadata");
@@ -261,7 +261,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       binding,
       {
         onDurablyLinked: async ({ childSessionId }) => {
-          expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+          expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
             subAgentTaskState: "TASK_STATE_SUBMITTED",
             a2aWireHandlerId: binding.handlerId,
             projectRoot: binding.project.root,
@@ -276,7 +276,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
 
     expect(result.ok).toBe(true);
     expect(isSafeStructuralId(result.childSessionId)).toBe(true);
-    const metadata = store.loadSessionMetadata(result.childSessionId);
+    const metadata = store.sessions.loadSessionMetadata(result.childSessionId);
     expect(metadata?.a2aWireInternalOrigin).toMatch(/^a2a-wire-[0-9a-f]{8}-/);
     expect(
       isSafeStructuralId(metadata?.a2aWireInternalOrigin),
@@ -323,7 +323,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
 
   it("fails closed before durable linking when the initial metadata save is tombstoned", async () => {
     const binding = makeBinding();
-    const originalSave = store.saveSessionMetadata.bind(store);
+    const originalSave = store.sessions.saveSessionMetadata.bind(store.sessions);
     let signalInitialSave!: () => void;
     const initialSaveEntered = new Promise<void>((resolve) => {
       signalInitialSave = resolve;
@@ -333,7 +333,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       releaseInitialSave = resolve;
     });
     let firstSave = true;
-    vi.spyOn(store, "saveSessionMetadata").mockImplementation(
+    vi.spyOn(store.sessions, "saveSessionMetadata").mockImplementation(
       async (...args) => {
         if (firstSave) {
           firstSave = false;
@@ -358,7 +358,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
 
     // Disable live cancellation here to isolate tombstone revalidation after persistence.
     await expect(
-      store.detachSessionsFromProject(binding.project.root),
+      store.sessions.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(0);
     releaseInitialSave();
 
@@ -387,7 +387,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ConversationLoop.prototype,
       "getSessionProjectRoot",
     ).mockReturnValue(binding.project.root);
-    const originalSave = store.saveSessionMetadata.bind(store);
+    const originalSave = store.sessions.saveSessionMetadata.bind(store.sessions);
     let signalWorkingSave!: () => void;
     const workingSaveEntered = new Promise<void>((resolve) => {
       signalWorkingSave = resolve;
@@ -397,7 +397,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       releaseWorkingSave = resolve;
     });
     let heldWorkingSave = false;
-    vi.spyOn(store, "saveSessionMetadata").mockImplementation(
+    vi.spyOn(store.sessions, "saveSessionMetadata").mockImplementation(
       async (...args) => {
         const metadata = args[1];
         if (
@@ -423,7 +423,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
 
     // Isolate post-save revalidation from runner-level abort.
     await expect(
-      store.detachSessionsFromProject(binding.project.root),
+      store.sessions.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(1);
     releaseWorkingSave();
 
@@ -436,7 +436,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       (runner as unknown as { activeChildren: Map<string, unknown> })
         .activeChildren.size,
     ).toBe(0);
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       projectRoot: undefined,
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
@@ -486,7 +486,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       (runner as unknown as { activeChildren: Map<string, unknown> })
         .activeChildren.size,
     ).toBe(0);
-    expect(store.loadSessionMetadata(linkedChildSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(linkedChildSessionId)).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: binding.handlerId,
       subAgentTaskState: "TASK_STATE_CANCELED",
@@ -557,7 +557,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       (runner as unknown as { activeChildren: Map<string, unknown> })
         .activeChildren.size,
     ).toBe(0);
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: binding.handlerId,
       subAgentTaskState: "TASK_STATE_CANCELED",
@@ -641,9 +641,9 @@ describe("SubAgentRunner A2A wire security contract", () => {
       a2aWireInternalOrigin: originSessionId,
     });
     await expect(
-      store.detachSessionsFromProject(binding.project.root),
+      store.sessions.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(1);
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: binding.handlerId,
       a2aWireInternalOrigin: originSessionId,
@@ -675,7 +675,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     expect(regularResult.ok).toBe(false);
     expect(runTurn).not.toHaveBeenCalled();
 
-    store.allowProjectRoot(binding.project.root);
+    store.sessions.allowProjectRoot(binding.project.root);
     expect(
       wireRunner.getA2AWireRunSnapshot(resumeId, {
         handlerId: binding.handlerId,
@@ -771,7 +771,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       stopReason: "round-cap",
       suspension: { reason: "budget" },
     });
-    expect(store.loadSessionMetadata(waiting.childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(waiting.childSessionId)).toMatchObject({
       sourceTools: [],
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       a2aWireHandlerId: binding.handlerId,
@@ -998,7 +998,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     const resumeId = makeResumeId(originSessionId);
     const hostRoot = join(tmpHome, "host-project");
     const fallbackRoot = join(tmpHome, "fallback-project");
-    await store.saveSession(resumeId, [{ role: "user", content: "seed" }]);
+    await store.sessions.saveSession(resumeId, [{ role: "user", content: "seed" }]);
     await saveWaitingMetadata(resumeId, originSessionId, {
       a2aWireHandlerId: "wire-handler-a",
       a2aWireInternalOrigin: originSessionId,
@@ -1074,7 +1074,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       run: { taskState: "TASK_STATE_CANCELED" },
     });
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
     await expect(
@@ -1153,7 +1153,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       run: { taskState: "TASK_STATE_CANCELED" },
     });
-    expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
 
@@ -1242,7 +1242,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       run: { taskState: "TASK_STATE_CANCELED" },
     });
-    expect(store.loadSessionMetadata(waiting.childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(waiting.childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
     expect(cleanupTerminalRecipientMailbox).toHaveBeenCalledOnce();
@@ -1263,9 +1263,9 @@ describe("SubAgentRunner A2A wire security contract", () => {
         return await turn;
       },
     );
-    const originalSave = store.saveSessionMetadata.bind(store);
+    const originalSave = store.sessions.saveSessionMetadata.bind(store.sessions);
     let canceledSaveAttempts = 0;
-    vi.spyOn(store, "saveSessionMetadata").mockImplementation(
+    vi.spyOn(store.sessions, "saveSessionMetadata").mockImplementation(
       async (...args) => {
         if (args[1].subAgentTaskState === "TASK_STATE_CANCELED") {
           canceledSaveAttempts += 1;
@@ -1300,7 +1300,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     await expect(
       runner.cancelA2AWireRun(childSessionId, { handlerId: binding.handlerId }),
     ).resolves.toEqual({ ok: false, reason: "storage-failed" });
-    expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_SUBMITTED",
     });
     expect(
@@ -1314,7 +1314,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: false,
       stopReason: "interrupted",
     });
-    expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_SUBMITTED",
     });
     expect(
@@ -1330,7 +1330,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       run: { taskState: "TASK_STATE_CANCELED" },
     });
     expect(canceledSaveAttempts).toBe(3);
-    expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
     expect(
@@ -1380,7 +1380,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       run: { taskState: "TASK_STATE_CANCELED" },
     });
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
     finishTurn(COMPLETED_TURN);
@@ -1426,7 +1426,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       stopReason: "end_turn",
     });
-    expect(store.loadSessionMetadata(childSessionId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_COMPLETED",
     });
     expect(
@@ -1473,7 +1473,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
       ok: true,
       stopReason: "end_turn",
     });
-    expect(store.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(store.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_COMPLETED",
     });
     expect(

@@ -15,7 +15,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   mm.stopPersistentContextWatcher();
-  mm.closeSearchIndex();
+  mm.sessions.closeSearchIndex();
   await cleanupTmpDir(dir);
 });
 
@@ -226,68 +226,68 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1500): Promise<vo
 
 describe("MemoryManager.searchSessions", () => {
   it("returns empty array when no sessions exist", () => {
-    const results = mm.searchSessions("hello");
+    const results = mm.sessions.searchSessions("hello");
     expect(results).toEqual([]);
   });
 
   it("returns empty array for genuinely trivial queries (empty / 1-char / whitespace)", async () => {
-    await mm.saveSession("a1b2c3d4-e5f6-7890-abcd-ef1234567890", [
+    await mm.sessions.saveSession("a1b2c3d4-e5f6-7890-abcd-ef1234567890", [
       { role: "user", content: "hello world" },
     ]);
     // Two Unicode code points use LIKE; trigram MATCH starts at three.
-    expect(mm.searchSessions("")).toEqual([]);
-    expect(mm.searchSessions("h")).toEqual([]);
-    expect(mm.searchSessions("  ")).toEqual([]);
-    expect(mm.searchSessions("가")).toEqual([]); // 1 Korean syllable = 1 code point
+    expect(mm.sessions.searchSessions("")).toEqual([]);
+    expect(mm.sessions.searchSessions("h")).toEqual([]);
+    expect(mm.sessions.searchSessions("  ")).toEqual([]);
+    expect(mm.sessions.searchSessions("가")).toEqual([]); // 1 Korean syllable = 1 code point
   });
 
   it("matches a 2-syllable Korean query via the LIKE fallback (2-char CJK, trigram-floor gap)", async () => {
     const id = "a2b2c3d4-e5f6-7890-abcd-ef1234567891";
-    await mm.saveSession(id, [
+    await mm.sessions.saveSession(id, [
       { role: "user", content: "이번 분기 매출 목표를 검토합시다" },
       { role: "assistant", content: "회의 일정을 잡겠습니다" },
     ]);
-    expect(mm.searchSessions("매출").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("분기").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("목표").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("회의").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("매출")[0].matchedMessage).toContain("매출");
+    expect(mm.sessions.searchSessions("매출").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("분기").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("목표").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("회의").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("매출")[0].matchedMessage).toContain("매출");
   });
 
   it("matches a 2-char ASCII query case-insensitively via the LIKE fallback", async () => {
     const id = "a3b2c3d4-e5f6-7890-abcd-ef1234567892";
-    await mm.saveSession(id, [{ role: "user", content: "Node.js Runtime notes" }]);
-    expect(mm.searchSessions("no").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("NO").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "Node.js Runtime notes" }]);
+    expect(mm.sessions.searchSessions("no").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("NO").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("keeps 3+ code-point Korean on the fast MATCH path", async () => {
     const id = "a4b2c3d4-e5f6-7890-abcd-ef1234567893";
-    await mm.saveSession(id, [{ role: "user", content: "분기 보고서 초안을 작성했습니다" }]);
-    expect(mm.searchSessions("보고서").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "분기 보고서 초안을 작성했습니다" }]);
+    expect(mm.sessions.searchSessions("보고서").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("handles a Korean+ASCII mixed 2-code-point query", async () => {
     const id = "a5b2c3d4-e5f6-7890-abcd-ef1234567894";
-    await mm.saveSession(id, [{ role: "user", content: "버전 v2 릴리스" }]);
-    expect(mm.searchSessions("v2").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "버전 v2 릴리스" }]);
+    expect(mm.sessions.searchSessions("v2").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("escapes LIKE metacharacters (% and _) in a 2-char query so they match literally", async () => {
     const literalId = "a6b2c3d4-e5f6-7890-abcd-ef1234567895";
     const decoyId = "a7b2c3d4-e5f6-7890-abcd-ef1234567896";
-    await mm.saveSession(literalId, [{ role: "user", content: "growth was 5% this quarter" }]);
-    await mm.saveSession(decoyId, [{ role: "user", content: "value 5X and 5Y only" }]);
+    await mm.sessions.saveSession(literalId, [{ role: "user", content: "growth was 5% this quarter" }]);
+    await mm.sessions.saveSession(decoyId, [{ role: "user", content: "value 5X and 5Y only" }]);
     // Escape percent so query text remains literal rather than a LIKE wildcard.
-    const hits = mm.searchSessions("5%").map((r) => r.sessionId);
+    const hits = mm.sessions.searchSessions("5%").map((r) => r.sessionId);
     expect(hits).toEqual([literalId]);
 
     const underscoreId = "a8b2c3d4-e5f6-7890-abcd-ef1234567897";
     const underscoreDecoy = "a9b2c3d4-e5f6-7890-abcd-ef1234567898";
-    await mm.saveSession(underscoreId, [{ role: "user", content: "the a_b marker here" }]);
-    await mm.saveSession(underscoreDecoy, [{ role: "user", content: "the axb variant here" }]);
+    await mm.sessions.saveSession(underscoreId, [{ role: "user", content: "the a_b marker here" }]);
+    await mm.sessions.saveSession(underscoreDecoy, [{ role: "user", content: "the axb variant here" }]);
     // Escape underscore so query text cannot match arbitrary characters.
-    const uHits = mm.searchSessions("a_").map((r) => r.sessionId);
+    const uHits = mm.sessions.searchSessions("a_").map((r) => r.sessionId);
     expect(uHits).toContain(underscoreId);
     expect(uHits).not.toContain(underscoreDecoy);
   });
@@ -298,7 +298,7 @@ describe("MemoryManager.searchSessions", () => {
     const sessionsDir = join(dir, "sessions");
     writeFileSync(join(sessionsDir, "../../etc-passwd.jsonl"), JSON.stringify({ role: "user", content: "secret hello data" }) + "\n");
     writeFileSync(join(sessionsDir, "notauuid.jsonl"), JSON.stringify({ role: "user", content: "hello leak" }) + "\n");
-    const results = mm.searchSessions("hello");
+    const results = mm.sessions.searchSessions("hello");
     const sessionIds = results.map((r) => r.sessionId);
     expect(sessionIds).not.toContain("../../etc-passwd");
     expect(sessionIds).not.toContain("notauuid");
@@ -311,7 +311,7 @@ describe("MemoryManager.searchSessions", () => {
     const bigId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const bigLine = JSON.stringify({ role: "user", content: "hello " + "x".repeat(6_000_000) });
     writeFileSync(join(sessionsDir, `${bigId}.jsonl`), bigLine + "\n");
-    const results = mm.searchSessions("hello");
+    const results = mm.sessions.searchSessions("hello");
     expect(results.find((r) => r.sessionId === bigId)).toBeUndefined();
   });
 
@@ -320,8 +320,8 @@ describe("MemoryManager.searchSessions", () => {
     const prefix = "a".repeat(150);
     const suffix = "b".repeat(150);
     const content = `${prefix}KEYWORD${suffix}`;
-    await mm.saveSession(sessionId, [{ role: "user", content }]);
-    const results = mm.searchSessions("KEYWORD");
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content }]);
+    const results = mm.sessions.searchSessions("KEYWORD");
     expect(results.length).toBe(1);
     expect(results[0].matchedMessage.length).toBeLessThanOrEqual(210);
     expect(results[0].matchedMessage).toContain("KEYWORD");
@@ -329,11 +329,11 @@ describe("MemoryManager.searchSessions", () => {
 
   it("matches message content substring", async () => {
     const sessionId = "cccccccc-dddd-eeee-ffff-000000000001";
-    await mm.saveSession(sessionId, [
+    await mm.sessions.saveSession(sessionId, [
       { role: "user", content: "quarterly report 분석 요청" },
       { role: "assistant", content: "네, 분석해드리겠습니다." },
     ]);
-    const results = mm.searchSessions("quarterly");
+    const results = mm.sessions.searchSessions("quarterly");
     expect(results.length).toBe(1);
     expect(results[0].sessionId).toBe(sessionId);
     expect(results[0].title).toBe("quarterly report 분석 요청");
@@ -343,11 +343,11 @@ describe("MemoryManager.searchSessions", () => {
   it("caps results at 50", async () => {
     for (let i = 0; i < 60; i++) {
       const id = `dddddddd-eeee-ffff-0000-${String(i).padStart(12, "0")}`;
-      await mm.saveSession(id, [
+      await mm.sessions.saveSession(id, [
         { role: "user", content: `hello world message ${i}` },
       ]);
     }
-    const results = mm.searchSessions("hello");
+    const results = mm.sessions.searchSessions("hello");
     expect(results.length).toBe(50);
   });
 });
@@ -355,50 +355,50 @@ describe("MemoryManager.searchSessions", () => {
 describe("MemoryManager.searchSessions — FTS5 escape + injection safety", () => {
   it("treats FTS5 operators in the query as literal text (no syntax error)", async () => {
     const id = "10000000-0000-4000-8000-000000000001";
-    await mm.saveSession(id, [{ role: "user", content: "deploy AND rollback plan" }]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "deploy AND rollback plan" }]);
     // Escape FTS operators as literal phrase text.
-    const results = mm.searchSessions("deploy AND rollback");
+    const results = mm.sessions.searchSessions("deploy AND rollback");
     expect(results.map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("does not throw on an unterminated double-quote in the query", async () => {
     const id = "10000000-0000-4000-8000-000000000002";
-    await mm.saveSession(id, [{ role: "user", content: 'he said "hello there" loudly' }]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: 'he said "hello there" loudly' }]);
     // Double embedded quotes so malformed user phrases cannot become FTS syntax errors.
-    expect(() => mm.searchSessions('"hello')).not.toThrow();
-    const results = mm.searchSessions('"hello there"');
+    expect(() => mm.sessions.searchSessions('"hello')).not.toThrow();
+    const results = mm.sessions.searchSessions('"hello there"');
     expect(results.map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("matches a substring inside an unbroken token (trigram tokenizer)", async () => {
     const id = "10000000-0000-4000-8000-000000000003";
     // Trigrams preserve substring matches inside unbroken URLs and identifiers.
-    await mm.saveSession(id, [{ role: "user", content: "see https://example.com/path" }]);
-    expect(mm.searchSessions("example").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "see https://example.com/path" }]);
+    expect(mm.sessions.searchSessions("example").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("indexes text parts of array (multi-part) user content", async () => {
     const id = "10000000-0000-4000-8000-000000000004";
-    await mm.saveSession(id, [
+    await mm.sessions.saveSession(id, [
       { role: "user", content: [{ type: "text", text: "multipart needle here" }] },
     ]);
-    expect(mm.searchSessions("needle").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("needle").map((r) => r.sessionId)).toEqual([id]);
   });
 });
 
 describe("MemoryManager.searchSessions — timestamp sourcing", () => {
   it("uses the session JSONL mtime, not the index-write time", async () => {
     const id = "60000000-0000-4000-8000-000000000001";
-    await mm.saveSession(id, [{ role: "user", content: "timestamp keyword body" }]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "timestamp keyword body" }]);
     const past = new Date("2020-01-02T03:04:05.000Z");
     const { utimesSync } = await import("node:fs");
     utimesSync(join(dir, "sessions", `${id}.jsonl`), past, past);
     // Remove index rows to force boot rebuild; a healthy populated index does not rescan file mtimes.
-    mm.closeSearchIndex();
+    mm.sessions.closeSearchIndex();
     rmSync(join(dir, "search"), { recursive: true, force: true });
-    await mm.verifyOrRebuildSearchIndex();
+    await mm.sessions.verifyOrRebuildSearchIndex();
 
-    const hit = mm.searchSessions("timestamp").find((r) => r.sessionId === id);
+    const hit = mm.sessions.searchSessions("timestamp").find((r) => r.sessionId === id);
     expect(hit).toBeDefined();
     expect(new Date(hit!.timestamp).getUTCFullYear()).toBe(2020);
   });
@@ -407,13 +407,13 @@ describe("MemoryManager.searchSessions — timestamp sourcing", () => {
 describe("MemoryManager.saveImportedSession", () => {
   it("always persists sessionKind:\"main\" regardless of any inherited metadata", async () => {
     const id = "50000000-0000-4000-8000-000000000001";
-    await mm.saveImportedSession(id, [
+    await mm.sessions.saveImportedSession(id, [
       { role: "user", content: "imported conversation body" },
       { role: "assistant", content: "reply" },
     ]);
-    expect(mm.searchSessions("imported").map((r) => r.sessionId)).toEqual([id]);
-    expect(mm.searchSessions("imported", { kind: "routine" })).toEqual([]);
-    expect(mm.listSessions().map((s) => s.id)).toContain(id);
+    expect(mm.sessions.searchSessions("imported").map((r) => r.sessionId)).toEqual([id]);
+    expect(mm.sessions.searchSessions("imported", { kind: "routine" })).toEqual([]);
+    expect(mm.sessions.listSessions().map((s) => s.id)).toContain(id);
     const metaPath = join(dir, "sessions", `${id}.meta.json`);
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
     expect(meta.sessionKind).toBe("main");
@@ -423,50 +423,50 @@ describe("MemoryManager.saveImportedSession", () => {
 describe("MemoryManager.searchSessions — index maintenance", () => {
   it("removes a deleted session's row from the search index (no orphan hit)", async () => {
     const id = "20000000-0000-4000-8000-000000000001";
-    await mm.saveSession(id, [{ role: "user", content: "ephemeral keyword body" }]);
-    expect(mm.searchSessions("ephemeral").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "ephemeral keyword body" }]);
+    expect(mm.sessions.searchSessions("ephemeral").map((r) => r.sessionId)).toEqual([id]);
 
-    await mm.deleteSession(id);
-    expect(mm.searchSessions("ephemeral")).toEqual([]);
+    await mm.sessions.deleteSession(id);
+    expect(mm.sessions.searchSessions("ephemeral")).toEqual([]);
   });
 
   it("re-indexes on metadata-only update so scope filters stay correct", async () => {
     const id = "20000000-0000-4000-8000-000000000002";
-    await mm.saveSession(id, [{ role: "user", content: "scoped keyword content" }]);
-    await mm.saveSessionMetadata(id, { sessionKind: "routine", routineId: "r-1" });
-    expect(mm.searchSessions("scoped")).toEqual([]);
-    expect(mm.searchSessions("scoped", { kind: "routine" }).map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "scoped keyword content" }]);
+    await mm.sessions.saveSessionMetadata(id, { sessionKind: "routine", routineId: "r-1" });
+    expect(mm.sessions.searchSessions("scoped")).toEqual([]);
+    expect(mm.sessions.searchSessions("scoped", { kind: "routine" }).map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("rebuilds the index from JSONL after the DB file is corrupted", async () => {
     const id = "20000000-0000-4000-8000-000000000003";
-    await mm.saveSession(id, [{ role: "user", content: "durable rebuild keyword" }]);
-    expect(mm.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "durable rebuild keyword" }]);
+    expect(mm.sessions.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
 
     const dbPath = join(dir, "search", "index.db");
     writeFileSync(dbPath, "not a sqlite database at all", "utf-8");
-    await mm.verifyOrRebuildSearchIndex();
-    expect(mm.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.verifyOrRebuildSearchIndex();
+    expect(mm.sessions.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("rebuilds a missing index from existing session files at boot", async () => {
     const id = "20000000-0000-4000-8000-000000000004";
-    await mm.saveSession(id, [{ role: "user", content: "cold boot keyword" }]);
+    await mm.sessions.saveSession(id, [{ role: "user", content: "cold boot keyword" }]);
     rmSync(join(dir, "search"), { recursive: true, force: true });
-    await mm.verifyOrRebuildSearchIndex();
-    expect(mm.searchSessions("cold").map((r) => r.sessionId)).toEqual([id]);
+    await mm.sessions.verifyOrRebuildSearchIndex();
+    expect(mm.sessions.searchSessions("cold").map((r) => r.sessionId)).toEqual([id]);
   });
 });
 
 describe("MemoryManager.listSessionEntries", () => {
   it("returns recent sessions with inspectable excerpts", async () => {
     const sessionId = "eeeeeeee-ffff-0000-1111-222222222222";
-    await mm.saveSession(sessionId, [
+    await mm.sessions.saveSession(sessionId, [
       { role: "user", content: "first message" },
       { role: "assistant", content: "latest answer preview" },
     ]);
 
-    const results = mm.listSessionEntries();
+    const results = mm.sessions.listSessionEntries();
     expect(results.length).toBe(1);
     expect(results[0].sessionId).toBe(sessionId);
     expect(results[0].title).toBe("first message");
@@ -476,16 +476,16 @@ describe("MemoryManager.listSessionEntries", () => {
   it("skips malformed session lines instead of crashing", async () => {
     const { appendFileSync } = await import("node:fs");
     const sessionId = "ffffffff-0000-1111-2222-333333333333";
-    await mm.saveSession(sessionId, [
+    await mm.sessions.saveSession(sessionId, [
       { role: "assistant", content: "valid message" },
     ]);
     appendFileSync(join(dir, "sessions", `${sessionId}.jsonl`), "{not-json}\n", "utf-8");
 
-    const loaded = mm.loadSession(sessionId);
+    const loaded = mm.sessions.loadSession(sessionId);
     expect(Array.isArray(loaded)).toBe(true);
     expect((loaded ?? []).length).toBe(1);
 
-    const sessions = mm.listSessions();
+    const sessions = mm.sessions.listSessions();
     expect(sessions[0].preview).toContain("valid message");
   });
 
@@ -494,7 +494,7 @@ describe("MemoryManager.listSessionEntries", () => {
     const sessionId = "99999999-aaaa-bbbb-cccc-444444444444";
     writeFileSync(join(dir, "sessions", `${sessionId}.jsonl`), "x".repeat(5_000_001), "utf-8");
 
-    const sessions = mm.listSessions();
+    const sessions = mm.sessions.listSessions();
     expect(sessions[0].id).toBe(sessionId);
     expect(sessions[0].preview).toMatch(/미리보기를 생략|preview skipped/);
   });
@@ -503,39 +503,39 @@ describe("MemoryManager.listSessionEntries", () => {
     const mainId = "11111111-2222-3333-4444-555555555555";
     const routineSessionId = "22222222-3333-4444-5555-666666666666";
     const routineIdOnlySessionId = "33333333-4444-5555-6666-777777777777";
-    await mm.saveSession(mainId, [{ role: "user", content: "needle main" }]);
-    await mm.saveSessionMetadata(mainId, { sessionKind: "main", title: "Main" });
-    await mm.saveSession(routineSessionId, [{ role: "user", content: "needle routine" }]);
-    await mm.saveSessionMetadata(routineSessionId, {
+    await mm.sessions.saveSession(mainId, [{ role: "user", content: "needle main" }]);
+    await mm.sessions.saveSessionMetadata(mainId, { sessionKind: "main", title: "Main" });
+    await mm.sessions.saveSession(routineSessionId, [{ role: "user", content: "needle routine" }]);
+    await mm.sessions.saveSessionMetadata(routineSessionId, {
       sessionKind: "routine",
       routineId: "routine-a",
       routineTitle: "Routine A",
     });
-    await mm.saveSession(routineIdOnlySessionId, [{ role: "user", content: "needle routine id only" }]);
-    await mm.saveSessionMetadata(routineIdOnlySessionId, { routineId: "routine-a", title: "Routine id only" });
+    await mm.sessions.saveSession(routineIdOnlySessionId, [{ role: "user", content: "needle routine id only" }]);
+    await mm.sessions.saveSessionMetadata(routineIdOnlySessionId, { routineId: "routine-a", title: "Routine id only" });
 
-    expect(mm.listSessions().map((s) => s.id)).toEqual(expect.arrayContaining([mainId, routineIdOnlySessionId]));
-    expect(mm.listSessions().map((s) => s.id)).not.toContain(routineSessionId);
-    expect(mm.listSessions({ kind: "routine" }).map((s) => s.id)).toEqual([routineSessionId]);
-    expect(mm.listSessionsByRoutine("routine-a").map((s) => s.id)).toEqual([routineSessionId]);
-    expect(mm.searchSessions("needle").map((s) => s.sessionId)).toEqual(expect.arrayContaining([mainId, routineIdOnlySessionId]));
-    expect(mm.searchSessions("needle").map((s) => s.sessionId)).not.toContain(routineSessionId);
-    expect(mm.searchSessions("needle", { kind: "routine" }).map((s) => s.sessionId)).toEqual([routineSessionId]);
+    expect(mm.sessions.listSessions().map((s) => s.id)).toEqual(expect.arrayContaining([mainId, routineIdOnlySessionId]));
+    expect(mm.sessions.listSessions().map((s) => s.id)).not.toContain(routineSessionId);
+    expect(mm.sessions.listSessions({ kind: "routine" }).map((s) => s.id)).toEqual([routineSessionId]);
+    expect(mm.sessions.listSessionsByRoutine("routine-a").map((s) => s.id)).toEqual([routineSessionId]);
+    expect(mm.sessions.searchSessions("needle").map((s) => s.sessionId)).toEqual(expect.arrayContaining([mainId, routineIdOnlySessionId]));
+    expect(mm.sessions.searchSessions("needle").map((s) => s.sessionId)).not.toContain(routineSessionId);
+    expect(mm.sessions.searchSessions("needle", { kind: "routine" }).map((s) => s.sessionId)).toEqual([routineSessionId]);
   });
 
   it("deleteSession removes the jsonl, metadata, per-session archive, checkpoint snapshots, and diff sidecars", async () => {
     const sessionId = "44444444-5555-6666-7777-888888888888";
     const sessionsDir = join(dir, "sessions");
     const diffCacheDir = join(dir, "diff-cache", sessionId);
-    await mm.saveSession(sessionId, [{ role: "user", content: "delete me" }]);
-    await mm.saveSessionMetadata(sessionId, { sessionKind: "main", title: "Delete me" });
-    await mm.saveCheckpointSnapshot(sessionId, 1, [{ role: "user", content: "snapshot" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "delete me" }]);
+    await mm.sessions.saveSessionMetadata(sessionId, { sessionKind: "main", title: "Delete me" });
+    await mm.sessions.saveCheckpointSnapshot(sessionId, 1, [{ role: "user", content: "snapshot" }]);
     mkdirSync(join(sessionsDir, sessionId, "truncated"), { recursive: true });
     writeFileSync(join(sessionsDir, sessionId, "truncated", "0.jsonl"), "archive", "utf-8");
     mkdirSync(diffCacheDir, { recursive: true });
     writeFileSync(join(diffCacheDir, "tool-call.json"), "diff", "utf-8");
 
-    await mm.deleteSession(sessionId);
+    await mm.sessions.deleteSession(sessionId);
 
     expect(existsSync(join(sessionsDir, `${sessionId}.jsonl`))).toBe(false);
     expect(existsSync(join(sessionsDir, `${sessionId}.meta.json`))).toBe(false);

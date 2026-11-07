@@ -83,6 +83,6 @@ describe("turn-owned code checkpoint integration", () => {
     expect(await readFile(file, "utf8")).toBe("created\r\n");
     expect(await restoreCodeCheckpoint(loop.getSessionId(), first, { cwd: root, extraAllowedDirectories: [] })).toEqual({ ok: true });
     await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null)?.filter((message) => message.role === "user").map((message) => message.meta?.messageId)).toEqual([first, second]);
+    expect((memoryManager.sessions.loadSession(loop.getSessionId()) as GenericMessage[] | null)?.filter((message) => message.role === "user").map((message) => message.meta?.messageId)).toEqual([first, second]);
   });
 });

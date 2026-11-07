@@ -60,8 +60,8 @@ function registryFor(store = settings, windowId = 1) {
     savedWindowId: () => windowId,
     load: (id) => id === windowId ? store.get("system").mainLayout : undefined,
     save: async (id, snapshot) => { if (id === windowId) await saveLayout(store, snapshot); },
-    sessionExists: (id) => memory.hasSessionTranscript(id),
-    legacyPaneSession: (tabId) => memory.findPaneSession(tabId),
+    sessionExists: (id) => memory.sessions.hasSessionTranscript(id),
+    legacyPaneSession: (tabId) => memory.sessions.findPaneSession(tabId),
   });
   return { registry, requests, changes };
 }
@@ -76,8 +76,8 @@ async function openOwnedTab(registry: BrowserTabRegistry<BrowserGuest>, requests
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "ave-tab-bindings-"));
   memory = new MemoryManager({ aveDir: join(directory, "sessions") });
-  await memory.saveSession(MAIN_SESSION, [{ role: "user", content: "Open a page" }]);
-  await memory.saveSession(PANE_SESSION, [{ role: "user", content: "Use this terminal" }]);
+  await memory.sessions.saveSession(MAIN_SESSION, [{ role: "user", content: "Open a page" }]);
+  await memory.sessions.saveSession(PANE_SESSION, [{ role: "user", content: "Use this terminal" }]);
   settings = settingsFromDisk();
   await saveLayout(settings, layout());
   info.mockClear();
@@ -130,7 +130,7 @@ describe("durable session tab bindings", () => {
   });
 
   it("writes a legacy migration once and does not rewrite it on the next restore", async () => {
-    await memory.saveSessionMetadata(PANE_SESSION, { sessionKind: "main", paneTabId: TERMINAL_TAB });
+    await memory.sessions.saveSessionMetadata(PANE_SESSION, { sessionKind: "main", paneTabId: TERMINAL_TAB });
     const patch = vi.spyOn(settings, "patch");
     const first = registryFor();
     expect(first.registry.paneConversation(1, TERMINAL_TAB)).toBe(PANE_SESSION);
@@ -361,12 +361,12 @@ describe("durable session tab bindings", () => {
   });
 
   it("migrates the legacy pane hint once and preserves an explicit clear across restart", async () => {
-    await memory.saveSessionMetadata(PANE_SESSION, { sessionKind: "main", paneTabId: TERMINAL_TAB });
+    await memory.sessions.saveSessionMetadata(PANE_SESSION, { sessionKind: "main", paneTabId: TERMINAL_TAB });
     const { registry } = registryFor();
     expect(registry.paneConversation(1, TERMINAL_TAB)).toBe(PANE_SESSION);
     registry.releasePaneConversation(1, TERMINAL_TAB);
     await registry.flushBindingWrites();
-    expect(memory.findPaneSession(TERMINAL_TAB)).toBe(PANE_SESSION);
+    expect(memory.sessions.findPaneSession(TERMINAL_TAB)).toBe(PANE_SESSION);
     const restarted = registryFor(settingsFromDisk(), 3);
     expect(restarted.registry.isConversationSurfaceKnown(3, TERMINAL_TAB)).toBe(true);
     expect(restarted.registry.paneConversation(3, TERMINAL_TAB)).toBeUndefined();
@@ -421,7 +421,7 @@ describe("durable session tab bindings", () => {
 
   it("projects a direct child's tab under its parent without replacing the actual owner", async () => {
     const child = "dddddddd-1111-2222-3333-444444444444";
-    await memory.saveSession(child, [{ role: "user", content: "Child task" }]);
+    await memory.sessions.saveSession(child, [{ role: "user", content: "Child task" }]);
     const actor = { sessionId: child, directParentSessionId: MAIN_SESSION };
     const { registry, requests } = registryFor();
     await openOwnedTab(registry, requests, actor);
@@ -431,7 +431,7 @@ describe("durable session tab bindings", () => {
     ]);
     expect(registry.liveTab("tab-1")?.owner).toEqual(actor);
     await registry.flushBindingWrites();
-    await memory.deleteSession(MAIN_SESSION);
+    await memory.sessions.deleteSession(MAIN_SESSION);
     const restarted = registryFor(settingsFromDisk(), 3);
     expect(restarted.registry.sessionBindingsState(3).bindings).toEqual([{ sessionId: child, browserTabIds: [BROWSER_TAB], terminalTabIds: [] }]);
     expect(info.mock.calls.some(([message, , id]) => String(message).includes("session-missing") && id === MAIN_SESSION)).toBe(true);

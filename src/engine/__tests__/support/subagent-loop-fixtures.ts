@@ -28,8 +28,10 @@ export function makeSubagentLoopDeps(
     },
     toolRegistry,
     memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => Promise.resolve(),
+        listSessions: () => [],
+      },
     },
     ...overrides,
   } as unknown as ConversationLoopDeps;

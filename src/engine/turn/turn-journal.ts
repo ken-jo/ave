@@ -10,10 +10,10 @@ const log = createLogger("turn-journal");
 
 const DEFAULT_PARTIAL_INTERVAL_MS = 1_000;
 
-type JournalStore = Pick<
-  MemoryManager,
+type JournalStore = { sessions: Pick<
+  MemoryManager["sessions"],
   "appendSessionProgress" | "beginTurnJournal" | "writeTurnPartial" | "endTurnJournal" | "clearTurnJournal"
->;
+> };
 
 export interface TurnJournalOptions {
   partialIntervalMs?: number;
@@ -47,7 +47,7 @@ export class TurnJournal {
   async begin(): Promise<void> {
     if (this.open) return;
     try {
-      await this.store.beginTurnJournal(this.sessionId, this.startedAt);
+      await this.store.sessions.beginTurnJournal(this.sessionId, this.startedAt);
     } catch (err) {
       // Journal setup is best-effort and must not take down the turn.
       log.warn("turn journal could not open: %s", err);
@@ -89,7 +89,7 @@ export class TurnJournal {
   private async clearPartialIfStill(roundId: string): Promise<void> {
     if (!this.open || this.lastWrittenPartialId !== roundId) return;
     try {
-      await this.store.writeTurnPartial(this.sessionId, this.startedAt, undefined);
+      await this.store.sessions.writeTurnPartial(this.sessionId, this.startedAt, undefined);
       this.lastWrittenPartialId = undefined;
     } catch (err) {
       log.warn("turn partial clear failed: %s", err);
@@ -126,7 +126,7 @@ export class TurnJournal {
     this.chain = this.chain.then(async () => {
       if (!this.open) return;
       try {
-        await this.store.writeTurnPartial(this.sessionId, this.startedAt, partial);
+        await this.store.sessions.writeTurnPartial(this.sessionId, this.startedAt, partial);
         this.lastWrittenPartialId = messageId;
       } catch (err) {
         log.warn("turn partial snapshot failed: %s", err);
@@ -138,7 +138,7 @@ export class TurnJournal {
     // Read under the transcript lock so queued appends cannot overwrite a newer save.
     if (!this.open) return false;
     try {
-      await this.store.appendSessionProgress(this.sessionId, () => this.history.getMessages());
+      await this.store.sessions.appendSessionProgress(this.sessionId, () => this.history.getMessages());
       return true;
     } catch (err) {
       log.warn("turn progress append failed: %s", err);
@@ -159,8 +159,8 @@ export class TurnJournal {
     const persisted = await this.syncRows();
     this.open = false;
     try {
-      this.store.endTurnJournal(this.sessionId);
-      if (persisted) this.store.clearTurnJournal(this.sessionId);
+      this.store.sessions.endTurnJournal(this.sessionId);
+      if (persisted) this.store.sessions.clearTurnJournal(this.sessionId);
     } catch (err) {
       log.warn("turn journal could not close: %s", err);
     }

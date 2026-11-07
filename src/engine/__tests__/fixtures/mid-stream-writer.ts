@@ -68,8 +68,8 @@ toolRegistry.register(createDynamicTool({
 
 const memoryManager = new MemoryManager({ aveDir });
 // Announce only persisted chunk snapshots so the parent can kill without guessing a delay.
-const writeTurnPartial = memoryManager.writeTurnPartial.bind(memoryManager);
-memoryManager.writeTurnPartial = async (...args) => {
+const writeTurnPartial = memoryManager.sessions.writeTurnPartial.bind(memoryManager.sessions);
+memoryManager.sessions.writeTurnPartial = async (...args) => {
   await writeTurnPartial(...args);
   if (args[2]?.content.startsWith("chunk-")) process.stdout.write("CHUNK_SNAPSHOT_SAVED\n");
 };

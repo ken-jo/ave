@@ -91,7 +91,7 @@ async function boardRun() {
   manager.setMode("default");
   const memory = new MemoryManager({ aveDir: join(root, "subagent") });
   memory.load();
-  cleanup.push(async () => { memory.closeSearchIndex(); });
+  cleanup.push(async () => { memory.sessions.closeSearchIndex(); });
   const scripts: StreamEvent[][] = [
     [{ type: "text_delta", text: "Write the approved work item once." }, { type: "message_complete", stopReason: "end_turn" }],
     [{ type: "tool_call", id: "board-write", name: "board_write", input: { path } }, { type: "message_complete", stopReason: "tool_use" }],

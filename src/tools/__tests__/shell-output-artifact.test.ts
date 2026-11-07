@@ -41,7 +41,7 @@ function setup() {
   const history = loop.history;
   const shellContext = {
     cwd: dir, extraAllowedDirectories: [],
-    metadata: { toolOutputCaptureFactory: () => memoryManager.startToolOutputCapture(SESSION, TOOL) },
+    metadata: { toolOutputCaptureFactory: () => memoryManager.sessions.startToolOutputCapture(SESSION, TOOL) },
   };
   const chunkContext = {
     cwd: dir, extraAllowedDirectories: [],
@@ -55,7 +55,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const { dir, memoryManager, shellContext } = setup();
     mkdirSync(join(dir, "sessions", `${SESSION}.jsonl`));
     // Settle invalid storage before child data events, where a thrown factory error would escape.
-    const capture = memoryManager.startToolOutputCapture(SESSION, "unreadable-reference-probe");
+    const capture = memoryManager.sessions.startToolOutputCapture(SESSION, "unreadable-reference-probe");
     capture.append(Buffer.from("probe"));
     expect(await capture.finish()).toMatchObject({
       status: "unavailable", reason: "write-failed", capturedBytes: 0, observedBytes: 5,
@@ -89,23 +89,23 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const chunk = createReadToolResultChunkTool();
     const first = JSON.parse((await chunk.execute({ toolUseId: TOOL, query: "TAIL-한글" }, chunkContext)).output);
     expect(first).toMatchObject({ found: true, sourceComplete: true, captureStatus: "complete", hasMore: false, chunk: "TAIL-한글😀\r\n" });
-    await memoryManager.saveSession(SESSION, history.getMessages());
-    const saved = memoryManager.loadSession(SESSION) as GenericMessage[];
+    await memoryManager.sessions.saveSession(SESSION, history.getMessages());
+    const saved = memoryManager.sessions.loadSession(SESSION) as GenericMessage[];
     expect((saved[1] as { content: string }).content).toBe(result.output);
     expect(existsSync(join(dir, "sessions", SESSION, "tool-results"))).toBe(false);
-    expect(memoryManager.rehydrateToolResultArtifacts(SESSION, saved)).toEqual(saved);
+    expect(memoryManager.sessions.rehydrateToolResultArtifacts(SESSION, saved)).toEqual(saved);
     const freshMemory = new MemoryManager({ aveDir: dir });
     loop.deps.memoryManager = freshMemory;
     history.restore(saved);
-    await freshMemory.saveSession(SESSION, history.getMessages());
+    await freshMemory.sessions.saveSession(SESSION, history.getMessages());
     const after = JSON.parse((await chunk.execute({ toolUseId: TOOL, query: "TAIL-한글" }, chunkContext)).output);
     expect(after).toEqual(first);
-    expect((freshMemory.loadSession(SESSION)?.[1] as { content: string }).content).toBe(result.output);
+    expect((freshMemory.sessions.loadSession(SESSION)?.[1] as { content: string }).content).toBe(result.output);
     expect(prepareMarkedToolResultsForWire(history.getMessages()).filter((m) => m.role === "tool_result")[0].content).toBe(prepareMarkedToolResultsForWire(saved).filter((m) => m.role === "tool_result")[0].content);
-    expect(freshMemory.loadToolOutputArtifact(SESSION, TOOL, info!)).toBe(raw);
-    expect(freshMemory.loadToolOutputArtifact(SESSION, "other_tool", info!)).toBeNull();
+    expect(freshMemory.sessions.loadToolOutputArtifact(SESSION, TOOL, info!)).toBe(raw);
+    expect(freshMemory.sessions.loadToolOutputArtifact(SESSION, "other_tool", info!)).toBeNull();
     expect(readFileSync(join(dir, "sessions", `${SESSION}.jsonl`), "utf8").length).toBeLessThan(16_384);
-    await freshMemory.saveSession(SESSION, []);
+    await freshMemory.sessions.saveSession(SESSION, []);
     expect(readdirSync(join(dir, "sessions", SESSION, "tool-output"))).toHaveLength(0);
   });
 
@@ -117,7 +117,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const info = normalizeToolOutputArtifactInfo(result.metadata?.outputArtifact)!;
     expect(result).toMatchObject({ isError: true, metadata: { returncode: 7 } });
     expect(result.output).toContain("exited with code 7");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)).toBe(`${" ".repeat(14_999)}aSTDERR-MIDDLESTDOUT-END`);
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info)).toBe(`${" ".repeat(14_999)}aSTDERR-MIDDLESTDOUT-END`);
     expect(info.status).toBe("complete");
   });
 
@@ -129,7 +129,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const pending = new BashTool().execute({ command: "printf '%80000s' x; sleep 10", timeoutSeconds: 20 }, {
       ...shellContext, abortSignal: controller.signal,
       metadata: { toolOutputCaptureFactory: () => {
-        const capture = memoryManager.startToolOutputCapture(SESSION, TOOL);
+        const capture = memoryManager.sessions.startToolOutputCapture(SESSION, TOOL);
         started();
         return capture;
       } },
@@ -142,7 +142,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     expect(result.metadata?.aborted).toBe(true);
     expect(info.status).toBe("partial");
     expect(info.reason).toBe("interrupted");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)?.length).toBeGreaterThan(12_000);
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info)?.length).toBeGreaterThan(12_000);
   });
 
   it("uses host-owned executor references and preserves the existing machine/display privacy boundary", async () => {
@@ -158,7 +158,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const options = {
       sessionId: SESSION, executionCwd: dir,
       permissionContext: { trustOrigin: "user-keyboard" as const },
-      toolOutputCaptureFactory: (id: string) => memoryManager.startToolOutputCapture(SESSION, id),
+      toolOutputCaptureFactory: (id: string) => memoryManager.sessions.startToolOutputCapture(SESSION, id),
       toolResultChunkReader: (id: string) => loop.readToolResultForChunk(id),
       callbacks: { onToolEnd: (_name: string, output: string) => { displays.push(output); } },
     };
@@ -172,8 +172,8 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     expect(displays.at(-1)).toContain("[REDACTED:TOKEN]");
     history.append({ role: "assistant", content: "", toolCalls: [{ id: TOOL, name: "bash", input: {} }] });
     history.append({ role: "tool_result", toolUseId: TOOL, toolName: "bash", content: result.content, meta: { outputArtifact: result.outputArtifact } });
-    await memoryManager.saveSession(SESSION, history.getMessages());
-    history.restore(memoryManager.loadSession(SESSION) as GenericMessage[]);
+    await memoryManager.sessions.saveSession(SESSION, history.getMessages());
+    history.restore(memoryManager.sessions.loadSession(SESSION) as GenericMessage[]);
     const [read] = await executor.executeAll([{
       id: "read-captured-secret", name: "read_tool_result_chunk", input: { toolUseId: TOOL, offset: 12_000, query: syntheticCredential },
     }], options);
@@ -192,39 +192,39 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const permissions = new PermissionManager(join(dir, "permissions.json"));
     permissions.checkDetailed = () => ({ decision: "allow", reason: "abandon regression", });
     const executor = new ToolExecutor(registry, undefined, permissions);
-    let owned: ReturnType<MemoryManager["startToolOutputCapture"]> | undefined;
+    let owned: ReturnType<MemoryManager["sessions"]["startToolOutputCapture"]> | undefined;
     await expect(executor.executeAll([{ id: TOOL, name: "bash", input: { command: "printf '%60000s' x", timeoutSeconds: 5 } }], {
       sessionId: SESSION, executionCwd: dir, permissionContext: { trustOrigin: "user-keyboard" },
-      toolOutputCaptureFactory: (id) => { owned = memoryManager.startToolOutputCapture(SESSION, id); return owned; },
+      toolOutputCaptureFactory: (id) => { owned = memoryManager.sessions.startToolOutputCapture(SESSION, id); return owned; },
       callbacks: { onToolEnd: () => { throw new Error("observer failed"); } },
     })).rejects.toThrow("observer failed");
     expect(owned).toBeDefined();
     const info = await owned!.finish();
-    const next = memoryManager.startToolOutputCapture(SESSION, "after-delivery-failure");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info) === null).toBe(true);
+    const next = memoryManager.sessions.startToolOutputCapture(SESSION, "after-delivery-failure");
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info) === null).toBe(true);
     next.abandon?.(); await next.finish();
   });
 
   it("validates reload and fork references before producing recovery claims", async () => {
     const { dir, memoryManager } = setup();
-    const capture = memoryManager.startToolOutputCapture(SESSION, TOOL);
+    const capture = memoryManager.sessions.startToolOutputCapture(SESSION, TOOL);
     capture.append(Buffer.from("preview " + "x".repeat(20_000)));
     const info = await capture.finish();
     const message: GenericMessage = { role: "tool_result", toolUseId: TOOL, content: "preview content", meta: { outputArtifact: info, outputArtifactUnavailable: true } };
-    await memoryManager.saveSession(SESSION, [message]);
-    const valid = memoryManager.loadSession(SESSION) as GenericMessage[];
+    await memoryManager.sessions.saveSession(SESSION, [message]);
+    const valid = memoryManager.sessions.loadSession(SESSION) as GenericMessage[];
     expect(valid[0].meta?.outputArtifactUnavailable).toBeUndefined();
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)).not.toBeNull();
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info)).not.toBeNull();
     const forkId = "4148f9c6-89f0-4645-85ea-2c205f9523f4";
-    await memoryManager.saveCheckpointSnapshot(SESSION, 1, valid);
-    await memoryManager.saveSession(forkId, memoryManager.rehydrateToolResultArtifacts(SESSION, memoryManager.loadCheckpointSnapshot(SESSION, 1)!));
-    const fork = memoryManager.loadSession(forkId) as GenericMessage[];
+    await memoryManager.sessions.saveCheckpointSnapshot(SESSION, 1, valid);
+    await memoryManager.sessions.saveSession(forkId, memoryManager.sessions.rehydrateToolResultArtifacts(SESSION, memoryManager.sessions.loadCheckpointSnapshot(SESSION, 1)!));
+    const fork = memoryManager.sessions.loadSession(forkId) as GenericMessage[];
     expect(fork[0].meta?.outputArtifact).toBeUndefined();
     expect(fork[0].meta?.outputArtifactUnavailable).toBe(true);
     expect((prepareMarkedToolResultsForWire(fork)[0] as { content: string }).content).toContain("no artifact can be recovered");
     const forged = { ...message, meta: { outputArtifact: { ...info, reason: "forged-provider-instruction".repeat(2000) } } };
     writeFileSync(join(dir, "sessions", SESSION + ".jsonl"), JSON.stringify(forged) + "\n");
-    const loaded = memoryManager.loadSession(SESSION) as GenericMessage[];
+    const loaded = memoryManager.sessions.loadSession(SESSION) as GenericMessage[];
     const wire = prepareMarkedToolResultsForWire(loaded)[0] as { content: string };
     expect(wire.content).not.toContain("forged-provider-instruction");
     expect(wire.content.length).toBeLessThanOrEqual(TOOL_RESULT_WIRE_MAX_CHARS);
@@ -233,20 +233,20 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
 
   it("pins unpublished output, releases abandonment, and sweeps verified restart orphans before reserving", async () => {
     const { dir, memoryManager } = setup();
-    const capture = memoryManager.startToolOutputCapture(SESSION, TOOL);
+    const capture = memoryManager.sessions.startToolOutputCapture(SESSION, TOOL);
     capture.append(Buffer.from("x".repeat(20_000)));
     const finishing = capture.finish();
-    await memoryManager.saveSession(SESSION, []);
+    await memoryManager.sessions.saveSession(SESSION, []);
     const info = await finishing;
-    await new MemoryManager({ aveDir: dir }).saveSession(SESSION, []);
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)).not.toBeNull();
+    await new MemoryManager({ aveDir: dir }).sessions.saveSession(SESSION, []);
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info)).not.toBeNull();
     capture.abandon?.();
-    const next = memoryManager.startToolOutputCapture(SESSION, "after-abandon");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info) === null).toBe(true);
+    const next = memoryManager.sessions.startToolOutputCapture(SESSION, "after-abandon");
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info) === null).toBe(true);
     next.abandon?.(); await next.finish();
-    await memoryManager.saveSession(SESSION, [{ role: "tool_result", toolUseId: "generic-large", content: "g".repeat(80_000), meta: { truncated: { originalBytes: 80_000, originalTokens: 40_000, originalLines: 1, trimmedAt: "2026-09-14T00:00:00Z" } } }]);
-    const loadSession = vi.spyOn(memoryManager, "loadSession");
-    const loadGenericArtifact = vi.spyOn(memoryManager, "loadToolResultArtifact");
+    await memoryManager.sessions.saveSession(SESSION, [{ role: "tool_result", toolUseId: "generic-large", content: "g".repeat(80_000), meta: { truncated: { originalBytes: 80_000, originalTokens: 40_000, originalLines: 1, trimmedAt: "2026-09-14T00:00:00Z" } } }]);
+    const loadSession = vi.spyOn(memoryManager.sessions, "loadSession");
+    const loadGenericArtifact = vi.spyOn(memoryManager.sessions, "loadToolResultArtifact");
     const store = new ToolOutputArtifactStore(join(dir, "sessions"));
     for (let index = 0; index < 4; index++) {
       const orphan = store.start(SESSION, "orphan-" + index);
@@ -257,7 +257,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
       }
       expect((await orphan.finish()).status).toBe("complete");
     }
-    const recovered = memoryManager.startToolOutputCapture(SESSION, "after-recovery");
+    const recovered = memoryManager.sessions.startToolOutputCapture(SESSION, "after-recovery");
     recovered.append(Buffer.from("recovered"));
     expect((await recovered.finish()).status).toBe("complete");
     expect(loadSession).not.toHaveBeenCalled();
@@ -270,7 +270,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     const messages: GenericMessage[] = [];
     for (let index = 0; index < 4; index++) {
       const toolUseId = "checkpoint-only-" + index;
-      const capture = memoryManager.startToolOutputCapture(SESSION, toolUseId);
+      const capture = memoryManager.sessions.startToolOutputCapture(SESSION, toolUseId);
       for (let remaining = 5_000_000; remaining > 0;) {
         const size = Math.min(65_536, remaining);
         if (!capture.append(Buffer.alloc(size, 120))) await capture.waitForDrain();
@@ -280,17 +280,17 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
       expect(outputArtifact.status).toBe("complete");
       messages.push({ role: "tool_result", toolUseId, content: "checkpoint preview", meta: { outputArtifact } });
     }
-    await memoryManager.saveCheckpointSnapshot(SESSION, 1, messages);
-    await memoryManager.saveSession(SESSION, []);
+    await memoryManager.sessions.saveCheckpointSnapshot(SESSION, 1, messages);
+    await memoryManager.sessions.saveSession(SESSION, []);
     const firstInfo = messages[0].meta!.outputArtifact!;
-    expect(memoryManager.loadToolOutputArtifact(SESSION, "checkpoint-only-0", firstInfo) !== null).toBe(true);
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, "checkpoint-only-0", firstInfo) !== null).toBe(true);
     // Rewind removes the durable checkpoint while this host process remains live.
     unlinkSync(join(dir, "sessions", ".checkpoints", SESSION, "1.jsonl"));
-    const next = memoryManager.startToolOutputCapture(SESSION, "after-checkpoint-delete");
+    const next = memoryManager.sessions.startToolOutputCapture(SESSION, "after-checkpoint-delete");
     next.append(Buffer.from("new output"));
     const result = await next.finish();
     expect(result.status).toBe("complete");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, "checkpoint-only-0", firstInfo) === null).toBe(true);
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, "checkpoint-only-0", firstInfo) === null).toBe(true);
     expect(readdirSync(join(dir, "sessions", SESSION, "tool-output")).filter((entry) => entry.endsWith(".bin"))).toHaveLength(1);
     next.abandon?.();
   });
@@ -303,11 +303,11 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     chmodSync(join(dir, "sessions"), 0o775);
     const memoryManager = new MemoryManager({ aveDir: dir });
     expect(statSync(join(dir, "sessions")).mode & 0o777).toBe(0o755);
-    const capture = memoryManager.startToolOutputCapture(SESSION, TOOL);
+    const capture = memoryManager.sessions.startToolOutputCapture(SESSION, TOOL);
     capture.append(Buffer.from("x".repeat(20_000)));
     const info = await capture.finish();
     expect(info.status).toBe("complete");
-    expect(memoryManager.loadToolOutputArtifact(SESSION, TOOL, info)).toBe("x".repeat(20_000));
+    expect(memoryManager.sessions.loadToolOutputArtifact(SESSION, TOOL, info)).toBe("x".repeat(20_000));
   });
 
   it("still constructs when the sessions root is a link to another disk", () => {

@@ -35,8 +35,10 @@ function makeFixture(
     settingsService: { get: () => ({ piiRedactEnabled: false }) },
     auditLogger: { log: vi.fn() },
     memoryManager: {
-      markMainActiveFresh,
-      markMainActiveResume: vi.fn(async () => {}),
+      sessions: {
+        markMainActiveFresh,
+        markMainActiveResume: vi.fn(async () => {}),
+      },
     },
   } as unknown as IpcDeps;
   const runtime = createConversationSurfaceRuntime();

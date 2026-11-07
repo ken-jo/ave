@@ -3,7 +3,7 @@ import { promises as fsPromises, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createLogger } from "../lib/logger.js";
-import type { SessionKind } from "./memory-manager.js";
+import type { SessionKind } from "../shared/session-lookup.js";
 import type BetterSqlite3 from "better-sqlite3";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 

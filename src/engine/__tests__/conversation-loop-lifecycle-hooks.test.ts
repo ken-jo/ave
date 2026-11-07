@@ -64,7 +64,12 @@ function buildLoop(
     systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn(),
     },
     toolRegistry,
-    memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [], loadSessionMetadata: () => null,
+    memoryManager: {
+      sessions: {
+        saveSession: () => Promise.resolve(),
+        listSessions: () => [],
+        loadSessionMetadata: () => null,
+      },
     },
     disableSessionPersistence: true,
     ...(scriptHookManager ? { scriptHookManager } : {}),

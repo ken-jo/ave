@@ -17,9 +17,11 @@ import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 describe("PostTurnHookChain title log", () => {
   it("logs the session id and title length, not the title", async () => {
     const memoryManager = {
-      saveSession: vi.fn(),
-      saveSessionMetadata: vi.fn(),
-      loadSessionMetadata: vi.fn().mockReturnValue(null),
+      sessions: {
+        saveSession: vi.fn(),
+        saveSessionMetadata: vi.fn(),
+        loadSessionMetadata: vi.fn().mockReturnValue(null),
+      },
     } as unknown as MemoryManager;
     const settingsService = {
       get: vi.fn((key: string) => (key === "llm" ? fakeLlmSettings() : { systemPrompt: "", autoCompact: false })),

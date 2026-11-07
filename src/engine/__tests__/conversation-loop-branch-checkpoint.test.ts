@@ -14,8 +14,10 @@ function makeLoop(
 describe("ConversationLoop.branchFromCheckpoint invalid cases", () => {
   it("throws when the requested checkpoint number is not in session metadata", async () => {
     const memoryManager = {
-      loadSessionMetadata: vi.fn(() => ({ checkpoints: [] })),
-      loadCheckpointSnapshot: vi.fn(() => null),
+      sessions: {
+        loadSessionMetadata: vi.fn(() => ({ checkpoints: [] })),
+        loadCheckpointSnapshot: vi.fn(() => null),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = makeLoop(memoryManager);
 
@@ -24,10 +26,12 @@ describe("ConversationLoop.branchFromCheckpoint invalid cases", () => {
 
   it("throws when the checkpoint exists but no pre-compact snapshot was persisted", async () => {
     const memoryManager = {
-      loadSessionMetadata: vi.fn(() => ({
-        checkpoints: [{ compactNum: 3, messageCountAtTrigger: 2 }],
-      })),
-      loadCheckpointSnapshot: vi.fn(() => null),
+      sessions: {
+        loadSessionMetadata: vi.fn(() => ({
+          checkpoints: [{ compactNum: 3, messageCountAtTrigger: 2 }],
+        })),
+        loadCheckpointSnapshot: vi.fn(() => null),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = makeLoop(memoryManager);
 
@@ -36,10 +40,12 @@ describe("ConversationLoop.branchFromCheckpoint invalid cases", () => {
 
   it("throws when the snapshot is shorter than the checkpoint's messageCountAtTrigger", async () => {
     const memoryManager = {
-      loadSessionMetadata: vi.fn(() => ({
-        checkpoints: [{ compactNum: 1, messageCountAtTrigger: 4 }],
-      })),
-      loadCheckpointSnapshot: vi.fn(() => []),
+      sessions: {
+        loadSessionMetadata: vi.fn(() => ({
+          checkpoints: [{ compactNum: 1, messageCountAtTrigger: 4 }],
+        })),
+        loadCheckpointSnapshot: vi.fn(() => []),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const loop = makeLoop(memoryManager);
 
@@ -55,7 +61,7 @@ describe("ConversationLoop.branchFromCheckpoint summary", () => {
       { role: "assistant", content: "auditing" },
       { role: "user", content: "continue" },
     ];
-    const base = makeConversationLoopMemoryManager([], SOURCE) as unknown as Record<string, unknown>;
+    const base = makeConversationLoopMemoryManager([], SOURCE) as unknown as Record<string, unknown> & { sessions: Record<string, unknown> };
     const metadata = new Map<string, Record<string, unknown>>([[SOURCE, {
       checkpoints: [{
         id: "cp-2", compactNum: 2, messageCountAtTrigger: 3, trigger: "manual",
@@ -64,10 +70,13 @@ describe("ConversationLoop.branchFromCheckpoint summary", () => {
     }]]);
     const memoryManager = {
       ...base,
-      loadCheckpointSnapshot: vi.fn(() => snapshot),
-      rehydrateToolResultArtifacts: vi.fn((_id: string, messages: GenericMessage[]) => messages),
-      loadSessionMetadata: vi.fn((id: string) => metadata.get(id) ?? null),
-      saveSessionMetadata: vi.fn(async (id: string, meta: Record<string, unknown>) => { metadata.set(id, meta); }),
+      sessions: {
+        ...base.sessions,
+        loadCheckpointSnapshot: vi.fn(() => snapshot),
+        rehydrateToolResultArtifacts: vi.fn((_id: string, messages: GenericMessage[]) => messages),
+        loadSessionMetadata: vi.fn((id: string) => metadata.get(id) ?? null),
+        saveSessionMetadata: vi.fn(async (id: string, meta: Record<string, unknown>) => { metadata.set(id, meta); }),
+      },
     } as unknown as ConversationLoopDeps["memoryManager"];
     const requests: StreamTurnParams[] = [];
     const loop = makeLoop(memoryManager);

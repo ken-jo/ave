@@ -144,11 +144,11 @@ export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, ho
   memoryManager.startPersistentContextWatcher();
   registerShutdownHook("memory-manager", () => {
     memoryManager.stopPersistentContextWatcher();
-    memoryManager.closeSearchIndex();
+    memoryManager.sessions.closeSearchIndex();
   });
   log.info("boot: memory loaded from %s", memoryManager.getDir());
   // Recover corrupt or missing search indexes from JSONL; never scan linearly as a fallback.
-  await memoryManager.verifyOrRebuildSearchIndex().catch((err: unknown) => {
+  await memoryManager.sessions.verifyOrRebuildSearchIndex().catch((err: unknown) => {
     log.warn("boot: search index verify/rebuild failed: %s", (err as Error).message,
     );
   });

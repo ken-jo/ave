@@ -66,7 +66,7 @@ function inputRejectingTool(message: string) {
 }
 
 function persisted(memoryManager: MemoryManager): GenericMessage[] {
-  return (memoryManager.loadSession(SESSION_ID) ?? []) as GenericMessage[];
+  return (memoryManager.sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
 }
 
 async function withTmpMemory(

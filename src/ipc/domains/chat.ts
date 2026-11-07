@@ -24,7 +24,8 @@ import { formatAppMessageEnvelope, isAppMessageOrigin } from "../../shared/mcp-a
 import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../shared/staged-origins.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
-import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
+import { MAX_SESSION_FILE_BYTES } from "../../memory/session-repository.js";
 import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
@@ -487,7 +488,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (pending.targetSessionId !== sessionId || loop.getSessionId() !== sessionId) return undefined;
     if (loop.getSessionEpoch() !== pending.sourceEpoch + 1) return undefined;
     // The target must still be the fork of the session this branch came from.
-    if (memoryManager.loadSessionMetadata(sessionId)?.parentSessionId !== pending.sourceSessionId) return undefined;
+    if (memoryManager.sessions.loadSessionMetadata(sessionId)?.parentSessionId !== pending.sourceSessionId) return undefined;
     if (Date.now() - pending.issuedAt > BRANCH_CONTINUATION_TTL_MS) return undefined;
     return pending.intent;
   };
@@ -913,7 +914,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         return await mainGroup.loop.runSessionTransition("primary-chat-group-release", async (lease) => {
           await mainGroup.loop.newConversation("main", undefined, lease);
           registerGroupApprovalOwner(mainGroup);
-          await memoryManager.markMainActiveFresh();
+          await memoryManager.sessions.markMainActiveFresh();
           return { ok: true, released: true };
         });
       } finally {
@@ -1155,13 +1156,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
       registerGroupApprovalOwner(group);
       // Persist project identity only for explicit selections; default-directory access is not a project label.
       if (!project.isDefault && (project.projectRoot || project.projectName)) {
-        await memoryManager.saveSessionMetadata(conversationLoop.getSessionId(), {
+        await memoryManager.sessions.saveSessionMetadata(conversationLoop.getSessionId(), {
           sessionKind: "main",
           ...(project.projectRoot ? { projectRoot: project.projectRoot } : {}),
           ...(project.projectName ? { projectName: project.projectName } : {}),
         });
       }
-      if (isPrimaryGroup(group)) await memoryManager.markMainActiveFresh();
+      if (isPrimaryGroup(group)) await memoryManager.sessions.markMainActiveFresh();
       return { ok: true as const };
     });
     return mutation ?? { ok: false as const, error: STREAMING_ACTIVE };
@@ -1229,7 +1230,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const result = await conversationLoop.resetAndResume(sessionId);
       if (result.ok) registerGroupApprovalOwner(group);
       if (result.ok && conversationLoop.getSessionKind() === "main" && isPrimaryGroup(group)) {
-        await memoryManager.markMainActiveResume(sessionId).catch((err: unknown) => {
+        await memoryManager.sessions.markMainActiveResume(sessionId).catch((err: unknown) => {
           log.warn("session-resume markMainActiveResume failed: %s", (err as Error).message);
         });
       }
@@ -1254,7 +1255,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.chat.mainActiveState, e);
       return null;
     }
-    return memoryManager.loadMainActiveSessionState();
+    return memoryManager.sessions.loadMainActiveSessionState();
   });
 
   ipcMain.handle(CHANNELS.chat.sessionHistory, (e, sessionId: string) => {
@@ -1362,8 +1363,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       conversationLoop.getHistory().truncate(historyIndex);
       const remaining = conversationLoop.getHistory().getMessages() as GenericMessage[];
       // Drop discarded checkpoint sidecars before saving or load-time recovery may resurrect removed messages.
-      await memoryManager.pruneCheckpointsDiscardedByRewind(sessionId, discarded);
-      await memoryManager.saveSession(sessionId, remaining);
+      await memoryManager.sessions.pruneCheckpointsDiscardedByRewind(sessionId, discarded);
+      await memoryManager.sessions.saveSession(sessionId, remaining);
       return {
         ok: true,
         text: restorable.text,
@@ -1397,14 +1398,14 @@ export function registerChatHandlers(deps: IpcDeps): void {
         );
       }
       if (current.length > 0) {
-        await memoryManager.saveSession(conversationLoop.getSessionId(), current);
+        await memoryManager.sessions.saveSession(conversationLoop.getSessionId(), current);
       }
       const newId = createDlpSafeUuid();
       const sourceSessionId = conversationLoop.getSessionId();
-      const forkSlice = memoryManager.rehydrateToolResultArtifacts(sourceSessionId, slice) as GenericMessage[];
-      await memoryManager.saveSession(newId, forkSlice);
-      const currentMeta = memoryManager.loadSessionMetadata(sourceSessionId);
-      await memoryManager.saveSessionMetadata(newId, {
+      const forkSlice = memoryManager.sessions.rehydrateToolResultArtifacts(sourceSessionId, slice) as GenericMessage[];
+      await memoryManager.sessions.saveSession(newId, forkSlice);
+      const currentMeta = memoryManager.sessions.loadSessionMetadata(sourceSessionId);
+      await memoryManager.sessions.saveSessionMetadata(newId, {
         sessionKind: currentMeta?.sessionKind ?? conversationLoop.getSessionKind(),
         ...(currentMeta?.routineId ? { routineId: currentMeta.routineId } : {}),
         ...(currentMeta?.routineTitle ? { routineTitle: currentMeta.routineTitle } : {}),
@@ -1416,7 +1417,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const loaded = await conversationLoop.loadSession(newId);
       if (loaded) registerGroupApprovalOwner(group);
       if (loaded && conversationLoop.getSessionKind() === "main" && isPrimaryGroup(group)) {
-        await memoryManager.markMainActiveResume(newId).catch((err: unknown) => {
+        await memoryManager.sessions.markMainActiveResume(newId).catch((err: unknown) => {
           log.warn("chat:fork markMainActiveResume failed: %s", (err as Error).message);
         });
       }
@@ -1516,7 +1517,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     let messages: GenericMessage[];
     if (typeof targetSessionId === "string" && targetSessionId !== loadedSessionId) {
       if (!isValidSessionId(targetSessionId)) return { ok: false, error: "invalid-session" };
-      const stored = memoryManager.loadSession(targetSessionId);
+      const stored = memoryManager.sessions.loadSession(targetSessionId);
       // A missing export target must fail instead of exporting another conversation under its name.
       if (!Array.isArray(stored)) return { ok: false, error: "not-found" };
       sessionId = targetSessionId;
@@ -1578,8 +1579,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       unread?: unknown;
     };
     if (!isValidSessionId(raw.sessionId)) return { ok: false, error: "invalid-session" };
-    if (!memoryManager.hasSessionMetadataFile(raw.sessionId)
-      && !Array.isArray(memoryManager.loadSession(raw.sessionId))) {
+    if (!memoryManager.sessions.hasSessionMetadataFile(raw.sessionId)
+      && !Array.isArray(memoryManager.sessions.loadSession(raw.sessionId))) {
       return { ok: false, error: "not-found" };
     }
     const fields: { title?: string; archivedAt?: string | null; unreadSince?: string | null } = {};
@@ -1604,7 +1605,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       fields.unreadSince = raw.unread ? now : null;
     }
     if (Object.keys(fields).length === 0) return { ok: false, error: "no-fields" };
-    await memoryManager.updateSessionRowFields(raw.sessionId, fields);
+    await memoryManager.sessions.updateSessionRowFields(raw.sessionId, fields);
     return { ok: true };
   });
 
@@ -1630,7 +1631,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
-      await memoryManager.deleteSession(sessionId);
+      await memoryManager.sessions.deleteSession(sessionId);
       // Schedules connected to it become 대화 없음: they never run until the user relinks, unlinks or deletes them. The chat is already
       // deleted, so a failure here is not a delete failure; a fire still finds the chat gone and marks the item then.
       try {
@@ -1702,7 +1703,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
 
     const newSessionId = createDlpSafeUuid();
-    await memoryManager.saveImportedSession(newSessionId, validated.messages);
+    await memoryManager.sessions.saveImportedSession(newSessionId, validated.messages);
     auditLogger.log({
       timestamp: new Date().toISOString(),
       sessionId: newSessionId,
@@ -1777,8 +1778,8 @@ export function registerChatHandlers(deps: IpcDeps): void {
       loadSessionMetadata: (sessionId: string) => runner.getPersistedSessionMetadata(sessionId),
     } : undefined;
     return {
-      main: memoryManager,
-      ...(deps.sideChatMemoryManager ? { "side-chat": deps.sideChatMemoryManager } : {}),
+      main: memoryManager.sessions,
+      ...(deps.sideChatMemoryManager ? { "side-chat": deps.sideChatMemoryManager.sessions } : {}),
       ...(subagent ? { subagent } : {}),
     };
   };
@@ -1866,13 +1867,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsList, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
-    return memoryManager.listSessionEntries(50, project.options);
+    return memoryManager.sessions.listSessionEntries(50, project.options);
   });
   ipcMain.handle(CHANNELS.memory.sessionsSearch, (e, query: string, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.sessionsSearch, e); return UNAUTHORIZED_FRAME; }
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return [];
-    return memoryManager.searchSessions(query, project.options);
+    return memoryManager.sessions.searchSessions(query, project.options);
   });
   ipcMain.handle(CHANNELS.memory.agentsMdGet, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.agentsMdGet, e); return UNAUTHORIZED_FRAME; }
@@ -2001,7 +2002,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const content = msg.content;
       if (typeof content !== "string") return null;
       const artifact = isToolResultStubContent(content) && !msg.meta?.artifactUnavailable
-        ? memoryManager.loadToolResultArtifact(sessionId, toolUseId)
+        ? memoryManager.sessions.loadToolResultArtifact(sessionId, toolUseId)
         : null;
       if (!artifact && msg.meta?.compactedAt === undefined && msg.meta?.truncated === undefined) return null;
       if (msg.meta?.serializedStub === true && isToolResultStubContent(content) && !artifact) return null;
@@ -2037,7 +2038,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ? p.childSessionId
         : undefined;
       if (!childSessionId) return { ok: false, error: "invalid-child-session-id" };
-      const messages = memoryManager.rehydrateToolResultArtifacts(
+      const messages = memoryManager.sessions.rehydrateToolResultArtifacts(
         originSessionId,
         group.loop.getHistory().getMessages(),
       ) as GenericMessage[];

@@ -33,10 +33,12 @@ describe("ave:chat:sessionDelete and connected schedules", () => {
       conversationSurfaceRuntime: createConversationSurfaceRuntime(),
       settingsService: { get: vi.fn((key?: string) => (key === "llm" ? fakeLlmSettings() : {})), patch: vi.fn(async () => undefined) },
       memoryManager: {
-        loadMainActiveSessionState: vi.fn(() => null),
-        markMainActiveFresh: vi.fn(async () => undefined),
-        saveSessionMetadata: vi.fn(async () => undefined),
-        deleteSession,
+        sessions: {
+          loadMainActiveSessionState: vi.fn(() => null),
+          markMainActiveFresh: vi.fn(async () => undefined),
+          saveSessionMetadata: vi.fn(async () => undefined),
+          deleteSession,
+        },
       },
       routinesStore: { markOrphaned },
       auditLogger: { log: vi.fn() },

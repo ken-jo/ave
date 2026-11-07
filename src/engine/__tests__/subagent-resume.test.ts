@@ -136,7 +136,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   afterEach(async () => {
     for (const gate of approvalGates) gate.disposeAll();
     await Promise.all(loopAuditLoggers.map((logger) => logger.close()));
-    for (const store of memoryStores) store.closeSearchIndex();
+    for (const store of memoryStores) store.sessions.closeSearchIndex();
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = prevAveHome;
     await cleanupTmpDir(tmpHome);
@@ -421,7 +421,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
 
     expect(spawned.incomplete).toBe(true);
-    expect(subStore.loadSessionMetadata(spawned.childSessionId)).toMatchObject({
+    expect(subStore.sessions.loadSessionMetadata(spawned.childSessionId)).toMatchObject({
       sessionKind: "subagent",
       projectRoot: explicitRoot,
       projectName: "agent-connector",
@@ -495,7 +495,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         instructions: "work in the default workspace",
         toolScope: exactToolScope(["noop"]),
       });
-      const metadata = subStore.loadSessionMetadata(spawned.childSessionId);
+      const metadata = subStore.sessions.loadSessionMetadata(spawned.childSessionId);
       expect(metadata?.sessionKind).toBe("subagent");
       expect(metadata?.projectRoot).toBeUndefined();
       expect(metadata?.projectName).toBeUndefined();
@@ -510,7 +510,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const runner = makeRunner(toolRegistry, subStore);
     const originSessionId = "092d865f-192a-48ae-8603-8a838c39d4dc";
     const childSessionId = "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
-    await subStore.saveSessionMetadata(childSessionId, { sessionKind: "subagent", originSessionId });
+    await subStore.sessions.saveSessionMetadata(childSessionId, { sessionKind: "subagent", originSessionId });
 
     expect(runner.isPersistedSpawnOfOrigin(originSessionId, childSessionId)).toBe(true);
     expect(runner.getPersistedTranscript({ originSessionId, childSessionId })).toEqual({
@@ -533,7 +533,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         spawnId: "spawn-1",
       });
       expect(result.ok).toBe(true);
-      const meta = subStore.loadSessionMetadata(result.childSessionId);
+      const meta = subStore.sessions.loadSessionMetadata(result.childSessionId);
       expect(meta).toMatchObject({
         sessionKind: "subagent",
         originSessionId: "092d865f-192a-48ae-8603-8a838c39d4dc",
@@ -598,7 +598,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         ok: false,
         error: "sub-agent-transcript-not-found",
       });
-      await subStore.saveSessionMetadata(result.childSessionId, {
+      await subStore.sessions.saveSessionMetadata(result.childSessionId, {
         sessionKind: "subagent",
         sourceTools: ["noop"],
         resumeCount: 0,
@@ -690,8 +690,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         originSessionId,
       });
       restore();
-      const meta = subStore.loadSessionMetadata(spawn.childSessionId)!;
-      await subStore.saveSessionMetadata(spawn.childSessionId, {
+      const meta = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
+      await subStore.sessions.saveSessionMetadata(spawn.childSessionId, {
         ...meta,
         subAgentTaskState: taskState,
         subAgentSuspensionReason: undefined,
@@ -742,7 +742,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         ).not.toHaveProperty("childSessionId");
         expect(deliverToParent).not.toHaveBeenCalled();
         expect(
-          subStore.loadSessionMetadata(spawn.childSessionId),
+          subStore.sessions.loadSessionMetadata(spawn.childSessionId),
         ).toMatchObject({
           subAgentTaskState: taskState,
           subAgentSuspensionReason: undefined,
@@ -778,7 +778,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(spawn.ok).toBe(true);
     const resumeId = spawn.childSessionId;
 
-    const persisted = subStore.loadSession(resumeId);
+    const persisted = subStore.sessions.loadSession(resumeId);
     expect(persisted).not.toBeNull();
     const spawnHistoryLen = persisted!.length;
     expect(spawnHistoryLen).toBeGreaterThan(1);
@@ -840,7 +840,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const resumeId = spawn.childSessionId;
-    expect(subStore.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
+    expect(subStore.sessions.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
       "read_only",
       "agent_send",
     ]);
@@ -918,7 +918,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const resumeId = spawn.childSessionId;
-    expect(subStore.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
+    expect(subStore.sessions.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
       "noop",
     ]);
 
@@ -961,10 +961,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
     const resumeId = spawn.childSessionId;
     // Exercise metadata that predates separate resume counters.
-    const legacyMeta = { ...subStore.loadSessionMetadata(resumeId)! };
+    const legacyMeta = { ...subStore.sessions.loadSessionMetadata(resumeId)! };
     delete legacyMeta.budgetResumeCount;
     delete legacyMeta.questionAnswerCount;
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...legacyMeta,
       resumeCount: 3,
     });
@@ -1021,7 +1021,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         ok: false,
         error: expect.stringContaining("question delivery was not staged"),
       });
-      expect(subStore.loadSessionMetadata(result.childSessionId)).toMatchObject(
+      expect(subStore.sessions.loadSessionMetadata(result.childSessionId)).toMatchObject(
         {
           subAgentTaskState: "TASK_STATE_FAILED",
           subAgentSuspensionReason: undefined,
@@ -1040,14 +1040,14 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const originSessionId = "5ab183b7-6d7e-41b4-83ee-d927e6f0a265";
     const senderChildSessionId = "sub-489dea8f-03ff43a1-33a7-48a2-87b9-bc70f76ed0d5";
     const recipientChildSessionId = "sub-eea1ef20-b91b2ca0-bf65-4c09-88ec-b9ea9dc3f76f";
-    await subStore.saveSessionMetadata(senderChildSessionId, {
+    await subStore.sessions.saveSessionMetadata(senderChildSessionId, {
       sessionKind: "subagent",
       originSessionId,
       subAgentTitle: "sender",
       sourceTools: ["noop"],
       subAgentTaskState: "TASK_STATE_WORKING",
     });
-    await subStore.saveSessionMetadata(recipientChildSessionId, {
+    await subStore.sessions.saveSessionMetadata(recipientChildSessionId, {
       sessionKind: "subagent",
       originSessionId,
       subAgentTitle: "recipient",
@@ -1145,8 +1145,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       true,
     );
 
-    await subStore.saveSessionMetadata(recipientChildSessionId, {
-      ...subStore.loadSessionMetadata(recipientChildSessionId)!,
+    await subStore.sessions.saveSessionMetadata(recipientChildSessionId, {
+      ...subStore.sessions.loadSessionMetadata(recipientChildSessionId)!,
       originSessionId: "bebd469f-b3d4-42a8-8340-f0a27e66162b",
     });
     await expect(
@@ -1165,8 +1165,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const activeChild = "sub-56943b9c-15b02ecc-849c-4c98-8749-233a8c151e73";
     const terminalChild = "sub-900b6b39-477e3848-f9a7-48c0-88f2-9cce18e71165";
 
-    await subStore.saveSession(activeChild, []);
-    await subStore.saveSessionMetadata(activeChild, {
+    await subStore.sessions.saveSession(activeChild, []);
+    await subStore.sessions.saveSessionMetadata(activeChild, {
       sessionKind: "subagent",
       originSessionId: activeOrigin,
       subAgentTitle: "persisted active",
@@ -1176,8 +1176,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "budget",
     });
-    await subStore.saveSession(terminalChild, []);
-    await subStore.saveSessionMetadata(terminalChild, {
+    await subStore.sessions.saveSession(terminalChild, []);
+    await subStore.sessions.saveSessionMetadata(terminalChild, {
       sessionKind: "subagent",
       originSessionId: terminalOrigin,
       subAgentTitle: "persisted terminal",
@@ -1354,7 +1354,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(directoriesAtRuns[0]).toContain(fallbackRoot);
       expect(directoriesAtRuns[0]).not.toContain(removedRoot);
       expect(
-        subStore.loadSessionMetadata(spawned.childSessionId),
+        subStore.sessions.loadSessionMetadata(spawned.childSessionId),
       ).toMatchObject({
         projectRoot: undefined,
         subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
@@ -1371,7 +1371,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(directoriesAtRuns[1]).toContain(fallbackRoot);
       expect(directoriesAtRuns[1]).not.toContain(removedRoot);
       expect(
-        subStore.loadSessionMetadata(spawned.childSessionId),
+        subStore.sessions.loadSessionMetadata(spawned.childSessionId),
       ).toMatchObject({
         projectRoot: undefined,
         subAgentTaskState: "TASK_STATE_COMPLETED",
@@ -1397,7 +1397,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const peekRecipientMailbox = vi.fn(
       async (recipientChildSessionId: string) => {
         expect(
-          subStore.loadSessionMetadata(recipientChildSessionId)
+          subStore.sessions.loadSessionMetadata(recipientChildSessionId)
             ?.subAgentTaskState,
         ).toBe("TASK_STATE_INPUT_REQUIRED");
         return mailboxEntry ? [mailboxEntry] : [];
@@ -1409,7 +1409,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         entries: readonly A2AAgentMailboxEntry[],
       ) => {
         expect(
-          subStore.loadSessionMetadata(recipientChildSessionId)
+          subStore.sessions.loadSessionMetadata(recipientChildSessionId)
             ?.subAgentTaskState,
         ).toBe("TASK_STATE_COMPLETED");
         return entries.length;
@@ -1435,8 +1435,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     mailboxEntry = makeAgentMailboxEntry(spawned.childSessionId);
-    const waitingMeta = subStore.loadSessionMetadata(spawned.childSessionId)!;
-    await subStore.saveSessionMetadata(spawned.childSessionId, {
+    const waitingMeta = subStore.sessions.loadSessionMetadata(spawned.childSessionId)!;
+    await subStore.sessions.saveSessionMetadata(spawned.childSessionId, {
       ...waitingMeta,
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "question",
@@ -1496,7 +1496,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       [mailboxEntry],
     );
     expect(
-      JSON.stringify(subStore.loadSession(spawned.childSessionId)),
+      JSON.stringify(subStore.sessions.loadSession(spawned.childSessionId)),
     ).toContain("idle sibling guidance");
   });
 
@@ -1573,14 +1573,14 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       maxRounds: 1,
     });
     restore();
-    const meta = subStore.loadSessionMetadata(spawn.childSessionId)!;
-    await subStore.saveSessionMetadata(spawn.childSessionId, {
+    const meta = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
+    await subStore.sessions.saveSessionMetadata(spawn.childSessionId, {
       ...meta,
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "question",
       subAgentSuspensionPrompt: "Which option?",
     });
-    const waiting = subStore.loadSessionMetadata(spawn.childSessionId)!;
+    const waiting = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
 
     const guard = new ScriptedProvider(endTurnScript("MUST-NOT-RUN"));
     restore = patchProvider(guard);
@@ -1597,7 +1597,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
           error: expect.stringContaining("question answer must be non-empty"),
         });
         expect(
-          subStore.loadSessionMetadata(spawn.childSessionId),
+          subStore.sessions.loadSessionMetadata(spawn.childSessionId),
         ).toMatchObject({
           subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
           subAgentSuspensionReason: "question",
@@ -1687,8 +1687,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       originSessionId,
     });
     restore();
-    const meta = subStore.loadSessionMetadata(spawn.childSessionId)!;
-    await subStore.saveSessionMetadata(spawn.childSessionId, {
+    const meta = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
+    await subStore.sessions.saveSessionMetadata(spawn.childSessionId, {
       ...meta,
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "question",
@@ -1761,8 +1761,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
 
-    const meta = subStore.loadSessionMetadata(spawn.childSessionId)!;
-    await subStore.saveSessionMetadata(spawn.childSessionId, {
+    const meta = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
+    await subStore.sessions.saveSessionMetadata(spawn.childSessionId, {
       ...meta,
       budgetResumeCount: 3,
       questionAnswerCount: 4,
@@ -1790,7 +1790,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
 
-    const updated = subStore.loadSessionMetadata(spawn.childSessionId)!;
+    const updated = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
     expect(updated.budgetResumeCount).toBe(3);
     expect(updated.resumeCount).toBe(3);
     expect(updated.questionAnswerCount).toBe(5);
@@ -1820,7 +1820,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         originSessionId,
       });
       restore();
-      const before = subStore.loadSessionMetadata(spawn.childSessionId)!;
+      const before = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
 
       restore = patchProvider(cleanSpawnProvider());
       const runTurnSpy = vi
@@ -1853,7 +1853,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
           error: `sub-agent resume stopped with ${stopReason}`,
         });
         expect(
-          subStore.loadSessionMetadata(spawn.childSessionId),
+          subStore.sessions.loadSessionMetadata(spawn.childSessionId),
         ).toMatchObject({
           budgetResumeCount: before.budgetResumeCount,
           questionAnswerCount: before.questionAnswerCount,
@@ -1879,8 +1879,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const resumeId = spawn.childSessionId;
-    const meta = subStore.loadSessionMetadata(resumeId)!;
-    await subStore.saveSessionMetadata(resumeId, {
+    const meta = subStore.sessions.loadSessionMetadata(resumeId)!;
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...meta,
       cumulativeRounds: 240,
     });
@@ -1910,8 +1910,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
 
     const resumeId = spawn.childSessionId;
-    const meta = subStore.loadSessionMetadata(resumeId)!;
-    await subStore.saveSessionMetadata(resumeId, {
+    const meta = subStore.sessions.loadSessionMetadata(resumeId)!;
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...meta,
       budgetResumeCount: 0,
       questionAnswerCount: 4,
@@ -1953,7 +1953,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(waiting.suspension).toMatchObject({ reason: "budget", resumeId });
       expect(observedMaxRounds).toBe(1);
 
-      const atCeiling = subStore.loadSessionMetadata(resumeId)!;
+      const atCeiling = subStore.sessions.loadSessionMetadata(resumeId)!;
       expect(atCeiling.cumulativeRounds).toBe(240);
       expect(atCeiling.budgetResumeCount).toBe(1);
       expect(atCeiling.resumeCount).toBe(1);
@@ -1968,7 +1968,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(refused.resumeRefusal).toBe("exhausted");
       expect(refused.turnCount).toBe(0);
       expect(runTurnSpy).toHaveBeenCalledTimes(1);
-      expect(subStore.loadSessionMetadata(resumeId)?.cumulativeRounds).toBe(
+      expect(subStore.sessions.loadSessionMetadata(resumeId)?.cumulativeRounds).toBe(
         240,
       );
     } finally {
@@ -2149,9 +2149,9 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
 
     const resumeId = spawn.childSessionId;
-    const meta = subStore.loadSessionMetadata(resumeId)!;
+    const meta = subStore.sessions.loadSessionMetadata(resumeId)!;
     // The cumulative ceiling scales with the configured budget rather than a fixed default.
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...meta,
       budgetResumeCount: 0,
       questionAnswerCount: 0,
@@ -2175,8 +2175,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(resumed.ok).toBe(true);
       expect(runTurnSpy).toHaveBeenCalledTimes(1);
 
-      const afterRun = subStore.loadSessionMetadata(resumeId)!;
-      await subStore.saveSessionMetadata(resumeId, {
+      const afterRun = subStore.sessions.loadSessionMetadata(resumeId)!;
+      await subStore.sessions.saveSessionMetadata(resumeId, {
         ...afterRun,
         cumulativeRounds: 2000,
       });
@@ -2228,7 +2228,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(spawn.ok).toBe(false);
     expect(spawn.turnCount).toBe(1);
     expect(spawn.error).toContain("partial spawn failure");
-    expect(subStore.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
+    expect(subStore.sessions.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
       budgetResumeCount: 0,
       questionAnswerCount: 0,
       resumeCount: 0,
@@ -2249,8 +2249,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
 
     const resumeId = spawn.childSessionId;
-    const meta = subStore.loadSessionMetadata(resumeId)!;
-    await subStore.saveSessionMetadata(resumeId, {
+    const meta = subStore.sessions.loadSessionMetadata(resumeId)!;
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...meta,
       budgetResumeCount: 1,
       questionAnswerCount: 7,
@@ -2296,7 +2296,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(resumed.ok).toBe(false);
     expect(resumed.turnCount).toBe(1);
     expect(resumed.error).toContain("partial resume failure");
-    expect(subStore.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(subStore.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       budgetResumeCount: 1,
       questionAnswerCount: 7,
       resumeCount: 1,
@@ -2315,7 +2315,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const resumeId = spawn.childSessionId;
-    expect(subStore.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(subStore.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "budget",
     });
@@ -2336,7 +2336,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       },
     };
     restore = patchProvider(slowProvider);
-    const saveSpy = vi.spyOn(subStore, "saveSessionMetadata");
+    const saveSpy = vi.spyOn(subStore.sessions, "saveSessionMetadata");
     try {
       const attempts = [
         runner.resume(resumeId, "continue A", "concurrent"),
@@ -2364,7 +2364,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       saveSpy.mockRestore();
       restore();
     }
-    expect(subStore.loadSessionMetadata(resumeId)).toMatchObject({
+    expect(subStore.sessions.loadSessionMetadata(resumeId)).toMatchObject({
       resumeCount: 1,
       budgetResumeCount: 1,
       subAgentTaskState: "TASK_STATE_COMPLETED",
@@ -2387,7 +2387,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(retry.resumeRefusal).toBe("invalid");
       expect(terminalGuard.turnsServed).toBe(0);
       expect(onLinked).not.toHaveBeenCalled();
-      expect(subStore.loadSessionMetadata(resumeId)).toMatchObject({
+      expect(subStore.sessions.loadSessionMetadata(resumeId)).toMatchObject({
         subAgentTaskState: "TASK_STATE_COMPLETED",
         subAgentSuspensionReason: undefined,
       });
@@ -2597,11 +2597,11 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
 
-    const originalSave = subStore.saveSessionMetadata.bind(subStore);
+    const originalSave = subStore.sessions.saveSessionMetadata.bind(subStore.sessions);
     let saveCount = 0;
     const savedStates: unknown[] = [];
     const saveSpy = vi
-      .spyOn(subStore, "saveSessionMetadata")
+      .spyOn(subStore.sessions, "saveSessionMetadata")
       .mockImplementation(async (sessionId, next) => {
         saveCount += 1;
         savedStates.push(next.subAgentTaskState);
@@ -2637,7 +2637,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         taskState: "TASK_STATE_FAILED",
         error: "final metadata write failed",
       });
-      expect(subStore.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
+      expect(subStore.sessions.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
         subAgentTaskState: "TASK_STATE_FAILED",
         subAgentSuspensionReason: undefined,
       });
@@ -2676,7 +2676,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
 
-    const originalSave = subStore.saveSessionMetadata.bind(subStore);
+    const originalSave = subStore.sessions.saveSessionMetadata.bind(subStore.sessions);
     let saveCount = 0;
     const savedStates: unknown[] = [];
     let signalFinalSave!: () => void;
@@ -2688,7 +2688,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       releaseFinalSave = resolve;
     });
     const saveSpy = vi
-      .spyOn(subStore, "saveSessionMetadata")
+      .spyOn(subStore.sessions, "saveSessionMetadata")
       .mockImplementation(async (sessionId, next) => {
         saveCount += 1;
         savedStates.push(next.subAgentTaskState);
@@ -2723,7 +2723,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
           taskState: "TASK_STATE_WORKING",
         },
       });
-      expect(subStore.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
+      expect(subStore.sessions.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
         subAgentTaskState: "TASK_STATE_WORKING",
         subAgentSuspensionReason: undefined,
       });
@@ -2741,7 +2741,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         status: "done",
         taskState: "TASK_STATE_COMPLETED",
       });
-      expect(subStore.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
+      expect(subStore.sessions.loadSessionMetadata(spawn.childSessionId)).toMatchObject({
         subAgentTaskState: "TASK_STATE_COMPLETED",
         subAgentSuspensionReason: undefined,
       });
@@ -2793,7 +2793,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       ? readdirSync(mainSessionsDir).filter((f) => f.endsWith(".jsonl"))
       : [];
     expect(mainFiles).toEqual([]);
-    expect(mainStore.listSessions()).toEqual([]);
+    expect(mainStore.sessions.listSessions()).toEqual([]);
   });
 
   it("increments resumeCount by 1 and cumulativeRounds by the turn's rounds, preserving the frozen scope (full-overwrite spread)", async () => {
@@ -2820,14 +2820,14 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       maxRounds: 5,
     });
     restore();
-    const afterSpawn = subStore.loadSessionMetadata(spawn.childSessionId)!;
+    const afterSpawn = subStore.sessions.loadSessionMetadata(spawn.childSessionId)!;
     expect(afterSpawn.cumulativeRounds).toBe(spawn.turnCount);
     expect(afterSpawn.resumeCount).toBe(0);
     expect(afterSpawn.budgetResumeCount).toBe(0);
     expect(afterSpawn.questionAnswerCount).toBe(0);
     const resumeId = spawn.childSessionId;
     // Question answers must not consume the budget-resume allowance.
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       ...afterSpawn,
       questionAnswerCount: 7,
     });
@@ -2842,7 +2842,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
     expect(resumed.ok).toBe(true);
 
-    const afterResume = subStore.loadSessionMetadata(resumeId)!;
+    const afterResume = subStore.sessions.loadSessionMetadata(resumeId)!;
     expect(afterResume.resumeCount).toBe(1);
     expect(afterResume.budgetResumeCount).toBe(1);
     expect(afterResume.questionAnswerCount).toBe(7);
@@ -2858,7 +2858,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
 
   it("refuses to resume a session that is not a sub-agent", async () => {
     const { subStore, runner } = makeNoopRunner();
-    await subStore.saveSessionMetadata("sub-e3b0c442-43badc19-3d7b-48b6-878e-1bca49295211", {
+    await subStore.sessions.saveSessionMetadata("sub-e3b0c442-43badc19-3d7b-48b6-878e-1bca49295211", {
       sessionKind: "main",
       sourceTools: ["noop"],
     });
@@ -2891,7 +2891,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const tagA = createHash("sha256").update(originA).digest("hex").slice(0, 8);
     const { createDlpSafeUuid } = await import("../../shared/dlp-safe-id.js");
     const resumeId = createDlpSafeUuid(`sub-${tagA}`);
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       sessionKind: "subagent",
       sourceTools: ["noop"],
       originSessionId: originA,
@@ -2902,7 +2902,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentSuspensionReason: "budget",
     });
     // Supply valid history so refusal proves ownership is checked before loading it.
-    await subStore.saveSession(resumeId, []);
+    await subStore.sessions.saveSession(resumeId, []);
 
     const guardProvider = new ScriptedProvider(endTurnScript("CROSS-SESSION-MUST-NOT-RUN"));
     const restoreGuard = patchProvider(guardProvider);
@@ -2950,7 +2950,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       .digest("hex")
       .slice(0, 8);
     const resumeId = createDlpSafeUuid("sub-" + tag);
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       sessionKind: "subagent",
       sourceTools: ["noop"],
       originSessionId: "0ef83e19-a3c4-4997-8e80-1108844af17b",
@@ -2959,7 +2959,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       resumeCount: 0,
       cumulativeRounds: 0,
     });
-    await subStore.saveSession(resumeId, []);
+    await subStore.sessions.saveSession(resumeId, []);
 
     const guardProvider = new ScriptedProvider(endTurnScript("MUST-NOT-RUN"));
     const restore = patchProvider(guardProvider);
@@ -3034,7 +3034,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     // Empty frozen scope indicates corruption outside the wire path and must fail closed.
     const { createNamespacedSessionId } = await import("../../shared/dlp-safe-id.js");
     const resumeId = createNamespacedSessionId("sub", "e3b0c442");
-    await subStore.saveSessionMetadata(resumeId, {
+    await subStore.sessions.saveSessionMetadata(resumeId, {
       sessionKind: "subagent",
       sourceTools: [],
       subAgentTitle: "tamper-test",
@@ -3062,7 +3062,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const subStore = makeSubStore();
     const cleanupTerminalRecipientMailbox = vi.fn(
       async (childSessionId: string) => {
-        expect(subStore.loadSessionMetadata(childSessionId)).toMatchObject({
+        expect(subStore.sessions.loadSessionMetadata(childSessionId)).toMatchObject({
           subAgentTaskState: "TASK_STATE_COMPLETED",
         });
         return { ok: true as const, removed: 1, retained: 0 };
@@ -3125,7 +3125,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         message: { metadata?: unknown; messageId: string; parts: unknown[] };
       }) => {
         expect(
-          subStore.loadSessionMetadata(input.childSessionId),
+          subStore.sessions.loadSessionMetadata(input.childSessionId),
         ).toMatchObject({
           subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
           subAgentSuspensionReason: "question",
@@ -3238,8 +3238,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
       agentMessageBus: bus,
     });
-    const originalSave = subStore.saveSessionMetadata.bind(subStore);
-    vi.spyOn(subStore, "saveSessionMetadata").mockImplementation(
+    const originalSave = subStore.sessions.saveSessionMetadata.bind(subStore.sessions);
+    vi.spyOn(subStore.sessions, "saveSessionMetadata").mockImplementation(
       async (id, meta) => {
         if (meta.subAgentTaskState === "TASK_STATE_FAILED") {
           throw new Error("terminal overwrite failed");
@@ -3276,7 +3276,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         stopReason: "input-required",
         suspension: { reason: "question", prompt: "Which option?" },
       });
-      expect(subStore.loadSessionMetadata(result.childSessionId)).toMatchObject(
+      expect(subStore.sessions.loadSessionMetadata(result.childSessionId)).toMatchObject(
         {
           subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
           subAgentSuspensionReason: "question",

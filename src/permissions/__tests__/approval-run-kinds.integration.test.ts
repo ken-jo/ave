@@ -389,7 +389,7 @@ describe("production run construction approval ownership", () => {
   it("keeps the unattended routine policy when a connected schedule runs headless in a saved chat", async () => {
     const f = await setup();
     const chat = randomUUID();
-    await f.memory.saveSession(chat, [{ role: "user", content: "earlier turn" }]);
+    await f.memory.sessions.saveSession(chat, [{ role: "user", content: "earlier turn" }]);
     // The chat was shown in a window before: its old approval owner must not receive the woken turn's card.
     updateApprovalSurface({ kind: "attach", sessionId: chat, surface: f.owner as unknown as WebContents });
     f.sessions.add(chat);

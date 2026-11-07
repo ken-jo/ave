@@ -8,7 +8,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 let dir: string;
 let manager: MemoryManager;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ave-memory-catalog-")); manager = new MemoryManager({ aveDir: dir }); });
-afterEach(async () => { manager.stopPersistentContextWatcher(); manager.closeSearchIndex(); await cleanupTmpDir(dir); });
+afterEach(async () => { manager.stopPersistentContextWatcher(); manager.sessions.closeSearchIndex(); await cleanupTmpDir(dir); });
 
 describe("memory panel scope inventory", () => {
   it("counts scopes without returning memories from another project or treating legacy notes as global", async () => {

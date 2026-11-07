@@ -59,8 +59,10 @@ function createLoop(
     approvalSurface,
     headless,
     memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => Promise.resolve(),
+        listSessions: () => [],
+      },
     },
   } as never);
   (loop as { provider: LLMProvider | null }).provider = provider;

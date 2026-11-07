@@ -84,7 +84,8 @@ export type { PermissionEvaluationContext } from "../../permissions/evaluation-c
 export type { ExecutionMode } from "../../shared/permission-mode.js";
 
 // Re-export checkpoint types for renderer-side consumers (type-only, no main-process runtime).
-export type { CheckpointTrigger, Checkpoint } from "../../memory/memory-manager.js";
+export type { CheckpointTrigger } from "../../memory/memory-manager.js";
+export type { Checkpoint } from "../../memory/session-repository.js";
 // Remote A2A action status is the controller's own status record.
 import type { RemoteA2AActionStatus } from "../../main/remote-a2a-action-controller.js";
 export type { RemoteA2AActionStatus };

@@ -47,7 +47,7 @@ async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", e
     },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   await loop.whenProviderReady();
@@ -122,7 +122,7 @@ it("records reasoning independently of a dormant endpoint on an SDK-managed rout
     settingsService: { get: () => llm, getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     disableSessionPersistence: true,
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   const streamTurn = vi.fn(async function* (): AsyncIterable<StreamEvent> {

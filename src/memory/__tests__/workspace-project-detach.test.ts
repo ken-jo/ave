@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MemoryManager, type SessionMetadata } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { type SessionMetadata } from "../session-repository.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION_A = "6b010d95-2319-4c22-80b1-87fbf1568da3";
@@ -20,7 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  memory.closeSearchIndex();
+  memory.sessions.closeSearchIndex();
   await cleanupTmpDir(dir);
 });
 
@@ -29,8 +30,8 @@ async function seed(
   projectRoot: string,
   title: string,
 ): Promise<string> {
-  await memory.saveSession(sessionId, [{ role: "user", content: `message-${sessionId}` }]);
-  await memory.saveSessionMetadata(sessionId, {
+  await memory.sessions.saveSession(sessionId, [{ role: "user", content: `message-${sessionId}` }]);
+  await memory.sessions.saveSessionMetadata(sessionId, {
     sessionKind: "main",
     projectRoot,
     projectName: "Alpha",
@@ -47,12 +48,12 @@ describe("MemoryManager workspace project detachment", () => {
     await seed(SESSION_OTHER, "C:\\Work\\Alpha\\child", "alpha-child");
     const before = readFileSync(join(dir, "sessions", `${SESSION_A}.meta.json`), "utf-8");
 
-    const counted = memory.countSessionsInProject(ROOT);
+    const counted = memory.sessions.countSessionsInProject(ROOT);
     expect(readFileSync(join(dir, "sessions", `${SESSION_A}.meta.json`), "utf-8")).toBe(before);
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(counted);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(counted);
     expect(counted).toBe(2);
-    expect(memory.countSessionsInProject(ROOT)).toBe(0);
+    expect(memory.sessions.countSessionsInProject(ROOT)).toBe(0);
   });
 
   it("preserves JSONL and unrelated metadata while detaching matching path variants", async () => {
@@ -60,19 +61,19 @@ describe("MemoryManager workspace project detachment", () => {
     const originalB = await seed(SESSION_B, "c:/work/alpha/", "alpha-b");
     await seed(SESSION_OTHER, "C:\\Work\\Beta", "beta");
 
-    expect(memory.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(2);
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(0);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(1);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(2);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(0);
 
-    expect(memory.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(0);
-    expect(memory.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT })).toHaveLength(0);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
     expect(readFileSync(join(dir, "sessions", `${SESSION_A}.jsonl`), "utf-8")).toBe(originalA);
     expect(readFileSync(join(dir, "sessions", `${SESSION_B}.jsonl`), "utf-8")).toBe(originalB);
-    expect(memory.loadSessionMetadata(SESSION_A)).toMatchObject({ title: "alpha-a" });
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectName).toBeUndefined();
-    expect(memory.loadSessionMetadata(SESSION_OTHER)?.projectRoot).toBe("C:\\Work\\Beta");
-    expect(memory.searchSessions(`message-${SESSION_OTHER}`, {
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({ title: "alpha-a" });
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectName).toBeUndefined();
+    expect(memory.sessions.loadSessionMetadata(SESSION_OTHER)?.projectRoot).toBe("C:\\Work\\Beta");
+    expect(memory.sessions.searchSessions(`message-${SESSION_OTHER}`, {
       projectRoot: "C:\\Work\\Beta",
     })).toHaveLength(1);
 
@@ -84,28 +85,28 @@ describe("MemoryManager workspace project detachment", () => {
 
   it("keeps old sessions detached after re-add while allowing new sessions to use the root", async () => {
     await seed(SESSION_A, ROOT, "alpha");
-    const stale = memory.loadSessionMetadata(SESSION_A)!;
+    const stale = memory.sessions.loadSessionMetadata(SESSION_A)!;
 
-    await memory.detachSessionsFromProject(ROOT);
-    await memory.saveSessionMetadata(SESSION_A, { ...stale, title: "late" });
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    await memory.sessions.detachSessionsFromProject(ROOT);
+    await memory.sessions.saveSessionMetadata(SESSION_A, { ...stale, title: "late" });
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
 
-    memory.allowProjectRoot(ROOT);
-    await memory.saveSessionMetadata(SESSION_A, stale);
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    memory.sessions.allowProjectRoot(ROOT);
+    await memory.sessions.saveSessionMetadata(SESSION_A, stale);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
 
-    await memory.saveSession(SESSION_B, [{ role: "user", content: "new-after-readd" }]);
-    await memory.saveSessionMetadata(SESSION_B, {
+    await memory.sessions.saveSession(SESSION_B, [{ role: "user", content: "new-after-readd" }]);
+    await memory.sessions.saveSessionMetadata(SESSION_B, {
       sessionKind: "main",
       projectRoot: ROOT,
       projectName: "Alpha",
     });
-    expect(memory.loadSessionMetadata(SESSION_B)?.projectRoot).toBe(ROOT);
+    expect(memory.sessions.loadSessionMetadata(SESSION_B)?.projectRoot).toBe(ROOT);
   });
 
   it("tombstones a session whose first stale metadata write arrives while the root is absent", async () => {
-    await memory.saveSession(SESSION_A, [{ role: "user", content: "active-before-removal" }]);
-    await memory.detachSessionsFromProject(ROOT);
+    await memory.sessions.saveSession(SESSION_A, [{ role: "user", content: "active-before-removal" }]);
+    await memory.sessions.detachSessionsFromProject(ROOT);
 
     const stale: SessionMetadata = {
       sessionKind: "main",
@@ -113,12 +114,12 @@ describe("MemoryManager workspace project detachment", () => {
       projectName: "Alpha",
       title: "late",
     };
-    await memory.saveSessionMetadata(SESSION_A, stale);
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    await memory.sessions.saveSessionMetadata(SESSION_A, stale);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
 
-    memory.allowProjectRoot(ROOT);
-    await memory.saveSessionMetadata(SESSION_A, stale);
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    memory.sessions.allowProjectRoot(ROOT);
+    await memory.sessions.saveSessionMetadata(SESSION_A, stale);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
   });
 
   it("cancels a detached wire task while preserving its host-visible identity", async () => {
@@ -136,17 +137,17 @@ describe("MemoryManager workspace project detachment", () => {
       subAgentSuspensionReason: "question",
       subAgentSuspensionPrompt: "Continue?",
     };
-    await memory.saveSession(SESSION_A, [{ role: "user", content: "wire transcript" }]);
-    await memory.saveSessionMetadata(SESSION_A, wireMetadata);
+    await memory.sessions.saveSession(SESSION_A, [{ role: "user", content: "wire transcript" }]);
+    await memory.sessions.saveSessionMetadata(SESSION_A, wireMetadata);
     const transcript = readFileSync(
       join(dir, "sessions", `${SESSION_A}.jsonl`),
       "utf-8",
     );
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
 
     const assertDetachedWireTask = (): void => {
-      const metadata = memory.loadSessionMetadata(SESSION_A);
+      const metadata = memory.sessions.loadSessionMetadata(SESSION_A);
       expect(metadata).toMatchObject({
         sessionKind: "subagent",
         originSessionId,
@@ -164,11 +165,11 @@ describe("MemoryManager workspace project detachment", () => {
     expect(readFileSync(join(dir, "sessions", `${SESSION_A}.jsonl`), "utf-8"))
       .toBe(transcript);
 
-    memory.allowProjectRoot(ROOT);
-    await memory.saveSessionMetadata(SESSION_A, wireMetadata);
+    memory.sessions.allowProjectRoot(ROOT);
+    await memory.sessions.saveSessionMetadata(SESSION_A, wireMetadata);
     assertDetachedWireTask();
 
-    memory.closeSearchIndex();
+    memory.sessions.closeSearchIndex();
     memory = new MemoryManager({ aveDir: dir });
     assertDetachedWireTask();
   });
@@ -193,24 +194,24 @@ describe("MemoryManager workspace project detachment", () => {
       subAgentTitle: "terminal wire task",
       subAgentTaskState: terminalState,
     };
-    await memory.saveSession(SESSION_A, [{ role: "user", content: "terminal transcript" }]);
-    await memory.saveSessionMetadata(SESSION_A, terminalMetadata);
+    await memory.sessions.saveSession(SESSION_A, [{ role: "user", content: "terminal transcript" }]);
+    await memory.sessions.saveSessionMetadata(SESSION_A, terminalMetadata);
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
-    expect(memory.loadSessionMetadata(SESSION_A)).toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: "wire-terminal-handler",
       subAgentTaskState: terminalState,
     });
 
-    memory.allowProjectRoot(ROOT);
-    await memory.saveSessionMetadata(SESSION_A, {
+    memory.sessions.allowProjectRoot(ROOT);
+    await memory.sessions.saveSessionMetadata(SESSION_A, {
       ...terminalMetadata,
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "question",
       subAgentSuspensionPrompt: "stale writer",
     });
-    const afterStaleWrite = memory.loadSessionMetadata(SESSION_A);
+    const afterStaleWrite = memory.sessions.loadSessionMetadata(SESSION_A);
     expect(afterStaleWrite).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: "wire-terminal-handler",
@@ -227,7 +228,7 @@ describe("MemoryManager workspace project detachment", () => {
     "TASK_STATE_CANCELED",
   ] as const)("accepts a rootless terminal wire record (%s)", async (terminalState) => {
     const originSessionId = "5875f03b-d5c6-4758-8d4a-1dd8c059bea0";
-    await memory.saveSessionMetadata(SESSION_A, {
+    await memory.sessions.saveSessionMetadata(SESSION_A, {
       sessionKind: "subagent",
       sourceTools: [],
       originSessionId,
@@ -237,7 +238,7 @@ describe("MemoryManager workspace project detachment", () => {
       subAgentTaskState: terminalState,
     });
 
-    expect(memory.loadSessionMetadata(SESSION_A)).toMatchObject({
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({
       projectRoot: undefined,
       sourceTools: [],
       a2aWireHandlerId: "rootless-wire-handler",
@@ -246,8 +247,8 @@ describe("MemoryManager workspace project detachment", () => {
   });
 
   it("does not treat explicitly undefined wire fields as a wire binding", async () => {
-    await memory.saveSession(SESSION_A, [{ role: "user", content: "ordinary sub-agent" }]);
-    await memory.saveSessionMetadata(SESSION_A, {
+    await memory.sessions.saveSession(SESSION_A, [{ role: "user", content: "ordinary sub-agent" }]);
+    await memory.sessions.saveSessionMetadata(SESSION_A, {
       sessionKind: "subagent",
       projectRoot: ROOT,
       sourceTools: ["noop"],
@@ -260,8 +261,8 @@ describe("MemoryManager workspace project detachment", () => {
       subAgentSuspensionPrompt: "ordinary question",
     });
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
-    expect(memory.loadSessionMetadata(SESSION_A)).toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({
       projectRoot: undefined,
       a2aWireHandlerId: undefined,
       a2aWireInternalOrigin: undefined,
@@ -273,7 +274,7 @@ describe("MemoryManager workspace project detachment", () => {
 
   it("clears detached wire terminal tombstones when a session is deleted", async () => {
     const originSessionId = "de9fa73e-4c21-40d7-839f-4fe4c6652c73";
-    await memory.saveSessionMetadata(SESSION_A, {
+    await memory.sessions.saveSessionMetadata(SESSION_A, {
       sessionKind: "subagent",
       projectRoot: ROOT,
       sourceTools: ["noop"],
@@ -283,16 +284,16 @@ describe("MemoryManager workspace project detachment", () => {
       subAgentTitle: "wire delete",
       subAgentTaskState: "TASK_STATE_COMPLETED",
     });
-    await memory.detachSessionsFromProject(ROOT);
-    memory.allowProjectRoot(ROOT);
-    await memory.deleteSession(SESSION_A);
+    await memory.sessions.detachSessionsFromProject(ROOT);
+    memory.sessions.allowProjectRoot(ROOT);
+    await memory.sessions.deleteSession(SESSION_A);
 
-    await memory.saveSessionMetadata(SESSION_A, {
+    await memory.sessions.saveSessionMetadata(SESSION_A, {
       sessionKind: "main",
       projectRoot: ROOT,
       title: "replacement",
     });
-    expect(memory.loadSessionMetadata(SESSION_A)).toMatchObject({
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({
       sessionKind: "main",
       projectRoot: ROOT,
       title: "replacement",
@@ -316,7 +317,7 @@ describe("MemoryManager workspace project detachment", () => {
       "utf-8",
     );
 
-    await expect(memory.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
       code: "SESSION_METADATA_INVALID",
     });
   });
@@ -330,19 +331,19 @@ describe("MemoryManager workspace project detachment", () => {
       "utf8",
     );
 
-    await expect(memory.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
       code: "SESSION_METADATA_INVALID",
     });
 
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBe(ROOT);
-    expect(memory.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBe(ROOT);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
       .toHaveLength(1);
   });
 
   it("repairs every FTS row on a zero-change detach retry", async () => {
     await seed(SESSION_A, ROOT, "stale-index");
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
-    const searchIndex = ((memory as unknown as { sessionRepository: unknown }).sessionRepository as {
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    const searchIndex = (memory.sessions as unknown as {
       searchIndex: {
         open(): boolean;
         close(): void;
@@ -366,55 +367,55 @@ describe("MemoryManager workspace project detachment", () => {
       title: "stale-index",
     });
     searchIndex.close();
-    expect(memory.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
       .toHaveLength(1);
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(0);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(0);
 
-    expect(memory.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`, { projectRoot: ROOT }))
       .toHaveLength(0);
-    expect(memory.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
   });
 
   it("preserves a retryable error when full FTS repair cannot open", async () => {
     await seed(SESSION_A, ROOT, "repair-retry");
-    const searchIndex = ((memory as unknown as { sessionRepository: unknown }).sessionRepository as {
+    const searchIndex = (memory.sessions as unknown as {
       searchIndex: { open(): boolean };
     }).searchIndex;
     const openSpy = vi.spyOn(searchIndex, "open").mockReturnValueOnce(false);
 
-    await expect(memory.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
       code: "SESSION_SEARCH_INDEX_REPAIR_FAILED",
     });
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
 
     openSpy.mockRestore();
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(0);
-    expect(memory.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(0);
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`)).toHaveLength(1);
   });
 
   it("removes an orphaned FTS row when project metadata exists without JSONL", async () => {
     await seed(SESSION_A, ROOT, "orphaned-index-row");
     rmSync(join(dir, "sessions", `${SESSION_A}.jsonl`));
 
-    expect(memory.searchSessions(`message-${SESSION_A}`).map((entry) => entry.sessionId)).toEqual([
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`).map((entry) => entry.sessionId)).toEqual([
       SESSION_A,
     ]);
 
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(1);
 
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
-    expect(memory.searchSessions(`message-${SESSION_A}`)).toEqual([]);
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    expect(memory.sessions.searchSessions(`message-${SESSION_A}`)).toEqual([]);
   });
 
   it("is idempotent under concurrent detach calls", async () => {
     await seed(SESSION_A, ROOT, "alpha");
     const counts = await Promise.all([
-      memory.detachSessionsFromProject(ROOT),
-      memory.detachSessionsFromProject(ROOT),
+      memory.sessions.detachSessionsFromProject(ROOT),
+      memory.sessions.detachSessionsFromProject(ROOT),
     ]);
     expect(counts.reduce((sum, count) => sum + count, 0)).toBe(1);
-    expect(memory.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
+    expect(memory.sessions.loadSessionMetadata(SESSION_A)?.projectRoot).toBeUndefined();
   });
 
   it("reports malformed metadata instead of declaring detach success", async () => {
@@ -424,7 +425,7 @@ describe("MemoryManager workspace project detachment", () => {
       `{"projectRoot":${JSON.stringify(ROOT)},`,
       "utf-8",
     );
-    await expect(memory.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).rejects.toMatchObject({
       code: "SESSION_METADATA_INVALID",
     });
   });

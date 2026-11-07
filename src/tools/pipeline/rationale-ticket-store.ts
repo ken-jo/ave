@@ -23,7 +23,7 @@ import {
   RATIONALE_TICKET_TERMINAL_STATES,
 } from "./rationale-ticket-lifecycle.js";
 import { UUID_PATTERN } from "../../shared/uuid.js";
-import { isValidSessionId } from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
 
 const TICKET_STATES: readonly RationaleTicketState[] = [
   "review_required",

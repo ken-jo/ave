@@ -94,8 +94,10 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
       updateMemoryIndex: vi.fn(),
       updateMemoryIndexIfUnchanged: vi.fn(async () => true),
       updateMemoryIndexSections: vi.fn(),
-      listSessionEntries: vi.fn(() => []),
-      searchSessions: vi.fn(() => []),
+      sessions: {
+        listSessionEntries: vi.fn(() => []),
+        searchSessions: vi.fn(() => []),
+      },
       getMemoryContext: vi.fn(() => ""),
       getAgentsMd: vi.fn(() => "# Agents"),
       getAgentsCustomMd: vi.fn(() => ""),

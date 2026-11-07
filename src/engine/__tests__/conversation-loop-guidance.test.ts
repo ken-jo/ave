@@ -952,7 +952,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
                   message.content.includes(injectedText),
               ),
             ).toBe(true);
-            await memoryManager.saveSession(sessionId, messages);
+            await memoryManager.sessions.saveSession(sessionId, messages);
             dirtySnapshotSaved = true;
             throw new Error("synthetic post-turn failure");
           },
@@ -965,7 +965,7 @@ describe("ConversationLoop guidance queue + boundary inject", () => {
         ).rejects.toThrow("synthetic post-turn failure");
         expect(dirtySnapshotSaved).toBe(true);
 
-        const persisted = memoryManager.loadSession(loop.getSessionId()) ?? [];
+        const persisted = memoryManager.sessions.loadSession(loop.getSessionId()) ?? [];
         expect(
           persisted.some((message) => {
             if (message === null || typeof message !== "object") return false;

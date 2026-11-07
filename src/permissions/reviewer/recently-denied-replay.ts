@@ -81,7 +81,7 @@ export function makeRecentlyDeniedInvocationRef(
 }
 
 export interface RecentlyDeniedReplayDeps {
-  memoryManager: Pick<MemoryManager, "loadSession" | "loadSessionMetadata">;
+  memoryManager: { sessions: Pick<MemoryManager["sessions"], "loadSession" | "loadSessionMetadata"> };
   toolRegistry: Pick<ToolRegistry, "findByName">;
   executeAll: ToolExecutor["executeAll"];
 }
@@ -96,10 +96,10 @@ export function createRecentlyDeniedReplayResolver(deps: RecentlyDeniedReplayDep
     let input: Record<string, unknown>;
     let cwd: string;
     try {
-      const root = deps.memoryManager.loadSessionMetadata(entry.sessionId)?.projectRoot;
+      const root = deps.memoryManager.sessions.loadSessionMetadata(entry.sessionId)?.projectRoot;
       if (typeof root !== "string" || !isAbsolute(root)) return unavailable;
       cwd = root;
-      const messages = deps.memoryManager.loadSession(entry.sessionId);
+      const messages = deps.memoryManager.sessions.loadSession(entry.sessionId);
       if (!Array.isArray(messages)) return unavailable;
       const matches: Record<string, unknown>[] = [];
       for (const message of messages) {

@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryManager, sessionFamilyOf } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { sessionFamilyOf } from "../session-repository.js";
 import {
   isSessionFamily,
   SESSION_FAMILIES,
@@ -42,23 +43,23 @@ describe("listSessions with workBoardRuns", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "ave-work-board-runs-"));
     mm = new MemoryManager({ aveDir: dir });
-    await mm.saveSession(MAIN, [{ role: "user", content: "hello" }]);
-    await mm.saveSessionMetadata(MAIN, { sessionKind: "main" });
-    await mm.saveSession(RUN, [{ role: "user", content: "run" }]);
-    await mm.saveSessionMetadata(RUN, {
+    await mm.sessions.saveSession(MAIN, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSessionMetadata(MAIN, { sessionKind: "main" });
+    await mm.sessions.saveSession(RUN, [{ role: "user", content: "run" }]);
+    await mm.sessions.saveSessionMetadata(RUN, {
       sessionKind: "subagent",
       originSessionId: workBoardOriginSessionId(12),
       spawnId: "spawn-run",
       subAgentTitle: "Execute: 월간 보고서",
     });
-    await mm.saveSession(BRIEFING, [{ role: "user", content: "briefing" }]);
-    await mm.saveSessionMetadata(BRIEFING, {
+    await mm.sessions.saveSession(BRIEFING, [{ role: "user", content: "briefing" }]);
+    await mm.sessions.saveSessionMetadata(BRIEFING, {
       sessionKind: "subagent",
       originSessionId: "work-board-briefing:daily",
       spawnId: "spawn-briefing",
     });
-    await mm.saveSession(CHAT_CHILD, [{ role: "user", content: "child" }]);
-    await mm.saveSessionMetadata(CHAT_CHILD, {
+    await mm.sessions.saveSession(CHAT_CHILD, [{ role: "user", content: "child" }]);
+    await mm.sessions.saveSessionMetadata(CHAT_CHILD, {
       sessionKind: "subagent",
       originSessionId: MAIN,
       spawnId: "spawn-child",
@@ -70,26 +71,26 @@ describe("listSessions with workBoardRuns", () => {
   });
 
   it("returns only the sub-agent sessions an item spawned, each naming its item", () => {
-    const runs = mm.listSessions({ kind: "subagent", workBoardRuns: true });
+    const runs = mm.sessions.listSessions({ kind: "subagent", workBoardRuns: true });
     expect(runs.map((entry) => entry.id)).toEqual([RUN]);
     expect(runs[0]?.workBoardItemId).toBe(12);
     expect(runs[0]?.sessionKind).toBe("subagent");
   });
 
   it("pages the same way as the other listings", () => {
-    const page = mm.listSessionsPage({ kind: "subagent", workBoardRuns: true, limit: 5 });
+    const page = mm.sessions.listSessionsPage({ kind: "subagent", workBoardRuns: true, limit: 5 });
     expect(page.map((entry) => entry.id)).toEqual([RUN]);
     expect(page[0]?.workBoardItemId).toBe(12);
   });
 
   it("does not change the default main listing", () => {
-    const main = mm.listSessions();
+    const main = mm.sessions.listSessions();
     expect(main.map((entry) => entry.id)).toEqual([MAIN]);
     expect(main[0]).not.toHaveProperty("workBoardItemId");
   });
 
   it("lists every sub-agent session without the flag, and only the run carries an item id", () => {
-    const all = mm.listSessions({ kind: "subagent" });
+    const all = mm.sessions.listSessions({ kind: "subagent" });
     expect(new Set(all.map((entry) => entry.id))).toEqual(new Set([RUN, BRIEFING, CHAT_CHILD]));
     expect(all.find((entry) => entry.id === RUN)?.workBoardItemId).toBe(12);
     expect(all.find((entry) => entry.id === BRIEFING)).not.toHaveProperty("workBoardItemId");
@@ -152,10 +153,10 @@ describe("originSessionId on a listed row", () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "ave-session-origin-"));
     mm = new MemoryManager({ aveDir: dir });
-    await mm.saveSession(SIDE, [{ role: "user", content: "side" }]);
-    await mm.saveSessionMetadata(SIDE, { sessionKind: "main", originSessionId: MAIN });
-    await mm.saveSession(MAIN, [{ role: "user", content: "hello" }]);
-    await mm.saveSessionMetadata(MAIN, { sessionKind: "main" });
+    await mm.sessions.saveSession(SIDE, [{ role: "user", content: "side" }]);
+    await mm.sessions.saveSessionMetadata(SIDE, { sessionKind: "main", originSessionId: MAIN });
+    await mm.sessions.saveSession(MAIN, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSessionMetadata(MAIN, { sessionKind: "main" });
   });
 
   afterEach(async () => {
@@ -163,7 +164,7 @@ describe("originSessionId on a listed row", () => {
   });
 
   it("carries the conversation a session was started from, and nothing when there is none", () => {
-    const rows = mm.listSessions({ kind: "all" });
+    const rows = mm.sessions.listSessions({ kind: "all" });
     expect(rows.find((entry) => entry.id === SIDE)?.originSessionId).toBe(MAIN);
     expect(rows.find((entry) => entry.id === MAIN)).not.toHaveProperty("originSessionId");
   });

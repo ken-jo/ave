@@ -205,7 +205,7 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
       settingsService: { get: (key: string) => key === "marketplace" ? { installedProviderPresets: [] } : llm, getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
       toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+      memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
       disableSessionPersistence: true,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
     await loop.whenProviderReady();

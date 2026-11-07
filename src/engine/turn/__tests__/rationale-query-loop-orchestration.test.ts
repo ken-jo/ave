@@ -63,7 +63,7 @@ function makeLoop(
     settingsService: { get: () => fakeLlmSettings(), getSecret: () => "key" },
     systemPromptBuilder: { build: () => "system", setToolScope: vi.fn() },
     toolRegistry: registry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     disableSessionPersistence: true,
     ...(factory ? { rationaleCoordinatorFactory: factory } : {}),
     ...(enabled ? { enableDormantRationaleForTesting: true } : {}),

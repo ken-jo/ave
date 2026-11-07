@@ -24,7 +24,7 @@ function buildLoop(provider: LLMProvider | null): ConversationLoop {
     },
     systemPromptBuilder: { build: () => "system" },
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as unknown as { provider: LLMProvider | null }).provider = provider;
   return loop;

@@ -34,18 +34,20 @@ export function makeConversationLoopMemoryManager(
   const sessions: Record<string, GenericMessage[]> = messages === null ? {} : { [sessionId]: messages };
   return {
     ...makePromptMemorySource(),
-    listSessions: () => Object.keys(sessions).map((id) => ({ id, modifiedAt: new Date() })),
+    sessions: {
+      listSessions: () => Object.keys(sessions).map((id) => ({ id, modifiedAt: new Date() })),
+      loadSession: (id: string) => sessions[id] ?? null,
+      loadSessionMetadata: vi.fn(() => null),
+      saveSession: vi.fn((id: string, msgs: GenericMessage[]) => {
+        sessions[id] = msgs;
+      }),
+      saveSessionMetadata: vi.fn(),
+      appendCheckpoint: vi.fn((_meta: unknown, cp: unknown) => ({ checkpoints: [cp],
+      })),
+      saveCheckpointSnapshot: vi.fn(),
+    },
     getMemoryIndex: () => "",
     getUserPreferences: () => "",
-    loadSession: (id: string) => sessions[id] ?? null,
-    loadSessionMetadata: vi.fn(() => null),
-    saveSession: vi.fn((id: string, msgs: GenericMessage[]) => {
-      sessions[id] = msgs;
-    }),
-    saveSessionMetadata: vi.fn(),
-    appendCheckpoint: vi.fn((_meta: unknown, cp: unknown) => ({ checkpoints: [cp],
-    })),
-    saveCheckpointSnapshot: vi.fn(),
     listMemoryEntries: () => [],
     saveMemory: vi.fn(),
     deleteMemory: vi.fn(),

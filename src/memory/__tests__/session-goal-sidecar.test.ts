@@ -24,7 +24,7 @@ let mm: MemoryManager;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ave-session-goal-"));
   mm = new MemoryManager({ aveDir: dir });
-  await mm.saveSession(SESSION, [{ role: "user", content: "hello" }]);
+  await mm.sessions.saveSession(SESSION, [{ role: "user", content: "hello" }]);
 });
 
 afterEach(async () => {
@@ -33,20 +33,20 @@ afterEach(async () => {
 
 describe("session goal sidecar", () => {
   it("brings the goal back with its spent rounds after a restart", async () => {
-    await mm.saveSessionGoal(SESSION, GOAL);
+    await mm.sessions.saveSessionGoal(SESSION, GOAL);
     const restarted = new MemoryManager({ aveDir: dir });
-    expect(restarted.loadSessionMetadata(SESSION)?.goal).toEqual(GOAL);
+    expect(restarted.sessions.loadSessionMetadata(SESSION)?.goal).toEqual(GOAL);
   });
 
   it("keeps the rest of the metadata when the goal is written", async () => {
-    await mm.saveSessionMetadata(SESSION, {
+    await mm.sessions.saveSessionMetadata(SESSION, {
       sessionKind: "main",
       projectRoot: "/ws/alpha",
       projectName: "alpha",
       title: "대화",
     });
-    await mm.saveSessionGoal(SESSION, GOAL);
-    const meta = new MemoryManager({ aveDir: dir }).loadSessionMetadata(SESSION);
+    await mm.sessions.saveSessionGoal(SESSION, GOAL);
+    const meta = new MemoryManager({ aveDir: dir }).sessions.loadSessionMetadata(SESSION);
     expect(meta).toMatchObject({
       projectRoot: "/ws/alpha",
       projectName: "alpha",
@@ -56,20 +56,20 @@ describe("session goal sidecar", () => {
   });
 
   it("removes the goal rather than storing a tombstone", async () => {
-    await mm.saveSessionGoal(SESSION, GOAL);
-    await mm.saveSessionGoal(SESSION, null);
-    expect(new MemoryManager({ aveDir: dir }).loadSessionMetadata(SESSION)?.goal).toBeUndefined();
+    await mm.sessions.saveSessionGoal(SESSION, GOAL);
+    await mm.sessions.saveSessionGoal(SESSION, null);
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSessionMetadata(SESSION)?.goal).toBeUndefined();
   });
 
   it("drops a malformed goal instead of reading a budget nobody can account for", async () => {
-    await mm.saveSessionMetadata(SESSION, {
+    await mm.sessions.saveSessionMetadata(SESSION, {
       sessionKind: "main",
       goal: { text: "x", status: "running", round: -1, ceiling: 50 } as never,
     });
-    expect(new MemoryManager({ aveDir: dir }).loadSessionMetadata(SESSION)?.goal).toBeUndefined();
+    expect(new MemoryManager({ aveDir: dir }).sessions.loadSessionMetadata(SESSION)?.goal).toBeUndefined();
   });
 
   it("refuses to write a goal against an invalid session id", async () => {
-    await expect(mm.saveSessionGoal("../escape", GOAL)).rejects.toThrow("saveSessionGoal");
+    await expect(mm.sessions.saveSessionGoal("../escape", GOAL)).rejects.toThrow("saveSessionGoal");
   });
 });

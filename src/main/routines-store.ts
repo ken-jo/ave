@@ -939,7 +939,7 @@ function validateRoutineContent(
 
 interface RemoveRoutineDeps {
   routinesStore: Pick<RoutinesStore, "remove">;
-  memoryManager: Pick<MemoryManager, "listSessionsByRoutine" | "deleteSession">;
+  memoryManager: { sessions: Pick<MemoryManager["sessions"], "listSessionsByRoutine" | "deleteSession"> };
   /** Ends a deleted run session's session-scoped permissions. Injected: the plugin child bundles this module, and the
    * permissions code must stay out of its module graph. */
   endSessionScope: (sessionId: string) => void | Promise<void>;
@@ -950,8 +950,8 @@ interface RemoveRoutineDeps {
 export async function removeRoutineWithRuns(deps: RemoveRoutineDeps, id: string): Promise<boolean> {
   const ok = await deps.routinesStore.remove(id);
   if (ok) {
-    for (const session of deps.memoryManager.listSessionsByRoutine(id)) {
-      await deps.memoryManager.deleteSession(session.id);
+    for (const session of deps.memoryManager.sessions.listSessionsByRoutine(id)) {
+      await deps.memoryManager.sessions.deleteSession(session.id);
       await deps.endSessionScope(session.id);
     }
   }

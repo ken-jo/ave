@@ -27,9 +27,11 @@ function buildLoop(scriptHookManager: ScriptHookManager): ConversationLoop {
   return new ConversationLoop(makeBasicConversationLoopDeps({
     systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
     memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-      loadSessionMetadata: () => null,
+      sessions: {
+        saveSession: () => Promise.resolve(),
+        listSessions: () => [],
+        loadSessionMetadata: () => null,
+      },
     },
     disableSessionPersistence: true,
     scriptHookManager,
