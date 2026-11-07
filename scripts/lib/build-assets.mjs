@@ -32,6 +32,12 @@ export const BUILD_ASSETS = Object.freeze([
     category: "audio-capture",
   },
   {
+    src: "src/shared/audio-capture-channels.json",
+    out: "dist/src/shared/audio-capture-channels.json",
+    label: "audio-capture-channels.json",
+    category: "audio-capture",
+  },
+  {
     src: "scripts/electron-flags.mjs",
     out: "dist/scripts/electron-flags.mjs",
     label: "electron-flags.mjs",

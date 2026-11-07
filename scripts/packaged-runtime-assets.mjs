@@ -1,21 +1,13 @@
 // Host-owned runtime assets ship with the installer; plugin payloads belong to plugin artifacts.
+// Where each one is packaged is owned by package.json `build.extraResources` and `build.asarUnpack`.
 import { installerUvTargetFor, SUPPORTED_UV_TARGET_DIRS } from "./uv-targets.mjs";
 
-export const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([
+const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([
   Object.freeze({
     id: "uv",
     owner: "host",
     reason: "Python and MCP uvx execution must not download uv on first app launch.",
     targets: SUPPORTED_UV_TARGET_DIRS,
-    packageResource: Object.freeze({
-      from: "resources/uv-runtime",
-      to: "uv",
-    }),
-    licenseResource: Object.freeze({
-      from: "resources/licenses/uv",
-      to: "licenses/uv",
-      requiredFiles: Object.freeze(["LICENSE-MIT"]),
-    }),
     stagedBy: "scripts/build-installers.mjs",
     materializedBy: "src/main/uv-runtime.ts",
   }),
@@ -24,10 +16,6 @@ export const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([
     owner: "host",
     reason: "The Electron main process imports better-sqlite3 at runtime.",
     targets: SUPPORTED_UV_TARGET_DIRS,
-    packageResource: Object.freeze({
-      from: "node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node",
-      to: "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node",
-    }),
     stagedBy: "npm-shipped N-API prebuild",
     materializedBy: "Electron app resources",
   }),

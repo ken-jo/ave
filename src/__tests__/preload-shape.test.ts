@@ -245,9 +245,6 @@ describe("preload contextBridge world shape lock", () => {
             "set",
             "setSecret",
           ],
-          "plugins": [
-            "cards",
-          ],
           "policy": [
             "get",
             "set",

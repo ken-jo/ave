@@ -321,7 +321,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   ): Promise<PluginCardSummary[] | null> => {
     const token = ++cardsReadTokenRef.current;
     try {
-      const cards = await window.ave.plugins.cards();
+      const cards = await getApi().listPluginCards();
       if (token !== cardsReadTokenRef.current) return cards;
       setPlugins(cards);
       setSelectedId((current) => {

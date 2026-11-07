@@ -3,6 +3,7 @@ import { BrowserWindow, ipcMain, session as electronSession } from "electron";
 import { randomUUID } from "node:crypto";
 import { runtimeAssetPath } from "./main-paths.js";
 import { preloadPreferences } from "./preload-bundles.js";
+import AUDIO_CAPTURE_CHANNELS from "../shared/audio-capture-channels.json" with { type: "json" };
 import {
   AudioCaptureError,
   type AudioCaptureDevice,
@@ -26,15 +27,8 @@ export function floatToInt16LittleEndian(samples: Float32Array): Uint8Array {
   return out;
 }
 
-// Channel names, in one place so the preload and this file cannot drift.
-const CHANNEL = {
-  getRequest: "ave-audio-capture:get-request",
-  ready: "ave-audio-capture:ready",
-  frame: "ave-audio-capture:frame",
-  ended: "ave-audio-capture:ended",
-  listDevices: "ave-audio-capture:list-devices",
-  devices: "ave-audio-capture:devices",
-} as const;
+// The copied CommonJS preload cannot import TypeScript, so both sides read the channel names from one JSON file.
+const CHANNEL = AUDIO_CAPTURE_CHANNELS;
 
 // Scope the display-media handler to the capture-only partition; installing it on the default session affects every renderer.
 const CAPTURE_PARTITION = "ave-audio-capture";

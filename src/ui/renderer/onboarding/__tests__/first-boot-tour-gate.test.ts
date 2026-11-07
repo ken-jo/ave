@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   hasSeenFirstBootTour,
-  FIRST_BOOT_SCENARIO_ID,
   type TourStateResult,
 } from "../first-boot-tour-gate.js";
+import { FIRST_BOOT_SCENARIO_ID } from "../../../../shared/first-boot-tour.js";
 
 function okState(completedScenarios: string[]): TourStateResult {
   return {

@@ -2267,8 +2267,6 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(runtimeAssets).toContain("HOST_PACKAGED_RUNTIME_ASSETS");
     expect(runtimeAssets).toContain("PLUGIN_MANAGED_RUNTIME_ASSETS");
-    expect(runtimeAssets).toContain("resources/uv-runtime");
-    expect(runtimeAssets).toContain("resources/licenses/uv");
     expect(runtimeAssets).toContain("better-sqlite3-native-binding");
     expect(runtimeAssets).toContain("python-wheelhouse");
     expect(buildInstallers).toContain("hostRuntimeAssetSummary(target, arch)");
@@ -2387,49 +2385,19 @@ describe("installer smoke and packaging discipline", () => {
     expect(packageFootprint).not.toContain('"/dist/scripts/uv-targets.mjs",');
   });
 
-  it("keeps static host runtime resources equal to the runtime asset inventory", async () => {
+  it("packages the host runtime assets from package.json alone", () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as {
       build: { extraResources: Array<{ from: string; to: string }>; asarUnpack: string[] };
     };
-    const runtimeAssets = await import("../../scripts/packaged-runtime-assets.mjs");
-    const extraResources: Array<{ from: string; to: string }> = packageJson.build.extraResources;
+    const extraResources = packageJson.build.extraResources;
     expect(new Set(extraResources.map(({ to }) => to)).size).toBe(extraResources.length);
-    const destinations: string[] = [];
-    const hostResources: Array<{ from: string; to: string }> = runtimeAssets.HOST_PACKAGED_RUNTIME_ASSETS.flatMap(
-      (asset: {
-        packageResource: { from: string; to: string };
-        licenseResource?: { from: string; to: string; requiredFiles: readonly string[] };
-      }) => {
-        const { packageResource, licenseResource } = asset;
-        destinations.push(packageResource.to);
-        const resources: Array<{ from: string; to: string }> = [];
-        if (packageResource.to.startsWith("app.asar.unpacked/")) {
-          expect(packageResource.to).toBe(`app.asar.unpacked/${packageResource.from}`);
-          const unpackPatterns: string[] = packageJson.build.asarUnpack;
-          expect(unpackPatterns.filter((pattern) =>
-            pattern.endsWith("/**") && packageResource.from.startsWith(pattern.slice(0, -2)),
-          )).toHaveLength(1);
-        } else {
-          resources.push(packageResource);
-        }
-        if (licenseResource) {
-          destinations.push(licenseResource.to);
-          expect(licenseResource.requiredFiles.length).toBeGreaterThan(0);
-          for (const file of licenseResource.requiredFiles) {
-            expect(readRepoFile(`${licenseResource.from}/${file}`).trim()).not.toBe("");
-          }
-          resources.push({ from: licenseResource.from, to: licenseResource.to });
-        }
-        return resources;
-      },
-    );
-
-    expect(hostResources.length).toBeGreaterThan(0);
-    expect(new Set(destinations).size).toBe(destinations.length);
-    const runtimeResources = extraResources.filter((resource) => hostResources.some(
-      ({ from, to }) => resource.from === from || resource.to === to,
-    ));
-    expect(runtimeResources).toEqual(hostResources);
+    expect(extraResources).toContainEqual({ from: "resources/uv-runtime", to: "uv" });
+    expect(extraResources).toContainEqual({ from: "resources/licenses/uv", to: "licenses/uv" });
+    expect(readRepoFile("resources/licenses/uv/LICENSE-MIT").trim()).not.toBe("");
+    // The better-sqlite3 N-API prebuild is unpacked from the archive, not copied as a resource.
+    expect(packageJson.build.asarUnpack.filter((pattern) =>
+      pattern.endsWith("/**") && "node_modules/better-sqlite3/prebuilds/".startsWith(pattern.slice(0, -2)),
+    )).toHaveLength(1);
   });
 
   it("ships the palette and color-derivation license notices as resources", () => {

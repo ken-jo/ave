@@ -25,6 +25,7 @@ import type { AveApi } from "../types.js";
 import type { ContinueAuthority } from "../../../shared/chat-origin.js";
 import { resetSuggestedReplies } from "./use-suggested-replies.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 
 function isMissingStagedEnvelopeIpcError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -188,7 +189,7 @@ export function useChatState(
         return;
       }
       if (ev.type === "permission_mode_changed" && ev.mode) {
-        window.dispatchEvent(new CustomEvent("ave:permissions:mode-changed", { detail: { mode: ev.mode } }));
+        window.dispatchEvent(new CustomEvent(PERMISSIONS.modeChanged, { detail: { mode: ev.mode } }));
         return;
       }
       if (streamId !== null) {

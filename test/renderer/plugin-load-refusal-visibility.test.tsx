@@ -176,8 +176,9 @@ describe("installed plugins boot refuses to run", () => {
   it("explains the two refusals differently in the Plugin Doctor panel", async () => {
     const cards = await loadCards();
     const { PluginConfigTab } = await import("../../src/ui/renderer/tabs/PluginConfigTab.js");
-    Object.defineProperty(window, "ave", {
-      value: { plugins: { cards: async () => cards } },
+    Object.defineProperty(window, "ave", { value: {}, writable: true, configurable: true });
+    Object.defineProperty(window, "aveApi", {
+      value: { listPluginCards: async () => cards },
       writable: true,
       configurable: true,
     });
