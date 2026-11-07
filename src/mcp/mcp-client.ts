@@ -1888,7 +1888,7 @@ class StdioTransport implements McpTransport {
   }
 
   /** The Windows form of {@link openWrapped}: srt-win relays no stdin and delivers no spawn environment, and grants no per-exec allow, so the server runs through the host's stdio relay under an ACL grant held for its lifetime; WRITE on its sandbox root and its plugin's data root, READ on
-   * those and on its bundled payload; via `spawnWindowsBundledProcess`. The configured working directory is NOT granted: a server whose `cwd` the `srt-sandbox` account cannot reach fails to start, with the relay's reason on its stderr, rather than widening the grant to wherever `cwd` points. */
+   * those and on its bundled payload; via `spawnWindowsBundledProcess`. The configured working directory is NOT granted: srt-win itself starts in it, so a server whose `cwd` the `srt-sandbox` account cannot read fails to start (srt-win reports that as `mapped_drive_cwd`, exit 16), rather than widening the grant to wherever `cwd` points. Without one it starts in its granted sandbox HOME. */
   private async openWrappedWindows(
     spawnCommand: { command: string; args: string[] },
     baseEnv: NodeJS.ProcessEnv,

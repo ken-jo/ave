@@ -1433,6 +1433,8 @@ describe("on Windows a confined child holds a grant on its own directories for e
       // Write grants cover the envelope and home, never generation or host worker roots.
       expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      // srt-win starts only in a directory the sandbox account is granted: the granted HOME, not the host's `<AVE_HOME>\workspace`.
+      expect(spawnConfinedChild.mock.calls[0]![0]).toMatchObject({ cwd: home });
       expect(existsSync(home)).toBe(false);
     });
   });
@@ -1534,6 +1536,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         await construct(layout);
         expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
         expect(windowsGrant.calls).toHaveLength(0);
+        expect(spawnConfinedChild.mock.calls[0]![0]).not.toHaveProperty("cwd");
       },
       { sandboxActive: false },
     );

@@ -355,6 +355,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         extraEnv: { ...sandboxHome.env },
         stdio: WORKER_STDIO,
         windowsStdio: "relay",
+        // srt-win starts only in a directory the sandbox account is granted; the host's own cwd is not one.
+        cwd: sandboxHome.path,
         assertStillValid: assertHolderAlive,
         onWrapped: () => {
           wrapped = true;

@@ -557,6 +557,8 @@ export async function spawnConfinedPluginChild(
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
       allowWrite: [...spec.envelope.write, sandboxHome.path],
+      // A grant is held exactly when this spawn is srt-wrapped; srt-win starts only in a directory the sandbox account is granted, and the host's own cwd is not one.
+      ...(grant !== undefined ? { cwd: sandboxHome.path } : {}),
       // Every other plugin's code and data: the floor does not cover the plugins root, so this spawn does wherever a deny can re-allow.
       ...(process.platform === "win32" ? {} : { denyPluginsRoot: true }),
       // The envelope names a floor-piercing host directory only when the plugin's reviewed declaration asked for it.
