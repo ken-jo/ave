@@ -160,13 +160,13 @@ Notes that are part of the contract:
   are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them.
   A relocated Ave home gets the root deny.
 - Unverifiable Ave home boundary (boot category boundary-link or boundary-unlisted): the OS sandbox cannot deny reads inside the
-  Ave home, so host shells (bash, PowerShell) run unconfined, both on the unavailable-sandbox route and as an explicit host
-  request, and each one runs only after a human approves it on its card (the unavailable-sandbox or explicit-host card, or the
-  out-of-directory card when the command leaves the allowed folders). The `sandbox-unavailable` floor makes it ask-forced (질문†):
-  allow once or deny once, no saved-rule, remembered, allow-mode, auto-review or in-project-write pass, no durable approval, deny
-  when headless. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
+  Ave home, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
+  worker confinement was requested (shell scope off), and as an explicit host request. Each one runs only after a human approves it
+  on its card (the shell card for that route, or the out-of-directory card when the command leaves the allowed folders). The
+  `sandbox-unavailable` floor makes it ask-forced (질문†): allow once or deny once, no saved-rule, remembered, allow-mode,
+  auto-review or sandbox auto-allow pass, no durable approval, deny when headless. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
   denied and can refuse its turn, which is the intended fail-closed result. The Permissions banner says shell commands will ask
-  each time. Other boot failures keep the ordinary unavailable-sandbox and explicit-host routes.
+  each time. Other boot failures keep the ordinary unavailable-sandbox, sandbox-off and explicit-host routes.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
   Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
   file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path

@@ -20,6 +20,7 @@ import {
   setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
@@ -247,6 +248,25 @@ describe("hook command permission admission", () => {
     expect(p.requestAndWait).toHaveBeenCalledOnce();
     expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
   });
+
+  it.each(["boundary-link", "boundary-unlisted"] as const)(
+    "asks once-only for a hook command on a worker-only boot with an unverifiable boundary (%s)", async (category) => {
+      setShellSandboxRequestedAtBoot(false);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\Users\alice\.ave", reason: "ave-home-boundary-unverified", category });
+      try {
+        expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
+        const p = policy("deny-once");
+        p.permissionManager.setMode("allow");
+        p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+        const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+        expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+        expect(p.requestAndWait).toHaveBeenCalledOnce();
+        expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+          forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
+      } finally {
+        _resetAveHomePrivacyForTest();
+      }
+    });
 
   it("consumes a real gate-approved host execution receipt before spawning", async () => {
     windowsPartialPlan();

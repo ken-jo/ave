@@ -11,7 +11,9 @@ export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): read
     // When requested confinement is unavailable, report the unsandboxed route wherever the plan is shown.
     ...(plan.fallbackReason === "requested-sandbox-unavailable"
       ? [t(plan.requiresExplicitUserApproval ? "shellExecution.sandboxUnavailableAsk" : "shellExecution.sandboxUnavailable")]
-      : []),
+      // A shell-scope-off plan requires approval only while boot cannot verify the Ave home boundary.
+      : plan.requiresExplicitUserApproval && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported")
+        ? [t("shellExecution.boundaryUnverifiedAsk")] : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),

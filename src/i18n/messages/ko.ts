@@ -4636,6 +4636,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // shellExecution
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
   "shellExecution.sandboxUnavailable": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령이 샌드박스 없이 일반 권한 규칙에 따라 실행됩니다.",
+  "shellExecution.boundaryUnverifiedAsk": "Ave 홈 경계를 확인할 수 없어, 셸 명령은 매번 승인한 뒤에만 OS 샌드박스 없이 실행됩니다.",
   "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 매번 승인한 뒤에만 샌드박스 없이 실행됩니다.",
   "shellExecution.location": "실행 위치: 현재 호스트({platform}).",
   "shellExecution.temporaryHome": "셸 HOME과 설정: 명령마다 임시 공간을 사용하며 사용자 로그인 프로필은 읽지 않습니다.",

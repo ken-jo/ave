@@ -27,7 +27,7 @@ import type { Tool } from "../base.js";
 import type { ToolExecutionContext } from "../types.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { requestedSandboxUnavailable } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
@@ -109,7 +109,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     { category, dialect, mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName], command: dialect.command },
     { category, dialect, mode: "auto" as const, label: "auto review", rules: [], command: dialect.command },
     { category, dialect, mode: "allow" as const, label: "allow mode", rules: [], command: dialect.command },
-    { category, dialect, mode: "default" as const, label: "an in-project write", rules: [dialect.toolName], command: dialect.writeCommand },
+    { category, dialect, mode: "default" as const, label: "an in-directory write despite a saved tool allow", rules: [dialect.toolName], command: dialect.writeCommand },
   ])));
 
   it.each(cases)("$category: $dialect.toolName with $label asks on the unavailable-sandbox card and spawns only after approval", async ({ category, dialect, mode, rules, command }) => {
@@ -227,6 +227,74 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(approvals.cards()).toHaveLength(1);
     expect(approvals.cards()[0]!.allowedChoices).toEqual(["allow-once", "deny-once"]);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  // Worker confinement on, shell scope off: boot still publishes the boundary state, and the sandbox-off plan asks every command.
+  const workerOnlyCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
+    { category, dialect, mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
+    { category, dialect, mode: "auto" as const, label: "auto review", rules: [] },
+    { category, dialect, mode: "allow" as const, label: "allow mode", rules: [] },
+  ])));
+
+  it.each(workerOnlyCases)("$category on a worker-only boot: $dialect.toolName with $label asks every command", async ({ category, dialect, mode, rules }) => {
+    setShellSandboxRequestedAtBoot(false);
+    publishBoundary(category);
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager(mode, rules);
+    const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+      [{ id, name: dialect.toolName, input: { command: dialect.command } }],
+      { sessionId: "boundary-worker-only", permissionContext: permissionContext() },
+    ));
+
+    const denied = cardGate("deny-once");
+    await run(denied.gate, "worker-only-deny");
+    expect(denied.cards()).toHaveLength(1);
+    const card = denied.cards()[0]!;
+    expect(card.executionPlan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(shellExecutionEnvironmentLines(card.executionPlan!)).toContain(t("shellExecution.boundaryUnverifiedAsk"));
+    expect(execute).not.toHaveBeenCalled();
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+
+    const approved = cardGate("allow-once");
+    await run(approved.gate, "worker-only-allow");
+    expect(execute).toHaveBeenCalledOnce();
+    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false });
+
+    const again = cardGate("deny-once");
+    await run(again.gate, "worker-only-again");
+    expect(again.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("denies a headless shell on a worker-only boot with an unverifiable boundary", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    publishBoundary("boundary-unlisted");
+    const execute = vi.fn();
+    const registry = probe(DIALECTS[0].create, execute);
+    const result = await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("allow", ["bash"]), undefined, cardGate("allow-once").gate).executeAll(
+      [{ id: "worker-only-headless", name: "bash", input: { command: "echo boundary" } }],
+      { sessionId: "worker-only-headless", permissionContext: permissionContext({ headless: true }) },
+    ));
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
+  });
+
+  it.each(DIALECTS)("keeps ordinary sandbox-off policy for $toolName with the shell scope off and no boundary failure", async (dialect) => {
+    setShellSandboxRequestedAtBoot(false);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const approvals = cardGate("deny-once");
+    await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, manager("default", [dialect.prefixRule, dialect.toolName]), undefined, approvals.gate).executeAll(
+      [{ id: "worker-only-control", name: dialect.toolName, input: { command: dialect.command } }],
+      { sessionId: "worker-only-control", permissionContext: permissionContext() },
+    ));
+    expect(approvals.cards()).toHaveLength(0);
+    expect(execute).toHaveBeenCalledOnce();
+    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
+      fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
   });
 
   it("denies a headless shell with no approver", async () => {

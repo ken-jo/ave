@@ -61,6 +61,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
+import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import { assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -254,6 +255,37 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       }
       await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none" }));
     });
+
+  it.each([["link", "boundary-link"], ["unlisted", "boundary-unlisted"]] as const)(
+    "asks for every default shell after a worker-only boot publishes an unverifiable boundary (%s)", async (reason, category) => {
+      h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+      h.detectMxc.mockResolvedValue(MXC_OK);
+      h.initialize.mockRejectedValue(Object.assign(new Error("sandbox: refusing confinement"),
+        { code: "ave-home-boundary-unverified", reason, home: "C:\Users\alice\.ave" }));
+
+      // Worker confinement on, shell scope off: the shell intent stays false.
+      await initSandboxGate(harness.context(false, true));
+
+      expect(h.initialize).toHaveBeenCalledOnce();
+      expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", category });
+      const plan = getHostShellExecutionPlan();
+      expect(plan).toMatchObject({ requestedSandbox: false, mode: "plain", fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+      expect(requiresUnsandboxedShellAsk(getHostShellExecutionPlan("host"))).toBe(true);
+    });
+
+  it("keeps the ordinary sandbox-off plan when a worker-only boot fails for another reason", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.initialize.mockRejectedValue(Object.assign(new Error("proxy failed to bind"), { code: "EADDRINUSE" }));
+
+    await initSandboxGate(harness.context(false, true));
+
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
+    expect(plan.identity.endsWith(":ask")).toBe(false);
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+  });
 
   it("keeps the generic Windows degrade for any other initialization failure", async () => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
