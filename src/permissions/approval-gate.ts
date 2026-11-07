@@ -1236,7 +1236,7 @@ export class ApprovalGate {
     }
 
     // surface a system notification when an approval is about to block the user. Approval is the most user-visible gate; default to urgent so the OS toast plays sound even when window is backgrounded.
-    // The window showing this request's toast, which need not be one the request is sent to; every exit from here on tells it the request settled.
+    // The window showing this request's toast, which need not be one the request is sent to; every exit from here on, a throw included, tells it the request settled.
     let toastSurface: WebContents | null = null;
     try {
       toastSurface = this.notificationService?.fire({
@@ -1255,14 +1255,17 @@ export class ApprovalGate {
 
     // Mint nonce + HMAC, attach to outgoing request (confused-deputy defense)
     const nonce = randomBytes(16).toString("hex");
-    const expectedHmac = signApprovalRequest(this.sessionKey, {
-      id: fullReq.id,
-      nonce,
-      toolName: fullReq.toolName,
-      sessionId: fullReq.sessionId,
-      args: fullReq.args,
-      executionCwd: fullReq.executionCwd,
-    });
+    let expectedHmac: string;
+    try {
+      expectedHmac = signApprovalRequest(this.sessionKey, {
+        id: fullReq.id,
+        nonce,
+        toolName: fullReq.toolName,
+        sessionId: fullReq.sessionId,
+        args: fullReq.args,
+        executionCwd: fullReq.executionCwd,
+      });
+    } catch (error) { retractToast(); throw error; }
     const signedReq: ApprovalRequest = {
       ...fullReq,
       // Added after the preimage above rather than before it, deliberately. The signature authenticates what the renderer echoes back, and this field is outbound-only — see its declaration.
@@ -1540,13 +1543,14 @@ export class ApprovalGate {
         );
       }
     });
+    // The wait wrapper can throw before running the callback (a budget that cannot pause), so the catch sits outside it.
     return (toolApprovalWait ?? withToolApprovalWait)(() => {
       if (this.lifetime.signal.aborted || abortSignal?.aborted) {
         retractToast();
         return Promise.resolve(denyForAbortedTurn());
       }
-      return waitForHuman().catch((error: unknown) => { retractToast(); throw error; });
-    });
+      return waitForHuman();
+    }).catch((error: unknown) => { retractToast(); throw error; });
   }
 
   capturePendingRequestIdentityGuard(requestId: string): { refresh: () => Promise<boolean>; isCurrent: () => boolean } | null {

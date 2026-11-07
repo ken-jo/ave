@@ -193,15 +193,16 @@ export class NotificationService {
   }
 
   deliver(opts: FireOptions): { accepted: boolean; toast?: WebContents } {
+    // Captured outside the try: a toast already on screen stays retractable even if a later step (the audit) throws.
+    let toast: WebContents | undefined;
     try {
-      let toast: WebContents | undefined;
       const accepted = this.fireUnguarded(opts, (target) => { toast = target; });
-      return { accepted, ...(accepted && toast !== undefined ? { toast } : {}) };
+      return { accepted, ...(toast !== undefined ? { toast } : {}) };
     } catch (err) {
       // Delivery failure must never propagate into the calling flow. The inner OS/toast paths already degrade individually; this catch is the structural
       // backstop for everything else (probe callbacks, window races, sanitizer edge cases).
       log.warn("notification fire failed: %s", (err as Error)?.message ?? String(err));
-      return { accepted: false };
+      return { accepted: false, ...(toast !== undefined ? { toast } : {}) };
     }
   }
 
