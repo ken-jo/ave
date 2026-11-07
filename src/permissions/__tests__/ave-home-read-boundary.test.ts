@@ -3,10 +3,21 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fakeHome = vi.hoisted(() => ({ value: undefined as string | undefined }));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    homedir: () => fakeHome.value ?? actual.homedir(),
+    userInfo: () => (fakeHome.value === undefined ? actual.userInfo() : { ...actual.userInfo(), homedir: fakeHome.value }),
+  };
+});
 
 vi.mock("../../shared/policy-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
@@ -22,13 +33,20 @@ import {
   aveHomeReadBoundaryCovering,
   buildPerCommandSandboxCustomConfig,
   buildSandboxConfig,
+  cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
   getProtectedReadDenyFloor,
+  initializeAsrtSandbox,
+  isAsrtSandboxActive,
+  resetAsrtSandbox,
+  wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 import { SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
-import { windowsReadDenyEvidence } from "../../shared/windows-read-deny-evidence.js";
+import { windowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { asrtCanInitialize } from "./test-helpers.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -46,6 +64,8 @@ const reallowed = (): string[] => [
   join(aveHome(), "agent-plugin-data", "bob-agent"),
   join(aveHome(), "packages", "agent-plugin", "bob-agent", "1.0.0"),
   join(aveHome(), "mcp", "example-server", "sandbox"),
+  join(aveHome(), "mcp", "build.json", "sandbox"),
+  join(aveHome(), "mcp-data", "example-server"),
   join(aveHome(), "runtime", "python-envs", "example"),
   join(aveHome(), "runtime", "uv"),
   join(aveHome(), "mxc-staging", "alice"),
@@ -60,6 +80,7 @@ const withheld = (): string[] => [
   join(aveHome(), "mcp", "servers.json"),
   join(aveHome(), "mcp", "servers.json.bak"),
   join(aveHome(), "mcp", ".cache"),
+  join(aveHome(), "mcp-data"),
   join(aveHome(), "packages", "ledger.json"),
   join(aveHome(), "runtime"),
   join(aveHome(), "runtime", "example-tool"),
@@ -77,6 +98,21 @@ describe("the Ave home re-allow table", () => {
     expect(isAveHomeReadReallowed(["mcp", "servers.json"])).toBe(false);
     expect(isAveHomeReadReallowed(["mcp", ".cache"])).toBe(false);
     expect(isAveHomeReadReallowed(["logs"])).toBe(false);
+    expect(isAveHomeReadReallowed(["plugins", "auth-partitions.json.tmp"])).toBe(false);
+    expect(isAveHomeReadReallowed(["plugins", ".cache", "plugin-contribution-trust"])).toBe(false);
+  });
+
+  it("accepts every MCP server directory the host derives, dotted ids included, and no host record beside them", () => {
+    // `ensureStdioSandboxRoot` keeps `[A-Za-z0-9._-]` and strips leading dots.
+    for (const id of ["build.json", "servers.json-tool", "a.b.c", "_x", "-y"]) expect(isAveHomeReadReallowed(["mcp", id, "sandbox"]), id).toBe(true);
+    for (const name of ["servers.json", "servers.json.bak", "servers.json.lock", ".cache", ".staging"]) expect(isAveHomeReadReallowed(["mcp", name]), name).toBe(false);
+  });
+
+  it("re-opens one marketplace data directory per server slug, never the namespace", () => {
+    expect(isAveHomeReadReallowed(["mcp-data", "example-server"])).toBe(true);
+    expect(isAveHomeReadReallowed(["mcp-data", "example-server", "index.db"])).toBe(true);
+    expect(isAveHomeReadReallowed(["mcp-data"])).toBe(false);
+    expect(isAveHomeReadReallowed(["mcp-data", ".hidden"])).toBe(false);
     expect(AVE_HOME_READ_REALLOWS.every((row) => row.why.length > 0)).toBe(true);
   });
 });
@@ -143,9 +179,94 @@ describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wr
 
   it.runIf(platform === "darwin")("spells the root deny exactly so a nested re-allow survives late deny emission", () => {
     setProcessPlatform(platform);
+    let real = aveHome();
+    try { real = realpathSync(aveHome()); } catch { /* not created: the deny still names it */ }
+    const exact = `${real.slice(0, -1)}[${real.slice(-1)}]`;
     const denies = spelled(buildSandboxConfig({ allowedDomains: [], strictAllowlist: true }).filesystem.denyRead);
+    expect(denies).toContain(exact);
     expect(denies).not.toContain(trim(aveHome()));
-    expect(denies.some((path) => path.endsWith("]") && path.includes("["))).toBe(true);
+  });
+});
+
+describe("the Ave home read boundary through the MCP stdio wrap", () => {
+  it("keeps a dotted server id's install and sandbox roots, and its own data directory, on Linux", () => {
+    setProcessPlatform("linux");
+    const install = join(aveHome(), "mcp", "build.json");
+    const sandbox = join(install, "sandbox");
+    const data = join(aveHome(), "mcp-data", "build.json");
+    // The shape wrapBundledCommand gives an MCP server of no plugin: its sandbox root writable, its install and data directories read.
+    const config = buildPerCommandSandboxCustomConfig({ allowRead: [install, data, sandbox], allowWrite: [sandbox], denyRead: getDefaultSensitiveReadDenyPaths() });
+    expect(spelled(config?.filesystem?.allowRead ?? [])).toEqual(expect.arrayContaining([install, data, sandbox].map(trim)));
+    expect(spelled(config?.filesystem?.allowWrite ?? [])).toContain(trim(sandbox));
+    expect(spelled(config?.filesystem?.allowWrite ?? [])).not.toContain(trim(data));
+  });
+
+  it("lets the Windows grant ceiling accept the same roots", () => {
+    setProcessPlatform("win32");
+    for (const path of [join(aveHome(), "mcp", "build.json", "sandbox"), join(aveHome(), "mcp-data", "build.json")]) {
+      expect(aveHomeReadBoundaryCovering(path), path).toBeUndefined();
+    }
+  });
+});
+
+describe("a profile-child Ave home on Windows", () => {
+  it("keeps its file rows instead of a root deny, and the relocated home keeps its root deny", () => {
+    const profile = mkdtempSync(join(tmpdir(), "ave-boundary-profile-"));
+    fakeHome.value = profile;
+    setProcessPlatform("win32");
+    try {
+      const original = join(profile, ".ave");
+      const settings = join(original, "settings.json");
+      mkdirSync(original, { recursive: true });
+      writeFileSync(settings, "fixture");
+      const floor = spelled(getDefaultSensitiveReadDenyPaths());
+      // A stamp on a profile child also stamps the profile root; that is what windowsDenyTargets refuses.
+      expect(floor).not.toContain(trim(original));
+      for (const row of ["settings.json", "permissions.json", join("plugins", "registry.json"), join("mcp", "servers.json")]) {
+        expect(floor).toContain(join(original, row));
+      }
+      expect(floor).toContain(trim(aveHome()));
+      for (const row of aveFileRows()) expect(floor).not.toContain(row);
+      // Readable original home, no grant beneath it: its file rows survive the profile filter, as on main.
+      const stat = lstatSync(settings, { bigint: true });
+      const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true },
+        new Map([[windowsReadDenyKey(settings), { status: "readable", principals: ["Everyone"],
+          identity: { volumeSerialNumber: stat.dev.toString(), fileId: stat.ino.toString() } } as const]]));
+      const denies = spelled(config.filesystem.denyRead);
+      expect(denies).toContain(settings);
+      expect(denies).not.toContain(trim(original));
+    } finally {
+      setProcessPlatform(HOST_PLATFORM);
+      fakeHome.value = undefined;
+      rmSync(profile, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.runIf(HOST_PLATFORM === "darwin")("the Ave home read boundary in a macOS wrap", () => {
+  afterEach(async () => { if (isAsrtSandboxActive()) await resetAsrtSandbox(); });
+
+  it("reads a granted child and nothing else under the root", async () => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return;
+    }
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const child = join(aveHome(), "workspace", "alice-project");
+    const other = join(aveHome(), "logs");
+    mkdirSync(child, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(child, "a.txt"), "CHILD");
+    writeFileSync(join(other, "b.log"), "OTHER");
+    const { argv, env } = await wrapWorkerCommand(`cat ${join(child, "a.txt")}; cat ${join(other, "b.log")}; echo done`, {
+      commandId: TEST_COMMAND_ID,
+      filesystem: { allowRead: [child], denyRead: getDefaultSensitiveReadDenyPaths() },
+    });
+    const run = spawnSync(argv[0]!, argv.slice(1), { env, encoding: "utf-8", timeout: 30_000 });
+    await cleanupAsrtSandboxAfterCommand();
+    expect(run.stdout).toContain("CHILD");
+    expect(run.stdout).not.toContain("OTHER");
+    expect(readFileSync(join(other, "b.log"), "utf8")).toBe("OTHER");
   });
 });
 

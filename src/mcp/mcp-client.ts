@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { assertSafeArtifactSlug } from "../plugins/plugin-id.js";
+import { aveHome } from "../shared/ave-home.js";
 import type {
   McpHttpServerConfig,
   McpServerConfig,
@@ -1838,9 +1841,10 @@ class StdioTransport implements McpTransport {
         args: spawnCommand.args,
         sandboxHome,
         allowWrite,
-        // A plugin-bundled server reads its own generation payload under the plugins root it is refused; a server of no plugin reads nothing there.
-        // A server of no plugin reads its own install directory, the parent of its sandbox root, inside the Ave home read deny.
-        ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : sandboxRoot ? [dirname(sandboxRoot)] : [],
+        // A plugin-bundled server reads its own generation payload under the plugins root it is refused. A server of no plugin reads, inside the
+        // Ave home read deny, its own install directory (the parent of its sandbox root) and its marketplace data directory.
+        ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot]
+          : [...(sandboxRoot ? [dirname(sandboxRoot)] : []), ...marketplaceDataReads(this.config)],
         tempPrincipal: { kind: "mcp", id: this.config.id },
         egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
       });
@@ -1903,7 +1907,7 @@ class StdioTransport implements McpTransport {
       args: spawnCommand.args,
       baseEnv,
       ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
-      allowRead: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
+      allowRead: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : marketplaceDataReads(this.config),
       allowWrite,
       egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
     });
@@ -2700,4 +2704,14 @@ export function extractParamHeaders(
     headers[`mcp-param-${headerName.toLowerCase()}`] = encodeMcpHeaderValue(text);
   }
   return headers;
+}
+
+/** A marketplace server's `$DATA_DIR` (`McpInstaller.dataDir`: `<Ave home>/mcp-data/<slug>`), derived from its host-validated id and
+ * granted only once the installer has created it. Read-only: it stays out of the write roots, as before. */
+function marketplaceDataReads(config: McpStdioServerConfig): string[] {
+  if (config.bundledPayloadRoot) return [];
+  let dir: string;
+  try { dir = join(aveHome(), "mcp-data", assertSafeArtifactSlug(config.id)); }
+  catch { return []; }
+  return existsSync(dir) ? [dir] : [];
 }

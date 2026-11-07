@@ -1048,8 +1048,19 @@ function aveHomeReadBoundaryRoots(): string[] {
   });
 }
 
+// The roots denied as one directory. On Windows a root directly beneath the OS profile keeps its file rows instead: a stamp also
+// denies FILE_DELETE_CHILD inheritably on the target's parent, and on the profile root that propagates through the whole profile and
+// exceeds the init timeout (why windowsDenyTargets filters profile-child read denies). The grant ceiling still covers every root.
+function aveHomeReadBoundaryDirectoryRoots(): string[] {
+  const roots = aveHomeReadBoundaryRoots();
+  const profile = process.platform === "win32" ? windowsProfileHome() : undefined;
+  if (profile === undefined) return roots;
+  const profileKey = caseFoldForMatch(resolve(profile));
+  return roots.filter((root) => caseFoldForMatch(dirname(resolve(root))) !== profileKey);
+}
+
 function aveHomeReadBoundaryDenies(): string[] {
-  return aveHomeReadBoundaryRoots().map((root) => (process.platform === "win32" ? root.replace(/[\\/]+$/, "") + sep : root));
+  return aveHomeReadBoundaryDirectoryRoots().map((root) => (process.platform === "win32" ? root.replace(/[\\/]+$/, "") + sep : root));
 }
 
 // The Ave home root covering `path` when `path` is that root or lies outside every re-allowed child.
@@ -1550,21 +1561,23 @@ function keepWindowsDenyTarget(
   return present;
 }
 
-// `readProjection` leaves out the Ave home file rows; the read projection denies that home as one directory instead.
+// `readProjection` leaves out the file rows of each Ave home the read projection denies as one directory.
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string, readProjection = false): string[] {
   const homes = sensitiveDenyHomes();
   const ave = aveHome();
   const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
+  const directoryRoots = new Set(readProjection ? aveHomeReadBoundaryDirectoryRoots().map((root) => caseFoldForMatch(resolve(root))) : []);
   // Electron userData dir — see electronUserDataDirs.
   const electronUserData = electronUserDataDirs(userDataDir, homes);
   const raw = [
     // The sensitive-path table, projected to literal absolute paths Projected from the single authority, SENSITIVE_PATH_ENTRIES in src/permissions/sensitive-paths.ts, which the in-process host-tool guard projects into globs. Do NOT hand-add a `join(home, …)` entry here — add a row to that table and BOTH surfaces deny it.
-    ...SENSITIVE_PATH_ENTRIES.filter((entry) => sensitiveEntryOnSandboxFloor(entry)
-      && !(readProjection && entry.anchor === "ave-home" && entry.kind === "file")).flatMap((entry) => {
+    ...SENSITIVE_PATH_ENTRIES.filter((entry) => sensitiveEntryOnSandboxFloor(entry)).flatMap((entry) => {
       let paths: string[];
       switch (entry.anchor) {
         case "ave-home":
-          paths = aveHomes.map((home) => join(home, ...entry.segments));
+          paths = (readProjection && entry.kind === "file"
+            ? aveHomes.filter((home) => !directoryRoots.has(caseFoldForMatch(resolve(home)))) : aveHomes)
+            .map((home) => join(home, ...entry.segments));
           break;
         case "home":
           paths = homes.map((home) => join(home, ...entry.segments));

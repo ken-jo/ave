@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   gateActive: true,
   holderSpawn: vi.fn(),
   legacySpawn: vi.fn(),
+  posixWrap: vi.fn(),
 }));
 
 vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => ({
@@ -17,6 +18,7 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => ({
   isMxcExtensionBackendSelected: () => state.selected,
   spawnMxcBundledHolder: (input: unknown) => state.holderSpawn(input),
   spawnWindowsBundledProcess: (input: unknown) => state.legacySpawn(input),
+  wrapBundledCommand: (input: unknown) => state.posixWrap(input),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
@@ -92,6 +94,7 @@ beforeEach(() => {
   state.gateActive = true;
   state.holderSpawn.mockReset();
   state.legacySpawn.mockReset();
+  state.posixWrap.mockReset();
   __resetWrappedMcpServersForTest();
 });
 
@@ -262,6 +265,32 @@ describe("pinned 0.0.80 fallback and other platforms", () => {
     await expect(client().connect()).rejects.toThrow("legacy route reached");
     expect(state.legacySpawn.mock.calls[0]![0]).toMatchObject({ label: "mcp:fs", allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"] });
     expect(state.holderSpawn).not.toHaveBeenCalled();
+  });
+
+  it("grants a marketplace server its own data directory and no other server's", async () => {
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { aveHome } = await import("../../shared/ave-home.js");
+    const own = join(aveHome(), "mcp-data", "fs");
+    const other = join(aveHome(), "mcp-data", "bob-server");
+    mkdirSync(own, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    try {
+      state.selected = false;
+      state.legacySpawn.mockRejectedValue(new Error("legacy route reached"));
+      await expect(client().connect()).rejects.toThrow("legacy route reached");
+      expect(state.legacySpawn.mock.calls[0]![0]).toMatchObject({ allowRead: [own], allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"] });
+
+      setProcessPlatform("linux");
+      state.posixWrap.mockRejectedValue(new Error("posix wrap reached"));
+      await expect(client({ sandboxRoot: "/ave/mcp/fs/sandbox" }).connect()).rejects.toThrow("posix wrap reached");
+      const wrap = state.posixWrap.mock.calls[0]![0] as { ownPluginReads: string[]; allowWrite: string[] };
+      expect(wrap.ownPluginReads).toEqual(["/ave/mcp/fs", own]);
+      expect(wrap.allowWrite).toEqual(["/ave/mcp/fs/sandbox"]);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 
   it.each(["darwin", "linux"] as const)("never takes the container route on %s", async (platform) => {

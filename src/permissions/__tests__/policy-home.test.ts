@@ -85,10 +85,13 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
       for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
         expect(new Set(denied.map((path) => path.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase())).size).toBe(denied.length);
         for (const root of homes) {
-          // The read floor denies the Ave home as one directory instead of its file rows.
-          if (floor === "read") expect(denied).toContain(join(root, ".ave") + sep);
+          // The read floor denies an Ave home as one directory instead of its file rows, except one directly under the
+          // profile: its stamp would also stamp the profile root.
+          const directory = floor === "read" && root !== home;
+          if (directory) expect(denied).toContain(join(root, ".ave") + sep);
+          else expect(denied).not.toContain(join(root, ".ave") + sep);
           for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root"
-            && !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
+            && !(directory && entry.anchor === "ave-home" && entry.kind === "file"))) {
             const path = join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments);
             expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
           }
@@ -149,8 +152,9 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
   });
 
   it("preserves missing directory kinds in deny projections", () => {
-    for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
-      for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
+    // The profile-child Ave home keeps its file rows on the read floor too.
+    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const entry of SENSITIVE_PATH_ENTRIES) {
         const path = entry.anchor === "root" ? "/" + entry.segments.join("/")
           : join(entry.anchor === "ave-home" ? join(home, ".ave") : home, ...entry.segments);
         expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
