@@ -1,3 +1,4 @@
+import { stagedEnvelopeTitle } from "./staged-origins.js";
 import { sessionDisplayTitle } from "./suggestions-session.js";
 
 /** A transcript-derived conversation name is at most this many code points. */
@@ -15,7 +16,9 @@ export function resolveConversationTitle(
     const { role, content, meta } = message as Record<string, unknown>;
     if (typeof content !== "string" || !content.trim()) continue;
     if (meta !== null && typeof meta === "object" && (meta as Record<string, unknown>).resumesInterruptedTurn === true) continue;
-    lastContent = content.replace(/\s+/g, " ").trim();
+    const staged = stagedEnvelopeTitle(content);
+    const text = staged ? staged.title || translate(staged.kind.labelKey) : content;
+    lastContent = text.replace(/\s+/g, " ").trim();
     if (role === "user") lastUser = lastContent;
   }
   const transcriptTitle = truncateCodePoints(lastUser || lastContent, CONVERSATION_TITLE_MAX_CHARS);
