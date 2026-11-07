@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ const SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function fixture(command: string, args: string[] = [], cwd?: string) {
+function fixture(command: string, args: string[] = [], cwd?: string, env?: Record<string, string>) {
   const root = mkdtempSync(join(tmpdir(), "agent-plugin-mcp-"));
   roots.push(root);
   const generationRoot = join(root, "generation");
@@ -20,7 +20,7 @@ function fixture(command: string, args: string[] = [], cwd?: string) {
   writeFileSync(join(generationRoot, "server", "run"), "server payload");
   writeFileSync(join(generationRoot, "server.js"), "server payload");
   writeFileSync(join(generationRoot, "config.json"), "{}");
-  const parsed = parsePortableMcp(JSON.stringify({ $schema: SCHEMA, mcpServers: { local: { type: "stdio", command, args, ...(cwd ? { cwd } : {}) } } }));
+  const parsed = parsePortableMcp(JSON.stringify({ $schema: SCHEMA, mcpServers: { local: { type: "stdio", command, args, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) } } }));
   const projected = projectPortableMcp(parsed);
   const staticServers = { local: { ...projected.local!, digest: "a".repeat(64) } } as AgentPluginComponents["mcpServers"];
   return { staticServers, generationRoot, dataDir, activation: { packageName: "kit", version: "1.0.0", generationRoot, dataDir, activationId: "run-a", generationId: "tree-a", approvalDigests: { local: "c".repeat(64) } } };
@@ -70,5 +70,45 @@ describe("agent plugin MCP runtime resolution", () => {
     expect(resolveRuntimeMcp(item.staticServers, item.activation)[0]!.approvalDigest).toBe("c".repeat(64));
     expect(resolveRuntimeMcp(item.staticServers, { ...item.activation, approvalDigests: { local: null } })[0]!.approvalDigest).toBeNull();
     expect(() => resolveRuntimeMcp(item.staticServers, { ...item.activation, approvalDigests: {} })).toThrow(/has no approval digest/u);
+  });
+
+  describe("PLUGIN_DATA paths in env follow the argv rule", () => {
+    // The plugin owns PLUGIN_DATA and can repoint a link after the check, so a data path may not pass through one.
+    function withDataLink(env: Record<string, string>, args: string[] = ["./server/run"]) {
+      const item = fixture("node", args, undefined, env);
+      mkdirSync(join(item.dataDir, "real"));
+      symlinkSync(join(item.dataDir, "real"), join(item.dataDir, "link"), "dir");
+      return item;
+    }
+
+    it("refuses an env value that passes through a symlink under PLUGIN_DATA", () => {
+      const item = withDataLink({ CONFIG: "${PLUGIN_DATA}/link/cfg" });
+      expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
+        .toThrow(/env\.CONFIG passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    });
+
+    it("refuses an env value that names a dangling symlink under PLUGIN_DATA", () => {
+      const item = fixture("node", ["./server/run"], undefined, { CONFIG: "${PLUGIN_DATA}/gone" });
+      symlinkSync(join(item.dataDir, "missing-target"), join(item.dataDir, "gone"));
+      expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
+        .toThrow(/env\.CONFIG passes through a symlink inside PLUGIN_DATA \('gone'\)/u);
+    });
+
+    it("still resolves an env value whose PLUGIN_DATA path has no link, existing or not", () => {
+      const item = withDataLink({ CONFIG: "${PLUGIN_DATA}/real/cfg", ROOT_DATA: "${PLUGIN_DATA}" });
+      const projection = resolveRuntimeMcp(item.staticServers, item.activation)[0]!;
+      expect(projection.config.transport).toBe("stdio");
+      if (projection.config.transport !== "stdio") return;
+      expect(projection.config.env).toMatchObject({
+        CONFIG: join(realpathSync(item.dataDir), "real", "cfg"),
+        ROOT_DATA: realpathSync(item.dataDir),
+      });
+    });
+
+    it("keeps refusing the same path in args", () => {
+      const item = withDataLink({}, ["./server/run", "${PLUGIN_DATA}/link/cfg"]);
+      expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
+        .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    });
   });
 });

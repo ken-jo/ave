@@ -70,6 +70,12 @@ function containedDataPath(dataDir: string, suffix: string, label: string): stri
   if (!suffix) return root;
   const candidate = resolve(root, relativeSegments(suffix, label));
   if (!isResolvedPathWithin(root, candidate)) throw new Error(`${label} escapes PLUGIN_DATA`);
+  refusePluginDataSymlinks(root, suffix, label);
+  return candidate;
+}
+
+/** Every existing component of `suffix` below the PLUGIN_DATA `root` must not be a link, including a dangling one. */
+export function refusePluginDataSymlinks(root: string, suffix: string, label: string): void {
   let component = root;
   for (const segment of suffix.split("/")) {
     component = join(component, segment);
@@ -88,7 +94,6 @@ function containedDataPath(dataDir: string, suffix: string, label: string): stri
       );
     }
   }
-  return candidate;
 }
 
 type ProcessValue =

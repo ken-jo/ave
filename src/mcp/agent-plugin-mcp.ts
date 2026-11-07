@@ -2,7 +2,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { AgentPluginComponents } from "../marketplace/catalog/types.js";
 import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
-import { resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
+import { refusePluginDataSymlinks, resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
 import { portableLauncherLiteralIndexes } from "./portable-launcher.js";
 import { prepareBundledMcpProjection, type PreparedPluginMcpProjection } from "./plugin-mcp-projection.js";
 
@@ -44,7 +44,11 @@ function resolveValue(value: string, activation: AgentPluginMcpActivation, label
   if (value === "${PLUGIN_ROOT}") resolved = containedReference(value, activation.generationRoot, label);
   else if (value === "${PLUGIN_DATA}") resolved = containedReference(value, activation.dataDir, label);
   else if (value.startsWith("${PLUGIN_ROOT}/") || value.startsWith("./")) resolved = containedReference(value, activation.generationRoot, label);
-  else if (value.startsWith("${PLUGIN_DATA}/")) resolved = containedReference(value, activation.dataDir, label);
+  else if (value.startsWith("${PLUGIN_DATA}/")) {
+    resolved = containedReference(value, activation.dataDir, label);
+    // An env value follows the argv rule: the plugin can repoint a link under PLUGIN_DATA after this check.
+    if (!directory) refusePluginDataSymlinks(realpathSync(activation.dataDir), value.slice("${PLUGIN_DATA}/".length), label);
+  }
   else if (!directory && !value.includes("${") && !CONTROL.test(value)) return value;
   else throw new Error(`${label} is not a declared package or data path`);
   if (directory && (!existsSync(resolved) || !statSync(resolved).isDirectory())) throw new Error(`${label} is not a directory`);
