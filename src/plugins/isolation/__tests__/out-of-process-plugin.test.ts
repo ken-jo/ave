@@ -91,7 +91,7 @@ import { EventEmitter } from "node:events";
 import { connect } from "node:net";
 import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
@@ -103,7 +103,7 @@ import type {
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -1433,6 +1433,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       // Write grants cover the envelope and home, never generation or host worker roots.
       expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      expect(existsSync(home)).toBe(false);
     });
   });
 
@@ -1470,6 +1471,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(outcome).toBeInstanceOf(Error);
       expect((outcome as Error).message).toBe("holder gone");
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
     });
   });
 
@@ -1639,6 +1641,8 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect((outcome as Error).message).toContain("something other than its announce");
       expect(spawned!.kill).toHaveBeenCalledWith("SIGTERM");
       await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+      // A start that failed leaves no throwaway HOME behind.
+      expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
     });
   });
 
@@ -1777,18 +1781,15 @@ describe("on Windows a confined child holds a grant on its own directories for e
       manifest: MANIFEST,
       launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
     });
-    const policy = TOOL_TIMEOUT_POLICY;
-    const layout = aveLayout();
-    await asWindows(layout, async () => {
-      // Setup, the 30 s channel connect, then import and factory.
-      expect(pluginFactoryDeadlineMs(factory, policy.pluginFactoryMs)).toBe(
-        policy.windowsSrtPluginSetupMs + 30_000 + policy.pluginImportMs + policy.pluginFactoryMs);
+    const fallbackMs = TOOL_TIMEOUT_POLICY.pluginFactoryMs;
+    await asWindows(aveLayout(), async () => {
+      expect(pluginFactoryDeadlineMs(factory, fallbackMs)).toBe(windowsSrtPluginChildFactoryBudgetMs());
+      // Only the factory this module built gets the budget, under the same platform and confinement.
+      expect(pluginFactoryDeadlineMs(async () => ({ handlers: {} }), fallbackMs)).toBe(fallbackMs);
     });
     await asWindows(aveLayout(), async () => {
-      expect(pluginFactoryDeadlineMs(factory, policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
+      expect(pluginFactoryDeadlineMs(factory, fallbackMs)).toBe(fallbackMs);
     }, { sandboxActive: false });
-    // Only the factory this module built gets the budget.
-    expect(pluginFactoryDeadlineMs(async () => ({ handlers: {} }), policy.pluginFactoryMs)).toBe(policy.pluginFactoryMs);
   });
 });
 

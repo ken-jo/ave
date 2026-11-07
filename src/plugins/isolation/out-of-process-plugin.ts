@@ -76,7 +76,7 @@ import {
 } from "./bound-host-api-table.js";
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
 import { spawnMxcPluginChild, type MxcPluginChild, type MxcPluginChildLaunch } from "./mxc-plugin-child.js";
-import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs, TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs, TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../shared/tool-timeout-policy.js";
 import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
@@ -437,9 +437,6 @@ export interface ObservedPluginChild {
   readonly exited: Promise<string>;
 }
 
-/** How long a sandboxed Windows child has to start and announce its listener. */
-const WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS = 30_000;
-
 /** The sandboxed Windows launch of the reference runtime: Node's symlink- preserving flags, the child entry, the loopback transport, and the child's environment as one argument. The flags are {@link NODE_PRESERVE_SYMLINK_FLAGS}, which says
  * why. For the child the trade is narrow: the entry path is already the host's real path (decision 33), and the host's integrity and path checks run on its side. The environment is {@link srtWinTargetEnv}'s, which says what stays srt-win's. */
 function windowsLoopbackLaunchLine(
@@ -641,7 +638,7 @@ export async function spawnConfinedPluginChild(
         channel = await connectToAnnouncedChild({
           stdout: child.stdout,
           exited: gone,
-          timeoutMs: WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS,
+          timeoutMs: TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs,
         });
       } catch (error) {
         terminateChild();
@@ -941,16 +938,12 @@ const nativeFactories = new WeakSet<RuntimePluginFactory>();
 const childFactories = new WeakSet<RuntimePluginFactory>();
 const nativeInstances = new WeakSet<RuntimePlugin>();
 
-/** An srt-win plugin child: host-side setup, then the channel connect and the construct request, each under its own deadline. */
-const WINDOWS_SRT_PLUGIN_FACTORY_BUDGET_MS = TOOL_TIMEOUT_POLICY.windowsSrtPluginSetupMs + WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS
-  + TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs;
-
 /** The runtime's deadline for one factory call: a native child also needs startup, construct and disposal time, and an srt-win child
  * (the same test `spawnConfinedPluginChild` grants by) its setup, connect and construct. */
 export function pluginFactoryDeadlineMs(factory: RuntimePluginFactory, fallbackMs: number): number {
   if (nativeFactories.has(factory)) return Math.max(fallbackMs, nativePluginChildFactoryBudgetMs());
   if (childFactories.has(factory) && process.platform === "win32" && isPluginWorkerConfinementActive()) {
-    return Math.max(fallbackMs, WINDOWS_SRT_PLUGIN_FACTORY_BUDGET_MS);
+    return Math.max(fallbackMs, windowsSrtPluginChildFactoryBudgetMs());
   }
   return fallbackMs;
 }

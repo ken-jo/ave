@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
 
 const confinement = vi.hoisted(() => ({ active: false }));
@@ -15,7 +15,9 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   isPluginWorkerConfinementActive: () => confinement.active,
 }));
 
-// Every lifecycle factory is budgeted as a real sandboxed Windows child would be: the module's own answer, asked under win32 with confinement on.
+// A factory routed below is budgeted as a real sandboxed Windows child would be: the module's own answer for one it built, asked under
+// win32 with confinement on. Any other factory gets the module's answer unchanged.
+const routed = vi.hoisted(() => ({ factories: new WeakSet<object>(), budgeted: 0 }));
 vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../isolation/out-of-process-plugin.js")>();
   const srtWinChild = actual.createOutOfProcessPluginFactory({
@@ -24,7 +26,9 @@ vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
   });
   return {
     ...actual,
-    pluginFactoryDeadlineMs: (_factory: unknown, fallbackMs: number) => {
+    pluginFactoryDeadlineMs: (factory: Parameters<typeof actual.pluginFactoryDeadlineMs>[0], fallbackMs: number) => {
+      if (!routed.factories.has(factory)) return actual.pluginFactoryDeadlineMs(factory, fallbackMs);
+      routed.budgeted += 1;
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { ...platform, value: "win32" });
       confinement.active = true;
@@ -39,8 +43,7 @@ vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
 });
 
 const PLUGIN_ID = "srt-budget";
-const SRT_WIN_BUDGET_MS = TOOL_TIMEOUT_POLICY.windowsSrtPluginSetupMs + 30_000
-  + TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs;
+const SRT_WIN_BUDGET_MS = windowsSrtPluginChildFactoryBudgetMs();
 
 /** Each construct takes `delayMs` on the host's (fake) clock, or never settles. */
 const construct = { delayMs: 0 as number | "hang", started: 0, generation: 0 };
@@ -53,17 +56,16 @@ function routeInHost(runtime: PluginRuntime): void {
   const original = routing.importPluginFactoryForLifecycle.bind(routing);
   vi.spyOn(routing, "importPluginFactoryForLifecycle").mockImplementation(async (...args: unknown[]) => {
     await original(...args);
-    return {
-      arm: "child",
-      createPlugin: async () => {
-        construct.started += 1;
-        const { delayMs } = construct;
-        if (delayMs === "hang") await new Promise(() => {});
-        else await new Promise((resolve) => setTimeout(resolve, delayMs));
-        const generation = ++construct.generation;
-        return { handlers: { srt_budget_ping: async () => generation } };
-      },
+    const createPlugin = async () => {
+      construct.started += 1;
+      const { delayMs } = construct;
+      if (delayMs === "hang") await new Promise(() => {});
+      else await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const generation = ++construct.generation;
+      return { handlers: { srt_budget_ping: async () => generation } };
     };
+    routed.factories.add(createPlugin);
+    return { arm: "child", createPlugin };
   });
 }
 
@@ -74,6 +76,7 @@ describe("an update's restart under the srt-win factory budget", () => {
 
   beforeEach(async () => {
     Object.assign(construct, { delayMs: 0, started: 0, generation: 0 });
+    routed.budgeted = 0;
     testDir = mkdtempSync(join(tmpdir(), "ave-srt-budget-"));
     installedDir = join(testDir, "plugins");
     registryPath = join(installedDir, "registry.json");
@@ -121,6 +124,8 @@ describe("an update's restart under the srt-win factory budget", () => {
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginFactoryMs + 2_500);
     await expect(restart).resolves.toBe("started");
     await expect(runtime.call("srt_budget_ping")).resolves.toBe(2);
+    // Boot and the restart each asked the deadline for the factory the lifecycle routed.
+    expect(routed.budgeted).toBe(2);
     expect(runtime.listPluginCards().find((card) => card.id === PLUGIN_ID)?.lifecycleQuarantined).toBeUndefined();
   });
 
