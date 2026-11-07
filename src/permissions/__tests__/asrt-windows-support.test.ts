@@ -1,8 +1,13 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+// Every srt-win copy this file prepares; the product keeps it until process exit, which a Vitest worker never reaches.
+const srtWinCopies = vi.hoisted(() => new Set<string>());
+vi.mock("../srt-win-integrity.js", async (importOriginal) =>
+  (await import("../../__tests__/support/srt-win-copies.js")).recordSrtWinCopies(await importOriginal(), srtWinCopies));
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeSrtWinCopies } from "../../__tests__/support/srt-win-copies.js";
 import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -14,6 +19,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+afterAll(() => removeSrtWinCopies(srtWinCopies));
+
 afterEach(() => { vi.unstubAllEnvs(); });
 
 import {

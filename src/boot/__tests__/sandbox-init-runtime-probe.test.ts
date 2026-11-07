@@ -1,6 +1,9 @@
 /** After a wrapper probe fails, retain requested activation but publish no verified capability.
  * Explicit activation aborts; settings activation degrades without exposing wrapper diagnostics. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -81,6 +84,9 @@ beforeEach(() => {
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
+
+// The mocked asrt-sandbox above makes this file's private sandbox roots here; the file owns removing them.
+afterAll(() => rmSync(join(tmpdir(), "ave-sandbox-init-runtime-probe-sandbox"), { recursive: true, force: true }));
 
 afterEach(() => {
   vi.unstubAllEnvs();

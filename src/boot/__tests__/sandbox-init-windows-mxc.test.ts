@@ -3,7 +3,10 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check each Windows substrate combination and the boot outcome reported to Settings. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -95,6 +98,9 @@ beforeEach(() => {
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
+
+// The mocked asrt-sandbox above makes this file's private sandbox roots here; the file owns removing them.
+afterAll(() => rmSync(join(tmpdir(), "ave-sandbox-init-windows-mxc-sandbox"), { recursive: true, force: true }));
 
 afterEach(() => {
   setSandboxStatusChangeListener(undefined);

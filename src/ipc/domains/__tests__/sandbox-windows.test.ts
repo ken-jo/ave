@@ -1,8 +1,13 @@
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+// Every srt-win copy this file prepares; the product keeps it until process exit, which a Vitest worker never reaches.
+const srtWinCopies = vi.hoisted(() => new Set<string>());
+vi.mock("../../../permissions/srt-win-integrity.js", async (importOriginal) =>
+  (await import("../../../__tests__/support/srt-win-copies.js")).recordSrtWinCopies(await importOriginal(), srtWinCopies));
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
+import { removeSrtWinCopies } from "../../../__tests__/support/srt-win-copies.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -143,6 +148,8 @@ beforeEach(() => {
   asrtState.verifyCalls = [];
   asrtState.verifyRejects = false;
 });
+
+afterAll(() => removeSrtWinCopies(srtWinCopies));
 
 afterEach(() => {
   _resetAveHomePrivacyForTest();
