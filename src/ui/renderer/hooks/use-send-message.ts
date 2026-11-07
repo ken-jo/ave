@@ -111,13 +111,14 @@ export type SendMode = "default" | "trigger-import" | "app-message" | "mcp-promp
  * The forward-ref bridge this hook writes.
  *
  * The TILE owns the ref: this hook sets `ref.current = handleAsk` each render
- * and the tile's own MCP-prompt path reads it. It surfaces the first three
- * params only — its readers never pass the 4th `opts`.
+ * and the tile's own prompt paths read it. Of the 4th `opts` it surfaces only
+ * the plugin-prompt template selection.
  */
 export type HandleAskRefFn = (
   q: string,
   mode?: SendMode,
   userIntent?: UserKeyboardIntentSnapshot,
+  opts?: Pick<ComposerSendOptions, "pluginPromptId">,
 ) => Promise<void>;
 
 /**
@@ -139,6 +140,8 @@ export interface ComposerSendOptions {
   injectHint?: "queue" | "interrupt";
   inputOrigin?: "queue-auto";
   appSource?: string;
+  /** The host-chrome template selection behind a plugin-prompt send; main resolves and validates it. */
+  pluginPromptId?: string;
   onAccepted?: () => void;
   onRefused?: () => void;
 }
@@ -318,6 +321,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       if (mode === "default") {
         appendUserEntry(displayText, opts?.injectHint);
       }
+      const pluginPromptId = mode === "plugin-prompt" ? opts?.pluginPromptId : undefined;
       try {
         const result = await api.chatSend(
           outgoing,
@@ -330,7 +334,10 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           opts?.inputOrigin === "queue-auto"
             ? undefined
             : mode === "default" ? composed.personaPromptId : undefined,
-          ...(interrupt ? [{ interrupt: true }] : []),
+          ...(interrupt || pluginPromptId ? [{
+            ...(interrupt ? { interrupt: true } : {}),
+            ...(pluginPromptId ? { pluginPromptId } : {}),
+          }] : []),
         );
         const refusal = chatSendRefusal(result);
         if (refusal !== undefined) throw new ChatSendRefusedError(refusal.code, refusal.interrupted);

@@ -20,6 +20,10 @@ export function formatAgentPluginTemplatePrompt(prompt: AgentPluginTemplatePromp
     throw new Error("invalid package template identity");
   }
   const body = prompt.body.replaceAll("{args}", () => args);
-  return formatStagedEnvelope(stagedOriginFor("plugin-prompt-emitted"), body,
-    `plugin-prompt:${extension ? "extension:" : ""}${prompt.packageName}:${prompt.name}`);
+  return formatStagedEnvelope(stagedOriginFor("plugin-prompt-emitted"), body, agentPluginPromptEnvelopeSource(prompt));
+}
+
+/** The envelope source a template's run carries; main binds a selected template id to it. */
+export function agentPluginPromptEnvelopeSource(prompt: Pick<AgentPluginTemplatePrompt, "id" | "packageName" | "name">): string {
+  return `plugin-prompt:${prompt.id.startsWith("extension:") ? "extension:" : ""}${prompt.packageName}:${prompt.name}`;
 }

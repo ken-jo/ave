@@ -711,7 +711,7 @@ export function ChatGroupSession({
   const runPluginPrompt = useCallback(async (prompt: AgentPluginTemplatePrompt, args: string) => {
     try {
       const envelope = formatAgentPluginTemplatePrompt(prompt, args);
-      await handleAskRef.current?.(envelope, "plugin-prompt");
+      await handleAskRef.current?.(envelope, "plugin-prompt", undefined, { pluginPromptId: prompt.id });
     } catch {
       pushTileNotice({ severity: "error", message: t(prompt.id.startsWith("extension:")
         ? "agentPluginPrompt.extensionFailed" : "agentPluginPrompt.failed"), ttlMs: 10000 });

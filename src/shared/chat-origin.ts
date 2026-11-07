@@ -174,6 +174,8 @@ export interface ChatSendPayload {
   inputOrigin: ChatSendInputOrigin;
   userActivation?: boolean;
   personaPromptId?: string;
+  /** Template the user picked in host chrome; main resolves it against installed templates. */
+  pluginPromptId?: string;
 }
 
 /** External payloads omit actual provenance; the host adds it at the command boundary. */

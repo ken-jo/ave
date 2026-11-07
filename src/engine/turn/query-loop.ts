@@ -1369,6 +1369,7 @@ export async function queryLoop(
               self.deps.allowedPluginIds?.has(pluginId) === true),
         ),
         sessionActivatedPluginIds: self.sessionActivatedPluginIds,
+        ...(scope.turnOnlyPluginIds ? { turnOnlyPluginIds: scope.turnOnlyPluginIds } : {}),
         isPluginEnabled: (pluginId) =>
           self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false,
       });
@@ -1674,6 +1675,7 @@ export async function queryLoop(
                         self.deps.allowedPluginIds?.has(pluginId) === true),
                   ),
                   sessionActivatedPluginIds: self.sessionActivatedPluginIds,
+                  ...(scope.turnOnlyPluginIds ? { turnOnlyPluginIds: scope.turnOnlyPluginIds } : {}),
                   isPluginEnabled: (pluginId) =>
                     self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false,
                 });
@@ -2246,6 +2248,8 @@ interface PluginExpansionState {
   availablePluginIds: string[];
   // Record allowlisted disabled-plugin activation for this session only; never persist enabled state.
   sessionActivatedPluginIds?: Set<string>;
+  // An explicit request_plugin promotes prompt-only scope to ordinary carried scope.
+  turnOnlyPluginIds?: Set<string>;
   isPluginEnabled?: (pluginId: string) => boolean;
 }
 
@@ -2308,6 +2312,7 @@ function handleRequestPlugin(
       });
     } else {
       state.activePluginIds.add(pluginId);
+      state.turnOnlyPluginIds?.delete(pluginId);
       // Preserve activated scope for this session without changing registry enabled state.
       if (state.isPluginEnabled?.(pluginId) === false) {
         state.sessionActivatedPluginIds?.add(pluginId);

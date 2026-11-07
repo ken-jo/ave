@@ -687,7 +687,7 @@ export type AvePreloadApi = {
     inputOrigin: ChatSendInputOrigin,
     userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
     personaPromptId?: string,
-    options?: { interrupt?: boolean },
+    options?: { interrupt?: boolean; pluginPromptId?: string },
   ) => Promise<unknown>;
   /** `userIntent` is the composer gesture's one-shot keyboard intent; without a valid one main queues the text as another principal's. */
   chatGuide: (input: string, userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot, appSource?: string) => Promise<unknown>;
