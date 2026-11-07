@@ -1365,13 +1365,13 @@ export async function queryLoop(
           (self.deps.pluginRuntime?.listPluginIds() ?? [])
             // Only allowlisted sessions may activate disabled plugins for themselves; main chat cannot.
             .filter((pluginId) =>
-              self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false ||
+              self.deps.pluginRuntime?.isPluginEnabled(pluginId) !== false ||
               self.deps.allowedPluginIds?.has(pluginId) === true),
         ),
         sessionActivatedPluginIds: self.sessionActivatedPluginIds,
         ...(scope.turnOnlyPluginIds ? { turnOnlyPluginIds: scope.turnOnlyPluginIds } : {}),
         isPluginEnabled: (pluginId) =>
-          self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false,
+          self.deps.pluginRuntime?.isPluginEnabled(pluginId) !== false,
       });
       pluginExpansions = pluginOutcome.nextTurnExpansions;
       self.sessionPluginExpansions = pluginOutcome.nextSessionExpansions;
@@ -1671,13 +1671,13 @@ export async function queryLoop(
                   availablePluginIds: self.filterAllowedPluginIds(
                     (self.deps.pluginRuntime?.listPluginIds() ?? [])
                       .filter((pluginId) =>
-                        self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false ||
+                        self.deps.pluginRuntime?.isPluginEnabled(pluginId) !== false ||
                         self.deps.allowedPluginIds?.has(pluginId) === true),
                   ),
                   sessionActivatedPluginIds: self.sessionActivatedPluginIds,
                   ...(scope.turnOnlyPluginIds ? { turnOnlyPluginIds: scope.turnOnlyPluginIds } : {}),
                   isPluginEnabled: (pluginId) =>
-                    self.deps.pluginRuntime?.isPluginEnabled?.(pluginId) !== false,
+                    self.deps.pluginRuntime?.isPluginEnabled(pluginId) !== false,
                 });
                 pluginExpansions = outcome.nextTurnExpansions;
                 self.sessionPluginExpansions = outcome.nextSessionExpansions;
@@ -2250,7 +2250,7 @@ interface PluginExpansionState {
   sessionActivatedPluginIds?: Set<string>;
   // An explicit request_plugin promotes prompt-only scope to ordinary carried scope.
   turnOnlyPluginIds?: Set<string>;
-  isPluginEnabled?: (pluginId: string) => boolean;
+  isPluginEnabled: (pluginId: string) => boolean;
 }
 
 interface PluginExpansionOutcome {
@@ -2314,7 +2314,7 @@ function handleRequestPlugin(
       state.activePluginIds.add(pluginId);
       state.turnOnlyPluginIds?.delete(pluginId);
       // Preserve activated scope for this session without changing registry enabled state.
-      if (state.isPluginEnabled?.(pluginId) === false) {
+      if (state.isPluginEnabled(pluginId) === false) {
         state.sessionActivatedPluginIds?.add(pluginId);
       }
       turnExpansions += 1;

@@ -66,9 +66,9 @@ export function resolveToolScope(
       }
     }
 
-    // Disabled plugins stay loaded but leave model scope next turn; undefined enabled state remains active.
+    // Disabled plugins stay loaded but leave model scope next turn.
     const pluginRuntime = deps.pluginRuntime;
-    if (pluginRuntime?.isPluginEnabled) {
+    if (pluginRuntime) {
       for (const pluginId of [...activePluginIds]) {
         // Session-activated plugins keep scope without persisting registry enabled state.
         if (
@@ -85,7 +85,7 @@ export function resolveToolScope(
     const installedPluginIds = new Set(turnScopedPluginIds.size > 0 ? pluginRuntime?.listPluginIds() ?? [] : []);
     for (const pluginId of turnScopedPluginIds) {
       if (activePluginIds.has(pluginId) || !installedPluginIds.has(pluginId)) continue;
-      if (pluginRuntime?.isPluginEnabled?.(pluginId) === false) continue;
+      if (pluginRuntime?.isPluginEnabled(pluginId) === false) continue;
       if (filterAllowedPluginIds(deps, [pluginId]).length === 0) continue;
       activePluginIds.add(pluginId);
       turnOnlyPluginIds.add(pluginId);
