@@ -54,9 +54,9 @@ export const TOOL_TIMEOUT_POLICY = {
   terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
-  // Host-side setup of an srt-win plugin child (grant turn, wrap), which has no deadline of its own. Measured 8-10 s idle,
-  // srt-win itself ~0.1 s, and slower while the incumbent of an update still holds its grant.
-  windowsSrtPluginSetupMs: 30_000,
+  // Budget only, no timer reads it: host-side setup of an srt-win plugin child (grant turn, wrap) has no deadline of its own.
+  // Measured 8-10 s idle, srt-win itself ~0.1 s, and slower while the incumbent of an update still holds its grant.
+  windowsSrtPluginSetupBudgetMs: 30_000,
   // A sandboxed Windows plugin child starts and announces its listener.
   windowsPluginChildConnectMs: 30_000,
   pluginStartupDefaultMs: 10_000,
@@ -113,15 +113,15 @@ export function nativePluginChildStopBudgetMs(): number {
     + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
 }
 
-/** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
- * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
- * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
 /** An srt-win plugin child's factory: host-side setup, then the channel connect and the construct request, each under its own deadline. */
 export function windowsSrtPluginChildFactoryBudgetMs(): number {
-  return TOOL_TIMEOUT_POLICY.windowsSrtPluginSetupMs + TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs
+  return TOOL_TIMEOUT_POLICY.windowsSrtPluginSetupBudgetMs + TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs
     + TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs;
 }
 
+/** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
+ * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
+ * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
     + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;

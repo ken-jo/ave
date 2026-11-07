@@ -29,6 +29,7 @@ vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
     pluginFactoryDeadlineMs: (factory: Parameters<typeof actual.pluginFactoryDeadlineMs>[0], fallbackMs: number) => {
       if (!routed.factories.has(factory)) return actual.pluginFactoryDeadlineMs(factory, fallbackMs);
       routed.budgeted += 1;
+      // The flip is synchronous and restored before returning, so no other code observes win32.
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { ...platform, value: "win32" });
       confinement.active = true;
