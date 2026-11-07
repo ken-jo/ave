@@ -1,6 +1,6 @@
 // Host lifecycle events trigger notifications; foreground turn completion is suppressed and other events choose toast or OS delivery. Audit metadata
 // only, never body text; test mode and pre-ready calls have no side effects.
-import type { ActivationArguments, BrowserWindow } from "electron";
+import type { ActivationArguments, BrowserWindow, WebContents } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
@@ -186,23 +186,27 @@ export class NotificationService {
     }
   }
 
-  // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle.
-  fire(opts: FireOptions): void {
-    this.deliver(opts);
+  // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle. Returns the window an in-app
+  // toast went to, so a caller can retract it there; null for an OS notification or no cue.
+  fire(opts: FireOptions): WebContents | null {
+    return this.deliver(opts).toast ?? null;
   }
 
-  deliver(opts: FireOptions): { accepted: boolean } {
+  deliver(opts: FireOptions): { accepted: boolean; toast?: WebContents } {
+    // Captured outside the try: a toast already on screen stays retractable even if a later step (the audit) throws.
+    let toast: WebContents | undefined;
     try {
-      return { accepted: this.fireUnguarded(opts) };
+      const accepted = this.fireUnguarded(opts, (target) => { toast = target; });
+      return { accepted, ...(toast !== undefined ? { toast } : {}) };
     } catch (err) {
       // Delivery failure must never propagate into the calling flow. The inner OS/toast paths already degrade individually; this catch is the structural
       // backstop for everything else (probe callbacks, window races, sanitizer edge cases).
       log.warn("notification fire failed: %s", (err as Error)?.message ?? String(err));
-      return { accepted: false };
+      return { accepted: false, ...(toast !== undefined ? { toast } : {}) };
     }
   }
 
-  private fireUnguarded(opts: FireOptions): boolean {
+  private fireUnguarded(opts: FireOptions, onToast: (target: WebContents) => void): boolean {
     // Test-mode + pre-ready hard guard — never pop a notification before the app is ready or inside a vitest run.
     if (this.isTestEnv() || !this.isReady()) return false;
 
@@ -256,6 +260,7 @@ export class NotificationService {
       };
       try {
         win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
+        onToast(win.webContents);
       } catch (err) {
         // Send race (webContents destroyed mid-fire) — fall back to OS path so the user still sees the cue. Audit reflects the final gate used.
         log.warn(

@@ -124,11 +124,29 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     [defaultToastTtlMs],
   );
 
-  const removeToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  /** Drop matching toasts. A new head gets a fresh TTL, so it is not skipped for having waited in line. */
+  const removeToastsWhere = useCallback(
+    (drop: (toast: ToastItem) => boolean) => {
+      setToasts((prev) => {
+        const next = prev.filter((t) => !drop(t));
+        if (next.length === prev.length) return prev;
+        const head = next[0];
+        if (head && head.id !== prev[0]?.id) next[0] = { ...head, expiresAt: Date.now() + (head.ttlMs ?? defaultToastTtlMs) };
+        return next;
+      });
+    },
+    [defaultToastTtlMs],
+  );
 
-    // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
+  const removeToast = useCallback((id: string) => removeToastsWhere((t) => t.id === id), [removeToastsWhere]);
+
+  /** Drop the toasts of settled approvals. */
+  const removeApprovalToasts = useCallback(
+    (approvalIds: ReadonlySet<string>) => removeToastsWhere((t) => approvalIds.has(t.notification?.contextRef?.approvalId ?? "")),
+    [removeToastsWhere],
+  );
+
+  // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
   // head's TTL elapses (or removeToast dismisses it early), the next item
   // in the queue becomes the new head and gets its own timer. This prevents
   // a burst of install-result events from rendering multiple toasts at once.
@@ -174,6 +192,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     pushToast,
     upsertToast,
     removeToast,
+    removeApprovalToasts,
     upsertPersistent,
     removePersistent,
   };

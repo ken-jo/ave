@@ -12,7 +12,7 @@ import { listHookTrustState } from "../hook-trust-commands.js";
 import { hookJsonInput, lifecycleMatcherSubject } from "../hook-contract.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import type { FireOptions } from "../../main/notification-service.js";
+import type { NotificationService } from "../../main/notification-service.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
 const PAYLOAD = { toolName: "read_file", source: "builtin" as const, category: "read" as const,
@@ -154,7 +154,7 @@ describe("hook matcher safety", () => {
         SessionStart: [{ matcher: "[", hooks: [{ type: "command", command: ["node", COMMAND] }] }],
         UserPromptSubmit: [{ matcher: "[", hooks: [{ type: "command", command: ["node", COMMAND] }] }],
       } }));
-      const notificationService = { fire: vi.fn<(notice: FireOptions) => void>() };
+      const notificationService = { fire: vi.fn<NotificationService["fire"]>(() => null) };
       const options = { hooksDir, disabledDir: join(hooksDir, ".disabled"), lockfilePath: join(hooksDir, ".lockfile.json"), notificationService };
       for (let boot = 0; boot < 2; boot += 1) {
         notificationService.fire.mockClear();

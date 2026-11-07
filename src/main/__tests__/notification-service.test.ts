@@ -864,3 +864,40 @@ describe("turn completion sound", () => {
     } finally { clock.mockRestore(); }
   });
 });
+
+describe("NotificationService — fire() names the toast's window", () => {
+  const notice = { kind: "approval", title: "x", body: "y", contextRef: { approvalId: "a-1" } } as const;
+
+  it("returns the window an in-app toast went to", () => {
+    const win = makeMockWindow({ focused: true });
+    const svc = createService(win, makeNotificationFactoryStub().factory, { isAnyWindowFocused: () => true });
+    expect(svc.fire(notice)).toBe(win.webContents);
+  });
+
+  it.each([
+    ["an OS notification", { focused: false, minimized: true }, {}],
+    ["a test run", { focused: true }, { isTestEnv: () => true }],
+    ["a host that is not ready", { focused: true }, { isReady: () => false }],
+  ] as const)("returns null for %s", (_label, windowState, options) => {
+    const win = makeMockWindow(windowState);
+    const svc = createService(win, makeNotificationFactoryStub().factory, { isAnyWindowFocused: () => windowState.focused, ...options });
+    expect(svc.fire(notice)).toBeNull();
+  });
+
+  it("returns null when the toast send throws and the cue falls back to the OS", () => {
+    const win = makeMockWindow({ focused: true });
+    win.webContents.send.mockImplementation(() => { throw new Error("webContents destroyed mid-fire"); });
+    const factoryStub = makeNotificationFactoryStub();
+    const svc = createService(win, factoryStub.factory, { isAnyWindowFocused: () => true });
+    expect(svc.fire(notice)).toBeNull();
+    expect(factoryStub.calls.length).toBe(1);
+  });
+
+  it("keeps the toast's window when the audit logger fails after the toast", () => {
+    const win = makeMockWindow({ focused: true });
+    const auditLogger = { log: vi.fn(() => { throw new Error("audit disk full"); }) } as unknown as AuditLogger;
+    const svc = createService(win, makeNotificationFactoryStub().factory, { auditLogger, isAnyWindowFocused: () => true });
+    expect(svc.fire(notice)).toBe(win.webContents);
+    expect(win.webContents.send).toHaveBeenCalledWith(IPC_NOTIFICATION_TOAST, expect.anything());
+  });
+});

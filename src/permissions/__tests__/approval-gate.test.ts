@@ -126,6 +126,66 @@ describe("ApprovalGate", () => {
       setLocale("ko");
     }
   });
+  it("announces the settlement to the window showing the toast, though the request went to another", async () => {
+    const owner = makeMockWebContents();
+    const toastWindow = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const pending = gate.requestAndWait(makeRequest({ id: "toast-elsewhere" }));
+    await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
+    expect(announcedSettledIds(toastWindow)).toEqual([]);
+    gate.resolve("toast-elsewhere", { requestId: "toast-elsewhere", choice: "deny-once", ...lastSentNonceHmac(owner) });
+    await pending;
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-elsewhere"]);
+  });
+  it("announces the settlement to the toast's window when the turn ends before the request is parked", async () => {
+    const toastWindow = makeMockWebContents();
+    const controller = new AbortController();
+    const fire = vi.fn(() => { controller.abort(new Error("turn stopped")); return toastWindow; });
+    const owner = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire } as never);
+    await expect(gate.requestAndWait(makeRequest({ id: "toast-aborted", abortSignal: controller.signal }))).resolves.toMatchObject({ choice: "deny-once" });
+    expect(sentApprovalCards(owner)).toEqual([]);
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-aborted"]);
+  });
+  it("announces the settlement to the toast's window when sealing the request throws before it is parked", async () => {
+    const toastWindow = makeMockWebContents();
+    const args: Record<string, unknown> = { title: "test" };
+    // The toast is up before the request is sealed; an argument the seal cannot serialize makes that step throw.
+    const fire = vi.fn(() => { args["count"] = 1n; return toastWindow; });
+    const owner = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire } as never);
+    await expect(gate.requestAndWait(makeRequest({ id: "toast-unsealed", args }))).rejects.toThrow();
+    expect(fire).toHaveBeenCalledOnce();
+    expect(sentApprovalCards(owner)).toEqual([]);
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-unsealed"]);
+  });
+  it("announces the settlement to the toast's window when the request times out", async () => {
+    const owner = makeMockWebContents();
+    const toastWindow = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 50, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    await expect(gate.requestAndWait(makeRequest({ id: "toast-timeout" }))).resolves.toMatchObject({ choice: "deny-once" });
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-timeout"]);
+  });
+  it("announces the settlement once when the toast's window is the one the request went to", async () => {
+    const owner = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => owner) } as never);
+    const pending = gate.requestAndWait(makeRequest({ id: "toast-here" }));
+    await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
+    gate.resolve("toast-here", { requestId: "toast-here", choice: "deny-once", ...lastSentNonceHmac(owner) });
+    await pending;
+    expect(announcedSettledIds(owner)).toEqual(["toast-here"]);
+  });
+  it("skips a toast window destroyed before the request settles", async () => {
+    const owner = makeMockWebContents();
+    const toastWindow = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const pending = gate.requestAndWait(makeRequest({ id: "toast-gone" }));
+    await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
+    toastWindow.isDestroyed.mockReturnValue(true);
+    gate.resolve("toast-gone", { requestId: "toast-gone", choice: "deny-once", ...lastSentNonceHmac(owner) });
+    await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
+    expect(announcedSettledIds(toastWindow)).toEqual([]);
+  });
   it.each(["timeout", "shutdown", "abort"] as const)("settles %s even when the live owner lookup fails after parking", async (termination) => {
     vi.useFakeTimers();
     const wc = makeMockWebContents();

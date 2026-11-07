@@ -168,6 +168,7 @@ export function App() {
     pendingCount: statusPendingCount,
     pushToast: statusPushToast,
     removeToast: statusRemoveToast,
+    removeApprovalToasts: statusRemoveApprovalToasts,
   } = useStatusBar({ api });
 
   // Notification clicks restore and focus the window through notifyClick; other toasts carry no notification.
@@ -888,6 +889,20 @@ export function App() {
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
   const approvals = useApproval();
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
+  // An approval toast leaves with its request: when the host announces it settled (the toast may name a request this window never
+  // queued, such as one the full queue refused), or when it leaves this window's queue. The notification fires before the request is
+  // queued, so a toast is dropped only once its request has been queued and then left the queue. Leaving the queue is not always the
+  // host settling (a failed respond, a handoff): the card is gone from this window then too, and the toast would only point at nothing.
+  useEffect(() => window.ave.approval.onSettled((payload: { requestId?: unknown } | undefined) => {
+    if (typeof payload?.requestId === "string" && payload.requestId.length > 0) statusRemoveApprovalToasts(new Set([payload.requestId]));
+  }), [statusRemoveApprovalToasts]);
+  const queuedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const queued = new Set(approvalQueue.map((request) => request.id));
+    const settled = new Set([...queuedApprovalIdsRef.current].filter((id) => !queued.has(id)));
+    queuedApprovalIdsRef.current = queued;
+    if (settled.size > 0) statusRemoveApprovalToasts(settled);
+  }, [approvalQueue, statusRemoveApprovalToasts]);
   // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
   // both cards and attention dots.
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);

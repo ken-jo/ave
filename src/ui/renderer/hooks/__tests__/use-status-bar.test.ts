@@ -282,6 +282,35 @@ describe("useStatusBar — sequential toast display", () => {
     expect(result.current.pendingCount).toBe(0);
   });
 
+  it("removeApprovalToasts drops settled approvals and gives the promoted head a full TTL", async () => {
+    const api = statusBarApi();
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+    const approval = (approvalId: string) => ({ kind: "approval" as const, contextRef: { approvalId } });
+
+    act(() => {
+      result.current.pushToast({ severity: "warning", message: "a-1", ttlMs: 3000, notification: approval("a-1") });
+      result.current.pushToast({ severity: "info", message: "unrelated", ttlMs: 3000 });
+      result.current.pushToast({ severity: "warning", message: "a-2", ttlMs: 3000, notification: approval("a-2") });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    act(() => result.current.removeApprovalToasts(new Set(["a-1", "a-2"])));
+    expect(result.current.visibleToast?.message).toBe("unrelated");
+    expect(result.current.pendingCount).toBe(0);
+
+    // Created 2.5 s ago, the promoted head still shows for its whole TTL.
+    await act(async () => {
+      vi.advanceTimersByTime(2900);
+    });
+    expect(result.current.visibleToast?.message).toBe("unrelated");
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(result.current.visibleToast).toBeNull();
+  });
+
   it("queue drains to null visibleToast after all toasts expire", async () => {
     const api = statusBarApi();
     const { result } = renderHook(() =>
@@ -322,6 +351,53 @@ describe("useStatusBar — sequential toast display", () => {
 
     expect(result.current.visibleToast?.message).toBe("second");
     expect(result.current.pendingCount).toBe(0);
+  });
+
+  it("removeToast of a queued toast leaves the head's expiry alone", async () => {
+    const api = statusBarApi();
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+
+    let secondId = "";
+    act(() => {
+      result.current.pushToast({ severity: "info", message: "first", ttlMs: 3000 });
+      secondId = result.current.pushToast({ severity: "info", message: "second", ttlMs: 3000 });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    act(() => result.current.removeToast(secondId));
+    expect(result.current.visibleToast?.message).toBe("first");
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(result.current.visibleToast).toBeNull();
+  });
+
+  it("removeToast gives the promoted head a full TTL", async () => {
+    const api = statusBarApi();
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+
+    let firstId = "";
+    act(() => {
+      firstId = result.current.pushToast({ severity: "info", message: "first", ttlMs: 3000 });
+      result.current.pushToast({ severity: "info", message: "second", ttlMs: 3000 });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    act(() => result.current.removeToast(firstId));
+    expect(result.current.visibleToast?.message).toBe("second");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2900);
+    });
+    expect(result.current.visibleToast?.message).toBe("second");
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(result.current.visibleToast).toBeNull();
   });
 
   it("burst of 3 install-result events shows only 1 toast at a time, advancing sequentially", async () => {
