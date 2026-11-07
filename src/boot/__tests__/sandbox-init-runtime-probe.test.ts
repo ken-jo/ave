@@ -1,12 +1,17 @@
 /** After a wrapper probe fails, retain requested activation but publish no verified capability.
  * Explicit activation aborts; settings activation degrades without exposing wrapper diagnostics. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
   type SandboxBootHarness,
 } from "../../__tests__/support/sandbox-boot-context.js";
 
+// This file's private sandbox root, unique per process so concurrent vitest runs never remove each other's.
+const SANDBOX_ROOT_NAME = vi.hoisted(() => `ave-sandbox-init-runtime-probe-sandbox-${process.pid}-${Math.random().toString(16).slice(2)}`);
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   closeAll: vi.fn(() => 2),
@@ -34,7 +39,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
-  const roots = join(tmpdir(), "ave-sandbox-init-runtime-probe-sandbox");
+  const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
@@ -81,6 +86,9 @@ beforeEach(() => {
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
 });
+
+// The mocked asrt-sandbox above makes this file's private sandbox roots here; the file owns removing them.
+afterAll(() => rmSync(join(tmpdir(), SANDBOX_ROOT_NAME), { recursive: true, force: true }));
 
 afterEach(() => {
   vi.unstubAllEnvs();
