@@ -55,7 +55,6 @@ import {
   buildPerCommandSandboxCustomConfig,
   buildSandboxConfig,
   cleanupAsrtSandboxAfterCommand,
-  createAveHomeBoundarySnapshot,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
@@ -65,6 +64,7 @@ import {
   resetAsrtSandbox,
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
 import { SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { windowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";

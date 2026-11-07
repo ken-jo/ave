@@ -10,7 +10,6 @@ import type { Readable, Writable } from "node:stream";
 import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
-  createAveHomeBoundarySnapshot,
   getDefaultSensitiveWriteDenyPaths,
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
@@ -23,6 +22,7 @@ import {
   type SandboxTempPrincipal,
   type WrapOptions,
 } from "./asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
 import {
   getHostShellExecutionPlan,

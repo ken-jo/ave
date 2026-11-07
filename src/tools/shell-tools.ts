@@ -83,10 +83,10 @@ import {
   filesystemSandboxBlockForCommand,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
-  createAveHomeBoundarySnapshot,
   getDefaultSensitiveWriteDenyPaths,
   type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";

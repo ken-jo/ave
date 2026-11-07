@@ -6,9 +6,10 @@ import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
 import {
-  buildPerCommandSandboxCustomConfig, createAveHomeBoundarySnapshot, getDefaultSensitiveReadDenyPaths,
+  buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths, isOfflineProcessConfinementActive,
 } from "./asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { detectSandboxCapability } from "./sandbox-capability.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";

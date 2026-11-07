@@ -16,7 +16,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { type AveHomeBoundarySnapshot, currentAveHomeBoundarySnapshot, inAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
@@ -711,148 +711,145 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
 }
 
 export function buildPerCommandSandboxCustomConfig(
-  ...args: Parameters<typeof buildPerCommandSandboxCustomConfigInSnapshot>
-): ReturnType<typeof buildPerCommandSandboxCustomConfigInSnapshot> {
-  return inAveHomeBoundarySnapshot(undefined, () => buildPerCommandSandboxCustomConfigInSnapshot(...args));
-}
-
-function buildPerCommandSandboxCustomConfigInSnapshot(
   filesystem: PerCommandFilesystem | undefined,
   onNotice?: (notice: string) => void,
   onGitControlSnapshot?: (snapshot: SandboxGitControlSnapshot) => void,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
 ): Partial<SandboxRuntimeConfig> | undefined {
-  // Restate Windows denies even without overrides: the session snapshot may no longer exist.
-  if (process.platform === "win32") {
-    filesystem = { ...filesystem, denyRead: filesystem?.denyRead ?? getDefaultSensitiveReadDenyPaths(_baseTrustedSettings?.userDataDir) };
-    readDenyEvidence ??= _baseReadDenyEvidence;
-  }
-  // Shared initialization is not a command snapshot: newly appeared Git metadata must be discovered again even without an explicit override.
-  filesystem ??= {};
-  if (filesystem.pinWriteRoots === true && filesystem.denyWrite === undefined) {
-    throw new Error(
-      "buildPerCommandSandboxCustomConfig: pinWriteRoots needs denyWrite restated; a per-command denyWrite "
-        + "replaces the shared deny floor",
-    );
-  }
-  if (filesystem.denyPluginsRoot === true) {
+  // One boundary snapshot for the whole per-command composition: the enclosing one, else a new one.
+  return inAveHomeBoundarySnapshot(undefined, () => {
+    // Restate Windows denies even without overrides: the session snapshot may no longer exist.
     if (process.platform === "win32") {
-      throw new Error(
-        "buildPerCommandSandboxCustomConfig: denyPluginsRoot is refused on Windows; a deny there is an ACE for the "
-          + "one sandbox account every confined process shares, so it would refuse each plugin its own directories",
-      );
+      filesystem = { ...filesystem, denyRead: filesystem?.denyRead ?? getDefaultSensitiveReadDenyPaths(_baseTrustedSettings?.userDataDir) };
+      readDenyEvidence ??= _baseReadDenyEvidence;
     }
-    if (filesystem.denyRead === undefined) {
+    // Shared initialization is not a command snapshot: newly appeared Git metadata must be discovered again even without an explicit override.
+    filesystem ??= {};
+    if (filesystem.pinWriteRoots === true && filesystem.denyWrite === undefined) {
       throw new Error(
-        "buildPerCommandSandboxCustomConfig: denyPluginsRoot needs denyRead restated; a per-command denyRead "
+        "buildPerCommandSandboxCustomConfig: pinWriteRoots needs denyWrite restated; a per-command denyWrite "
           + "replaces the shared deny floor",
       );
     }
-  }
-  const grants = admitFilesystemPolicy({
-    allowWrite: filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [],
-    allowRead: filesystem.allowRead ?? _baseTrustedSettings?.allowRead,
-    denyRead: [...(filesystem.denyRead ?? []), ...(_baseTrustedSettings?.denyRead ?? [])],
-    denyWrite: [...(filesystem.denyWrite ?? []), ...(_baseTrustedSettings?.denyWrite ?? [])],
-  });
-  const fs: Partial<FilesystemConfig> = {};
-  const floor = getProtectedReadDenyPaths();
-  // A per-command deny REPLACES the shared one, so the trusted custom denies are restated here once for every wrap rather than by each composer.
-  let hiddenSeccompHelper: string | undefined;
-  // What the wrap may be granted on Windows: per-exec grants are refused there (see above), so the session's and the live worker grants.
-  const windowsWriteGrants: FilesystemPathEntry[] = [
-    ...(process.platform === "win32" ? loadedSandboxManagerForRelease?.getConfig()?.filesystem.allowWrite ?? [] : []),
-    ...(_baseTrustedSettings?.allowWrite ?? []),
-    ...(filesystem.allowWrite ?? []),
-    ...grants.allowWrite,
-    ...(liveGrants.allowWrite ?? []),
-  ];
-  const windowsGrants: FilesystemPathEntry[] = [
-    ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
-    ...(grants.allowRead ?? []),
-    ...(liveGrants.allowRead ?? []),
-    ...windowsWriteGrants,
-  ];
-  if (filesystem.denyRead !== undefined) {
-    const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
-    const denyRead = [...new Set([...grants.denyRead, ...pluginRoots])];
-    hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
-    fs.denyRead = windowsDenyTargets(
-      asrtReadDenyPaths(
-        denyRead,
-        // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
-        [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
-      ),
-      _baseTrustedSettings?.userDataDir,
-      windowsGrants,
-      windowsWriteGrants,
-      "read",
-      readDenyEvidence,
-    );
-  }
-  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
-  const mandatory = buildMandatorySandboxWritePolicy(
-    admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
-    _baseTrustedSettings?.userDataDir,
-    sensitiveDenyWrite,
-    sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
-  );
-  fs.allowWrite = process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
-  const reasonKeys = {
-    "entry-budget": "sandboxPolicy.scanEntryBudget",
-    "path-budget": "sandboxPolicy.scanPathBudget",
-    "filesystem-access": "sandboxPolicy.scanInaccessible",
-    "routing-link": "sandboxPolicy.scanRouting",
-  } as const;
-  for (const reason of new Set(mandatory.narrowedWriteRoots.map(entry => entry.reason))) {
-    const notice = t("sandboxPolicy.scanNarrowed", {
-      reason: t(reasonKeys[reason]),
-      roots: fs.allowWrite.length ? fs.allowWrite.map(root => JSON.stringify(root)).join(", ") : t("sandboxPolicy.noWriteRoots"),
-      removed: mandatory.narrowedWriteRoots.filter(entry => entry.reason === reason).map(entry => JSON.stringify(entry.root)).join(", "),
-    });
-    onNotice?.(notice);
-    log.warn(notice);
-  }
-  {
-    fs.denyWrite = windowsDenyTargets(
-      [...new Set([
-        ...sensitiveDenyWrite,
-        ...mandatory.denyWrite,
-        ...grants.denyWrite,
-        ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite === undefined ? [] : grants.allowWrite) : []),
-      ])],
-      _baseTrustedSettings?.userDataDir,
-      windowsGrants,
-      windowsWriteGrants,
-      "write",
-    );
-  }
-  if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
-    // A per-command allowRead REPLACES the shared one, so a wrap that only restates its denies keeps the shared grants alongside the seccomp helper. The helper joins before the floor filter: a protected deny still wins.
-    const readGrants = grants.allowRead ?? [];
-    fs.allowRead = readGrantsOutsideReadDenies(
-      hiddenSeccompHelper === undefined || readGrants.includes(hiddenSeccompHelper) ? readGrants : [...readGrants, hiddenSeccompHelper],
-      floor,
-      // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
-      filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
-    );
-  }
-  if (Object.keys(fs).length === 0) return undefined;
-  // The runtime and Linux mount replay consume one discovery snapshot. Freeze its lists so neither consumer can change the other's policy mid-wrap.
-  for (const entries of Object.values(fs)) {
-    if (Array.isArray(entries)) {
-      for (const entry of entries) if (typeof entry === "object") Object.freeze(entry);
-      Object.freeze(entries);
+    if (filesystem.denyPluginsRoot === true) {
+      if (process.platform === "win32") {
+        throw new Error(
+          "buildPerCommandSandboxCustomConfig: denyPluginsRoot is refused on Windows; a deny there is an ACE for the "
+            + "one sandbox account every confined process shares, so it would refuse each plugin its own directories",
+        );
+      }
+      if (filesystem.denyRead === undefined) {
+        throw new Error(
+          "buildPerCommandSandboxCustomConfig: denyPluginsRoot needs denyRead restated; a per-command denyRead "
+            + "replaces the shared deny floor",
+        );
+      }
     }
-  }
-  if (mandatory.gitControlSnapshot) {
-    const snapshot = restrictSandboxGitControlSnapshot(
-      mandatory.gitControlSnapshot, spelledPathEntries(fs.allowWrite ?? [], "allowWrite"), gitQuarantineExclusions(fs, floor),
+    const grants = admitFilesystemPolicy({
+      allowWrite: filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [],
+      allowRead: filesystem.allowRead ?? _baseTrustedSettings?.allowRead,
+      denyRead: [...(filesystem.denyRead ?? []), ...(_baseTrustedSettings?.denyRead ?? [])],
+      denyWrite: [...(filesystem.denyWrite ?? []), ...(_baseTrustedSettings?.denyWrite ?? [])],
+    });
+    const fs: Partial<FilesystemConfig> = {};
+    const floor = getProtectedReadDenyPaths();
+    // A per-command deny REPLACES the shared one, so the trusted custom denies are restated here once for every wrap rather than by each composer.
+    let hiddenSeccompHelper: string | undefined;
+    // What the wrap may be granted on Windows: per-exec grants are refused there (see above), so the session's and the live worker grants.
+    const windowsWriteGrants: FilesystemPathEntry[] = [
+      ...(process.platform === "win32" ? loadedSandboxManagerForRelease?.getConfig()?.filesystem.allowWrite ?? [] : []),
+      ...(_baseTrustedSettings?.allowWrite ?? []),
+      ...(filesystem.allowWrite ?? []),
+      ...grants.allowWrite,
+      ...(liveGrants.allowWrite ?? []),
+    ];
+    const windowsGrants: FilesystemPathEntry[] = [
+      ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
+      ...(grants.allowRead ?? []),
+      ...(liveGrants.allowRead ?? []),
+      ...windowsWriteGrants,
+    ];
+    if (filesystem.denyRead !== undefined) {
+      const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
+      const denyRead = [...new Set([...grants.denyRead, ...pluginRoots])];
+      hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
+      fs.denyRead = windowsDenyTargets(
+        asrtReadDenyPaths(
+          denyRead,
+          // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
+          [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
+        ),
+        _baseTrustedSettings?.userDataDir,
+        windowsGrants,
+        windowsWriteGrants,
+        "read",
+        readDenyEvidence,
+      );
+    }
+    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
+    const mandatory = buildMandatorySandboxWritePolicy(
+      admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
+      _baseTrustedSettings?.userDataDir,
+      sensitiveDenyWrite,
+      sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
     );
-    onGitControlSnapshot?.(snapshot);
-  }
-  return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants)) as FilesystemConfig };
+    fs.allowWrite = process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
+    const reasonKeys = {
+      "entry-budget": "sandboxPolicy.scanEntryBudget",
+      "path-budget": "sandboxPolicy.scanPathBudget",
+      "filesystem-access": "sandboxPolicy.scanInaccessible",
+      "routing-link": "sandboxPolicy.scanRouting",
+    } as const;
+    for (const reason of new Set(mandatory.narrowedWriteRoots.map(entry => entry.reason))) {
+      const notice = t("sandboxPolicy.scanNarrowed", {
+        reason: t(reasonKeys[reason]),
+        roots: fs.allowWrite.length ? fs.allowWrite.map(root => JSON.stringify(root)).join(", ") : t("sandboxPolicy.noWriteRoots"),
+        removed: mandatory.narrowedWriteRoots.filter(entry => entry.reason === reason).map(entry => JSON.stringify(entry.root)).join(", "),
+      });
+      onNotice?.(notice);
+      log.warn(notice);
+    }
+    {
+      fs.denyWrite = windowsDenyTargets(
+        [...new Set([
+          ...sensitiveDenyWrite,
+          ...mandatory.denyWrite,
+          ...grants.denyWrite,
+          ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite === undefined ? [] : grants.allowWrite) : []),
+        ])],
+        _baseTrustedSettings?.userDataDir,
+        windowsGrants,
+        windowsWriteGrants,
+        "write",
+      );
+    }
+    if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
+      // A per-command allowRead REPLACES the shared one, so a wrap that only restates its denies keeps the shared grants alongside the seccomp helper. The helper joins before the floor filter: a protected deny still wins.
+      const readGrants = grants.allowRead ?? [];
+      fs.allowRead = readGrantsOutsideReadDenies(
+        hiddenSeccompHelper === undefined || readGrants.includes(hiddenSeccompHelper) ? readGrants : [...readGrants, hiddenSeccompHelper],
+        floor,
+        // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
+        filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
+      );
+    }
+    if (Object.keys(fs).length === 0) return undefined;
+    // The runtime and Linux mount replay consume one discovery snapshot. Freeze its lists so neither consumer can change the other's policy mid-wrap.
+    for (const entries of Object.values(fs)) {
+      if (Array.isArray(entries)) {
+        for (const entry of entries) if (typeof entry === "object") Object.freeze(entry);
+        Object.freeze(entries);
+      }
+    }
+    if (mandatory.gitControlSnapshot) {
+      const snapshot = restrictSandboxGitControlSnapshot(
+        mandatory.gitControlSnapshot, spelledPathEntries(fs.allowWrite ?? [], "allowWrite"), gitQuarantineExclusions(fs, floor),
+      );
+      onGitControlSnapshot?.(snapshot);
+    }
+    return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants)) as FilesystemConfig };
+  });
 }
 
 // Remembered exclusion answers per invocation; past it, answers are recomputed.
@@ -1089,7 +1086,7 @@ function isWindowsProfileChild(root: string): boolean {
 // native pin by the shared reparse rule. Any link, reparse point or unpinnable entry refuses; see the decision tree's Windows limit note.
 function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
   const roots = aveHomeReadBoundaryRoots().filter(isWindowsProfileChild);
-  const snapshot = boundarySnapshotScope.getStore();
+  const snapshot = currentAveHomeBoundarySnapshot();
   if (snapshot === undefined) return projectAveHomeProfileChildren(roots);
   const key = roots.map((root) => caseFoldForMatch(resolve(root))).join("|");
   if (snapshot.taken?.key !== key) {
@@ -1132,30 +1129,6 @@ function projectAveHomeProfileChildren(roots: readonly string[]): ReadonlyMap<st
     }));
   }
   return children;
-}
-
-// One composition's admitted boundary: the first projection inside it pins the profile-child homes, every later one reuses that
-// result or its refusal. Each shell invocation or extension spawn takes a new one, so nothing is reused across commands or spawns.
-export class AveHomeBoundarySnapshot {
-  taken?: { readonly key: string; readonly children: ReadonlyMap<string, readonly string[]> } | { readonly key: string; readonly error: unknown };
-
-  // Run a synchronous or asynchronous composition step against this snapshot.
-  run<T>(fn: () => T): T {
-    return inAveHomeBoundarySnapshot(this, fn);
-  }
-}
-
-const boundarySnapshotScope = new AsyncLocalStorage<AveHomeBoundarySnapshot>();
-
-export function createAveHomeBoundarySnapshot(): AveHomeBoundarySnapshot {
-  return new AveHomeBoundarySnapshot();
-}
-
-// Run `fn` against `snapshot`, else the enclosing one, else a new one scoped to this call.
-function inAveHomeBoundarySnapshot<T>(snapshot: AveHomeBoundarySnapshot | undefined, fn: () => T): T {
-  const current = boundarySnapshotScope.getStore();
-  const chosen = snapshot ?? current ?? new AveHomeBoundarySnapshot();
-  return chosen === current ? fn() : boundarySnapshotScope.run(chosen, fn);
 }
 
 function admitBoundaryEntry(facts: WindowsPathFacts, home: string, path: string): void {

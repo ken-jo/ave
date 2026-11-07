@@ -1,7 +1,6 @@
 import { shellQuote } from "../lib/shell-resolver.js";
 import {
   getDefaultSensitiveReadDenyPaths,
-  createAveHomeBoundarySnapshot,
   getDefaultSensitiveWriteDenyPaths,
   cleanupAsrtSandboxAfterCommand,
   ensureSandboxTempPrincipalDir,
@@ -9,6 +8,7 @@ import {
   wrapWorkerCommand,
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";

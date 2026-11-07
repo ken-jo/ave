@@ -16,7 +16,6 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildHostShellChildEnv, buildSandboxedChildEnv } from "../../tools/safe-env.js";
 import {
   getDefaultSensitiveReadDenyPaths,
-  createAveHomeBoundarySnapshot,
   getDefaultSensitiveWriteDenyPaths,
   wrapTerminalCommand,
   wrapWorkerCommand,
@@ -25,6 +24,7 @@ import {
   sandboxTempEnvLaunch,
   type SandboxWrapResult,
 } from "../../permissions/asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
