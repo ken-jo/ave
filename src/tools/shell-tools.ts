@@ -3066,6 +3066,9 @@ const POWERSHELL_ALIASES = new Map<string, string>([
   ["ls", "get-childitem"],
   ["mkdir", "new-item"],
   ["md", "new-item"],
+  // New-PSDrive: ndr on all platforms, mount on Windows; both are gated everywhere.
+  ["mount", "new-psdrive"],
+  ["ndr", "new-psdrive"],
   ["mi", "move-item"],
   ["move", "move-item"],
   ["mv", "move-item"],
@@ -3440,8 +3443,14 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   return null;
 }
 
+// A `<Module>\` qualifier names the same cmdlet as the bare name. Any module-shaped
+// qualifier is dropped, so an unknown module cannot carry a gated cmdlet past the gate.
+// Path invocations (drive, `.`/`..` or `/` prefixes) keep their spelling.
+const POWERSHELL_MODULE_QUALIFIER = /^[a-z_][\w.-]*\\(?=[^\\/]+$)/i;
+
 function canonicalPowerShellCommandName(name: string): string {
-  return POWERSHELL_ALIASES.get(name) ?? name;
+  const bare = name.trim().toLowerCase().replace(POWERSHELL_MODULE_QUALIFIER, "");
+  return POWERSHELL_ALIASES.get(bare) ?? bare;
 }
 
 type PowerShellParameter = Extract<PowerShellArgument, { kind: "parameter" }>;

@@ -975,6 +975,45 @@ describe("powershell tool", () => {
       expect(validatePowerShellAst(ast([{ name: "start" }]))).toContain("process detachment");
     });
 
+    it("blocks New-PSDrive through its built-in aliases and module qualification in any case", () => {
+      const drive = (name: string) => validatePowerShellAst(ast([{ name, arguments: [psLiteral(name), psLiteral("X"), psLiteral("FileSystem"), psLiteral("C:\\Windows")] }]));
+      for (const name of ["New-PSDrive", "ndr", "NDR", "mount", "MOUNT", "Microsoft.PowerShell.Management\\New-PSDrive", "microsoft.powershell.management\\NDR"]) {
+        expect(drive(name)).toBe("dynamic filesystem drive mapping is not allowed");
+      }
+    });
+
+    it("strips a module qualifier before every gate, and an unknown module fails closed", () => {
+      expect(validatePowerShellAst(ast([{ name: "Microsoft.PowerShell.Utility\\Invoke-Expression" }]))).toContain("Invoke-Expression");
+      expect(validatePowerShellAst(ast([{ name: "Microsoft.PowerShell.Management\\Start-Process" }]))).toContain("process detachment");
+      expect(validatePowerShellAst(ast([{ name: "Microsoft.PowerShell.Core\\Invoke-Command" }]))).toContain("remote command invocation");
+      expect(validatePowerShellAst(ast([{ name: "Unknown.Module\\New-PSDrive" }]))).toBe("dynamic filesystem drive mapping is not allowed");
+      expect(validatePowerShellAst(ast([{ name: "Microsoft.PowerShell.Management\\Remove-Item", arguments: [
+        psLiteral("Microsoft.PowerShell.Management\\Remove-Item"), psLiteral("./x"), psParameter("Recurse"), psParameter("Force")] }]))).toContain("recursive");
+      expect(validatePowerShellAst(ast([{ name: "Microsoft.PowerShell.Management\\Set-Content", arguments: [
+        psLiteral("Microsoft.PowerShell.Management\\Set-Content"), psDynamic("($HOME + '/.ssh/id_rsa')"), psLiteral("x")] }]))).toContain("dynamic path argument");
+    });
+
+    it("leaves non-gated cmdlets and path invocations unchanged, qualified or not", () => {
+      const content = (name: string) => validatePowerShellAst(ast([{ name, arguments: [psLiteral(name), psLiteral("./x")] }]));
+      expect(content("Get-Content")).toBeNull();
+      expect(content("Microsoft.PowerShell.Management\\Get-Content")).toBeNull();
+      expect(content("Write-Output")).toBeNull();
+      expect(content("Microsoft.PowerShell.Utility\\Write-Output")).toBeNull();
+      expect(content(".\\tool.exe")).toBeNull();
+      expect(content("C:\\tools\\tool.exe")).toBeNull();
+    });
+
+    it("classifies a module-qualified cmdlet's path effect like the bare cmdlet", () => {
+      const outside = join(process.cwd(), "..", "outside-ps-qualifier");
+      const violation = (name: string, ...rest: PowerShellArgument[]) =>
+        findPowerShellAstPathViolation(ast([{ name, arguments: [psLiteral(name), ...rest] }]), process.cwd(), process.cwd(), [], false);
+      expect(violation("Microsoft.PowerShell.Management\\Get-ChildItem", psLiteral(outside)))
+        .toEqual(violation("Get-ChildItem", psLiteral(outside)));
+      expect(violation("Microsoft.PowerShell.Management\\Set-Content", psLiteral(outside), psLiteral("x")))
+        .toEqual(violation("Set-Content", psLiteral(outside), psLiteral("x")));
+      expect(violation("Set-Content", psLiteral(outside), psLiteral("x"))).not.toBeNull();
+    });
+
     it("fails closed when the parser reports syntax errors or dynamic dispatch", () => {
       expect(validatePowerShellAst(ast([], ["Unexpected token"]))).toContain("parse error");
       expect(validatePowerShellAst(ast([{ name: null, text: "& ($x)" }]))).toContain("dynamic command");
