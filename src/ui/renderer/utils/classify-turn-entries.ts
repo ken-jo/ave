@@ -10,14 +10,15 @@ export function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
  * that turn's start (`isTurnStartEntry`); an imported prompt, a sub-agent report or an empty row starting it names no message.
  * A turn start is not bounded by its stamp: a host-submitted or remote row is stamped by the renderer on arrival and can trail
  * the request it caused, and no later turn starts while this one waits on the approval. Rows injected into the running turn
- * (queued guidance, sub-agent reports) are bounded: one that arrived after the request did not cause it. A resume row
+ * (queued guidance, sub-agent reports) and an interrupt send are bounded: one that arrived after the request did not cause it. A resume row
  * ("Continue") is not the user's words, so the walk passes it to the interrupted turn's own message. Undefined means the
  * caller names the conversation instead. */
 export function approvalTriggerMessage(entries: readonly ChatEntry[], requestCreatedAt: number): string | undefined {
   for (const entry of [...entries].reverse()) {
     if (!isTurnStartEntry(entry)) continue;
     if (entry.kind !== "user") return undefined;
-    const injected = entry.injectHint === "queue" || entry.injectHint === "sub-agent";
+    // An interrupt send starts the next turn, which begins after the pending request; it bears the same ceiling.
+    const injected = entry.injectHint === "queue" || entry.injectHint === "sub-agent" || entry.injectHint === "interrupt";
     if (injected && entry.createdAt !== undefined && entry.createdAt > requestCreatedAt) continue;
     if (entry.resumesInterruptedTurn === true) continue;
     if (entry.injectHint === "sub-agent") return undefined;

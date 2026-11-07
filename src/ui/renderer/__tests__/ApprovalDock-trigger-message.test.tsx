@@ -4,6 +4,7 @@ import { act, screen, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { approvalRequest, deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "../../../../test/renderer/mock-ave-api.js";
+import { formatStagedEnvelope, stagedOriginFor } from "../../../shared/staged-origins.js";
 
 /** The in-pane card names the message whose turn raised the request, not the conversation's cached title or an earlier turn. */
 describe("approval card conversation line", () => {
@@ -67,6 +68,32 @@ describe("approval card conversation line", () => {
       emitApproval(approvalRequest({ id: "resumed", sessionId: MOCK_DEFAULT_SESSION_ID }));
     });
     expect(await screen.findByTestId("approval-conversation")).toHaveTextContent(current);
+  });
+
+  it.each([
+    ["mcp-prompt-emitted", "mcp-prompt:docs"],
+    ["plugin-prompt-emitted", "plugin-prompt:notes:summarize"],
+  ] as const)("names the conversation, not the earlier message, for a live %s turn", async (origin, source) => {
+    const previous = "RUNSB: New-Item ./scratch/a.txt";
+    const { emitApproval, emitChatStream } = await renderApp({
+      hasApiKey: true,
+      sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title: "Scratch cleanup", modifiedAt: "2026-01-01T00:00:00Z" }],
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
+        { index: 0, role: "user", content: previous },
+        { index: 1, role: "assistant", content: "Created ./scratch/a.txt" },
+      ] },
+    });
+    await screen.findByText(previous);
+    await act(async () => {
+      emitChatStream({ type: "user_message", origin, messageId: "prompt-row",
+        text: formatStagedEnvelope(stagedOriginFor(origin), "Remove the scratch folder", source) });
+    });
+    await act(async () => {
+      emitApproval(approvalRequest({ id: "prompt-turn", sessionId: MOCK_DEFAULT_SESSION_ID, createdAt: Date.now() }));
+    });
+    const line = await screen.findByTestId("approval-conversation");
+    expect(line).toHaveTextContent("Scratch cleanup");
+    expect(line).not.toHaveTextContent("New-Item");
   });
 
   it("names the conversation when the request did not come from this conversation's turn", async () => {

@@ -115,6 +115,14 @@ describe("approvalTriggerMessage", () => {
     ], 200)).toBe("remote C");
   });
 
+  it("does not name an interrupt send that drained after the request", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "B", createdAt: 100 },
+      assistant("a"),
+      { kind: "user", text: "send now", injectHint: "interrupt", createdAt: 300 },
+    ], 200)).toBe("B");
+  });
+
   it("cuts a long message by code points", () => {
     expect(approvalTriggerMessage([{ kind: "user", text: `${"a".repeat(79)}😀 tail` }], 200)).toBe(`${"a".repeat(79)}😀`);
   });

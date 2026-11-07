@@ -14,6 +14,7 @@ import {
   type SubscriptionUsageTelemetry,
 } from "../shared/subscription-runtime.js";
 import { isExternalSurfaceInputOrigin } from "../shared/chat-origin.js";
+import { stagedEnvelopeCard } from "../shared/staged-origins.js";
 import { t } from "../i18n/index.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/model-pricing.js";
@@ -397,6 +398,13 @@ export function applyUserMessageFrame(
         ...(frame.messageId !== undefined ? { messageId: frame.messageId } : {}),
       },
     ];
+  }
+  // An MCP or plugin prompt turn has no optimistic echo; its turn start is the provenance card a reload rebuilds from the same row.
+  if (frame.origin === "mcp-prompt-emitted" || frame.origin === "plugin-prompt-emitted") {
+    const card = stagedEnvelopeCard(typeof frame.text === "string" ? frame.text : "");
+    if (!card || card.kind.inputOrigin !== frame.origin) return entries;
+    return appendImportedTriggerEntry(entries, { sessionId: crypto.randomUUID(), source: card.source, prompt: card.prompt,
+      summary: card.summary, toolCallCount: 0, importedAt: new Date().toISOString() });
   }
   if (frame.messageId === undefined) return entries;
   // Claim each explicitly pending echo once; missing ids on guidance, imported, or legacy rows do not qualify.
