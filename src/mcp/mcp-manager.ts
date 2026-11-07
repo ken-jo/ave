@@ -1419,9 +1419,10 @@ export class McpManager {
       await this.withConfigFileLock(async () => {
         const validation = this.governance.validateServer(normalizedConfig);
         if (!validation.valid) {
-          throw new Error(
-            `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`,
-          );
+          const message = `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`;
+          // Invoke rejections preserve message text, not custom error fields.
+          const code = validation.layer === 1 ? validation.reasonCode : undefined;
+          throw new Error(code ? `${code}: ${message}` : message);
         }
         const existing = await this.loadConfigForWrite();
         if (existing.some((s) => s.id === normalizedId)) {

@@ -1,3 +1,4 @@
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../shared/mcp-error-code.js";
 /** Config mutation tests use isolated temporary state and never launch real clients. */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
@@ -22,7 +23,7 @@ const mockGetState = vi.fn().mockReturnValue({
 });
 const mockAuditLog = vi.fn();
 const constructedConfigs: unknown[] = [];
-const mockValidateServer = vi.fn(() => ({ valid: true as const }));
+const mockValidateServer = vi.fn<() => ValidationResult>(() => ({ valid: true }));
 
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
@@ -49,7 +50,7 @@ vi.mock("../../tools/registry.js", () => ({
 }));
 
 import { McpManager } from "../mcp-manager.js";
-import type { McpServerConfig } from "../types.js";
+import type { McpServerConfig, ValidationResult } from "../types.js";
 import { observeFileHandleSyncs } from "../../__tests__/support/fsync-observer.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 import { previewStudioConnector } from "../../studio/connector.js";
@@ -519,6 +520,23 @@ describe("McpManager — addConfig()", () => {
         (entry) => entry.endsWith(".tmp") || entry.endsWith(".old"),
       ),
     ).toEqual([]);
+  });
+
+  it.each([
+    [1, MCP_GOVERNANCE_UNAPPROVED_SERVER, true],
+    [0, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
+    [2, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
+    [3, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
+    [1, undefined, false],
+  ] as const)("tags only an unapproved server refusal at layer %s (%s)", async (layer, reasonCode, coded) => {
+    mockValidateServer.mockReturnValueOnce({ valid: false as const, layer, reason: "unchanged refusal", reasonCode });
+    const mgr = await makeManager();
+    const error = await mgr.addConfig({ id: "blocked", transport: "stdio", command: "notes-server" }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message.startsWith(`${MCP_GOVERNANCE_UNAPPROVED_SERVER}: `)).toBe(coded);
+    expect((error as Error).message).toContain("unchanged refusal");
+    expect(existsSync(testConfigPath)).toBe(false);
+    expect(mockConnect).not.toHaveBeenCalled();
   });
 
   it("rejects governance-invalid config before save", async () => {

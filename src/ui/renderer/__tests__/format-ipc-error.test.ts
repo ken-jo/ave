@@ -1,9 +1,33 @@
 import { describe, it, expect } from "vitest";
 import {
   formatIpcError,
+  invokeErrorCode,
+  invokeErrorDetail,
   COMMON_IPC_ERROR_MESSAGES,
 } from "../format-ipc-error.js";
 import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { CHANNELS } from "../../../contract/app-contract.js";
+
+describe("invoke error code allowlist", () => {
+  it.each(["sandbox", "terminal", "host-allow-list", "mcp-other-refusal"])("keeps ordinary %s detail uncoded", (prefix) => {
+    const message = `${prefix}: localized detail`;
+    expect(invokeErrorCode(new Error(message))).toBeUndefined();
+    expect(invokeErrorDetail(new Error(message))).toBeUndefined();
+    expect(invokeErrorCode(new Error(`Error invoking remote method '${CHANNELS.mcp.configAdd}': Error: ${message}`))).toBeUndefined();
+  });
+  it("recognizes only the leading approved code", () => {
+    expect(invokeErrorCode(new Error(`${MCP_GOVERNANCE_UNAPPROVED_SERVER}: detail`))).toBe(MCP_GOVERNANCE_UNAPPROVED_SERVER);
+    expect(invokeErrorCode(new Error(`Error invoking remote method '${CHANNELS.mcp.configAdd}': Error: ${MCP_GOVERNANCE_UNAPPROVED_SERVER}: detail`))).toBe(MCP_GOVERNANCE_UNAPPROVED_SERVER);
+    expect(invokeErrorCode(new Error(`detail: ${MCP_GOVERNANCE_UNAPPROVED_SERVER}`))).toBeUndefined();
+    expect(invokeErrorCode({ message: MCP_GOVERNANCE_UNAPPROVED_SERVER })).toBeUndefined();
+  });
+  it.each([false, true])("preserves localized detail without the recognized code (wrapped: %s)", (wrapped) => {
+    const detail = "승인이 필요합니다.\n서버 정책을 검토하세요.";
+    const message = `${MCP_GOVERNANCE_UNAPPROVED_SERVER}: ${detail}`;
+    expect(invokeErrorDetail(new Error(wrapped ? `Error invoking remote method '${CHANNELS.mcp.configAdd}': Error: ${message}` : message))).toBe(detail);
+  });
+});
 
 describe("formatIpcError (SOT — #830)", () => {
   it.each([

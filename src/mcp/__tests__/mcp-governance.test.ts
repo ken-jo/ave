@@ -1,3 +1,4 @@
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../shared/mcp-error-code.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -586,5 +587,20 @@ describe("McpGovernance transport validation", () => {
     expect(result).toMatchObject({ valid: false, layer: 1 });
     if (result.valid) throw new Error("Unsupported transport was accepted");
     expect(result.reason).toBe(t("be_mcpClient.unsupportedTransport", { transport }));
+  });
+});
+
+describe("McpGovernance server refusal codes", () => {
+  it.each(["missing", "pending", "revoked", "transport-mismatch", "approved"] as const)("codes only a missing approval: %s", (kind) => {
+    const gov = governanceWithPolicy(basePolicy({
+      status: kind === "pending" || kind === "revoked" ? kind : "approved",
+      transport: kind === "transport-mismatch" ? "http" : "stdio",
+    }));
+    const result = gov.validateServer({ id: kind === "missing" ? "unknown" : "browser-use", transport: "stdio", command: "uvx", auth: "api-key", apiKeyEnv: "OPENAI_API_KEY" });
+    if (kind === "missing") {
+      expect(result).toMatchObject({ valid: false, layer: 1, reasonCode: MCP_GOVERNANCE_UNAPPROVED_SERVER });
+    } else {
+      expect(result).not.toHaveProperty("reasonCode");
+    }
   });
 });

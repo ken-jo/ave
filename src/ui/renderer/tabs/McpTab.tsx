@@ -16,6 +16,8 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { invokeErrorCode, invokeErrorDetail } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
 type Transport = "stdio" | "http";
@@ -199,7 +201,7 @@ function parseKeyValueLines(input: string, delimiter: ":" | "="): Record<string,
   );
 }
 
-export function McpTab() {
+export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = {}) {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const formIdPrefix = useId();
@@ -220,11 +222,11 @@ export function McpTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [banner, setBanner] = useState<{ type: "error" | "success"; msg: string } | null>(null);
+  const [banner, setBanner] = useState<{ type: "error" | "success"; msg: string; policyApprovalRequired: boolean } | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBanner = useCallback((type: "error" | "success", msg: string) => {
+  const showBanner = useCallback((type: "error" | "success", msg: string, policyApprovalRequired = false) => {
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
+    setBanner({ type, msg, policyApprovalRequired });
     bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
   }, []);
 
@@ -476,7 +478,8 @@ export function McpTab() {
       notifySaved();
       void fetchAll();
     } catch (e) {
-      showBanner("error", errorMessage(e));
+      const message = invokeErrorDetail(e) ?? errorMessage(e);
+      showBanner("error", message, invokeErrorCode(e) === MCP_GOVERNANCE_UNAPPROVED_SERVER);
     } finally {
       setFormBusy(false);
     }
@@ -509,6 +512,16 @@ export function McpTab() {
             }`}
           >
             {banner.msg}
+            {banner.policyApprovalRequired && (
+              <div className="mt-2 space-y-2">
+                <p>{t("mcpTab.policyApprovalGuidance", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>
+                {onNavigate && (
+                  <Button size="sm" variant="outline" onClick={() => onNavigate("permissions")}>
+                    {t("mcpTab.openPermissionsButton")}
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
