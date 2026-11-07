@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
   logger: {
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),

@@ -7,6 +7,18 @@ import { MemoryManager } from "../memory-manager.js";
 import { appendJsonlRecords, turnInflightPath, writeTurnInflightRecord } from "../session-turn-journal.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+const memoryLogInfo = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/logger.js")>();
+  return {
+    ...actual,
+    createLogger: (name: string) => {
+      const logger = actual.createLogger(name);
+      return new Proxy(logger, { get: (target, key, receiver) => key === "info" && name === "memory" ? memoryLogInfo : Reflect.get(target, key, receiver) });
+    },
+  };
+});
+
 const SESSION = "c0ffee00-1111-2222-3333-444444444444";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -266,6 +278,16 @@ describe("in-flight sidecar recovery", () => {
     await next.sessions.saveSession(SESSION, recovered);
     expect(existsSync(sidecarPath())).toBe(false);
     expect(next.sessions.loadSession(SESSION)).toEqual(recovered);
+  });
+
+  it("reports a fold once per session however often the session is read", async () => {
+    await crashMidTurn([user, round1, result1], { messageId: "a2-partial", content: "partial" });
+    memoryLogInfo.mockClear();
+    const reader = new MemoryManager({ aveDir: dir }).sessions;
+    reader.loadSession(SESSION);
+    reader.loadSession(SESSION);
+    const folds = memoryLogInfo.mock.calls.filter(([message]) => String(message).startsWith("session: recovered an interrupted turn"));
+    expect(folds).toEqual([["session: recovered an interrupted turn (%d rows -> %d)", 3, 4]]);
   });
 
   it("ignores a sidecar that is not one this host wrote", async () => {

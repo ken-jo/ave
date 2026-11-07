@@ -17,6 +17,7 @@ import {
   type ExecutionGrant,
 } from "../../permissions/execution-router.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "../types.js";
+import { PROCESS_GROUP_REAPER_SCRIPT } from "../../main/process-group-reaper.js";
 import {
   backgroundShellManager,
   BashTool,
@@ -882,7 +883,8 @@ describe("brokered workload shell execution", () => {
     );
 
     expect(result).toMatchObject({ output: "host-ok", isError: false });
-    expect(spawnSpy).toHaveBeenCalledTimes(1);
+    // The host-death reaper (`process-group-reaper.ts`) is spawned with the first detached group; it is not the command.
+    expect(spawnSpy.mock.calls.filter(([, args]) => !(Array.isArray(args) && args[1] === PROCESS_GROUP_REAPER_SCRIPT))).toHaveLength(1);
     expect(broker.execute).not.toHaveBeenCalled();
   });
 });

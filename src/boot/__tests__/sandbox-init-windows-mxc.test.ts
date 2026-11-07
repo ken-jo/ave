@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("electron", () => ({

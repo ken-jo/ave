@@ -6,6 +6,7 @@ import { maskSensitiveData } from "../../../audit/dlp-filter.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { JudgeFailure } from "../judge-contract.js";
 import { buildExternalJudgeEnv, ExternalJudge, parseJudgeResponse, type JudgeFetch } from "../external-judge.js";
+import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
 import { PLANTED_CREDENTIAL, judgeInvocation, judgeRequest } from "./judge-request-fixture.js";
 
 function unparseableKind(text: string): string | null {
@@ -204,6 +205,17 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
       }
     }
     expect(alive).toBe(false);
+  });
+
+  it("tracks the judge process as a managed child until it is gone", async () => {
+    const slow = script("cat >/dev/null\nsleep 30");
+    const before = getManagedChildProcessCount();
+    const controller = new AbortController();
+    const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
+    expect(getManagedChildProcessCount()).toBe(before + 1);
+    controller.abort(new Error("stop"));
+    await expect(pending).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(before), { timeout: 5_000, interval: 50 });
   });
 
   it("abort kills the process", async () => {

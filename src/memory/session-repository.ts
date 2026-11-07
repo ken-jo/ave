@@ -770,6 +770,7 @@ export class SessionRepository {
   private readonly detachedProjectRoots = new Set<string>();
   // Session tombstones survive root re-add so old conversations remain detached.
   private readonly detachedProjectRootsBySession = new Map<string, Set<string>>();
+  private readonly reportedInterruptedTurnFolds = new Set<string>();
   // Capture policy generation before locking to detect detach/re-add ABA races.
   private readonly projectRootGenerations = new Map<string, number>();
   // Retain terminal state and binding together so late writes cannot regress or reclassify detached wire tasks.
@@ -1000,12 +1001,18 @@ export class SessionRepository {
       log.warn({ sessionId }, "ignoring unreadable turn in-flight record");
       return messages;
     }
-    return recoverInterruptedTurn(
+    const recovered = recoverInterruptedTurn(
       messages,
       record,
       (seed) => derivedRowId(sessionId, seed),
       { toolResultUnknown: t("be_conversationLoop.hostExitToolResultUnknown") },
     );
+    // Every read folds until the next save removes the sidecar; report it once per session.
+    if (!this.reportedInterruptedTurnFolds.has(sessionId)) {
+      this.reportedInterruptedTurnFolds.add(sessionId);
+      log.info("session: recovered an interrupted turn (%d rows -> %d)", messages.length, recovered.length);
+    }
+    return recovered;
   }
 
   // Imports require a fresh session id and never overwrite an existing transcript.

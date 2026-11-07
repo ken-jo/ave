@@ -3,6 +3,7 @@ import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
 const log = createLogger("ave");
 const PROCESS_TREE_KILL_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.processTreeKillMs;
@@ -23,6 +24,7 @@ interface ManagedChildProcess {
 }
 
 const managedChildren = new Set<ManagedChildProcess>();
+let processGroupReaper: ProcessGroupReaper | undefined;
 const pendingTreeKills = new WeakMap<ChildProcess, Promise<void>>();
 let managedChildProcessAdmissionSealed = false;
 
@@ -81,12 +83,16 @@ export function trackManagedChildProcess(
     onError: () => {},
   };
 
+  // Only a process this host spawned goes to the reaper (below): a pid on any other object names nothing the host owns. `spawnfile` is set by
+  // node:child_process on every process it starts.
+  const reaperHeldGroup = typeof child.spawnfile === "string" ? entry.processGroupId : undefined;
   const dispose = (): void => {
-    managedChildren.delete(entry);
+    const wasTracked = managedChildren.delete(entry);
     if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
     child.off("exit", entry.onSettled);
     child.off("close", entry.onSettled);
     child.off("error", entry.onError);
+    if (wasTracked && reaperHeldGroup !== undefined) hostDeathReaper().release(reaperHeldGroup);
   };
   const onSettled = (): void => {
     if (pendingTreeKills.has(child)) return;
@@ -109,6 +115,27 @@ export function trackManagedChildProcess(
   child.once("exit", onSettled);
   child.once("close", onSettled);
   child.once("error", onError);
+  // The quit sweep dies with the host, so a host killed by SIGKILL or a crash left the group reparented and running. The reaper also holds the
+  // group and kills it when the host's end of its pipe closes. Disposal releases it: at once when the leader exits with no group left, and
+  // otherwise on the disposal poll (processGroupPollMs, 1 s) that first sees the group gone. The one case the reaper could signal the wrong
+  // group: the leader exited while descendants remained, the last of them exits, and within that poll interval the pgid is reused and the host
+  // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
+  if (reaperHeldGroup !== undefined) {
+    try {
+      hostDeathReaper().retain(reaperHeldGroup);
+    } catch (error) {
+      dispose();
+      try {
+        forceKillProcessTreeSync(child, entry.killProcessGroup, entry.processGroupId);
+      } catch (killError) {
+        log.warn(
+          { pid: child.pid ?? null, label: entry.label, err: errorMessage(killError) },
+          "managed-child: failed to kill a child whose process group the reaper refused",
+        );
+      }
+      throw error;
+    }
+  }
   if (managedChildProcessAdmissionSealed && isKillable(entry)) {
     if (process.platform === "win32") {
       void forceKillManagedChildProcess(child, "registered after admission seal");
@@ -347,9 +374,16 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
   finish();
 }
 
+function hostDeathReaper(): ProcessGroupReaper {
+  processGroupReaper ??= createProcessGroupReaper();
+  return processGroupReaper;
+}
+
 export function __resetManagedChildProcessesForTest(): void {
   for (const entry of [...managedChildren]) entry.dispose();
   managedChildren.clear();
+  processGroupReaper?.shutdown();
+  processGroupReaper = undefined;
   managedChildProcessAdmissionSealed = false;
 }
 
