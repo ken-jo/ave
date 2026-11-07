@@ -1821,7 +1821,8 @@ describe("on Windows a confined child holds a grant on its own directories for e
         const echoed = (await instance.handlers.pilot_echo!({ text: "over loopback" })) as { payload: unknown };
         expect(echoed.payload).toEqual({ text: "over loopback" });
         await instance.stop?.();
-        await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+        // Stop resolves only after the child's exit released the grant: no release may trail the reported stop.
+        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
         expect(port).toBeGreaterThan(0);
         const refused = await new Promise<string>((resolve) => {
           const probe = connect({ host: "127.0.0.1", port });
