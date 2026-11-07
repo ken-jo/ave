@@ -353,6 +353,32 @@ describe("useStatusBar — sequential toast display", () => {
     expect(result.current.pendingCount).toBe(0);
   });
 
+  it("removeToast gives the promoted head a full TTL", async () => {
+    const api = statusBarApi();
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+
+    let firstId = "";
+    act(() => {
+      firstId = result.current.pushToast({ severity: "info", message: "first", ttlMs: 3000 });
+      result.current.pushToast({ severity: "info", message: "second", ttlMs: 3000 });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    act(() => result.current.removeToast(firstId));
+    expect(result.current.visibleToast?.message).toBe("second");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2900);
+    });
+    expect(result.current.visibleToast?.message).toBe("second");
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(result.current.visibleToast).toBeNull();
+  });
+
   it("burst of 3 install-result events shows only 1 toast at a time, advancing sequentially", async () => {
     let capturedHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
 
