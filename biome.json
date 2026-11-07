@@ -4,5 +4,6 @@
   "files": { "includes": ["src/**", "scripts/**", "test/**"] },
   "formatter": { "enabled": false },
   "assist": { "enabled": false },
+  "css": { "parser": { "tailwindDirectives": true } },
   "linter": { "enabled": true, "rules": { "preset": "recommended" } }
 }

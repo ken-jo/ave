@@ -364,7 +364,7 @@ jobs:
         run: rm -f ajv pino
       - name: Core hygiene gates
         working-directory: ave
-        run: bun run check:gate-core && bun run test:knip-gate
+        run: bun run check:gate-core && bun run test:knip-gate && bun run test:biome-gate
 
   mxc-pins:
     runs-on: ubuntu-24.04-arm

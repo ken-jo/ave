@@ -33,6 +33,9 @@ beforeAll(() => {
   writeFileSync(join(repo, "test/scripts/retired-name.test.mjs"),
     'import { test } from "node:test"; test("fixture check", () => {});\n');
   writeFileSync(join(repo, "scripts/check-retired-name.mjs"), "");
+  writeFileSync(join(repo, "test/scripts/biome-baseline.test.mjs"),
+    'import { test } from "node:test"; test("fixture check", () => {});\n');
+  writeFileSync(join(repo, "scripts/check-biome-baseline.mjs"), "");
   git(["add", "."]);
   git(["commit", "-qm", "initial fixture"]);
   const base = git(["rev-parse", "HEAD"]);
