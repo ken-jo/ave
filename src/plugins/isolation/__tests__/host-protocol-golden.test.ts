@@ -13,6 +13,7 @@ import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import { WorkerTransportUnsupportedError } from "../../../permissions/mxc-extension-errors.js";
 import { WorkerControlFailedError } from "../../../permissions/worker-stdio-control.js";
+import { WorkerAlreadyRunningError } from "../../../permissions/worker-spawn.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
 import { PluginRuntimeDetachedOperationError } from "../../runtime/detached-operation.js";
 import { CredentialLeaseError } from "../../secret-access/credential-lease-registry.js";
@@ -448,6 +449,11 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     overrides: {
       spawnWorker: throwing(() => new WorkerControlFailedError("[worker-spawn] worker:golden-invoker:indexer: no answer to $/ai.agent-connector.ave/hello within 60000ms")),
     },
+    provoke: throughStub("spawnWorker"),
+  },
+  "worker-already-running": {
+    trigger: "a worker id that is already running or stopping",
+    overrides: { spawnWorker: throwing(() => new WorkerAlreadyRunningError("golden-invoker", "golden")) },
     provoke: throughStub("spawnWorker"),
   },
   "credential-conflict": {

@@ -35,6 +35,7 @@ import {
 import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import { WorkerTransportUnsupportedError } from "../../permissions/mxc-extension-errors.js";
 import { WorkerControlFailedError } from "../../permissions/worker-stdio-control.js";
+import { WorkerAlreadyRunningError } from "../../permissions/worker-spawn.js";
 import {
   HOSTAPI_PATH_CONTRACTS,
   HOST_PROTOCOL_NOTIFICATIONS,
@@ -1242,7 +1243,7 @@ export function classifyHostApiError(error: unknown): HostApiWireError {
       },
     };
   }
-  if (error instanceof WorkerTransportUnsupportedError || error instanceof WorkerControlFailedError) {
+  if (error instanceof WorkerTransportUnsupportedError || error instanceof WorkerControlFailedError || error instanceof WorkerAlreadyRunningError) {
     return { code: error.code, name: error.name, message: error.message };
   }
   if (error instanceof PluginRuntimeDetachedOperationError) {

@@ -139,6 +139,9 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
 import { resolvePluginChildEntryPath } from "../confined-child.js";
+import { HostApiDispatcher, HOSTAPI_DISPATCH_TABLE, defineHostApiPath } from "../../plugins/isolation/host-api-dispatcher.js";
+import { PluginHostApiError } from "../../plugins/isolation/host-api-wire.js";
+import { hostApiRequest, settleHostApiReply } from "../../__tests__/support/host-protocol-wire.js";
 
 // A minimal child-process double (NOT a shared helper — local to this file).
 class StubWorkerChild extends EventEmitter {
@@ -926,8 +929,32 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const spec = workerOptions();
 
     const oldWorker = await spawnWorker(spec);
+    const dispatcher = new HostApiDispatcher({
+      pluginId: spec.pluginId,
+      isActive: () => true,
+      notifications: { deliver: () => {} },
+      reportUnknownField: () => {},
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        spawnWorker: defineHostApiPath("spawnWorker", async () => {
+          await spawnWorker(spec);
+          throw new Error("reservation unexpectedly succeeded");
+        }),
+      },
+    });
+    const expectConflict = async () => {
+      const reply = await dispatcher.handle(hostApiRequest("spawnWorker", [{
+        workerId: spec.workerId, command: spec.command, control: spec.control,
+      }]));
+      expect(() => settleHostApiReply(reply)).toThrow(PluginHostApiError);
+      expect(() => settleHostApiReply(reply)).toThrow(expect.objectContaining({
+        code: "worker-already-running",
+        message: `[worker-spawn] worker ${spec.pluginId}/${spec.workerId} is already running or stopping`,
+      }));
+    };
+    await expectConflict();
     oldWorker.stop();
-    await expect(spawnWorker(spec)).rejects.toThrow(/already running or stopping/);
+    await expectConflict();
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     oldChild.emit("exit", 0, "SIGTERM");
@@ -935,6 +962,27 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     expect(replacement.pid).toBe(replacementChild.pid);
     expect(spawnMock).toHaveBeenCalledTimes(2);
     replacementChild.emit("exit", 0, null);
+  });
+
+  it("keeps unclassified worker failures opaque to the plugin", async () => {
+    const dispatcher = new HostApiDispatcher({
+      pluginId: "local-indexer",
+      isActive: () => true,
+      notifications: { deliver: () => {} },
+      reportUnknownField: () => {},
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        spawnWorker: defineHostApiPath("spawnWorker", async () => {
+          throw new Error("worker local-indexer/embed is already running or stopping");
+        }),
+      },
+    });
+    const reply = await dispatcher.handle(hostApiRequest("spawnWorker", [{
+      workerId: "embed", command: "/opt/worker", control: "output-only-v1",
+    }]));
+    expect(() => settleHostApiReply(reply)).toThrow(expect.objectContaining({
+      code: "host-internal", message: "Host request failed.",
+    }));
   });
 });
 

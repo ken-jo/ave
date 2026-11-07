@@ -87,6 +87,15 @@ const log = createLogger("worker-spawn");
 const activeWrappedWorkerKeys = new Set<string>();
 const workerExitWaiters = new Map<string, Promise<void>>();
 
+export class WorkerAlreadyRunningError extends Error {
+  readonly code = "worker-already-running";
+
+  constructor(pluginId: string, workerId: string) {
+    super(`[worker-spawn] worker ${pluginId}/${workerId} is already running or stopping`);
+    this.name = "WorkerAlreadyRunningError";
+  }
+}
+
 // Resolve after every worker of this plugin has definitively exited.
 export async function waitForPluginWorkersStopped(pluginId: string): Promise<void> {
   const prefix = `${pluginId.length}:${pluginId}:`;
@@ -100,9 +109,7 @@ function wrappedWorkerKey(pluginId: string, workerId: string): string {
 function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
   const key = wrappedWorkerKey(pluginId, workerId);
   if (activeWrappedWorkerKeys.has(key)) {
-    throw new Error(
-      `[worker-spawn] worker ${pluginId}/${workerId} is already running or stopping`,
-    );
+    throw new WorkerAlreadyRunningError(pluginId, workerId);
   }
   activeWrappedWorkerKeys.add(key);
   let resolveExit!: () => void;

@@ -1568,7 +1568,8 @@ export interface PluginHostApi {
    * host's `$/ai.agent-connector.ave/hello`; a worker that does not is stopped and the call
    * rejects with `worker-control-failed`. A host whose extension backend cannot
    * run the declared mode refuses before creating the process with
-   * `worker-transport-unsupported`.
+   * `worker-transport-unsupported`. Reusing a workerId that is running or
+   * stopping rejects with `worker-already-running`.
    *
    * OPTIONAL: undefined on host builds that predate this primitive — guard with
    * `typeof hostApi.spawnWorker === "function"`, mirroring `resolveApiKey?`.
