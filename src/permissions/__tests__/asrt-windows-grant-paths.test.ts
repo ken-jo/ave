@@ -148,6 +148,16 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     }
   });
 
+  it("starts no holder for a turn refused by a later check", async () => {
+    await initializeAsrtSandbox({});
+    const started: number[] = [];
+    vi.mocked(runtime.getWindowsSandboxUserStatus).mockReturnValueOnce({ provisioned: false, credPresent: false } as ReturnType<typeof runtime.getWindowsSandboxUserStatus>);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: () => { started.push(process.pid + 1); return process.pid + 1; }, allowRead: [target] }))
+      .rejects.toThrow("Windows sandbox user is not provisioned");
+    expect(started).toEqual([]);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("grants and rechecks distinct case-only objects with correct compensation, replaced=%s", async replaced => {
     await initializeAsrtSandbox({});
     const nativePin = facts.pinWindowsPaths;
