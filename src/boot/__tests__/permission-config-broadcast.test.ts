@@ -49,7 +49,7 @@ function sharedLoopDeps() {
     toolRegistry: new ToolRegistry(),
     memoryManager: makeConversationLoopMemoryManager(),
     memoryReviewer: { review: async () => "recap" },
-    pluginRuntime: { listPluginCards: () => [], listPluginIds: () => [], listAll: () => [] },
+    pluginRuntime: { listPluginCards: () => [], listPluginIds: () => [], isPluginEnabled: () => true, listAll: () => [] },
     permissionManager: {},
     approvalGate: {},
     hookRunner: {},
