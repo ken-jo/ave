@@ -320,6 +320,11 @@ describe("a profile-child Ave home on Windows", () => {
     linkHome(true);
     try {
       for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+      // Boot names the refused home and the link reason in Settings (aveHomeBoundaryFailure).
+      let caught: { reason?: string; home?: string } | undefined;
+      try { getDefaultSensitiveReadDenyPaths(); } catch (error) { caught = error as typeof caught; }
+      expect(caught?.reason).toBe("link");
+      expect(trim(caught?.home ?? "").toLowerCase()).toBe(trim(original).toLowerCase());
     } finally {
       rmdirSync(original);
     }

@@ -59,6 +59,21 @@ describe("private-home refusal at extension spawn boundaries", () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["boundary-link", "boundary-unlisted"] as const)("refuses an out-of-process child under an unverifiable read boundary (%s) until approval", async (category) => {
+    // Boot publishes an `ave-home-boundary-unverified` init failure as this privacy refusal (sandbox-init.ts).
+    _resetAveHomePrivacyForTest();
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: path, category, reason: "ave-home-boundary-unverified" });
+    const spec = { pluginId: "privacy", envelope: { read: [path], write: [path] },
+      socketDir: join(path, "sockets"),
+      launch: { kind: "entry" as const, childEntryPath: join(path, "child.mjs") } };
+    await expect(spawnConfinedPluginChild(spec)).rejects.toThrow(`could not be established (${category}). Approve running without isolation`);
+    expect(spawn).not.toHaveBeenCalled();
+    approveExtensionsWithoutIsolation();
+    spawn.mockImplementationOnce(() => { throw new Error("fixture spawn reached"); });
+    await expect(spawnConfinedPluginChild(spec)).rejects.toThrow("fixture spawn reached");
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("denies a hook requesting confinement before approval and runs it after approval", async () => {
     const hook: RunnableHook = { id: "privacy", hookType: "pre", command: ["privacy-hook.exe"],
       hookPath: join(path, "hook.exe"), confinement: { kind: "bundled", pluginId: "privacy", dataDir: path, generationRoot: path } };

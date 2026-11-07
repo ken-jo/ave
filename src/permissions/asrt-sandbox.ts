@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
-import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
@@ -1086,49 +1086,47 @@ function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
       names = readdirSync(root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new AveHomeBoundaryUnverifiedError("unlisted", `${root} cannot be enumerated (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
+        throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${root} cannot be enumerated (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
       }
     }
     const candidates = (names ?? []).filter((name) => !isAveHomeReadReallowed([caseFoldForMatch(name)]));
-    const [home, ...entries] = pinBoundaryFacts([root, ...candidates.map((name) => join(root, name))]);
-    admitBoundaryEntry(home!, root);
+    const [home, ...entries] = pinBoundaryFacts(root, [root, ...candidates.map((name) => join(root, name))]);
+    admitBoundaryEntry(home!, root, root);
     if (home!.exists === false && names === undefined) {
       children.set(caseFoldForMatch(resolve(root)), []);
       continue;
     }
     if (home!.exists !== true || !home!.directory || names === undefined) {
-      throw new AveHomeBoundaryUnverifiedError("unlisted", `${root} changed or is not a directory during enumeration`);
+      throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${root} changed or is not a directory during enumeration`);
     }
     children.set(caseFoldForMatch(resolve(root)), candidates.filter((name, index) => {
       const entry = entries[index]!;
-      admitBoundaryEntry(entry, join(root, name));
-      if (entry.exists !== true) throw new AveHomeBoundaryUnverifiedError("unlisted", `${join(root, name)} vanished during enumeration`);
+      admitBoundaryEntry(entry, root, join(root, name));
+      if (entry.exists !== true) throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${join(root, name)} vanished during enumeration`);
       return entry.directory;
     }));
   }
   return children;
 }
 
-function admitBoundaryEntry(facts: WindowsPathFacts, path: string): void {
-  if (facts.exists === null) throw new AveHomeBoundaryUnverifiedError("unlisted", `${path} cannot be pinned (the native walk stopped above it)`);
-  if (admitWindowsReparse(facts) !== true) throw new AveHomeBoundaryUnverifiedError("link", `${path} is, or lies beneath, a link or reparse point`);
+function admitBoundaryEntry(facts: WindowsPathFacts, home: string, path: string): void {
+  if (facts.exists === null) throw new AveHomeBoundaryUnverifiedError("unlisted", home, `${path} cannot be pinned (the native walk stopped above it)`);
+  if (admitWindowsReparse(facts) !== true) throw new AveHomeBoundaryUnverifiedError("link", home, `${path} is, or lies beneath, a link or reparse point`);
 }
 
-function pinBoundaryFacts(paths: readonly string[]): readonly WindowsPathFacts[] {
+function pinBoundaryFacts(home: string, paths: readonly string[]): readonly WindowsPathFacts[] {
   try {
     return pinWindowsPaths(paths);
   } catch (error) {
-    throw new AveHomeBoundaryUnverifiedError("unlisted", `path facts are unavailable for ${paths.length} entries`, { cause: error });
+    throw new AveHomeBoundaryUnverifiedError("unlisted", home, `path facts are unavailable for ${paths.length} entries`, { cause: error });
   }
 }
 
-// Stable code for a confined launch refused because a profile-child Ave home's read boundary cannot be projected; `reason` says
-// whether a link or reparse point, or an unlistable home, caused it.
-const AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE = "ave-home-boundary-unverified";
-
+// A confined launch refused because a profile-child Ave home's read boundary cannot be projected; `reason` says whether a link or
+// reparse point, or an unlistable home, caused it. Boot maps it to the AVE_HOME privacy refusal (aveHomeBoundaryFailure).
 class AveHomeBoundaryUnverifiedError extends Error {
   readonly code = AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE;
-  constructor(readonly reason: "link" | "unlisted", detail: string, options?: ErrorOptions) {
+  constructor(readonly reason: "link" | "unlisted", readonly home: string, detail: string, options?: ErrorOptions) {
     super(`sandbox: refusing confinement, the Ave home read boundary cannot be projected: ${detail}`, options);
     this.name = "AveHomeBoundaryUnverifiedError";
   }

@@ -61,7 +61,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
-import { assertAveHomePrivacyForConfinement, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -225,6 +225,46 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation"));
+  });
+
+  it.each([["link", "boundary-link"], ["unlisted", "boundary-unlisted"]] as const)(
+    "publishes an unverifiable Ave home read boundary (%s) as the privacy refusal, not the generic degrade", async (reason, category) => {
+      const home = "C:\\Users\\alice\\.ave";
+      h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+      h.detectMxc.mockResolvedValue(MXC_OK);
+      h.initialize.mockRejectedValue(Object.assign(new Error(`sandbox: refusing confinement: ${home}\\logs is a link or reparse point`),
+        { code: "ave-home-boundary-unverified", reason, home }));
+      const context = harness.context(true, true);
+      const logRefusal = vi.fn();
+      context.bootAuditLogger.log = logRefusal;
+
+      await initSandboxGate(context);
+
+      // No proxy-only retry: every confined start would refuse the same boundary.
+      expect(h.initialize).toHaveBeenCalledOnce();
+      expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-boundary-unverified",
+        causes: ["ave-home-privacy-failed"], dependencyErrors: ["ave-home-boundary-unverified"] });
+      expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", home, category });
+      expect(() => assertAveHomePrivacyForConfinement()).toThrow("Approve running without isolation in Settings > Permissions");
+      expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+      expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", category);
+      // Logs carry codes only: the error's paths never reach the boot log.
+      for (const call of [...h.logger.warn.mock.calls, ...h.logger.error.mock.calls, ...h.logger.info.mock.calls]) {
+        expect(JSON.stringify(call)).not.toContain("alice");
+      }
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none" }));
+    });
+
+  it("keeps the generic Windows degrade for any other initialization failure", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    h.initialize.mockRejectedValue(Object.assign(new Error("proxy failed to bind"), { code: "EADDRINUSE" }));
+
+    await initSandboxGate(harness.context(true, true));
+
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed", causes: ["init-failed"] });
+    expect(getAveHomePrivacyFailure()).toBeUndefined();
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation=none"));
   });
 
   it("records the withdrawn substrate when ASRT fails to initialize", async () => {
