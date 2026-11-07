@@ -1824,7 +1824,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       if (/^\\\\server\\profiles(?:\\|$)/i.test(resolve(String(path)))) {
         throw Object.assign(new Error("Synthetic network entry is absent"), { code: "ENOENT" });
       }
-      return nativeReaddir(path, options);
+      return Reflect.apply(nativeReaddir, undefined, [path, options]);
     }) as typeof readdirSync);
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
