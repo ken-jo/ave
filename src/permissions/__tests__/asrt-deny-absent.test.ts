@@ -45,7 +45,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = mkdtempSync(join(os.tmpdir(), "deny-absent-"));
-    profile = join(root, "profile");
+    profile = join(root, "alice");
     mkdirSync(profile);
     vi.stubEnv("HOME", profile);
     vi.stubEnv("USERPROFILE", profile);
@@ -62,7 +62,9 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       provisioned: true, credPresent: true, sid: "S-1-5-21-1001",
     } as ReturnType<typeof runtime.getWindowsSandboxUserStatus>);
     vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([]);
+    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) =>
+      vi.mocked(runtime.grantWindowsAcl).mock.calls.filter(([call]) => call.holderPid === holderPid)
+        .flatMap(([call]) => (call.read ?? []).map(path => ({ path, status: "revoked" as const }))));
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
     vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({

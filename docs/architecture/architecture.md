@@ -3048,11 +3048,15 @@ with its own owner rule:
   release out of its JSON), or answered a status outside its `AceRelease` set.
   The quit is then `failed` and the runtime keeps the session for a retry.
   `revoked`, `stillHeld`, `downgraded`, `relocated` and `noRow` are completed
-  releases. `mismatch` and `missing` mean srt-win already dropped the holder
-  row, so a retry would change nothing. They do not fail the quit; Ave logs
+  releases, as are `restored` and `alreadyOriginal`. `mismatch` and `missing`
+  mean srt-win already dropped the holder row, so a retry would change nothing. They do not fail the quit; Ave logs
   their counts per step, without paths. A mismatched object's ACE is left as
   it was, so a deny there stays fail-closed, and the next boot's ACL recovery
   handles leftovers.
+  A plugin or worker grant release is judged by the same status sets and exit
+  code. An unconfirmed one seals the session against further confinement until
+  the quit reset (in practice, until restart); confined children already
+  running are not stopped.
   The copy's `exit` handler, registered at import and so run before the
   runtime's own, removes the copy only after a successful release.
   Otherwise it keeps the copy and writes one line to stderr, since the file log

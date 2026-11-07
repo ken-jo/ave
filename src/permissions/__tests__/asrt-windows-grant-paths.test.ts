@@ -38,7 +38,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     fixture = mkdtempSync(join(os.tmpdir(), "grant-target-"));
     target = join(fixture, "allowed");
     mkdirSync(target);
-    const profile = join(fixture, "profile");
+    const profile = join(fixture, "alice");
     mkdirSync(profile);
     vi.stubEnv("HOME", profile);
     vi.stubEnv("USERPROFILE", profile);
@@ -50,7 +50,10 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.spyOn(integrity, "prepareSrtWinExecutable").mockImplementation(source => source);
     vi.spyOn(runtime, "getWindowsSandboxUserStatus").mockReturnValue({ provisioned: true, credPresent: true, sid: "S-1-5-21-1001" } as ReturnType<typeof runtime.getWindowsSandboxUserStatus>);
     vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([]);
+    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(({ holderPid }) =>
+      [...new Set(vi.mocked(runtime.grantWindowsAcl).mock.calls
+        .filter(([call]) => call.holderPid === holderPid).flatMap(([call]) => call.read ?? []))]
+        .map(path => ({ path, status: "revoked" as const })));
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime.SandboxManager, "initialize").mockImplementation(async next => { config = next; });
@@ -101,7 +104,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
   });
 
   it.each(["private-helper", "write-floor"])("refuses a resolved target inside the %s boundary", async kind => {
-    const destination = kind === "write-floor" ? join(fixture, "profile", ".config") : target;
+    const destination = kind === "write-floor" ? join(fixture, "alice", ".config") : target;
     mkdirSync(destination, { recursive: true });
     if (kind === "private-helper") vi.spyOn(integrity, "srtWinPrivateDirectories").mockReturnValue([join(target, "bin")]);
     const link = join(fixture, "link");
@@ -283,7 +286,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 
-  it.each(["undefined", "incomplete", "empty", "missing-row", "malformed", "throws"])("contains the session and exposes failed compensation when revoke %s", async outcome => {
+  it.each(["undefined", "incomplete", "missing-row", "malformed", "throws"])("contains the session and exposes failed compensation when revoke %s", async outcome => {
     await initializeAsrtSandbox({});
     vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => {
       renameSync(target, join(fixture, "original"));
@@ -292,7 +295,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const revoke = vi.mocked(runtime.revokeWindowsAcl);
     if (outcome === "throws") revoke.mockImplementation(() => { throw new Error("revoke unavailable"); });
     else if (outcome === "malformed") revoke.mockReturnValue(null as unknown as ReturnType<typeof runtime.revokeWindowsAcl>);
-    else revoke.mockReturnValue(outcome === "undefined" ? undefined : outcome === "empty" ? []
+    else revoke.mockReturnValue(outcome === "undefined" ? undefined
       : outcome === "missing-row" ? [{ path: join(fixture, "other"), status: "revoked" }] : [{ path: target, status: "leftChanged" }]);
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(/cleanup failed/);
     expect(isAsrtSandboxActive()).toBe(true);
@@ -301,6 +304,125 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(calls);
     await expect(wrapToolCommand("echo confined", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/cleanup failed/);
     revoke.mockReturnValue([]);
+  });
+
+  it.each(["failed", "throws"])("seals confinement after release revoke %s until sandbox reset", async outcome => {
+    await initializeAsrtSandbox({});
+    const holderPid = process.pid + 1;
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid, allowRead: [target] });
+    const revoke = vi.mocked(runtime.revokeWindowsAcl);
+    const cause = new Error("revoke unavailable");
+    if (outcome === "throws") revoke.mockImplementationOnce(() => { throw cause; });
+    else revoke.mockReturnValueOnce([{ path: target, status: "leftChanged" }]);
+    expect(() => grant.release()).not.toThrow();
+    expect(isAsrtSandboxActive()).toBe(true);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] }))
+      .rejects.toThrow(`Windows filesystem grant cleanup failed for ${target}; reset the sandbox session`);
+    await expect(wrapToolCommand("echo confined", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/cleanup failed/);
+    if (outcome === "throws") {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid, allowRead: [target] })).rejects.toMatchObject({ cause });
+    }
+    revoke.mockReturnValue([{ path: target, status: "revoked" }]);
+    await resetAsrtSandbox();
+    await initializeAsrtSandbox({});
+    const next = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+    next.release();
+  });
+
+  it.each(["revoked", "stillHeld", "downgraded", "relocated", "noRow", "restored", "alreadyOriginal", "missing", "mismatch"] as const)("keeps confinement usable after release reports %s", async status => {
+    await initializeAsrtSandbox({});
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: target, status }]);
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] });
+    expect(() => grant.release()).not.toThrow();
+    const next = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+    next.release();
+  });
+
+  it("seals confinement without throwing when release config cleanup fails", async () => {
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] });
+    const cause = new Error("config update unavailable");
+    vi.mocked(runtime.SandboxManager.updateConfig).mockImplementationOnce(() => { throw cause; });
+    expect(() => grant.release()).not.toThrow();
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] }))
+      .rejects.toMatchObject({ cause, message: expect.stringContaining("reset the sandbox session") });
+  });
+
+  it("resets a sealed release through the runtime and permits new confinement", async () => {
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] });
+    const revoke = vi.mocked(runtime.revokeWindowsAcl);
+    revoke.mockReturnValueOnce([{ path: target, status: "leftChanged" }]);
+    grant.release();
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+    revoke.mockClear();
+    revoke.mockReturnValue([]);
+    try {
+      await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+      expect(runtime.SandboxManager.reset).toHaveBeenCalledTimes(1);
+      expect(revoke).not.toHaveBeenCalled();
+      expect(isAsrtSandboxActive()).toBe(false);
+      await initializeAsrtSandbox({});
+      const next = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+      next.release();
+    } finally {
+      revoke.mockReturnValue([{ path: target, status: "revoked" }]);
+    }
+  });
+
+  it.each([true, false])("judges an empty revoke by its exit on release and compensation, clean=%s", async clean => {
+    await initializeAsrtSandbox({});
+    const revoke = vi.mocked(runtime.revokeWindowsAcl);
+    revoke.mockImplementation(({ onExit }) => { onExit?.(clean); return []; });
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] });
+    expect(() => grant.release()).not.toThrow();
+    try {
+      if (!clean) {
+        await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+        return;
+      }
+      vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { throw new Error("grant unavailable"); });
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow("grant unavailable");
+      const next = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 3, allowRead: [target] });
+      next.release();
+    } finally {
+      revoke.mockReturnValue([{ path: target, status: "revoked" }]);
+    }
+  });
+
+  it.each(["revoked", "missing", "leftChanged"] as const)("seals release on a non-zero exit even with %s JSON", async status => {
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementationOnce(({ onExit }) => {
+      onExit?.(false);
+      return [{ path: target, status }];
+    });
+    expect(() => grant.release()).not.toThrow();
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+  });
+
+  it("seals release when a clean nonempty result omits a requested path", async () => {
+    const other = join(fixture, "other");
+    mkdirSync(other);
+    await initializeAsrtSandbox({});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target, other] });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementationOnce(({ onExit }) => {
+      onExit?.(true);
+      return [{ path: target, status: "revoked" }];
+    });
+    expect(() => grant.release()).not.toThrow();
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+  });
+
+  it("seals compensation on a non-zero exit even with completed JSON", async () => {
+    await initializeAsrtSandbox({});
+    vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { throw new Error("grant unavailable"); });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementationOnce(({ onExit }) => {
+      onExit?.(false);
+      return [{ path: target, status: "revoked" }];
+    });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
   });
 
   it.each(["session", "turn", "project"] as const)("refuses live %s root ancestors and equality directly and through junctions", async scope => {
@@ -328,7 +450,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     grant.release();
   });
 
-  it.each(["revoked", "stillHeld"] as const)("accepts native extended-path %s compensation without sealing a usable session", async status => {
+  it.each(["revoked", "stillHeld", "downgraded", "relocated", "noRow", "restored", "alreadyOriginal", "missing", "mismatch"] as const)("accepts native extended-path %s compensation without sealing a usable session", async status => {
     await initializeAsrtSandbox({});
     vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => {
       renameSync(target, join(fixture, "original"));
@@ -418,7 +540,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it("keeps junction deny evidence unproven and refuses an overlapping grant", async () => {
     const link = join(target, "denied");
-    symlinkSync(join(fixture, "profile"), link, "junction");
+    symlinkSync(join(fixture, "alice"), link, "junction");
     expect(() => denyAcl.readWindowsDenyAcls([link], "S-1-5-21-1001")).toThrow(/verification/);
     await initializeAsrtSandbox({ denyRead: [link], denyWrite: [link] });
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(/verification/);
@@ -426,7 +548,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
   });
 
   it("keeps a profile junction read-deny row and exposes unproven evidence", async () => {
-    const link = join(fixture, "profile", "denied");
+    const link = join(fixture, "alice", "denied");
     symlinkSync(target, link, "junction");
     const evidence = await readWindowsReadDenyEvidence([link]);
     expect(evidence.get(windowsReadDenyKey(link))?.status).toBe("reparse");

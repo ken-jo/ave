@@ -689,7 +689,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       };
     });
     const grant = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
-    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(() => {});
+    vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([{ path: realpathSync.native(existing), status: "revoked" }]);
     const checked = vi.spyOn(homeGuard, "checkSandboxStampTargets");
     const held = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [join(alias, "*.stamp-fixture")] });
     expect(held.allowWrite).toEqual([realpathSync.native(existing)]);

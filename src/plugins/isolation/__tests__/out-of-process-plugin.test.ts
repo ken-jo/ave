@@ -1752,10 +1752,14 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void } = {}) {
+  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void; readonly ignoresEof?: boolean } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
       const child = fakeChild();
+      if (opts.ignoresEof) child.kill.mockImplementation((signal: NodeJS.Signals) => {
+        setTimeout(() => end(child, null, signal), 50);
+        return true;
+      });
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
@@ -1767,11 +1771,12 @@ describe("on Windows a confined child holds a grant on its own directories for e
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
       }).then((socket) => {
+        if (opts.ignoresEof) socket.allowHalfOpen = true;
         const service = servePluginChild(socket, socket);
         socket.resume();
         socket.on("close", () => {
           service.hostGone();
-          end(child, 0, null);
+          if (!opts.ignoresEof) end(child, 0, null);
         });
       }, () => end(child, 1, null));
       return { child, confinement: "windows-srt" };
@@ -1833,6 +1838,22 @@ describe("on Windows a confined child holds a grant on its own directories for e
           probe.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
         });
         expect(refused).toBe("ECONNREFUSED");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes releasing the grant before stop returns when the child ignores socket EOF", async () => {
+    const layout = aveLayout();
+    const { dir, entryPath } = writePluginModule();
+    try {
+      await asWindows(layout, async () => {
+        spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: true }));
+        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+        const instance = await factory(hostContext(fakeHostApi(), layout.context));
+        await instance.stop?.();
+        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
