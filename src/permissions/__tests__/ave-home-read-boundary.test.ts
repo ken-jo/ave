@@ -6,8 +6,8 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join, sep } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakeHome = vi.hoisted(() => ({ value: undefined as string | undefined }));
 vi.mock("node:os", async (importOriginal) => {
@@ -210,36 +210,79 @@ describe("the Ave home read boundary through the MCP stdio wrap", () => {
 });
 
 describe("a profile-child Ave home on Windows", () => {
-  it("keeps its file rows instead of a root deny, and the relocated home keeps its root deny", () => {
-    const profile = mkdtempSync(join(tmpdir(), "ave-boundary-profile-"));
+  // A stamp on a profile child also stamps the profile root, so such a home denies its existing top-level children instead of itself.
+  let profile: string;
+  let original: string;
+  beforeEach(() => {
+    profile = mkdtempSync(join(tmpdir(), "ave-boundary-profile-"));
+    original = join(profile, ".ave");
+    for (const dir of [["plugins", "alice-plugin"], ["mcp", "example-server"], ["workspace", "alice-project"], ["logs"], ["sessions"], ["runtime", "uv"]]) {
+      mkdirSync(join(original, ...dir), { recursive: true });
+    }
+    writeFileSync(join(original, "settings.json"), "fixture");
+    writeFileSync(join(original, "plugins", "registry.json"), "fixture");
     fakeHome.value = profile;
     setProcessPlatform("win32");
-    try {
-      const original = join(profile, ".ave");
-      const settings = join(original, "settings.json");
-      mkdirSync(original, { recursive: true });
-      writeFileSync(settings, "fixture");
-      const floor = spelled(getDefaultSensitiveReadDenyPaths());
-      // A stamp on a profile child also stamps the profile root; that is what windowsDenyTargets refuses.
-      expect(floor).not.toContain(trim(original));
-      for (const row of ["settings.json", "permissions.json", join("plugins", "registry.json"), join("mcp", "servers.json")]) {
-        expect(floor).toContain(join(original, row));
-      }
-      expect(floor).toContain(trim(aveHome()));
-      for (const row of aveFileRows()) expect(floor).not.toContain(row);
-      // Readable original home, no grant beneath it: its file rows survive the profile filter, as on main.
-      const stat = lstatSync(settings, { bigint: true });
-      const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true },
-        new Map([[windowsReadDenyKey(settings), { status: "readable", principals: ["Everyone"],
-          identity: { volumeSerialNumber: stat.dev.toString(), fileId: stat.ino.toString() } } as const]]));
-      const denies = spelled(config.filesystem.denyRead);
-      expect(denies).toContain(settings);
-      expect(denies).not.toContain(trim(original));
-    } finally {
-      setProcessPlatform(HOST_PLATFORM);
-      fakeHome.value = undefined;
-      rmSync(profile, { recursive: true, force: true });
-    }
+  });
+  afterEach(() => {
+    setProcessPlatform(HOST_PLATFORM);
+    fakeHome.value = undefined;
+    rmSync(profile, { recursive: true, force: true });
+  });
+
+  it("denies each existing top-level child as a directory, never the home itself", () => {
+    const floor = getDefaultSensitiveReadDenyPaths();
+    expect(spelled(floor)).not.toContain(trim(original));
+    for (const child of ["plugins", "mcp", "logs", "runtime"]) expect(floor).toContain(join(original, child) + sep);
+    // Wholly re-allowed children are not denied; `sessions` keeps its own floor row.
+    for (const child of ["workspace"]) expect(spelled(floor)).not.toContain(join(original, child));
+    expect(floor).toContain(join(original, "sessions") + sep);
+    // The relocated home keeps its root deny and none of its file rows.
+    expect(spelled(floor)).toContain(trim(aveHome()));
+    for (const row of aveFileRows()) expect(floor).not.toContain(row);
+  });
+
+  it("keeps root files as file rows and drops the rows a denied child covers", () => {
+    const floor = getDefaultSensitiveReadDenyPaths();
+    for (const row of ["settings.json", "permissions.json"]) expect(floor).toContain(join(original, row));
+    expect(floor).not.toContain(join(original, "plugins", "registry.json"));
+    expect(floor).not.toContain(join(original, "mcp", "servers.json"));
+    // `agent-plugin-data` does not exist, so the rows inside it stay as they were.
+    const absent = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home" && entry.kind === "file" && entry.segments[0] === "packages");
+    for (const entry of absent) expect(floor).toContain(join(original, ...entry.segments));
+  });
+
+  it("denies a top-level child created after one projection in the next", () => {
+    expect(spelled(getDefaultSensitiveReadDenyPaths())).not.toContain(join(original, "future-child"));
+    mkdirSync(join(original, "future-child"));
+    expect(getDefaultSensitiveReadDenyPaths()).toContain(join(original, "future-child") + sep);
+  });
+
+  it("grants re-allowed children beneath a denied child as under a relocated root", () => {
+    const own = join(original, "plugins", "alice-plugin");
+    const server = join(original, "mcp", "example-server");
+    const workspace = join(original, "workspace", "alice-project");
+    const policy = getBuiltinShellReadPolicy([own, server, workspace, join(original, "logs"), join(original, "plugins", "registry.json")], profile);
+    expect(spelled(policy.allowRead)).toEqual(expect.arrayContaining([own, server, workspace]));
+    expect(spelled(policy.allowRead)).not.toContain(join(original, "logs"));
+    expect(spelled(policy.allowRead)).not.toContain(join(original, "plugins", "registry.json"));
+    expect(policy.denyRead).toContain(join(original, "plugins") + sep);
+    for (const path of [own, server, workspace]) expect(aveHomeReadBoundaryCovering(path), path).toBeUndefined();
+    expect(aveHomeReadBoundaryCovering(join(original, "plugins", "registry.json"))).toBe(original);
+  });
+
+  it("keeps a denied child in directory form when a grant lies beneath it, and a readable root file row", () => {
+    const own = join(original, "plugins", "alice-plugin");
+    const settings = join(original, "settings.json");
+    const stat = lstatSync(settings, { bigint: true });
+    const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true },
+      new Map([[windowsReadDenyKey(settings), { status: "readable", principals: ["Everyone"],
+        identity: { volumeSerialNumber: stat.dev.toString(), fileId: stat.ino.toString() } } as const]]),
+      { allowRead: [{ path: own, literal: true }] });
+    const denies = config.filesystem.denyRead.map((entry) => typeof entry === "string" ? entry : entry.path);
+    expect(denies).toContain(join(original, "plugins") + sep);
+    expect(spelled(denies)).toContain(settings);
+    expect(spelled(denies)).not.toContain(trim(original));
   });
 });
 

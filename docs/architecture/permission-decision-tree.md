@@ -142,15 +142,20 @@ Notes that are part of the contract:
   and the explicit allow on a granted child ranks above it. Linux masks the root with tmpfs and binds the granted children back.
   macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write
   floor keep the per-file rows.
-- Limit of the Ave home boundary on Windows: an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) keeps its
-  file rows instead of the root deny. A stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile
-  root that propagates through the whole profile and exceeds the init timeout. That default home is owner-only, so its own DACL
-  already refuses the sandbox account everything that is not explicitly granted. A relocated Ave home gets the root deny.
-- Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the Windows profile-child Ave home above): Linux bind
-  masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a file the host
-  replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path handling,
-  which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there. Per-exec
-  shells re-apply masks and stamps on every spawn.
+- Limit of the Ave home boundary on Windows: an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no
+  root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that
+  propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not
+  wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are
+  dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by
+  their explicit allow exactly as under the relocated root. Every projection re-reads the home's top-level entries (one readdir, no
+  recursion), and per-exec shells stamp the result on each spawn. Residual set: top-level files of the Ave home stay file rows (see the
+  file-row limit below), and a top-level child created after a spawn is not covered for that spawn's lifetime; the next spawn denies
+  it. A relocated Ave home gets the root deny.
+- Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
+  Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
+  file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path
+  handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there.
+  Per-exec shells re-apply masks and stamps on every spawn.
 - User-typed terminal-tab commands are user actions and stay outside this tree.
 
 ## Mode behaviour matrix (owner clarification 2026-10-30)

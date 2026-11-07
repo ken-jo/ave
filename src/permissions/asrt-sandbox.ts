@@ -13,7 +13,7 @@ import { expandWindowsFsPaths, setWindowsAclRecoveryListener, type WindowsAclRec
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
-import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -672,7 +672,7 @@ export function admitMxcExtensionFilesystem(filesystem: PerCommandFilesystem, ow
   }))];
   // Only the shared private/namespace masks are re-openable by this holder's own leaf roots.
   // An explicit literal deny below those masks, or anywhere else, remains a hard floor.
-  const reallowableMasks = literalDenies([...appOwnedSandboxPrivateRoots(), ...namespaceRoots, ...aveHomeReadBoundaryRoots()]);
+  const reallowableMasks = literalDenies([...appOwnedSandboxPrivateRoots(), ...namespaceRoots, ...aveHomeReadBoundaryMasks()]);
   const samePath = (left: string, right: string): boolean =>
     win32.normalize(left).replace(/[\\/]+$/, "").toLowerCase() === win32.normalize(right).replace(/[\\/]+$/, "").toLowerCase();
   const explicitReadFloor = literalDenies(admitted.denyRead).filter(path => !reallowableMasks.some(mask => samePath(path, mask)));
@@ -767,7 +767,7 @@ export function buildPerCommandSandboxCustomConfig(
       asrtReadDenyPaths(
         denyRead,
         // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
-        [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryRoots()],
+        [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
       ),
       _baseTrustedSettings?.userDataDir,
       windowsGrants,
@@ -1033,8 +1033,17 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
 // Reads are deny-only: allowRead only re-allows within a covering deny, so unknown paths remain readable. Project the canonical sensitive table plus trusted runtime userData and private temp/HOME roots; re-allow only each process's own private directory.
 // Do not deny whole home/config/cwd/system/temp roots; use literal host-derived paths, never untrusted userData. Missing paths do not imply allow; Linux skips absent binds. Windows retains its ACL floor; private roots stay outside the write floor so each process can write its own directory.
 // The Ave home is one directory deny (aveHomeReadBoundaryRoots), so its file rows are left out here; they stay on the protected floor and the write floor.
+// Every call re-enumerates a profile-child home's top-level children (aveHomeProfileChildren); nothing is cached between projections.
 export function getDefaultSensitiveReadDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
-  return [...getDefaultSensitiveDenyPaths(userDataDir, undefined, true), ...aveHomeReadBoundaryDenies(), ...appOwnedSandboxPrivateRoots()];
+  const children = aveHomeProfileChildren();
+  const seen = new Set<string>();
+  return [...getDefaultSensitiveDenyPaths(userDataDir, undefined, true, children), ...aveHomeReadBoundaryDenies(children), ...appOwnedSandboxPrivateRoots()]
+    .filter((path) => {
+      const key = caseFoldForMatch(path.replace(/[\\/]+$/, ""));
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 // Every spelling of the Ave home the sensitive table anchors to. Read-denied as a whole directory, so a child added later, a file created after a stamp, or a rename-over beneath it stays denied; a wrap re-opens only children AVE_HOME_READ_REALLOWS names.
@@ -1048,19 +1057,47 @@ function aveHomeReadBoundaryRoots(): string[] {
   });
 }
 
-// The roots denied as one directory. On Windows a root directly beneath the OS profile keeps its file rows instead: a stamp also
-// denies FILE_DELETE_CHILD inheritably on the target's parent, and on the profile root that propagates through the whole profile and
-// exceeds the init timeout (why windowsDenyTargets filters profile-child read denies). The grant ceiling still covers every root.
+// The roots denied as one directory. On Windows a root directly beneath the OS profile is not: a stamp also denies FILE_DELETE_CHILD
+// inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout
+// (why windowsDenyTargets filters profile-child read denies). Such a home denies its top-level children instead, so the parent stamp
+// lands on the home. The grant ceiling still covers every root.
 function aveHomeReadBoundaryDirectoryRoots(): string[] {
-  const roots = aveHomeReadBoundaryRoots();
-  const profile = process.platform === "win32" ? windowsProfileHome() : undefined;
-  if (profile === undefined) return roots;
-  const profileKey = caseFoldForMatch(resolve(profile));
-  return roots.filter((root) => caseFoldForMatch(dirname(resolve(root))) !== profileKey);
+  return aveHomeReadBoundaryRoots().filter((root) => !isWindowsProfileChild(root));
 }
 
-function aveHomeReadBoundaryDenies(): string[] {
-  return aveHomeReadBoundaryDirectoryRoots().map((root) => (process.platform === "win32" ? root.replace(/[\\/]+$/, "") + sep : root));
+function isWindowsProfileChild(root: string): boolean {
+  const profile = process.platform === "win32" ? windowsProfileHome() : undefined;
+  return profile !== undefined && caseFoldForMatch(dirname(resolve(root))) === caseFoldForMatch(resolve(profile));
+}
+
+// Per profile-child home (keyed by its folded path), the top-level directories that exist now and are not wholly re-allowed: one
+// readdir, no recursion. `plugins`, `mcp` and `runtime` are denied and their re-allowed children granted beneath them, as under a
+// relocated root. Root files keep their file rows; a child created later is denied from the next projection on.
+function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
+  const children = new Map<string, string[]>();
+  for (const root of aveHomeReadBoundaryRoots().filter(isWindowsProfileChild)) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      // An absent or unreadable home has no child to deny; all its file rows stay.
+    }
+    children.set(caseFoldForMatch(resolve(root)), names.filter((name) => !isAveHomeReadReallowed([caseFoldForMatch(name)])));
+  }
+  return children;
+}
+
+// Each directory root, and each denied top-level child of a profile-child home.
+function aveHomeReadBoundaryDenies(children: ReadonlyMap<string, readonly string[]> = aveHomeProfileChildren()): string[] {
+  return [
+    ...aveHomeReadBoundaryDirectoryRoots(),
+    ...aveHomeReadBoundaryRoots().flatMap((root) => (children.get(caseFoldForMatch(resolve(root))) ?? []).map((name) => join(root, name))),
+  ].map((path) => (process.platform === "win32" ? path.replace(/[\\/]+$/, "") + sep : path));
+}
+
+// The same denies as bare paths, for the composers that treat them as re-openable masks.
+function aveHomeReadBoundaryMasks(): string[] {
+  return aveHomeReadBoundaryDenies().map((path) => path.replace(/[\\/]+$/, ""));
 }
 
 // The Ave home root covering `path` when `path` is that root or lies outside every re-allowed child.
@@ -1089,8 +1126,9 @@ export function getBuiltinShellSessionReadPolicy(userDataDir = _baseTrustedSetti
 } {
   const sessionPolicy = getConfiguredSessionReadPolicy();
   const sessionRoot = sessionPolicy.allowRead[0];
+  const children = aveHomeProfileChildren();
   const otherDenies = [
-    ...getDefaultSensitiveDenyPaths(userDataDir, sessionRoot, true),
+    ...getDefaultSensitiveDenyPaths(userDataDir, sessionRoot, true, children),
     ...(_baseTrustedSettings?.denyRead ?? []),
   ];
   // A session allowance must not carve into another protected namespace or a trusted custom deny.
@@ -1103,7 +1141,7 @@ export function getBuiltinShellSessionReadPolicy(userDataDir = _baseTrustedSetti
   // The session root is a re-allowed child of the Ave home boundary, so the boundary joins after the carve check.
   return Object.freeze({
     allowRead: sessionPolicy.allowRead,
-    denyRead: Object.freeze([...otherDenies, ...aveHomeReadBoundaryDenies(), ...sessionPolicy.denyRead]),
+    denyRead: Object.freeze([...otherDenies, ...aveHomeReadBoundaryDenies(children), ...sessionPolicy.denyRead]),
   });
 }
 
@@ -1488,7 +1526,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         (entry.anchor === "ave-home" ? aveHomes : homes).map((home) => join(home, ...entry.segments)),
       ),
       ...electronUserDataDirs(userDataDir, homes).map((path) => path.replace(/[\\/]+$/, "")),
-      ...aveHomeReadBoundaryRoots().map((path) => path.replace(/[\\/]+$/, "")),
+      ...aveHomeReadBoundaryRoots().map((path) => path.replace(/[\\/]+$/, "")), ...aveHomeReadBoundaryMasks(),
       ...writePersistenceDirectories(homes),
     ].map(caseFoldForMatch),
   );
@@ -1561,12 +1599,24 @@ function keepWindowsDenyTarget(
   return present;
 }
 
-// `readProjection` leaves out the file rows of each Ave home the read projection denies as one directory.
-function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string, readProjection = false): string[] {
+// `readProjection` leaves out the Ave home file rows a boundary deny covers: all of them under a directory root, and those inside a
+// denied top-level child of a profile-child home (`profileChildren`). Root files of a profile-child home keep their rows.
+function getDefaultSensitiveDenyPaths(
+  userDataDir: string | undefined,
+  readablePrimarySessionRoot?: string,
+  readProjection = false,
+  profileChildren: ReadonlyMap<string, readonly string[]> = new Map(),
+): string[] {
   const homes = sensitiveDenyHomes();
   const ave = aveHome();
   const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
   const directoryRoots = new Set(readProjection ? aveHomeReadBoundaryDirectoryRoots().map((root) => caseFoldForMatch(resolve(root))) : []);
+  const coveredFileRow = (home: string, segments: readonly string[]): boolean => {
+    const key = caseFoldForMatch(resolve(home));
+    if (directoryRoots.has(key)) return true;
+    const denied = profileChildren.get(key);
+    return denied !== undefined && segments.length > 1 && denied.some((name) => caseFoldForMatch(name) === caseFoldForMatch(segments[0]!));
+  };
   // Electron userData dir — see electronUserDataDirs.
   const electronUserData = electronUserDataDirs(userDataDir, homes);
   const raw = [
@@ -1576,7 +1626,7 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
       switch (entry.anchor) {
         case "ave-home":
           paths = (readProjection && entry.kind === "file"
-            ? aveHomes.filter((home) => !directoryRoots.has(caseFoldForMatch(resolve(home)))) : aveHomes)
+            ? aveHomes.filter((home) => !coveredFileRow(home, entry.segments)) : aveHomes)
             .map((home) => join(home, ...entry.segments));
           break;
         case "home":
