@@ -342,7 +342,7 @@ describe("MemoryManager workspace project detachment", () => {
   it("repairs every FTS row on a zero-change detach retry", async () => {
     await seed(SESSION_A, ROOT, "stale-index");
     await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(1);
-    const searchIndex = (memory as unknown as {
+    const searchIndex = ((memory as unknown as { sessionRepository: unknown }).sessionRepository as {
       searchIndex: {
         open(): boolean;
         close(): void;
@@ -378,7 +378,7 @@ describe("MemoryManager workspace project detachment", () => {
 
   it("preserves a retryable error when full FTS repair cannot open", async () => {
     await seed(SESSION_A, ROOT, "repair-retry");
-    const searchIndex = (memory as unknown as {
+    const searchIndex = ((memory as unknown as { sessionRepository: unknown }).sessionRepository as {
       searchIndex: { open(): boolean };
     }).searchIndex;
     const openSpy = vi.spyOn(searchIndex, "open").mockReturnValueOnce(false);

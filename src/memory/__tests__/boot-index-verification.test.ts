@@ -19,7 +19,7 @@ describe("MemoryManager boot index verification", () => {
   it("does not enumerate session JSONL files when the index is healthy and populated", async () => {
     const manager = new MemoryManager({ aveDir });
     const close = vi.fn();
-    const internals = manager as unknown as {
+    const internals = (manager as unknown as { sessionRepository: unknown }).sessionRepository as {
       searchIndex: {
         open(): boolean;
         rowCount(): number;
