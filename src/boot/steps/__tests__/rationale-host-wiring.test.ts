@@ -9,6 +9,18 @@ import { MemorySecretStore } from "../../../audit/hmac-chain.js";
 import type { DurableHostInvocationStartCasStoreOptions } from "../../../tools/pipeline/rationale-invocation-journal.js";
 import { wireRationaleHost } from "../rationale-host-wiring.js";
 
+const logInfo = vi.hoisted(() => vi.fn());
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return {
+    ...actual,
+    createLogger: (name: string) => {
+      const logger = actual.createLogger(name);
+      return new Proxy(logger, { get: (target, key, receiver) => key === "info" ? logInfo : Reflect.get(target, key, receiver) });
+    },
+  };
+});
+
 function makeContext(): BootContext {
   return {
     rationaleHostService: undefined,
@@ -144,6 +156,9 @@ describe("wireRationaleHost", () => {
     expect(appendInvocation).toHaveBeenCalledOnce();
     expect(publicationStates).toEqual([undefined, undefined, undefined]);
     expect(ctx.rationaleHostService).toBe(service);
+    expect(logInfo).toHaveBeenCalledWith(
+      "boot: invocation journal recovered %d unknown-after-crash, delivered %d audit records", 1, 1,
+    );
   });
 
   it("fails closed when recovery reports corruption", async () => {

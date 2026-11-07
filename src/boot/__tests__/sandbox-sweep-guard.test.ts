@@ -95,7 +95,7 @@ describe("the sandbox sweep in a test process", () => {
     expectNothingRemoved();
   });
 
-  it("sweeps a root under ~/.ave/test-tmp, which is the tests' own", async () => {
+  it("sweeps a root under ~/.ave/test-tmp, which is the tests' own, keeping and counting entries in use", async () => {
     const root = join(ave, "test-tmp", "sbx-case", "home");
     mkdirSync(join(root, "stale"), { recursive: true });
     // Confined processes can leave owner-inaccessible directories and user-immutable files.
@@ -111,8 +111,13 @@ describe("the sandbox sweep in a test process", () => {
       execFileSync("/usr/bin/chflags", ["uchg", join(flagged, "file")]);
       execFileSync("/usr/bin/chflags", ["uchg", flagged]);
     }
-    await sweepSandboxPrivateRoot(root, new Set());
-    expect(readdirSync(root)).toEqual([]);
+    const live = join(root, "live");
+    mkdirSync(live);
+    await expect(sweepSandboxPrivateRoot(root, new Set([live]))).resolves.toEqual({
+      removed: process.platform === "darwin" ? 3 : 2,
+      kept: 1,
+    });
+    expect(readdirSync(root)).toEqual(["live"]);
     expectNothingRemoved();
   });
 });
