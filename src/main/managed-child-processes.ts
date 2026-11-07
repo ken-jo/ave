@@ -96,7 +96,7 @@ export function trackManagedChildProcess(
   };
   const onSettled = (): void => {
     if (pendingTreeKills.has(child)) return;
-    if (entry.processGroupId !== undefined && processGroupExists(entry.processGroupId)) {
+    if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) {
       scheduleProcessGroupDisposal(entry);
       return;
     }
@@ -349,7 +349,7 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
   };
   const finish = (): void => {
     if (entry && managedChildren.has(entry)) {
-      if (entry.processGroupId !== undefined && processGroupExists(entry.processGroupId)) {
+      if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) {
         // Signal delivery is not proof of termination, including EPERM failures. Keep the original group handle until disappearance is observed.
         scheduleProcessGroupDisposal(entry);
       } else if (process.platform !== "win32" || !isKillable(entry) || (child.pid ?? 0) <= 0) {
@@ -388,7 +388,7 @@ export function __resetManagedChildProcessesForTest(): void {
 }
 
 function isKillable(entry: ManagedChildProcess): boolean {
-  if (entry.processGroupId !== undefined && processGroupExists(entry.processGroupId)) return true;
+  if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) return true;
   return entry.child.exitCode === null && entry.child.signalCode == null;
 }
 
@@ -398,7 +398,7 @@ function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
 
   const poll = (): void => {
     entry.disposeTimer = undefined;
-    if (entry.processGroupId === undefined || !processGroupExists(entry.processGroupId)) {
+    if (entry.processGroupId === undefined || !processExists(-entry.processGroupId)) {
       entry.dispose();
       return;
     }
@@ -420,10 +420,10 @@ function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
   entry.disposeTimer.unref?.();
 }
 
-// Only ESRCH proves a group is gone; permission and unexpected probe errors conservatively keep disposal polling.
-function processGroupExists(processGroupId: number): boolean {
+// Only ESRCH proves a process is gone; permission and unexpected probe errors retain ownership.
+function processExists(pid: number): boolean {
   try {
-    process.kill(-processGroupId, 0);
+    process.kill(pid, 0);
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -438,18 +438,25 @@ interface TreeKillResult {
   signal: NodeJS.Signals | null;
   elapsedMs: number;
   budgetExceeded: boolean;
+  targetGone: boolean;
 }
 
-function runWindowsTreeKill(pid: number): Promise<TreeKillResult> {
+function runWindowsTreeKill(child: ChildProcess, pid: number): Promise<TreeKillResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let settled = false;
+    let targetExited = child.exitCode != null || child.signalCode != null;
+    const handleTargetExit = (): void => { targetExited = true; };
+    child.once("exit", handleTargetExit);
+    child.once("close", handleTargetExit);
     let timer: NodeJS.Timeout | undefined;
-    const finish = (exitCode: number | null, signal: NodeJS.Signals | null, budgetExceeded = false): void => {
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null, budgetExceeded = false, targetGone = false): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ exitCode, signal, elapsedMs: Date.now() - startedAt, budgetExceeded });
+      child.off("exit", handleTargetExit);
+      child.off("close", handleTargetExit);
+      resolve({ exitCode, signal, elapsedMs: Date.now() - startedAt, budgetExceeded, targetGone });
     };
     try {
       const runner = spawn(win32SystemBinary("taskkill"), ["/PID", String(pid), "/T", "/F"], {
@@ -458,7 +465,8 @@ function runWindowsTreeKill(pid: number): Promise<TreeKillResult> {
       runner.once("error", () => finish(null, null));
       runner.once("exit", (code, signal) => finish(code, signal));
       timer = setTimeout(() => {
-        finish(null, "SIGKILL", true);
+        const targetGone = targetExited || child.exitCode != null || child.signalCode != null || !processExists(pid);
+        finish(null, "SIGKILL", true, targetGone);
         try { runner.kill("SIGKILL"); } catch { /* Still try the tree again. */ }
       }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
     } catch {
@@ -483,11 +491,14 @@ function forceKillProcessTree(
     // No runtime Windows descendant snapshot is available. Retry the full tree before terminating the root, which would lose its ancestry information.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
-      const result = await runWindowsTreeKill(pid);
-      if (result.exitCode === 0) return;
+      const result = await runWindowsTreeKill(child, pid);
+      if (result.exitCode === 0 || result.targetGone) {
+        log.info({ targetPid: pid, attempt, ...result }, "managed-child: taskkill /T /F succeeded");
+        return;
+      }
       // 128: the root is already gone, so no /T pass can reach its tree again.
       if (result.exitCode === TASKKILL_PROCESS_NOT_FOUND) break;
-      log.warn({ pid, attempt, ...result }, "managed-child: taskkill /T /F failed");
+      log.warn({ targetPid: pid, attempt, ...result }, "managed-child: taskkill /T /F failed");
     }
     if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL");
   })();
