@@ -7,6 +7,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
+import { stagedOriginForInput } from "../shared/staged-origins.js";
 import type { PolicyFile } from "./policy-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { NotificationService } from "../main/notification-service.js";
@@ -855,9 +856,11 @@ export class ApprovalGate {
     const title = request.sessionId === undefined ? ""
       : this.conversationTitleResolver?.(request.sessionId)
         ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
-    return t("be_approvalGate.conversationNotification", {
-      action: maskedAction, title: segment(title),
-    });
+    // The origin belongs to the request, not the title: the title names the root conversation's latest message, while a staged origin can come from a sub-agent or from staged guidance inside a typed turn.
+    const staged = stagedOriginForInput(request.trustOrigin);
+    return staged
+      ? t("be_approvalGate.stagedConversationNotification", { action: maskedAction, origin: t(staged.labelKey), title: segment(title) })
+      : t("be_approvalGate.conversationNotification", { action: maskedAction, title: segment(title) });
   }
 
   // Replace the runtime policy immediately from the ave:policy:set IPC handler.
