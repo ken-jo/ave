@@ -92,6 +92,20 @@ test("check mode fails on growth", () => {
   assert.deepEqual(result.failure.details, ["src/a.ts lint/style/useConst x1"]);
 });
 
+test("check mode fails on growth even when another entry shrinks, listing only the growth", () => {
+  const result = evaluateBiomeBaseline(
+    [
+      { ...accepted[0], count: 1 },
+      { file: "src/b.ts", category: "lint/suspicious/noDebugger", count: 1 },
+    ],
+    snapshot(),
+    VERSION,
+  );
+  assert.match(result.failure.message, /new lint diagnostics exceed the reviewed baseline/);
+  assert.deepEqual(result.failure.details, ["src/b.ts lint/suspicious/noDebugger x1"]);
+  assert.equal(result.notice, null);
+});
+
 test("check mode passes on shrinkage with a lock-in notice", () => {
   const result = evaluateBiomeBaseline([{ ...accepted[0], count: 1 }], snapshot(), VERSION);
   assert.equal(result.failure, null);
