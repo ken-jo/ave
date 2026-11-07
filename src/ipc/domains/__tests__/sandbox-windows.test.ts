@@ -13,6 +13,7 @@ import { UNAUTHORIZED_FRAME } from "../../gated.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { setAveHomePrivacyAtBoot, areExtensionsWithoutIsolationApproved, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import * as srtIntegrity from "../../../permissions/srt-win-integrity.js";
 import * as asrtSandbox from "../../../permissions/asrt-sandbox.js";
 import {
@@ -211,6 +212,25 @@ describe("extension isolation session approval", () => {
     expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ homePrivacyError: { approvedForSession: true } });
     _resetAveHomePrivacyForTest(); failPrivacy();
     expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+  });
+  it.each(["boundary-link", "boundary-unlisted"] as const)("audits a %s approval with its category and code, never a path", async (category) => {
+    setProcessPlatform("win32");
+    const path = home();
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: path, failedPath: join(path, "logs"), reason: "ave-home-boundary-unverified", category });
+    const { registerPermissionsHandlers } = await import("../permissions.js");
+    const deps = { ...makeDeps({ pluginWorkerConfinement: true }), settingsService: { get: vi.fn(() => ({ pluginWorkerConfinement: true })), set: vi.fn() } };
+    registerPermissionsHandlers(deps as never);
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, foreignFrameEvent("https://evil.example"), { intent: USER_INTENT })).toEqual(UNAUTHORIZED_FRAME);
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), {})).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), { intent: USER_INTENT })).toEqual({ ok: true });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(true);
+    const approvals = (deps.auditLogger.log.mock.calls as unknown as [{ type: string; output: string }][]).map(call => call[0]).filter(entry => entry.type === "approval");
+    expect(approvals).toHaveLength(1);
+    expect(JSON.parse(approvals[0].output)).toEqual({ action: "extensions_without_isolation_approved", who: "user-ui", category, code: "ave-home-boundary-unverified" });
+    const logged = JSON.stringify(deps.auditLogger.log.mock.calls);
+    expect(logged).not.toContain(JSON.stringify(path).slice(1, -1));
+    expect(logged).not.toContain("logs");
   });
   it("cannot approve when the home is protected", async () => {
     setProcessPlatform("win32"); await setup();

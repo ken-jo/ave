@@ -63,6 +63,7 @@ import {
 } from "./sandbox-capability.js";
 import {
   getHostShellExecutionPlanAuditProjection,
+  requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "./host-shell-execution-plan.js";
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
@@ -1420,6 +1421,9 @@ export class PermissionManager {
   ): PermissionCheckResult {
     let admissionDenial = context.admissionDenial;
     let floor = context.floor;
+    if (requiresUnsandboxedShellAsk(context.hostShellExecutionPlan)) {
+      floor ??= { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval each time." };
+    }
     let exfiltration = context.exfiltration;
     const invalidMeta = category === "meta" && (source !== "builtin" || context.decisionOverride === undefined);
     if (invalidMeta) admissionDenial ??= { code: "invalid-meta", reason: "The tool has no valid host decision contract." };

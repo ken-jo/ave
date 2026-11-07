@@ -190,6 +190,8 @@ export function buildHostShellExecutionPlan(input: {
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
+  // Boot could not verify the Ave home read boundary: an unavailable sandbox then needs a human ask for every command.
+  unavailableSandboxRequiresAsk?: boolean;
 }): HostShellExecutionPlan {
   const shellSubstrate = input.shellSubstrate ?? "asrt";
   if (shellSubstrate === "mxc" && input.platform !== "win32") {
@@ -243,6 +245,7 @@ export function buildHostShellExecutionPlan(input: {
       input.platform,
       "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored.",
     );
+    const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -253,8 +256,8 @@ export function buildHostShellExecutionPlan(input: {
       substrate: "none" as const,
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+      requiresExplicitUserApproval: askEveryCommand,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ":ask" : ""),
     });
   }
 
@@ -320,6 +323,13 @@ export function buildHostShellExecutionPlan(input: {
     requiresExplicitUserApproval: false,
     identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
   });
+}
+
+// The unavailable-sandbox plan that boot marked for a human ask on every command (an unverifiable Ave home boundary). The
+// permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
+export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
+  return plan !== undefined && plan.mode === "plain" && plan.executionRequest === "default" &&
+    plan.fallbackReason === "requested-sandbox-unavailable" && plan.requiresExplicitUserApproval === true;
 }
 
 // An unpinned native parser needs one-shot authority before startup. Existing

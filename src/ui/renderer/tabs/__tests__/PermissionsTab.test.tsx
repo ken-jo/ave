@@ -1504,6 +1504,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
       }
       const reason = t(REASON[category]!, { principals: "S-1-5-11" });
+      // Both boundary reasons tell the user that shell commands now ask each time.
+      if (category.startsWith("boundary-")) expect(reason).toContain(locale === "en" ? "shell commands will ask each time" : "셸 명령은 매번 승인을 요청함");
       const fix = FIX[category];
       const tail = fix === null ? "" : ` ${t(fix)}`;
       if (fix !== null) expect(t(fix)).not.toBe(fix);

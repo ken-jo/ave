@@ -2,7 +2,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal";
+export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable";
 
 export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };

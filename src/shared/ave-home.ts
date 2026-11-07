@@ -722,6 +722,16 @@ export function getAveHomePrivacyFailure(): Extract<AveHomePrivacy, { enforcemen
   return bootHomePrivacy?.enforcement === "none" ? bootHomePrivacy : undefined;
 }
 
+/** A read-boundary category: its failure carries no path into logs or audit. */
+export function isAveHomeBoundaryCategory(category: string | undefined): category is "boundary-link" | "boundary-unlisted" {
+  return category === "boundary-link" || category === "boundary-unlisted";
+}
+
+/** Boot published an unverifiable profile-child read boundary; host shells then ask a human for every command. */
+export function isAveHomeBoundaryUnverifiedAtBoot(): boolean {
+  return isAveHomeBoundaryCategory(getAveHomePrivacyFailure()?.category);
+}
+
 /** Guard initialization and each confined extension effect boundary. */
 export function assertAveHomePrivacyForConfinement(): void {
   if (process.platform !== "win32") return;
@@ -732,7 +742,7 @@ export function assertAveHomePrivacyForConfinement(): void {
   if (failure !== undefined) {
     const principals = failure.extraPrincipals?.map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", ");
     // A read-boundary refusal names no path: its message reaches the host log, which carries codes only for it.
-    const where = failure.category === "boundary-link" || failure.category === "boundary-unlisted" ? "" : `, ${failure.failedPath ?? failure.home}`;
+    const where = isAveHomeBoundaryCategory(failure.category) ? "" : `, ${failure.failedPath ?? failure.home}`;
     const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). Approve running without isolation in Settings > Permissions, or fix the folder permissions.${principals ? ` Extra principals: ${principals}.` : ""}`;
     reportPrivacyRefusal?.(message);
     throw new Error(message);
