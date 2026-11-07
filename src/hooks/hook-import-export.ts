@@ -28,9 +28,16 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function rewritePlaceholder(value: string): string {
+/** Claude Code plugin placeholders to Ave's, for hook and MCP launch values imported from a Claude plugin. */
+export function rewritePlaceholder(value: string): string {
   return value.replaceAll("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}")
     .replaceAll("${CLAUDE_PLUGIN_DATA}", "${PLUGIN_DATA}");
+}
+
+/** The reverse of `rewritePlaceholder`, for hook and MCP launch values exported to a Claude plugin layout. */
+export function exportPlaceholder(value: string): string {
+  return value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
+    .replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}");
 }
 
 function hasForbiddenPlaceholder(value: string): boolean {
@@ -138,16 +145,14 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
 // Project reviewed native entries for an optional adjacent legacy layout.
 export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks: Record<string, unknown[]>; notice: string } {
   const hooks: Record<string, unknown[]> = {};
-  const back = (value: string) => value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
-    .replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}");
   for (const entry of entries) {
     const event = Object.hasOwn(INTERNAL_TO_EVENT, entry.event) ? INTERNAL_TO_EVENT[entry.event] : undefined;
     if (!event) throw new Error(`hook event ${entry.event} cannot be exported`);
     const [command, ...args] = entry.command;
     if (!command) throw new Error(`hook ${entry.id} has no executable`);
     (hooks[event] ??= []).push({ ...(entry.matcher && hookEventSupportsMatcher(entry.event) ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
-      command: back(command), args: args.map(back),
-      ...(entry.env ? { env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, back(value)])) } : {}),
+      command: exportPlaceholder(command), args: args.map(exportPlaceholder),
+      ...(entry.env ? { env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, exportPlaceholder(value)])) } : {}),
       timeoutMs: entry.timeoutMs }] });
   }
   return { hooks, notice: "Event names and argv were mapped. Stdin payload, decision output, and matcher semantics remain specific to the exporting host; review and adapt each handler before running it." };
