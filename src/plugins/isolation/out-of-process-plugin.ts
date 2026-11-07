@@ -540,6 +540,8 @@ export async function spawnConfinedPluginChild(
         allowRead,
         allowWrite,
       });
+      // The grant turn may have waited past the factory deadline; a refusal here releases the grant.
+      spec.assertStillValid?.();
     }
     const grant = windowsGrant;
     const { command, baseEnv } = spawnLine;

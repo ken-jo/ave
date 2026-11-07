@@ -907,17 +907,22 @@ class PluginStartupTimeoutError extends Error {
   }
 }
 
+/** The factory attempt a sandbox-envelope registration belongs to; its deadline abandons the attempt's setup. */
+const factoryAttemptDeadline = new AsyncLocalStorage<{ passed: boolean }>();
+
 /** Revoke timed-out factory authority and retain its late instance for cleanup without publishing it. */
 export async function runPluginFactoryWithTimeout<T>(
   factory: () => Promise<T> | T,
   onLateResolution: (value: T) => Promise<void> | void,
   timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginFactoryMs,
 ): Promise<T> {
-  const operation = Promise.resolve().then(factory);
+  const deadline = { passed: false };
+  const operation = Promise.resolve().then(() => factoryAttemptDeadline.run(deadline, factory));
   let timedOut = false;
   try {
     return await raceWithTimeout(operation, timeoutMs, () => {
       timedOut = true;
+      deadline.passed = true;
       return new PluginFactoryTimeoutError(timeoutMs);
     });
   } finally {
@@ -1351,6 +1356,8 @@ abstract class PluginRuntimeState {
       }
     };
     assertNoUnverifiedIncumbent();
+    // A registration made by a timed-out factory fails its next check, so the late setup releases what it holds.
+    const deadline = factoryAttemptDeadline.getStore();
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
     const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
@@ -1359,6 +1366,7 @@ abstract class PluginRuntimeState {
     this.sandboxEnvelopes.set(pluginId, entries);
     return {
       assertCurrent: () => {
+        if (deadline?.passed) throw new Error("plugin-factory-deadline-passed");
         if (!record.active || record.grants.some((grant) => !isPluginSandboxGrantCovered(grant, pluginRoot, pluginDataDir))) {
           throw new Error("sandbox-grant-outside-ceiling");
         }
