@@ -3646,7 +3646,7 @@ function powerShellExecutionEnvironment(verified: VerifiedPowerShellExecution | 
 }
 
 function spawnManagedPowerShell(executable: string, command: string, options: SpawnOptions & { env: Record<string, string> }, verified?: VerifiedPowerShellExecution): ManagedPowerShellChild {
-  const launch = preparePowerShellLaunch(command, options.env);
+  const launch = preparePowerShellLaunch(command, options.env, undefined, { hostShell: true });
   try {
     const child = spawn(executable, launch.args, { ...options, env: powerShellExecutionEnvironment(verified, launch.env) }) as ManagedPowerShellChild;
     retainPowerShellLaunchUntilExit(launch, child);
