@@ -1,5 +1,5 @@
 import { chatSurface } from "./components/chat-surface.js";
-import { resolveConversationTitle } from "../../shared/conversation-title.js";
+import { approvalTriggerMessage, resolveConversationTitle } from "../../shared/conversation-title.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1026,7 +1026,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       />
       <ApprovalDock
         queue={pendingApprovals}
-        conversationLabel={resolveConversationTitle({
+        conversationLabel={(approvalHead !== null && approvalHead.sessionId === currentSessionId
+          ? approvalTriggerMessage(entries, approvalHead.createdAt) : undefined) ?? resolveConversationTitle({
           sessionId: currentSessionId ?? "",
           title: currentSessionTitle,
           messages: entries.flatMap((entry) => entry.kind === "user" || entry.kind === "assistant"

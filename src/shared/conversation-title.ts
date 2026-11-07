@@ -20,3 +20,19 @@ export function resolveConversationTitle(
     session.title || transcriptTitle || session.routineTitle
       || translate("be_memoryManager.sessionTitleShort", { id: session.sessionId.slice(0, 8) }), translate);
 }
+
+/** The approval line names the user message whose turn raised the request: the last message the user sent at or before it.
+ * A row with no send time (restored history) precedes every live request; a sub-agent report is not the user's message.
+ * Undefined when the transcript holds no such message; the caller then names the conversation. */
+export function approvalTriggerMessage(
+  entries: readonly { kind: string; text?: string; createdAt?: number; injectHint?: string }[],
+  requestCreatedAt: number,
+): string | undefined {
+  for (const entry of [...entries].reverse()) {
+    if (entry.kind !== "user" || entry.injectHint === "sub-agent") continue;
+    if (entry.createdAt !== undefined && entry.createdAt > requestCreatedAt) continue;
+    const text = (entry.text ?? "").replace(/\s+/g, " ").trim();
+    if (text) return text.slice(0, 80);
+  }
+  return undefined;
+}

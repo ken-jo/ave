@@ -126,7 +126,8 @@ describe("App notification toasts", () => {
       const panel = screen.getByTestId("tool-approval-panel");
       expect(panel.getAttribute("data-approval-request-id")).toBe("notice-write");
       expect(document.activeElement).toBe(panel);
-      expect(screen.getByTestId("approval-conversation").textContent).toBe(title);
+      // Back in its pane the card names the message whose turn asked, not the conversation title the covered notice used.
+      expect(screen.getByTestId("approval-conversation").textContent).toBe("Continue");
     });
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);
   });
