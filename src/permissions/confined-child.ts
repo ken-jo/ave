@@ -133,7 +133,7 @@ export interface ConfinedChildSpec {
   readonly windowsCommandLineEnv?: Readonly<Record<string, string>>;
   // Use returned relay streams rather than child pipes to preserve stdin, env, cwd and runtime symlink flags. Require piped stdin/stdout and exclude direct shell/env options; other platforms/unwrapped paths keep the original command.
   readonly windowsStdio?: "relay";
-  // The child's working directory; on the relay, the program's.
+  // The child's working directory; on the relay, the program's too. srt-win refuses one the sandbox account cannot read, and a Windows sandboxed spawn without one is refused.
   readonly cwd?: string;
   // A user hook follows the host-shell plan it was admitted under, not the extension backend. The script-hook runner
   // passes the host-issued plan object its command authorization returned; only that issued, current, srt-win (`asrt`
@@ -445,8 +445,8 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
       env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
-      // On the relay the program's directory travels in its request; the relay itself needs none.
-      ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
+      // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
+      ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     });
   } catch (error) {
     egress?.release();
@@ -571,6 +571,12 @@ async function resolveSpawnLine(
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
+  // srt-win refuses to start unless the sandbox account can read the attributes of its working directory (it reports that as
+  // `mapped_drive_cwd`, exit 16). Inherited, that is the host's `<AVE_HOME>\workspace`, which the owner-only home keeps from it.
+  // Refused before the temp directory, the egress lease or the wrap exist.
+  if (confinement === "windows-srt" && spec.cwd === undefined) {
+    throw new Error(`[confined-child] ${spec.label}: srt-win requires an explicit cwd, one the sandbox account is granted`);
+  }
   const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);

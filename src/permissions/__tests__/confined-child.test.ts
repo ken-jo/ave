@@ -500,6 +500,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
       tempPrincipal: PRINCIPAL,
       baseEnv: {},
       windowsShell: "cmd",
+      ...(platform === "win32" ? { cwd: "C:\\sandbox\\home" } : {}),
     }).finally(() => {
       if (hostSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = hostSystemRoot;
@@ -507,6 +508,25 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     expect(spawned.confinement).toBe(expected);
     expect(spawned.child).toBe(spawnMock.mock.results[0]!.value);
+  });
+
+  it("refuses a Windows sandboxed spawn that names no working directory, before anything is wrapped or spawned", async () => {
+    setProcessPlatform("win32");
+    const hostSystemRoot = process.env.SystemRoot;
+    process.env.SystemRoot = "C:\\Windows";
+    await expect(spawnConfinedChild({ egressOwner: EGRESS_OWNER,
+      command: "/usr/bin/python3",
+      args: [],
+      label: "worker:x:main",
+      grantMode: "deny-only",
+      baseEnv: {},
+      windowsShell: "cmd",
+    }).finally(() => {
+      if (hostSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = hostSystemRoot;
+    })).rejects.toThrow("[confined-child] worker:x:main: srt-win requires an explicit cwd");
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("reports an unwrapped child as unconfined on every platform, whatever the setting would say", async () => {
@@ -563,6 +583,7 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
       grantMode: "deny-only",
       baseEnv: {},
       windowsShell: "cmd",
+      cwd: "C:\\sandbox\\home",
       ...(env ? { windowsCommandLineEnv: env } : {}),
     });
   }
@@ -625,13 +646,14 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
       label: "plugin-child:x",
       grantMode: "deny-only",
       baseEnv: {},
+      cwd: "C:\\sandbox\\home",
       windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: "1" },
     })).rejects.toThrow('windowsCommandLineEnv needs windowsShell "cmd"');
   });
 
   it("refuses a Windows sandboxed spawn that names neither the relay nor cmd: srt-win's PowerShell launch would lose its stdin, environment and exit code", async () => {
     await expect(
-      spawnConfinedChild({ egressOwner: EGRESS_OWNER, command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} }),
+      spawnConfinedChild({ egressOwner: EGRESS_OWNER, command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", cwd: "C:\\sandbox\\home", grantMode: "deny-only", baseEnv: {} }),
     ).rejects.toThrow(/names windowsStdio "relay" or windowsShell "cmd"/);
     expect(spawnMock).not.toHaveBeenCalled();
   });
@@ -692,9 +714,9 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
         + `"${resolvePluginChildEntryPath()}" "--ave-child-transport=relay"`,
     );
     expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
-    // The broker gets no working directory of its own; the program's is in the request.
+    // srt-win starts in the program's directory too: it refuses one the sandbox account cannot read (`mapped_drive_cwd`).
     const [, , spawnOptions] = spawnMock.mock.calls[0]! as [string, string[], { cwd?: string }];
-    expect(spawnOptions.cwd).toBeUndefined();
+    expect(spawnOptions.cwd).toBe("C:\\Users\\example\\work dir");
     expect(spawned.confinement).toBe("windows-srt");
     expect(spawned.stdin).not.toBe(child.stdin);
     expect(spawned.stdout).not.toBe(child.stdout);

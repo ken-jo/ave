@@ -280,6 +280,30 @@ describe("spawnWorker — gate OFF (default)", () => {
     }
   });
 
+  it("starts srt-win and the worker in the worker's granted sandbox HOME, never the host's cwd", async () => {
+    setProcessPlatform("win32");
+    gateActive = true;
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "Filesystem confinement", confines: { filesystem: true, process: false, network: true } });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["srt-win.exe", "exec", "--", "cmd.exe"], env: { ...process.env } });
+    const holder = new StubWorkerChild();
+    holder.pid = 5151;
+    const child = new StubWorkerChild();
+    child.pid = 5152;
+    spawnMock.mockReturnValueOnce(holder).mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "relay-cwd", command: "C:/runtime/worker.exe", control: "output-only-v1" as const });
+    const peer = await startFakeRelayPeer(child.stdout);
+    try {
+      const request = await peer.request as { cwd?: string; env: Record<string, string> };
+      const [, , options] = spawnMock.mock.calls[1]! as [string, string[], { cwd?: string }];
+      expect(request.cwd).toBe(request.env.HOME);
+      expect(options.cwd).toBe(request.cwd);
+      expect(options.cwd).not.toBe(process.cwd());
+      worker.stop();
+    } finally {
+      peer.close();
+    }
+  });
+
   it("carries a stdio-control worker's frames through the Windows relay: hello first, then requests", async () => {
     setProcessPlatform("win32");
     gateActive = true;
