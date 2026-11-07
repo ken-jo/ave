@@ -209,13 +209,13 @@ export function parseStagedEnvelopePayload(input: string): StagedEnvelope | null
 
 /** What a staged turn is called in titles: a package template by its prompt name, any other kind by its body. An unclosed header
  * still counts, so no title ever shows a provenance tag. Undefined for text that carries no staged envelope header. */
-export function stagedEnvelopeTitle(text: string): { kind: StagedOriginKind; title: string } | undefined {
+export function stagedEnvelopeTitle(text: string): { kind: StagedOriginKind; title: string; body: string } | undefined {
   const parsed = parseStagedEnvelopePayload(text);
   if (!parsed) return undefined;
   const title = parsed.kind.inputOrigin === "plugin-prompt-emitted"
     ? parsed.source.slice(parsed.source.lastIndexOf(":") + 1)
     : parsed.body;
-  return { kind: parsed.kind, title };
+  return { kind: parsed.kind, title, body: parsed.body };
 }
 
 /** Bound on a staged card's summary: the transcript is a file the user or an import can write, and the summary renders as markdown in host chrome. */

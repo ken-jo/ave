@@ -1,7 +1,7 @@
 import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { resolveConversationTitle } from "../shared/conversation-title.js";
+import { resolveConversationTitle, unwrapStagedText } from "../shared/conversation-title.js";
 import { readBoundedTextWindow } from "../shared/bounded-tool-output.js";
 import { ToolOutputArtifactStore } from "./tool-output-artifact-store.js";
 import { deleteCodeCheckpoints } from "./code-checkpoints.js";
@@ -846,12 +846,13 @@ export class SessionRepository {
     if ([...query.trim()].length < 2) return [];
     if (!this.searchIndex.open()) return [];
     try {
+      // Rows indexed before staged titles were unwrapped still hold a raw envelope; unwrapping on read repairs them without a reindex.
       return this.searchIndex.query(query, {
         kind: options.kind,
         routineId: options.routineId,
         projectRoot: options.projectRoot,
         includeUnscoped: options.includeUnscoped,
-      });
+      }).map((hit) => (hit.title ? { ...hit, title: unwrapStagedText(hit.title, t) } : hit));
     } finally {
       this.searchIndex.close();
     }
@@ -2228,7 +2229,7 @@ export class SessionRepository {
       // Exclude host resume instructions from titles and previews; they do not describe the user's request.
       const meta = (message as Record<string, unknown>)?.meta;
       if (isRecord(meta) && meta.resumesInterruptedTurn === true) continue;
-      const normalized = content.replace(/\s+/g, " ").trim();
+      const normalized = unwrapStagedText(content, t, "body").replace(/\s+/g, " ").trim();
       lastContent = normalized;
       if (role === "user") lastUser = normalized;
     }
