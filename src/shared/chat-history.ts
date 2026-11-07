@@ -66,6 +66,8 @@ export type SerializedHistoryMessage = {
   interrupted?: boolean;
   /** The interruption was the app exiting mid-turn, not the user's Stop. */
   interruptedBy?: "host-exit";
+  /** The host's row that resumes an interrupted turn; not the user's own words. */
+  resumesInterruptedTurn?: true;
 };
 
 export function serializeHistoryMessage(
@@ -101,6 +103,7 @@ export function serializeHistoryMessage(
     ...(meta?.subAgentReport !== undefined ? { subAgentReport: meta.subAgentReport } : {}),
     ...(systemNotice !== undefined ? { systemNotice } : {}),
     ...(meta?.interrupted === true ? { interrupted: true } : {}),
+    ...(meta?.resumesInterruptedTurn === true ? { resumesInterruptedTurn: true as const } : {}),
     ...(meta?.interrupted === true && meta.interruptedBy === "host-exit"
       ? { interruptedBy: "host-exit" as const }
       : {}),

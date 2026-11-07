@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalTriggerMessage, resolveConversationTitle } from "../conversation-title.js";
+import { resolveConversationTitle, truncateCodePoints } from "../conversation-title.js";
 import { SUGGESTIONS_SESSION_ID } from "../suggestions-session.js";
 import { t } from "../../i18n/runtime.js";
 
@@ -32,19 +32,14 @@ describe("resolveConversationTitle", () => {
   });
 });
 
-describe("approvalTriggerMessage", () => {
-  it("names the last message the user sent before the request, not one sent after it", () => {
-    expect(approvalTriggerMessage([
-      { kind: "user", text: "restored first", },
-      { kind: "assistant", text: "done" },
-      { kind: "user", text: "RUNSB:\n Remove-Item", createdAt: 100 },
-      { kind: "user", text: "sub-agent report", injectHint: "sub-agent", createdAt: 150 },
-      { kind: "user", text: "sent later", createdAt: 300 },
-    ], 200)).toBe("RUNSB: Remove-Item");
-  });
-
-  it("is undefined when the transcript holds no user message for the request", () => {
-    expect(approvalTriggerMessage([{ kind: "assistant", text: "hi" }], 200)).toBeUndefined();
-    expect(approvalTriggerMessage([{ kind: "user", text: "later", createdAt: 300 }], 200)).toBeUndefined();
+describe("truncateCodePoints", () => {
+  it("never splits an emoji at the title boundary", () => {
+    const title = resolveConversationTitle({
+      sessionId: "conversation-1",
+      messages: [{ role: "user", content: `${"a".repeat(79)}😀 tail` }],
+    }, t);
+    expect(title).toBe(`${"a".repeat(79)}😀`);
+    expect(truncateCodePoints("😀😀", 1)).toBe("😀");
+    expect(truncateCodePoints("short", 80)).toBe("short");
   });
 });

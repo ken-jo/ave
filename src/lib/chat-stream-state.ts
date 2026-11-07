@@ -182,6 +182,8 @@ export type ChatEntry =
       awaitingHostId?: true;
       /** Restored unanswered questions belong to interrupted prior runs; this marker is display-only. */
       restored?: true;
+      /** The host's "Continue" row that resumes an interrupted turn; it is not the user's own words. */
+      resumesInterruptedTurn?: true;
     }
   | {
       kind: "reasoning";
@@ -360,6 +362,7 @@ export function appendUserEntry(
   entries: ChatEntry[],
   text: string,
   injectHint?: "queue" | "interrupt",
+  resumesInterruptedTurn?: true,
 ): ChatEntry[] {
   // Stamp optimistic entries immediately so live timestamps and day indexing match later history replay.
   return [
@@ -370,6 +373,7 @@ export function appendUserEntry(
       createdAt: Date.now(),
       awaitingHostId: true,
       ...(injectHint ? { injectHint } : {}),
+      ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
     },
   ];
 }

@@ -287,3 +287,11 @@ describe("serializeHistoryMessage createdAt + turnSummary projection", () => {
     expect(s.checkpointMeta?.truncatedDir).toBe("/tmp/ave-truncated");
   });
 });
+
+describe("serializeHistoryMessage resume row", () => {
+  it("marks the host's resume row so a restored transcript does not read it as the user's words", () => {
+    const resumed = serializeHistoryMessage({ role: "user", content: "Continue", meta: { resumesInterruptedTurn: true } }, 0);
+    expect(resumed.resumesInterruptedTurn).toBe(true);
+    expect("resumesInterruptedTurn" in serializeHistoryMessage({ role: "user", content: "hi" }, 1)).toBe(false);
+  });
+});

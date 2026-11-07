@@ -1,5 +1,5 @@
 import { chatSurface } from "./components/chat-surface.js";
-import { approvalTriggerMessage, resolveConversationTitle } from "../../shared/conversation-title.js";
+import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -31,7 +31,7 @@ import type { UserKeyboardIntentSnapshot } from "../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./components/slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import type { ProjectIdentity } from "../../shared/project-identity.js";
-import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
+import { approvalTriggerMessage, isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
 import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
 import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";

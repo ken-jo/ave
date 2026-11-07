@@ -52,6 +52,23 @@ describe("approval card conversation line", () => {
     expect(line).not.toHaveTextContent("Scratch cleanup");
   });
 
+  it("names a resumed turn by its own message, not the restored Continue row", async () => {
+    const current = "RUNSB: Remove-Item -Recurse ./scratch";
+    const { emitApproval } = await renderApp({
+      hasApiKey: true,
+      sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title: "Scratch cleanup", modifiedAt: "2026-01-01T00:00:00Z" }],
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
+        { index: 0, role: "user", content: current },
+        { index: 1, role: "assistant", content: "Removing", interrupted: true, interruptedBy: "host-exit" },
+        { index: 2, role: "user", content: "Continue", resumesInterruptedTurn: true },
+      ] },
+    });
+    await act(async () => {
+      emitApproval(approvalRequest({ id: "resumed", sessionId: MOCK_DEFAULT_SESSION_ID }));
+    });
+    expect(await screen.findByTestId("approval-conversation")).toHaveTextContent(current);
+  });
+
   it("names the conversation when the request did not come from this conversation's turn", async () => {
     const { emitApproval } = await renderApp({
       hasApiKey: true,

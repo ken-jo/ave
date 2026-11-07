@@ -131,6 +131,7 @@ export function historyToEntries(
           : {}),
         ...(m.createdAt !== undefined ? { createdAt: m.createdAt } : {}),
         ...(m.messageId !== undefined ? { messageId: m.messageId } : {}),
+        ...(m.resumesInterruptedTurn === true ? { resumesInterruptedTurn: true as const } : {}),
         restored: true,
       });
     } else if (m.role === "assistant") {

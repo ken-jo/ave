@@ -93,7 +93,7 @@ describe("App notification toasts", () => {
       sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title, modifiedAt: "2026-01-01T00:00:00Z" }],
       history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
         { index: 0, role: "user", content: title },
-        { index: 1, role: "user", content: "Continue" },
+        { index: 1, role: "user", content: "views.c4 도 정리해줘" },
       ] },
     });
     const surfaceSelector = surface === "web" ? '[data-surface-kind="browser"]' : '[data-testid="main-pane-shell"][data-view="work-board"]';
@@ -127,7 +127,7 @@ describe("App notification toasts", () => {
       expect(panel.getAttribute("data-approval-request-id")).toBe("notice-write");
       expect(document.activeElement).toBe(panel);
       // Back in its pane the card names the message whose turn asked, not the conversation title the covered notice used.
-      expect(screen.getByTestId("approval-conversation").textContent).toBe("Continue");
+      expect(screen.getByTestId("approval-conversation").textContent).toBe("views.c4 도 정리해줘");
     });
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);
   });
