@@ -16,7 +16,6 @@ import {
 } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
-import type { SessionFamily, SessionKind, SessionListRow } from "../shared/session-lookup.js";
 import { discoverProjectAgentsMd, type ProjectAgentsMd } from "./project-agents-md.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import { isRecord } from "../shared/is-record.js";
@@ -238,7 +237,7 @@ export interface MemoryIndexSectionsPatch {
   references?: string;
 }
 
-export type { SessionFamily, SessionKind, SessionListRow };
+export type { SessionKind } from "../shared/session-lookup.js";
 
 export type CheckpointTrigger = "auto-compact" | "manual";
 
@@ -546,7 +545,7 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   private projectAgentsMdSignature(value: ProjectAgentsMd): string {
-    return value.watchedPaths.map((path) => this.getFileMtimeMs(path)).join(",");
+    return value.watchedPaths.map((path) => getFileMtimeMs(path)).join(",");
   }
 
   getMemoryIndex(options: ProjectScopedMemoryOptions = {}): string {
@@ -1426,7 +1425,7 @@ export class MemoryManager implements PromptMemorySource {
   private snapshotPersistentContextFiles(): void {
     this.persistentContextFileState.clear();
     for (const path of this.persistentContextFiles()) {
-      this.persistentContextFileState.set(path, this.getFileMtimeMs(path));
+      this.persistentContextFileState.set(path, getFileMtimeMs(path));
     }
   }
 
@@ -1436,7 +1435,7 @@ export class MemoryManager implements PromptMemorySource {
       let changed = false;
       for (const path of this.persistentContextFiles()) {
         const previous = this.persistentContextFileState.get(path);
-        const current = this.getFileMtimeMs(path);
+        const current = getFileMtimeMs(path);
         if (previous !== current) {
           this.persistentContextFileState.set(path, current);
           changed = true;
@@ -1447,10 +1446,6 @@ export class MemoryManager implements PromptMemorySource {
     const maybeNodeTimer = timer as ReturnType<typeof setInterval> & { unref?: () => void };
     maybeNodeTimer.unref?.();
     this.persistentContextPollTimer = timer;
-  }
-
-  private getFileMtimeMs(path: string): number {
-    return getFileMtimeMs(path);
   }
 
   private schedulePersistentContextReload(reason: string): void {

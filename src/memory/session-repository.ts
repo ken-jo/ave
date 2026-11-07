@@ -17,7 +17,8 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import { t } from "../i18n/index.js";
 import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
-import type { CheckpointTrigger, SessionFamily, SessionKind, SessionListRow } from "./memory-manager.js";
+import type { CheckpointTrigger } from "./memory-manager.js";
+import type { SessionFamily, SessionKind, SessionListRow } from "../shared/session-lookup.js";
 import { maskSensitiveData } from "../shared/dlp.js";
 import {
   A2ATaskState,
