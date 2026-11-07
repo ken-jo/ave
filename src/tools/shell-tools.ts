@@ -3050,10 +3050,12 @@ export const PowerShellToolInputSchema = z.object({
 }).superRefine(validateHostShellExecutionRequest);
 
 const POWERSHELL_ALIASES = new Map<string, string>([
+  // Windows-only aliases (mount, icim; gwmi and iwmi in Windows PowerShell) are mapped on every platform.
   ["ac", "add-content"],
   ["cat", "get-content"],
   ["clc", "clear-content"],
   ["copy", "copy-item"],
+  ["cvpa", "convert-path"],
   ["cp", "copy-item"],
   ["cpi", "copy-item"],
   ["del", "remove-item"],
@@ -3062,14 +3064,18 @@ const POWERSHELL_ALIASES = new Map<string, string>([
   ["gc", "get-content"],
   ["gci", "get-childitem"],
   ["gi", "get-item"],
+  ["gwmi", "get-wmiobject"],
+  ["icim", "invoke-cimmethod"],
+  ["icm", "invoke-command"],
   ["iex", "invoke-expression"],
+  ["iwmi", "invoke-wmimethod"],
   ["ls", "get-childitem"],
   ["mkdir", "new-item"],
   ["md", "new-item"],
-  // New-PSDrive: ndr on all platforms, mount on Windows; both are gated everywhere.
   ["mount", "new-psdrive"],
   ["ndr", "new-psdrive"],
   ["mi", "move-item"],
+  ["nal", "new-alias"],
   ["move", "move-item"],
   ["mv", "move-item"],
   ["ni", "new-item"],
@@ -3079,6 +3085,9 @@ const POWERSHELL_ALIASES = new Map<string, string>([
   ["rm", "remove-item"],
   ["rmdir", "remove-item"],
   ["rni", "rename-item"],
+  ["rvpa", "resolve-path"],
+  ["sajb", "start-job"],
+  ["sal", "set-alias"],
   ["saps", "start-process"],
   ["sc", "set-content"],
   ["si", "set-item"],
@@ -3108,6 +3117,7 @@ const BLOCKED_COMMANDS = new Map<string, string>([
   ["powershell", "nested PowerShell shells are not allowed"],
   ["powershell.exe", "nested PowerShell shells are not allowed"],
   ["pwsh", "nested PowerShell shells are not allowed"],
+  ["pwsh.exe", "nested PowerShell shells are not allowed"],
 ]);
 
 const ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc"]);
@@ -3409,7 +3419,7 @@ export function validatePowerShellAstStructure(ast: PowerShellAstSummary): strin
   }
   for (const command of ast.commands) {
     const rawName = command.name?.trim().toLowerCase() ?? "";
-    const name = canonicalPowerShellCommandName(rawName);
+    const name = gatedPowerShellCommandName(rawName);
     if (!name) {
       return "dynamic command invocation is not allowed";
     }
@@ -3433,7 +3443,7 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   const structural = validatePowerShellAstStructure(ast);
   if (structural) return structural;
   for (const command of ast.commands) {
-    const name = canonicalPowerShellCommandName(command.name?.trim().toLowerCase() ?? "");
+    const name = gatedPowerShellCommandName(command.name ?? "");
     if (isDefinitePowerShellRecursion(name, command.arguments.slice(1))) return POWERSHELL_RECURSIVE_TRAVERSAL_REASON;
     if (!FILESYSTEM_COMMANDS.has(name)) continue;
     const dynamic = command.arguments.slice(1).find((argument) => argument.kind === "dynamic"
@@ -3443,13 +3453,38 @@ export function validatePowerShellAst(ast: PowerShellAstSummary): string | null 
   return null;
 }
 
-// A `<Module>\` qualifier names the same cmdlet as the bare name. Any module-shaped
-// qualifier is dropped, so an unknown module cannot carry a gated cmdlet past the gate.
-// Path invocations (drive, `.`/`..` or `/` prefixes) keep their spelling.
-const POWERSHELL_MODULE_QUALIFIER = /^[a-z_][\w.-]*\\(?=[^\\/]+$)/i;
+// Blocking gates read the command leaf: whatever a module or path qualifier
+// selects, a gated leaf is refused. This can only tighten.
+function gatedPowerShellCommandName(name: string): string {
+  const lowered = name.trim().toLowerCase();
+  const leaf = lowered.slice(Math.max(lowered.lastIndexOf("\\"), lowered.lastIndexOf("/")) + 1);
+  return POWERSHELL_ALIASES.get(leaf) ?? leaf;
+}
 
-function canonicalPowerShellCommandName(name: string): string {
-  const bare = name.trim().toLowerCase().replace(POWERSHELL_MODULE_QUALIFIER, "");
+// Modules in the Microsoft Learn PowerShell 7.5 module reference. Only these
+// qualifiers are known to select the built-in cmdlet; any other module may
+// export a same-named function, so it keeps the unknown-command write effect.
+const POWERSHELL_BUILTIN_MODULES = new Set([
+  "cimcmdlets",
+  "microsoft.powershell.archive",
+  "microsoft.powershell.core",
+  "microsoft.powershell.diagnostics",
+  "microsoft.powershell.host",
+  "microsoft.powershell.management",
+  "microsoft.powershell.security",
+  "microsoft.powershell.utility",
+  "microsoft.wsman.management",
+  "psdiagnostics",
+  "psreadline",
+  "threadjob",
+]);
+
+function effectPowerShellCommandName(name: string): string {
+  const lowered = name.trim().toLowerCase();
+  const separator = lowered.indexOf("\\");
+  const bare = separator > 0 && POWERSHELL_BUILTIN_MODULES.has(lowered.slice(0, separator)) && !/[\\/]/.test(lowered.slice(separator + 1))
+    ? lowered.slice(separator + 1)
+    : lowered;
   return POWERSHELL_ALIASES.get(bare) ?? bare;
 }
 
@@ -3486,7 +3521,7 @@ export function findPowerShellAstPathViolation(
   };
   for (const redirect of ast.redirections) { const violation = inspect(redirect, "write"); if (violation) return violation; }
   for (const command of ast.commands) {
-    const name = canonicalPowerShellCommandName(command.name!.toLowerCase());
+    const name = effectPowerShellCommandName(command.name!);
     const runtimeReads = powerShellHostScriptReadPaths(ast, source);
     if (runtimeReads.length > 0) {
       const violation = inspect(command.arguments[0]!, "read", true);

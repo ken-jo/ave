@@ -1014,6 +1014,44 @@ describe("powershell tool", () => {
       expect(violation("Set-Content", psLiteral(outside), psLiteral("x"))).not.toBeNull();
     });
 
+    it("keeps the unknown-command write effect for a cmdlet name qualified by a non-built-in module", () => {
+      const outside = join(process.cwd(), "..", "outside-ps-qualifier");
+      const violation = (name: string, ...rest: PowerShellArgument[]) =>
+        findPowerShellAstPathViolation(ast([{ name, arguments: [psLiteral(name), ...rest] }]), process.cwd(), process.cwd(), [], false);
+      expect(violation("Get-ChildItem", psLiteral(outside))).toBeNull();
+      expect(violation("Microsoft.PowerShell.Management\\Get-ChildItem", psLiteral(outside))).toBeNull();
+      const unknownWrite = violation("Evil-Command", psLiteral(outside));
+      expect(unknownWrite).not.toBeNull();
+      expect(violation("Evil.Module\\Get-ChildItem", psLiteral(outside))).toEqual(unknownWrite);
+      expect(violation("Evil.Module\\gci", psLiteral(outside))).toEqual(unknownWrite);
+      expect(validatePowerShellAst(ast([{ name: "Evil.Module\\New-PSDrive" }]))).toBe("dynamic filesystem drive mapping is not allowed");
+    });
+
+    it.each([
+      ["icm", "remote command invocation"],
+      ["sajb", "background jobs"],
+      ["gwmi", "WMI command invocation"],
+      ["iwmi", "WMI command invocation"],
+      ["sal", "alias mutation"],
+      ["nal", "alias mutation"],
+      ["rvpa", "dynamic path resolution"],
+      ["cvpa", "dynamic path resolution"],
+      ["icim", "CIM command invocation"],
+      ["ICM", "remote command invocation"],
+      ["Microsoft.PowerShell.Utility\\sal", "alias mutation"],
+    ])("blocks the built-in alias %s of a gated cmdlet", (name, reason) => {
+      expect(validatePowerShellAst(ast([{ name }]))).toContain(reason);
+    });
+
+    it.each([
+      "powershell", "powershell.exe", "pwsh", "pwsh.exe", "PWSH.EXE",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "/usr/local/bin/pwsh",
+    ])("blocks the nested shell spelling %s", (name) => {
+      expect(validatePowerShellAst(ast([{ name }]))).toBe("nested PowerShell shells are not allowed");
+    });
+
     it("fails closed when the parser reports syntax errors or dynamic dispatch", () => {
       expect(validatePowerShellAst(ast([], ["Unexpected token"]))).toContain("parse error");
       expect(validatePowerShellAst(ast([{ name: null, text: "& ($x)" }]))).toContain("dynamic command");
