@@ -79,11 +79,16 @@ export async function wireRationaleHost(
 
     if (productionEnabled) {
       auditSink.assertWritable();
-      await invocationStartCas.recoverAfterCrash({
+      const crashRecovery = await invocationStartCas.recoverAfterCrash({
         persistAudit: (sessionId, record) => {
           auditSink.appendInvocation(sessionId, record);
         },
       });
+      log.info(
+        "boot: invocation journal recovered %d unknown-after-crash, delivered %d audit records",
+        crashRecovery.recovered,
+        crashRecovery.delivered,
+      );
     }
 
     const serviceOptions: RationaleHostServiceOptions = {

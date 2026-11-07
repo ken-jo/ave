@@ -4,7 +4,7 @@
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
@@ -455,34 +455,48 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
   // Reject real-home test targets before touching either root.
   for (const [root] of roots) checkSandboxSweepRoot(root);
   for (const [root, inUse] of roots) {
-    await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
+    await sweepSandboxPrivateRoot(root, inUse).then(({ removed, kept }) => {
+      log.info("boot: sandbox %s sweep removed %d, kept %d in use", basename(root), removed, kept);
+    }, (error: unknown) => {
       log.warn("boot: could not empty the sandbox root %s: %s", root, errorMessage(error));
     });
   }
 }
 
+export interface SandboxSweepCounts {
+  removed: number;
+  kept: number;
+}
+
 /** Sweep unused private roots before confined processes start; preserve this process's directories.
  * Never follow links; remove owned trees while reclaiming restrictive modes and immutable flags. */
-export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
+export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<SandboxSweepCounts> {
   checkSandboxSweepRoot(root);
+  const counts: SandboxSweepCounts = { removed: 0, kept: 0 };
   let entry;
   try {
     entry = await lstat(root);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return counts;
     throw error;
   }
   if (!entry.isDirectory()) {
     await unlink(root);
-    return;
+    counts.removed = 1;
+    return counts;
   }
   const canonicalRoot = await realpath(root);
   // The root contains live processes' homes and temporary files; sweeping would delete them.
   checkSandboxSweepRoot(canonicalRoot);
   for (const name of await readdir(root)) {
-    if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
+    if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) {
+      counts.kept += 1;
+      continue;
+    }
     await removeOwnedPluginTree(join(root, name));
+    counts.removed += 1;
   }
+  return counts;
 }
 
 /** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
