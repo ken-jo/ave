@@ -54,7 +54,6 @@ import {
   DEFAULT_LOCALE,
   isDefaultVisibleLocale,
   normalizeLocale,
-  normalizeLocaleSetting,
   type Locale,
 } from "../i18n/locale.js";
 import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
@@ -707,7 +706,7 @@ export interface MarketplaceSettings {
   installedProviderIds: MarketplaceEligibleLLMVendor[];
   /** User-installed OpenAI-compatible provider presets from Marketplace. */
   installedProviderPresets: MarketplaceInstalledProviderPreset[];
-  /** Language packs the server marketplace turned on. Legacy: the migration installs the language package for each locale. */
+  /** Inert legacy language activation data, retained for settings compatibility. */
   installedLanguagePacks: Locale[];
   /** Messaging connections the owner installed, as the catalog declared them. Declarations only; the
    * credentials each one names are held by the connection itself in the encrypted secret store, never here. */
@@ -1075,7 +1074,7 @@ export class SettingsService {
       acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "glassTint", patch.glassTint, isGlassTint, "appearance", PATCHED_FIELD);
-      if ("language" in patch) nextAppearance.language = normalizeLocaleSetting(patch.language);
+      if ("language" in patch) nextAppearance.language = normalizeLocale(patch.language);
       const fontPatch = patch.font;
       if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {
         const font = fontPatch as Record<string, unknown>;
@@ -1673,6 +1672,9 @@ export class SettingsService {
       llm = normalizedLlm;
 
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
+      if (typeof onDisk?.language === "string" && onDisk.language !== appearance.language) {
+        log.warn("replaced an unsupported saved locale with %s", appearance.language);
+      }
       needsAppearanceWriteBack ||= !!onDisk && JSON.stringify(onDisk) !== JSON.stringify(appearance);
 
       let normalizedFeatures = normalizeFeatureFlags(parsed.features);

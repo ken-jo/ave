@@ -1,4 +1,4 @@
-/** Duplicate locales or font families fail installation; corrupt ledgers apply the first claimant deterministically. */
+/** Duplicate font families fail installation; corrupt ledgers apply the first claimant deterministically. */
 import { join } from "node:path";
 import {
   contentAssetUrl,
@@ -6,7 +6,6 @@ import {
   type BrokenContentView,
   type InstalledContentView,
   type InstalledFontView,
-  type InstalledLanguageView,
 } from "../../shared/installed-content.js";
 import type { ContentKind } from "./rules.js";
 import type { ParsedContent } from "./kinds.js";
@@ -39,8 +38,7 @@ export interface InstalledAgentPluginRuntime extends InstalledAgentPlugin {
 }
 
 export class InstalledContentService {
-  private view: InstalledContentView = { languages: [], fonts: [], routineTemplates: [], broken: [] };
-  private catalogs = new Map<string, Record<string, string>>();
+  private view: InstalledContentView = { fonts: [], routineTemplates: [], broken: [] };
   private served = new Map<string, ServedContentFile>();
   private instructions: InstalledInstruction[] = [];
   private agentPlugins: InstalledAgentPlugin[] = [];
@@ -55,11 +53,9 @@ export class InstalledContentService {
 
   async reload(): Promise<InstalledContentView> {
     const { loaded, broken } = await this.store.load();
-    const languages: InstalledLanguageView[] = [];
     const fonts: InstalledFontView[] = [];
     const routineTemplates: AgentPluginRoutineTemplate[] = [];
     const brokenViews: BrokenContentView[] = broken.map(({ entry, problem }) => ({ kind: entry.kind, name: entry.name, problem }));
-    const catalogs = new Map<string, Record<string, string>>();
     const served = new Map<string, ServedContentFile>();
     const instructions: InstalledInstruction[] = [];
     const agentPlugins: InstalledAgentPlugin[] = [];
@@ -77,22 +73,7 @@ export class InstalledContentService {
         refuse(item, revocation);
         continue;
       }
-      if (content.kind === "language") {
-        const holder = languages.find((language) => language.locale === content.locale);
-        if (holder) {
-          refuse(item, `${holder.name} already provides ${content.locale}`);
-          continue;
-        }
-        catalogs.set(content.locale, content.messages);
-        languages.push({
-          name: entry.name,
-          locale: content.locale,
-          nativeName: content.nativeName,
-          englishName: content.englishName,
-          missingKeys: content.missingKeys,
-          ...from(item),
-        });
-      } else if (content.kind === "font") {
+      if (content.kind === "font") {
         const holder = fonts.find((font) => font.family === content.family);
         if (holder) {
           refuse(item, `${holder.name} already provides the ${content.family} family`);
@@ -126,8 +107,7 @@ export class InstalledContentService {
         }
       }
     }
-    this.view = { languages, fonts, routineTemplates, broken: brokenViews };
-    this.catalogs = catalogs;
+    this.view = { fonts, routineTemplates, broken: brokenViews };
     this.served = served;
     this.instructions = instructions;
     this.agentPlugins = agentPlugins;
@@ -149,12 +129,6 @@ export class InstalledContentService {
 
   installedAgentPluginRuntime(): readonly InstalledAgentPluginRuntime[] {
     return this.agentPluginRuntime;
-  }
-
-  languageMessages(locale: string): Record<string, string> {
-    const catalog = this.catalogs.get(locale);
-    if (!catalog) throw new Error(`no installed language provides ${locale}`);
-    return { ...catalog };
   }
 
   /** Serves only listed font faces; all other asset paths return null. */

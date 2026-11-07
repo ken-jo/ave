@@ -33,7 +33,7 @@ import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as configurationAccess from "../../shared/ave-home-configuration-access.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { IpcDeps } from "../types.js";
-import { createContentActivation, legacyContentSettings, removeAgentPluginData } from "../domains/marketplace-content.js";
+import { createContentActivation, removeAgentPluginData } from "../domains/marketplace-content.js";
 
 const entry = (kind: LedgerEntry["kind"], name: string): LedgerEntry => ({
   kind,
@@ -122,12 +122,11 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([]);
   });
 
-  it("returns a selected language or font to the default when its package is removed", async () => {
+  it("keeps a normalized retired language inert and resets a removed font", async () => {
     const activation = createContentActivation(deps);
-    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "fr", font: { family: installedFontStack("harbor-sans") } } });
+    await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "fr" as never, font: { family: installedFontStack("harbor-sans") } } });
 
-
-    await activation.deactivate(entry("language", "french"), { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: {}, missingKeys: [] });
+    await activation.deactivate(entry("language", "french"), null);
     expect(settingsService.get("appearance").language).toBe("en");
 
     await activation.deactivate(entry("font", "harbor-sans"), null);
@@ -137,7 +136,7 @@ describe("createContentActivation", () => {
   it("keeps a compiled language selected when the package that overlaid it is removed", async () => {
     const activation = createContentActivation(deps);
     await settingsService.patch({ appearance: { ...settingsService.get("appearance"), language: "ko" } });
-    await activation.deactivate(entry("language", "korean"), { kind: "language", locale: "ko", nativeName: "한국어", englishName: "Korean", messages: {}, missingKeys: [] });
+    await activation.deactivate(entry("language", "korean"), null);
     expect(settingsService.get("appearance").language).toBe("ko");
   });
 
@@ -223,22 +222,6 @@ describe("createContentActivation", () => {
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
 
   });
-
-  it("reads the legacy activations for the first-boot migration, and drops only the locales it was given", async () => {
-    await settingsService.installMarketplaceProviderPreset(preset);
-    await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"], installedLanguagePacks: ["ko"] } });
-    const legacy = legacyContentSettings(deps);
-    expect(legacy.activations).toEqual({ locales: ["ko"], providers: ["azure-foundry", "harbor-llm"] });
-
-    await legacy.release({ locales: ["ko"] });
-    expect(settingsService.get("marketplace")).toMatchObject({
-      installedLanguagePacks: [],
-      installedProviderIds: ["azure-foundry"],
-      installedProviderPresets: [expect.objectContaining({ providerId: "harbor-llm" })],
-    });
-    expect(sent).toContain("ave:settings:updated");
-  });
-
 
   it("adopts a legacy activation the settings hold without rewriting it, and activates one they do not", async () => {
     const activation = createContentActivation(deps);

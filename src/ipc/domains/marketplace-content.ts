@@ -4,8 +4,6 @@ import { randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { DEFAULT_LOCALE, SUPPORTED_LOCALES, registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
-import { messages } from "../../i18n/messages/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { InstalledContentService } from "../../marketplace/content/service.js";
 import { AgentPluginMcpRuntime } from "../../marketplace/content/agent-plugin-mcp-runtime.js";
@@ -16,7 +14,6 @@ import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { type LegacyActivations } from "../../marketplace/migration/legacy-content.js";
 import { installContentAssetProtocolHandler } from "../../main/content-asset-protocol.js";
-import { applyBootLocale } from "../../boot/services.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
@@ -40,23 +37,12 @@ function contentPackagesRoot(home: string = aveHome()): string {
 // Migrate existing package activations without retaining obsolete locale registrations.
 export function legacyContentSettings(deps: IpcDeps): {
   activations: LegacyActivations;
-  release(provided: { locales: readonly string[] }): Promise<void>;
 } {
   const settings = deps.settingsService;
   const marketplace = settings.get("marketplace");
   return {
     activations: {
-      locales: [...marketplace.installedLanguagePacks],
       providers: [...marketplace.installedProviderIds, ...marketplace.installedProviderPresets.map((preset) => preset.providerId)],
-    },
-    async release(provided) {
-      const current = settings.get("marketplace");
-      await settings.patch({
-        marketplace: {
-          installedLanguagePacks: current.installedLanguagePacks.filter((locale) => !provided.locales.includes(locale)),
-        },
-      });
-      await broadcastSettingsSnapshot(deps);
     },
   };
 }
@@ -129,7 +115,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       // Reload passive content before retiring the replaced install's files.
       return { retired: Promise.resolve() };
     },
-    async deactivate(entry: LedgerEntry, content: ParsedContent | null) {
+    async deactivate(entry: LedgerEntry, _content: ParsedContent | null) {
       if (entry.kind === "agent-plugin") {
         if (!mcpRuntime) throw new Error("agent plugin MCP deactivation requires its runtime");
         await mcpRuntime.deactivate(entry.name);
@@ -149,12 +135,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       }
       if (entry.kind === "messaging-connection") {
         await settings.patch({ marketplace: { installedMessagingConnections: connectionsWithout(entry.name) } });
-      } else if (
-        content?.kind === "language" &&
-        appearance.language === content.locale &&
-        !(SUPPORTED_LOCALES as readonly string[]).includes(content.locale)
-      ) {
-        await settings.patch({ appearance: { ...appearance, language: DEFAULT_LOCALE } });
       } else if (entry.kind === "font" && appearance.font?.family === installedFontStack(entry.name)) {
         await settings.patch({ appearance: { ...appearance, font: { ...appearance.font, family: "system" } } });
       } else {
@@ -165,7 +145,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
   };
 }
 
-type InstalledContentPort = Pick<InstalledContentService, "installed" | "languageMessages" | "servedFile">;
+type InstalledContentPort = Pick<InstalledContentService, "installed" | "servedFile">;
 
 export interface InstalledContentRuntime {
   store: ContentStore;
@@ -195,8 +175,6 @@ export async function removeAgentPluginData(settings: Pick<IpcDeps["settingsServ
 
 async function applyInMain(deps: IpcDeps, service: InstalledContentService, view: InstalledContentView, mcpRuntime: AgentPluginMcpRuntime, hookRuntime?: AgentPluginHookRuntime): Promise<void> {
   for (const broken of view.broken) log.warn(broken, "installed content package not applied");
-  registerInstalledLocales(view.languages);
-  setInstalledCatalogLoader(async (locale) => service.languageMessages(locale));
   const instructions = service.installedInstructions();
   deps.skillStore?.setInstalledPackages(instructions.filter((item) => item.kind === "skill"));
   deps.agentProfileStore?.setInstalledPackages(instructions.filter((item) => item.kind === "agent"));
@@ -234,7 +212,6 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
   const hookRuntime = deps.scriptHookManager ? new AgentPluginHookRuntime(deps.scriptHookManager) : undefined;
   const store = await ContentStore.open({
     root,
-    english: messages.en,
     activation: createContentActivation(deps, mcpRuntime, hookRuntime),
   });
   const swept = await store.sweep();
@@ -244,7 +221,6 @@ export async function loadInstalledContent(deps: IpcDeps, assetToken: string, ro
     return decision.kind === "block" ? `revoked by ${decision.sourceId}: ${decision.reason}` : null;
   });
   await applyInMain(deps, service, await service.reload(), mcpRuntime, hookRuntime);
-  await applyBootLocale(deps.settingsService);
   return {
     store,
     service,
@@ -290,21 +266,6 @@ export function registerMarketplaceContentHandlers(
       ...content,
       routineTemplates: [...content.routineTemplates, ...deps.pluginBundleLifecycle.listRoutineTemplates()],
     } };
-  });
-
-  ipcMain.handle(CHANNELS.marketplaceContent.languageMessages, async (event, locale: unknown) => {
-    if (!validateHostRendererSender(event)) {
-      auditUnauthorized(deps.auditLogger, CHANNELS.marketplaceContent.languageMessages, event);
-      return UNAUTHORIZED_FRAME;
-    }
-    if (typeof locale !== "string") return { ok: false, error: "invalid-locale" };
-    const runtime = await loaded();
-    if (!runtime) return { ok: false, error: "installed-content-unavailable" };
-    try {
-      return { ok: true, messages: runtime.service.languageMessages(locale) };
-    } catch (error) {
-      return { ok: false, error: "language-not-installed", message: errorMessage(error) };
-    }
   });
 
   return loaded;

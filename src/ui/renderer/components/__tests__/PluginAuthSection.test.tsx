@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { PluginAuthSection } from "../PluginAuthSection.js";
 import type { AveApi, PluginAuthSummary } from "../../types.js";
+import { normalizeLocale, type Locale } from "../../../../i18n/locale.js";
 import type { PluginAuthState } from "../../hooks/use-plugin-auth-status.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
@@ -188,7 +189,7 @@ describe("PluginAuthSection label language", () => {
     const { getLocale, setLocale } = await import("../../../../i18n/runtime.js");
     const suiteLocale = getLocale();
     const auth: PluginAuthSummary = { ...baseAuth, locales: { en: { label: "Microsoft account" } } };
-    const tree = (locale: string) => (
+    const tree = (locale: Locale) => (
       <I18nProvider locale={locale} setLocale={() => undefined}>
         <PluginAuthSection
           api={pluginAuthSectionApi()}
@@ -201,7 +202,7 @@ describe("PluginAuthSection label language", () => {
       </I18nProvider>
     );
     try {
-      const { rerender } = render(tree("en-us"));
+      const { rerender } = render(tree(normalizeLocale("en-us")));
       expect(screen.getByText("Microsoft account")).toBeInTheDocument();
       rerender(tree("ko"));
       expect(screen.getByText("Microsoft 계정")).toBeInTheDocument();

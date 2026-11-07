@@ -458,7 +458,6 @@ describe("preload contextBridge world shape lock", () => {
           "installLocalPlugin": "function",
           "installedContent": [
             "installed",
-            "languageMessages",
           ],
           "listAgentProfiles": "function",
           "listLlmModels": "function",

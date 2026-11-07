@@ -9,7 +9,7 @@ import type {
 import type { AlertCard, AlertCardClosedReason, AlertKindRow, AlertSettings, SetAlertKindResult, SetAlertOsNotificationsResult } from "../shared/alerts-types.js";
 import { ALERT_HOST_PLUGIN_ID, ALERT_RESERVED_PACKAGE_ID, isAlertKindKey, isAlertKindPatch, isAlertVisibility } from "../shared/alerts-types.js";
 import type { AuditEntry } from "../audit/audit-logger.js";
-import { t, translate } from "../i18n/index.js";
+import { t, translate, type Locale } from "../i18n/index.js";
 import { getDeclaredAlertKinds, getDeclaredConfigInherits } from "../plugins/runtime/manifest-validation.js";
 import { AlertMigration, type AlertMigrationPorts } from "./migration.js";
 import {
@@ -49,7 +49,7 @@ export interface AlertsServiceDeps {
   /** Plugins present on first service boot count as existing installs. */
   installedPluginIds: () => Promise<readonly string[]>;
   appVersion: string;
-  locale: () => string;
+  locale: () => Locale;
   predecessorBlocks: (pluginId: string, sourceHint: string) => Promise<boolean>;
   overlay: {
     /** Retain staged cards for windows that appear later. */

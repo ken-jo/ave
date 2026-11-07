@@ -63,7 +63,7 @@ describe("agent-plugin component authority", () => {
     expect(components.agents).toMatchObject([{ name: "review" }]);
     expect(components.routineTemplates).toMatchObject([{ id: "daily" }]);
     expect(components.mcpServers.editor).toMatchObject({ command: "./server/editor", cwd: "${PLUGIN_ROOT}" });
-    const context = { name: "writer-plugin", version: "1.0.0", payload: { manifest: "plugin.json", components }, english: {}, sourceOrigin: "custom" as const, unknownMessageKeys: "refuse" as const };
+    const context = { name: "writer-plugin", version: "1.0.0", payload: { manifest: "plugin.json", components }, sourceOrigin: "custom" as const };
     expect(parseContent("agent-plugin", files, context)).toEqual({ kind: "agent-plugin", components, files });
     expect(() => parseContent("agent-plugin", files, { ...context, payload: { ...context.payload, components: { ...components, agents: [] } } }))
       .toThrow("agent-plugin components differ from the package tree");

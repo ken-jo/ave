@@ -580,7 +580,7 @@ export function SettingsContent({
           </TabsContent>
 
           <TabsContent value="appearance" className={tabContentCls}>
-            <AppearanceTab onOpenMarketplace={openMarketplaceTab} />
+            <AppearanceTab />
           </TabsContent>
 
           <TabsContent value="chat" className={tabContentCls}>

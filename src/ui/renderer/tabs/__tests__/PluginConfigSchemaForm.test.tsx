@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { I18nProvider } from "../../../../i18n/react.js";
+import type { Locale } from "../../../../i18n/locale.js";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 import { PluginConfigSchemaForm } from "../PluginConfigSchemaForm.js";
 import type { PluginConfigSchemaSummary } from "../../types.js";
@@ -20,7 +21,7 @@ describe("PluginConfigSchemaForm field text language", () => {
       depth: { type: "integer", title: "깊이" },
     },
   };
-  const tree = (locale: string) => (
+  const tree = (locale: Locale) => (
     <I18nProvider locale={locale} setLocale={() => undefined}>
       <PluginConfigSchemaForm
         pluginId="indexer"

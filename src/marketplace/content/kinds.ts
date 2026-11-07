@@ -7,8 +7,6 @@ import {
   type MarketplaceInstalledMessagingConnection,
   type MarketplaceInstalledProviderPreset,
 } from "../../shared/marketplace-package-assets.js";
-import { SUPPORTED_LOCALES } from "../../i18n/locale.js";
-import { isModelFacingKey } from "../../i18n/model-facing.js";
 import type { FontFormat } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor, type MarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
@@ -24,15 +22,6 @@ export interface ContentFile {
   path: string;
   data: Buffer;
   executable?: boolean;
-}
-
-interface LanguageContent {
-  kind: "language";
-  locale: string;
-  nativeName: string;
-  englishName: string;
-  messages: Record<string, string>;
-  missingKeys: string[];
 }
 
 interface FontContent {
@@ -63,14 +52,13 @@ interface AgentPluginContent {
   files: readonly ContentFile[];
 }
 
-export type ParsedContent = LanguageContent | FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
+export type ParsedContent = FontContent | ProviderContent | MessagingConnectionContent | InstructionContent | AgentPluginContent;
 
 export type DataContentKind = ParsedContent["kind"];
 
 export function isDataContentKind(kind: ContentKind): kind is DataContentKind {
   return (
     kind === "agent-plugin" ||
-    kind === "language" ||
     kind === "font" ||
     kind === "provider" ||
     kind === "messaging-connection" ||
@@ -85,12 +73,8 @@ export interface ContentContext {
   version?: string;
   minAppVersion?: string;
   payload: Record<string, unknown> | null;
-  /** Translations retain the English key placeholders. */
-  english: Readonly<Record<string, string>>;
   /** The source the package came from; some content is reserved for official and managed sources. */
   sourceOrigin: SourceOrigin;
-  /** Author checks reject unknown or model-facing keys; installed languages ignore them across catalog changes. */
-  unknownMessageKeys: "refuse" | "ignore";
 }
 
 class ContentFailure extends MarketplaceError {
@@ -127,79 +111,6 @@ function readJson(files: Map<string, Buffer>, path: string): Record<string, unkn
 function closed(record: Record<string, unknown>, path: string, keys: readonly string[]): void {
   const unknown = Object.keys(record).filter((key) => !keys.includes(key));
   if (unknown.length > 0) throw new ContentFailure(path, `unknown field ${unknown.join(", ")}`);
-}
-
-/** Reject invisible formatting that could misrepresent displayed names or approval prompts. */
-const HIDDEN_FORMATTING = /[\u00ad\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
-
-function text(record: Record<string, unknown>, path: string, key: string, max: number): string {
-  const value = record[key];
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > max || /[\u0000-\u001f\u007f]/u.test(value) || HIDDEN_FORMATTING.test(value)) {
-    throw new ContentFailure(path, `${key} must be a single-line string of at most ${max} characters`);
-  }
-  return value;
-}
-
-const MESSAGE_MAX = 4000;
-const PLACEHOLDER = /\{([a-zA-Z0-9_]+)\}/gu;
-
-function placeholders(value: string): string {
-  return [...new Set([...value.matchAll(PLACEHOLDER)].map((match) => match[1]!))].sort().join(",");
-}
-
-/** Model-facing text always uses compiled catalogs, never language packages. */
-export function translatableKeys(english: Readonly<Record<string, string>>): string[] {
-  return Object.keys(english).filter((key) => !isModelFacingKey(key));
-}
-const LOCALE_TAG = /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?$/u;
-
-function language(files: Map<string, Buffer>, context: ContentContext): LanguageContent {
-  const infoPath = "language.json";
-  const info = readJson(files, infoPath);
-  closed(info, infoPath, ["locale", "nativeName", "englishName"]);
-  const locale = info.locale;
-  if (typeof locale !== "string" || !LOCALE_TAG.test(locale)) throw new ContentFailure(infoPath, "locale must be a BCP 47 language tag");
-  if (context.payload && context.payload.locale !== locale) {
-    throw new ContentFailure(infoPath, `locale must be ${String(context.payload.locale)}, the descriptor's locale`);
-  }
-  // Only trusted sources may replace a compiled language; regional aliases must not shadow one.
-  const primary = locale.split("-")[0]!;
-  if ((SUPPORTED_LOCALES as readonly string[]).includes(primary)) {
-    const reserved = primary === "en" || locale !== primary || (context.sourceOrigin !== "official" && context.sourceOrigin !== "managed");
-    if (reserved) throw new ContentFailure(infoPath, `${locale} is a built-in language and cannot be installed from this source`);
-  }
-  const messagesPath = "messages.json";
-  const catalog = readJson(files, messagesPath);
-  const unknown: string[] = [];
-  const messages: Record<string, string> = {};
-  for (const [key, value] of Object.entries(catalog)) {
-    const english = Object.hasOwn(context.english, key) ? context.english[key] : undefined;
-    if (english === undefined || isModelFacingKey(key)) {
-      unknown.push(key);
-      continue;
-    }
-    if (typeof value !== "string" || value.length === 0 || value.length > MESSAGE_MAX || HIDDEN_FORMATTING.test(value)) {
-      throw new ContentFailure(messagesPath, `${key} must be a non-empty string of at most ${MESSAGE_MAX} characters without hidden formatting`);
-    }
-    // Approval translations must retain placeholders so the approved target cannot change.
-    if (placeholders(value) !== placeholders(english)) {
-      throw new ContentFailure(messagesPath, `${key} must keep the placeholders {${placeholders(english).split(",").filter(Boolean).join("}, {")}}`);
-    }
-    messages[key] = value;
-  }
-  if (unknown.length > 0 && context.unknownMessageKeys === "refuse") {
-    const shown = unknown.slice(0, 5).join(", ");
-    throw new ContentFailure(messagesPath, `${unknown.length} key(s) are not interface keys of the English catalog: ${shown}${unknown.length > 5 ? ", …" : ""}`);
-  }
-  const missingKeys = translatableKeys(context.english).filter((key) => !(key in messages)).sort();
-  return {
-    kind: "language",
-    locale,
-    nativeName: text(info, infoPath, "nativeName", 64),
-    englishName: text(info, infoPath, "englishName", 64),
-    messages,
-    missingKeys,
-  };
 }
 
 const FONT_FAMILY = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,47}$/u;
@@ -338,8 +249,6 @@ export function parseContent(kind: DataContentKind, files: readonly ContentFile[
     case "skill":
     case "agent":
       return instruction(kind, map, context);
-    case "language":
-      return language(map, context);
     case "font":
       return font(map);
     case "provider":

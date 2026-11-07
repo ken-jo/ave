@@ -328,8 +328,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // as a live plugin panel. Reuse the established not-registered wording.
   "webview-not-live": "formatIpcError.notRegistered",
   "installed-content-unavailable": "formatIpcError.installedContentUnavailable",
-  "language-not-installed": "formatIpcError.languageNotInstalled",
-  "invalid-locale": "formatIpcError.invalidInput",
   "invalid-bundle-id": "formatIpcError.invalidBundleId",
   "invalid-entry-url": "formatIpcError.invalidEntryUrl",
   "entry-url-outside-install-root": "formatIpcError.entryUrlOutsideInstallRoot",

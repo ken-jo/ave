@@ -611,7 +611,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
     }
-    // Legacy language activations are main-owned until package migration releases them.
+    // The legacy language activation list is main-owned and inert.
     const marketplacePatch = (partial as Record<string, unknown> | null | undefined)?.marketplace;
     if (
       marketplacePatch

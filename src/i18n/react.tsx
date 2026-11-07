@@ -44,16 +44,11 @@ export function useTranslation(): I18nContextValue {
 
 export interface I18nProviderProps {
   locale: Locale;
-  /**
-   * Bumped by the owner when the active locale's catalog was replaced (an installed package laid over a compiled locale), so
-   * consumers re-render although the locale tag is unchanged.
-   */
-  revision?: number;
   setLocale: (locale: Locale) => void;
   children: ReactNode;
 }
 
-export function I18nProvider({ locale, revision = 0, setLocale, children }: I18nProviderProps) {
+export function I18nProvider({ locale, setLocale, children }: I18nProviderProps) {
   // Keep the module-level runtime in sync so `t()` (imported directly, not via
   // the hook — e.g. in event callbacks or non-React utils) resolves against the
   // active `locale`. The context value below is keyed on `locale`, so hook
@@ -61,15 +56,13 @@ export function I18nProvider({ locale, revision = 0, setLocale, children }: I18n
   // remounting — preserving component state (open chat, scroll position, …).
   setRuntimeLocale(locale);
   // The document language follows the UI (screen readers, hyphenation, and
-  // the font fallback a locale's glyphs take), including installed locales.
+  // the font fallback a locale's glyphs take).
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
   const value = useMemo<I18nContextValue>(
-    // `revision` is a dependency only: a new value object makes consumers re-render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     () => ({ locale, setLocale, t: (key, vars) => runtimeT(key, vars) }),
-    [locale, revision, setLocale],
+    [locale, setLocale],
   );
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

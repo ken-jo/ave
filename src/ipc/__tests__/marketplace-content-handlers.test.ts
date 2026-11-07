@@ -1,7 +1,7 @@
 /** The installed-content IPC (blueprint P3): the `ave-content:` handler is registered with the IPC handlers, before any window loads (a frame binds its scheme loaders when it
  * commits); nothing is loaded until the renderer or an asset request first asks, the load runs once, and a failed load answers "unavailable" (IPC) or 404 (assets) instead of throwing. */
 import { mkdtempSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,10 +24,10 @@ vi.mock("../gated.js", () => ({
 
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
-import { loadLocaleMessages } from "../../i18n/messages/index.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
+import { ContentLedger } from "../../marketplace/content/ledger.js";
 import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
 import type { PackagePlan } from "../../marketplace/resolve/descriptor.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../marketplace/sources/policy.js";
@@ -37,13 +37,9 @@ import { loadInstalledContent, registerMarketplaceContentHandlers } from "../dom
 const TOKEN = "t0123456789abcdef0123456789abcdef";
 /** No installed package here has an MCP server: the runtime only registers its lease source. */
 const LEASE_ONLY_MCP = { registerGenerationLeaseSource: () => undefined, registerBundledCredentialSource: () => undefined };
-const content = { languages: [], fonts: [], routineTemplates: [], broken: [] };
+const content = { fonts: [], routineTemplates: [], broken: [] };
 const port = {
   installed: () => content,
-  languageMessages: (locale: string) => {
-    if (locale !== "fr") throw new Error(`${locale} is not installed`);
-    return { "app.title": "Ave" };
-  },
   servedFile: () => null,
 };
 const runtime = (service: typeof port) => ({
@@ -78,11 +74,8 @@ describe("registerMarketplaceContentHandlers", () => {
     expect(load).not.toHaveBeenCalled();
 
     const installed = electron.handlers.get(CHANNELS.marketplaceContent.installed)!;
-    const languageMessages = electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!;
     await expect(installed({})).resolves.toEqual({ ok: true, content });
-    await expect(languageMessages({}, "fr")).resolves.toEqual({ ok: true, messages: { "app.title": "Ave" } });
-    await expect(languageMessages({}, "de")).resolves.toMatchObject({ ok: false, error: "language-not-installed" });
-    await expect(languageMessages({}, 42)).resolves.toEqual({ ok: false, error: "invalid-locale" });
+    await expect(installed({})).resolves.toEqual({ ok: true, content });
     expect(load).toHaveBeenCalledTimes(1);
   });
 
@@ -116,7 +109,6 @@ describe("registerMarketplaceContentHandlers", () => {
       throw new Error("ledger unreadable");
     });
     await expect(electron.handlers.get(CHANNELS.marketplaceContent.installed)!({})).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
-    await expect(electron.handlers.get(CHANNELS.marketplaceContent.languageMessages)!({}, "fr")).resolves.toEqual({ ok: false, error: "installed-content-unavailable" });
     expect((await schemeHandler()(assetRequest(`ave-content://${TOKEN}/font/harbor-serif/files/a.woff2`))).status).toBe(404);
   });
 });
@@ -127,41 +119,30 @@ describe("loadInstalledContent", () => {
     root = mkdtempSync(join(tmpdir(), "ave-installed-content-"));
   });
   afterEach(async () => {
-    registerInstalledLocales([]);
-    setInstalledCatalogLoader(null);
     setLocale("en");
     await rm(root, { recursive: true, force: true });
   });
 
   /** Install `content` from `files` the way the install path does, without a git source. */
-  async function install(kind: "language" | "skill" | "agent-plugin", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
+  async function install(kind: "skill" | "agent-plugin", name: string, files: Record<string, unknown>, content: ParsedContent, into?: ContentStore) {
     const list = Object.entries(files).map(([path, value]) => ({ path, data: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)) }));
     const plan = { sourceId: "acme", sourceOrigin: "custom", snapshotCommit: "a".repeat(40), versionCommit: "a".repeat(40), packagePath: `${kind}s/${name}`, kind, name, version: "1.0.0", minAppVersion: "0.12.0" } as PackagePlan;
     const staged = { plan, files: list, contentSha256: treeDigest(list.map((file) => ({ ...file, executable: false }))), content, minAppVersion: "0.12.0", hostProtocol: null } as StagedContent;
-    const store = into ?? (await ContentStore.open({ root, english: {}, activation: { activate: async () => ({ retired: Promise.resolve() }), deactivate: async () => {}, approveComponents: async () => {} } }));
+    const store = into ?? (await ContentStore.open({ root, activation: { activate: async () => ({ retired: Promise.resolve() }), deactivate: async () => {}, approveComponents: async () => {} } }));
     await store.install(staged);
   }
 
-  it("applies what the store holds to this process: locales, their catalogs and the selected language", async () => {
-    const language = { locale: "fr", nativeName: "Français", englishName: "French" };
-    // A real interface key: the loader checks the package against the compiled English catalog.
-    const key = "common.cancel";
-    const messages = { [key]: "Annuler" };
-    await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
+  it("does not override the active locale while loading content", async () => {
+    setLocale("ko");
     const settingsService = { get: () => ({ language: "fr" }) };
-
     const { service } = await loadInstalledContent({ settingsService, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
-    expect(service.installed().languages.map((item) => item.locale)).toEqual(["fr"]);
-    expect(isInstalledLocale("fr")).toBe(true);
-    expect(await loadLocaleMessages("fr")).toMatchObject(messages);
-    expect(getLocale()).toBe("fr");
-    expect(translate("fr", key)).toBe("Annuler");
+    expect(service.installed().broken).toEqual([]);
+    expect(getLocale()).toBe("ko");
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {
     const { service } = await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager: LEASE_ONLY_MCP } as unknown as IpcDeps, TOKEN, root);
-    expect(service.installed()).toEqual({ languages: [], fonts: [], routineTemplates: [], broken: [] });
-    expect(isInstalledLocale("fr")).toBe(false);
+    expect(service.installed()).toEqual({ fonts: [], routineTemplates: [], broken: [] });
   });
 
   it("vouches for its installed agent plugins only when none failed to load", async () => {
@@ -170,6 +151,27 @@ describe("loadInstalledContent", () => {
     await loadInstalledContent({ settingsService: { get: () => ({ language: "en" }) }, getAppWindows: () => [], mcpManager } as unknown as IpcDeps, TOKEN, root);
     expect(sources).toHaveLength(1);
     expect(await sources[0]!.installedPackages()).toEqual(new Set());
+  });
+
+  it.each(["language", "theme"])("keeps agent-plugin ownership known with a retired %s ledger entry", async (kind) => {
+    const files = { "plugin.json": JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin", version: "1.0.0", description: "Writing tools" }) };
+    const bytes = Object.entries(files).map(([path, data]) => ({ path, data: Buffer.from(data) }));
+    await install("agent-plugin", "writer-plugin", files, { kind: "agent-plugin", components: deriveAgentPluginComponents(bytes), files: bytes });
+    const ledger = await ContentLedger.open(join(root, "ledger.json"));
+    // Released ledger kinds are read from disk, never offered as current install plans.
+    const entry = ledger.list()[0]!;
+    const legacy = { ...entry, kind, name: "retired", origin: { ...entry.origin,
+      sourceId: "acme", sourceOrigin: "custom", commit: "a".repeat(40), installId: undefined, payloadDir: undefined, consent: undefined } };
+    const path = join(root, "ledger.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    saved.packages.push(legacy);
+    await writeFile(path, JSON.stringify(saved));
+    const register = vi.fn();
+    const { service } = await loadInstalledContent({ getAppWindows: () => [],
+      mcpManager: { ...LEASE_ONLY_MCP, registerBundledCredentialSource: register } } as unknown as IpcDeps, TOKEN, root);
+    expect(service.installed().broken).toEqual([]);
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(await register.mock.calls[0]![1].installedPackages()).toEqual(new Set(["writer-plugin"]));
   });
 
   it("hands installed skills and agents to their stores, and reload applies an install made after load", async () => {

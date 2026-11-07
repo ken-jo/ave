@@ -6,7 +6,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { createLogger } from "../lib/logger.js";
 import { onEvent } from "../boot/types.js";
 import { getLastThemePayload } from "../shared/host-theme-replay.js";
-import { DEFAULT_LOCALE, getLocale, isDefaultVisibleLocale, onLocaleChange, type Locale } from "../i18n/index.js";
+import { getLocale, onLocaleChange } from "../i18n/index.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { configureMcpAppWebviewAttach } from "./webview-attach.js";
 import type {
@@ -19,22 +19,6 @@ import type {
 } from "./floating-dock.js";
 
 const log = createLogger("floating-dock");
-
-/**
- * The language the dock renders: main's locale when it has a built-in catalog, otherwise English.
- *
- * Main's locale can be a language that exists only as an installed marketplace language pack. The dock renderer registers no
- * installed languages and has no pack catalog loader, so it can render only the built-in catalogs, and it rejects anything else
- * as a contract violation. For such a pack-only language the dock therefore deliberately shows English, while the main window
- * registers the pack and shows its strings (English only for keys the pack lacks). That mismatch is accepted until the
- * marketplace language-pack retirement (lane 4, I2) removes installed packs.
- *
- * Deprecation owner: lane 4, I2. Once it deletes the installed-locale path, main's locale can only be a built-in one; this
- * mapping is removed then and the dock is sent `getLocale()` directly.
- */
-function dockLocale(locale: Locale): Locale {
-  return isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
-}
 
 // The real window. Created lazily and destroyed on `hide()` rather than merely hidden: a dock with nothing in it has no state worth keeping alive, and a
 // destroyed window cannot be left floating by a bug in the visibility bookkeeping.
@@ -232,7 +216,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
   #sendAppearance(theme: unknown): void {
     if (theme === null) return;
     const appearance = this.settings.get("appearance");
-    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: appearance.terminalFont.family, font: appearance.font, locale: dockLocale(getLocale()) });
+    this.#post(CHANNELS.dock.theme, { theme, terminalFontFamily: appearance.terminalFont.family, font: appearance.font, locale: getLocale() });
   }
 
   #post(channel: string, payload: unknown): void {

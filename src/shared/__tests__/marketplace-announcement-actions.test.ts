@@ -1,5 +1,6 @@
 /** Drop malformed network-supplied actions rather than correcting them into unintended destinations. */
 import { describe, expect, it } from "vitest";
+import { normalizeLocale } from "../../i18n/locale.js";
 import {
   announcementActionLabel,
   isMarketplaceAnnouncementAction,
@@ -222,10 +223,10 @@ describe("isMarketplaceAnnouncementAction", () => {
 });
 
 describe("announcementActionLabel", () => {
-  it("reads the label in the UI language, and in English for an installed language it does not carry", () => {
+  it("reads the compiled UI language label after normalizing a retired selection", () => {
     const action = { label: LABEL };
     expect(announcementActionLabel(action, "ko")).toBe("샌드박스 설정 열기");
     expect(announcementActionLabel(action, "en")).toBe("Open sandbox settings");
-    expect(announcementActionLabel(action, "fr")).toBe("Open sandbox settings");
+    expect(announcementActionLabel(action, normalizeLocale("fr"))).toBe("Open sandbox settings");
   });
 });
