@@ -577,7 +577,7 @@ async function resolveSpawnLine(
   if (confinement === "windows-srt" && spec.cwd === undefined) {
     throw new Error(`[confined-child] ${spec.label}: srt-win requires an explicit cwd, one the sandbox account is granted`);
   }
-  const relay =spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
+  const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
   const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
