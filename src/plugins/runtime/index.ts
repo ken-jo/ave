@@ -1356,7 +1356,8 @@ abstract class PluginRuntimeState {
       }
     };
     assertNoUnverifiedIncumbent();
-    // A registration made by a timed-out factory fails its next check, so the late setup releases what it holds.
+    // A registration made by a timed-out factory fails its next check, so the late setup releases what it holds;
+    // one made outside a factory attempt has no deadline.
     const deadline = factoryAttemptDeadline.getStore();
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
