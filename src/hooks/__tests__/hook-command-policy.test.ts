@@ -249,24 +249,80 @@ describe("hook command permission admission", () => {
     expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
   });
 
-  it.each(["boundary-link", "boundary-unlisted"] as const)(
-    "asks once-only for a hook command on a worker-only boot with an unverifiable boundary (%s)", async (category) => {
+  describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
+    // Worker confinement on, shell scope off: boot publishes the boundary state while the shell intent stays false.
+    function publish(): void {
       setShellSandboxRequestedAtBoot(false);
-      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\Users\alice\.ave", reason: "ave-home-boundary-unverified", category });
-      try {
-        expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
-        const p = policy("deny-once");
-        p.permissionManager.setMode("allow");
-        p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
-        const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-        expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
-        expect(p.requestAndWait).toHaveBeenCalledOnce();
-        expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-          forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
-      } finally {
-        _resetAveHomePrivacyForTest();
-      }
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "ave-home-boundary-unverified", category });
+    }
+    afterEach(() => _resetAveHomePrivacyForTest());
+
+    // A real authenticated gate answers each card once with `choice`.
+    async function runWithGate(p: ReturnType<typeof policy>, choice: "allow-once" | "deny-once") {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+      const pending = runOneHookScript(hook, payload, { authorizeCommand });
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request?.nonce).toBeTruthy();
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true } });
+      gate.resolve(request.id, { requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac });
+      const result = await pending;
+      return { result, cards: wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined).length };
+    }
+
+    function allowAll() {
+      const p = policy();
+      p.permissionManager.setMode("allow");
+      p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+      return p;
+    }
+
+    it("runs the hook exactly once per gate-signed allow-once, and asks again next time", async () => {
+      publish();
+      const p = allowAll();
+      const first = await runWithGate(p, "allow-once");
+      expect(first.result.decision, first.result.reason).toBe("allow");
+      expect(JSON.parse(first.result.rawStdout).reason).toBe("received");
+      expect(first.cards).toBe(1);
+      expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+
+      const second = await runWithGate(p, "allow-once");
+      expect(second.cards).toBe(1);
+      expect(second.result.decision, second.result.reason).toBe("allow");
+      expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
     });
+
+    it("does not run the hook on deny-once", async () => {
+      publish();
+      const { result } = await runWithGate(allowAll(), "deny-once");
+      expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+      expect(permits.consumed).toEqual([]);
+    });
+
+    it("denies the hook headless without a card", async () => {
+      publish();
+      const p = allowAll();
+      const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+        () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+      expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps the ordinary sandbox-off hook policy outside the boundary state", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    expect(getHostShellExecutionPlan()).toMatchObject({ fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    expect(permits.minted).toBe(0);
+  });
 
   it("consumes a real gate-approved host execution receipt before spawning", async () => {
     windowsPartialPlan();

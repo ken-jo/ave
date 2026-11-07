@@ -5,6 +5,7 @@ import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdent
 import {
   parseHostShellExecutionInput,
   requiresExplicitHostShellApproval,
+  requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
   type HostShellExecutionRequest,
 } from "./host-shell-execution-plan.js";
@@ -162,6 +163,8 @@ export function mintHostShellExecutionPermit(input: {
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
+  // Under the unverifiable Ave home boundary a saved rule never stands in for fresh consent; policy records are made only after a human card.
+  if (allowRuleAuthorization !== undefined && requiresUnsandboxedShellAsk(input.plan)) return undefined;
   if (
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity

@@ -260,7 +260,10 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const approved = cardGate("allow-once");
     await run(approved.gate, "worker-only-allow");
     expect(execute).toHaveBeenCalledOnce();
-    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false });
+    const ctx = execute.mock.calls[0]?.[0] as ToolExecutionContext;
+    expect(ctx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false });
+    // The spawn consumer needs the one-shot permit this approval minted.
+    expect(ctx.hostShellExecutionPermit).toBeDefined();
 
     const again = cardGate("deny-once");
     await run(again.gate, "worker-only-again");
@@ -293,8 +296,9 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     ));
     expect(approvals.cards()).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
-    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
-      fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
+    const ctx = execute.mock.calls[0]?.[0] as ToolExecutionContext;
+    expect(ctx.hostShellExecutionPlan).toMatchObject({ fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
+    expect(ctx.hostShellExecutionPermit).toBeUndefined();
   });
 
   it("denies a headless shell with no approver", async () => {

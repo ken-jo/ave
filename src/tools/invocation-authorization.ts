@@ -1,7 +1,7 @@
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
-import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
+import { isConfinedHostShellExecution, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
@@ -1329,7 +1329,8 @@ export async function authorizeToolInvocation(
   const ruleProofStands = hostShellAllowRuleDecision !== undefined && permissionResult === hostShellAllowRuleDecision;
   if (hostShellExecutionPermitBinding !== undefined &&
       hostShellApprovalDecision === undefined && !ruleProofStands &&
-      permissionResult?.decision === "allow") {
+      permissionResult?.decision === "allow" &&
+      (humanApproved || !requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan))) {
     recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }
 

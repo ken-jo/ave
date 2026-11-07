@@ -10,7 +10,7 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
 } from "../approval-gate.js";
-import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import {
   buildHostShellExecutionPermitBinding,
@@ -310,6 +310,21 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
       plan: planB, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding: planBBinding,
+    })).toBeUndefined();
+  });
+
+  it("never lets a saved rule replace fresh consent for a host plan under an unverifiable Ave home boundary", () => {
+    const marked = buildHostShellExecutionPlan({
+      platform: "linux",
+      requestedSandbox: true,
+      executionMode: "host",
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "worker-only boot" },
+      unavailableSandboxRequiresAsk: true,
+    });
+    expect(marked.identity.endsWith(":ask")).toBe(true);
+    const binding = hostBinding(marked);
+    expect(mintHostShellExecutionPermit({
+      plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })).toBeUndefined();
   });
 
@@ -671,5 +686,39 @@ describe.skipIf(process.platform !== "win32")("host permits on a sandbox-capable
     } finally {
       cleanupTmpDir(directory);
     }
+  });
+});
+
+describe("shell-off plan under an unverifiable Ave home boundary", () => {
+  const sandboxOff = (askEveryCommand: boolean) => buildHostShellExecutionPlan({
+    platform: "win32",
+    requestedSandbox: false,
+    activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "worker-only boot" },
+    unavailableSandboxRequiresAsk: askEveryCommand,
+  });
+
+  it("mints one spawn permit from a gate-signed allow-once and refuses its replay", async () => {
+    const binding = makeBinding(sandboxOff(true));
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeDefined();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
+  });
+
+  it("refuses a missing receipt, a receipt for another action and a changed spawn", async () => {
+    const binding = makeBinding(sandboxOff(true));
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
+    const other = makeBinding(binding.plan, { command: "echo other" });
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(other) })).toBeUndefined();
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    expect(consumeHostShellExecutionPermitForSpawn({ ...permitInput(binding, permit), command: "echo changed" })).toBeUndefined();
+  });
+
+  it("needs no permit for the ordinary shell-off plan", () => {
+    const plan = sandboxOff(false);
+    expect(plan).toMatchObject({ requiresExplicitUserApproval: false });
+    expect(plan.identity.endsWith(":ask")).toBe(false);
+    expect(requiresExplicitHostShellApproval(plan, "bash")).toBe(false);
+    expect(requiresExplicitHostShellApproval(sandboxOff(true), "bash")).toBe(true);
   });
 });

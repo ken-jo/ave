@@ -342,11 +342,12 @@ export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undef
 
 // An unpinned native parser needs one-shot authority before startup. Existing
 // explicit-host and partial-sandbox gates remain independent of startup proof.
+// A plan marked for the unverifiable Ave home boundary (including shell scope off) needs the same one-shot authority.
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan, toolName?: string): boolean {
   return (plan.mode === "plain" && toolName === "powershell" && !isPowerShellStartupPinned(plan.platform, plan)) || (plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
     plan.capability.kind === "none" &&
-    plan.requiresExplicitUserApproval === true);
+    plan.requiresExplicitUserApproval === true) || requiresUnsandboxedShellAsk(plan);
 }
 
 // Schema-relevant input normalization shared by the host approval surface and the final native shell permit. It lives in this leaf module (which imports neither approval-gate nor the permit module) so the two host boundaries never form a runtime cycle through their shared parser.
