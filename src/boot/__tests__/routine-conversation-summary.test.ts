@@ -26,7 +26,7 @@ describe("routine summary tag", () => {
       toolRegistry: new ToolRegistry(),
       memoryManager,
       systemPromptBuilder: makeSystemPromptBuilder(),
-      pluginRuntime: { listPluginIds: () => [], listPluginCards: () => [] },
+      pluginRuntime: { listPluginIds: () => [], isPluginEnabled: () => true, listPluginCards: () => [] },
     } as unknown as Parameters<typeof createRoutineConversationLoop>[0]);
     (loop as unknown as { provider: LLMProvider | null }).provider = new SummaryProvider();
     const engine = new RoutineEngine({ createConversationLoop: () => loop });
