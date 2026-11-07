@@ -54,6 +54,11 @@ export const TOOL_TIMEOUT_POLICY = {
   terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
+  // Budget only, no timer reads it: host-side setup of an srt-win plugin child (grant turn, wrap) has no deadline of its own.
+  // Measured 8-10 s idle, srt-win itself ~0.1 s, and slower while the incumbent of an update still holds its grant.
+  windowsSrtPluginSetupBudgetMs: 30_000,
+  // A sandboxed Windows plugin child starts and announces its listener.
+  windowsPluginChildConnectMs: 30_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
   // Allow retiring generations to drain existing calls before shutdown aborts their scope.
@@ -106,6 +111,12 @@ export const TOOL_TIMEOUT_POLICY = {
 export function nativePluginChildStopBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs + TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs
     + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+}
+
+/** An srt-win plugin child's factory: host-side setup, then the channel connect and the construct request, each under its own deadline. */
+export function windowsSrtPluginChildFactoryBudgetMs(): number {
+  return TOOL_TIMEOUT_POLICY.windowsSrtPluginSetupBudgetMs + TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs
+    + TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs;
 }
 
 /** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
