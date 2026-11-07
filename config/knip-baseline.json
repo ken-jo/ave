@@ -559,11 +559,6 @@
     },
     {
       "type": "types",
-      "file": "src/memory/memory-manager.ts",
-      "name": "CheckpointTrigger"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/agent-action-approver.ts",
       "name": "AgentActionApprovalDiagnostic"
     },
