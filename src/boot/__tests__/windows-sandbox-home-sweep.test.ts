@@ -21,7 +21,7 @@ function home(name: string, marker?: string | { pid: number; startTime: string }
   mkdirSync(join(path, "AppData"), { recursive: true });
   writeFileSync(join(path, "AppData", "state"), "x");
   if (marker !== undefined) {
-    writeFileSync(join(path, ".ave-sandbox-owner"), typeof marker === "string" ? marker : JSON.stringify(marker));
+    writeFileSync(`${path}.owner`, typeof marker === "string" ? marker : JSON.stringify(marker));
   }
   return path;
 }
@@ -36,11 +36,32 @@ function probeOf(states: Record<number, ProcessRunState>): ProcessRunStateProbe 
 }
 
 describe("sweepStaleWindowsSandboxHomes", () => {
-  it("removes a HOME whose owner process is gone", async () => {
+  it("removes a HOME whose owner process is gone, with its marker", async () => {
     const dead = home("ave-sandbox-home-dead", { pid: 4101, startTime: "100" });
     const result = await sweepStaleWindowsSandboxHomes(root, new Set(), probeOf({ 4101: { running: false } }));
     expect(existsSync(dead)).toBe(false);
+    expect(existsSync(`${dead}.owner`)).toBe(false);
     expect(result).toEqual({ removed: 1, failed: 0 });
+  });
+
+  it("drops an orphan marker of a dead owner and keeps one of a live owner", async () => {
+    const deadMarker = join(root, "ave-sandbox-home-gone.owner");
+    const liveMarker = join(root, "ave-sandbox-home-elsewhere.owner");
+    writeFileSync(deadMarker, JSON.stringify({ pid: 4111, startTime: "1" }));
+    writeFileSync(liveMarker, JSON.stringify({ pid: 4112, startTime: "2" }));
+    await sweepStaleWindowsSandboxHomes(root, new Set(), probeOf({
+      4111: { running: false },
+      4112: { running: true, startTime: "2" },
+    }));
+    expect(existsSync(deadMarker)).toBe(false);
+    expect(existsSync(liveMarker)).toBe(true);
+  });
+
+  it("ignores a marker written inside the HOME", async () => {
+    const path = home("ave-sandbox-home-inner");
+    writeFileSync(join(path, ".owner"), JSON.stringify({ pid: 4113, startTime: "1" }));
+    await sweepStaleWindowsSandboxHomes(root, new Set(), probeOf({ 4113: { running: false } }));
+    expect(existsSync(join(path, "AppData", "state"))).toBe(true);
   });
 
   it("keeps a HOME whose owner is still running", async () => {
@@ -73,7 +94,8 @@ describe("sweepStaleWindowsSandboxHomes", () => {
       home("ave-sandbox-home-unprobed", { pid: 4105, startTime: "1" }),
       home("ave-sandbox-home-unknown-start", { pid: 4106, startTime: "1" }),
     ];
-    mkdirSync(join(root, "ave-sandbox-home-dir-marker", ".ave-sandbox-owner"), { recursive: true });
+    mkdirSync(join(root, "ave-sandbox-home-dir-marker"));
+    mkdirSync(join(root, "ave-sandbox-home-dir-marker.owner"));
     await sweepStaleWindowsSandboxHomes(root, new Set(), probeOf({
       4104: { running: false },
       4106: { running: true, startTime: null },
@@ -90,21 +112,22 @@ describe("sweepStaleWindowsSandboxHomes", () => {
     mkdirSync(nested);
     const deeper = join(nested, "ave-sandbox-home-deep");
     mkdirSync(deeper);
-    writeFileSync(join(deeper, ".ave-sandbox-owner"), JSON.stringify(owner));
+    writeFileSync(`${deeper}.owner`, JSON.stringify(owner));
     await sweepStaleWindowsSandboxHomes(root, new Set([inUse]), probeOf({ 4107: { running: false } }));
     expect(existsSync(join(foreign, "AppData", "state"))).toBe(true);
     expect(existsSync(join(inUse, "AppData", "state"))).toBe(true);
-    expect(existsSync(join(deeper, ".ave-sandbox-owner"))).toBe(true);
+    expect(existsSync(`${deeper}.owner`)).toBe(true);
   });
 
   it("does not follow a directory link that carries the prefix", async () => {
     const target = mkdtempSync(join(tmpdir(), "ave-home-sweep-target-"));
     try {
-      writeFileSync(join(target, ".ave-sandbox-owner"), JSON.stringify({ pid: 4108, startTime: "1" }));
       writeFileSync(join(target, "keep"), "x");
       symlinkSync(target, join(root, "ave-sandbox-home-link"), process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(join(root, "ave-sandbox-home-link.owner"), JSON.stringify({ pid: 4108, startTime: "1" }));
       await sweepStaleWindowsSandboxHomes(root, new Set(), probeOf({ 4108: { running: false } }));
       expect(existsSync(join(target, "keep"))).toBe(true);
+      expect(existsSync(join(root, "ave-sandbox-home-link.owner"))).toBe(true);
     } finally {
       const link = join(root, "ave-sandbox-home-link");
       if (existsSync(link)) (process.platform === "win32" ? rmdirSync : unlinkSync)(link);

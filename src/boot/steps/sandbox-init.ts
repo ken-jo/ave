@@ -33,7 +33,8 @@ const log = createLogger("ave");
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
   // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
-  if (process.platform === "win32") await sweepWindowsSandboxHomes();
+  // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
+  if (process.platform === "win32") void sweepWindowsSandboxHomes();
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
     bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
@@ -498,38 +499,55 @@ async function sweepWindowsSandboxHomes(): Promise<void> {
   }
 }
 
-/** Remove `ave-sandbox-home-*` directories directly under `root` whose marker names a process that is gone or a reused pid; keep unmarked, unreadable and undetermined ones. Never follows links. */
+/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. */
 export async function sweepStaleWindowsSandboxHomes(
   root: string,
   inUse: ReadonlySet<string>,
   probe: ProcessRunStateProbe,
 ): Promise<{ removed: number; failed: number }> {
-  const { SANDBOX_HOME_PREFIX, readSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
+  const { SANDBOX_HOME_OWNER_SUFFIX, SANDBOX_HOME_PREFIX, readSandboxHomeOwner } =
+    await import("../../permissions/sandbox-process-home.js");
   checkSandboxSweepRoot(root);
   const canonicalRoot = await realpath(root);
   checkSandboxSweepRoot(canonicalRoot);
-  const candidates: { path: string; pid: number; startTime: string }[] = [];
-  for (const entry of await readdir(canonicalRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith(SANDBOX_HOME_PREFIX)) continue;
-    const path = join(canonicalRoot, entry.name);
-    if (inUse.has(path) || inUse.has(join(root, entry.name))) continue;
-    const owner = await readSandboxHomeOwner(path);
-    if (owner !== null) candidates.push({ path, ...owner });
+  const entries = await readdir(canonicalRoot, { withFileTypes: true });
+  const names = new Set(entries.map(({ name }) => name));
+  const candidates: { home: string; orphan: boolean; pid: number; startTime: string }[] = [];
+  for (const entry of entries) {
+    if (!entry.name.startsWith(SANDBOX_HOME_PREFIX)) continue;
+    let homeName: string;
+    let orphan: boolean;
+    if (entry.isDirectory()) {
+      homeName = entry.name;
+      orphan = false;
+    } else if (entry.isFile() && entry.name.endsWith(SANDBOX_HOME_OWNER_SUFFIX)) {
+      homeName = entry.name.slice(0, -SANDBOX_HOME_OWNER_SUFFIX.length);
+      // A marker beside its HOME is handled with that HOME.
+      if (names.has(homeName)) continue;
+      orphan = true;
+    } else continue;
+    const home = join(canonicalRoot, homeName);
+    if (inUse.has(home) || inUse.has(join(root, homeName))) continue;
+    const owner = await readSandboxHomeOwner(home);
+    if (owner !== null) candidates.push({ home, orphan, ...owner });
   }
   let removed = 0;
   let failed = 0;
   if (candidates.length === 0) return { removed, failed };
   const states = await probe([...new Set(candidates.map(({ pid }) => pid))]);
-  for (const { path, pid, startTime } of candidates) {
+  for (const { home, orphan, pid, startTime } of candidates) {
     const state = states.get(pid);
     const stale = state !== undefined
       && (!state.running || (state.startTime !== null && state.startTime !== startTime));
     if (!stale) continue;
     try {
-      const entry = await lstat(path);
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      await removeOwnedPluginTree(path);
-      removed += 1;
+      if (!orphan) {
+        const entry = await lstat(home);
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        await removeOwnedPluginTree(home);
+        removed += 1;
+      } else if ((await lstat(home).catch(() => undefined)) !== undefined) continue;
+      await unlink(`${home}${SANDBOX_HOME_OWNER_SUFFIX}`);
     } catch {
       failed += 1;
     }

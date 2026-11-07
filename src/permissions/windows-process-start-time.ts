@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 
 const execFileAsync = promisify(execFile);
+// A boot-time query, not a tool call: past this the result is unresolved and callers keep what it owns.
+const START_TIME_PROBE_TIMEOUT_MS = 10_000;
 
-// `startTime` is the process creation time as UTC ticks, or null when the process runs but its start time cannot be read (another account's process).
+// `startTime` is the process creation time as a UTC FILETIME, or null when the process runs but its start time cannot be read (another account's process).
 export type ProcessRunState = { readonly running: false } | { readonly running: true; readonly startTime: string | null };
 
 // A pid missing from the result is undetermined; callers keep whatever it owns.
@@ -15,12 +16,12 @@ export type ProcessRunStateProbe = (pids: readonly number[]) => Promise<Readonly
 const START_TIME_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$PSModuleAutoLoadingPreference = 'None'",
-  "foreach ($id in ($env:AVE_PROBE_PIDS -split ',')) { $n = [int]$id; $v = 'unknown'; try { $p = [System.Diagnostics.Process]::GetProcessById($n); try { $v = $p.StartTime.ToUniversalTime().Ticks.ToString() } catch { } finally { $p.Dispose() } } catch [System.ArgumentException] { $v = 'gone' }; [Console]::Out.WriteLine(\"$n $v\") }",
+  "foreach ($id in ($env:AVE_PROBE_PIDS -split ',')) { $n = [int]$id; $v = 'unknown'; try { $p = [System.Diagnostics.Process]::GetProcessById($n); try { $v = $p.StartTime.ToFileTimeUtc().ToString() } catch { } finally { $p.Dispose() } } catch [System.ArgumentException] { $v = 'gone' }; [Console]::Out.WriteLine(\"$n $v\") }",
 ].join("; ");
 const START_TIME_COMMAND = Buffer.from(START_TIME_SCRIPT, "utf16le").toString("base64");
 
 function isPid(pid: number): boolean {
-  return Number.isSafeInteger(pid) && pid > 0 && pid <= 0xffff_ffff;
+  return Number.isSafeInteger(pid) && pid > 0 && pid <= 0x7fff_ffff;
 }
 
 // Signal 0 answers liveness without a spawn; only running pids pay for the start-time query.
@@ -65,7 +66,7 @@ export const readWindowsProcessRunStates: ProcessRunStateProbe = async (pids) =>
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", START_TIME_COMMAND,
   ], {
     env: { SystemRoot: windowsSystemRoot(), AVE_PROBE_PIDS: running.join(",") },
-    windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs, encoding: "utf8",
+    windowsHide: true, timeout: START_TIME_PROBE_TIMEOUT_MS, encoding: "utf8",
   });
   for (const [pid, state] of parseProcessStartTimes(stdout, running)) states.set(pid, state);
   return states;

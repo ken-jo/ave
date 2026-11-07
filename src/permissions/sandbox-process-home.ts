@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -18,8 +19,8 @@ import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./window
 
 const log = createLogger("sandbox-process-home");
 export const SANDBOX_HOME_PREFIX = "ave-sandbox-home-";
-// Windows HOMEs share the host temp directory with other Ave instances, so each names its owner for the boot sweep (`sweepStaleWindowsSandboxHomes`).
-const OWNER_MARKER_NAME = ".ave-sandbox-owner";
+// Windows HOMEs share the host temp directory with other Ave instances, so each has a sibling owner marker for the boot sweep (`sweepStaleWindowsSandboxHomes`). The sibling sits in the temp root, which no confined process can write.
+export const SANDBOX_HOME_OWNER_SUFFIX = ".owner";
 const OWNER_MARKER_MAX_BYTES = 128;
 const CLEANUP_RETRY_DELAYS_MS = [50, 250, 1_000] as const;
 
@@ -39,40 +40,80 @@ function sandboxHomeParent(platform: NodeJS.Platform): string {
 
 export interface SandboxHomeOwner {
   readonly pid: number;
-  // Process creation time as UTC ticks, so a reused pid does not pass for the owner.
+  // Process creation time as a UTC FILETIME, so a reused pid does not pass for the owner.
   readonly startTime: string;
 }
 
-const hostOwnerMarkers = new WeakMap<ProcessRunStateProbe, Promise<string | null>>();
+const resolvedOwnerMarkers = new WeakMap<ProcessRunStateProbe, string>();
+const pendingOwnerMarkers = new WeakMap<ProcessRunStateProbe, Promise<string | null>>();
+let ownerProbeFailureLogged = false;
 
-function hostOwnerMarker(probe: ProcessRunStateProbe): Promise<string | null> {
-  let marker = hostOwnerMarkers.get(probe);
-  if (marker === undefined) {
-    marker = probe([process.pid]).then((states) => {
+// The host's marker text. Only a success is cached, so a failed probe is retried by the next HOME.
+function resolveHostOwnerMarker(probe: ProcessRunStateProbe): Promise<string | null> {
+  const known = resolvedOwnerMarkers.get(probe);
+  if (known !== undefined) return Promise.resolve(known);
+  let pending = pendingOwnerMarkers.get(probe);
+  if (pending === undefined) {
+    pending = probe([process.pid]).then((states) => {
       const state = states.get(process.pid);
       if (!state?.running || state.startTime === null) return null;
       return JSON.stringify({ pid: process.pid, startTime: state.startTime } satisfies SandboxHomeOwner);
-    }).catch(() => null);
-    hostOwnerMarkers.set(probe, marker);
+    }).catch(() => null).then((marker) => {
+      pendingOwnerMarkers.delete(probe);
+      if (marker !== null) resolvedOwnerMarkers.set(probe, marker);
+      else if (!ownerProbeFailureLogged) {
+        ownerProbeFailureLogged = true;
+        log.debug("sandbox process HOME owner start time unavailable; HOMEs stay unmarked until it resolves");
+      }
+      return marker;
+    });
+    pendingOwnerMarkers.set(probe, pending);
   }
-  return marker;
+  return pending;
 }
 
-// Exclusive create: anything already at the name (a child's file or link) is left as it is, and only ever affects the HOME it sits in. No marker leaves the HOME to its own cleanup; the sweep keeps it.
-function markSandboxHomeOwner(homePath: string, probe: ProcessRunStateProbe): void {
-  void hostOwnerMarker(probe).then((marker) => {
-    if (marker === null || !liveHomes.has(homePath)) return;
-    try {
-      writeFileSync(join(homePath, OWNER_MARKER_NAME), marker, { flag: "wx", mode: 0o600 });
-    } catch (err) {
-      log.debug({ err: errorMessage(err) }, "sandbox process HOME owner marker not written");
+export function _resolveHostOwnerMarkerForTest(probe: ProcessRunStateProbe): Promise<string | null> {
+  return resolveHostOwnerMarker(probe);
+}
+
+function writeOwnerMarker(homePath: string, marker: string): boolean {
+  try {
+    writeFileSync(`${homePath}${SANDBOX_HOME_OWNER_SUFFIX}`, marker, { flag: "wx", mode: 0o600 });
+    return true;
+  } catch (err) {
+    log.debug({ err: errorMessage(err) }, "sandbox process HOME owner marker not written");
+    return false;
+  }
+}
+
+// With the host start time known, the marker is written before the HOME exists, so no crash leaves an unmarked HOME; otherwise mkdtemp, and the marker follows the first probe. An unmarked HOME is kept by the sweep.
+function createHomeDirectory(parentRoot: string, platform: NodeJS.Platform, probe: ProcessRunStateProbe): string {
+  const marker = platform === "win32" ? resolvedOwnerMarkers.get(probe) : undefined;
+  if (marker !== undefined) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const path = join(parentRoot, `${SANDBOX_HOME_PREFIX}${randomBytes(6).toString("hex")}`);
+      if (!writeOwnerMarker(path, marker)) continue;
+      try {
+        mkdirSync(path, { mode: 0o700 });
+        return path;
+      } catch (err) {
+        rmSync(`${path}${SANDBOX_HOME_OWNER_SUFFIX}`, { force: true });
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
     }
-  });
+  }
+  const path = mkdtempSync(join(parentRoot, SANDBOX_HOME_PREFIX));
+  if (platform === "win32") {
+    void resolveHostOwnerMarker(probe).then((resolved) => {
+      if (resolved !== null && liveHomes.has(path)) writeOwnerMarker(path, resolved);
+    });
+  }
+  return path;
 }
 
-// The HOME's owner, or null when the marker is absent, not a plain small file, or malformed. The confined child can write its HOME, so the marker only ever decides about the directory it is in.
+// The HOME's owner from its sibling marker, or null when the marker is absent, not a plain small file, or malformed.
 export async function readSandboxHomeOwner(homePath: string): Promise<SandboxHomeOwner | null> {
-  const markerPath = join(homePath, OWNER_MARKER_NAME);
+  const markerPath = `${homePath}${SANDBOX_HOME_OWNER_SUFFIX}`;
   try {
     const entry = await lstat(markerPath);
     if (!entry.isFile() || entry.size > OWNER_MARKER_MAX_BYTES) return null;
@@ -171,7 +212,7 @@ export function createSandboxProcessHome(
   probeOwner: ProcessRunStateProbe = readWindowsProcessRunStates,
 ): SandboxProcessHome {
   const parentRoot = sandboxHomeParent(platform);
-  const createdPath = mkdtempSync(join(parentRoot, SANDBOX_HOME_PREFIX));
+  const createdPath = createHomeDirectory(parentRoot, platform, probeOwner);
   let homePath = createdPath;
   let env: Readonly<Record<string, string>>;
   try {
@@ -197,6 +238,7 @@ export function createSandboxProcessHome(
     ) {
       try {
         rmSync(createdPath, { recursive: true, force: true });
+        rmSync(`${createdPath}${SANDBOX_HOME_OWNER_SUFFIX}`, { force: true });
       } catch {
         // Preserve the initialization error; cleanup failures are secondary.
       }
@@ -205,7 +247,6 @@ export function createSandboxProcessHome(
   }
 
   liveHomes.add(homePath);
-  if (platform === "win32") markSandboxHomeOwner(homePath, probeOwner);
   let cleaned = false;
   let failedAttempts = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -215,6 +256,14 @@ export function createSandboxProcessHome(
       cleaned = true;
       liveHomes.delete(homePath);
       failedAttempts = 0;
+      // After the HOME, so a crash between the two leaves an orphan marker the sweep drops, never an unmarked HOME.
+      if (platform === "win32") {
+        try {
+          rmSync(`${homePath}${SANDBOX_HOME_OWNER_SUFFIX}`, { force: true });
+        } catch (err) {
+          log.debug({ err: errorMessage(err) }, "sandbox process HOME owner marker not removed");
+        }
+      }
     } catch (err) {
       failedAttempts += 1;
       log.warn(

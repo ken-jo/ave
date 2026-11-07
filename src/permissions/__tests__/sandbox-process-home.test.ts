@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appOwnedSandboxHomeRoot, ensureSandboxTempPrincipalDir } from "../asrt-sandbox.js";
 import { sweepSandboxPrivateRoots } from "../../boot/steps/sandbox-init.js";
 import {
+  _resolveHostOwnerMarkerForTest,
   createSandboxProcessHome,
   readSandboxHomeOwner,
   sandboxProcessHomesInUse,
@@ -254,30 +255,40 @@ describe("createSandboxProcessHome", () => {
     }
   });
 
-  it.runIf(process.platform === "win32")("marks a Windows HOME with the host's pid and start time", async () => {
+  it.runIf(process.platform === "win32")("marks a Windows HOME with a sibling owner marker and removes it on cleanup", async () => {
+    const startTime = "133000000000000000";
     const probe = vi.fn(async (pids: readonly number[]) =>
-      new Map(pids.map((pid) => [pid, { running: true, startTime: "638000000000000000" } as const])));
-    const home = createSandboxProcessHome("win32", rmSync, probe);
+      new Map(pids.map((pid) => [pid, { running: true, startTime } as const])));
+    const first = createSandboxProcessHome("win32", rmSync, probe);
+    let second: ReturnType<typeof createSandboxProcessHome> | undefined;
     try {
-      await vi.waitFor(async () => {
-        expect(await readSandboxHomeOwner(home.path)).toEqual({ pid: process.pid, startTime: "638000000000000000" });
-      });
-      expect(probe).toHaveBeenCalledWith([process.pid]);
+      await _resolveHostOwnerMarkerForTest(probe);
+      expect(await readSandboxHomeOwner(first.path)).toEqual({ pid: process.pid, startTime });
+      expect(existsSync(join(first.path, ".owner"))).toBe(false);
+      // Known start time: the marker exists before the HOME is returned.
+      second = createSandboxProcessHome("win32", rmSync, probe);
+      expect(readFileSync(`${second.path}.owner`, "utf8")).toBe(JSON.stringify({ pid: process.pid, startTime }));
+      expect(probe).toHaveBeenCalledTimes(1);
     } finally {
-      home.cleanup();
+      first.cleanup();
+      second?.cleanup();
     }
+    expect(existsSync(`${first.path}.owner`)).toBe(false);
+    expect(existsSync(`${second!.path}.owner`)).toBe(false);
   });
 
-  it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown", async () => {
+  it.runIf(process.platform === "win32")("leaves a Windows HOME unmarked when the host start time is unknown, and retries", async () => {
     const probe = vi.fn(async (pids: readonly number[]) =>
       new Map(pids.map((pid) => [pid, { running: true, startTime: null } as const])));
-    const home = createSandboxProcessHome("win32", rmSync, probe);
+    const first = createSandboxProcessHome("win32", rmSync, probe);
     try {
-      await vi.waitFor(() => expect(probe).toHaveBeenCalled());
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(existsSync(join(home.path, ".ave-sandbox-owner"))).toBe(false);
+      expect(await _resolveHostOwnerMarkerForTest(probe)).toBeNull();
+      expect(existsSync(`${first.path}.owner`)).toBe(false);
+      const second = createSandboxProcessHome("win32", rmSync, probe);
+      second.cleanup();
+      expect(probe).toHaveBeenCalledTimes(2);
     } finally {
-      home.cleanup();
+      first.cleanup();
     }
   });
 
