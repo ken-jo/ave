@@ -83,6 +83,7 @@ import {
   filesystemSandboxBlockForCommand,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
+  createAveHomeBoundarySnapshot,
   getDefaultSensitiveWriteDenyPaths,
   type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
@@ -2404,8 +2405,10 @@ export async function spawnWithSandbox(
   if (!homePath) throw new Error("Sandbox shell preparation has no owned HOME");
   // Compose broad reads while retaining protected paths and private sessions.
   const sandboxWritePaths = [...writePaths, homePath];
+  // One Ave home boundary snapshot serves this command's read policy and its wrap.
+  const boundarySnapshot = createAveHomeBoundarySnapshot();
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
-    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath,
+    [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath, boundarySnapshot,
   );
   const filesystem = {
     allowWrite: sandboxWritePaths,
@@ -2426,6 +2429,7 @@ export async function spawnWithSandbox(
     const binShell = shell.cmd;
     wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
       filesystem,
+      boundarySnapshot,
       abortSignal: wrapAbortSignal,
       commandId: egress.token,
       denyUnixSockets: true,
@@ -3766,7 +3770,8 @@ async function spawnPowerShellWithSandbox(
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path);
+  const boundarySnapshot = createAveHomeBoundarySnapshot();
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
   const filesystem = {
     allowWrite: sandboxWritePaths,
     allowRead,
@@ -3785,6 +3790,7 @@ async function spawnPowerShellWithSandbox(
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
       filesystem,
+      boundarySnapshot,
       abortSignal: wrapAbortSignal,
       commandId: egress.token,
       denyUnixSockets: true,

@@ -1,9 +1,13 @@
 const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
+// The first path of every native pin, so a test can count the helper calls one composition makes.
+const pinnedFirstPaths = vi.hoisted(() => [] as string[]);
 vi.mock("../../shared/windows-path-facts.js", async original => {
   const facts = await (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original());
   // A seam for reparse tags no fixture can create: the named paths report the given tag on their own native facts.
-  const pinWindowsPaths: typeof facts.pinWindowsPaths = (paths) => facts.pinWindowsPaths(paths)
-    .map((row, index) => ({ ...row, ...factsOverride.get(paths[index]!) }));
+  const pinWindowsPaths: typeof facts.pinWindowsPaths = (paths) => {
+    if (paths[0] !== undefined) pinnedFirstPaths.push(paths[0]);
+    return facts.pinWindowsPaths(paths).map((row, index) => ({ ...row, ...factsOverride.get(paths[index]!) }));
+  };
   return { ...facts, pinWindowsPaths };
 });
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
@@ -51,6 +55,7 @@ import {
   buildPerCommandSandboxCustomConfig,
   buildSandboxConfig,
   cleanupAsrtSandboxAfterCommand,
+  createAveHomeBoundarySnapshot,
   getBuiltinShellReadPolicy,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
@@ -363,6 +368,41 @@ describe("a profile-child Ave home on Windows", () => {
     // `agent-plugin-data` does not exist, so the rows inside it stay as they were.
     const absent = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home" && entry.kind === "file" && entry.segments[0] === "packages");
     for (const entry of absent) expect(floor).toContain(join(original, ...entry.segments));
+  });
+
+  // One native pin per profile-child home per composition: a shell command's read policy and its wrap, or an extension child's
+  // floor and its wrap, share one snapshot; the next command or spawn takes its own.
+  it("pins the profile-child home once per composition, and afresh for the next one", () => {
+    const pins = (): number => pinnedFirstPaths.filter((path) => trim(path).toLowerCase() === trim(original).toLowerCase()).length;
+    const grant = [join(original, "workspace", "alice-project")];
+    pinnedFirstPaths.length = 0;
+    getBuiltinShellReadPolicy(grant, profile);
+    expect(pins()).toBe(1);
+    buildPerCommandSandboxCustomConfig({ allowRead: grant });
+    expect(pins()).toBe(2);
+    const shell = createAveHomeBoundarySnapshot();
+    const policy = getBuiltinShellReadPolicy(grant, profile, undefined, shell);
+    shell.run(() => buildPerCommandSandboxCustomConfig({ allowRead: [...policy.allowRead], denyRead: [...policy.denyRead] }));
+    expect(pins()).toBe(3);
+    const child = createAveHomeBoundarySnapshot();
+    const floor = child.run(() => getDefaultSensitiveReadDenyPaths());
+    child.run(() => buildPerCommandSandboxCustomConfig({ allowRead: grant, denyRead: floor }));
+    expect(pins()).toBe(4);
+    mkdirSync(join(original, "future-child"));
+    expect(createAveHomeBoundarySnapshot().run(() => getDefaultSensitiveReadDenyPaths())).toContain(join(original, "future-child") + sep);
+    expect(pins()).toBe(5);
+    // A finished composition's snapshot is never consulted again; reusing one would miss the new child.
+    expect(spelled(shell.run(() => getDefaultSensitiveReadDenyPaths()))).not.toContain(join(original, "future-child"));
+    expect(pins()).toBe(5);
+  });
+
+  it("keeps a refusal for the rest of its composition and re-pins the next one", () => {
+    readdirFault.path = original;
+    const snapshot = createAveHomeBoundarySnapshot();
+    expect(() => snapshot.run(() => getDefaultSensitiveReadDenyPaths())).toThrow(refused);
+    readdirFault.path = undefined;
+    expect(() => snapshot.run(() => buildPerCommandSandboxCustomConfig({ allowRead: [join(original, "workspace", "alice-project")] }))).toThrow(refused);
+    expect(() => createAveHomeBoundarySnapshot().run(() => getDefaultSensitiveReadDenyPaths())).not.toThrow();
   });
 
   it("denies a top-level child created after one projection in the next", () => {

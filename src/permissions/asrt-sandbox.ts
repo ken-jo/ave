@@ -16,6 +16,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
@@ -237,6 +238,8 @@ export interface WrapOptions {
 // What every wrap must carry: the invocation's egress token (`egress-invocations.ts`), passed to ASRT as `commandId`. ASRT records the proxy denies of the wrapped process under it and puts it in the proxy username, so a deny can be attributed to the tool call, terminal tab or worker that opened the connection. Without it ASRT keys on the command text, which two invocations can share and which the violation store compares on its first 100 characters only, so it is required, not defaulted.
 export interface AttributedWrapOptions extends WrapOptions {
   readonly commandId: string;
+  // The invocation's boundary snapshot, shared with its read policy; a fresh one when absent.
+  readonly boundarySnapshot?: AveHomeBoundarySnapshot;
 }
 
 // `network.allowLocalBinding` opens outbound loopback to every port, which would let any sandboxed process reach any other invocation's proxy listener and be attributed to it. Ave never sets it; a config that does is a bug, refused here (the carried ASRT patch refuses the wrap as well).
@@ -612,7 +615,13 @@ function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted:
 }
 
 /** Admit only this holder's roots. This path never consults live account grants or changes host ACLs. */
-export function admitMxcExtensionFilesystem(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
+export function admitMxcExtensionFilesystem(
+  ...args: Parameters<typeof admitMxcExtensionFilesystemInSnapshot>
+): ReturnType<typeof admitMxcExtensionFilesystemInSnapshot> {
+  return inAveHomeBoundarySnapshot(undefined, () => admitMxcExtensionFilesystemInSnapshot(...args));
+}
+
+function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
   readonly policy: ShellFilesystemPolicy;
   readonly assertStillValid: () => void;
 } {
@@ -702,6 +711,12 @@ export function admitMxcExtensionFilesystem(filesystem: PerCommandFilesystem, ow
 }
 
 export function buildPerCommandSandboxCustomConfig(
+  ...args: Parameters<typeof buildPerCommandSandboxCustomConfigInSnapshot>
+): ReturnType<typeof buildPerCommandSandboxCustomConfigInSnapshot> {
+  return inAveHomeBoundarySnapshot(undefined, () => buildPerCommandSandboxCustomConfigInSnapshot(...args));
+}
+
+function buildPerCommandSandboxCustomConfigInSnapshot(
   filesystem: PerCommandFilesystem | undefined,
   onNotice?: (notice: string) => void,
   onGitControlSnapshot?: (snapshot: SandboxGitControlSnapshot) => void,
@@ -1033,7 +1048,7 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
 // Reads are deny-only: allowRead only re-allows within a covering deny, so unknown paths remain readable. Project the canonical sensitive table plus trusted runtime userData and private temp/HOME roots; re-allow only each process's own private directory.
 // Do not deny whole home/config/cwd/system/temp roots; use literal host-derived paths, never untrusted userData. Missing paths do not imply allow; Linux skips absent binds. Windows retains its ACL floor; private roots stay outside the write floor so each process can write its own directory.
 // The Ave home is one directory deny (aveHomeReadBoundaryRoots), so its file rows are left out here; they stay on the protected floor and the write floor.
-// Every call re-enumerates a profile-child home's top-level children (aveHomeProfileChildren); nothing is cached between projections.
+// A profile-child home's top-level children are enumerated once per composition snapshot (AveHomeBoundarySnapshot), never across commands or spawns.
 export function getDefaultSensitiveReadDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
   const children = aveHomeProfileChildren();
   const seen = new Set<string>();
@@ -1070,17 +1085,27 @@ function isWindowsProfileChild(root: string): boolean {
   return profile !== undefined && caseFoldForMatch(dirname(resolve(root))) === caseFoldForMatch(resolve(profile));
 }
 
-// Per profile-child home (keyed by its folded path), the top-level directories that exist now and are not wholly re-allowed: one
-// listing, no recursion. `plugins`, `mcp` and `runtime` are denied and their re-allowed children granted beneath them, as under a
-// relocated root. Root files keep their file rows; a child created after this enumeration is denied from the next projection on.
-// The home and every candidate entry then pass the shared non-following reparse admission rule in one native pin, so a listing taken
-// through a link is never used: only a home the native walk reports absent projects no child, and a home or entry that is a link or
-// any other reparse point (dangling or not), or that cannot be listed or pinned, refuses confinement, since none of them can be
-// denied without a root row and following a link would stamp its target. Names are folded; case-distinct siblings in a
-// case-sensitive directory are not supported.
+// Per profile-child home (keyed by its folded path), the top-level directories that are not wholly re-allowed, admitted through one
+// native pin by the shared reparse rule. Any link, reparse point or unpinnable entry refuses; see the decision tree's Windows limit note.
 function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
+  const roots = aveHomeReadBoundaryRoots().filter(isWindowsProfileChild);
+  const snapshot = boundarySnapshotScope.getStore();
+  if (snapshot === undefined) return projectAveHomeProfileChildren(roots);
+  const key = roots.map((root) => caseFoldForMatch(resolve(root))).join("|");
+  if (snapshot.taken?.key !== key) {
+    try {
+      snapshot.taken = { key, children: projectAveHomeProfileChildren(roots) };
+    } catch (error) {
+      snapshot.taken = { key, error };
+    }
+  }
+  if ("error" in snapshot.taken) throw snapshot.taken.error;
+  return snapshot.taken.children;
+}
+
+function projectAveHomeProfileChildren(roots: readonly string[]): ReadonlyMap<string, readonly string[]> {
   const children = new Map<string, string[]>();
-  for (const root of aveHomeReadBoundaryRoots().filter(isWindowsProfileChild)) {
+  for (const root of roots) {
     let names: string[] | undefined;
     try {
       names = readdirSync(root);
@@ -1107,6 +1132,30 @@ function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
     }));
   }
   return children;
+}
+
+// One composition's admitted boundary: the first projection inside it pins the profile-child homes, every later one reuses that
+// result or its refusal. Each shell invocation or extension spawn takes a new one, so nothing is reused across commands or spawns.
+export class AveHomeBoundarySnapshot {
+  taken?: { readonly key: string; readonly children: ReadonlyMap<string, readonly string[]> } | { readonly key: string; readonly error: unknown };
+
+  // Run a synchronous or asynchronous composition step against this snapshot.
+  run<T>(fn: () => T): T {
+    return inAveHomeBoundarySnapshot(this, fn);
+  }
+}
+
+const boundarySnapshotScope = new AsyncLocalStorage<AveHomeBoundarySnapshot>();
+
+export function createAveHomeBoundarySnapshot(): AveHomeBoundarySnapshot {
+  return new AveHomeBoundarySnapshot();
+}
+
+// Run `fn` against `snapshot`, else the enclosing one, else a new one scoped to this call.
+function inAveHomeBoundarySnapshot<T>(snapshot: AveHomeBoundarySnapshot | undefined, fn: () => T): T {
+  const current = boundarySnapshotScope.getStore();
+  const chosen = snapshot ?? current ?? new AveHomeBoundarySnapshot();
+  return chosen === current ? fn() : boundarySnapshotScope.run(chosen, fn);
 }
 
 function admitBoundaryEntry(facts: WindowsPathFacts, home: string, path: string): void {
@@ -1165,7 +1214,13 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
 }
 
 // Only builtin shell workloads receive primary saved-history read access. Per-command read denies replace the shared runtime floor, so this projection carries every other default deny as well as the grant's nested exclusions.
-export function getBuiltinShellSessionReadPolicy(userDataDir = _baseTrustedSettings?.userDataDir): {
+export function getBuiltinShellSessionReadPolicy(
+  ...args: Parameters<typeof getBuiltinShellSessionReadPolicyInSnapshot>
+): ReturnType<typeof getBuiltinShellSessionReadPolicyInSnapshot> {
+  return inAveHomeBoundarySnapshot(undefined, () => getBuiltinShellSessionReadPolicyInSnapshot(...args));
+}
+
+function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSettings?.userDataDir): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
 } {
@@ -1195,16 +1250,21 @@ export function getBuiltinShellReadPolicy(
   readPaths: readonly string[],
   hostHome: string | undefined,
   sandboxHome?: string,
+  boundarySnapshot?: AveHomeBoundarySnapshot,
 ): {
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
   // The saved-session grant, the one read the shell holds inside the floor.
   readonly floorPierces: readonly string[];
 } {
+  void hostHome;
+  return inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome));
+}
+
+function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
   const sessions = getBuiltinShellSessionReadPolicy();
   const privateRoots = appOwnedSandboxPrivateRoots();
   const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
-  void hostHome;
   // Refusing saved-session access restates private roots too. Those roots still
   // allow this invocation's own HOME; an explicit protected deny keeps priority.
   const protectedDenies = new Set(getProtectedReadDenyPaths());
@@ -2216,9 +2276,11 @@ export async function wrapToolCommand(
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
-  const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
-    : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+  const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
+    const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
+      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
+    return buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+  });
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
@@ -2399,9 +2461,11 @@ async function wrapLongLivedCommand(
   await openEgressListener(SandboxManager, caller, options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
-  const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
-    : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+  const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
+    const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
+      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
+    return buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+  });
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
