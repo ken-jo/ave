@@ -13,6 +13,8 @@ import {
   type SandboxBootHarness,
 } from "../../__tests__/support/sandbox-boot-context.js";
 
+// This file's private sandbox root, unique per process so concurrent vitest runs never remove each other's.
+const SANDBOX_ROOT_NAME = vi.hoisted(() => `ave-sandbox-boot-outcome-sandbox-${process.pid}-${Math.random().toString(16).slice(2)}`);
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
   subscribe: vi.fn(),
@@ -46,7 +48,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
-  const roots = join(tmpdir(), "ave-sandbox-boot-outcome-sandbox");
+  const roots = join(tmpdir(), SANDBOX_ROOT_NAME);
   return {
     appOwnedSandboxTempRoot: () => join(roots, "tmp"),
     appOwnedSandboxHomeRoot: () => join(roots, "home"),
@@ -101,7 +103,7 @@ beforeEach(() => {
 });
 
 // The mocked asrt-sandbox above makes this file's private sandbox roots here; the file owns removing them.
-afterAll(() => rmSync(join(tmpdir(), "ave-sandbox-boot-outcome-sandbox"), { recursive: true, force: true }));
+afterAll(() => rmSync(join(tmpdir(), SANDBOX_ROOT_NAME), { recursive: true, force: true }));
 
 afterEach(() => {
   vi.unstubAllEnvs();
