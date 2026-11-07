@@ -128,6 +128,20 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  /** Drop the toasts of settled approvals. A new head gets a fresh TTL, so it is not skipped for having waited in line. */
+  const removeApprovalToasts = useCallback(
+    (approvalIds: ReadonlySet<string>) => {
+      setToasts((prev) => {
+        const next = prev.filter((t) => !approvalIds.has(t.notification?.contextRef?.approvalId ?? ""));
+        if (next.length === prev.length) return prev;
+        const head = next[0];
+        if (head && head.id !== prev[0]?.id) next[0] = { ...head, expiresAt: Date.now() + (head.ttlMs ?? defaultToastTtlMs) };
+        return next;
+      });
+    },
+    [defaultToastTtlMs],
+  );
+
     // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
   // head's TTL elapses (or removeToast dismisses it early), the next item
   // in the queue becomes the new head and gets its own timer. This prevents
@@ -174,6 +188,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     pushToast,
     upsertToast,
     removeToast,
+    removeApprovalToasts,
     upsertPersistent,
     removePersistent,
   };

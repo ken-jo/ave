@@ -164,6 +164,33 @@ describe("App notification toasts", () => {
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);
   });
 
+  it("drops each approval toast when its request settles, so only pending requests are announced", async () => {
+    const { emitApproval, emitApprovalSettled, emitNotificationToast } = await renderApp();
+    const ids = Array.from({ length: 9 }, (_, i) => `burst-${i + 1}`);
+    await act(async () => {
+      for (const id of ids) {
+        emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: `request ${id}`,
+          contextRef: { approvalId: id, sessionId: MOCK_DEFAULT_SESSION_ID } });
+        emitApproval(approvalRequest({ id, nonce: `nonce-${id}`, sessionId: MOCK_DEFAULT_SESSION_ID }));
+      }
+    });
+    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request burst-1");
+    expect(screen.getByText("+8")).toBeInTheDocument();
+
+    await act(async () => ids.slice(0, 6).forEach((id) => emitApprovalSettled(id)));
+    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request burst-7");
+    expect(screen.getByText("+2")).toBeInTheDocument();
+
+    await act(async () => ids.slice(6, 8).forEach((id) => emitApprovalSettled(id)));
+    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request burst-9");
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+
+    await act(async () => emitApprovalSettled("burst-9"));
+    await waitFor(() => expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true"));
+    endAnimation(screen.getByTestId("status-bar-presence"));
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+  });
+
   it("names an untitled in-panel approval from its first user message", async () => {
     const { emitApproval } = await renderApp({ history: { sessionId: MOCK_DEFAULT_SESSION_ID,
       messages: [{ index: 0, role: "user", content: "Set up diagram views" }] } });
