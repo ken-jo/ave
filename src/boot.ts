@@ -36,8 +36,9 @@ import { configureHostResources } from "./main/host-resources.js";
  *   steps/remote-a2a-setup        remote A2A runtime + action controller;
  *                                 a start failure disables the feature only.
  *   steps/routines-wiring         RoutinesScheduler v2 branch wiring.
+ *   steps/sandbox-init            OS tool sandbox gate + ASRT init (before
+ *                                 any MCP server or plugin process spawns).
  *   steps/mcp-setup               MCP servers + signed-artifact stores.
- *   steps/sandbox-init            OS tool sandbox gate + ASRT init.
  *   steps/post-boot               release prep + plugin update-check timer.
  *
  * No plugin-specific code lives here — all plugins register themselves via the
@@ -116,6 +117,7 @@ import { wireRoutinesScheduler } from "./boot/steps/routines-wiring.js";
 import { setupRemoteA2A } from "./boot/steps/remote-a2a-setup.js";
 import { setupMcp } from "./boot/steps/mcp-setup.js";
 import { initSandboxGate } from "./boot/steps/sandbox-init.js";
+import { markSandboxGatePendingAtBoot } from "./permissions/sandbox-capability.js";
 import { createA2ARemoteRuntime } from "./main/a2a-remote-runtime.js";
 import { snapshotA2ARemoteGates } from "./main/a2a-remote-gates.js";
 import { createRemoteA2AActionController } from "./main/remote-a2a-action-controller.js";
@@ -165,6 +167,8 @@ export async function bootstrap(
   configureAppShutdownHost(host);
   configureHostResources(host);
   log.info("boot: starting...");
+  // From here until initSandboxGate records its outcome, stdio MCP server spawns are refused (fail closed).
+  markSandboxGatePendingAtBoot();
   const headless = launch === "headless";
   if (!headless && !mainWindow) throw new Error("Interactive boot requires a main window");
   if (headless) {
@@ -796,6 +800,21 @@ export async function bootstrap(
   // Work approvals re-list when any source store writes.
   wireWorkApprovalsChanged(ctx);
 
+  // §691: OS-level tool sandbox — decided exactly once here at boot, BEFORE
+  // setupMcp() and startPlugins(). setupMcp() connects the configured stdio
+  // MCP servers, and an out-of-process plugin's factory spawns its confined
+  // child inside startAll(); both decide whether to wrap from the gate's
+  // boot-frozen request and active runtime, which read as "not requested"
+  // until this step runs, so a spawn before it would run unconfined. The
+  // StdioTransport refuses to spawn while this boot's gate is undecided.
+  // wrapWorkerCommand also refuses to build a spawn plan while ASRT is not
+  // yet active. Every input (settings, AVE_HOME privacy and trust, approval
+  // gate, permission manager, the marketplace allowlist builder) exists above.
+  // The network union computed at init predates pluginRuntime.load(), so
+  // startPluginsOnce refreshes it (same builder, safe global live-swap) after
+  // load() and before startAll().
+  await initSandboxGate(ctx);
+
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);
   // An interrupted bootstrap disconnects MCP before it stops the plugin
@@ -833,14 +852,6 @@ export async function bootstrap(
   ctx.scriptHookManager.setPluginGenerationAccess(pluginBundleLifecycle);
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();
-
-  // §691: OS-level tool sandbox — decided exactly once here at boot, and
-  // BEFORE startPlugins(): an out-of-process plugin's factory spawns its
-  // confined child inside startAll(), and wrapWorkerCommand refuses to build
-  // a spawn plan while ASRT is not yet active. The network union computed at
-  // init predates pluginRuntime.load(), so startPluginsOnce refreshes it
-  // (same builder, safe global live-swap) after load() and before startAll().
-  await initSandboxGate(ctx);
 
   await startPlugins();
 

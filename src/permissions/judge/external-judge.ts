@@ -1,6 +1,7 @@
 // External commands require an absolute executable, direct argv spawn and a minimal env; redact bounded stderr for audit only. URL transport permits HTTPS or loopback HTTP and refuses redirects. Only redacted requests leave the process; nonzero exits and non-schema responses fail.
 import { spawn } from "node:child_process";
 import { errorMessage } from "../../shared/error-message.js";
+import { trackManagedChildProcess } from "../../main/managed-child-processes.js";
 import {
   JudgeFailure,
   type JudgeFailureKind,
@@ -96,6 +97,8 @@ function runCommand(argv: readonly string[], env: Record<string, string>, body: 
     // POSIX: own process group, so a timeout kills every process the judge started.
     const detached = process.platform !== "win32";
     const child = spawn(argv[0]!, argv.slice(1), { shell: false, env, detached, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    // Tracked so the quit sweep and, if the host dies, the process group reaper end the group too; the timeout and abort kill below are unchanged.
+    trackManagedChildProcess(child, { label: "judge:external", killProcessGroup: detached });
     const killTree = (): void => {
       if (detached && child.pid !== undefined) {
         try {

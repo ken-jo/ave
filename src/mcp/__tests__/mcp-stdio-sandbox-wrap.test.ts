@@ -99,7 +99,12 @@ import {
   setActiveSandboxCapability,
   __resetActiveSandboxCapabilityForTest,
   __resetWrappedMcpServersForTest,
+  __resetSandboxBootOutcomeForTest,
+  __resetSandboxRequestedAtBootForTest,
   isMcpServerWrapped,
+  markSandboxGatePendingAtBoot,
+  setPluginWorkerConfinementRequestedAtBoot,
+  setSandboxBootOutcome,
 } from "../../permissions/sandbox-capability.js";
 import { aveHome } from "../../shared/ave-home.js";
 import {
@@ -201,6 +206,52 @@ describe("StdioTransport ASRT wrap — gate OFF (default)", () => {
     const cap = resolveReviewerSandboxCapability("mcp", "mcp_fs_read", "fs");
     expect(cap.kind).toBe("none");
 
+    await client.disconnect();
+  });
+});
+
+describe("StdioTransport — boot sandbox gate undecided (fail closed)", () => {
+  afterEach(() => {
+    __resetSandboxBootOutcomeForTest();
+    __resetSandboxRequestedAtBootForTest();
+  });
+
+  function bootClient(): McpClient {
+    const gov = governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")]));
+    return new McpClient(
+      { id: "fs", transport: "stdio", command: "ave-mcp-fs", sandboxRoot: join(aveHome(), "mcp", "fs", "sandbox") },
+      gov,
+      new ToolRegistry(),
+      unusedNetworkFetch,
+    );
+  }
+
+  it.each([true, false])(
+    "refuses to spawn while the boot gate has not recorded an outcome (confinement request flag %s)",
+    async (requested) => {
+      markSandboxGatePendingAtBoot();
+      setPluginWorkerConfinementRequestedAtBoot(requested);
+
+      await expect(bootClient().connect()).rejects.toThrow(
+        "stdio MCP server 'fs' cannot start before the OS sandbox gate has decided",
+      );
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("connects plain once the gate recorded gate-off", async () => {
+    markSandboxGatePendingAtBoot();
+    setSandboxBootOutcome({ action: "skip", reason: "gate-off", onSignal: "off", dependencyErrors: [], causes: [] });
+    const fake = new FakeChildProcess();
+    fake.responses = handshakeResponses("fs");
+    spawnMock.mockReturnValueOnce(fake);
+
+    const client = bootClient();
+    await client.connect();
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
     await client.disconnect();
   });
 });

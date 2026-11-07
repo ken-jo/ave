@@ -639,7 +639,8 @@ function readCatalogValueChanges(beforeText, afterText, before, after, allowKeyC
  * compiler's lexical scope. Other runtime references and unresolved key tables keep
  * full checks even when another file names every changed namespace.
  * Unsupported catalog modules and unreadable or unparseable consumers keep
- * full checks too.
+ * full checks too. Unless unresolved consumers are included, a proven value
+ * import of a non-relative specifier keeps full checks before the tree is parsed.
  *
  * Returns { namespaces, testFiles, consumerModules } or { reason }.
  */
@@ -676,12 +677,34 @@ export function selectMessageCatalogChecks(entries, { readBlob, trackedFiles, re
     if (typeof text !== "string") return { reason: `${path} could not be read for message consumers; full checks required` };
     texts.set(path, text);
   }
+  const bareImporter = includeUnresolvedConsumers ? null : findBareModuleImporter(texts);
+  if (bareImporter) return { reason: `${bareImporter} has an unresolved dynamic message consumer; full checks required` };
   try {
     return withParsedSourceTexts(texts, (sources, resolveDeclarations) =>
       selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles, includeUnresolvedConsumers));
   } catch {
     return { reason: "message consumers could not be analyzed; full checks required" };
   }
+}
+
+const BARE_IMPORT_CANDIDATE = /\b(?:from|import)\s*["'](?!\.\.?\/)/;
+const BARE_IMPORT_CANDIDATE_LIMIT = 8;
+
+// The consumer reader resolves only ./ and ../ specifiers, so a value import of
+// any other specifier is unresolved whatever the rest of the tree holds. Parse
+// a few textual candidates alone to prove one before the whole-tree session;
+// a miss or a failure falls through to the full analysis.
+function findBareModuleImporter(texts) {
+  const candidates = new Map([...texts].filter(([, text]) => BARE_IMPORT_CANDIDATE.test(text)).slice(0, BARE_IMPORT_CANDIDATE_LIMIT));
+  let sources;
+  try {
+    sources = parseSourceTexts(candidates);
+  } catch {
+    return null;
+  }
+  return [...candidates.keys()].find((path) => sources.get(path)?.statements.some((statement) =>
+    ast.isImportDeclaration(statement) && !statement.importClause?.isTypeOnly && isStaticString(statement.moduleSpecifier) &&
+    !statement.moduleSpecifier.text.startsWith("./") && !statement.moduleSpecifier.text.startsWith("../"))) ?? null;
 }
 
 function selectParsedMessageConsumers(texts, sources, resolveDeclarations, changedNamespaces, trackedFiles, includeUnresolvedConsumers = false) {
