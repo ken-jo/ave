@@ -37,7 +37,7 @@ import { GUIDE_MAX_CHARS } from "../engine/turn/guidance-limits.js";
 import { maskSensitiveData } from "../shared/dlp.js";
 import { createDlpSafeUuid, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { A2AHandlerError, type A2ARequestHandler } from "./a2a-router.js";
-import { isValidSessionId } from "../memory/memory-manager.js";
+import { isValidSessionId } from "../shared/session-id.js";
 import {
   A2ATaskStore,
   isA2ARfc3339Timestamp,

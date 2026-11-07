@@ -80,7 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  memory.closeSearchIndex();
+  memory.sessions.closeSearchIndex();
   await cleanupTmpDir(dir);
   vi.clearAllMocks();
 });
@@ -97,9 +97,9 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
       projectName: "Alpha",
     }));
 
-    const detaching = memory.detachSessionsFromProject(ROOT);
+    const detaching = memory.sessions.detachSessionsFromProject(ROOT);
     await lockControl.firstLockBlocked;
-    const deleting = memory.deleteSession(SESSION_ID);
+    const deleting = memory.sessions.deleteSession(SESSION_ID);
     await deleting;
 
     expect(lockControl.targets).toHaveLength(2);
@@ -128,7 +128,7 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
     };
 
     lockControl.events.push("stale-save-invoked");
-    const staleSave = memory.saveSessionMetadata(SESSION_ID, {
+    const staleSave = memory.sessions.saveSessionMetadata(SESSION_ID, {
       ...wireMetadata,
       subAgentTaskState: "TASK_STATE_SUBMITTED",
     });
@@ -139,11 +139,11 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
     expect(existsSync(metadataPath)).toBe(false);
 
     lockControl.events.push("detach-start");
-    await expect(memory.detachSessionsFromProject(ROOT)).resolves.toBe(0);
+    await expect(memory.sessions.detachSessionsFromProject(ROOT)).resolves.toBe(0);
     lockControl.events.push("detach-complete");
     expect(existsSync(metadataPath)).toBe(false);
 
-    memory.allowProjectRoot(ROOT);
+    memory.sessions.allowProjectRoot(ROOT);
     lockControl.events.push("allow-complete");
     expect(existsSync(metadataPath)).toBe(false);
 
@@ -161,7 +161,7 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
       "stale-save-lock-callback-complete",
       "stale-save-complete",
     ]);
-    expect(memory.loadSessionMetadata(SESSION_ID)).toMatchObject({
+    expect(memory.sessions.loadSessionMetadata(SESSION_ID)).toMatchObject({
       projectRoot: undefined,
       projectName: undefined,
       a2aWireHandlerId: "wire-aba-handler",
@@ -169,11 +169,11 @@ describe("MemoryManager workspace project detach ABA ordering", () => {
       subAgentTaskState: "TASK_STATE_CANCELED",
     });
 
-    await memory.saveSessionMetadata(SESSION_ID, {
+    await memory.sessions.saveSessionMetadata(SESSION_ID, {
       ...wireMetadata,
       subAgentTaskState: "TASK_STATE_COMPLETED",
     });
-    expect(memory.loadSessionMetadata(SESSION_ID)).toMatchObject({
+    expect(memory.sessions.loadSessionMetadata(SESSION_ID)).toMatchObject({
       projectRoot: undefined,
       projectName: undefined,
       subAgentTaskState: "TASK_STATE_CANCELED",

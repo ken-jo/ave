@@ -42,8 +42,10 @@ const workspaceDeps = {
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => null,
   memoryManager: {
-    allowProjectRoot: vi.fn(),
-    detachSessionsFromProject: vi.fn(async () => 0),
+    sessions: {
+      allowProjectRoot: vi.fn(),
+      detachSessionsFromProject: vi.fn(async () => 0),
+    },
   },
   conversationLoop: {
     deps: {},

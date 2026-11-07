@@ -321,7 +321,7 @@ describe("MemoryCaptureService with the real store", () => {
       expect(saved?.origin).toEqual({ v: 1, sessionId: SESSION_ID, messageId: TURN_MESSAGE_ID, store: "main" });
     } finally {
       store.stopPersistentContextWatcher();
-      store.closeSearchIndex();
+      store.sessions.closeSearchIndex();
       await cleanupTmpDir(dir);
     }
   });

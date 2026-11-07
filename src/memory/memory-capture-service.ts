@@ -13,8 +13,8 @@ import type {
   MemoryOriginV1,
   NoteEntry,
   ProjectScopedMemoryOptions,
-  SessionNamespace,
 } from "./memory-manager.js";
+import type { SessionNamespace } from "./session-repository.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { MAX_MEMORY_SOURCE_CHARS, MEMORY_KINDS } from "./memory-manager.js";
 

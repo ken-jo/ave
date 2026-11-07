@@ -83,8 +83,14 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
       getHistory: () => ({ getMessages: () => [{ role: "user", content: sessionId === rootSessionId
         ? "그래 두개 진행해보자" : "Internal child task" }] }),
     })) as unknown as BootContext["findLoopBySessionId"];
-    const store = { hasSessionTranscript: () => false, hasSessionMetadataFile: () => false,
-      loadSessionMetadata: () => null, loadSession: vi.fn(() => null) };
+    const store = {
+      sessions: {
+        hasSessionTranscript: () => false,
+        hasSessionMetadataFile: () => false,
+        loadSessionMetadata: () => null,
+        loadSession: vi.fn(() => null),
+      },
+    };
     await setupWorkflowStores(ctx, [store as never]);
     ctx.subAgentRunnerRef.fn = {
       resolveOriginSessionId: (sessionId: string) => sessionId === childSessionId ? rootSessionId : undefined,
@@ -104,12 +110,18 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
     ctx.findLoopBySessionId = vi.fn(() => ({
       getHistory: () => ({ getMessages: () => [{ role: "user", content: "그래 두개 진행해보자" }] }),
     })) as unknown as BootContext["findLoopBySessionId"];
-    const store = { hasSessionTranscript: () => false, hasSessionMetadataFile: () => false,
-      loadSessionMetadata: () => null, loadSession: vi.fn(() => null) };
+    const store = {
+      sessions: {
+        hasSessionTranscript: () => false,
+        hasSessionMetadataFile: () => false,
+        loadSessionMetadata: () => null,
+        loadSession: vi.fn(() => null),
+      },
+    };
     await setupWorkflowStores(ctx, [store as never]);
     const resolveTitle = titleResolver.mock.calls[0][0] as (id: string) => string;
     expect(resolveTitle(sessionId)).toBe("그래 두개 진행해보자");
-    expect(store.loadSession).not.toHaveBeenCalled();
+    expect(store.sessions.loadSession).not.toHaveBeenCalled();
     ctx.idleScheduler?.stop();
   });
   it("registers skill_load and routes its first-use modal to ctx.approvalGate", async () => {

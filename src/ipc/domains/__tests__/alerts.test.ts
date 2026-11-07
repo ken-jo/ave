@@ -45,13 +45,13 @@ describe("alerts IPC", () => {
   });
 
   it("serves the staged cards, and none without a service", () => {
-    const memoryManager = { touchSessionTranscript: vi.fn() };
+    const memoryManager = { sessions: { touchSessionTranscript: vi.fn() } };
     expect(register(service, { memoryManager })(ALERTS.listOpen)).toEqual([card]);
-    expect(memoryManager.touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
-    memoryManager.touchSessionTranscript.mockClear();
+    expect(memoryManager.sessions.touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
+    memoryManager.sessions.touchSessionTranscript.mockClear();
     service.listOpen.mockReturnValueOnce([]);
     expect(register(service, { memoryManager })(ALERTS.listOpen)).toEqual([]);
-    expect(memoryManager.touchSessionTranscript).not.toHaveBeenCalled();
+    expect(memoryManager.sessions.touchSessionTranscript).not.toHaveBeenCalled();
     expect(register(undefined)(ALERTS.listOpen)).toEqual([]);
     expect(register(undefined)(ALERTS.cardClosed, "abc", "accepted")).toEqual({ ok: false, error: "no-alerts-service" });
   });

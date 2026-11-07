@@ -24,11 +24,13 @@ const SESSION = "7a7a7a7a-1111-2222-3333-444444444444";
 
 function fakeStore() {
   return {
-    appendSessionProgress: vi.fn(async () => "appended" as const),
-    beginTurnJournal: vi.fn(async () => undefined),
-    writeTurnPartial: vi.fn(async (_session: string, _startedAt: number, _partial: unknown) => undefined),
-    endTurnJournal: vi.fn(),
-    clearTurnJournal: vi.fn(),
+    sessions: {
+      appendSessionProgress: vi.fn(async () => "appended" as const),
+      beginTurnJournal: vi.fn(async () => undefined),
+      writeTurnPartial: vi.fn(async (_session: string, _startedAt: number, _partial: unknown) => undefined),
+      endTurnJournal: vi.fn(),
+      clearTurnJournal: vi.fn(),
+    },
   };
 }
 
@@ -52,11 +54,11 @@ describe("TurnJournal partial snapshots", () => {
       now += 10;
       await vi.advanceTimersByTimeAsync(10);
     }
-    expect(store.writeTurnPartial.mock.calls.length).toBeGreaterThanOrEqual(3);
-    expect(store.writeTurnPartial.mock.calls.length).toBeLessThanOrEqual(4);
-    expect(render.mock.calls.length).toBe(store.writeTurnPartial.mock.calls.length);
+    expect(store.sessions.writeTurnPartial.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(store.sessions.writeTurnPartial.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(render.mock.calls.length).toBe(store.sessions.writeTurnPartial.mock.calls.length);
     // Throttled recovery may lose at most one snapshot interval of text.
-    const last = store.writeTurnPartial.mock.calls.at(-1)![2] as { content: string };
+    const last = store.sessions.writeTurnPartial.mock.calls.at(-1)![2] as { content: string };
     expect(text.length - last.content.length).toBeLessThanOrEqual(100);
   });
 
@@ -69,7 +71,7 @@ describe("TurnJournal partial snapshots", () => {
     journal.notePartial(() => ({ content: "a" }));
     await vi.advanceTimersByTimeAsync(5);
     const roundId = journal.currentRoundRowId();
-    expect((store.writeTurnPartial.mock.calls[0][2] as { messageId: string }).messageId).toBe(roundId);
+    expect((store.sessions.writeTurnPartial.mock.calls[0][2] as { messageId: string }).messageId).toBe(roundId);
     history.append({ role: "assistant", content: "a", meta: { messageId: roundId } });
     expect(journal.currentRoundRowId()).not.toBe(roundId);
   });
@@ -77,11 +79,13 @@ describe("TurnJournal partial snapshots", () => {
   it("clears a superseded snapshot only after the row replacing it was appended", async () => {
     const order: string[] = [];
     const store = {
-      appendSessionProgress: vi.fn(async () => { order.push("append"); return "appended" as const; }),
-      beginTurnJournal: vi.fn(),
-      writeTurnPartial: vi.fn((_s: string, _t: number, partial: unknown) => { order.push(partial ? "snapshot" : "clear"); }),
-      endTurnJournal: vi.fn(),
-      clearTurnJournal: vi.fn(),
+      sessions: {
+        appendSessionProgress: vi.fn(async () => { order.push("append"); return "appended" as const; }),
+        beginTurnJournal: vi.fn(),
+        writeTurnPartial: vi.fn((_s: string, _t: number, partial: unknown) => { order.push(partial ? "snapshot" : "clear"); }),
+        endTurnJournal: vi.fn(),
+        clearTurnJournal: vi.fn(),
+      },
     };
     const history = new ConversationHistory();
     const journal = new TurnJournal(store as never, SESSION, history, { partialIntervalMs: 0 });
@@ -92,13 +96,13 @@ describe("TurnJournal partial snapshots", () => {
     await journal.settled();
     expect(order).toEqual(["snapshot", "append", "clear"]);
     await journal.end();
-    expect(store.endTurnJournal).toHaveBeenCalledWith(SESSION);
+    expect(store.sessions.endTurnJournal).toHaveBeenCalledWith(SESSION);
   });
 
   it("retains a partial when the replacing row and final transcript sync both fail", async () => {
     vi.useFakeTimers();
     const store = fakeStore();
-    store.appendSessionProgress.mockRejectedValue(Object.assign(new Error("write denied"), { code: "EACCES" }));
+    store.sessions.appendSessionProgress.mockRejectedValue(Object.assign(new Error("write denied"), { code: "EACCES" }));
     const history = new ConversationHistory();
     const journal = new TurnJournal(store, SESSION, history, { partialIntervalMs: 0 });
     await journal.begin();
@@ -106,10 +110,10 @@ describe("TurnJournal partial snapshots", () => {
     await vi.advanceTimersByTimeAsync(1);
     history.append({ role: "assistant", content: "stream failed", meta: { systemNotice: "stream-error" } });
     await journal.end();
-    expect(store.writeTurnPartial).toHaveBeenCalledTimes(1);
-    expect(store.writeTurnPartial.mock.calls[0][2]).toMatchObject({ content: "saved partial" });
-    expect(store.endTurnJournal).toHaveBeenCalledWith(SESSION);
-    expect(store.clearTurnJournal).not.toHaveBeenCalled();
+    expect(store.sessions.writeTurnPartial).toHaveBeenCalledTimes(1);
+    expect(store.sessions.writeTurnPartial.mock.calls[0][2]).toMatchObject({ content: "saved partial" });
+    expect(store.sessions.endTurnJournal).toHaveBeenCalledWith(SESSION);
+    expect(store.sessions.clearTurnJournal).not.toHaveBeenCalled();
   });
 
   it("removes the recovery sidecar only after the final transcript sync succeeds", async () => {
@@ -119,9 +123,9 @@ describe("TurnJournal partial snapshots", () => {
     await journal.begin();
     history.append({ role: "assistant", content: "complete" });
     await journal.end();
-    expect(store.clearTurnJournal).toHaveBeenCalledWith(SESSION);
-    expect(store.appendSessionProgress.mock.invocationCallOrder.at(-1)).toBeLessThan(store.endTurnJournal.mock.invocationCallOrder[0]);
-    expect(store.endTurnJournal.mock.invocationCallOrder[0]).toBeLessThan(store.clearTurnJournal.mock.invocationCallOrder[0]);
+    expect(store.sessions.clearTurnJournal).toHaveBeenCalledWith(SESSION);
+    expect(store.sessions.appendSessionProgress.mock.invocationCallOrder.at(-1)).toBeLessThan(store.sessions.endTurnJournal.mock.invocationCallOrder[0]);
+    expect(store.sessions.endTurnJournal.mock.invocationCallOrder[0]).toBeLessThan(store.sessions.clearTurnJournal.mock.invocationCallOrder[0]);
   });
 });
 
@@ -153,7 +157,7 @@ describe("append cost on a 60-round turn", () => {
         history.append({ role: i % 2 === 0 ? "user" : "assistant", content: `prior ${i} ${"y".repeat(2_000)}` });
       }
       history.append({ role: "user", content: "60 라운드 작업" });
-      await mm.saveSession(SESSION, history.getMessages());
+      await mm.sessions.saveSession(SESSION, history.getMessages());
 
       const appendMs: number[] = [];
       const loopDelay = monitorEventLoopDelay({ resolution: 1 });
@@ -166,7 +170,7 @@ describe("append cost on a 60-round turn", () => {
         });
         history.append({ role: "tool_result", toolUseId: `call-${round}`, toolName: "bash", content: "o".repeat(4_000) });
         const started = performance.now();
-        await mm.appendSessionProgress(SESSION, history.getMessages());
+        await mm.sessions.appendSessionProgress(SESSION, history.getMessages());
         appendMs.push(performance.now() - started);
       }
       loopDelay.disable();
@@ -180,7 +184,7 @@ describe("append cost on a 60-round turn", () => {
       const partialMs: number[] = [];
       for (let i = 0; i < 20; i += 1) {
         const started = performance.now();
-        await mm.writeTurnPartial(SESSION, 1, { messageId: "p", content: "w".repeat(20_000), updatedAt: i });
+        await mm.sessions.writeTurnPartial(SESSION, 1, { messageId: "p", content: "w".repeat(20_000), updatedAt: i });
         partialMs.push(performance.now() - started);
       }
       const partialMedian = [...partialMs].sort((x, y) => x - y)[10];
@@ -188,7 +192,7 @@ describe("append cost on a 60-round turn", () => {
       expect(partialMedian).toBeLessThan(100);
 
       const saveStarted = performance.now();
-      await mm.saveSession(SESSION, history.getMessages());
+      await mm.sessions.saveSession(SESSION, history.getMessages());
       const fullSaveMs = performance.now() - saveStarted;
 
       const sorted = [...appendMs].sort((x, y) => x - y);
@@ -201,7 +205,7 @@ describe("append cost on a 60-round turn", () => {
         + `one full save at the end=${fullSaveMs.toFixed(2)}ms (${history.length} rows)\n`,
       );
       expect(median).toBeLessThan(50);
-      expect(new Set((mm.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId)).size)
+      expect(new Set((mm.sessions.loadSession(SESSION) as Array<{ meta: { messageId: string } }>).map((m) => m.meta.messageId)).size)
         .toBe(history.length);
     } finally {
       await cleanupTmpDir(dir);
@@ -220,7 +224,7 @@ describe("parallel result append cost", () => {
     const datasync = vi.fn(async () => { throw failure; });
     try {
       history.append({ role: "user", content: "persist this turn" });
-      await mm.saveSession(SESSION, history.getMessages());
+      await mm.sessions.saveSession(SESSION, history.getMessages());
       const path = join(dir, "sessions", SESSION + ".jsonl");
       open.mockImplementation(async (...args) => {
         const handle = await actualAsync.open(...args);
@@ -228,7 +232,7 @@ describe("parallel result append cost", () => {
         return handle;
       });
       history.append({ role: "assistant", content: "new progress" });
-      await expect(mm.appendSessionProgress(SESSION, history.getMessages())).rejects.toBe(failure);
+      await expect(mm.sessions.appendSessionProgress(SESSION, history.getMessages())).rejects.toBe(failure);
       expect(datasync).toHaveBeenCalledTimes(1);
     } finally {
       open.mockRestore();
@@ -247,7 +251,7 @@ describe("parallel result append cost", () => {
       history.append({ role: "user", content: "six parallel calls" });
       const calls = Array.from({ length: 6 }, (_, i) => ({ id: "call-" + i, name: "read_file", input: {} }));
       history.append({ role: "assistant", content: "", toolCalls: calls });
-      await mm.saveSession(SESSION, history.getMessages());
+      await mm.sessions.saveSession(SESSION, history.getMessages());
       const journal = new TurnJournal(mm, SESSION, history);
       await journal.begin();
       const path = join(dir, "sessions", SESSION + ".jsonl");
@@ -297,7 +301,7 @@ describe("parallel result append cost", () => {
         };
         return handle;
       });
-      const progress = vi.spyOn(mm, "appendSessionProgress");
+      const progress = vi.spyOn(mm.sessions, "appendSessionProgress");
       let syncFsyncMs = 0;
       const { fsyncSync: fsync } = await vi.importActual<typeof import("node:fs")>("node:fs");
       const syncFsync = vi.mocked(fs.fsyncSync).mockClear().mockImplementation((fd) => {
@@ -358,8 +362,8 @@ describe("parallel result append cost", () => {
         expect(raw.filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
           .toEqual((reversed ? [...calls].reverse() : calls).map((call) => call.id));
         // Live readers see call order before final rewrite normalizes the file.
-        expect((mm.loadSession(SESSION) as Array<{ role: string; toolUseId?: string }>).filter((row) => row.role === "tool_result").map((row) => row.toolUseId)).toEqual(expected);
-        await mm.saveSession(SESSION, history.getMessages());
+        expect((mm.sessions.loadSession(SESSION) as Array<{ role: string; toolUseId?: string }>).filter((row) => row.role === "tool_result").map((row) => row.toolUseId)).toEqual(expected);
+        await mm.sessions.saveSession(SESSION, history.getMessages());
         const saved = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
         expect(saved.filter((row) => row.role === "tool_result").map((row) => row.toolUseId)).toEqual(expected);
         return metrics;

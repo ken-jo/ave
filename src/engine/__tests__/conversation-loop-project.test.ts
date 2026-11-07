@@ -102,9 +102,9 @@ describe("ConversationLoop project identity", () => {
     const memoryManager = makeConversationLoopMemoryManager([
       { role: "user", content: "hello" },
     ], "67b72cc9-5409-43e4-8eab-c69e635362b9");
-    vi.mocked(memoryManager.loadSessionMetadata).mockReturnValue({
+    vi.mocked(memoryManager.sessions.loadSessionMetadata).mockReturnValue({
       sessionKind: "main",
-    } as ReturnType<typeof memoryManager.loadSessionMetadata>);
+    } as ReturnType<typeof memoryManager.sessions.loadSessionMetadata>);
     const loop = new ConversationLoop(makeConversationLoopDeps({
       memoryManager,
       getDefaultProject: () => ({
@@ -131,11 +131,11 @@ describe("ConversationLoop project identity", () => {
     const memoryManager = makeConversationLoopMemoryManager([
       { role: "user", content: "hello" },
     ], "d50f8c3f-2fe2-4183-8ed0-1e1e442767b1");
-    vi.mocked(memoryManager.loadSessionMetadata).mockReturnValue({
+    vi.mocked(memoryManager.sessions.loadSessionMetadata).mockReturnValue({
       sessionKind: "main",
       projectRoot: deniedRoot,
       projectName: "denied",
-    } as ReturnType<typeof memoryManager.loadSessionMetadata>);
+    } as ReturnType<typeof memoryManager.sessions.loadSessionMetadata>);
     const loop = new ConversationLoop(makeConversationLoopDeps({
       memoryManager,
       systemPromptBuilder,

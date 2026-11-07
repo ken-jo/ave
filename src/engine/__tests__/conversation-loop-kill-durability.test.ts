@@ -57,7 +57,7 @@ function startWriter(mode: "stream" | "tool-hang", ready: RegExp): { ready: Prom
 }
 
 function reopen(): GenericMessage[] {
-  return (new MemoryManager({ aveDir: home! }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+  return (new MemoryManager({ aveDir: home! }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
 }
 
 describe("SIGKILL mid-turn", () => {

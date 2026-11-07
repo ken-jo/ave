@@ -169,7 +169,7 @@ describe("mid-stream durability", () => {
       await waitFor(() => running && existsSync(transcript)
         && readFileSync(transcript, "utf8").includes('"toolUseId":"finished"'));
       cpSync(join(dir, "sessions"), join(crashed, "sessions"), { recursive: true });
-      const restored = (new MemoryManager({ aveDir: crashed }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+      const restored = (new MemoryManager({ aveDir: crashed }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
       const results = restored.filter((row) => row.role === "tool_result");
       expect(results.map((row) => row.toolUseId)).toEqual(laterFirst ? ["waiting", "finished"] : ["finished", "waiting"]);
       expect(results.find((row) => row.toolUseId === "finished")).toMatchObject({ content: "finished output" });
@@ -181,7 +181,7 @@ describe("mid-stream durability", () => {
       await turn;
       await cleanupTmpDir(crashed);
     }
-    const saved = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+    const saved = (new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
     expect(saved.filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
       .toEqual(laterFirst ? ["waiting", "finished"] : ["finished", "waiting"]);
     expect(provider.seen[1].filter((row) => row.role === "tool_result").map((row) => row.toolUseId))
@@ -215,9 +215,9 @@ describe("mid-stream durability", () => {
       expect(JSON.parse(readFileSync(sidecar, "utf8")).partial.content).toBe("partial text survives denied write");
       vi.restoreAllMocks();
       const restarted = new MemoryManager({ aveDir: dir });
-      const restored = restarted.loadSession(SESSION_ID) as GenericMessage[];
+      const restored = restarted.sessions.loadSession(SESSION_ID) as GenericMessage[];
       expect(restored.at(-1)).toMatchObject({ role: "assistant", content: "partial text survives denied write", meta: { interrupted: true, interruptedBy: "host-exit" } });
-      await restarted.saveSession(SESSION_ID, restored);
+      await restarted.sessions.saveSession(SESSION_ID, restored);
       expect(existsSync(sidecar)).toBe(false);
     } finally {
       loop.abortCurrentTurn();
@@ -227,7 +227,7 @@ describe("mid-stream durability", () => {
 
   it("has every completed round and tool_result on disk while the turn is still running, without a save per round", async () => {
     const memoryManager = new MemoryManager({ aveDir: dir });
-    const saveSpy = vi.spyOn(memoryManager, "saveSession");
+    const saveSpy = vi.spyOn(memoryManager.sessions, "saveSession");
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(okTool("probe_tool", "probe output"));
     let onDiskAtRound2: GenericMessage[] = [];
@@ -240,7 +240,7 @@ describe("mid-stream durability", () => {
       ],
       (round) => {
         if (round !== 2) return;
-        onDiskAtRound2 = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+        onDiskAtRound2 = (new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
         savesBeforeRound2 = saveSpy.mock.calls.length;
       },
     );
@@ -271,7 +271,7 @@ describe("mid-stream durability", () => {
       ...userKeyboardTurn(),
     });
 
-    const messages = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+    const messages = (new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
     const ids = messages.map((m) => m.meta?.messageId);
     expect(new Set(ids).size).toBe(ids.length);
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "tool_result", "assistant"]);
@@ -299,7 +299,7 @@ describe("mid-stream durability", () => {
     const crashed = mkdtempSync(join(tmpdir(), "ave-mid-stream-crashed-"));
     try {
       cpSync(join(dir, "sessions"), join(crashed, "sessions"), { recursive: true });
-      const recovered = (new MemoryManager({ aveDir: crashed }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+      const recovered = (new MemoryManager({ aveDir: crashed }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
       expect(recovered.map((m) => m.role)).toEqual(["user", "assistant", "tool_result", "assistant"]);
       expect(recovered[3]).toMatchObject({
         content: "스트리밍 중인 두 번째 답변",
@@ -335,7 +335,7 @@ describe("mid-stream durability", () => {
     expect(result.stopReason).toBe("interrupted");
 
     const relaunched = new MemoryManager({ aveDir: dir });
-    const onDisk = (relaunched.loadSession(SESSION_ID) ?? []) as GenericMessage[];
+    const onDisk = (relaunched.sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
     expect(onDisk[onDisk.length - 1]).toMatchObject({
       role: "assistant",
       content: "종료 직전까지 쓴 답변",
@@ -381,7 +381,7 @@ describe("mid-stream durability", () => {
     await interruptRunningTurnsForExit(3_000);
     await turn;
 
-    const onDisk = (new MemoryManager({ aveDir: dir }).loadSession(SESSION_ID) ?? []) as GenericMessage[];
+    const onDisk = (new MemoryManager({ aveDir: dir }).sessions.loadSession(SESSION_ID) ?? []) as GenericMessage[];
     expect(onDisk[0]).toMatchObject({ role: "user", content: "도구 중 종료" });
     expect(onDisk.some((m) => m.role === "assistant" && m.toolCalls?.[0]?.id === "call-slow")).toBe(true);
     expect(onDisk[onDisk.length - 1]).toMatchObject({
@@ -415,7 +415,7 @@ describe("mid-stream durability", () => {
           createIsolated: () => ({ build: () => "system" }),
         },
         toolRegistry,
-        memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [] },
+        memoryManager: { sessions: { saveSession: () => Promise.resolve(), listSessions: () => [] } },
         ...makeConversationPermissionDeps(),
       } as unknown as ConstructorParameters<typeof ConversationLoop>[0],
       toolRegistry,
@@ -436,20 +436,20 @@ describe("mid-stream durability", () => {
       const childFiles = readdirSync(join(openFeatureNamespace("subagent").dir, "sessions")).filter((f) => f.endsWith(".jsonl"));
       expect(childFiles).toHaveLength(1);
       const childId = childFiles[0].slice(0, -".jsonl".length);
-      const midRun = (new MemoryManager({ aveDir: openFeatureNamespace("subagent").dir }).loadSession(childId) ?? []) as GenericMessage[];
+      const midRun = (new MemoryManager({ aveDir: openFeatureNamespace("subagent").dir }).sessions.loadSession(childId) ?? []) as GenericMessage[];
       expect(midRun.map((m) => m.role)).toEqual(["user", "assistant", "tool_result"]);
       expect(midRun[1].content).toBe("child round 0");
 
       await interruptRunningTurnsForExit(3_000);
       await spawned;
-      const final = (subStore.loadSession(childId) ?? []) as GenericMessage[];
+      const final = (subStore.sessions.loadSession(childId) ?? []) as GenericMessage[];
       expect(final[final.length - 1]).toMatchObject({
         role: "assistant",
         content: "child partial",
         meta: { interrupted: true, interruptedBy: "host-exit" },
       });
     } finally {
-      subStore.closeSearchIndex();
+      subStore.sessions.closeSearchIndex();
       if (prevHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = prevHome;
     }

@@ -20,7 +20,7 @@ import {
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
-import { isValidSessionId } from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
 import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
 import { mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 
@@ -140,7 +140,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   // The refusal offers the tab as a navigation target only when it is open in the asking window, as for a held pane.
   const recordedPaneRefusal = (sessionId: string, windowId: number): SideChatOperationFailure | undefined => {
     // A metadata read failure is not "no pane": it surfaces to the caller rather than letting the rail take the conversation.
-    const row: { paneTabId?: unknown; archivedAt?: unknown } | null | undefined = store?.loadSessionMetadata(sessionId);
+    const row: { paneTabId?: unknown; archivedAt?: unknown } | null | undefined = store?.sessions.loadSessionMetadata(sessionId);
     const paneTabId = row?.paneTabId;
     if (typeof paneTabId !== "string" || row?.archivedAt !== undefined) return undefined;
     const inWindow = parseTabId(paneTabId) !== null && browserTabRegistry.windowsHoldingTab(paneTabId).includes(windowId);
@@ -198,7 +198,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   const storedPaneSession = (windowId: number, tabId: string): string | undefined => {
     const sessionId = browserTabRegistry.paneConversation(windowId, tabId);
     if (sessionId !== undefined || browserTabRegistry.isConversationSurfaceKnown(windowId, tabId)) return sessionId;
-    return store?.findPaneSession(tabId);
+    return store?.sessions.findPaneSession(tabId);
   };
 
   const watchedWindows = new Set<number>();
@@ -228,9 +228,9 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       await abortTurnOf(loop);
     }
     browserTabRegistry.releasePaneConversation(windowId, tabId, true);
-    if (sessionId !== undefined && store?.hasSessionTranscript(sessionId)) {
+    if (sessionId !== undefined && store?.sessions.hasSessionTranscript(sessionId)) {
       try {
-        await store.updateSessionRowFields(sessionId, { archivedAt: new Date().toISOString() });
+        await store.sessions.updateSessionRowFields(sessionId, { archivedAt: new Date().toISOString() });
       } catch (err) {
         log.warn("pane chat not archived: %s", err);
       }
@@ -432,7 +432,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     const sessionId = storedPaneSession(senderWindow.id, tabId);
     if (sessionId === undefined) return { ok: true as const, sessionId: null, messages: [] };
-    const messages = (store?.loadSession(sessionId) ?? []) as GenericMessage[];
+    const messages = (store?.sessions.loadSession(sessionId) ?? []) as GenericMessage[];
     return { ok: true as const, sessionId, messages: messages.map(serializeHistoryMessage) };
   });
 
@@ -548,7 +548,7 @@ async function recordSideChatRow(
   const recordOrigin = isValidSessionId(originSessionId);
   if (!recordOrigin && paneTabId === undefined) return;
   try {
-    const current = sideChatMemoryManager.loadSessionMetadata(sideChatSessionId);
+    const current = sideChatMemoryManager.sessions.loadSessionMetadata(sideChatSessionId);
     const next = { ...(current ?? {}) };
     let changed = false;
     if (recordOrigin && current?.originSessionId === undefined) {
@@ -562,7 +562,7 @@ async function recordSideChatRow(
       next.paneTabId = paneTabId;
       changed = true;
     }
-    if (changed) await sideChatMemoryManager.saveSessionMetadata(sideChatSessionId, next);
+    if (changed) await sideChatMemoryManager.sessions.saveSessionMetadata(sideChatSessionId, next);
   } catch (err) {
     // Row metadata failure must not fail an otherwise working turn; restored panes may start fresh.
     log.warn("side-chat row not recorded: %s", err);

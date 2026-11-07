@@ -9,7 +9,9 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 // Transcript ownership requires a subagent session with this exact host-recorded origin.
 function runnerWith(metadataById: Record<string, unknown>) {
   const subAgentMemoryManager = {
-    loadSessionMetadata: vi.fn((id: string) => metadataById[id] ?? null),
+    sessions: {
+      loadSessionMetadata: vi.fn((id: string) => metadataById[id] ?? null),
+    },
   };
   return new SubAgentRunner({ subAgentMemoryManager } as never);
 }
@@ -24,10 +26,10 @@ describe("SubAgentRunner persisted session existence", () => {
     try {
       const memory = new MemoryManager({ aveDir: directory });
       const runner = new SubAgentRunner({ subAgentMemoryManager: memory } as never);
-      await memory.saveSession(CHILD, [{ role: "user", content: "Child task" }]);
+      await memory.sessions.saveSession(CHILD, [{ role: "user", content: "Child task" }]);
       expect(runner.listPersistedSpawnsForOrigin(PARENT)).toEqual([]);
       expect(runner.hasPersistedSession(CHILD)).toBe(true);
-      await memory.deleteSession(CHILD);
+      await memory.sessions.deleteSession(CHILD);
       expect(runner.hasPersistedSession(CHILD)).toBe(false);
       expect(runner.hasPersistedSession("../missing")).toBe(false);
     } finally {
@@ -71,12 +73,12 @@ describe("SubAgentRunner.isPersistedSpawnOfOrigin", () => {
 
   it("rejects malformed ids without touching storage", () => {
     const metadata = { [CHILD]: { sessionKind: "subagent", originSessionId: PARENT } };
-    const subAgentMemoryManager = { loadSessionMetadata: vi.fn(() => metadata[CHILD]) };
+    const subAgentMemoryManager = { sessions: { loadSessionMetadata: vi.fn(() => metadata[CHILD]) } };
     const runner = new SubAgentRunner({ subAgentMemoryManager } as never);
 
     expect(runner.isPersistedSpawnOfOrigin("../escape", CHILD)).toBe(false);
     expect(runner.isPersistedSpawnOfOrigin(PARENT, "../escape")).toBe(false);
     expect(runner.isPersistedSpawnOfOrigin("", "")).toBe(false);
-    expect(subAgentMemoryManager.loadSessionMetadata).not.toHaveBeenCalled();
+    expect(subAgentMemoryManager.sessions.loadSessionMetadata).not.toHaveBeenCalled();
   });
 });

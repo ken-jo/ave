@@ -58,7 +58,9 @@ function stubbedRunner(metadataById: MetadataById) {
   const audited: string[] = [];
   const runner = new SubAgentRunner({
     subAgentMemoryManager: {
-      loadSessionMetadata: (id: string) => metadataById[id] ?? null,
+      sessions: {
+        loadSessionMetadata: (id: string) => metadataById[id] ?? null,
+      },
     },
     parentDirectiveMailbox: mailbox,
     parentDeps: {
@@ -281,8 +283,10 @@ describe("SubAgentRunner.queueParentMessageToChild — routing and bounds", () =
   it("fails closed when no durable store is wired", async () => {
     const runner = new SubAgentRunner({
       subAgentMemoryManager: {
-        loadSessionMetadata: (id: string) =>
-          id === OWNED_CHILD ? suspendedChild() : null,
+        sessions: {
+          loadSessionMetadata: (id: string) =>
+            id === OWNED_CHILD ? suspendedChild() : null,
+        },
       },
     } as never);
     expect(await runner.queueParentMessageToChild(ROOT_SESSION, OWNED_CHILD, "stop"))
@@ -375,7 +379,7 @@ describe("parent directive delivery into a live sub-agent run", () => {
 
   afterEach(async () => {
     await Promise.all(auditLoggers.map((logger) => logger.close()));
-    for (const store of stores) store.closeSearchIndex();
+    for (const store of stores) store.sessions.closeSearchIndex();
     if (previousHome === undefined) delete process.env.AVE_HOME;
     else process.env.AVE_HOME = previousHome;
     await cleanupTmpDir(tmpHome);
@@ -409,7 +413,7 @@ describe("parent directive delivery into a live sub-agent run", () => {
       },
       toolRegistry,
       auditLogger,
-      memoryManager: { saveSession: () => Promise.resolve(), listSessions: () => [] },
+      memoryManager: { sessions: { saveSession: () => Promise.resolve(), listSessions: () => [] } },
       ...makeConversationPermissionDeps(),
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
   }
@@ -531,8 +535,8 @@ describe("parent directive delivery into a live sub-agent run", () => {
     });
     restore();
 
-    const spawnedMeta = store.loadSessionMetadata(spawned.childSessionId)!;
-    await store.saveSessionMetadata(spawned.childSessionId, {
+    const spawnedMeta = store.sessions.loadSessionMetadata(spawned.childSessionId)!;
+    await store.sessions.saveSessionMetadata(spawned.childSessionId, {
       ...spawnedMeta,
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "question",

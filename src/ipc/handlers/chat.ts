@@ -26,14 +26,9 @@ import {
 } from "../../shared/session-lookup.js";
 import type { IpcDeps } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
-import {
-  isValidSessionId,
-  MAX_PROJECT_NAME_CHARS,
-  MAX_PROJECT_ROOT_CHARS,
-  sessionFamilyOf,
-  toSessionListRow,
-  type SessionKind,
-} from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
+import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow } from "../../memory/session-repository.js";
+import { type SessionKind } from "../../shared/session-lookup.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
@@ -378,19 +373,19 @@ export async function markMainActiveAfterTurn(
             projectName: typeof conversationLoop.getSessionProjectName === "function" ? conversationLoop.getSessionProjectName() ?? undefined : undefined,
           };
       if (project.projectRoot || project.projectName) {
-        const existing = memoryManager.loadSessionMetadata(conversationLoop.getSessionId()) ?? {};
-        await memoryManager.saveSessionMetadata(conversationLoop.getSessionId(), {
+        const existing = memoryManager.sessions.loadSessionMetadata(conversationLoop.getSessionId()) ?? {};
+        await memoryManager.sessions.saveSessionMetadata(conversationLoop.getSessionId(), {
           ...existing,
           sessionKind: "main",
           ...project,
         });
       }
     }
-    await memoryManager.markMainActiveResume(conversationLoop.getSessionId());
+    await memoryManager.sessions.markMainActiveResume(conversationLoop.getSessionId());
     return;
   }
   if (input.trim() === "/new" && isUserKeyboardOrigin(inputOrigin)) {
-    await memoryManager.markMainActiveFresh();
+    await memoryManager.sessions.markMainActiveFresh();
   }
 }
 
@@ -552,7 +547,7 @@ export async function handleChatSessions(
       : "__ave_unauthorized_project_root__"
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
-  const sessions = memoryManager
+  const sessions = memoryManager.sessions
     .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
     .flatMap((s): SessionListRow[] => {
       // Strip legacy default-project tags at the read boundary so they cannot become named sidebar projects.
@@ -640,7 +635,7 @@ function sideChatRows(
 ): SessionListRow[] {
   const manager = deps.sideChatMemoryManager;
   if (!manager) return [];
-  return manager
+  return manager.sessions
     .listSessionsPage({
       kind: "all",
       limit: window.limit,
@@ -668,7 +663,7 @@ function restoredSubAgentRows(deps: IpcDeps, originSessionId: string) {
 export function handleChatGetHistory(deps: IpcDeps) {
   const { conversationLoop, memoryManager } = deps;
   const messages = conversationLoop.getHistory().getMessages() as GenericMessage[];
-  const currentListEntry = memoryManager
+  const currentListEntry = memoryManager.sessions
     .listSessions({ kind: "all", limit: Number.POSITIVE_INFINITY })
     .find((session) => session.id === conversationLoop.getSessionId());
   return {
@@ -696,7 +691,7 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
   // Catch session I/O and parse failures so corrupted files do not reject renderer IPC.
   let loaded: unknown;
   try {
-    loaded = memoryManager.loadSession(sessionId);
+    loaded = memoryManager.sessions.loadSession(sessionId);
   } catch {
     return { ok: false, messages: [] };
   }
@@ -715,7 +710,7 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
   let projectRoot: string | undefined;
   let projectName: string | undefined;
   try {
-    const meta = memoryManager.loadSessionMetadata(sessionId);
+    const meta = memoryManager.sessions.loadSessionMetadata(sessionId);
     if (meta) {
       sessionKind = meta.sessionKind ?? "main";
       sessionTitle = meta.title;
@@ -729,7 +724,7 @@ export function handleChatSessionHistory(deps: IpcDeps, sessionId: string) {
   } catch {
   }
   if (!sessionTitle) {
-    sessionTitle = memoryManager
+    sessionTitle = memoryManager.sessions
       .listSessions({ kind: "all", limit: Number.POSITIVE_INFINITY })
       .find((session) => session.id === sessionId)?.title;
   }

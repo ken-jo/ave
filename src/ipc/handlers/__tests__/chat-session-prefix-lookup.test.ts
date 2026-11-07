@@ -17,7 +17,7 @@ function depsWithListSpy(): {
     listSessionsPage,
     deps: {
       conversationLoop: { getSessionId: () => "session-1" },
-      memoryManager: { listSessionsPage },
+      memoryManager: { sessions: { listSessionsPage } },
     } as unknown as IpcDeps,
   };
 }

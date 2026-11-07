@@ -68,7 +68,7 @@ function context() {
     bootAuditLogger: { log: vi.fn() },
     notificationService: { isFocusGateActive: () => false, fire: vi.fn() },
     getMainWindow: () => ({ isDestroyed: () => false, webContents: { send } }),
-    memoryManager: { touchSessionTranscript },
+    memoryManager: { sessions: { touchSessionTranscript } },
   } as unknown as BootContext;
   return { ctx, send, touchSessionTranscript };
 }

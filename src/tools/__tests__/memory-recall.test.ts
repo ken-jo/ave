@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  manager.closeSearchIndex();
+  manager.sessions.closeSearchIndex();
   await cleanupTmpDir(aveDir);
 });
 

@@ -50,8 +50,10 @@ function makeLoop() {
     },
     toolRegistry,
     memoryManager: {
-      saveSession: () => {},
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
     },
     permissionManager,
     approvalGate,

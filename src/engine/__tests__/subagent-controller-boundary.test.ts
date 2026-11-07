@@ -71,7 +71,7 @@ describe("delegated session controller boundary", () => {
         });
       }
     } finally {
-      memory.closeSearchIndex();
+      memory.sessions.closeSearchIndex();
       await cleanupTmpDir(root);
     }
   });

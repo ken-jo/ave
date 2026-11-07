@@ -600,7 +600,7 @@ export async function bootstrap(
       return prunedGrants;
     },
     beforeComplete: async (runtimeRoot) => {
-      await detachWorkspaceRootSessions(runtimeRoot, workspaceSessionStores);
+      await detachWorkspaceRootSessions(runtimeRoot, workspaceSessionStores.map((manager) => manager.sessions));
     },
   });
 

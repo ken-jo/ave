@@ -54,7 +54,7 @@ export function makeBasicConversationLoopDeps(
     settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
     systemPromptBuilder: { build: () => "system" },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     ...makeConversationPermissionDeps(),
     ...overrides,
   } as unknown as ConversationLoopDeps;

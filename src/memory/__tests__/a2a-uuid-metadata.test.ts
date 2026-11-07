@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { MemoryManager, type SessionMetadata } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { type SessionMetadata } from "../session-repository.js";
 
 const COLLIDING_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-010123456789";
 const CHILD_ID = `sub-abcdefab-${COLLIDING_UUID}`;
@@ -17,7 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  memory.closeSearchIndex();
+  memory.sessions.closeSearchIndex();
   await cleanupTmpDir(directory);
 });
 
@@ -35,22 +36,22 @@ describe("A2A structural UUID metadata", () => {
   }
 
   it("writes and reloads phone-colliding child and internal-origin UUIDs", async () => {
-    await memory.saveSessionMetadata(CHILD_ID, metadata());
-    expect(memory.loadSessionMetadata(CHILD_ID)).toMatchObject(metadata());
+    await memory.sessions.saveSessionMetadata(CHILD_ID, metadata());
+    expect(memory.sessions.loadSessionMetadata(CHILD_ID)).toMatchObject(metadata());
     const reloaded = new MemoryManager({ aveDir: directory });
     try {
-      expect(reloaded.loadSessionMetadata(CHILD_ID)).toMatchObject(metadata());
+      expect(reloaded.sessions.loadSessionMetadata(CHILD_ID)).toMatchObject(metadata());
     } finally {
-      reloaded.closeSearchIndex();
+      reloaded.sessions.closeSearchIndex();
     }
   });
 
   it("retains rejection for phone-bearing handler names and invalid origin shapes", async () => {
-    await expect(memory.saveSessionMetadata(CHILD_ID, {
+    await expect(memory.sessions.saveSessionMetadata(CHILD_ID, {
       ...metadata(),
       a2aWireHandlerId: "agent-010123456789",
     })).rejects.toThrow("a2a-wire-binding-invalid");
-    await expect(memory.saveSessionMetadata(CHILD_ID, {
+    await expect(memory.sessions.saveSessionMetadata(CHILD_ID, {
       ...metadata(),
       originSessionId: `custom-${COLLIDING_UUID}`,
       a2aWireInternalOrigin: `custom-${COLLIDING_UUID}`,

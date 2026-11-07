@@ -63,28 +63,28 @@ export async function setupWorkflowStores(
 
   const sessionOwner = (sessionId: string): MemoryManager =>
     sessionMetadataStores.find(
-      (store) => store.hasSessionTranscript(sessionId) || store.hasSessionMetadataFile(sessionId),
+      (store) => store.sessions.hasSessionTranscript(sessionId) || store.sessions.hasSessionMetadataFile(sessionId),
     ) ?? sessionMetadataStores[0];
   approvalGate.setConversationTitleResolver((requestingSessionId) => {
     const sessionId = ctx.resolveRootSessionId(requestingSessionId);
     const store = sessionOwner(sessionId);
-    const metadata = store.loadSessionMetadata(sessionId);
+    const metadata = store.sessions.loadSessionMetadata(sessionId);
     const liveLoop = findSessionLiveLoop(ctx, sessionId);
     return resolveConversationTitle({
       sessionId,
       title: metadata?.title,
       routineTitle: metadata?.routineTitle,
-      messages: liveLoop?.getHistory().getMessages() ?? store.loadSession(sessionId),
+      messages: liveLoop?.getHistory().getMessages() ?? store.sessions.loadSession(sessionId),
     }, t);
   });
   const sessionTasksStore = new SessionTasksStore({
-    load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.tasks ?? [],
-    save: (sessionId, items) => sessionOwner(sessionId).saveSessionTasks(sessionId, items),
+    load: (sessionId) => sessionOwner(sessionId).sessions.loadSessionMetadata(sessionId)?.tasks ?? [],
+    save: (sessionId, items) => sessionOwner(sessionId).sessions.saveSessionTasks(sessionId, items),
   });
   // Keep goals and tasks in the same owner-resolved session sidecar.
   const sessionGoalStore = new SessionGoalStore({
-    load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.goal ?? null,
-    save: (sessionId, goal) => sessionOwner(sessionId).saveSessionGoal(sessionId, goal),
+    load: (sessionId) => sessionOwner(sessionId).sessions.loadSessionMetadata(sessionId)?.goal ?? null,
+    save: (sessionId, goal) => sessionOwner(sessionId).sessions.saveSessionGoal(sessionId, goal),
   });
   const skillStore = new SkillStore({ bundledDir: join(ctx.host.resourcePath, "skills") });
   const agentProfileStore = new AgentProfileStore();
@@ -112,7 +112,7 @@ export async function setupWorkflowStores(
     get findLoopBySessionId() { return ctx.findLoopBySessionId; },
     get sideChatConversationLoop() { return ctx.sideChatConversationLoop; },
     get paneChatLoops() { return ctx.paneChatLoops; },
-    loadSessionMetadata: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId),
+    loadSessionMetadata: (sessionId) => sessionOwner(sessionId).sessions.loadSessionMetadata(sessionId),
     defaultProjectRoot: () => defaultWorkspaceProject().projectRoot,
   });
   const mainChatStore = sessionMetadataStores[0];
@@ -121,8 +121,8 @@ export async function setupWorkflowStores(
     get findLoopBySessionId() { return ctx.findLoopBySessionId; },
     get sideChatConversationLoop() { return ctx.sideChatConversationLoop; },
     get paneChatLoops() { return ctx.paneChatLoops; },
-    loadMainChatMetadata: (sessionId) => mainChatStore.hasSessionMetadataFile(sessionId) || mainChatStore.hasSessionTranscript(sessionId)
-      ? mainChatStore.loadSessionMetadata(sessionId) ?? {}
+    loadMainChatMetadata: (sessionId) => mainChatStore.sessions.hasSessionMetadataFile(sessionId) || mainChatStore.sessions.hasSessionTranscript(sessionId)
+      ? mainChatStore.sessions.loadSessionMetadata(sessionId) ?? {}
       : undefined,
   });
   const workflowDeps: WorkflowToolDeps = {

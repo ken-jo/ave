@@ -1,6 +1,6 @@
 /** Spawn isolated child history with scoped tools, a host-assigned round budget, labeled approval prompts, and streamed status.
  * Never expose agent_spawn to children or mutate the parent loop's state. */
-import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/memory-manager.js";
+import type { ListSessionsOptions, RestoredSubAgentSession, SessionListEntry } from "../memory/session-repository.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
@@ -21,7 +21,8 @@ import {
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import { isValidSessionId, type MemoryManager } from "../memory/memory-manager.js";
+import { type MemoryManager } from "../memory/memory-manager.js";
+import { isValidSessionId } from "../shared/session-id.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import type {
   ApprovalGate,
@@ -550,7 +551,7 @@ interface InFlightResumeAttempt {
 }
 
 type SubAgentSessionMetadata = NonNullable<
-  ReturnType<MemoryManager["loadSessionMetadata"]>
+  ReturnType<MemoryManager["sessions"]["loadSessionMetadata"]>
 >;
 type A2AWireBoundMetadata = SubAgentSessionMetadata & Required<
   Pick<
@@ -960,18 +961,18 @@ export class SubAgentRunner {
 
   /** Allow newly-created child sessions to bind to a root registered again. */
   allowProjectRoot(root: string): void {
-    this.deps.subAgentMemoryManager.allowProjectRoot(root);
+    this.deps.subAgentMemoryManager.sessions.allowProjectRoot(root);
   }
 
   /** The removal preview's count of sub-agent conversations `detachSessionsFromProject` would detach now. */
   countSessionsInProject(root: string): number {
-    return this.deps.subAgentMemoryManager.countSessionsInProject(root);
+    return this.deps.subAgentMemoryManager.sessions.countSessionsInProject(root);
   }
 
   /** Detach the removed project from the isolated sub-agent session store while preserving transcripts. Once that durable boundary commits, cancel every
    * matching live wire child before returning so the workspace coordinator's later settings write cannot leave a removed project executing in between. */
   async detachSessionsFromProject(root: string): Promise<number> {
-    const detached = await this.deps.subAgentMemoryManager.detachSessionsFromProject(root);
+    const detached = await this.deps.subAgentMemoryManager.sessions.detachSessionsFromProject(root);
     let canonicalRoot: string;
     try {
       canonicalRoot = canonicalizePathForMatch(root);
@@ -1204,10 +1205,10 @@ export class SubAgentRunner {
     messageId: string,
   ): Promise<ResolvedSubAgentAddress | null> {
     if (!isValidSessionId(childSessionId)) return null;
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     if (!meta) {
       // A present-but-invalid/unreadable file is never treated as missing.
-      if (this.deps.subAgentMemoryManager.hasSessionMetadataFile(childSessionId)) {
+      if (this.deps.subAgentMemoryManager.sessions.hasSessionMetadataFile(childSessionId)) {
         return null;
       }
       const run = this.trackedRuns.get(childSessionId);
@@ -1321,7 +1322,7 @@ export class SubAgentRunner {
     if (!isValidSessionId(childSessionId)) return undefined;
     const liveOrigin = this.liveOriginSessionId(childSessionId);
     if (liveOrigin !== undefined) return liveOrigin;
-    const metadata = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const metadata = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     return metadata?.sessionKind === "subagent" ? metadata.originSessionId : undefined;
   }
 
@@ -1336,12 +1337,12 @@ export class SubAgentRunner {
       && !isA2ATerminalTaskState(run.taskState))) {
       return true;
     }
-    const persisted = this.deps.subAgentMemoryManager.listSessions({
+    const persisted = this.deps.subAgentMemoryManager.sessions.listSessions({
       kind: "subagent",
       limit: MAX_TRACKED_RUNS,
     });
     return persisted.some((session) => {
-      const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(session.id);
+      const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(session.id);
       return meta?.sessionKind === "subagent"
         && meta.originSessionId === originSessionId
         && !isA2ATerminalTaskState(
@@ -1353,7 +1354,7 @@ export class SubAgentRunner {
     if (!isValidSessionId(childSessionId)) return null;
     const active = this.activeChildren.get(childSessionId);
     if (!active?.originSessionId || !active.loop.hasActiveTurn()) return null;
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     if (
       meta?.sessionKind !== "subagent"
       || meta.originSessionId !== active.originSessionId
@@ -1462,7 +1463,7 @@ export class SubAgentRunner {
       title: string;
       taskState: A2AProjectedTaskState;
     } | null => {
-      const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+      const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
       if (
         meta?.sessionKind !== "subagent"
         || !meta.originSessionId
@@ -1544,12 +1545,12 @@ export class SubAgentRunner {
     if (originSessionId === childSessionId) return refuse("self-send");
     // Hop guard, checked BEFORE ownership: a sub-agent session directing anything would be a second hop on the parent axis, whatever it happens to own.
     if (
-      this.deps.subAgentMemoryManager.loadSessionMetadata(originSessionId)?.sessionKind
+      this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(originSessionId)?.sessionKind
         === "subagent"
     ) {
       return refuse("nested-parent");
     }
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     if (!this.isPersistedSpawnOfOrigin(originSessionId, childSessionId)) {
       // One verdict, two reasons; the same split sibling A2A already reports: "no such child" and "someone else's child" are different facts to an operator, and telling the parent
       // which one it hit is what keeps it from retrying an address that will never become its own. No disclosure here that `agent_list` does not already make: every session is this user's.
@@ -1623,7 +1624,7 @@ export class SubAgentRunner {
 
     // The child stopped accepting guidance between the liveness check and the enqueue. The stored directive is only kept when the child landed
     // somewhere a resume can still deliver it from; otherwise it is removed, because an entry no path will read is worse than an error the parent can act on.
-    const settledState = this.deps.subAgentMemoryManager
+    const settledState = this.deps.subAgentMemoryManager.sessions
       .loadSessionMetadata(childSessionId)?.subAgentTaskState ?? A2ATaskState.SUBMITTED;
     if (queued !== "queue-full" && isResumableSubAgentTaskState(settledState)) {
       audit("info", "mailbox:" + queued);
@@ -1951,18 +1952,18 @@ export class SubAgentRunner {
    * `createIsolatedConversationMemoryManagers`), so the main manager's sessions directory contains none of them. `getPersistedTranscript` below reaches the same store the same way. Rows only; a child's transcript is fetched separately, on demand. */
   listPersistedSpawnsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!isValidSessionId(originSessionId)) return [];
-    return this.deps.subAgentMemoryManager.listSubAgentSessionsForOrigin(originSessionId);
+    return this.deps.subAgentMemoryManager.sessions.listSubAgentSessionsForOrigin(originSessionId);
   }
 
   /** Transcript existence, independent of row metadata and current run state. */
   hasPersistedSession(sessionId: string): boolean {
-    return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
+    return this.deps.subAgentMemoryManager.sessions.hasSessionTranscript(sessionId);
   }
 
   /** Read a persisted child's title without loading or hydrating its transcript. */
   getPersistedSessionMetadata(sessionId: string): { title?: string } | null {
     if (!isValidSessionId(sessionId)) return null;
-    const metadata = this.deps.subAgentMemoryManager.loadSessionMetadata(sessionId);
+    const metadata = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(sessionId);
     if (metadata?.sessionKind !== "subagent") return null;
     return metadata.subAgentTitle ? { title: metadata.subAgentTitle } : {};
   }
@@ -1972,7 +1973,7 @@ export class SubAgentRunner {
   listWorkBoardRunSessions(
     options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after"> = {},
   ): SessionListEntry[] {
-    return this.deps.subAgentMemoryManager.listSessionsPage({
+    return this.deps.subAgentMemoryManager.sessions.listSessionsPage({
       ...options,
       kind: "subagent",
       workBoardRuns: true,
@@ -1983,7 +1984,7 @@ export class SubAgentRunner {
    * the linking tool_result out of. Both ids must be well-formed and the child must actually be a sub-agent session: a main session id must never satisfy this, or it would become a way to read another conversation. */
   isPersistedSpawnOfOrigin(originSessionId: string, childSessionId: string): boolean {
     if (!isValidSessionId(originSessionId) || !isValidSessionId(childSessionId)) return false;
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     return meta?.sessionKind === "subagent" && meta.originSessionId === originSessionId;
   }
 
@@ -1995,10 +1996,10 @@ export class SubAgentRunner {
       : undefined;
     if (!childSessionId) return { ok: false, error: "invalid-child-session-id" };
 
-    const makeResult = (id: string, meta: ReturnType<MemoryManager["loadSessionMetadata"]>) => {
-      const loaded = this.deps.subAgentMemoryManager.loadSession(id);
+    const makeResult = (id: string, meta: ReturnType<MemoryManager["sessions"]["loadSessionMetadata"]>) => {
+      const loaded = this.deps.subAgentMemoryManager.sessions.loadSession(id);
       if (!Array.isArray(loaded)) return null;
-      const hydrated = this.deps.subAgentMemoryManager.rehydrateToolResultArtifacts(id, loaded);
+      const hydrated = this.deps.subAgentMemoryManager.sessions.rehydrateToolResultArtifacts(id, loaded);
       const messages = hydrated
         .filter(isGenericMessage)
         .map(hideUnhydratedToolResultStub)
@@ -2014,7 +2015,7 @@ export class SubAgentRunner {
     };
 
     for (const id of [childSessionId]) {
-      const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(id);
+      const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(id);
       if (meta?.sessionKind !== "subagent") continue;
       if (request.originSessionId) {
         if (meta.originSessionId !== request.originSessionId) continue;
@@ -2260,7 +2261,7 @@ export class SubAgentRunner {
   /** Whether a resume of this child would be refused before running a turn. Read by `agent_list` so the `resumable` flag it advertises means what it
    * says: a child whose resume budget is spent is INPUT_REQUIRED forever, and offering it as resumable spends a parent round on a guaranteed refusal. */
   isResumeExhausted(childSessionId: string): boolean {
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     if (!meta) return false;
     return this.spentResumeAxis(meta) !== null;
   }
@@ -2680,7 +2681,7 @@ export class SubAgentRunner {
     const { modeResult, cappedRounds, grantedScope, child } = setupResult;
     // Persist resume metadata alongside the child JSONL before provider validation and the first turn, into the SAME isolated subagent namespace (child loop's MemoryManager). run-turn's saveSession writes the JSONL; this writes the .meta.json sibling. `sessionKind: "subagent"` lets listing/rotation distinguish sub-agent sessions from
     // main/routine. `grantedScope` is the grant as RESOLVED, encoded by the one codec that writes this field, and is the exact set a resume must re-scope to; permission is frozen at spawn, not re-granted on resume. `resumeCount`/`cumulativeRounds` init to 0 for the resume-loop guards. No resume logic here; this is metadata foundation.
-    const spawnMetadata: Parameters<MemoryManager["saveSessionMetadata"]>[1] = {
+    const spawnMetadata: Parameters<MemoryManager["sessions"]["saveSessionMetadata"]>[1] = {
       sessionKind: "subagent",
       ...(executionPolicy
         ? child.getSessionProjectContext()
@@ -2729,7 +2730,7 @@ export class SubAgentRunner {
     };
     let initialMetadataPersisted = false;
     try {
-      await this.deps.subAgentMemoryManager.saveSessionMetadata(
+      await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
         childSessionId,
         spawnMetadata,
       );
@@ -2765,7 +2766,7 @@ export class SubAgentRunner {
       });
       if (initialMetadataPersisted) {
         try {
-          await this.deps.subAgentMemoryManager.saveSessionMetadata(childSessionId, {
+          await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(childSessionId, {
             ...spawnMetadata,
             subAgentTaskState: projectSubAgentResultState(result),
           });
@@ -2780,7 +2781,7 @@ export class SubAgentRunner {
 
     const metadataForResult = (
       terminalResult: SubAgentSpawnResult,
-    ): Parameters<MemoryManager["saveSessionMetadata"]>[1] => ({
+    ): Parameters<MemoryManager["sessions"]["saveSessionMetadata"]>[1] => ({
       ...spawnMetadata,
       cumulativeRounds: terminalResult.turnCount,
       subAgentTaskState: projectSubAgentResultState(terminalResult),
@@ -2803,7 +2804,7 @@ export class SubAgentRunner {
       let durableTaskState: A2AProjectedTaskState | undefined;
       let durableResult: SubAgentSpawnResult | undefined;
       const saveResult = async (next: SubAgentSpawnResult): Promise<void> => {
-        await this.deps.subAgentMemoryManager.saveSessionMetadata(
+        await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
           childSessionId,
           metadataForResult(next),
         );
@@ -3064,7 +3065,7 @@ export class SubAgentRunner {
     handlerId: string,
   ): A2AWireBoundMetadata | null {
     if (!isValidA2AWireId(childSessionId) || !isValidA2AWireHandlerId(handlerId)) return null;
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(childSessionId);
     const isDetachedTerminalTask = meta?.projectRoot === undefined
       && meta?.subAgentTaskState !== undefined
       && isA2ATerminalTaskState(meta.subAgentTaskState);
@@ -3211,7 +3212,7 @@ export class SubAgentRunner {
     };
     if (trackedRun?.cancellationPersistencePending) {
       try {
-        await this.deps.subAgentMemoryManager.saveSessionMetadata(
+        await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
           childSessionId,
           canceledMeta,
         );
@@ -3255,7 +3256,7 @@ export class SubAgentRunner {
         suspension: undefined,
       });
       try {
-        await this.deps.subAgentMemoryManager.saveSessionMetadata(
+        await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
           childSessionId,
           canceledMeta,
         );
@@ -3284,7 +3285,7 @@ export class SubAgentRunner {
     }
 
     try {
-      await this.deps.subAgentMemoryManager.saveSessionMetadata(
+      await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
         childSessionId,
         canceledMeta,
       );
@@ -3514,7 +3515,7 @@ export class SubAgentRunner {
       }
     }
 
-    const meta = this.deps.subAgentMemoryManager.loadSessionMetadata(resumeId);
+    const meta = this.deps.subAgentMemoryManager.sessions.loadSessionMetadata(resumeId);
     if (meta === null) {
       return refuseStructurally(
         'sub-agent resume: no session metadata for "' + resumeId + '"',
@@ -3602,7 +3603,7 @@ export class SubAgentRunner {
       const taskState = projectSubAgentResultState(result);
       let persisted = false;
       try {
-        await this.deps.subAgentMemoryManager.saveSessionMetadata(resumeId, {
+        await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(resumeId, {
           ...meta,
           subAgentTaskState: taskState,
           subAgentSuspensionPrompt: undefined,
@@ -3822,7 +3823,7 @@ export class SubAgentRunner {
       status: subAgentRunStatusFromTaskState(A2ATaskState.WORKING),
     });
     try {
-      await this.deps.subAgentMemoryManager.saveSessionMetadata(resumeId, {
+      await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(resumeId, {
         ...meta,
         subAgentTaskState: A2ATaskState.WORKING,
         subAgentSuspensionPrompt: undefined,
@@ -3985,7 +3986,7 @@ export class SubAgentRunner {
     let durableTaskState: A2AProjectedTaskState | undefined;
     let durableResult: SubAgentSpawnResult | undefined;
     const saveResult = async (next: SubAgentSpawnResult): Promise<void> => {
-      await this.deps.subAgentMemoryManager.saveSessionMetadata(
+      await this.deps.subAgentMemoryManager.sessions.saveSessionMetadata(
         resumeId,
         metadataForResult(next),
       );

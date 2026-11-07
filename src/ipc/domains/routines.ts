@@ -57,9 +57,9 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
   // 대화에 연결: the chat must exist and belong to the item's project. A chat outside any named project belongs to the default
   // workspace, like everywhere else. Null when the chat may be connected, else the error code.
   const chatLinkError = (targetSessionId: string, projectRoot: string | undefined): string | null => {
-    const metadata = memoryManager.loadSessionMetadata(targetSessionId);
+    const metadata = memoryManager.sessions.loadSessionMetadata(targetSessionId);
     // The same existence test the fire uses: a chat needs its metadata and its transcript.
-    if (!metadata || !memoryManager.hasSessionTranscript(targetSessionId)) return "chat-not-found";
+    if (!metadata || !memoryManager.sessions.hasSessionTranscript(targetSessionId)) return "chat-not-found";
     const defaultRoot = () => defaultWorkspaceProject().projectRoot;
     return projectRootEquals(metadata.projectRoot ?? defaultRoot(), projectRoot ?? defaultRoot()) ? null : "chat-other-project";
   };
@@ -132,7 +132,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
         summary: "",
       };
       if (routine.execution === "llm-session" && routine.lastRoutineSessionId) {
-        const session = memoryManager
+        const session = memoryManager.sessions
           .listSessionsByRoutine(routine.id)
           .find((candidate) => candidate.id === routine.lastRoutineSessionId);
         if (session) {
@@ -264,8 +264,8 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     const sessionExists = (sessionId: string): boolean => {
       const cached = sessionAvailability.get(sessionId);
       if (cached !== undefined) return cached;
-      const available = memoryManager.loadSessionMetadata(sessionId) !== null
-        && memoryManager.hasSessionTranscript(sessionId);
+      const available = memoryManager.sessions.loadSessionMetadata(sessionId) !== null
+        && memoryManager.sessions.hasSessionTranscript(sessionId);
       sessionAvailability.set(sessionId, available);
       return available;
     };
@@ -287,7 +287,7 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
         seen.add(run.firedAt);
       }
       if (routine.execution === "llm-session") {
-        for (const session of memoryManager.listSessionsByRoutine(routine.id)) {
+        for (const session of memoryManager.sessions.listSessionsByRoutine(routine.id)) {
           if (!inRange(session.routineFiredAt) || seen.has(session.routineFiredAt)) continue;
           seen.add(session.routineFiredAt);
           runs.push({ routineId: routine.id, firedAt: session.routineFiredAt, status: statusOf(session.routineFiredAt), sessionId: session.id });

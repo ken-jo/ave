@@ -1,13 +1,10 @@
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve, basename } from "node:path";
-import { type ToolOutputCapture, type ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 import { isValidSessionId } from "../shared/session-id.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
 import { readAveHomeInputSync, recordAveHomeInputWriteSync } from "../shared/ave-home-trust.js";
-import { type SessionTaskItem } from "../shared/session-tasks.js";
-import { type SessionGoal } from "../shared/session-goal.js";
 import { createLogger } from "../lib/logger.js";
 import {
   AGENTS_CUSTOM_DOC_NAME,
@@ -24,7 +21,6 @@ import { isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { MemoryHistory, historyText, type MemoryHistoryActor, type MemoryHistoryRead } from "./memory-history.js";
 import { SHA256_HEX } from "../lib/hex-digest-equal.js";
-import { type TurnInflightPartial } from "./session-turn-journal.js";
 import {
   SessionRepository,
   getFileMtimeMs,
@@ -35,21 +31,9 @@ import {
   sha256Text,
   normalizeMetadataString,
   type FileSnapshot,
-  type SessionSearchEntry,
-  type ToolResultArtifact,
   type SessionNamespace,
-  type RestoredSubAgentSession,
-  type ListSessionsOptions,
-  type MainActiveSessionState,
-  type SessionListEntry,
-  type Checkpoint,
-  type SessionMetadata,
 } from "./session-repository.js";
 
-export { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../shared/tool-output-artifact.js";
-export { isValidSessionId } from "../shared/session-id.js";
-export type { SessionNamespace, RestoredSubAgentSession, ListSessionsOptions, SessionListEntry, Checkpoint, SessionMetadata } from "./session-repository.js";
-export { sessionFamilyOf, toSessionListRow, MAX_SESSION_FILE_BYTES, MAX_PROJECT_ROOT_CHARS, MAX_PROJECT_NAME_CHARS } from "./session-repository.js";
 
 const log = createLogger("memory");
 
@@ -236,8 +220,6 @@ export interface MemoryIndexSectionsPatch {
   urgentMemory?: string;
   references?: string;
 }
-
-export type { SessionKind } from "../shared/session-lookup.js";
 
 export type CheckpointTrigger = "auto-compact" | "manual";
 
@@ -459,7 +441,7 @@ export interface PromptMemorySource {
 export class MemoryManager implements PromptMemorySource {
   private readonly aveDir: string;
   private readonly memoryDir: string;
-  private readonly sessionRepository: SessionRepository;
+  readonly sessions: SessionRepository;
   private readonly history: MemoryHistory;
   private persistentContextWatchers: FSWatcher[] = [];
   private persistentContextReloadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -478,7 +460,7 @@ export class MemoryManager implements PromptMemorySource {
     mkdirSync(this.aveDir, { recursive: true });
     this.migrateLegacyDirectory("memory", "memories");
     mkdirSync(this.memoryDir, { recursive: true });
-    this.sessionRepository = new SessionRepository({ aveDir: this.aveDir });
+    this.sessions = new SessionRepository({ aveDir: this.aveDir });
     this.ensureStructure();
   }
 
@@ -518,8 +500,6 @@ export class MemoryManager implements PromptMemorySource {
     this.persistentContextWatchers = [];
     this.persistentContextFileState.clear();
   }
-
-  closeSearchIndex(): void { return this.sessionRepository.closeSearchIndex(); }
 
   getAgentsMd(): string {
     return this.agentsMd;
@@ -704,8 +684,6 @@ export class MemoryManager implements PromptMemorySource {
     return this.searchEntries(this.listMemoryEntries(options), query);
   }
 
-  searchSessions(query: string, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] { return this.sessionRepository.searchSessions(query, options); }
-
   getMemoryContext(options: ProjectScopedMemoryOptions = {}): string {
     return this.buildMarkdownContext(
       this.listMemoryEntries(options).filter((entry) => !this.isDerivedMemory(entry)),
@@ -789,8 +767,6 @@ export class MemoryManager implements PromptMemorySource {
         || left.entry.filename.localeCompare(right.entry.filename),
       );
   }
-
-  listSessionEntries(limit = 50, options: Pick<ListSessionsOptions, "kind" | "routineId" | "projectRoot" | "includeUnscoped"> = {}): SessionSearchEntry[] { return this.sessionRepository.listSessionEntries(limit, options); }
 
   // `actor` is who is saving now; it is recorded in the change history and never inferred from stored metadata.
   // `requestedIn` is the conversation that asked for the change; the history row keeps its id only.
@@ -1256,117 +1232,6 @@ export class MemoryManager implements PromptMemorySource {
   getDir(): string {
     return this.aveDir;
   }
-
-  async saveSession(sessionId: string, messages: unknown[]): Promise<void> { return this.sessionRepository.saveSession(sessionId, messages); }
-
-  // Append only a valid extension of the last written history; otherwise atomically rewrite from the live reader.
-  async appendSessionProgress(
-    sessionId: string,
-    readMessages: unknown[] | (() => unknown[]),
-  ): Promise<"appended" | "rewritten" | "unchanged"> { return this.sessionRepository.appendSessionProgress(sessionId, readMessages); }
-
-  // Persist the in-flight marker before the first provider call so any later crash remains recoverable.
-  async beginTurnJournal(sessionId: string, startedAt: number): Promise<void> { return this.sessionRepository.beginTurnJournal(sessionId, startedAt); }
-
-  // Undefined partial content preserves the in-flight marker.
-  async writeTurnPartial(sessionId: string, startedAt: number, partial: TurnInflightPartial | undefined): Promise<void> { return this.sessionRepository.writeTurnPartial(sessionId, startedAt, partial); }
-
-  // Deregister the turn but retain recovery evidence until persistence is confirmed.
-  endTurnJournal(sessionId: string): void { return this.sessionRepository.endTurnJournal(sessionId); }
-
-  // Remove the sidecar only after its owner confirms the transcript contains the turn.
-  clearTurnJournal(sessionId: string): void { return this.sessionRepository.clearTurnJournal(sessionId); }
-
-  // Imports require a fresh session id and never overwrite an existing transcript.
-  async saveImportedSession(sessionId: string, messages: unknown[]): Promise<void> { return this.sessionRepository.saveImportedSession(sessionId, messages); }
-
-  // Boot integrity repair rebuilds missing or corrupt indexes from JSONL; search never scans as a fallback.
-  async verifyOrRebuildSearchIndex(): Promise<void> { return this.sessionRepository.verifyOrRebuildSearchIndex(); }
-
-  // Store pre-compact snapshots in a separate directory so session listings cannot expose them as conversations.
-  async saveCheckpointSnapshot(sessionId: string, compactNum: number, messages: unknown[]): Promise<void> { return this.sessionRepository.saveCheckpointSnapshot(sessionId, compactNum, messages); }
-
-  loadCheckpointSnapshot(sessionId: string, compactNum: number): unknown[] | null { return this.sessionRepository.loadCheckpointSnapshot(sessionId, compactNum); }
-
-  loadSession(sessionId: string): unknown[] | null { return this.sessionRepository.loadSession(sessionId); }
-
-  loadToolResultArtifact(sessionId: string, toolUseId: string): ToolResultArtifact | null { return this.sessionRepository.loadToolResultArtifact(sessionId, toolUseId); }
-
-  startToolOutputCapture(sessionId: string, toolUseId: string): ToolOutputCapture { return this.sessionRepository.startToolOutputCapture(sessionId, toolUseId); }
-
-  loadToolOutputArtifact(sessionId: string, toolUseId: string, info: ToolOutputArtifactInfo): string | null { return this.sessionRepository.loadToolOutputArtifact(sessionId, toolUseId, info); }
-
-  rehydrateToolResultArtifacts(sessionId: string, messages: unknown[]): unknown[] { return this.sessionRepository.rehydrateToolResultArtifacts(sessionId, messages); }
-
-  // Read-modify-write row fields so whole-sidecar persistence preserves unrelated metadata.
-  async updateSessionRowFields(
-    sessionId: string,
-    fields: { title?: string; archivedAt?: string | null; unreadSince?: string | null },
-  ): Promise<void> { return this.sessionRepository.updateSessionRowFields(sessionId, fields); }
-
-  // Task-list updates preserve unrelated metadata; an empty list removes the field.
-  async saveSessionTasks(sessionId: string, tasks: SessionTaskItem[]): Promise<void> { return this.sessionRepository.saveSessionTasks(sessionId, tasks); }
-
-  // Goal updates preserve unrelated metadata; null removes the goal without a tombstone.
-  async saveSessionGoal(sessionId: string, goal: SessionGoal | null): Promise<void> { return this.sessionRepository.saveSessionGoal(sessionId, goal); }
-
-  async saveSessionMetadata(sessionId: string, metadata: SessionMetadata): Promise<void> { return this.sessionRepository.saveSessionMetadata(sessionId, metadata); }
-
-  // Re-add permits new bindings but keeps old session tombstones; it does not reassign detached chats.
-  allowProjectRoot(projectRoot: string): void { return this.sessionRepository.allowProjectRoot(projectRoot); }
-
-  /** The removal preview: how many conversations `detachSessionsFromProject` would detach now, by the same predicate, writing nothing.
-   * Unreadable metadata fails here as it would fail the detach. */
-  countSessionsInProject(projectRoot: string): number { return this.sessionRepository.countSessionsInProject(projectRoot); }
-
-  async detachSessionsFromProject(projectRoot: string): Promise<number> { return this.sessionRepository.detachSessionsFromProject(projectRoot); }
-
-  // Existence must match conversation listing and return false for invalid ids.
-  hasSessionTranscript(sessionId: unknown): boolean { return this.sessionRepository.hasSessionTranscript(sessionId); }
-
-  // Create missing transcripts exclusively so concurrent writers cannot be overwritten.
-  touchSessionTranscript(sessionId: string, options: { bump: boolean }): boolean { return this.sessionRepository.touchSessionTranscript(sessionId, options); }
-
-  hasSessionMetadataFile(sessionId: string): boolean { return this.sessionRepository.hasSessionMetadataFile(sessionId); }
-
-  loadSessionMetadata(sessionId: string): SessionMetadata | null { return this.sessionRepository.loadSessionMetadata(sessionId); }
-
-  loadMainActiveSessionState(): MainActiveSessionState | null { return this.sessionRepository.loadMainActiveSessionState(); }
-
-  async saveMainActiveSessionState(state: MainActiveSessionState): Promise<void> { return this.sessionRepository.saveMainActiveSessionState(state); }
-
-  async markMainActiveFresh(): Promise<void> { return this.sessionRepository.markMainActiveFresh(); }
-
-  async markMainActiveResume(sessionId: string): Promise<void> { return this.sessionRepository.markMainActiveResume(sessionId); }
-
-  // Assemble plain lists through pagination so row fields cannot drift between the two surfaces.
-  listSessions(input: number | ListSessionsOptions = Number.POSITIVE_INFINITY): SessionListEntry[] { return this.sessionRepository.listSessions(input); }
-
-  // Resolve pane sessions from a lazy metadata index and update it on local writes and deletes.
-  findPaneSession(paneTabId: string): string | undefined { return this.sessionRepository.findPaneSession(paneTabId); }
-
-  // Restore child panel rows from persisted metadata; live spawn events disappear on restart.
-
-  listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] { return this.sessionRepository.listSubAgentSessionsForOrigin(originSessionId); }
-
-  listSessionsPage(options: ListSessionsOptions = {}): SessionListEntry[] { return this.sessionRepository.listSessionsPage(options); }
-
-  listSessionsByRoutine(routineId: string, limit = Number.POSITIVE_INFINITY): SessionListEntry[] { return this.sessionRepository.listSessionsByRoutine(routineId, limit); }
-
-  // Append in memory only; callers must persist the updated metadata.
-  appendCheckpoint(metadata: SessionMetadata, checkpoint: Checkpoint): SessionMetadata { return this.sessionRepository.appendCheckpoint(metadata, checkpoint); }
-
-  // Prune only discarded checkpoint boundaries and their snapshots before saving rewind state.
-  async pruneCheckpointsDiscardedByRewind(
-    sessionId: string,
-    discardedMessages: readonly unknown[],
-  ): Promise<void> { return this.sessionRepository.pruneCheckpointsDiscardedByRewind(sessionId, discardedMessages); }
-
-  // Cap the preamble and return updated metadata without persisting it.
-  setSummaryPreamble(metadata: SessionMetadata, preamble: string): SessionMetadata { return this.sessionRepository.setSummaryPreamble(metadata, preamble); }
-
-  // Delete session artifacts but retain the stable metadata lock target for waiting operations.
-  async deleteSession(sessionId: string): Promise<void> { return this.sessionRepository.deleteSession(sessionId); }
 
   private ensureStructure(): void {
     // Use exclusive creation to eliminate check-then-write races.

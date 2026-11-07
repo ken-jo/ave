@@ -31,7 +31,7 @@ function makeLoop(compactionModel = "") {
     settingsService: { get: () => llm, getSecret: () => "route-secret" },
     systemPromptBuilder: { build: () => "system" },
     toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   return { loop, llm, requests };
 }

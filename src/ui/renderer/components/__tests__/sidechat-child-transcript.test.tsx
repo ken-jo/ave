@@ -143,8 +143,8 @@ async function setup() {
     [foreignChildId, tileSessionId, "Foreign child must remain private"],
     [tileChildId, tileSessionId, "Persisted tile child transcript"],
   ]) {
-    await childStore.saveSession(child, [{ role: "assistant", content }]);
-    await childStore.saveSessionMetadata(child, { sessionKind: "subagent", originSessionId: origin });
+    await childStore.sessions.saveSession(child, [{ role: "assistant", content }]);
+    await childStore.sessions.saveSessionMetadata(child, { sessionKind: "subagent", originSessionId: origin });
   }
   // These reads require only the real isolated store; no child turn or provider execution is needed to exercise the runner's
   // persisted transcript methods.

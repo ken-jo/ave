@@ -44,7 +44,9 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}): LocalApiDep
       permissionManager: { getMode: () => "acceptEdits" },
     },
     memoryManager: {
-      listSessionsPage: () => [],
+      sessions: {
+        listSessionsPage: () => [],
+      },
     },
     ...overrides,
   } as unknown as IpcDeps;
@@ -77,7 +79,7 @@ describe("local-api dispatch — public read routing", () => {
     const api = createLocalApi(
       makeDeps({
         conversationLoop: { getSessionId: () => "session-1", permissionManager: { getMode: () => "default" } },
-        memoryManager: { listSessionsPage },
+        memoryManager: { sessions: { listSessionsPage } },
       }),
     );
     const result = await api.dispatch({ channel: CHANNELS.chat.sessions, origin: "local-api" });

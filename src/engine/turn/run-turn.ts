@@ -82,7 +82,7 @@ function commitsHostInjectedMessages(stopReason: TurnStopReason | undefined,
 async function flushTranscript(self: LoopContext, reason: string): Promise<void> {
   if (self.deps.disableSessionPersistence) return;
   try {
-    await self.deps.memoryManager.saveSession(
+    await self.deps.memoryManager.sessions.saveSession(
       self.sessionId,
       self.history.getMessages(),
     );
@@ -741,7 +741,7 @@ async function runTurnInSpan(
       // Child fallback saves stay isolated from parent audit and extraction hooks.
       // Do not stub after the turn: preserving the reusable prefix avoids cache churn.
       if (!self.deps.disableSessionPersistence) {
-        await self.deps.memoryManager.saveSession(
+        await self.deps.memoryManager.sessions.saveSession(
           self.sessionId,
           self.history.getMessages(),
         );
@@ -912,7 +912,7 @@ async function runTurnInSpan(
         attachedTurnSummary && self.deps.disableSessionPersistence === true;
       if (attachedTurnSummary && !self.deps.disableSessionPersistence) {
         try {
-          await self.deps.memoryManager.saveSession(
+          await self.deps.memoryManager.sessions.saveSession(
             self.sessionId,
             self.history.getMessages(),
           );

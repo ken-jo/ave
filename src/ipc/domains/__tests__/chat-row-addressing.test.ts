@@ -67,12 +67,14 @@ function makeDeps(seed: GenericMessage[]) {
     } as any,
     settingsService: { get: vi.fn(() => ({})), patch: vi.fn(async () => undefined) } as any,
     memoryManager: {
-      saveSession: vi.fn(async () => undefined),
-      saveSessionMetadata: vi.fn(async () => undefined),
-      loadSessionMetadata: vi.fn(() => null),
-      rehydrateToolResultArtifacts: vi.fn((_id: string, msgs: GenericMessage[]) => msgs),
-      markMainActiveResume: vi.fn(async () => undefined),
-      pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
+      sessions: {
+        saveSession: vi.fn(async () => undefined),
+        saveSessionMetadata: vi.fn(async () => undefined),
+        loadSessionMetadata: vi.fn(() => null),
+        rehydrateToolResultArtifacts: vi.fn((_id: string, msgs: GenericMessage[]) => msgs),
+        markMainActiveResume: vi.fn(async () => undefined),
+        pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
+      },
     } as any,
     auditLogger: { log: vi.fn() } as any,
     getMainWindow: vi.fn(() => null),
@@ -90,7 +92,7 @@ async function setup(seed: GenericMessage[]) {
 }
 
 function savedMessages(deps: ReturnType<typeof makeDeps>): GenericMessage[] {
-  const call = deps.memoryManager.saveSession.mock.calls.at(-1);
+  const call = deps.memoryManager.sessions.saveSession.mock.calls.at(-1);
   expect(call, "rewind must persist the truncated session").toBeDefined();
   expect(call![0]).toBe(ACTIVE_SESSION);
   return call![1] as GenericMessage[];
@@ -141,7 +143,7 @@ describe("ave:chat:rewind-to", () => {
 
     await invokeRegisteredHandler<Promise<{ ok: boolean }>>(handlers, REWIND, "m-q1", "main");
 
-    expect(deps.memoryManager.pruneCheckpointsDiscardedByRewind).toHaveBeenCalledWith(
+    expect(deps.memoryManager.sessions.pruneCheckpointsDiscardedByRewind).toHaveBeenCalledWith(
       ACTIVE_SESSION,
       driftShapedHistory(),
     );
@@ -175,7 +177,7 @@ describe("ave:chat:rewind-to", () => {
     );
 
     expect(result).toEqual({ ok: false, error: "not-a-user-message" });
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 
   it("refuses a row that is no longer in the conversation", async () => {
@@ -186,7 +188,7 @@ describe("ave:chat:rewind-to", () => {
     );
 
     expect(result).toEqual({ ok: false, error: "message-not-found" });
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 
   it("refuses a missing identifier", async () => {
@@ -197,7 +199,7 @@ describe("ave:chat:rewind-to", () => {
     );
 
     expect(result).toEqual({ ok: false, error: "invalid-message-id" });
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 
   it("refuses a message with an attachment rather than cutting it and losing the image", async () => {
@@ -214,7 +216,7 @@ describe("ave:chat:rewind-to", () => {
     );
 
     expect(result).toEqual({ ok: false, error: "attachment-not-restorable" });
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 
   it("returns the persona the turn was addressed with", async () => {
@@ -245,7 +247,7 @@ describe("ave:chat:fork — same rule, same fixture", () => {
     );
 
     expect(result.ok).toBe(true);
-    const forked = deps.memoryManager.saveSession.mock.calls.find(
+    const forked = deps.memoryManager.sessions.saveSession.mock.calls.find(
       ([sessionId]: [string]) => sessionId !== ACTIVE_SESSION,
     );
     expect(forked, "fork must write a new session file").toBeDefined();
@@ -259,7 +261,7 @@ describe("ave:chat:fork — same rule, same fixture", () => {
 
     await invokeRegisteredHandler<Promise<{ ok: boolean }>>(handlers, FORK, "m-a1", "main");
 
-    const forked = deps.memoryManager.saveSession.mock.calls.find(
+    const forked = deps.memoryManager.sessions.saveSession.mock.calls.find(
       ([sessionId]: [string]) => sessionId !== ACTIVE_SESSION,
     );
     expect((forked![1] as GenericMessage[]).map((m) => m.meta?.messageId)).toEqual([
@@ -275,7 +277,7 @@ describe("ave:chat:fork — same rule, same fixture", () => {
     );
 
     expect(result).toEqual({ ok: false, sessionId: null, error: "message-not-found" });
-    expect(deps.memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 });
 
@@ -381,7 +383,7 @@ describe("a session written before rows carried an identity", () => {
   });
 
   async function writeLegacySession(): Promise<void> {
-    await mm.saveSession(LEGACY_SESSION, [
+    await mm.sessions.saveSession(LEGACY_SESSION, [
       { role: "user", content: "first question" },
       { role: "assistant", content: "first answer" },
       { role: "user", content: "second question" },
@@ -392,8 +394,8 @@ describe("a session written before rows carried an identity", () => {
   it("reads back the same identity for the same row on every load", async () => {
     await writeLegacySession();
 
-    const first = mm.loadSession(LEGACY_SESSION)!;
-    const second = mm.loadSession(LEGACY_SESSION)!;
+    const first = mm.sessions.loadSession(LEGACY_SESSION)!;
+    const second = mm.sessions.loadSession(LEGACY_SESSION)!;
 
     const ids = first.map((m) => (m as GenericMessage).meta?.messageId);
     expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
@@ -403,7 +405,7 @@ describe("a session written before rows carried an identity", () => {
 
   it("restores into the loop under the ids the transcript shows, and rewinds to the clicked row", async () => {
     await writeLegacySession();
-    const loaded = mm.loadSession(LEGACY_SESSION) as GenericMessage[];
+    const loaded = mm.sessions.loadSession(LEGACY_SESSION) as GenericMessage[];
 
     const history = new ConversationHistory();
     history.restore(loaded);

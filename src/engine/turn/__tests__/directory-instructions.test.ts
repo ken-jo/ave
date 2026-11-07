@@ -127,7 +127,7 @@ describe("directory instructions in the query loop", () => {
       settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
       systemPromptBuilder: { build: () => "system" },
       toolRegistry,
-      memoryManager: { saveSession: async () => {}, listSessions: () => [] },
+      memoryManager: { sessions: { saveSession: async () => {}, listSessions: () => [] } },
       disableSessionPersistence: true,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
     (loop as { provider: LLMProvider | null }).provider = provider;

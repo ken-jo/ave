@@ -4,7 +4,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { fanOutToAllWindows } from "../window-fanout.js";
-import { isValidSessionId } from "../../memory/memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
 import { createLogger } from "../../lib/logger.js";
 const log = createLogger("ave");
 

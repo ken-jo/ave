@@ -166,7 +166,7 @@ async function overlayHostApi(input: {
       getPluginConfig: vi.fn(() => ({})),
       setPluginConfig: vi.fn(async () => {}),
     } as never,
-    memoryManager: { touchSessionTranscript: suggestionsTouch } as never,
+    memoryManager: { sessions: { touchSessionTranscript: suggestionsTouch } } as never,
     toolRegistry: {
       unregisterByPlugin: vi.fn(),
       register: vi.fn(),

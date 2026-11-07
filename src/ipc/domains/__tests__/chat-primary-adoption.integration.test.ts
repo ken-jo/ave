@@ -120,7 +120,7 @@ describe("cached primary conversation adoption", () => {
       gate.disposeAll();
       if (running) await Promise.allSettled([running]);
       updateApprovalSurface({ kind: "release", sessionId });
-      memory.closeSearchIndex();
+      memory.sessions.closeSearchIndex();
       await audit.close();
     });
     expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(original.contents);

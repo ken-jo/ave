@@ -185,13 +185,15 @@ async function registerWithGroups(
   const releaseChatGroupLoop = vi.fn((chatGroupId: string) => { groups.delete(chatGroupId); });
   const { registerChatHandlers } = await import("../chat.js");
   const memoryManager = {
-    loadMainActiveSessionState: vi.fn(() => null),
-    markMainActiveFresh: vi.fn(async () => undefined),
-    markMainActiveResume: vi.fn(async () => undefined),
-    saveSessionMetadata: vi.fn(async () => undefined),
-    saveSession: vi.fn(async () => undefined),
-    pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
-    listSessions: vi.fn(() => []),
+    sessions: {
+      loadMainActiveSessionState: vi.fn(() => null),
+      markMainActiveFresh: vi.fn(async () => undefined),
+      markMainActiveResume: vi.fn(async () => undefined),
+      saveSessionMetadata: vi.fn(async () => undefined),
+      saveSession: vi.fn(async () => undefined),
+      pruneCheckpointsDiscardedByRewind: vi.fn(async () => undefined),
+      listSessions: vi.fn(() => []),
+    },
   };
   const goalDisk = new Map<string, SessionGoal | null>();
   const sessionGoalStore = new SessionGoalStore({
@@ -346,7 +348,7 @@ describe("ave:chat:* with chat groups", () => {
     expect(result).toMatchObject({ ok: true, text: "tile question" });
     expect(tile.getHistory().getMessages()).toEqual([]);
     expect(main.getHistory().getMessages()).toHaveLength(2);
-    expect(memoryManager.saveSession).toHaveBeenCalledWith(sessionUuid("session-of-group-2"), []);
+    expect(memoryManager.sessions.saveSession).toHaveBeenCalledWith(sessionUuid("session-of-group-2"), []);
   });
 
   describe("code rewind at the conversation mutation boundary", () => {
@@ -376,7 +378,7 @@ describe("ave:chat:* with chat groups", () => {
       expect(result).toMatchObject({ ok: true, review: { sessionId: tile.getSessionId(), turnId: "tile-q1", files: [{ path: "code.txt", hunks: [{ oldText: "before", newText: "agent" }] }] } });
       expect(await readFile(file, "utf8")).toBe("agent");
       expect(tile.getHistory().getMessages()).toHaveLength(2);
-      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+      expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     });
     it("retains the initiating review turn after queued guidance is injected", async () => {
       const { invoke, tile } = await setup();
@@ -403,7 +405,7 @@ describe("ave:chat:* with chat groups", () => {
       expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "code")).toMatchObject({ ok: true });
       expect(await readFile(file, "utf8")).toBe("before");
       expect(tile.getHistory().getMessages()).toHaveLength(2);
-      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+      expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     });
     it("restores both files and persisted conversation", async () => {
       const { invoke, tile, file, main, memoryManager } = await setup();
@@ -411,7 +413,7 @@ describe("ave:chat:* with chat groups", () => {
       expect(await readFile(file, "utf8")).toBe("before");
       expect(tile.getHistory().getMessages()).toEqual([]);
       expect(main.getHistory().getMessages()).toHaveLength(2);
-      expect(memoryManager.saveSession).toHaveBeenCalledWith(tile.getSessionId(), []);
+      expect(memoryManager.sessions.saveSession).toHaveBeenCalledWith(tile.getSessionId(), []);
     });
     it("lists conflicts and keeps history and code unchanged on refusal", async () => {
       const { invoke, tile, file, memoryManager } = await setup();
@@ -419,7 +421,7 @@ describe("ave:chat:* with chat groups", () => {
       expect(await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2", "both")).toMatchObject({ ok: false, error: "code-restore-conflict", conflictingFiles: [file] });
       expect(await readFile(file, "utf8")).toBe("external");
       expect(tile.getHistory().getMessages()).toHaveLength(2);
-      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+      expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     });
     it("leaves code untouched for conversation-only rewind", async () => {
       const { invoke, file } = await setup();
@@ -434,7 +436,7 @@ describe("ave:chat:* with chat groups", () => {
       });
       expect(await readFile(file, "utf8")).toBe("agent");
       expect(tile.getHistory().getMessages()).toHaveLength(2);
-      expect(memoryManager.saveSession).not.toHaveBeenCalled();
+      expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     });
     it("rejects invalid restore modes without changing anything", async () => {
       const { invoke, tile, file } = await setup();
@@ -458,7 +460,7 @@ describe("ave:chat:* with chat groups", () => {
     const result = await invoke(CHANNELS.chat.rewindTo, "tile-q1", "group-2");
 
     expect(result).toEqual({ ok: false, error: "streaming-active" });
-    expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     releaseTurn();
     await heldTurn;
   });
@@ -472,7 +474,7 @@ describe("ave:chat:* with chat groups", () => {
     const result = await invoke(CHANNELS.chat.rewindTo, "main-q1", "group-2");
 
     expect(result).toEqual({ ok: false, error: "message-not-found" });
-    expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
   });
 
   it("opens a session in one tile at a time — a resume of one another tile holds is refused", async () => {
@@ -511,10 +513,10 @@ describe("ave:chat:* with chat groups", () => {
     invoke(CHANNELS.chat.hasProvider, "group-2");
 
     await invoke(CHANNELS.chat.sessionResume, sessionUuid("session-archived"), "group-2");
-    expect(memoryManager.markMainActiveResume).not.toHaveBeenCalled();
+    expect(memoryManager.sessions.markMainActiveResume).not.toHaveBeenCalled();
 
     await invoke(CHANNELS.chat.sessionResume, sessionUuid("session-older"), MAIN_CHAT_GROUP_ID);
-    expect(memoryManager.markMainActiveResume).toHaveBeenCalledWith(sessionUuid("session-older"));
+    expect(memoryManager.sessions.markMainActiveResume).toHaveBeenCalledWith(sessionUuid("session-older"));
   });
 
   it("releasing the primary keeps its loop and hands it a blank conversation", async () => {
@@ -522,7 +524,7 @@ describe("ave:chat:* with chat groups", () => {
     expect(await invoke(CHANNELS.chat.groupRelease, MAIN_CHAT_GROUP_ID)).toEqual({ ok: true, released: true });
     expect(main.abortCurrentTurn).toHaveBeenCalledTimes(1);
     expect(main.newConversation).toHaveBeenCalledTimes(1);
-    expect(memoryManager.markMainActiveFresh).toHaveBeenCalledTimes(1);
+    expect(memoryManager.sessions.markMainActiveFresh).toHaveBeenCalledTimes(1);
     expect(releaseChatGroupLoop).not.toHaveBeenCalledWith(MAIN_CHAT_GROUP_ID);
   });
 
@@ -581,7 +583,7 @@ describe("ave:chat:* with chat groups", () => {
     await sessionGoalStore.set(sessionUuid("session-of-group-2"), "finish safely");
     await Promise.resolve();
     expect(sessionGoalStore.get(sessionUuid("session-of-group-2"))?.round).toBe(0);
-    expect(memoryManager.saveSession).not.toHaveBeenCalled();
+    expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
 
     finishCleanup();
     expect(await release).toEqual({ ok: true, released: true });

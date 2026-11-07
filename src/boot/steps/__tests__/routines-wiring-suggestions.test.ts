@@ -51,9 +51,11 @@ function wire(
     host: { desktop: { getAppWindows: () => [window] } },
     notificationService,
     memoryManager: {
-      touchSessionTranscript,
-      loadSessionMetadata: (id: string) => chats[id] ?? null,
-      hasSessionTranscript: (id: string) => chats[id] !== undefined && chats[id].noTranscript !== true,
+      sessions: {
+        touchSessionTranscript,
+        loadSessionMetadata: (id: string) => chats[id] ?? null,
+        hasSessionTranscript: (id: string) => chats[id] !== undefined && chats[id].noTranscript !== true,
+      },
     },
   } as unknown as BootContext;
   wireRoutinesScheduler(ctx);

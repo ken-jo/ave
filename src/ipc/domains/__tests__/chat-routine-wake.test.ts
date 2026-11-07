@@ -38,9 +38,11 @@ async function setup(activeTurn = false) {
     conversationSurfaceRuntime: createConversationSurfaceRuntime(),
     settingsService: { get: vi.fn((key?: string) => (key === "llm" ? fakeLlmSettings() : {})), patch: vi.fn(async () => undefined) },
     memoryManager: {
-      loadMainActiveSessionState: vi.fn(() => null),
-      markMainActiveFresh: vi.fn(async () => undefined),
-      saveSessionMetadata: vi.fn(async () => undefined),
+      sessions: {
+        loadMainActiveSessionState: vi.fn(() => null),
+        markMainActiveFresh: vi.fn(async () => undefined),
+        saveSessionMetadata: vi.fn(async () => undefined),
+      },
     },
     auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => null),

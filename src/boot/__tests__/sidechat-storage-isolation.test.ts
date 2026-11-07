@@ -31,11 +31,11 @@ describe("side-chat storage isolation", () => {
     const mainMm = new MemoryManager({ aveDir: home });
     const sideMm = new MemoryManager({ aveDir: openFeatureNamespace("side-chat").dir });
 
-    await mainMm.saveSession("2d2b9e84-a250-4c44-8890-4d620405ff50", [
+    await mainMm.sessions.saveSession("2d2b9e84-a250-4c44-8890-4d620405ff50", [
       { role: "user", content: "main hi" },
       { role: "assistant", content: "main reply" },
     ]);
-    await sideMm.saveSession("b4d2673e-eaa1-42fe-874f-fca6c175855d", [
+    await sideMm.sessions.saveSession("b4d2673e-eaa1-42fe-874f-fca6c175855d", [
       { role: "user", content: "side hi" },
       { role: "assistant", content: "side reply" },
     ]);
@@ -43,8 +43,8 @@ describe("side-chat storage isolation", () => {
     expect(existsSync(join(home, "sessions", "2d2b9e84-a250-4c44-8890-4d620405ff50.jsonl"))).toBe(true);
     expect(existsSync(join(home, "side-chat", "sessions", "b4d2673e-eaa1-42fe-874f-fca6c175855d.jsonl"))).toBe(true);
 
-    const mainIds = mainMm.listSessions().map((s) => s.id);
-    const sideIds = sideMm.listSessions().map((s) => s.id);
+    const mainIds = mainMm.sessions.listSessions().map((s) => s.id);
+    const sideIds = sideMm.sessions.listSessions().map((s) => s.id);
     expect(mainIds).toContain("2d2b9e84-a250-4c44-8890-4d620405ff50");
     expect(mainIds).not.toContain("b4d2673e-eaa1-42fe-874f-fca6c175855d");
     expect(sideIds).toContain("b4d2673e-eaa1-42fe-874f-fca6c175855d");
@@ -54,8 +54,8 @@ describe("side-chat storage isolation", () => {
   it("clearing the side-chat namespace leaves the main sessions intact", async () => {
     const mainMm = new MemoryManager({ aveDir: home });
     const sideMm = new MemoryManager({ aveDir: openFeatureNamespace("side-chat").dir });
-    await mainMm.saveSession("c1a66b9d-085b-4360-8135-241826537b5d", [{ role: "user", content: "x" }]);
-    await sideMm.saveSession("612eb9ad-ca7e-4f2a-881d-96ed4b390792", [{ role: "user", content: "y" }]);
+    await mainMm.sessions.saveSession("c1a66b9d-085b-4360-8135-241826537b5d", [{ role: "user", content: "x" }]);
+    await sideMm.sessions.saveSession("612eb9ad-ca7e-4f2a-881d-96ed4b390792", [{ role: "user", content: "y" }]);
 
     rmSync(join(home, "side-chat"), { recursive: true, force: true });
 

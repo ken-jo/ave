@@ -1604,7 +1604,7 @@ export async function queryLoop(
           abortSignal,
           toolResultChunkReader: (toolUseId) => self.readToolResultForChunk(toolUseId),
           toolOutputCaptureFactory: (toolUseId) => {
-            const capture = self.deps.memoryManager.startToolOutputCapture(bounds?.sessionIdOverride ?? self.sessionId, toolUseId);
+            const capture = self.deps.memoryManager.sessions.startToolOutputCapture(bounds?.sessionIdOverride ?? self.sessionId, toolUseId);
             ownedOutputCaptures.push(capture);
             return capture;
           },

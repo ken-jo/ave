@@ -87,7 +87,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       const target = routine.targetSessionId;
       // The chat was deleted without the delete reaching this item (its metadata or its transcript is gone; the chat list needs both):
       // it becomes 대화 없음 and runs nowhere else, rather than being skipped as busy on every fire.
-      if (target !== undefined && (!memoryManager.loadSessionMetadata(target) || !memoryManager.hasSessionTranscript(target))) {
+      if (target !== undefined && (!memoryManager.sessions.loadSessionMetadata(target) || !memoryManager.sessions.hasSessionTranscript(target))) {
         try {
           await routinesStore.markOrphaned(target);
         } catch (err) {

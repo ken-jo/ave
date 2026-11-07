@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_TOOL_RESULT_ARTIFACT_BYTES, MemoryManager } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../../shared/tool-output-artifact.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_RESULT_WIRE_MAX_CHARS } from "../../shared/bounded-tool-output.js";
 
@@ -55,7 +56,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
       isError: false,
       image: { data: base64, mimeType: "image/png", bytes: 12 },
     };
-    await mm.saveSession(SESSION_ID, [msg]);
+    await mm.sessions.saveSession(SESSION_ID, [msg]);
 
     const jsonl = readFileSync(join(dir, "sessions", `${SESSION_ID}.jsonl`), "utf-8");
     expect(jsonl).not.toContain(base64); // no base64 payload on disk
@@ -63,7 +64,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     expect(jsonl).toContain("[image loaded]"); // placeholder text retained
     expect(jsonl).toContain("toolu_view_image_1");
 
-    const loaded = mm.loadSession(SESSION_ID);
+    const loaded = mm.sessions.loadSession(SESSION_ID);
     expect(loaded?.[0]).toMatchObject({
       role: "tool_result",
       toolUseId: "toolu_view_image_1",
@@ -78,7 +79,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
   it("saves oversized tool_result content as a JSONL stub plus artifact", async () => {
     const raw = Array.from({ length: 150 }, (_, i) => `row ${i}: ${"x".repeat(80)}`).join("\n");
 
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
 
     const jsonl = readFileSync(join(dir, "sessions", `${SESSION_ID}.jsonl`), "utf-8");
     expect(jsonl).toContain("[tool_result truncated by host");
@@ -93,7 +94,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     expect(entries.filter((entry) => entry.endsWith(".txt"))).toHaveLength(1);
     expect(entries.filter((entry) => entry.endsWith(".json"))).toHaveLength(1);
 
-    const artifact = mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
+    const artifact = mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
     expect(artifact).toMatchObject({
       toolUseId: "toolu_artifact_1",
       toolName: "long_output_query",
@@ -105,15 +106,15 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
 
   it("keeps artifact content available across stub-only session rewrites", async () => {
     const raw = "large result\n".repeat(160);
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
 
-    const loaded = mm.loadSession(SESSION_ID);
+    const loaded = mm.sessions.loadSession(SESSION_ID);
     expect(loaded).not.toBeNull();
-    await mm.saveSession(SESSION_ID, loaded!);
+    await mm.sessions.saveSession(SESSION_ID, loaded!);
 
-    const artifact = mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
+    const artifact = mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
     expect(artifact?.content).toBe(raw);
-    expect(mm.loadSession(SESSION_ID)?.[0]).toMatchObject({
+    expect(mm.sessions.loadSession(SESSION_ID)?.[0]).toMatchObject({
       role: "tool_result",
       toolUseId: "toolu_artifact_1",
       meta: {
@@ -125,11 +126,11 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
 
   it("rehydrates artifact-backed stubs for fork-style cross-session saves", async () => {
     const raw = "forkable artifact result\n".repeat(140);
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
-    const loaded = mm.loadSession(SESSION_ID);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    const loaded = mm.sessions.loadSession(SESSION_ID);
     expect(loaded).not.toBeNull();
 
-    const hydrated = mm.rehydrateToolResultArtifacts(SESSION_ID, loaded!);
+    const hydrated = mm.sessions.rehydrateToolResultArtifacts(SESSION_ID, loaded!);
 
     expect(hydrated[0]).toMatchObject({
       role: "tool_result",
@@ -141,14 +142,14 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     });
 
     const forkId = "4ba882ce-d6c4-4534-81a6-444672f37669";
-    await mm.saveSession(forkId, hydrated);
-    expect(mm.loadToolResultArtifact(forkId, "toolu_artifact_1")?.content).toBe(raw);
+    await mm.sessions.saveSession(forkId, hydrated);
+    expect(mm.sessions.loadToolResultArtifact(forkId, "toolu_artifact_1")?.content).toBe(raw);
   });
 
   it("does not mistake raw oversized content with a stub prefix for a serialized stub", async () => {
     const raw = `[tool_result truncated by host but this is real output]\n${"prefix collision\n".repeat(160)}`;
 
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
 
     const jsonl = readFileSync(join(dir, "sessions", `${SESSION_ID}.jsonl`), "utf-8");
     expect(jsonl).toContain("[tool_result truncated by host");
@@ -156,30 +157,30 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     expect(saved.content).toContain("prefix collision");
     expect(saved.content).not.toContain(raw);
     expect(saved.content.length).toBeLessThanOrEqual(TOOL_RESULT_WIRE_MAX_CHARS);
-    expect(mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")?.content).toBe(raw);
+    expect(mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")?.content).toBe(raw);
   });
 
   it("skips file-backed artifact persistence when content exceeds the artifact cap", async () => {
-    await mm.saveSession(SESSION_ID, [artifactMessage("stale artifact\n".repeat(150))]);
-    expect(mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")).not.toBeNull();
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage("stale artifact\n".repeat(150))]);
+    expect(mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")).not.toBeNull();
 
     const raw = "x".repeat(MAX_TOOL_RESULT_ARTIFACT_BYTES + 1);
 
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
 
-    const saved = mm.loadSession(SESSION_ID)?.[0] as { content: string; meta?: Record<string, unknown> };
+    const saved = mm.sessions.loadSession(SESSION_ID)?.[0] as { content: string; meta?: Record<string, unknown> };
     expect(saved.content).toContain("artifact storage cap");
     expect(saved.content).not.toContain("read_tool_result_chunk");
     expect(saved.meta?.artifactUnavailable).toMatchObject({
       reason: "artifact-too-large",
       maxBytes: MAX_TOOL_RESULT_ARTIFACT_BYTES,
     });
-    expect(mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")).toBeNull();
+    expect(mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")).toBeNull();
   });
 
   it("does not rehydrate unavailable stubs even if a stale artifact is present", async () => {
     const raw = "stale artifact\n".repeat(150);
-    await mm.saveSession(SESSION_ID, [artifactMessage(raw)]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage(raw)]);
     const unavailableStub = {
       role: "tool_result" as const,
       toolUseId: "toolu_artifact_1",
@@ -195,7 +196,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
       },
     };
 
-    const hydrated = mm.rehydrateToolResultArtifacts(SESSION_ID, [unavailableStub]);
+    const hydrated = mm.sessions.rehydrateToolResultArtifacts(SESSION_ID, [unavailableStub]);
 
     expect(hydrated[0]).toBe(unavailableStub);
   });
@@ -203,7 +204,7 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
   it("preserves exact opaque toolUseIds in the recovery instruction", async () => {
     const opaqueId = "toolu weird/opaque?id=1";
     const raw = "opaque result\n".repeat(160);
-    await mm.saveSession(SESSION_ID, [{
+    await mm.sessions.saveSession(SESSION_ID, [{
       ...artifactMessage(raw),
       toolUseId: opaqueId,
     }]);
@@ -212,12 +213,12 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     const saved = JSON.parse(jsonl) as { content: string };
     expect(saved.content).toContain(`toolUseId=${JSON.stringify(opaqueId)}`);
     expect(saved.content).toContain(`read_tool_result_chunk with toolUseId=${JSON.stringify(opaqueId)}`);
-    expect(mm.loadToolResultArtifact(SESSION_ID, opaqueId)?.content).toBe(raw);
+    expect(mm.sessions.loadToolResultArtifact(SESSION_ID, opaqueId)?.content).toBe(raw);
   });
 
   it("preserves bounded recovery details for compacted oversized results", async () => {
     const raw = "compacted artifact result\n".repeat(160);
-    await mm.saveSession(SESSION_ID, [{
+    await mm.sessions.saveSession(SESSION_ID, [{
       ...artifactMessage(raw),
       meta: {
         compactedAt: "2026-05-19T00:00:00.000Z",
@@ -225,42 +226,42 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
       },
     }]);
 
-    expect(mm.loadSession(SESSION_ID)?.[0]).toMatchObject({
+    expect(mm.sessions.loadSession(SESSION_ID)?.[0]).toMatchObject({
       role: "tool_result",
       content: expect.stringContaining("[tool_result truncated by host"),
     });
 
-    const loaded = mm.loadSession(SESSION_ID);
+    const loaded = mm.sessions.loadSession(SESSION_ID);
     expect(loaded).not.toBeNull();
-    await mm.saveSession(SESSION_ID, loaded!);
+    await mm.sessions.saveSession(SESSION_ID, loaded!);
 
-    const resaved = mm.loadSession(SESSION_ID)?.[0] as { content?: string } | undefined;
+    const resaved = mm.sessions.loadSession(SESSION_ID)?.[0] as { content?: string } | undefined;
     expect(resaved?.content).toContain("[tool_result truncated by host");
     expect(resaved?.content).toContain("compacted artifact result");
-    expect(mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")?.content).toBe(raw);
+    expect(mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1")?.content).toBe(raw);
   });
 
   it("keeps checkpoint artifact content after the main session is compacted away", async () => {
     const raw = "checkpoint result\n".repeat(180);
-    await mm.saveCheckpointSnapshot(SESSION_ID, 1, [
+    await mm.sessions.saveCheckpointSnapshot(SESSION_ID, 1, [
       { role: "assistant", content: "calling", toolCalls: [{ id: "toolu_artifact_1", name: "long_output_query", input: {} }] },
       artifactMessage(raw),
     ]);
-    await mm.saveSession(SESSION_ID, [{ role: "assistant", content: "compact summary only" }]);
+    await mm.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "compact summary only" }]);
 
-    const artifact = mm.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
+    const artifact = mm.sessions.loadToolResultArtifact(SESSION_ID, "toolu_artifact_1");
     expect(artifact?.content).toBe(raw);
-    expect(mm.loadCheckpointSnapshot(SESSION_ID, 1)?.[1]).toMatchObject({
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_ID, 1)?.[1]).toMatchObject({
       role: "tool_result",
       content: expect.stringContaining("[tool_result truncated by host"),
     });
   });
 
   it("removes artifact files once no session or checkpoint references them", async () => {
-    await mm.saveSession(SESSION_ID, [artifactMessage("orphan soon\n".repeat(150))]);
+    await mm.sessions.saveSession(SESSION_ID, [artifactMessage("orphan soon\n".repeat(150))]);
     expect(existsSync(artifactDir())).toBe(true);
 
-    await mm.saveSession(SESSION_ID, [{ role: "assistant", content: "no tool results" }]);
+    await mm.sessions.saveSession(SESSION_ID, [{ role: "assistant", content: "no tool results" }]);
 
     expect(readdirSync(artifactDir())).toEqual([]);
   });

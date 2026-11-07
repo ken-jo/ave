@@ -246,7 +246,7 @@ describe("checkpoint recovery and retention", () => {
     const other = randomUUID();
     await withCodeCheckpoint({ sessionId: other, messageId: "kept" }, () => edit("other"));
     const before = await readdir(storage);
-    await new MemoryManager({ aveDir: join(root, "state") }).deleteSession(sessionId);
+    await new MemoryManager({ aveDir: join(root, "state") }).sessions.deleteSession(sessionId);
     expect(await restoreCodeCheckpoint(sessionId, "deleted")).toEqual(unavailable);
     expect(await restoreCodeCheckpoint(other, "kept")).toEqual({ ok: true });
     expect((await readdir(storage)).length).toBeLessThan(before.length);
@@ -257,7 +257,7 @@ describe("checkpoint recovery and retention", () => {
     const old = await readFile(join(storage, "turns.json"), "utf8");
     await writeFile(join(storage, "turns.json.corrupt-1-example.bak"), old);
     await writeFile(join(storage, `image-${randomUUID()}.json`), '"orphan"', { mode: 0o600 });
-    await new MemoryManager({ aveDir: join(root, "state") }).deleteSession(sessionId);
+    await new MemoryManager({ aveDir: join(root, "state") }).sessions.deleteSession(sessionId);
     expect(await readdir(storage)).toEqual(["turns.json"]);
   });
 });

@@ -53,7 +53,7 @@ async function register(): Promise<void> {
   } as never);
 }
 
-const listed = (id: string) => mm.listSessions().some((session) => session.id === id);
+const listed = (id: string) => mm.sessions.listSessions().some((session) => session.id === id);
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ave-chat-suggestions-"));
@@ -69,7 +69,7 @@ afterEach(async () => {
 
 describe("deleting the Suggestions conversation", () => {
   it("clears its history and lists it again at once, empty", async () => {
-    await mm.saveSession(SUGGESTIONS_SESSION_ID, [
+    await mm.sessions.saveSession(SUGGESTIONS_SESSION_ID, [
       { role: "user", content: "an accepted suggestion" },
       { role: "assistant", content: "its answer" },
     ]);
@@ -80,11 +80,11 @@ describe("deleting the Suggestions conversation", () => {
 
     expect(result).toEqual({ ok: true, wasLoaded: false });
     expect(listed(SUGGESTIONS_SESSION_ID)).toBe(true);
-    expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
+    expect(mm.sessions.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([]);
   });
 
   it("leaves it untouched when the user cancels the confirm", async () => {
-    await mm.saveSession(SUGGESTIONS_SESSION_ID, [{ role: "user", content: "kept" }]);
+    await mm.sessions.saveSession(SUGGESTIONS_SESSION_ID, [{ role: "user", content: "kept" }]);
     showMessageBox.mockResolvedValue({ response: 0 });
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean; canceled?: boolean }>>(
@@ -92,13 +92,13 @@ describe("deleting the Suggestions conversation", () => {
     );
 
     expect(result).toEqual({ ok: false, canceled: true });
-    expect(mm.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([
+    expect(mm.sessions.loadSession(SUGGESTIONS_SESSION_ID)).toEqual([
       expect.objectContaining({ role: "user", content: "kept" }),
     ]);
   });
 
   it("removes an ordinary conversation for good", async () => {
-    await mm.saveSession(ORDINARY, [{ role: "user", content: "mine" }]);
+    await mm.sessions.saveSession(ORDINARY, [{ role: "user", content: "mine" }]);
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean }>>(
       handlers, DELETE, { sessionId: ORDINARY },
@@ -112,26 +112,26 @@ describe("deleting the Suggestions conversation", () => {
 
 describe("archiving the Suggestions conversation", () => {
   it("is refused, and the row stays unarchived", async () => {
-    mm.touchSessionTranscript(SUGGESTIONS_SESSION_ID, { bump: false });
+    mm.sessions.touchSessionTranscript(SUGGESTIONS_SESSION_ID, { bump: false });
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean; error?: string }>>(
       handlers, UPDATE, { sessionId: SUGGESTIONS_SESSION_ID, archived: true },
     );
 
     expect(result).toEqual({ ok: false, error: "suggestions-not-archivable" });
-    const row = mm.listSessions().find((session) => session.id === SUGGESTIONS_SESSION_ID);
+    const row = mm.sessions.listSessions().find((session) => session.id === SUGGESTIONS_SESSION_ID);
     expect(row?.archivedAt).toBeFalsy();
   });
 
   it("still archives an ordinary conversation", async () => {
-    await mm.saveSession(ORDINARY, [{ role: "user", content: "mine" }]);
+    await mm.sessions.saveSession(ORDINARY, [{ role: "user", content: "mine" }]);
 
     const result = await invokeRegisteredHandler<Promise<{ ok: boolean }>>(
       handlers, UPDATE, { sessionId: ORDINARY, archived: true },
     );
 
     expect(result).toEqual({ ok: true });
-    const row = mm.listSessions().find((session) => session.id === ORDINARY);
+    const row = mm.sessions.listSessions().find((session) => session.id === ORDINARY);
     expect(row?.archivedAt).toBeTruthy();
   });
 });

@@ -370,7 +370,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
       });
 
       void Promise.resolve(
-        self.deps.memoryManager?.saveSession(self.sessionId, self.history.getMessages()),
+        self.deps.memoryManager?.sessions.saveSession(self.sessionId, self.history.getMessages()),
       ).catch((err: unknown) => {
         log.warn("manualCompact saveSession failed: %s", (err as Error).message);
       });
@@ -437,14 +437,14 @@ export async function applyBoundaryToSession(
         ...(result.truncatedDir !== undefined ? { truncatedDir: result.truncatedDir } : {}),
       });
       try {
-        await self.deps.memoryManager.saveCheckpointSnapshot(
+        await self.deps.memoryManager.sessions.saveCheckpointSnapshot(
           self.sessionId,
           self.compactNum,
           messagesBefore,
         );
         const { usableContext: usable } = contextBudgetForCurrentRuntime(self);
         const ctxUsageAtTrigger = usable > 0 ? Math.min(1.0, estimatedBefore / usable) : 0;
-        const checkpointEntry: import("../../memory/memory-manager.js").Checkpoint = {
+        const checkpointEntry: import("../../memory/session-repository.js").Checkpoint = {
           id: crypto.randomUUID(),
           triggeredAt: truncated.createdAt,
           trigger,
@@ -453,9 +453,9 @@ export async function applyBoundaryToSession(
           messageCountAtTrigger: prevMessageCount,
           compactNum: self.compactNum,
         };
-        const existingMeta = self.deps.memoryManager.loadSessionMetadata(self.sessionId) ?? {};
-        const updatedMeta = self.deps.memoryManager.appendCheckpoint(existingMeta, checkpointEntry);
-        await self.deps.memoryManager.saveSessionMetadata(self.sessionId, updatedMeta);
+        const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(self.sessionId) ?? {};
+        const updatedMeta = self.deps.memoryManager.sessions.appendCheckpoint(existingMeta, checkpointEntry);
+        await self.deps.memoryManager.sessions.saveSessionMetadata(self.sessionId, updatedMeta);
       } catch (storageErr) {
         log.warn(`applyBoundaryToSession: content-truncated checkpoint persist failed — ${(storageErr as Error).message}`);
       }
@@ -484,7 +484,7 @@ export async function applyBoundaryToSession(
 
     // Snapshot failure is non-fatal to compaction; branching reports the missing snapshot when used.
     try {
-      await self.deps.memoryManager.saveCheckpointSnapshot(
+      await self.deps.memoryManager.sessions.saveCheckpointSnapshot(
         self.sessionId,
         self.compactNum,
         messagesBefore,
@@ -514,7 +514,7 @@ export async function applyBoundaryToSession(
     try {
       const { usableContext: usable } = contextBudgetForCurrentRuntime(self);
       const ctxUsageAtTrigger = usable > 0 ? Math.min(1.0, estimatedBefore / usable) : 0;
-      const checkpointEntry: import("../../memory/memory-manager.js").Checkpoint = {
+      const checkpointEntry: import("../../memory/session-repository.js").Checkpoint = {
         id: crypto.randomUUID(),
         triggeredAt: result.boundary.createdAt,
         trigger,
@@ -523,9 +523,9 @@ export async function applyBoundaryToSession(
         messageCountAtTrigger: prevMessageCount,
         compactNum: self.compactNum,
       };
-      const existingMeta = self.deps.memoryManager.loadSessionMetadata(self.sessionId) ?? {};
-      const updatedMeta = self.deps.memoryManager.appendCheckpoint(existingMeta, checkpointEntry);
-      await self.deps.memoryManager.saveSessionMetadata(self.sessionId, {
+      const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(self.sessionId) ?? {};
+      const updatedMeta = self.deps.memoryManager.sessions.appendCheckpoint(existingMeta, checkpointEntry);
+      await self.deps.memoryManager.sessions.saveSessionMetadata(self.sessionId, {
         ...updatedMeta,
         summaryPreamble: preamble,
       });

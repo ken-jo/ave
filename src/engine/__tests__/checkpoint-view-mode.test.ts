@@ -23,18 +23,20 @@ function makeLoop(
   const resolvedSnapshot = snapshotMessages === undefined ? FAKE_DISK_MESSAGES : snapshotMessages;
 
   const memoryManager = {
-    saveSession: vi.fn(async (id: string, msgs: unknown[]) => { savedSessions.set(id, msgs); }),
-    saveSessionMetadata: vi.fn(async (id: string, meta: unknown) => { savedMetadata.set(id, meta); }),
-    loadSessionMetadata: vi.fn((_id: string) => {
-      if (!metaCheckpoints) return null;
-      return { checkpoints: metaCheckpoints };
-    }),
-    loadToolResultArtifact: vi.fn(() => null),
-    rehydrateToolResultArtifacts: vi.fn((_sessionId: string, messages: unknown[]) => messages,
-    ),
-    loadCheckpointSnapshot: vi.fn((_id: string, _num: number) => resolvedSnapshot,
-    ),
-    listSessions: vi.fn(() => []),
+    sessions: {
+      saveSession: vi.fn(async (id: string, msgs: unknown[]) => { savedSessions.set(id, msgs); }),
+      saveSessionMetadata: vi.fn(async (id: string, meta: unknown) => { savedMetadata.set(id, meta); }),
+      loadSessionMetadata: vi.fn((_id: string) => {
+        if (!metaCheckpoints) return null;
+        return { checkpoints: metaCheckpoints };
+      }),
+      loadToolResultArtifact: vi.fn(() => null),
+      rehydrateToolResultArtifacts: vi.fn((_sessionId: string, messages: unknown[]) => messages,
+      ),
+      loadCheckpointSnapshot: vi.fn((_id: string, _num: number) => resolvedSnapshot,
+      ),
+      listSessions: vi.fn(() => []),
+    },
   };
 
   const loop = new ConversationLoop(makeBasicConversationLoopDeps({
@@ -133,7 +135,7 @@ describe("ConversationLoop branchFromCheckpoint", () => {
     const result = await loop.branchFromCheckpoint(1);
     const { newSessionId } = result;
 
-    expect(memoryManager.loadCheckpointSnapshot).toHaveBeenCalledWith(loop.getSessionId(), 1,
+    expect(memoryManager.sessions.loadCheckpointSnapshot).toHaveBeenCalledWith(loop.getSessionId(), 1,
     );
 
     expect(newSessionId).toMatch(/^[0-9a-f-]{36}$/);
@@ -169,7 +171,7 @@ describe("ConversationLoop branchFromCheckpoint", () => {
       [{ compactNum: 1, messageCountAtTrigger: 2 }],
       snapshot,
     );
-    memoryManager.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, messages: unknown[]) =>
+    memoryManager.sessions.rehydrateToolResultArtifacts.mockImplementation((_sessionId: string, messages: unknown[]) =>
       messages.map((message) => {
         if ((message as { role?: string; toolUseId?: string }).role !== "tool_result") return message;
         return {
@@ -186,7 +188,7 @@ describe("ConversationLoop branchFromCheckpoint", () => {
         };
       }),
     );
-    memoryManager.loadToolResultArtifact.mockReturnValue({
+    memoryManager.sessions.loadToolResultArtifact.mockReturnValue({
       toolUseId: "tu-art",
       toolName: "long_output_query",
       content: raw,
@@ -217,7 +219,7 @@ describe("ConversationLoop branchFromCheckpoint", () => {
     });
     expect((saved[1].meta as Record<string, unknown>).serializedStub,
     ).toBeUndefined();
-    expect(memoryManager.rehydrateToolResultArtifacts).toHaveBeenCalledWith(loop.getSessionId(), snapshot,
+    expect(memoryManager.sessions.rehydrateToolResultArtifacts).toHaveBeenCalledWith(loop.getSessionId(), snapshot,
     );
   });
 

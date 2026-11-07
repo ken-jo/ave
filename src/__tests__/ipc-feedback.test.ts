@@ -39,7 +39,7 @@ function makeServices(overrides: Record<string, unknown> = {}) {
     },
     pluginRuntime: { listUiExtensions: vi.fn(() => []), listPluginCards: vi.fn(() => []), callFromUi: vi.fn(), restartAll: vi.fn(), getPerfStats: vi.fn(() => ({})) },
     pluginMarketplace: { list: vi.fn(() => []), install: vi.fn(), uninstall: vi.fn() },
-    memoryManager: { listMemoryEntries: vi.fn(() => []), saveMemory: vi.fn(), deleteMemory: vi.fn(), searchMemoryEntries: vi.fn(() => []), getMemoryContext: vi.fn(() => ""), getUserPreferences: vi.fn(() => ""), updateUserPreferences: vi.fn(), saveSession: vi.fn() },
+    memoryManager: { listMemoryEntries: vi.fn(() => []), saveMemory: vi.fn(), deleteMemory: vi.fn(), searchMemoryEntries: vi.fn(() => []), getMemoryContext: vi.fn(() => ""), getUserPreferences: vi.fn(() => ""), updateUserPreferences: vi.fn(), sessions: { saveSession: vi.fn() } },
     approvalGate: null,
     mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() },
     ...overrides,

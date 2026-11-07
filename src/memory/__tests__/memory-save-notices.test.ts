@@ -26,7 +26,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   manager.stopPersistentContextWatcher();
-  manager.closeSearchIndex();
+  manager.sessions.closeSearchIndex();
   await cleanupTmpDir(dir);
 });
 

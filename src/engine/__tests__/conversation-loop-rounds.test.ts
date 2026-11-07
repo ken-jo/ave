@@ -1123,7 +1123,7 @@ describe("ConversationLoop queryLoop", () => {
         { length: 160 },
         (_, i) => `row-${i.toString().padStart(3, "0")}: ${"x".repeat(20)}`,
       ).join("\n");
-      await memoryManager.saveSession(sessionId, [
+      await memoryManager.sessions.saveSession(sessionId, [
         {
           role: "assistant",
           content: "",
@@ -1169,7 +1169,7 @@ describe("ConversationLoop queryLoop", () => {
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       expect(await loop.loadSession(sessionId)).toBe(true);
-      const persistedUnknown = memoryManager.loadSession(sessionId);
+      const persistedUnknown = memoryManager.sessions.loadSession(sessionId);
       expect(persistedUnknown).not.toBeNull();
       const persisted = persistedUnknown as GenericMessage[];
       const persistedResult = persisted[1];

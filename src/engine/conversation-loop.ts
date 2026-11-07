@@ -25,7 +25,7 @@ import type {
   TokenUsage,
 } from "./llm/types.js";
 import type { ReadableToolResult } from "../tools/tool-result-chunk.js";
-import type { SessionKind } from "../memory/memory-manager.js";
+import type { SessionKind } from "../shared/session-lookup.js";
 import type { ActiveRolePrompt } from "../data/role-presets.js";
 import type { TurnMemoryUse } from "../prompts/system-prompt-builder.js";
 import { AuditLogger } from "../audit/audit-logger.js";
@@ -653,14 +653,14 @@ export class ConversationLoop {
     if (match.meta?.outputArtifact !== undefined) {
       const outputArtifact = normalizeToolOutputArtifactInfo(match.meta.outputArtifact);
       const content = outputArtifact
-        ? this.deps.memoryManager.loadToolOutputArtifact(this.sessionId, toolUseId, outputArtifact)
+        ? this.deps.memoryManager.sessions.loadToolOutputArtifact(this.sessionId, toolUseId, outputArtifact)
         : null;
       return { ...match, content: content ?? "", ...(outputArtifact ? { outputArtifact } : {}), artifactReadUnavailable: content === null };
     }
     if (isToolResultStubContent(match.content)) {
       const artifact = match.meta?.artifactUnavailable
         ? null
-        : this.deps.memoryManager.loadToolResultArtifact(this.sessionId, toolUseId);
+        : this.deps.memoryManager.sessions.loadToolResultArtifact(this.sessionId, toolUseId);
       if (!artifact) return match;
       const { serializedStub: _serializedStub, ...restMeta } = match.meta ?? {};
       return {
@@ -741,7 +741,7 @@ export class ConversationLoop {
   }
 
   public enterViewMode(compactNum: number): { messageIndexAtCreation: number } | null {
-    const checkpoints = this.deps.memoryManager.loadSessionMetadata(this.sessionId)?.checkpoints ?? [];
+    const checkpoints = this.deps.memoryManager.sessions.loadSessionMetadata(this.sessionId)?.checkpoints ?? [];
     const target = checkpoints.find((c) => c.compactNum === compactNum);
     if (!target) return null;
     return { messageIndexAtCreation: target.messageCountAtTrigger };
@@ -805,7 +805,7 @@ export class ConversationLoop {
   }
 
   listSessions(limit?: number): Array<{ id: string; modifiedAt: Date; title: string }> {
-    return this.deps.memoryManager.listSessions(limit).map((session) => ({
+    return this.deps.memoryManager.sessions.listSessions(limit).map((session) => ({
       id: session.id,
       modifiedAt: session.modifiedAt,
       title: session.title,

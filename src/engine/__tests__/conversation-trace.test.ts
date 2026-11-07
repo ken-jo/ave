@@ -62,8 +62,10 @@ function makeLoop(provider: LLMProvider) {
     systemPromptBuilder: { build: () => "system" },
     toolRegistry,
     memoryManager: {
-      saveSession: () => {},
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
     },
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;

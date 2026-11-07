@@ -1,6 +1,6 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { MAX_SESSION_FILE_BYTES } from "../../../memory/memory-manager.js";
+import { MAX_SESSION_FILE_BYTES } from "../../../memory/session-repository.js";
 import {
   MAX_LOCAL_USER_CONTENT_PARTS,
   MAX_LOCAL_USER_CONTENT_TEXT_CHARS,
@@ -72,9 +72,11 @@ function makeDeps() {
     conversationLoop: { getSessionId: vi.fn(() => "active"), listSessions: vi.fn(() => []) } as any,
     settingsService: { get: vi.fn(() => ({})), patch: vi.fn(async () => undefined) } as any,
     memoryManager: {
-      saveImportedSession: vi.fn(async () => undefined),
-      saveSession: vi.fn(async () => undefined),
-      saveSessionMetadata: vi.fn(async () => undefined),
+      sessions: {
+        saveImportedSession: vi.fn(async () => undefined),
+        saveSession: vi.fn(async () => undefined),
+        saveSessionMetadata: vi.fn(async () => undefined),
+      },
     } as any,
     auditLogger: { log: vi.fn() } as any,
     getMainWindow: vi.fn(() => null),
@@ -129,8 +131,8 @@ describe("ave:chat:import — success round-trip", () => {
     expect(result.messageCount).toBe(3);
     expect(typeof result.sessionId).toBe("string");
     expect(result.sessionId).not.toBe("original-session-id");
-    expect(deps.memoryManager.saveImportedSession).toHaveBeenCalledTimes(1);
-    const [savedId, savedMessages] = deps.memoryManager.saveImportedSession.mock.calls[0];
+    expect(deps.memoryManager.sessions.saveImportedSession).toHaveBeenCalledTimes(1);
+    const [savedId, savedMessages] = deps.memoryManager.sessions.saveImportedSession.mock.calls[0];
     expect(savedId).toBe(result.sessionId);
     expect(savedMessages).toHaveLength(3);
     expect(savedMessages[1]).toEqual({ role: "assistant", content: "hi back", thought: "reasoning" });
@@ -146,7 +148,7 @@ describe("ave:chat:import — success round-trip", () => {
 
     const result = await invoke();
     expect(result.ok).toBe(true);
-    expect(deps.memoryManager.saveImportedSession).toHaveBeenCalledTimes(1);
+    expect(deps.memoryManager.sessions.saveImportedSession).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -178,7 +180,7 @@ describe("ave:chat:import — canonical attachment storage", () => {
 
     const result = await invoke();
     expect(result.ok).toBe(true);
-    expect(deps.memoryManager.saveImportedSession).toHaveBeenCalledWith(
+    expect(deps.memoryManager.sessions.saveImportedSession).toHaveBeenCalledWith(
       result.sessionId,
       [{
         role: "user",
@@ -199,7 +201,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
     const result = await invoke();
     expect(result).toEqual({ ok: false, canceled: true });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects a file larger than MAX_SESSION_FILE_BYTES before reading it", async () => {
@@ -209,7 +211,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
     const result = await invoke();
     expect(result).toEqual({ ok: false, error: "file-too-large" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects non-JSON file content", async () => {
@@ -253,7 +255,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
     const result = await invoke();
     expect(result).toEqual({ ok: false, error: "invalid-message-shape" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects invalid optional image metadata", async () => {
@@ -279,7 +281,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
       });
       expect(await invoke()).toEqual({ ok: false, error: "invalid-message-shape" });
     }
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
 
@@ -297,7 +299,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
     });
 
     expect(await invoke()).toEqual({ ok: false, error: "invalid-message-shape" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects multipart user text over the part or aggregate-character cap", async () => {
@@ -327,7 +329,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
     // Keep fstat below the independent byte cap so the test reaches composition validation.
     fsState.size = MAX_SESSION_FILE_BYTES;
     expect(await invoke()).toEqual({ ok: false, error: "invalid-message-shape" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects a message with an unknown role (whole import fails, no partial)", async () => {
@@ -339,7 +341,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
     const result = await invoke();
     expect(result).toEqual({ ok: false, error: "invalid-message-shape" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("rejects a message carrying an unknown field (arbitrary-field smuggling)", async () => {
@@ -379,7 +381,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
 
     const result = await invoke();
     expect(result).toEqual({ ok: false, error: "too-many-messages" });
-    expect(deps.memoryManager.saveImportedSession).not.toHaveBeenCalled();
+    expect(deps.memoryManager.sessions.saveImportedSession).not.toHaveBeenCalled();
   });
 
   it("accepts rows carrying meta — this app's own export writes it — and keeps none of it", async () => {
@@ -406,7 +408,7 @@ describe("ave:chat:import — rejection branches (fail-closed)", () => {
     const result = await invoke();
 
     expect(result.ok).toBe(true);
-    const [, savedMessages] = deps.memoryManager.saveImportedSession.mock.calls[0];
+    const [, savedMessages] = deps.memoryManager.sessions.saveImportedSession.mock.calls[0];
     expect(savedMessages).toHaveLength(3);
     expect(JSON.stringify(savedMessages)).not.toContain("borrowed-row-id");
     expect(JSON.stringify(savedMessages)).not.toContain("compactBoundary");

@@ -93,8 +93,10 @@ function createLoopWithRegistry(
     systemPromptBuilder: { build: () => "system" },
     toolRegistry,
     memoryManager: {
-      saveSession: () => {},
-      listSessions: () => [],
+      sessions: {
+        saveSession: () => {},
+        listSessions: () => [],
+      },
     },
     ...makeConversationPermissionDeps(),
     ...overrides,
@@ -473,7 +475,7 @@ describe("ConversationLoop onTurnSummary", () => {
       { type: "message_complete", stopReason: "end_turn", usage: { inputTokens: 60, outputTokens: 10 } },
     ]]));
     const memoryManager = new MemoryManager({ aveDir: aveHome() });
-    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
+    const beginJournal = vi.spyOn(memoryManager.sessions, "beginTurnJournal");
     const loop = createLoopWithRegistry(fallback, new ToolRegistry(), {
       memoryManager,
       settingsService: { get: () => settings, getSecret: () => "test-key" },
@@ -486,7 +488,7 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(summary).toMatchObject({ vendorProvider: "openai", vendorModel: "gpt-3.5-turbo" });
     expect(summary?.modelSettings).toBeUndefined();
     expect(beginJournal).toHaveBeenCalledOnce();
-    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    const persisted = memoryManager.sessions.loadSession(loop.getSessionId()) as GenericMessage[] | null;
     expect(persisted?.some((message) => message.role === "assistant" && message.content === "fallback answer")).toBe(true);
   });
 
@@ -668,10 +670,7 @@ describe("ConversationLoop onTurnSummary", () => {
     ]);
     const saveSession = vi.fn(async () => {});
     const loop = createLoopWithRegistry(provider, toolRegistry, {
-      memoryManager: {
-        saveSession,
-        listSessions: () => [],
-      } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
     });
 
     await loop.runTurn("질문", {}, undefined, { ...userKeyboardTurn() });
@@ -730,7 +729,7 @@ describe("ConversationLoop onTurnSummary", () => {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: async () => "test-key",
       },
-      memoryManager: { saveSession, listSessions: () => [] } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
       auditLogger: auditLogger as never,
     });
 
@@ -799,8 +798,8 @@ describe("ConversationLoop onTurnSummary", () => {
       execute: async () => ({ output: "value", isError: false }),
     }));
     const memoryManager = new MemoryManager({ aveDir: aveHome() });
-    const beginJournal = vi.spyOn(memoryManager, "beginTurnJournal");
-    const endJournal = vi.spyOn(memoryManager, "endTurnJournal");
+    const beginJournal = vi.spyOn(memoryManager.sessions, "beginTurnJournal");
+    const endJournal = vi.spyOn(memoryManager.sessions, "endTurnJournal");
     const loop = createLoopWithRegistry(provider, registry, {
       memoryManager,
       settingsService: {
@@ -830,7 +829,7 @@ describe("ConversationLoop onTurnSummary", () => {
     expect(auditLogger.logTurn).toHaveBeenCalledTimes(1);
     expect(beginJournal).toHaveBeenCalledOnce();
     expect(endJournal).toHaveBeenCalledOnce();
-    const persisted = memoryManager.loadSession(loop.getSessionId()) as GenericMessage[] | null;
+    const persisted = memoryManager.sessions.loadSession(loop.getSessionId()) as GenericMessage[] | null;
     expect(persisted?.some((message) => message.role === "user" && message.content === "reply")).toBe(true);
     expect(persisted?.findLast((message) => message.role === "assistant")?.meta?.turnSummary).toMatchObject({
       vendorProvider: "openai", vendorModel: model,
@@ -921,7 +920,7 @@ describe("ConversationLoop onTurnSummary", () => {
         get: () => fakeLlmSettings({ provider: "claude", model: "claude-sonnet-4-6" }),
         getSecret: async () => "test-key",
       },
-      memoryManager: { saveSession, listSessions: () => [] } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
       auditLogger: auditLogger as never,
     });
 
@@ -959,10 +958,12 @@ describe("ConversationLoop onTurnSummary", () => {
     const toolRegistry = new ToolRegistry();
     const saveSession = vi.fn(async (..._args: unknown[]) => {});
     const memoryManager = {
-      saveSession,
-      listSessions: () => [],
-      loadSessionMetadata: () => ({}),
-      saveSessionMetadata: vi.fn(async () => {}),
+      sessions: {
+        saveSession,
+        listSessions: () => [],
+        loadSessionMetadata: () => ({}),
+        saveSessionMetadata: vi.fn(async () => {}),
+      },
     };
     const settingsService = {
       get: fakeUsageReportingSubscriptionSettings,
@@ -1220,10 +1221,12 @@ describe("ConversationLoop onTurnSummary", () => {
     ]);
     const saveSession = vi.fn(async () => {});
     const memoryManager = {
-      saveSession,
-      listSessions: () => [],
-      loadSessionMetadata: () => ({}),
-      saveSessionMetadata: vi.fn(async () => {}),
+      sessions: {
+        saveSession,
+        listSessions: () => [],
+        loadSessionMetadata: () => ({}),
+        saveSessionMetadata: vi.fn(async () => {}),
+      },
     };
     const settingsService = {
       get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
@@ -1269,10 +1272,7 @@ describe("ConversationLoop onTurnSummary", () => {
     const saveSession = vi.fn(async () => {
       throw new Error("disk unavailable");
     });
-    const memoryManager = {
-      saveSession,
-      listSessions: () => [],
-    };
+    const memoryManager = { sessions: { saveSession, listSessions: () => [] } };
     const settingsService = {
       get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
@@ -1310,7 +1310,7 @@ describe("ConversationLoop onTurnSummary", () => {
     ]);
     const saveSession = vi.fn(async () => {});
     const loop = createLoopWithRegistry(provider, toolRegistry, {
-      memoryManager: { saveSession, listSessions: () => [] } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
     });
     const input = '<imported-from-proactive source="overlay:daily-briefing">\n오늘 브리핑\n</imported-from-proactive>';
 
@@ -1339,7 +1339,7 @@ describe("ConversationLoop onTurnSummary", () => {
     ]);
     const saveSession = vi.fn(async () => {});
     const loop = createLoopWithRegistry(provider, toolRegistry, {
-      memoryManager: { saveSession, listSessions: () => [] } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
     });
 
     await loop.runTurn("지금 메일 읽어줘", {}, undefined, { ...userKeyboardTurn(),
@@ -1470,7 +1470,7 @@ describe("ConversationLoop onTurnSummary", () => {
     ]);
     const saveSession = vi.fn(async () => {});
     const loop = createLoopWithRegistry(provider, toolRegistry, {
-      memoryManager: { saveSession, listSessions: () => [] } as never,
+      memoryManager: { sessions: { saveSession, listSessions: () => [] } } as never,
     });
 
     let summary: { tokensIn: number; tokensOut: number; freshInputTokens: number;

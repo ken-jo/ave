@@ -30,8 +30,8 @@ async function subject() {
   registry.register(tool);
   const call = { id: CALL_ID, name: tool.name, input, source: tool.source, category: tool.category };
   const messages = [{ role: "assistant", content: "", toolCalls: [call] }];
-  await memory.saveSession(SESSION_ID, messages);
-  await memory.saveSessionMetadata(SESSION_ID, { projectRoot: project });
+  await memory.sessions.saveSession(SESSION_ID, messages);
+  await memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: project });
   const executeAll = vi.fn(async () => [{ tool_use_id: "fresh", content: "done", is_error: false, durationMs: 0 }]);
   const resolver = createRecentlyDeniedReplayResolver({ memoryManager: memory, toolRegistry: registry, executeAll });
   const invocationRef = makeRecentlyDeniedInvocationRef(input, { cwd: project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN });
@@ -90,14 +90,14 @@ describe("persisted denial invocation references", () => {
 
   it.each(["missing-session", "duplicate-call", "changed-input", "changed-name", "changed-source", "invalid-input", "missing-root", "changed-root"])("refuses %s without entering the executor", async (kind) => {
     const current = await subject();
-    if (kind === "missing-session") vi.spyOn(current.memory, "loadSession").mockReturnValue(null);
-    if (kind === "duplicate-call") await current.memory.saveSession(SESSION_ID, [...current.messages, ...current.messages]);
-    if (kind === "changed-input") await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, input: { message: "changed" } }] }]);
-    if (kind === "changed-name") await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, name: "another_tool" }] }]);
-    if (kind === "changed-source") await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, source: "plugin" }] }]);
-    if (kind === "invalid-input") await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, invalidInput: { raw: "bad" } }] }]);
-    if (kind === "missing-root") await current.memory.saveSessionMetadata(SESSION_ID, {});
-    if (kind === "changed-root") { const other = join(current.root, "other"); mkdirSync(other); await current.memory.saveSessionMetadata(SESSION_ID, { projectRoot: other }); }
+    if (kind === "missing-session") vi.spyOn(current.memory.sessions, "loadSession").mockReturnValue(null);
+    if (kind === "duplicate-call") await current.memory.sessions.saveSession(SESSION_ID, [...current.messages, ...current.messages]);
+    if (kind === "changed-input") await current.memory.sessions.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, input: { message: "changed" } }] }]);
+    if (kind === "changed-name") await current.memory.sessions.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, name: "another_tool" }] }]);
+    if (kind === "changed-source") await current.memory.sessions.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, source: "plugin" }] }]);
+    if (kind === "invalid-input") await current.memory.sessions.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, invalidInput: { raw: "bad" } }] }]);
+    if (kind === "missing-root") await current.memory.sessions.saveSessionMetadata(SESSION_ID, {});
+    if (kind === "changed-root") { const other = join(current.root, "other"); mkdirSync(other); await current.memory.sessions.saveSessionMetadata(SESSION_ID, { projectRoot: other }); }
     expect(await current.resolver(current.entry)).toEqual({ ok: false, error: "rerun-unavailable" });
     expect(current.executeAll).not.toHaveBeenCalled();
   });
@@ -114,7 +114,7 @@ describe("persisted denial invocation references", () => {
     const current = await subject();
     const store = makeRecentlyDeniedStore(join(current.root, "history.json"));
     const id = await store.append(current.entry);
-    const load = vi.spyOn(current.memory, "loadSession").mockReturnValue(null);
+    const load = vi.spyOn(current.memory.sessions, "loadSession").mockReturnValue(null);
     store.setReplayResolver(current.resolver);
     expect((await store.list())[0].rerunAvailable).toBe(true);
     expect(load).not.toHaveBeenCalled();
@@ -137,7 +137,7 @@ describe("persisted denial invocation references", () => {
     const origin = source === "plugin" ? { pluginId: "message-provider" } : { mcpServerId: "message-server" };
     const ownedTool = { ...current.tool, source, ...origin };
     vi.spyOn(current.registry, "findByName").mockReturnValue(ownedTool);
-    await current.memory.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, source, ...origin }] }]);
+    await current.memory.sessions.saveSession(SESSION_ID, [{ ...current.messages[0], toolCalls: [{ ...current.call, source, ...origin }] }]);
     const invocationRef = makeRecentlyDeniedInvocationRef(current.input, { cwd: current.project, toolUseId: CALL_ID, replayOrigin: REPLAY_ORIGIN, ...origin });
     const entry = { ...current.entry, source, invocationRef };
     expect(await current.resolver(entry)).toEqual({ ok: true });

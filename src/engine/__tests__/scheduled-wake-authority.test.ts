@@ -77,7 +77,7 @@ describe("scheduled wake authority", () => {
     const loop = new ConversationLoop(f.deps);
     await inScheduledWake(() => loop.runTurn("check", undefined, undefined, { inputOrigin: "plugin-emitted" }));
     expect(f.seen).toEqual([{ withheld: true, grant: undefined }]);
-    f.memory.closeSearchIndex();
+    f.memory.sessions.closeSearchIndex();
   });
 
   it("stays on a background child the woken turn spawned, after the wake has ended", async () => {
@@ -102,7 +102,7 @@ describe("scheduled wake authority", () => {
       expect(sessionAuthorityWithheld(childSessionId)).toBe(true);
       expect(sessionAuthorityWithheld(f.CHAT)).toBe(false);
     });
-    f.memory.closeSearchIndex();
+    f.memory.sessions.closeSearchIndex();
   });
 
   it("stays on a child the woken turn resumed, after the wake has ended", async () => {
@@ -120,7 +120,7 @@ describe("scheduled wake authority", () => {
     await inScheduledWake(() => runner.resume(childSessionId, "continue", input.title, undefined, f.CHAT));
     release();
     turnExtensionPolicyContext.exit(() => expect(sessionAuthorityWithheld(childSessionId)).toBe(true));
-    f.memory.closeSearchIndex();
+    f.memory.sessions.closeSearchIndex();
   });
 
   it("stays on a running child the woken turn sent instructions to, after the wake has ended", async () => {
@@ -154,6 +154,6 @@ describe("scheduled wake authority", () => {
       open();
       await running;
     });
-    f.memory.closeSearchIndex();
+    f.memory.sessions.closeSearchIndex();
   });
 });

@@ -40,11 +40,13 @@ function makeDeps(history: GenericMessage[]) {
     } as any,
     settingsService: { get: vi.fn(() => ({})), patch: vi.fn(async () => undefined) } as any,
     memoryManager: {
-      saveSession: vi.fn(async () => undefined),
-      saveSessionMetadata: vi.fn(async () => undefined),
-      loadSessionMetadata: vi.fn(() => null),
-      rehydrateToolResultArtifacts: vi.fn((_id: string, msgs: GenericMessage[]) => msgs),
-      markMainActiveResume: vi.fn(async () => undefined),
+      sessions: {
+        saveSession: vi.fn(async () => undefined),
+        saveSessionMetadata: vi.fn(async () => undefined),
+        loadSessionMetadata: vi.fn(() => null),
+        rehydrateToolResultArtifacts: vi.fn((_id: string, msgs: GenericMessage[]) => msgs),
+        markMainActiveResume: vi.fn(async () => undefined),
+      },
     } as any,
     auditLogger: { log: vi.fn() } as any,
     getMainWindow: vi.fn(() => null),
@@ -62,7 +64,7 @@ async function setup(history: GenericMessage[]) {
 }
 
 function forkedMessages(deps: ReturnType<typeof makeDeps>): GenericMessage[] {
-  const call = deps.memoryManager.saveSession.mock.calls.find(
+  const call = deps.memoryManager.sessions.saveSession.mock.calls.find(
     ([sessionId]: [string]) => sessionId !== ACTIVE_SESSION,
   );
   expect(call, "fork must write a new session file").toBeDefined();
@@ -110,7 +112,7 @@ describe("ave:chat:fork — tool-pair invariant", () => {
     const deps = await setup(historyWithOrphanToolCall());
     await invokeRegisteredHandler<Promise<unknown>>(handlers, CHANNEL, -1, "main");
 
-    const activeCall = deps.memoryManager.saveSession.mock.calls.find(
+    const activeCall = deps.memoryManager.sessions.saveSession.mock.calls.find(
       ([sessionId]: [string]) => sessionId === ACTIVE_SESSION,
     );
     expect(activeCall).toBeDefined();

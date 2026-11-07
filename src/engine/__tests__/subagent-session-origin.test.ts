@@ -7,7 +7,7 @@ const CHILD = "sub-11111111-22222222-2222-4222-8222-222222222222";
 describe("subagent session origin", () => {
   it("reads restored ownership only from subagent metadata", () => {
     const loadSessionMetadata = vi.fn(() => ({ sessionKind: "subagent", originSessionId: PARENT }));
-    const runner = new SubAgentRunner({ subAgentMemoryManager: { loadSessionMetadata } } as never);
+    const runner = new SubAgentRunner({ subAgentMemoryManager: { sessions: { loadSessionMetadata } } } as never);
     expect(runner.resolveOriginSessionId(CHILD)).toBe(PARENT);
     loadSessionMetadata.mockReturnValue({ sessionKind: "main", originSessionId: PARENT });
     expect(runner.resolveOriginSessionId(CHILD)).toBeUndefined();
@@ -17,7 +17,7 @@ describe("subagent session origin", () => {
 
   it("prefers live host ownership over stale disk metadata", () => {
     const loadSessionMetadata = vi.fn();
-    const runner = new SubAgentRunner({ subAgentMemoryManager: { loadSessionMetadata } } as never);
+    const runner = new SubAgentRunner({ subAgentMemoryManager: { sessions: { loadSessionMetadata } } } as never);
     vi.spyOn(runner, "liveOriginSessionId").mockReturnValue(PARENT);
     expect(runner.resolveOriginSessionId(CHILD)).toBe(PARENT);
     expect(loadSessionMetadata).not.toHaveBeenCalled();

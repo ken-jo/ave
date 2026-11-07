@@ -65,11 +65,13 @@ function makeHarness(
     },
     toolRegistry,
     memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-      loadSession: (sessionId: string) =>
-        sessionId === "d373c881-0d44-4fc3-8456-f52a702c8481" ? [] : null,
-      loadSessionMetadata: () => null,
+      sessions: {
+        saveSession: () => Promise.resolve(),
+        listSessions: () => [],
+        loadSession: (sessionId: string) =>
+          sessionId === "d373c881-0d44-4fc3-8456-f52a702c8481" ? [] : null,
+        loadSessionMetadata: () => null,
+      },
     },
     ...(closeRationaleSession ? { closeRationaleSession } : {}),
     disableSessionPersistence: true,

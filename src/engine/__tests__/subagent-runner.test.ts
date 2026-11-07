@@ -92,10 +92,12 @@ function fakeSubAgentMemoryManager(memory: Partial<PromptMemorySource> = {}) {
   return {
     // Prompt fixtures must implement the child store reader contract.
     ...makePromptMemorySource(memory),
-    saveSession: () => Promise.resolve(),
-    saveSessionMetadata: () => Promise.resolve(),
-    listSessions: () => [],
-    listSessionsPage: () => [],
+    sessions: {
+      saveSession: () => Promise.resolve(),
+      saveSessionMetadata: () => Promise.resolve(),
+      listSessions: () => [],
+      listSessionsPage: () => [],
+    },
     load: () => undefined,
   } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]["subAgentMemoryManager"];
 }
@@ -807,12 +809,13 @@ describe("SubAgentRunner — projected terminal status", () => {
   it("projects a structurally returned blocked turn as rejected/error", async () => {
     const toolRegistry = new ToolRegistry();
     const saveSessionMetadata = vi.fn(async () => undefined);
+    const sessionMemory = fakeSubAgentMemoryManager();
     const runner = new SubAgentRunner({
       parentDeps: buildLoopDeps(toolRegistry),
       toolRegistry,
       subAgentMemoryManager: {
-        ...fakeSubAgentMemoryManager(),
-        saveSessionMetadata,
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSessionMetadata },
       },
     });
     const hasProviderSpy = vi
@@ -877,12 +880,13 @@ describe("SubAgentRunner — projected terminal status", () => {
     async (stopReason) => {
       const toolRegistry = new ToolRegistry();
       const saveSessionMetadata = vi.fn(async () => undefined);
+      const sessionMemory = fakeSubAgentMemoryManager();
       const runner = new SubAgentRunner({
         parentDeps: buildLoopDeps(toolRegistry),
         toolRegistry,
         subAgentMemoryManager: {
-          ...fakeSubAgentMemoryManager(),
-          saveSessionMetadata,
+          ...sessionMemory,
+          sessions: { ...sessionMemory.sessions, saveSessionMetadata },
         },
       });
       const hasProviderSpy = vi
@@ -958,12 +962,13 @@ describe("SubAgentRunner — projected terminal status", () => {
       messageId: "canceled-message",
     }));
     const toolRegistry = new ToolRegistry();
+    const sessionMemory = fakeSubAgentMemoryManager();
     const runner = new SubAgentRunner({
       parentDeps: buildLoopDeps(toolRegistry),
       toolRegistry,
       subAgentMemoryManager: {
-        ...fakeSubAgentMemoryManager(),
-        saveSessionMetadata,
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSessionMetadata },
       },
       messageBus: { deliverToParent } as never,
     });
@@ -1099,12 +1104,13 @@ describe("SubAgentRunner — projected terminal status", () => {
       messageId: "failed-final-save-message",
     }));
     const toolRegistry = new ToolRegistry();
+    const sessionMemory = fakeSubAgentMemoryManager();
     const runner = new SubAgentRunner({
       parentDeps: buildLoopDeps(toolRegistry),
       toolRegistry,
       subAgentMemoryManager: {
-        ...fakeSubAgentMemoryManager(),
-        saveSessionMetadata,
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSessionMetadata },
       },
       messageBus: { deliverToParent } as never,
     });
@@ -2038,9 +2044,9 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
         : [];
       expect(mainFiles).toEqual([]);
 
-      expect(mainMemoryManager.listSessions()).toEqual([]);
+      expect(mainMemoryManager.sessions.listSessions()).toEqual([]);
       // Child sessions must be listed under the subagent kind, never the default main kind.
-      const subIds = subAgentMemoryManager
+      const subIds = subAgentMemoryManager.sessions
         .listSessions({ kind: "subagent" })
         .map((s) => s.id);
       expect(subIds).toContain(result.childSessionId);
@@ -2172,7 +2178,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
         error: expect.stringContaining("provider not configured"),
       });
       expect(
-        subAgentMemoryManager.loadSessionMetadata(result.childSessionId),
+        subAgentMemoryManager.sessions.loadSessionMetadata(result.childSessionId),
       ).toMatchObject({
         sessionKind: "subagent",
         originSessionId: "b0590dc4-c31e-4ff6-8106-2b5f6d6325d9",
@@ -2215,7 +2221,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     );
     try {
       const result = await run();
-      const meta = subAgentMemoryManager.loadSessionMetadata(
+      const meta = subAgentMemoryManager.sessions.loadSessionMetadata(
         result.childSessionId,
       );
       expect(meta).not.toBeNull();
@@ -2227,7 +2233,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       expect(meta?.budgetResumeCount).toBe(0);
       expect(meta?.questionAnswerCount).toBe(0);
       expect(meta?.cumulativeRounds).toBe(result.turnCount);
-      const listed = subAgentMemoryManager
+      const listed = subAgentMemoryManager.sessions
         .listSessions({ kind: "subagent" })
         .find((s) => s.id === result.childSessionId);
       expect(listed?.sessionKind).toBe("subagent");
@@ -2254,7 +2260,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
     );
     try {
       const result = await run();
-      const meta = subAgentMemoryManager.loadSessionMetadata(
+      const meta = subAgentMemoryManager.sessions.loadSessionMetadata(
         result.childSessionId,
       );
       expect(meta?.sessionKind).toBe("subagent");
@@ -2375,13 +2381,17 @@ describe("SubAgentRunner A2A bus facade", () => {
     const mailbox = new SubAgentMessageMailbox(namespace.handle);
     const audit = vi.fn();
     const toolRegistry = new ToolRegistry();
+    const sessionMemory = fakeSubAgentMemoryManager();
     const subAgentMemoryManager = {
-      ...fakeSubAgentMemoryManager(),
-      saveSessionMetadata: vi.fn(async () => {
-        throw new Error("initial metadata write failed");
-      }),
-      loadSessionMetadata: vi.fn(() => null),
-      hasSessionMetadataFile: vi.fn(() => false),
+      ...sessionMemory,
+      sessions: {
+        ...sessionMemory.sessions,
+        saveSessionMetadata: vi.fn(async () => {
+          throw new Error("initial metadata write failed");
+        }),
+        loadSessionMetadata: vi.fn(() => null),
+        hasSessionMetadataFile: vi.fn(() => false),
+      },
     } as unknown as ConstructorParameters<
       typeof SubAgentRunner
     >[0]["subAgentMemoryManager"];
@@ -2645,12 +2655,13 @@ describe("SubAgentRunner workspace lifecycle", () => {
           ? { projectRoot, projectName, isDefault: false }
           : null,
     });
+    const sessionMemory = fakeSubAgentMemoryManager();
     const runner = new SubAgentRunner({
       parentDeps,
       toolRegistry,
       subAgentMemoryManager: {
-        ...fakeSubAgentMemoryManager(),
-        saveSessionMetadata,
+        ...sessionMemory,
+        sessions: { ...sessionMemory.sessions, saveSessionMetadata },
       },
     });
     const hasProviderSpy = vi
@@ -2720,8 +2731,10 @@ describe("SubAgentRunner workspace lifecycle", () => {
     const detachSessionsFromProject = vi.fn(async () => 2);
     const runner = new SubAgentRunner({
       subAgentMemoryManager: {
-        allowProjectRoot,
-        detachSessionsFromProject,
+        sessions: {
+          allowProjectRoot,
+          detachSessionsFromProject,
+        },
       },
     } as never);
     const root = join(tmpdir(), "removed-subagent-workspace");
@@ -2919,14 +2932,18 @@ describe("SubAgentRunner completion mailbox single-shot", () => {
     const namespace = createInMemoryMailboxNamespace();
     const mailbox = new SubAgentMessageMailbox(namespace.handle);
     const storedMetadata = new Map<string, Record<string, unknown>>();
+    const sessionMemory = fakeSubAgentMemoryManager();
     const subAgentMemoryManager = {
-      ...fakeSubAgentMemoryManager(),
-      saveSessionMetadata: vi.fn(async (id: string, meta: Record<string, unknown>) => {
-        storedMetadata.set(id, { ...meta });
-      }),
-      loadSessionMetadata: vi.fn((id: string) => storedMetadata.get(id) ?? null),
-      hasSessionMetadataFile: vi.fn((id: string) => storedMetadata.has(id)),
-      listSubAgentSessionsForOrigin: vi.fn(() => []),
+      ...sessionMemory,
+      sessions: {
+        ...sessionMemory.sessions,
+        saveSessionMetadata: vi.fn(async (id: string, meta: Record<string, unknown>) => {
+          storedMetadata.set(id, { ...meta });
+        }),
+        loadSessionMetadata: vi.fn((id: string) => storedMetadata.get(id) ?? null),
+        hasSessionMetadataFile: vi.fn((id: string) => storedMetadata.has(id)),
+        listSubAgentSessionsForOrigin: vi.fn(() => []),
+      },
     } as unknown as ConstructorParameters<
       typeof SubAgentRunner
     >[0]["subAgentMemoryManager"];
@@ -3131,9 +3148,10 @@ describe("listWorkBoardRunSessions", () => {
   it("asks the sub-agent namespace for work-board runs with the caller's page window", () => {
     const toolRegistry = new ToolRegistry();
     const listSessionsPage = vi.fn(() => []);
+    const sessionMemory = fakeSubAgentMemoryManager();
     const subAgentMemoryManager = {
-      ...fakeSubAgentMemoryManager(),
-      listSessionsPage,
+      ...sessionMemory,
+      sessions: { ...sessionMemory.sessions, listSessionsPage },
     } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]["subAgentMemoryManager"];
     const runner = new SubAgentRunner({
       parentDeps: buildLoopDeps(toolRegistry),
@@ -3187,8 +3205,8 @@ describe("SubAgentRunner activity ordering", () => {
     try {
       const resumeId = entry === "resume" ? (await runner.spawn(input)).childSessionId : undefined;
       timeline.length = 0;
-      const saveMetadata = memory.saveSessionMetadata.bind(memory);
-      vi.spyOn(memory, "saveSessionMetadata").mockImplementation(async (id, metadata) => {
+      const saveMetadata = memory.sessions.saveSessionMetadata.bind(memory.sessions);
+      vi.spyOn(memory.sessions, "saveSessionMetadata").mockImplementation(async (id, metadata) => {
         timeline.push(`metadata:${metadata.subAgentTaskState}`);
         await saveMetadata(id, metadata);
       });
@@ -3230,7 +3248,7 @@ describe("SubAgentRunner activity ordering", () => {
         onTerminal: (result: SubAgentSpawnResult) => {
           timeline.push("terminal");
           terminalResult = structuredClone(result);
-          terminalTaskState = memory.loadSessionMetadata(result.childSessionId)?.subAgentTaskState;
+          terminalTaskState = memory.sessions.loadSessionMetadata(result.childSessionId)?.subAgentTaskState;
         },
       };
       const result = entry === "spawn"
@@ -3261,7 +3279,7 @@ describe("SubAgentRunner activity ordering", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(timeline).toEqual(terminalTimeline);
     } finally {
-      memory.closeSearchIndex();
+      memory.sessions.closeSearchIndex();
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
       await cleanupTmpDir(root);

@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryManager, toSessionListRow } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { toSessionListRow } from "../session-repository.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -15,7 +16,7 @@ let mm: MemoryManager;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "ave-session-row-fields-"));
   mm = new MemoryManager({ aveDir: dir });
-  await mm.saveSession(SESSION, [{ role: "user", content: "hello" }]);
+  await mm.sessions.saveSession(SESSION, [{ role: "user", content: "hello" }]);
 });
 
 afterEach(async () => {
@@ -24,36 +25,36 @@ afterEach(async () => {
 
 describe("updateSessionRowFields", () => {
   it("keeps the rest of the metadata when one field changes", async () => {
-    await mm.saveSessionMetadata(SESSION, {
+    await mm.sessions.saveSessionMetadata(SESSION, {
       sessionKind: "main",
       projectRoot: "/ws/alpha",
       projectName: "alpha",
     });
-    await mm.updateSessionRowFields(SESSION, { title: "이름 바꾼 대화" });
+    await mm.sessions.updateSessionRowFields(SESSION, { title: "이름 바꾼 대화" });
 
-    const metadata = mm.loadSessionMetadata(SESSION);
+    const metadata = mm.sessions.loadSessionMetadata(SESSION);
     expect(metadata?.title).toBe("이름 바꾼 대화");
     expect(metadata?.projectRoot).toBe("/ws/alpha");
     expect(metadata?.projectName).toBe("alpha");
   });
 
   it("round-trips archived and unread through the listing", async () => {
-    await mm.updateSessionRowFields(SESSION, { archivedAt: "2026-08-27T00:00:00.000Z" });
-    await mm.updateSessionRowFields(SESSION, { unreadSince: "2026-08-27T01:00:00.000Z" });
+    await mm.sessions.updateSessionRowFields(SESSION, { archivedAt: "2026-08-27T00:00:00.000Z" });
+    await mm.sessions.updateSessionRowFields(SESSION, { unreadSince: "2026-08-27T01:00:00.000Z" });
 
-    const listed = mm.listSessions().find((entry) => entry.id === SESSION);
+    const listed = mm.sessions.listSessions().find((entry) => entry.id === SESSION);
     expect(listed?.archivedAt).toBe("2026-08-27T00:00:00.000Z");
     expect(listed?.unreadSince).toBe("2026-08-27T01:00:00.000Z");
   });
 
   it("clears a flag with null and leaves the other one alone", async () => {
-    await mm.updateSessionRowFields(SESSION, {
+    await mm.sessions.updateSessionRowFields(SESSION, {
       archivedAt: "2026-08-27T00:00:00.000Z",
       unreadSince: "2026-08-27T01:00:00.000Z",
     });
-    await mm.updateSessionRowFields(SESSION, { archivedAt: null });
+    await mm.sessions.updateSessionRowFields(SESSION, { archivedAt: null });
 
-    const metadata = mm.loadSessionMetadata(SESSION);
+    const metadata = mm.sessions.loadSessionMetadata(SESSION);
     expect(metadata?.archivedAt).toBeUndefined();
     // Undefined leaves unread unchanged, allowing unarchive without marking read.
     expect(metadata?.unreadSince).toBe("2026-08-27T01:00:00.000Z");
@@ -61,26 +62,26 @@ describe("updateSessionRowFields", () => {
 
   it("keeps a title the user typed rather than cutting it to a few words", async () => {
     const typed = "회의록 정리와 후속 액션 아이템 추출까지 한 번에 처리한 대화";
-    await mm.updateSessionRowFields(SESSION, { title: typed });
-    expect(mm.loadSessionMetadata(SESSION)?.title).toBe(typed);
+    await mm.sessions.updateSessionRowFields(SESSION, { title: typed });
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.title).toBe(typed);
   });
 
   it("refuses a malformed session id instead of writing somewhere else", async () => {
     await expect(
-      mm.updateSessionRowFields("../escape", { title: "x" }),
+      mm.sessions.updateSessionRowFields("../escape", { title: "x" }),
     ).rejects.toThrow(/invalid sessionId/);
   });
 });
 
 describe("saveSessionTasks", () => {
   it("round-trips the task list through the sidecar, completed items included", async () => {
-    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", projectRoot: "/ws/alpha", title: "plan" });
-    await mm.saveSessionTasks(SESSION, [
+    await mm.sessions.saveSessionMetadata(SESSION, { sessionKind: "main", projectRoot: "/ws/alpha", title: "plan" });
+    await mm.sessions.saveSessionTasks(SESSION, [
       { id: "a", content: "scan folder", status: "completed" },
       { id: "b", content: "write report", status: "in_progress" },
     ]);
 
-    const metadata = mm.loadSessionMetadata(SESSION);
+    const metadata = mm.sessions.loadSessionMetadata(SESSION);
     expect(metadata?.tasks).toEqual([
       { id: "a", content: "scan folder", status: "completed" },
       { id: "b", content: "write report", status: "in_progress" },
@@ -90,17 +91,17 @@ describe("saveSessionTasks", () => {
   });
 
   it("survives a later field-level update and is dropped by an empty list", async () => {
-    await mm.saveSessionTasks(SESSION, [{ id: "a", content: "one", status: "pending" }]);
-    await mm.updateSessionRowFields(SESSION, { title: "renamed" });
-    expect(mm.loadSessionMetadata(SESSION)?.tasks).toEqual([{ id: "a", content: "one", status: "pending" }]);
+    await mm.sessions.saveSessionTasks(SESSION, [{ id: "a", content: "one", status: "pending" }]);
+    await mm.sessions.updateSessionRowFields(SESSION, { title: "renamed" });
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.tasks).toEqual([{ id: "a", content: "one", status: "pending" }]);
 
-    await mm.saveSessionTasks(SESSION, []);
-    expect(mm.loadSessionMetadata(SESSION)?.tasks).toBeUndefined();
-    expect(mm.loadSessionMetadata(SESSION)?.title).toBe("renamed");
+    await mm.sessions.saveSessionTasks(SESSION, []);
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.tasks).toBeUndefined();
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.title).toBe("renamed");
   });
 
   it("keeps only well-formed items when reading a sidecar", async () => {
-    await mm.saveSessionMetadata(SESSION, {
+    await mm.sessions.saveSessionMetadata(SESSION, {
       sessionKind: "main",
       tasks: [
         { id: "ok", content: "fine", status: "pending" },
@@ -108,7 +109,7 @@ describe("saveSessionTasks", () => {
         "not an item" as never,
       ],
     });
-    expect(mm.loadSessionMetadata(SESSION)?.tasks).toEqual([{ id: "ok", content: "fine", status: "pending" }]);
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.tasks).toEqual([{ id: "ok", content: "fine", status: "pending" }]);
   });
 });
 
@@ -120,66 +121,66 @@ describe("findPaneSession", () => {
 
   it("finds the newest unarchived conversation of a pane, and none for another pane", async () => {
     for (const id of [OLDER, NEWER]) {
-      await mm.saveSession(id, [{ role: "user", content: id }]);
-      await mm.saveSessionMetadata(id, { sessionKind: "main", paneTabId: "browser:w-1" });
+      await mm.sessions.saveSession(id, [{ role: "user", content: id }]);
+      await mm.sessions.saveSessionMetadata(id, { sessionKind: "main", paneTabId: "browser:w-1" });
     }
     at(OLDER, 1_000);
     at(NEWER, 2_000);
-    expect(mm.findPaneSession("browser:w-1")).toBe(NEWER);
-    expect(mm.findPaneSession("terminal:w-1")).toBeUndefined();
-    await mm.updateSessionRowFields(NEWER, { archivedAt: "2026-10-19T00:00:00.000Z" });
-    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBe(NEWER);
+    expect(mm.sessions.findPaneSession("terminal:w-1")).toBeUndefined();
+    await mm.sessions.updateSessionRowFields(NEWER, { archivedAt: "2026-10-19T00:00:00.000Z" });
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBe(OLDER);
   });
 
   it("answers from its index after one scan, kept by writes and deletes made through it", async () => {
-    await mm.saveSession(OLDER, [{ role: "user", content: "older" }]);
-    await mm.saveSessionMetadata(OLDER, { sessionKind: "main", paneTabId: "browser:w-1" });
-    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
-    await mm.saveSession(NEWER, [{ role: "user", content: "newer" }]);
+    await mm.sessions.saveSession(OLDER, [{ role: "user", content: "older" }]);
+    await mm.sessions.saveSessionMetadata(OLDER, { sessionKind: "main", paneTabId: "browser:w-1" });
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBe(OLDER);
+    await mm.sessions.saveSession(NEWER, [{ role: "user", content: "newer" }]);
     writeFileSync(join(sessionStorePath(dir), `${NEWER}.meta.json`), JSON.stringify({ sessionKind: "main", paneTabId: "browser:w-9" }));
-    expect(mm.findPaneSession("browser:w-9")).toBeUndefined();
-    await mm.saveSessionMetadata(NEWER, { sessionKind: "main", paneTabId: "browser:w-1" });
+    expect(mm.sessions.findPaneSession("browser:w-9")).toBeUndefined();
+    await mm.sessions.saveSessionMetadata(NEWER, { sessionKind: "main", paneTabId: "browser:w-1" });
     at(OLDER, 1_000);
     at(NEWER, 2_000);
-    expect(mm.findPaneSession("browser:w-1")).toBe(NEWER);
-    await mm.deleteSession(NEWER);
-    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
-    await mm.updateSessionRowFields(OLDER, { archivedAt: "2026-10-19T00:00:00.000Z" });
-    expect(mm.findPaneSession("browser:w-1")).toBeUndefined();
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBe(NEWER);
+    await mm.sessions.deleteSession(NEWER);
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBe(OLDER);
+    await mm.sessions.updateSessionRowFields(OLDER, { archivedAt: "2026-10-19T00:00:00.000Z" });
+    expect(mm.sessions.findPaneSession("browser:w-1")).toBeUndefined();
   });
 
   it("carries pane binding from metadata through the shared side-chat row only", async () => {
-    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
-    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    await mm.sessions.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
+    const listed = mm.sessions.listSessions().find((entry) => entry.id === SESSION)!;
     expect(listed.paneTabId).toBe("terminal:w-2");
     expect(toSessionListRow("side-chat", listed)?.paneTabId).toBe("terminal:w-2");
     expect(toSessionListRow("main", listed)?.paneTabId).toBeUndefined();
   });
 
   it("reads the pane back from the metadata it was saved in", async () => {
-    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
-    expect(mm.loadSessionMetadata(SESSION)?.paneTabId).toBe("terminal:w-2");
-    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "" });
-    expect(mm.loadSessionMetadata(SESSION)?.paneTabId).toBeUndefined();
-    expect(mm.findPaneSession("terminal:w-2")).toBeUndefined();
+    await mm.sessions.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.paneTabId).toBe("terminal:w-2");
+    await mm.sessions.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "" });
+    expect(mm.sessions.loadSessionMetadata(SESSION)?.paneTabId).toBeUndefined();
+    expect(mm.sessions.findPaneSession("terminal:w-2")).toBeUndefined();
   });
 });
 
 
 describe("conversation row previews", () => {
   it("carries the last saved message rather than the conversation title across namespaces", async () => {
-    await mm.saveSession(SESSION, [
+    await mm.sessions.saveSession(SESSION, [
       { role: "user", content: "First request" },
       { role: "assistant", content: "Build completed successfully" },
     ]);
-    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    const listed = mm.sessions.listSessions().find((entry) => entry.id === SESSION)!;
     expect(toSessionListRow("main", listed)?.preview).toBe("Build completed successfully");
     expect(toSessionListRow("side-chat", listed)?.preview).toBe("Build completed successfully");
     expect(toSessionListRow("main", { ...listed, sessionKind: "routine" })?.preview).toBe("Build completed successfully");
   });
 
   it("bounds display summaries and omits unavailable summaries", () => {
-    const listed = mm.listSessions().find((entry) => entry.id === SESSION)!;
+    const listed = mm.sessions.listSessions().find((entry) => entry.id === SESSION)!;
     expect(toSessionListRow("main", { ...listed, preview: "x".repeat(300) })?.preview).toHaveLength(200);
     expect(toSessionListRow("main", { ...listed, preview: "" })).not.toHaveProperty("preview");
   });

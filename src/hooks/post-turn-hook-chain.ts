@@ -116,7 +116,7 @@ export class PostTurnHookChain {
           ? replaceLastAssistantOutput(baseMessages, ctx.output, outputForPersistence)
           : baseMessages;
       // saveSession owns JSONL stubbing and file-backed tool results; preserve the engine's in-memory verbatim messages.
-      await this.deps.memoryManager?.saveSession(ctx.sessionId, messagesForPersistence);
+      await this.deps.memoryManager?.sessions.saveSession(ctx.sessionId, messagesForPersistence);
     } catch (err) {
       log.warn("saveSession failed: %s", err);
     }
@@ -142,8 +142,8 @@ export class PostTurnHookChain {
 
     try {
       if (this.deps.memoryManager && detector.newTitle) {
-        const sessionMeta = this.deps.memoryManager.loadSessionMetadata(ctx.sessionId) ?? {};
-        await this.deps.memoryManager.saveSessionMetadata(ctx.sessionId, {
+        const sessionMeta = this.deps.memoryManager.sessions.loadSessionMetadata(ctx.sessionId) ?? {};
+        await this.deps.memoryManager.sessions.saveSessionMetadata(ctx.sessionId, {
           ...sessionMeta,
           title: detector.newTitle,
         });

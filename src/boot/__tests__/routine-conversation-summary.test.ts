@@ -35,7 +35,7 @@ describe("routine summary tag", () => {
     const answers = loop.getHistory().getMessages().filter((m) => m.role === "assistant").map((m) => m.content);
     expect(answers).toEqual(["The build is green."]);
     // The transcript written to disk is the same history: no save carries the tag.
-    const saved = (memoryManager.saveSession as unknown as { mock: { calls: Array<[string, unknown[]]> } }).mock.calls;
+    const saved = (memoryManager.sessions.saveSession as unknown as { mock: { calls: Array<[string, unknown[]]> } }).mock.calls;
     expect(saved.length).toBeGreaterThan(0);
     expect(JSON.stringify(saved)).not.toContain("<summary>");
   });

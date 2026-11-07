@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isValidSessionId, MemoryManager } from "../memory-manager.js";
-import type { Checkpoint, SessionMetadata } from "../memory-manager.js";
+import { MemoryManager } from "../memory-manager.js";
+import { isValidSessionId } from "../../shared/session-id.js";
+import type { Checkpoint, SessionMetadata } from "../session-repository.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 function makeCheckpoint(overrides?: Partial<Checkpoint>): Checkpoint {
@@ -42,7 +43,7 @@ describe("appendCheckpoint", () => {
   it("adds a checkpoint to metadata with no prior checkpoints", () => {
     const meta: SessionMetadata = { sessionKind: "routine", routineId: "r1" };
     const ckpt = makeCheckpoint();
-    const updated = mm.appendCheckpoint(meta, ckpt);
+    const updated = mm.sessions.appendCheckpoint(meta, ckpt);
     expect(updated.checkpoints).toHaveLength(1);
     expect(updated.checkpoints![0]).toEqual(ckpt);
   });
@@ -51,7 +52,7 @@ describe("appendCheckpoint", () => {
     const first = makeCheckpoint({ id: "ckpt-0001", messageCountAtTrigger: 20 });
     const second = makeCheckpoint({ id: "ckpt-0002", messageCountAtTrigger: 60, trigger: "auto-compact" });
     const meta: SessionMetadata = { checkpoints: [first] };
-    const updated = mm.appendCheckpoint(meta, second);
+    const updated = mm.sessions.appendCheckpoint(meta, second);
     expect(updated.checkpoints).toHaveLength(2);
     expect(updated.checkpoints![0]).toEqual(first);
     expect(updated.checkpoints![1]).toEqual(second);
@@ -60,19 +61,19 @@ describe("appendCheckpoint", () => {
   it("does not mutate the original metadata object", () => {
     const meta: SessionMetadata = { checkpoints: [makeCheckpoint()] };
     const original = JSON.stringify(meta);
-    mm.appendCheckpoint(meta, makeCheckpoint({ id: "ckpt-new" }));
+    mm.sessions.appendCheckpoint(meta, makeCheckpoint({ id: "ckpt-new" }));
     expect(JSON.stringify(meta)).toBe(original);
   });
 
   it("persists checkpoints correctly through saveSessionMetadata + loadSessionMetadata", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
     const ckpt = makeCheckpoint();
     const meta: SessionMetadata = { sessionKind: "routine", routineId: "r1" };
-    const updated = mm.appendCheckpoint(meta, ckpt);
-    await mm.saveSessionMetadata(sessionId, updated);
+    const updated = mm.sessions.appendCheckpoint(meta, ckpt);
+    await mm.sessions.saveSessionMetadata(sessionId, updated);
 
-    const loaded = mm.loadSessionMetadata(sessionId);
+    const loaded = mm.sessions.loadSessionMetadata(sessionId);
     expect(loaded).not.toBeNull();
     expect(loaded!.checkpoints).toHaveLength(1);
     expect(loaded!.checkpoints![0].id).toBe("ckpt-0001");
@@ -83,37 +84,37 @@ describe("appendCheckpoint", () => {
 
 describe("project metadata", () => {
   it("persists project identity and filters session lists by projectRoot", async () => {
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "project a" }]);
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "project b" }]);
-    await mm.saveSessionMetadata(SESSION_A, {
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "project a" }]);
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "project b" }]);
+    await mm.sessions.saveSessionMetadata(SESSION_A, {
       sessionKind: "main",
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
     });
-    await mm.saveSessionMetadata(SESSION_B, {
+    await mm.sessions.saveSessionMetadata(SESSION_B, {
       sessionKind: "main",
       projectRoot: "C:\\workspace\\beta",
       projectName: "beta",
     });
 
-    expect(mm.loadSessionMetadata(SESSION_A)).toMatchObject({
+    expect(mm.sessions.loadSessionMetadata(SESSION_A)).toMatchObject({
       projectRoot: "C:\\workspace\\alpha",
       projectName: "alpha",
     });
-    expect(mm.listSessionsPage({ kind: "main", projectRoot: "c:/workspace/alpha/" }).map((s) => s.id))
+    expect(mm.sessions.listSessionsPage({ kind: "main", projectRoot: "c:/workspace/alpha/" }).map((s) => s.id))
       .toEqual([SESSION_A]);
   });
 
   it("can include legacy unscoped sessions when listing the default project", async () => {
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "legacy" }]);
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "project b" }]);
-    await mm.saveSessionMetadata(SESSION_B, {
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "legacy" }]);
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "project b" }]);
+    await mm.sessions.saveSessionMetadata(SESSION_B, {
       sessionKind: "main",
       projectRoot: "C:\\workspace\\beta",
       projectName: "beta",
     });
 
-    expect(mm.listSessionsPage({
+    expect(mm.sessions.listSessionsPage({
       kind: "main",
       projectRoot: "C:\\workspace\\default",
       includeUnscoped: true,
@@ -124,41 +125,41 @@ describe("project metadata", () => {
 describe("setSummaryPreamble", () => {
   it("stores the preamble in metadata", () => {
     const meta: SessionMetadata = {};
-    const updated = mm.setSummaryPreamble(meta, "Summary of prior discussion.");
+    const updated = mm.sessions.setSummaryPreamble(meta, "Summary of prior discussion.");
     expect(updated.summaryPreamble).toBe("Summary of prior discussion.");
   });
 
   it("replaces an existing preamble", () => {
     const meta: SessionMetadata = { summaryPreamble: "old preamble" };
-    const updated = mm.setSummaryPreamble(meta, "new preamble");
+    const updated = mm.sessions.setSummaryPreamble(meta, "new preamble");
     expect(updated.summaryPreamble).toBe("new preamble");
   });
 
   it("truncates preamble exceeding 8000 chars", () => {
     const long = "x".repeat(10_000);
-    const updated = mm.setSummaryPreamble({}, long);
+    const updated = mm.sessions.setSummaryPreamble({}, long);
     expect(updated.summaryPreamble!.length).toBe(8_000);
   });
 
   it("does not truncate preamble at exactly 8000 chars", () => {
     const exact = "y".repeat(8_000);
-    const updated = mm.setSummaryPreamble({}, exact);
+    const updated = mm.sessions.setSummaryPreamble({}, exact);
     expect(updated.summaryPreamble!.length).toBe(8_000);
   });
 
   it("does not mutate the original metadata object", () => {
     const meta: SessionMetadata = { summaryPreamble: "original" };
-    mm.setSummaryPreamble(meta, "new value");
+    mm.sessions.setSummaryPreamble(meta, "new value");
     expect(meta.summaryPreamble).toBe("original");
   });
 
   it("persists and loads preamble round-trip", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
-    const updated = mm.setSummaryPreamble({}, "context from previous session");
-    await mm.saveSessionMetadata(sessionId, updated);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    const updated = mm.sessions.setSummaryPreamble({}, "context from previous session");
+    await mm.sessions.saveSessionMetadata(sessionId, updated);
 
-    const loaded = mm.loadSessionMetadata(sessionId);
+    const loaded = mm.sessions.loadSessionMetadata(sessionId);
     expect(loaded!.summaryPreamble).toBe("context from previous session");
   });
 });
@@ -166,7 +167,7 @@ describe("setSummaryPreamble", () => {
 describe("metadata validation", () => {
   it("silently drops checkpoint entries with invalid trigger values", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
@@ -189,7 +190,7 @@ describe("metadata validation", () => {
         ],
       });
 
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toHaveLength(1);
     expect(meta!.checkpoints![0].id).toBe("ckpt-valid");
   });
@@ -197,12 +198,12 @@ describe("metadata validation", () => {
 
 describe("main active session state", () => {
   it("persists resume state for an explicit main session", async () => {
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "main" }]);
-    await mm.saveSessionMetadata(SESSION_A, { sessionKind: "main" });
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "main" }]);
+    await mm.sessions.saveSessionMetadata(SESSION_A, { sessionKind: "main" });
 
-    await mm.markMainActiveResume(SESSION_A);
+    await mm.sessions.markMainActiveResume(SESSION_A);
 
-    expect(mm.loadMainActiveSessionState()).toEqual({
+    expect(mm.sessions.loadMainActiveSessionState()).toEqual({
       mainActiveMode: "resume",
       mainActiveSessionId: SESSION_A,
       updatedAt: expect.any(String),
@@ -210,13 +211,13 @@ describe("main active session state", () => {
   });
 
   it("fresh mode ignores any stored session id", async () => {
-    await mm.saveMainActiveSessionState({
+    await mm.sessions.saveMainActiveSessionState({
       mainActiveMode: "fresh",
       mainActiveSessionId: SESSION_A,
       updatedAt: "2026-05-16T00:00:00.000Z",
     });
 
-    expect(mm.loadMainActiveSessionState()).toEqual({
+    expect(mm.sessions.loadMainActiveSessionState()).toEqual({
       mainActiveMode: "fresh",
       mainActiveSessionId: null,
       updatedAt: "2026-05-16T00:00:00.000Z",
@@ -224,8 +225,8 @@ describe("main active session state", () => {
   });
 
   it("treats a routine session id in active state as fresh", async () => {
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "routine" }]);
-    await mm.saveSessionMetadata(SESSION_B, {
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "routine" }]);
+    await mm.sessions.saveSessionMetadata(SESSION_B, {
       sessionKind: "routine",
       routineId: "r1",
       routineTitle: "Routine",
@@ -241,7 +242,7 @@ describe("main active session state", () => {
       "utf-8",
     );
 
-    expect(mm.loadMainActiveSessionState()).toEqual({
+    expect(mm.sessions.loadMainActiveSessionState()).toEqual({
       mainActiveMode: "fresh",
       mainActiveSessionId: null,
       updatedAt: "2026-05-16T00:00:00.000Z",
@@ -252,14 +253,14 @@ describe("main active session state", () => {
     const sessionsDir = join(dir, "sessions");
     writeFileSync(join(sessionsDir, ".active-session.json"), "{", "utf-8");
 
-    expect(mm.loadMainActiveSessionState()).toBeNull();
+    expect(mm.sessions.loadMainActiveSessionState()).toBeNull();
   });
 });
 
 describe("normalizeCheckpoint range validation", () => {
   it("drops checkpoint with ctxUsageAtTrigger below 0", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
@@ -273,13 +274,13 @@ describe("normalizeCheckpoint range validation", () => {
           },
         ],
       });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
 
   it("drops checkpoint with ctxUsageAtTrigger above 1", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
@@ -293,13 +294,13 @@ describe("normalizeCheckpoint range validation", () => {
           },
         ],
       });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
 
   it("drops checkpoint with ctxUsageAtTrigger = NaN", async () => {
     const sessionId = SESSION_C;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     // JSON encodes NaN as null; use null to exercise that persisted shape.
     writeSessionMetadataFixture(sessionsDir, sessionId, {
@@ -314,13 +315,13 @@ describe("normalizeCheckpoint range validation", () => {
           },
         ],
       });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
 
   it("drops checkpoint with negative messageCountAtTrigger", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
@@ -334,13 +335,13 @@ describe("normalizeCheckpoint range validation", () => {
           },
         ],
       });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
 
   it("drops checkpoint with fractional messageCountAtTrigger", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, {
         checkpoints: [
@@ -354,7 +355,7 @@ describe("normalizeCheckpoint range validation", () => {
           },
         ],
       });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.checkpoints).toBeUndefined();
   });
 });
@@ -362,10 +363,10 @@ describe("normalizeCheckpoint range validation", () => {
 describe("normalizeSessionMetadata — parentSessionId regex validation", () => {
   it("drops parentSessionId with path-traversal characters during normalize", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, { sessionKind: "routine", routineId: "r1", parentSessionId: "../../../etc/passwd" });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta).not.toBeNull();
     expect(meta!.routineId).toBe("r1");
     expect(meta!.parentSessionId).toBeUndefined();
@@ -373,10 +374,10 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
 
   it("preserves a valid parentSessionId through normalize", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     writeSessionMetadataFixture(sessionsDir, sessionId, { parentSessionId: SESSION_A });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.parentSessionId).toBe(SESSION_A);
   });
 });
@@ -384,29 +385,29 @@ describe("normalizeSessionMetadata — parentSessionId regex validation", () => 
 describe("saveSessionMetadata — summaryPreamble truncation invariant", () => {
   it("truncates summaryPreamble exceeding 8000 chars even when setSummaryPreamble was bypassed", async () => {
     const sessionId = SESSION_C;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
     const overlong = "z".repeat(12_000);
-    await mm.saveSessionMetadata(sessionId, { summaryPreamble: overlong });
+    await mm.sessions.saveSessionMetadata(sessionId, { summaryPreamble: overlong });
 
-    const loaded = mm.loadSessionMetadata(sessionId);
+    const loaded = mm.sessions.loadSessionMetadata(sessionId);
     expect(loaded!.summaryPreamble!.length).toBe(8_000);
   });
 
   it("does not mutate original metadata passed to saveSessionMetadata", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
     const overlong = "z".repeat(12_000);
     const original: SessionMetadata = { summaryPreamble: overlong };
-    await mm.saveSessionMetadata(sessionId, original);
+    await mm.sessions.saveSessionMetadata(sessionId, original);
     expect(original.summaryPreamble!.length).toBe(12_000);
   });
 
   it("does not alter summaryPreamble that is exactly at the limit", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
     const exact = "a".repeat(8_000);
-    await mm.saveSessionMetadata(sessionId, { summaryPreamble: exact });
-    const loaded = mm.loadSessionMetadata(sessionId);
+    await mm.sessions.saveSessionMetadata(sessionId, { summaryPreamble: exact });
+    const loaded = mm.sessions.loadSessionMetadata(sessionId);
     expect(loaded!.summaryPreamble!.length).toBe(8_000);
   });
 });
@@ -414,41 +415,41 @@ describe("saveSessionMetadata — summaryPreamble truncation invariant", () => {
 describe("isValidSessionId helper — valid/invalid boundaries", () => {
   it("accepts a standard UUID-format parentSessionId", async () => {
     const sessionsDir = join(dir, "sessions");
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
     writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: SESSION_B });
-    const meta = mm.loadSessionMetadata(SESSION_A);
+    const meta = mm.sessions.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBe(SESSION_B);
   });
 
   it("accepts alphanumeric-plus-dash ID (non-UUID-shaped)", async () => {
     const sessionsDir = join(dir, "sessions");
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
     writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: "f502abaa-afc9-46a6-863c-19c8bbe6013c" });
-    const meta = mm.loadSessionMetadata(SESSION_A);
+    const meta = mm.sessions.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBe("f502abaa-afc9-46a6-863c-19c8bbe6013c");
   });
 
   it("rejects parentSessionId with slash (path-traversal)", async () => {
     const sessionsDir = join(dir, "sessions");
-    await mm.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(SESSION_A, [{ role: "user", content: "msg" }]);
     writeSessionMetadataFixture(sessionsDir, SESSION_A, { parentSessionId: "../evil" });
-    const meta = mm.loadSessionMetadata(SESSION_A);
+    const meta = mm.sessions.loadSessionMetadata(SESSION_A);
     expect(meta!.parentSessionId).toBeUndefined();
   });
 
   it("rejects parentSessionId with space", async () => {
     const sessionsDir = join(dir, "sessions");
-    await mm.saveSession(SESSION_B, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(SESSION_B, [{ role: "user", content: "msg" }]);
     writeSessionMetadataFixture(sessionsDir, SESSION_B, { parentSessionId: "session id" });
-    const meta = mm.loadSessionMetadata(SESSION_B);
+    const meta = mm.sessions.loadSessionMetadata(SESSION_B);
     expect(meta!.parentSessionId).toBeUndefined();
   });
 
   it("rejects empty string parentSessionId", async () => {
     const sessionsDir = join(dir, "sessions");
-    await mm.saveSession(SESSION_C, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(SESSION_C, [{ role: "user", content: "msg" }]);
     writeSessionMetadataFixture(sessionsDir, SESSION_C, { parentSessionId: "" });
-    const meta = mm.loadSessionMetadata(SESSION_C);
+    const meta = mm.sessions.loadSessionMetadata(SESSION_C);
     expect(meta!.parentSessionId).toBeUndefined();
   });
 });
@@ -456,21 +457,21 @@ describe("isValidSessionId helper — valid/invalid boundaries", () => {
 describe("normalizeSessionMetadata — read-side summaryPreamble truncation (defense-in-depth)", () => {
   it("truncates summaryPreamble exceeding 8000 chars on read (corrupted file)", async () => {
     const sessionId = SESSION_A;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     const overlong = "x".repeat(10_000);
     writeSessionMetadataFixture(sessionsDir, sessionId, { summaryPreamble: overlong });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.summaryPreamble!.length).toBe(8_000);
   });
 
   it("does not alter preamble at exactly 8000 chars on read", async () => {
     const sessionId = SESSION_B;
-    await mm.saveSession(sessionId, [{ role: "user", content: "msg" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "msg" }]);
     const sessionsDir = join(dir, "sessions");
     const exact = "y".repeat(8_000);
     writeSessionMetadataFixture(sessionsDir, sessionId, { summaryPreamble: exact });
-    const meta = mm.loadSessionMetadata(sessionId);
+    const meta = mm.sessions.loadSessionMetadata(sessionId);
     expect(meta!.summaryPreamble!.length).toBe(8_000);
   });
 });
@@ -483,21 +484,21 @@ describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
       { role: "user", content: "hello" },
       { role: "assistant", content: "world" },
     ];
-    await mm.saveCheckpointSnapshot(SESSION_SNAP, 1, messages);
-    const loaded = mm.loadCheckpointSnapshot(SESSION_SNAP, 1);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_SNAP, 1, messages);
+    const loaded = mm.sessions.loadCheckpointSnapshot(SESSION_SNAP, 1);
     expect(loaded).toEqual(messages);
   });
 
   it("returns null when snapshot does not exist", () => {
-    const result = mm.loadCheckpointSnapshot(SESSION_SNAP, 99);
+    const result = mm.sessions.loadCheckpointSnapshot(SESSION_SNAP, 99);
     expect(result).toBeNull();
   });
 
   it("snapshot files do NOT appear in listSessions", async () => {
-    await mm.saveSession(SESSION_SNAP, [{ role: "user", content: "real session" }]);
-    await mm.saveCheckpointSnapshot(SESSION_SNAP, 1, [{ role: "user", content: "pre-compact" }]);
+    await mm.sessions.saveSession(SESSION_SNAP, [{ role: "user", content: "real session" }]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_SNAP, 1, [{ role: "user", content: "pre-compact" }]);
 
-    const sessions = mm.listSessions();
+    const sessions = mm.sessions.listSessions();
     const ids = sessions.map((s) => s.id);
 
     expect(ids).toContain(SESSION_SNAP);
@@ -507,10 +508,10 @@ describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
   });
 
   it("snapshot files do NOT appear in listSessionsPage", async () => {
-    await mm.saveSession(SESSION_SNAP, [{ role: "user", content: "real" }]);
-    await mm.saveCheckpointSnapshot(SESSION_SNAP, 2, [{ role: "user", content: "snap" }]);
+    await mm.sessions.saveSession(SESSION_SNAP, [{ role: "user", content: "real" }]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_SNAP, 2, [{ role: "user", content: "snap" }]);
 
-    const page = mm.listSessionsPage({ limit: 100 });
+    const page = mm.sessions.listSessionsPage({ limit: 100 });
     const ids = page.map((s) => s.id);
     expect(ids).toContain(SESSION_SNAP);
     expect(ids.every((id) => !id.includes(".cp") && !id.includes(".checkpoints"))).toBe(true);
@@ -519,17 +520,17 @@ describe("saveCheckpointSnapshot / loadCheckpointSnapshot", () => {
   it("multiple compactNums are all independently loadable", async () => {
     const m1 = [{ role: "user", content: "snap1" }];
     const m2 = [{ role: "user", content: "snap2" }, { role: "assistant", content: "a2" }];
-    await mm.saveCheckpointSnapshot(SESSION_SNAP, 1, m1);
-    await mm.saveCheckpointSnapshot(SESSION_SNAP, 2, m2);
-    expect(mm.loadCheckpointSnapshot(SESSION_SNAP, 1)).toEqual(m1);
-    expect(mm.loadCheckpointSnapshot(SESSION_SNAP, 2)).toEqual(m2);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_SNAP, 1, m1);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_SNAP, 2, m2);
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_SNAP, 1)).toEqual(m1);
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_SNAP, 2)).toEqual(m2);
   });
 
   it("rejects invalid sessionId without throwing fs errors", async () => {
     await expect(
-      mm.saveCheckpointSnapshot("../evil/path", 1, []),
+      mm.sessions.saveCheckpointSnapshot("../evil/path", 1, []),
     ).rejects.toThrow(/invalid sessionId/);
-    expect(mm.loadCheckpointSnapshot("../evil/path", 1)).toBeNull();
+    expect(mm.sessions.loadCheckpointSnapshot("../evil/path", 1)).toBeNull();
   });
 });
 
@@ -544,52 +545,52 @@ describe("saveCheckpointSnapshot post-compaction simulation", () => {
     ];
     const postCompact = [{ role: "assistant", content: "compact summary only" }];
 
-    await mm.saveCheckpointSnapshot(SESSION_BRANCH, 1, preCompact);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_BRANCH, 1, preCompact);
 
-    await mm.saveSession(SESSION_BRANCH, postCompact);
+    await mm.sessions.saveSession(SESSION_BRANCH, postCompact);
 
-    const loaded = mm.loadCheckpointSnapshot(SESSION_BRANCH, 1);
+    const loaded = mm.sessions.loadCheckpointSnapshot(SESSION_BRANCH, 1);
     expect(loaded).toEqual(preCompact);
 
     // loadSession adds missing row ids, so compare message content rather than saved literal bytes.
-    const main = mm.loadSession(SESSION_BRANCH);
+    const main = mm.sessions.loadSession(SESSION_BRANCH);
     expect(main).toMatchObject(postCompact);
   });
 });
 
 describe("saveSessionMetadata — invalid sessionId throws", () => {
   it("throws for path-traversal sessionId (../etc/passwd)", async () => {
-    await expect(mm.saveSessionMetadata("../etc/passwd", {})).rejects.toThrow(
+    await expect(mm.sessions.saveSessionMetadata("../etc/passwd", {})).rejects.toThrow(
       /invalid sessionId/,
     );
   });
 
   it("throws for sessionId with a slash", async () => {
-    await expect(mm.saveSessionMetadata("a/b", {})).rejects.toThrow(/invalid sessionId/);
+    await expect(mm.sessions.saveSessionMetadata("a/b", {})).rejects.toThrow(/invalid sessionId/);
   });
 
   it("throws for empty string sessionId", async () => {
-    await expect(mm.saveSessionMetadata("", {})).rejects.toThrow(/invalid sessionId/);
+    await expect(mm.sessions.saveSessionMetadata("", {})).rejects.toThrow(/invalid sessionId/);
   });
 });
 
 describe("saveSession / loadSession — invalid sessionId protection", () => {
   it("rejects path-traversal sessionId on save", async () => {
-    await expect(mm.saveSession("../etc/passwd", [])).rejects.toThrow(/invalid sessionId/);
+    await expect(mm.sessions.saveSession("../etc/passwd", [])).rejects.toThrow(/invalid sessionId/);
   });
 
   it("returns null for path-traversal sessionId on load", () => {
-    expect(mm.loadSession("../etc/passwd")).toBeNull();
+    expect(mm.sessions.loadSession("../etc/passwd")).toBeNull();
   });
 
   it("recovers the latest checkpoint user when a capped session lost every user row", async () => {
     const sessionId = SESSION_A;
-    await mm.saveCheckpointSnapshot(sessionId, 1, [
+    await mm.sessions.saveCheckpointSnapshot(sessionId, 1, [
       { role: "user", content: "older question" },
       { role: "assistant", content: "older answer" },
       { role: "user", content: "폴더 전체를 삭제" },
     ]);
-    await mm.saveSessionMetadata(sessionId, {
+    await mm.sessions.saveSessionMetadata(sessionId, {
       checkpoints: [
         makeCheckpoint({
           compactNum: 1,
@@ -598,11 +599,11 @@ describe("saveSession / loadSession — invalid sessionId protection", () => {
         }),
       ],
     });
-    await mm.saveSession(sessionId, [
+    await mm.sessions.saveSession(sessionId, [
       { role: "assistant", content: "정리해보니 delete_file 은 디렉터리에 쓸 수 없습니다." },
     ]);
 
-    expect(mm.loadSession(sessionId)).toMatchObject([
+    expect(mm.sessions.loadSession(sessionId)).toMatchObject([
       { role: "user", content: "폴더 전체를 삭제" },
       { role: "assistant", content: "정리해보니 delete_file 은 디렉터리에 쓸 수 없습니다." },
     ]);
@@ -611,22 +612,22 @@ describe("saveSession / loadSession — invalid sessionId protection", () => {
 
 describe("loadSessionMetadata — invalid sessionId throws", () => {
   it("throws for path-traversal sessionId (../etc/passwd)", () => {
-    expect(() => mm.loadSessionMetadata("../etc/passwd")).toThrow(/invalid sessionId/);
+    expect(() => mm.sessions.loadSessionMetadata("../etc/passwd")).toThrow(/invalid sessionId/);
   });
 
   it("throws for sessionId with a slash", () => {
-    expect(() => mm.loadSessionMetadata("a/b")).toThrow(/invalid sessionId/);
+    expect(() => mm.sessions.loadSessionMetadata("a/b")).toThrow(/invalid sessionId/);
   });
 
   it("throws for empty string sessionId", () => {
-    expect(() => mm.loadSessionMetadata("")).toThrow(/invalid sessionId/);
+    expect(() => mm.sessions.loadSessionMetadata("")).toThrow(/invalid sessionId/);
   });
 });
 
 describe("round-trip — write then read preserves all new fields", () => {
   it("persists all new fields and reads them back identically", async () => {
     const sessionId = SESSION_C;
-    await mm.saveSession(sessionId, [{ role: "user", content: "hello" }]);
+    await mm.sessions.saveSession(sessionId, [{ role: "user", content: "hello" }]);
 
     const ckpt = makeCheckpoint({
       id: "ckpt-rt-01",
@@ -643,8 +644,8 @@ describe("round-trip — write then read preserves all new fields", () => {
       checkpoints: [ckpt],
     };
 
-    await mm.saveSessionMetadata(sessionId, meta);
-    const loaded = mm.loadSessionMetadata(sessionId);
+    await mm.sessions.saveSessionMetadata(sessionId, meta);
+    const loaded = mm.sessions.loadSessionMetadata(sessionId);
 
     expect(loaded).not.toBeNull();
     expect(loaded!.routineId).toBe("r2");
@@ -669,78 +670,78 @@ describe("pruneCheckpointsDiscardedByRewind", () => {
 
   it("keeps every checkpoint when the rewind discarded no boundary", async () => {
     // Earlier compact boundaries may already be summarized away; their absence alone must not delete snapshots.
-    await mm.saveSessionMetadata(SESSION_A, {
+    await mm.sessions.saveSessionMetadata(SESSION_A, {
       checkpoints: [makeCheckpoint({ compactNum: 1 }), makeCheckpoint({ id: "ckpt-0002", compactNum: 2 })],
     });
-    await mm.saveCheckpointSnapshot(SESSION_A, 1, [question("first cycle")]);
-    await mm.saveCheckpointSnapshot(SESSION_A, 2, [question("second cycle")]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_A, 1, [question("first cycle")]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_A, 2, [question("second cycle")]);
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_A, [question("the last message")]);
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_A, [question("the last message")]);
 
-    expect(mm.loadSessionMetadata(SESSION_A)?.checkpoints?.map((c) => c.compactNum)).toEqual([1, 2]);
-    expect(mm.loadCheckpointSnapshot(SESSION_A, 1)).not.toBeNull();
-    expect(mm.loadCheckpointSnapshot(SESSION_A, 2)).not.toBeNull();
+    expect(mm.sessions.loadSessionMetadata(SESSION_A)?.checkpoints?.map((c) => c.compactNum)).toEqual([1, 2]);
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_A, 1)).not.toBeNull();
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_A, 2)).not.toBeNull();
   });
 
   it("drops only the checkpoint whose boundary this rewind discarded", async () => {
-    await mm.saveSessionMetadata(SESSION_A, {
+    await mm.sessions.saveSessionMetadata(SESSION_A, {
       checkpoints: [makeCheckpoint({ compactNum: 1 }), makeCheckpoint({ id: "ckpt-0002", compactNum: 2 })],
     });
-    await mm.saveCheckpointSnapshot(SESSION_A, 1, [question("first cycle")]);
-    await mm.saveCheckpointSnapshot(SESSION_A, 2, [question("second cycle")]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_A, 1, [question("first cycle")]);
+    await mm.sessions.saveCheckpointSnapshot(SESSION_A, 2, [question("second cycle")]);
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(2), question("after the boundary")]);
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(2), question("after the boundary")]);
 
-    expect(mm.loadSessionMetadata(SESSION_A)?.checkpoints?.map((c) => c.compactNum)).toEqual([1]);
-    expect(mm.loadCheckpointSnapshot(SESSION_A, 1)).not.toBeNull();
-    expect(mm.loadCheckpointSnapshot(SESSION_A, 2)).toBeNull();
+    expect(mm.sessions.loadSessionMetadata(SESSION_A)?.checkpoints?.map((c) => c.compactNum)).toEqual([1]);
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_A, 1)).not.toBeNull();
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_A, 2)).toBeNull();
   });
 
   it("keeps a checkpoint that never recorded a compact number", async () => {
-    await mm.saveSessionMetadata(SESSION_B, {
+    await mm.sessions.saveSessionMetadata(SESSION_B, {
       checkpoints: [makeCheckpoint({ id: "ckpt-manual" }), makeCheckpoint({ id: "ckpt-0003", compactNum: 3 })],
     });
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_B, [boundary(3)]);
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_B, [boundary(3)]);
 
-    expect(mm.loadSessionMetadata(SESSION_B)?.checkpoints?.map((c) => c.id)).toEqual(["ckpt-manual"]);
+    expect(mm.sessions.loadSessionMetadata(SESSION_B)?.checkpoints?.map((c) => c.id)).toEqual(["ckpt-manual"]);
   });
 
   it("deletes the pre-compact snapshot a dropped checkpoint owned", async () => {
-    await mm.saveSessionMetadata(SESSION_B, { checkpoints: [makeCheckpoint({ compactNum: 3 })] });
-    await mm.saveCheckpointSnapshot(SESSION_B, 3, [question("archived")]);
-    expect(mm.loadCheckpointSnapshot(SESSION_B, 3)).not.toBeNull();
+    await mm.sessions.saveSessionMetadata(SESSION_B, { checkpoints: [makeCheckpoint({ compactNum: 3 })] });
+    await mm.sessions.saveCheckpointSnapshot(SESSION_B, 3, [question("archived")]);
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_B, 3)).not.toBeNull();
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_B, [boundary(3)]);
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_B, [boundary(3)]);
 
-    expect(mm.loadCheckpointSnapshot(SESSION_B, 3)).toBeNull();
+    expect(mm.sessions.loadCheckpointSnapshot(SESSION_B, 3)).toBeNull();
   });
 
   it("drops the summary preamble only when the newest checkpoint goes with it", async () => {
     // Only losing the latest checkpoint invalidates the summary preamble.
-    await mm.saveSessionMetadata(SESSION_A, {
+    await mm.sessions.saveSessionMetadata(SESSION_A, {
       summaryPreamble: "prior context summary",
       checkpoints: [makeCheckpoint({ compactNum: 1 }), makeCheckpoint({ id: "ckpt-0002", compactNum: 2 })],
     });
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(1)]);
-    expect(mm.loadSessionMetadata(SESSION_A)?.summaryPreamble).toBe("prior context summary");
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(1)]);
+    expect(mm.sessions.loadSessionMetadata(SESSION_A)?.summaryPreamble).toBe("prior context summary");
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(2)]);
-    expect(mm.loadSessionMetadata(SESSION_A)?.summaryPreamble).toBeUndefined();
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_A, [boundary(2)]);
+    expect(mm.sessions.loadSessionMetadata(SESSION_A)?.summaryPreamble).toBeUndefined();
   });
 
   it("a session rewound to its opening message reloads empty, not carrying the discarded message back", async () => {
     // Prune checkpoint recovery state before rewind or reload can resurrect a discarded user message.
-    await mm.saveSessionMetadata(SESSION_C, { checkpoints: [makeCheckpoint({ compactNum: 1 })] });
-    await mm.saveCheckpointSnapshot(SESSION_C, 1, [question("the discarded question")]);
-    await mm.saveSession(SESSION_C, [boundary(1)] as never);
-    expect(JSON.stringify(mm.loadSession(SESSION_C))).toContain("the discarded question");
+    await mm.sessions.saveSessionMetadata(SESSION_C, { checkpoints: [makeCheckpoint({ compactNum: 1 })] });
+    await mm.sessions.saveCheckpointSnapshot(SESSION_C, 1, [question("the discarded question")]);
+    await mm.sessions.saveSession(SESSION_C, [boundary(1)] as never);
+    expect(JSON.stringify(mm.sessions.loadSession(SESSION_C))).toContain("the discarded question");
 
-    await mm.pruneCheckpointsDiscardedByRewind(SESSION_C, [boundary(1), question("the discarded question")]);
-    await mm.saveSession(SESSION_C, [] as never);
+    await mm.sessions.pruneCheckpointsDiscardedByRewind(SESSION_C, [boundary(1), question("the discarded question")]);
+    await mm.sessions.saveSession(SESSION_C, [] as never);
 
-    expect(mm.loadSession(SESSION_C)).toEqual([]);
+    expect(mm.sessions.loadSession(SESSION_C)).toEqual([]);
   });
 });
 
