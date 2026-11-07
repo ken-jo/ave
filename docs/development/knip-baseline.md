@@ -52,9 +52,10 @@ desktop workflows analyze the declarations without requiring `web/node_modules`.
 - `@vscode/ripgrep` pulls in the per-platform package whose `bin/rg` is
   resolved by path in `src/tools/ripgrep-executable.ts`; the wrapper module is
   never imported.
-- `better-sqlite3` is rebuilt in `postinstall`, staged by
-  `scripts/packaged-runtime-assets.mjs`, guarded by package footprint tests, and
-  kept external by `scripts/build-main-esbuild.mjs`.
+- `better-sqlite3` is rebuilt in `postinstall`, ships its npm N-API prebuild,
+  is packaged through `package.json` `build.asarUnpack` (resources come from
+  `build.extraResources`), guarded by package footprint tests, and kept
+  external by `scripts/build-main-esbuild.mjs`.
 - `electron-updater` is dynamically required by `src/main/auto-updater.ts` so
   tests can run without loading the native Electron updater implementation.
 - `pino-pretty` is selected by `src/lib/logger.ts` as a runtime transport and
