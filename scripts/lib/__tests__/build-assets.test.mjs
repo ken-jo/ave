@@ -44,6 +44,12 @@ test("resolveBuildAssets exposes one SOT for build and dev watched assets", () =
           "dist/src/audio-capture-window-preload.cjs",
         ],
         [
+          "audio-capture",
+          "audio-capture-channels.json",
+          "src/shared/audio-capture-channels.json",
+          "dist/src/shared/audio-capture-channels.json",
+        ],
+        [
           "runtime-script",
           "electron-flags.mjs",
           "scripts/electron-flags.mjs",
@@ -58,8 +64,8 @@ test("resolveBuildAssets exposes one SOT for build and dev watched assets", () =
       ],
     );
     assert.equal(resolveBuildAssets(root, "runtime-script").length, 2);
-    // The capture page, script and preload must ship together.
-    assert.equal(resolveBuildAssets(root, "audio-capture").length, 3);
+    // The capture page, script, preload and the channel names the preload shares with main must ship together.
+    assert.equal(resolveBuildAssets(root, "audio-capture").length, 4);
   } finally {
     if (existsSync(root)) rmSync(root, { recursive: true, force: true });
   }

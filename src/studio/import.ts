@@ -7,7 +7,7 @@ import { AGENT_PLUGINS_SCHEMA_URL } from "../plugins/public-contract.js";
 import { parseStrictJson } from "../marketplace/catalog/strict-json.js";
 import { MARKETPLACE_DESCRIPTOR_FILE } from "../marketplace/catalog/types.js";
 import type { StudioDiagnostic } from "../shared/plugin-studio.js";
-import { importLegacyHooks, type ImportedHookEntry } from "../hooks/hook-import-export.js";
+import { importLegacyHooks, rewritePlaceholder, type ImportedHookEntry } from "../hooks/hook-import-export.js";
 
 export interface ImportedStudioPackage {
   files: Array<{ path: string; data: Buffer }>;
@@ -124,10 +124,6 @@ function importedCommand(name: string, source: string, sourcePath: string, diagn
   return promptFile(name, body, description ?? header.description ?? `Imported ${name}`, argumentHint ?? header["argument-hint"]);
 }
 
-function translatePlaceholder(value: string): string {
-  return value.replaceAll("${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}").replaceAll("${CLAUDE_PLUGIN_DATA}", "${PLUGIN_DATA}");
-}
-
 function addFile(files: Map<string, Buffer>, path: string, data: Buffer, diagnostics: StudioDiagnostic[]): void {
   if (files.has(path)) diagnostics.push(diagnostic("rewritten", path, "Later declaration replaced an earlier component"));
   files.set(path, data);
@@ -184,12 +180,12 @@ function convertMcp(name: string, raw: unknown, diagnostics: StudioDiagnostic[])
     }
     if (result.command !== original) diagnostics.push(diagnostic("rewritten", `mcpServers.${name}.command`, "Package command became relative"));
     if (Array.isArray(result.args)) result.args = result.args.map((arg, index) => {
-      const rewritten = typeof arg === "string" ? translatePlaceholder(arg) : arg;
+      const rewritten = typeof arg === "string" ? rewritePlaceholder(arg) : arg;
       if (rewritten !== arg) diagnostics.push(diagnostic("rewritten", `mcpServers.${name}.args[${index}]`, "Package placeholder changed"));
       return rewritten;
     });
     if (result.env && typeof result.env === "object") result.env = Object.fromEntries(Object.entries(result.env).map(([key, value]) => {
-      const rewritten = typeof value === "string" ? translatePlaceholder(value) : value;
+      const rewritten = typeof value === "string" ? rewritePlaceholder(value) : value;
       if (rewritten !== value) diagnostics.push(diagnostic("rewritten", `mcpServers.${name}.env.${key}`, "Package placeholder changed"));
       return [key, rewritten];
     }));

@@ -1,0 +1,8 @@
+{
+  "getRequest": "ave-audio-capture:get-request",
+  "ready": "ave-audio-capture:ready",
+  "frame": "ave-audio-capture:frame",
+  "ended": "ave-audio-capture:ended",
+  "listDevices": "ave-audio-capture:list-devices",
+  "devices": "ave-audio-capture:devices"
+}

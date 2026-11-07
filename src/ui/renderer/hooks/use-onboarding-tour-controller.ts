@@ -3,6 +3,7 @@ import type { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { LLM_VENDORS } from "../../../shared/llm-vendor-defaults.js";
 import { hasSeenFirstBootTour } from "../onboarding/first-boot-tour-gate.js";
+import { FIRST_BOOT_SCENARIO_ID } from "../../../shared/first-boot-tour.js";
 import { BLOCKING_SURFACE_SELECTOR } from "../../../shared/test-ids.js";
 
 type Api = ReturnType<typeof getApi>;
@@ -73,7 +74,7 @@ export function useOnboardingTourController(
         // The IPC handler broadcasts before its invoke response resolves. Mark this first so a fast dismiss/complete callback
         // cannot race past the one-time completion notification below.
         firstBootTourStartedRef.current = true;
-        const started = await api.tour.start("first-boot-essentials");
+        const started = await api.tour.start(FIRST_BOOT_SCENARIO_ID);
         if (cancelled || !started.ok) firstBootTourStartedRef.current = false;
       } catch {
         // The tour can always be opened later with the help shortcut.
@@ -124,7 +125,7 @@ export function useOnboardingTourController(
         return;
       }
       event.preventDefault();
-      void api.tour.start("first-boot-essentials");
+      void api.tour.start(FIRST_BOOT_SCENARIO_ID);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);

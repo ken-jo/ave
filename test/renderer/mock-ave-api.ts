@@ -791,7 +791,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     onWorkBoardRunFinished: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardRunFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardFailed: vi.fn((_h: (event: { itemId: number; error: string }) => void) => () => {}),
-    onWorkBoardDueSoon: vi.fn((_h: (p: unknown) => void) => () => {}),
 
     onOverlayShow: vi.fn((handler: (item: unknown) => void) => {
       overlayShowHandlers.add(handler);
