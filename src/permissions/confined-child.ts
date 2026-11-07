@@ -441,7 +441,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     // srt-win refuses to start unless the sandbox account can read the attributes of its working directory (it reports that as
     // `mapped_drive_cwd`, exit 16). Inherited, that is the host's `<AVE_HOME>\workspace`, which the owner-only home keeps from it.
     if (confinement === "windows-srt" && spec.cwd === undefined) {
-      throw new Error(`[confined-child] ${spec.label}: a Windows sandboxed spawn must name a working directory the sandbox account is granted`);
+      throw new Error(`[confined-child] ${spec.label}: srt-win requires an explicit cwd, one the sandbox account is granted`);
     }
     child = spawn(executable, args, {
       stdio,

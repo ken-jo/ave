@@ -524,7 +524,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     }).finally(() => {
       if (hostSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = hostSystemRoot;
-    })).rejects.toThrow("a Windows sandboxed spawn must name a working directory the sandbox account is granted");
+    })).rejects.toThrow("[confined-child] worker:x:main: srt-win requires an explicit cwd");
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
