@@ -50,7 +50,12 @@ const grants = vi.hoisted(() => ({
 }));
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../asrt-sandbox.js")>()),
-  grantWindowsWorkerFilesystemAccess: async (opts: { holderPid: number; allowRead?: readonly string[]; allowWrite?: readonly string[] }) => {
+  grantWindowsWorkerFilesystemAccess: async (request: {
+    holderPid: number | (() => number); allowRead?: readonly string[]; allowWrite?: readonly string[]; assertStillValid?: () => void;
+  }) => {
+    // The turn starts here: the check, then the holder, then the grant.
+    request.assertStillValid?.();
+    const { assertStillValid: _check, ...opts } = { ...request, holderPid: typeof request.holderPid === "number" ? request.holderPid : request.holderPid() };
     grants.calls.push(opts);
     if (grants.fail) throw grants.fail;
     return {
@@ -133,6 +138,16 @@ describe("holdWindowsFilesystemGrant", () => {
       /started without a pid/,
     );
     expect(grants.calls).toHaveLength(0);
+  });
+
+  it("starts no holder and makes no grant when the turn is refused as it starts", async () => {
+    await expect(holdWindowsFilesystemGrant({
+      label: "x", allowRead: ["C:\\a"], allowWrite: [],
+      assertStillValid: () => { throw new Error("plugin-factory-deadline-passed"); },
+    })).rejects.toThrow("plugin-factory-deadline-passed");
+    expect(spawned.calls).toHaveLength(0);
+    expect(grants.calls).toHaveLength(0);
+    expect(grants.released).toBe(0);
   });
 
   it("reports a holder lost after the grant, once, to listeners added before and after", async () => {

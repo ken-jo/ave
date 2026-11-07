@@ -79,17 +79,14 @@ export interface HeldWindowsGrant {
 }
 
 // Start a holder and grant it `allowRead` (read and execute) and `allowWrite` (modify) for the `srt-sandbox` account. Every path must already exist: ASRT drops a grant on a missing path rather than refusing it. On any failure the holder is stopped and whatever was granted is revoked before the throw.
+// The holder starts inside the grant turn, after `assertStillValid`: a turn refused when it starts leaves no holder and no grant.
 export async function holdWindowsFilesystemGrant(opts: {
   readonly label: string;
   readonly allowRead: readonly string[];
   readonly allowWrite: readonly string[];
+  readonly assertStillValid?: () => void;
 }): Promise<HeldWindowsGrant> {
-  const holder = startWindowsAclGrantHolder(opts.label);
-  const holderPid = holder.pid;
-  if (holderPid === undefined) {
-    stopWindowsAclGrantHolder(holder);
-    throw new Error("[windows-acl-grant-holder] Windows ACL grant holder started without a pid");
-  }
+  let holder: ChildProcess | undefined;
   let grant: WindowsWorkerFilesystemGrant | undefined;
   let released = false;
   let lost: Error | undefined;
@@ -104,7 +101,7 @@ export async function holdWindowsFilesystemGrant(opts: {
         // Cleanup must continue even if ASRT reports the grant was already gone.
       }
     }
-    stopWindowsAclGrantHolder(holder);
+    if (holder !== undefined) stopWindowsAclGrantHolder(holder);
   };
   const holderGone = (first?: unknown, second?: unknown): void => {
     if (released || lost !== undefined) return;
@@ -116,13 +113,23 @@ export async function holdWindowsFilesystemGrant(opts: {
         );
     for (const listener of lostListeners.splice(0)) listener(lost);
   };
-  holder.once("exit", holderGone);
-  holder.once("error", holderGone);
+  const startHolder = (): number => {
+    const started = startWindowsAclGrantHolder(opts.label);
+    holder = started;
+    const holderPid = started.pid;
+    if (holderPid === undefined) {
+      throw new Error("[windows-acl-grant-holder] Windows ACL grant holder started without a pid");
+    }
+    started.once("exit", holderGone);
+    started.once("error", holderGone);
+    return holderPid;
+  };
   try {
     grant = await grantWindowsWorkerFilesystemAccess({
-      holderPid,
+      holderPid: startHolder,
       allowRead: opts.allowRead,
       allowWrite: opts.allowWrite,
+      ...(opts.assertStillValid !== undefined ? { assertStillValid: opts.assertStillValid } : {}),
     });
     if (lost !== undefined) throw lost;
   } catch (error) {
