@@ -23,7 +23,7 @@ describe("useChatState", () => {
     });
     expect(api.chatContinueLastUser).toHaveBeenCalledWith("sess-1", expect.objectContaining({ inputOrigin: "user-keyboard" }));
     expect(result.current.entries.filter((e) => e.kind === "user")).toEqual([
-      expect.objectContaining({ kind: "user", text: "Continue" }),
+      expect.objectContaining({ kind: "user", text: "Continue", resumesInterruptedTurn: true }),
     ]);
   });
 

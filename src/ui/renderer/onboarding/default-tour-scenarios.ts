@@ -1,4 +1,5 @@
 import { t } from "../../../i18n/runtime.js";
+import { FIRST_BOOT_SCENARIO_ID } from "../../../shared/first-boot-tour.js";
 
 export type CompletionTrigger =
   | { kind: "keypress"; combo: "⌘+K" | "⌘+?" | "⌘+Enter" }
@@ -42,7 +43,7 @@ export interface TourScenario {
 /** Keep every tour selector backed by production data-tour-anchor markup and the live keyboard start path. */
 function buildFirstBootEssentials(): TourScenario {
   return {
-    id: "first-boot-essentials",
+    id: FIRST_BOOT_SCENARIO_ID,
     title: t("defaultTourScenarios.firstBootTitle"),
     steps: [
       {
@@ -95,7 +96,7 @@ function buildFirstBootEssentials(): TourScenario {
  * the current locale. */
 export const DEFAULT_TOUR_SCENARIOS: Readonly<Record<string, TourScenario>> = Object.freeze(
   Object.defineProperties({} as Record<string, TourScenario>, {
-    "first-boot-essentials": { get: buildFirstBootEssentials, enumerable: true, configurable: false },
+    [FIRST_BOOT_SCENARIO_ID]: { get: buildFirstBootEssentials, enumerable: true, configurable: false },
   }),
 );
 

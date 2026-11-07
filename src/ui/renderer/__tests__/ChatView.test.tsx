@@ -1581,8 +1581,9 @@ describe("ChatView", () => {
         undefined,
         undefined,
       );
+      // The accepted turn's card shows the staged prompt it ran, as a reload does.
       expect(container.textContent).toContain("overlay:meeting-summary");
-      expect(container.querySelector("strong")?.textContent).toBe("회의 요약");
+      expect(container.textContent).toContain("회의 요약을 확인해줘");
     });
 
     await act(async () => {

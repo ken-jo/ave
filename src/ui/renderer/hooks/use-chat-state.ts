@@ -25,6 +25,7 @@ import type { AveApi } from "../types.js";
 import type { ContinueAuthority } from "../../../shared/chat-origin.js";
 import { resetSuggestedReplies } from "./use-suggested-replies.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 
 function isMissingStagedEnvelopeIpcError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -188,7 +189,7 @@ export function useChatState(
         return;
       }
       if (ev.type === "permission_mode_changed" && ev.mode) {
-        window.dispatchEvent(new CustomEvent("ave:permissions:mode-changed", { detail: { mode: ev.mode } }));
+        window.dispatchEvent(new CustomEvent(PERMISSIONS.modeChanged, { detail: { mode: ev.mode } }));
         return;
       }
       if (streamId !== null) {
@@ -756,7 +757,8 @@ export function useChatState(
     finalAssistantRoundClosedRef.current = false;
     // Resuming an interrupted turn starts a new user row on the host; showing its bubble now keeps the resumed answer in its
     // own turn instead of folding it into the interrupted one.
-    if (opts?.userBubble) appendUserMessage(opts.userBubble);
+    const resumeBubble = opts?.userBubble;
+    if (resumeBubble) setEntries((p) => appendUserEntry(p, resumeBubble, undefined, true));
     appendAssistantStatus(t("useChatState.continueFromLastUserStatus"));
     try {
       const res = await api.chatContinueLastUser(sessionId, authority);
@@ -773,7 +775,7 @@ export function useChatState(
     } finally {
       finishStreamingRequest(requestId);
     }
-  }, [api, beginStreamingRequest, finishStreamingRequest, appendAssistantStatus, appendUserMessage, dropUnannouncedUserBubble, setErrorWithThought, releaseActiveStream]);
+  }, [api, beginStreamingRequest, finishStreamingRequest, appendAssistantStatus, dropUnannouncedUserBubble, setErrorWithThought, releaseActiveStream]);
 
   const appendSystemEntry = useCallback((text: string): void => {
     if (text.length === 0) return;

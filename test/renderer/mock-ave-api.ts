@@ -7,6 +7,7 @@ import type { MemorySummariesResult } from "../../src/shared/memory-detail.js";
 import { vi, type Mock } from "vitest";
 import type { RewindMode, RewindResult } from "../../src/shared/code-rewind.js";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
+import { parseStagedEnvelope } from "../../src/shared/staged-origins.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
 import { resolveActiveChatModel, type ActiveChatModelSettings } from "../../src/shared/active-chat-model.js";
 import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings } from "../../src/shared/llm-vendor-defaults.js";
@@ -359,6 +360,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   };
 
   const chatStreamHandlers = new Set<(ev: ChatStreamEvent) => void>();
+  // Preload labels each stream frame with its chat group and every tile hears only its own; a send's announcement reaches only
+  // the tile that sent it. `emitChatStream` still speaks to every tile.
+  const groupStreamHandlers = new Map<string, Set<(ev: ChatStreamEvent) => void>>();
+  let sendingGroupId: string | null = null;
   const agentSpawnEventHandlers = new Set<(event: AgentSpawnEvent) => void>();
   const skillLoadedHandlers = new Set<
     (event: { name: string; description: string; sessionId: string }) => void
@@ -503,6 +508,21 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         chatGetHistory: vi.fn(async () => ({ ...(await history), sessionId: `session-${chatGroupId}` })),
         chatGroupRelease: vi.fn(async () => ({ ok: true, released: true })),
         onChatFallback: subscribeChatFallback(chatGroupId),
+        onChatStream: vi.fn((h: (ev: ChatStreamEvent) => void) => {
+          const handlers = groupStreamHandlers.get(chatGroupId) ?? new Set();
+          groupStreamHandlers.set(chatGroupId, handlers);
+          handlers.add(h);
+          return () => handlers.delete(h);
+        }),
+        // The window's spy records the call; the announcement it makes goes to this group's tile.
+        chatSend: vi.fn((...args: Parameters<MockAveApi["chatSend"]>) => {
+          sendingGroupId = chatGroupId;
+          try {
+            return api.chatSend(...args);
+          } finally {
+            sendingGroupId = null;
+          }
+        }),
       };
       chatGroupApis.set(chatGroupId, made);
       return made;
@@ -511,15 +531,19 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "mock-user-intent" })),
     // Mirrors `runStreamedTurn`: every accepted turn announces its input and the identity of the row the host appended for it, which is how the transcript's optimistic bubble
     // learns which row it stands for. Without this the bubble would never become addressable and every action that names a past message would be dead in tests but alive in the app.
-    chatSend: vi.fn(async (payload?: unknown) => {
+    chatSend: vi.fn(async (payload?: unknown, _attachments?: unknown, inputOrigin?: unknown) => {
       const text = typeof payload === "string"
         ? payload
         : (payload as { input?: string } | undefined)?.input ?? "";
       sentTurnCount += 1;
-      chatStreamHandlers.forEach((h) => h({
+      // As the host does: a staged envelope names its own origin, otherwise the send's.
+      const origin = parseStagedEnvelope(text)?.kind.inputOrigin
+        ?? (typeof inputOrigin === "string" ? inputOrigin : "user-keyboard");
+      const handlers = sendingGroupId === null ? chatStreamHandlers : groupStreamHandlers.get(sendingGroupId) ?? new Set();
+      handlers.forEach((h) => h({
         type: "user_message",
         text,
-        origin: "user-keyboard",
+        origin,
         messageId: `sent-msg-${sentTurnCount}`,
       } as ChatStreamEvent));
       return { ok: true };
@@ -791,7 +815,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     onWorkBoardRunFinished: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardRunFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardFailed: vi.fn((_h: (event: { itemId: number; error: string }) => void) => () => {}),
-    onWorkBoardDueSoon: vi.fn((_h: (p: unknown) => void) => () => {}),
 
     onOverlayShow: vi.fn((handler: (item: unknown) => void) => {
       overlayShowHandlers.add(handler);
@@ -907,7 +930,10 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         .filter(([, group]) => group.chatGroupRelease.mock.calls.length > 0)
         .map(([chatGroupId]) => chatGroupId),
     ],
-    emitChatStream: (ev) => chatStreamHandlers.forEach((h) => h(ev)),
+    emitChatStream: (ev) => {
+      chatStreamHandlers.forEach((h) => h(ev));
+      groupStreamHandlers.forEach((handlers) => handlers.forEach((h) => h(ev)));
+    },
     emitChatFallback: (chatGroupId, payload) =>
       chatFallbackHandlers.get(chatGroupId)?.forEach((h) => h(payload)),
     emitAgentSpawnEvent: (event) => agentSpawnEventHandlers.forEach((h) => h(event)),

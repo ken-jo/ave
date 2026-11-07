@@ -68,14 +68,6 @@ export interface ChatGroupSessionHandle {
     mode?: SendMode,
     userIntent?: UserKeyboardIntentSnapshot,
   ) => Promise<void>;
-  /** Put a trigger-import row in the transcript — same window-level origin. */
-  insertImportedTriggerEntry: (input: {
-    sessionId: string;
-    /** Provenance tag — `plugin:<pluginId>` or `app:<serverId>`. */
-    source: string;
-    prompt: string;
-    summary: string;
-  }) => void;
   /** Which session this tile is holding — the sidebar highlights it. */
   currentSessionId: string;
   /**
@@ -135,7 +127,6 @@ const EMPTY_CHAT_GROUP_SESSION: ChatGroupSessionHandle = Object.freeze({
   resetForNewSession: () => {},
   restoreSubAgentSpawns: () => {},
   ask: async () => {},
-  insertImportedTriggerEntry: () => {},
   currentSessionId: "",
   hidden: false,
   paneHidden: false,
@@ -525,9 +516,6 @@ export class ChatGroupSessionRegistry {
       ) => {
         await live()?.ask(question, mode, userIntent);
       },
-      insertImportedTriggerEntry: (input: Parameters<
-        ChatGroupSessionHandle["insertImportedTriggerEntry"]
-      >[0]) => live()?.insertImportedTriggerEntry(input),
       currentSessionId: handle.currentSessionId,
       hidden: handle.hidden,
       paneHidden: handle.paneHidden,

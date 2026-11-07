@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveConversationTitle } from "../conversation-title.js";
+import { resolveConversationTitle, truncateCodePoints } from "../conversation-title.js";
 import { SUGGESTIONS_SESSION_ID } from "../suggestions-session.js";
 import { t } from "../../i18n/runtime.js";
 
@@ -29,5 +29,17 @@ describe("resolveConversationTitle", () => {
       .toBe("긴 대화 이름".repeat(20));
     expect(resolveConversationTitle({ sessionId: SUGGESTIONS_SESSION_ID, title: "Stored name" }, t))
       .toBe(t("suggestionsSession.title"));
+  });
+});
+
+describe("truncateCodePoints", () => {
+  it("never splits an emoji at the title boundary", () => {
+    const title = resolveConversationTitle({
+      sessionId: "conversation-1",
+      messages: [{ role: "user", content: `${"a".repeat(79)}😀 tail` }],
+    }, t);
+    expect(title).toBe(`${"a".repeat(79)}😀`);
+    expect(truncateCodePoints("😀😀", 1)).toBe("😀");
+    expect(truncateCodePoints("short", 80)).toBe("short");
   });
 });

@@ -5,6 +5,7 @@ import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../../shared/permission-mode.js";
+import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 
 export interface PermissionModeBadgeProps {
   mode?: ExecutionModeDisplay;
@@ -190,9 +191,9 @@ function defaultModeSubscriber(handler: (mode: ExecutionModeDisplay) => void): (
     const detail = (event as CustomEvent<{ mode: string }>).detail;
     if (detail?.mode) handler(normalizeExecutionMode(detail.mode));
   };
-  window.addEventListener("ave:permissions:mode-changed", listener);
+  window.addEventListener(PERMISSIONS.modeChanged, listener);
   return () => {
     unsubscribeIpc?.();
-    window.removeEventListener("ave:permissions:mode-changed", listener);
+    window.removeEventListener(PERMISSIONS.modeChanged, listener);
   };
 }

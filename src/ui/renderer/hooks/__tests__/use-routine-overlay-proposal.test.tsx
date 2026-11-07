@@ -47,10 +47,9 @@ function setup() {
 
   const prefillComposer = vi.fn();
   const ask = vi.fn();
-  const insertImportedTriggerEntry = vi.fn();
   const registry = {
     read: vi.fn((id: string) =>
-      id === TILE ? { prefillComposer, ask, insertImportedTriggerEntry } : undefined),
+      id === TILE ? { prefillComposer, ask } : undefined),
     readTiles: vi.fn(() => []),
   };
   const onNavigateToSettings = vi.fn();
@@ -73,7 +72,6 @@ function setup() {
     answer,
     prefillComposer,
     ask,
-    insertImportedTriggerEntry,
     onNavigateToSettings,
     onSuggestionStaged,
     queueAdd,
@@ -105,7 +103,6 @@ describe("useRoutineOverlay — onboarding proposal answers", () => {
 
     expect(s.prefillComposer).toHaveBeenCalledWith("Start recording the meeting");
     expect(s.ask).not.toHaveBeenCalled();
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.answer).toHaveBeenCalledWith("meeting:first-task", "accepted", "en");
   });
 

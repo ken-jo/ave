@@ -10,7 +10,7 @@ import { parsePortableMcp } from "../mcp/portable-mcp.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import type { AgentPluginFile } from "../marketplace/content/agent-plugin-components.js";
 import { parseHookConfig } from "../hooks/hook-config.js";
-import { exportLegacyHooks } from "../hooks/hook-import-export.js";
+import { exportLegacyHooks, exportPlaceholder } from "../hooks/hook-import-export.js";
 import { containsStoredCredential } from "../mcp/studio-credential-guard.js";
 
 const MAX_FILES = 257;
@@ -78,8 +78,8 @@ function projection(files: readonly AgentPluginFile[]): AgentPluginFile[] {
       delete converted.type;
       if (server.type === "stdio") {
         converted.command = server.command.startsWith("./") ? `\${CLAUDE_PLUGIN_ROOT}/${server.command.slice(2)}` : server.command;
-        if (server.args) converted.args = server.args.map((arg) => arg.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}").replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}"));
-        if (server.env) converted.env = Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, value.replaceAll("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}").replaceAll("${PLUGIN_DATA}", "${CLAUDE_PLUGIN_DATA}")]));
+        if (server.args) converted.args = server.args.map(exportPlaceholder);
+        if (server.env) converted.env = Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, exportPlaceholder(value)]));
       }
       servers[name] = converted;
     }

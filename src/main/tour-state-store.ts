@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { openFeatureNamespace, readJsonFileOrEmpty } from "./storage/feature-namespace.js";
 import { isStringArray } from "../shared/is-record.js";
+import { FIRST_BOOT_SCENARIO_ID } from "../shared/first-boot-tour.js";
 
 export interface TourState {
   lastSeenScenario: string | null;
@@ -66,12 +67,12 @@ function serializeTourState<T>(operation: () => Promise<T>): Promise<T> {
 export function readTourState(legacyOnboardingCompleted = false): Promise<TourState> {
   return serializeTourState(async () => {
     const current = await loadTourState();
-    if (!legacyOnboardingCompleted || current.completedScenarios.includes("first-boot-essentials")) {
+    if (!legacyOnboardingCompleted || current.completedScenarios.includes(FIRST_BOOT_SCENARIO_ID)) {
       return current;
     }
     const next = {
       ...current,
-      completedScenarios: [...current.completedScenarios, "first-boot-essentials"],
+      completedScenarios: [...current.completedScenarios, FIRST_BOOT_SCENARIO_ID],
     };
     await ns.writeJson(TOUR_STATE_FILE, next);
     return next;

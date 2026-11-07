@@ -31,7 +31,7 @@ import type { UserKeyboardIntentSnapshot } from "../../shared/chat-origin.js";
 import type { McpPromptEntry } from "./components/slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import type { ProjectIdentity } from "../../shared/project-identity.js";
-import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
+import { approvalTriggerMessage, isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
 import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
 import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
@@ -1026,7 +1026,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       />
       <ApprovalDock
         queue={pendingApprovals}
-        conversationLabel={resolveConversationTitle({
+        conversationLabel={(approvalHead !== null && approvalHead.sessionId === currentSessionId
+          ? approvalTriggerMessage(entries, approvalHead.createdAt) : undefined) ?? resolveConversationTitle({
           sessionId: currentSessionId ?? "",
           title: currentSessionTitle,
           messages: entries.flatMap((entry) => entry.kind === "user" || entry.kind === "assistant"
