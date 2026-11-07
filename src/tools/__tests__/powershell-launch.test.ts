@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const profileFactory = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("../../permissions/sandbox-process-home.js", () => ({ createSandboxProcessHome: profileFactory.create }));
 
-import { POWERSHELL_MODULE_PRELUDE, preparePowerShellLaunch, retainPowerShellLaunchUntilExit } from "../powershell-launch.js";
+import { POWERSHELL_EGRESS_PROXY_PRELUDE, POWERSHELL_MODULE_PRELUDE, preparePowerShellLaunch, retainPowerShellLaunchUntilExit } from "../powershell-launch.js";
 import type { SandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 
 const originalPlatform = process.platform;
@@ -160,6 +160,26 @@ describe("controlled shell startup", () => {
     expect(plan.args).not.toContain("-SettingsFile");
     expect(plan.env).toEqual({ HOME: "retained-home", PSModulePath: "" });
     expect(profileFactory.create).not.toHaveBeenCalled();
+    expect(plan.args.at(-1)).toBe(POWERSHELL_MODULE_PRELUDE + "Get-Date");
+    plan.cleanup();
+  });
+
+  it("routes a sandboxed Windows command's web cmdlets through the egress proxy after module initialization", () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    const plan = preparePowerShellLaunch("Invoke-WebRequest https://example.com", { HOME: "retained-home" }, undefined, { sandboxEgressProxy: true });
+    expect(plan.args.at(-1)).toBe(POWERSHELL_MODULE_PRELUDE + POWERSHELL_EGRESS_PROXY_PRELUDE + "Invoke-WebRequest https://example.com");
+    expect(POWERSHELL_EGRESS_PROXY_PRELUDE).toBe(
+      "& { $proxy = $env:HTTPS_PROXY; if (-not $proxy) { $proxy = $env:HTTP_PROXY }; if ($proxy) { [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebProxy]::new($proxy) } };\n",
+    );
+    plan.cleanup();
+  });
+
+  it.each([
+    ["an unsandboxed Windows command", "win32", {}],
+    ["a sandboxed command off Windows", "linux", { sandboxEgressProxy: true }],
+  ] as const)("leaves the proxy of %s alone", (_label, platform, options) => {
+    Object.defineProperty(process, "platform", { configurable: true, value: platform });
+    const plan = preparePowerShellLaunch("Get-Date", { HOME: "retained-home" }, undefined, options);
     expect(plan.args.at(-1)).toBe(POWERSHELL_MODULE_PRELUDE + "Get-Date");
     plan.cleanup();
   });

@@ -3742,7 +3742,7 @@ async function spawnPowerShellWithSandbox(
   }
   const isWindows = process.platform === "win32";
   let powerShellLaunch: ReturnType<typeof preparePowerShellLaunch>;
-  try { powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome); }
+  try { powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome, { sandboxEgressProxy: true }); }
   catch (error) { sandboxHome.cleanup(); throw error; }
   const sandboxCommand = isWindows ? powerShellLaunch.args.at(-1)!
     : [executable, ...powerShellLaunch.args].map(posixSingleQuote).join(" ");
@@ -3981,7 +3981,7 @@ async function spawnPowerShellInMxc(
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     };
   }
-  const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
+  const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome, { sandboxEgressProxy: true });
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
