@@ -91,7 +91,7 @@ import { EventEmitter } from "node:events";
 import { connect } from "node:net";
 import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
@@ -102,7 +102,8 @@ import type {
   RuntimePlugin,
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
-import { createOutOfProcessPluginFactory, PluginSandboxGrantError, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -1434,6 +1435,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
       // srt-win starts only in a directory the sandbox account is granted: the granted HOME, not the host's `<AVE_HOME>\workspace`.
       expect(spawnConfinedChild.mock.calls[0]![0]).toMatchObject({ cwd: home });
+      expect(existsSync(home)).toBe(false);
     });
   });
 
@@ -1471,6 +1473,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(outcome).toBeInstanceOf(Error);
       expect((outcome as Error).message).toBe("holder gone");
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
     });
   });
 
@@ -1641,6 +1644,8 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect((outcome as Error).message).toContain("something other than its announce");
       expect(spawned!.kill).toHaveBeenCalledWith("SIGTERM");
       await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+      // A start that failed leaves no throwaway HOME behind.
+      expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
     });
   });
 
@@ -1772,6 +1777,22 @@ describe("on Windows a confined child holds a grant on its own directories for e
       spawnConfinedChild.mockReset();
       rmSync(layout.home, { recursive: true, force: true });
     }
+  });
+
+  it("budgets a sandboxed child's factory for its setup, connect and construct, and leaves an unsandboxed one at the fallback", async () => {
+    const factory = createOutOfProcessPluginFactory({
+      manifest: MANIFEST,
+      launch: { kind: "entry", entryPath: join(tmpdir(), "never-imported.mjs") },
+    });
+    const fallbackMs = TOOL_TIMEOUT_POLICY.pluginFactoryMs;
+    await asWindows(aveLayout(), async () => {
+      expect(pluginFactoryDeadlineMs(factory, fallbackMs)).toBe(windowsSrtPluginChildFactoryBudgetMs());
+      // Only the factory this module built gets the budget, under the same platform and confinement.
+      expect(pluginFactoryDeadlineMs(async () => ({ handlers: {} }), fallbackMs)).toBe(fallbackMs);
+    });
+    await asWindows(aveLayout(), async () => {
+      expect(pluginFactoryDeadlineMs(factory, fallbackMs)).toBe(fallbackMs);
+    }, { sandboxActive: false });
   });
 });
 
