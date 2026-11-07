@@ -405,6 +405,16 @@ describe("shell egress human fallback termination", () => {
     expect(permissionManager.getPolicyEpoch()).not.toBe(before);
   });
 
+  it("reports a card cancelled after the policy changed as cancelled, not as a policy change", async () => {
+    const { gate, wc } = makeGate();
+    const controller = new AbortController();
+    const answer = createRequester(gate, permissionManager)(egressRequest({ abortSignal: controller.signal }));
+    await cardSent(wc);
+    permissionManager.setMode("default");
+    controller.abort(new Error("turn stopped"));
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+  });
+
   it("still refuses an allow answered after the policy changed under the card", async () => {
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       permissionManager.setMode("default");
