@@ -604,6 +604,11 @@ describe("pre-push message catalog selection", () => {
     expect(selectFixture(catalog("Panel"), catalog("Panel heading"), tree)).toEqual({
       reason: "src/ui/clock.ts has an unresolved dynamic message consumer; full checks required",
     });
+    // The whole-tree parse would stop first at the unparseable file; only the early exit names the import.
+    const withBroken = new Map([...fixtureTree, ["src/ui/broken.ts", "export const = ;"], ["src/ui/clock.ts", tree.get("src/ui/clock.ts")!]]);
+    expect(selectFixture(catalog("Panel"), catalog("Panel heading"), withBroken)).toEqual({
+      reason: "src/ui/clock.ts has an unresolved dynamic message consumer; full checks required",
+    });
     const plan = selectFixture(catalog("Panel"), catalog("Panel heading"), tree, false, true);
     expect(plan.reason).toBeUndefined();
     expect(plan.consumerModules).toContain("src/ui/clock.ts");
