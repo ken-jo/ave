@@ -3145,6 +3145,19 @@ const FILESYSTEM_COMMANDS = new Set([
   "test-path",
 ]);
 
+const NETWORK_URL_OPERAND = /^(?:https?|wss?|ftps?):\/\/[^/\\?#\s]/i;
+
+const DOS_DEVICE_SEGMENT = /^(?:con|prn|aux|nul|com\d|lpt\d|conin\$|conout\$)(?:\..*)?$/i;
+
+// A network URL operand, left to the egress proxy, skips the path checks. Any command may still open it as a Win32 path
+// (`curl -o`, `tar -xf`): `cwd\https:\host\...`, which cannot be opened through its `scheme:` component unless a segment
+// collapses it. So a backslash, a segment Win32 collapses (all dots, or ending in a dot or space: `x./..` climbs too) and a
+// DOS device name keep the operand path-checked.
+function isNetworkUrlOperand(value: string): boolean {
+  if (!NETWORK_URL_OPERAND.test(value) || value.includes("\\")) return false;
+  return value.slice(value.indexOf("//") + 2).split(/[/?#]/).every((segment) => !/[. ]$/.test(segment) && !DOS_DEVICE_SEGMENT.test(segment));
+}
+
 const canonicalPowerShellTools = new WeakSet<object>();
 
 export function isCanonicalPowerShellTool(tool: unknown): tool is Tool & PowerShellTool {
@@ -3516,10 +3529,12 @@ export function findPowerShellAstPathViolation(
   if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   const structural = validatePowerShellAst(ast);
   if (structural) return { kind: "dynamic-path", reason: `PowerShell command blocked: ${structural}` };
-  const inspect = (argument: PowerShellArgument, effect: "read" | "write", literalPath = false): ShellPathPolicyViolation | null => {
-    if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath) : null;
+  const inspect = (argument: PowerShellArgument, effect: "read" | "write", literalPath = false, networkUrls = false): ShellPathPolicyViolation | null => {
+    if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath, networkUrls) : null;
     if (argument.kind !== "literal") return { kind: "dynamic-path", reason: "PowerShell path argument is unresolved", candidate: argument.text };
     const path = argument.value;
+    // A network URL names a destination the egress proxy and its card govern. `file:`, UNC and empty-authority forms stay paths.
+    if (networkUrls && isNetworkUrlOperand(path)) return null;
     if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || /^[a-z][a-z0-9_-]*:(?![\\/])/i.test(path)) {
       return { kind: "dynamic-path", reason: "PowerShell provider, home or wildcard path requires an explicit ordinary path", candidate: argument.text };
     }
@@ -3561,7 +3576,7 @@ export function findPowerShellAstPathViolation(
         positional += 1;
         if (["set-content", "add-content", "set-item", "set-itemproperty"].includes(name) && positional > 1) continue;
       }
-      const violation = inspect(argument, index === 1 && runtimeReads.length > 0 ? "read" : effect); if (violation) return violation;
+      const violation = inspect(argument, index === 1 && runtimeReads.length > 0 ? "read" : effect, false, !FILESYSTEM_COMMANDS.has(name)); if (violation) return violation;
     }
   }
   return null;

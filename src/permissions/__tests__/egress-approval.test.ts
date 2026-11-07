@@ -394,4 +394,41 @@ describe("shell egress human fallback termination", () => {
     await expect(createRequester(gate, permissionManager)(egressRequest({ ownerUnattended: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry." });
     expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ ownerUnattended: true }));
   });
+
+  it("reports a deny-always answer as the user's deny although its saved rule moves the policy epoch", async () => {
+    const before = permissionManager.getPolicyEpoch();
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+      permissionManager.setRules([{ pattern: "Network(github.com:443)", action: "deny" }]);
+      return { requestId: request.id, choice: "deny-once" as const };
+    }) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    expect(permissionManager.getPolicyEpoch()).not.toBe(before);
+  });
+
+  it("reports a card cancelled after the policy changed as cancelled, not as a policy change", async () => {
+    const { gate, wc } = makeGate();
+    const controller = new AbortController();
+    const answer = createRequester(gate, permissionManager)(egressRequest({ abortSignal: controller.signal }));
+    await cardSent(wc);
+    permissionManager.setMode("default");
+    controller.abort(new Error("turn stopped"));
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+  });
+
+  it("reports a card that times out after the policy changed as timed out", async () => {
+    const wc = makeWebContents();
+    const gate = new ApprovalGate(wc as never, undefined, 50, { log: vi.fn() } as never);
+    const answer = createRequester(gate, permissionManager)(egressRequest());
+    await cardSent(wc);
+    permissionManager.setMode("default");
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout });
+  });
+
+  it("still refuses an allow answered after the policy changed under the card", async () => {
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+      permissionManager.setMode("default");
+      return { requestId: request.id, choice: "allow-once" as const, egressScope: "session" as const };
+    }) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: "Permission policy changed during network approval." });
+  });
 });

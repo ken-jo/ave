@@ -129,8 +129,9 @@ export function createApprovalGateEgressRequester(
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     });
     if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
-    if (!terminal && permissionManager!.getPolicyEpoch() !== policyEpoch) return { allow: false, reason: "Permission policy changed during network approval." };
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
+      // Only an allow depends on the policy it was asked under. A deny stands, so the rule a "deny always" answer saves is not read as an outside change.
+      if (!terminal && permissionManager!.getPolicyEpoch() !== policyEpoch) return { allow: false, reason: "Permission policy changed during network approval." };
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }

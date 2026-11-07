@@ -55,6 +55,53 @@ describe("native PowerShell AST facts", () => {
     expect(validatePowerShellAst(summary)).toBeNull();
   });
 
+  it.each([
+    command("Invoke-WebRequest", [literal("https://example.com/a?b=1")]),
+    command("Invoke-WebRequest", [{ kind: "parameter", name: "Uri", text: "-Uri", argument: literal("https://example.com/") }]),
+    command("Invoke-RestMethod", [literal("https://example.com/", "'https://example.com/'")]),
+    command("curl.exe", [literal("-sS"), literal("https://example.com:8443/x")]),
+  ])("leaves a network URL operand to the egress proxy instead of the path policy %#", (summary) => {
+    expect(check(summary)).toBeNull();
+  });
+
+  it("keeps path checks for a curl output path next to a URL", () => {
+    expect(check(command("curl.exe", [literal("-o"), literal("../outside/x"), literal("https://example.com/")]))?.kind).toBe("sandbox-boundary");
+  });
+
+  it.each([
+    command("curl.exe", [literal("-o"), literal("https://x/../../../escaped")]),
+    command("curl.exe", [literal("-o"), literal("https://x?/../../../escaped")]),
+    command("curl.exe", [literal("-o"), literal("FTP://x/x./../../../../escaped")]),
+    command("Invoke-WebRequest", [{ kind: "parameter", name: "OutFile", text: "-OutFile", argument: literal("https://x/../../../escaped") }]),
+    command("tar.exe", [literal("-xf"), literal("https://x/../../../a.tar")]),
+  ])("path-checks a URL-shaped operand that resolves outside the working directory %#", (summary) => {
+    expect(check(summary)).not.toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32").each(["https://x/NUL", "https://x/com1.txt", "https://x/conin$"])(
+    "path-checks %s, a DOS device name Win32 maps out of the path", (operand) => {
+      expect(check(command("curl.exe", [literal("-o"), literal(operand)]))).not.toBeNull();
+    },
+  );
+
+  it.skipIf(process.platform !== "win32").each(["https://x/..\\..\\..\\secret", "https://x/a\\..\\..\\escaped"])(
+    "path-checks %s, whose backslashes Win32 reads as separators", (operand) => {
+      expect(check(command("curl.exe", [literal("-T"), literal(operand)]))).not.toBeNull();
+    },
+  );
+
+  it("keeps URL-shaped operands of filesystem cmdlets and redirects as paths", () => {
+    const escaping = "https://x/../../../outside";
+    expect(check(command("Copy-Item", [literal("./safe"), literal(escaping)]))).not.toBeNull();
+    expect(check({ ...command("Invoke-WebRequest", [literal("https://example.com/")]), redirections: [literal(escaping)] })).not.toBeNull();
+  });
+
+  it.skipIf(process.platform !== "win32").each(["file:///C:/Windows/win.ini", "file://server/share/x", "\\\\server\\share\\x", "https:///no-authority"])(
+    "still path-checks %s", (operand) => {
+      expect(check(command("Invoke-WebRequest", [literal(operand)]))).not.toBeNull();
+    },
+  );
+
   it("does not treat an additional New-Item path as content data", () => {
     expect(check(command("New-Item", [literal("./safe"), literal("../outside/result")]))?.kind).toBe("sandbox-boundary");
   });
