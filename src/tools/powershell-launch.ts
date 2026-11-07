@@ -35,8 +35,10 @@ export const POWERSHELL_MODULE_PRELUDE = [
   "} catch { [System.Console]::Error.WriteLine('Shell module initialization failed'); exit 197 };\n",
 ].join(" ");
 
-// Windows PowerShell's web cmdlets and WebClient take the system proxy, never HTTPS_PROXY, and a sandboxed command reaches the
-// network only through the egress proxy that variable names. Route them through it; with no proxy named nothing changes.
+// Windows PowerShell's web cmdlets, WebClient and HttpClient take the system proxy, never HTTPS_PROXY, and a sandboxed command
+// reaches the network only through the egress proxy that variable names. Route them through it; with no proxy named nothing
+// changes. Credentials in the proxy URL are not carried over (a 407, fail-closed), and .NET still sends loopback direct, where
+// the sandbox fence refuses it as before. A host shell opts out: its proxy is the user's own.
 export const POWERSHELL_EGRESS_PROXY_PRELUDE =
   "& { $proxy = $env:HTTPS_PROXY; if (-not $proxy) { $proxy = $env:HTTP_PROXY }; if ($proxy) { [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebProxy]::new($proxy) } };\n";
 
@@ -44,7 +46,7 @@ export function preparePowerShellLaunch(
   command: string,
   baseEnv: Readonly<Record<string, string>>,
   profile?: SandboxProcessHome,
-  options: { sandboxEgressProxy?: boolean } = {},
+  options: { hostShell?: boolean } = {},
 ): PowerShellLaunch {
   const env = Object.fromEntries(Object.entries(baseEnv).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
   const args = [...(process.platform === "win32" ? WIN32_POWERSHELL_STARTUP_ARGS : POWERSHELL_STARTUP_ARGS)];
@@ -73,7 +75,7 @@ export function preparePowerShellLaunch(
       env.PSModulePath = moduleSeed;
       args.push("-SettingsFile", settingsFile);
     }
-    const egressProxyPrelude = options.sandboxEgressProxy === true && process.platform === "win32" ? POWERSHELL_EGRESS_PROXY_PRELUDE : "";
+    const egressProxyPrelude = options.hostShell !== true && process.platform === "win32" ? POWERSHELL_EGRESS_PROXY_PRELUDE : "";
     args.push("-Command", POWERSHELL_MODULE_PRELUDE + egressProxyPrelude + command);
     return { args, env, cleanup };
   } catch (error) {

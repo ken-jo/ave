@@ -43,6 +43,7 @@ import {
 } from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { POWERSHELL_EGRESS_PROXY_PRELUDE } from "../powershell-launch.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const CHILD_OUTPUT = "native Windows Plan-B child output";
@@ -213,6 +214,8 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
       if (toolName === "powershell") {
         expect(nativeArgs.at(-1)).toEqual(expect.stringContaining("$PSModuleAutoLoadingPreference = 'None'"));
         expect(nativeArgs.at(-1)?.endsWith(input.command)).toBe(true);
+        // A host shell keeps the user's own proxy.
+        expect(nativeArgs.at(-1)).not.toContain(POWERSHELL_EGRESS_PROXY_PRELUDE);
         expect(nativeArgs.slice(0, -2)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]);
         expect((nativeCall[2] as { env: Record<string, string> }).env.PSModulePath).toBe("");
       } else expect(nativeArgs).toContain(input.command);

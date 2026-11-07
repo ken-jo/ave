@@ -75,6 +75,7 @@ import {
 } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { POWERSHELL_EGRESS_PROXY_PRELUDE } from "../powershell-launch.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const WXC_EXEC = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`;
@@ -215,6 +216,7 @@ describe("builtin shell — Windows MXC containers", () => {
       expect(script).toContain("[System.IO.Path]::Combine($PSHOME, 'Modules')");
       expect(script).toContain("Microsoft.PowerShell.Core\\Import-Module -Name");
       expect(prepared.env.PSModulePath).toBe("");
+      expect(script).toContain(POWERSHELL_EGRESS_PROXY_PRELUDE);
     }
     expect(launch["egressToken"]).toEqual(expect.any(String));
     expect(launch["commandLine"]).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe.* -EncodedCommand /);
