@@ -166,6 +166,7 @@ export function markSandboxGatePendingAtBoot(): void {
 
 // True while a boot is in progress and its gate has not recorded an outcome. Until then the boot-frozen confinement
 // request and the active runtime both read as off, so a confinement-deciding spawn must refuse instead of running unconfined.
+// The pending flag exists only for callers that never run bootstrap() (unit tests); production sets it first, so the guard reduces to "outcome is null".
 export function isSandboxGateUndecidedAtBoot(): boolean {
   return _sandboxGatePendingAtBoot && _bootOutcome === null;
 }

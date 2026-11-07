@@ -2146,6 +2146,9 @@ probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
 its `sandboxed` field describes the selected child, including exclusions and
 unsandboxed retries, rather than merely repeating the setting. Permission,
 reviewer, audit and cache consumers use that plan.
+The boot sandbox gate decision precedes every stdio MCP server spawn and every
+plugin start, enforced by the boot-order test (`bootstrap-integration.test.ts`)
+and the `StdioTransport` guard that refuses a spawn while the gate is undecided.
 
 A shell whose plan is not sandboxed, including explicit host execution or escalation, uses the ordinary mode/human decision in the [decision tree](permission-decision-tree.md). Host state wins even when read-only evidence exists. Normal cards may save prefix rules. Such execution and command-text upload signals are not forced floors; protected-path mutations, critical delete, escape and other-principal turns still are. Upload hints use ordinary mode handling, while actual sandboxed connections pass the egress proxy's destination policy. Non-sandboxed Allow can execute wrapped or opaque uploads. Deny rules remain authoritative.
 
