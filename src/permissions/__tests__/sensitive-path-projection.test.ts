@@ -1,8 +1,9 @@
 // Host guards and sandbox floors project one sensitive-path table; no secret may be readable through either. Saved history deliberately permits builtin reads only. Put the test target inside allowed scope so directory policy cannot hide a missing hard deny.
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { configureHostResources } from "../../main/host-resources.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import { aveHomeReadBoundaryCovering, getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
 import {
@@ -13,6 +14,9 @@ import {
   sensitiveEntryOnSandboxFloor,
   type SensitiveEntry,
 } from "../sensitive-paths.js";
+
+// The Windows read boundary pins the Ave home entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const FAKE_AVE_HOME = join(tmpdir(), "ave-projection-test-home", ".ave");
 const HOME = homedir();

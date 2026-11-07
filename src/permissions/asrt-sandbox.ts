@@ -13,7 +13,7 @@ import { expandWindowsFsPaths, setWindowsAclRecoveryListener, type WindowsAclRec
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
-import { chmodSync, type Dirent, lstatSync, mkdirSync, readdirSync, realpathSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -1071,48 +1071,64 @@ function isWindowsProfileChild(root: string): boolean {
 }
 
 // Per profile-child home (keyed by its folded path), the top-level directories that exist now and are not wholly re-allowed: one
-// readdir, no recursion. `plugins`, `mcp` and `runtime` are denied and their re-allowed children granted beneath them, as under a
-// relocated root. Root files keep their file rows; a child created later is denied from the next projection on. Only an absent home
-// projects no child: any other enumeration failure, and a linked top-level child that is not wholly re-allowed, refuse confinement,
-// since neither can be denied without a root row and following a link would stamp its target.
+// listing, no recursion. `plugins`, `mcp` and `runtime` are denied and their re-allowed children granted beneath them, as under a
+// relocated root. Root files keep their file rows; a child created after this enumeration is denied from the next projection on.
+// The home and every candidate entry then pass the shared non-following reparse admission rule in one native pin, so a listing taken
+// through a link is never used: only a home the native walk reports absent projects no child, and a home or entry that is a link or
+// any other reparse point (dangling or not), or that cannot be listed or pinned, refuses confinement, since none of them can be
+// denied without a root row and following a link would stamp its target. Names are folded; case-distinct siblings in a
+// case-sensitive directory are not supported.
 function aveHomeProfileChildren(): ReadonlyMap<string, readonly string[]> {
   const children = new Map<string, string[]>();
   for (const root of aveHomeReadBoundaryRoots().filter(isWindowsProfileChild)) {
-    let entries: Dirent[];
+    let names: string[] | undefined;
     try {
-      entries = readdirSync(root, { withFileTypes: true });
+      names = readdirSync(root);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") throw new AveHomeBoundaryUnverifiedError(`${root} cannot be enumerated (${code ?? "unknown error"})`, { cause: error });
-      entries = [];
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new AveHomeBoundaryUnverifiedError("unlisted", `${root} cannot be enumerated (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
+      }
     }
-    const names: string[] = [];
-    for (const entry of entries) {
-      if (isAveHomeReadReallowed([caseFoldForMatch(entry.name)])) continue;
-      // The listing types every reparse point as a link; lstat keeps only links and junctions out of the plain kinds.
-      const kind = entry.isDirectory() || entry.isFile() ? entry : lstatOrRefuse(join(root, entry.name));
-      if (kind.isDirectory()) names.push(entry.name);
-      else if (!kind.isFile()) throw new AveHomeBoundaryUnverifiedError(`${join(root, entry.name)} is a link or reparse point`);
+    const candidates = (names ?? []).filter((name) => !isAveHomeReadReallowed([caseFoldForMatch(name)]));
+    const [home, ...entries] = pinBoundaryFacts([root, ...candidates.map((name) => join(root, name))]);
+    admitBoundaryEntry(home!, root);
+    if (home!.exists === false && names === undefined) {
+      children.set(caseFoldForMatch(resolve(root)), []);
+      continue;
     }
-    children.set(caseFoldForMatch(resolve(root)), names);
+    if (home!.exists !== true || !home!.directory || names === undefined) {
+      throw new AveHomeBoundaryUnverifiedError("unlisted", `${root} changed or is not a directory during enumeration`);
+    }
+    children.set(caseFoldForMatch(resolve(root)), candidates.filter((name, index) => {
+      const entry = entries[index]!;
+      admitBoundaryEntry(entry, join(root, name));
+      if (entry.exists !== true) throw new AveHomeBoundaryUnverifiedError("unlisted", `${join(root, name)} vanished during enumeration`);
+      return entry.directory;
+    }));
   }
   return children;
 }
 
-function lstatOrRefuse(path: string): Stats {
+function admitBoundaryEntry(facts: WindowsPathFacts, path: string): void {
+  if (facts.exists === null) throw new AveHomeBoundaryUnverifiedError("unlisted", `${path} cannot be pinned (the native walk stopped above it)`);
+  if (admitWindowsReparse(facts) !== true) throw new AveHomeBoundaryUnverifiedError("link", `${path} is, or lies beneath, a link or reparse point`);
+}
+
+function pinBoundaryFacts(paths: readonly string[]): readonly WindowsPathFacts[] {
   try {
-    return lstatSync(path);
+    return pinWindowsPaths(paths);
   } catch (error) {
-    throw new AveHomeBoundaryUnverifiedError(`${path} cannot be classified (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`, { cause: error });
+    throw new AveHomeBoundaryUnverifiedError("unlisted", `path facts are unavailable for ${paths.length} entries`, { cause: error });
   }
 }
 
-// Stable code for a confined launch refused because a profile-child Ave home's read boundary cannot be projected.
+// Stable code for a confined launch refused because a profile-child Ave home's read boundary cannot be projected; `reason` says
+// whether a link or reparse point, or an unlistable home, caused it.
 const AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE = "ave-home-boundary-unverified";
 
 class AveHomeBoundaryUnverifiedError extends Error {
   readonly code = AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE;
-  constructor(detail: string, options?: ErrorOptions) {
+  constructor(readonly reason: "link" | "unlisted", detail: string, options?: ErrorOptions) {
     super(`sandbox: refusing confinement, the Ave home read boundary cannot be projected: ${detail}`, options);
     this.name = "AveHomeBoundaryUnverifiedError";
   }

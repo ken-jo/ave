@@ -1,4 +1,11 @@
-vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
+const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
+vi.mock("../../shared/windows-path-facts.js", async original => {
+  const facts = await (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original());
+  // A seam for reparse tags no fixture can create: the named paths report the given tag on their own native facts.
+  const pinWindowsPaths: typeof facts.pinWindowsPaths = (paths) => facts.pinWindowsPaths(paths)
+    .map((row, index) => ({ ...row, ...factsOverride.get(paths[index]!) }));
+  return { ...facts, pinWindowsPaths };
+});
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 const readdirFault = vi.hoisted(() => ({ path: undefined as string | undefined, code: "EACCES" }));
 vi.mock("node:fs", async original => {
@@ -14,7 +21,7 @@ vi.mock("node:fs", async original => {
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -236,6 +243,7 @@ describe("a profile-child Ave home on Windows", () => {
   });
   afterEach(() => {
     readdirFault.path = undefined;
+    factsOverride.clear();
     setProcessPlatform(HOST_PLATFORM);
     fakeHome.value = undefined;
     rmSync(profile, { recursive: true, force: true });
@@ -286,6 +294,41 @@ describe("a profile-child Ave home on Windows", () => {
     } finally {
       rmSync(target, { recursive: true, force: true });
     }
+  });
+
+  const linkHome = (dangling: boolean): string => {
+    const target = mkdtempSync(join(tmpdir(), "ave-boundary-home-target-"));
+    mkdirSync(join(target, "logs"));
+    rmSync(original, { recursive: true, force: true });
+    symlinkSync(target, original, "junction");
+    if (dangling) rmSync(target, { recursive: true, force: true });
+    return target;
+  };
+
+  it("refuses a profile home that is a junction at every composer, with the active home relocated", () => {
+    expect(trim(aveHome()).toLowerCase()).not.toBe(trim(original).toLowerCase());
+    const target = linkHome(false);
+    try {
+      for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+    } finally {
+      rmdirSync(original);
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a dangling profile-home junction instead of treating the home as absent", () => {
+    linkHome(true);
+    try {
+      for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+    } finally {
+      rmdirSync(original);
+    }
+  });
+
+  it("refuses a top-level directory behind a reparse point that is not a link", () => {
+    // A cloud placeholder tag: the listing and lstat both call it a plain directory.
+    factsOverride.set(join(original, "logs"), { reparseTag: 0x9000001a, attributes: 0x410 });
+    for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
   });
 
   it("never yields a profile-root or home-root row from any composer", () => {

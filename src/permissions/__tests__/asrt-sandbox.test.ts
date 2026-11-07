@@ -31,6 +31,7 @@ import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../_
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsReadDenyKey, type WindowsReadDenyEvidence } from "../../shared/windows-read-deny-evidence.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import * as windowsStampTargets from "../windows-stamp-targets.js";
@@ -1826,6 +1827,11 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       }
       return Reflect.apply(nativeReaddir, undefined, [path, options]);
     }) as typeof readdirSync);
+    const nativePin = windowsPathFacts.pinWindowsPaths;
+    const pinFacts = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockImplementation(paths => paths.some(path => /^\\\\server\\profiles(?:\\|$)/i.test(resolve(path)))
+      ? paths.map(() => ({ exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null, fileIndex: null,
+        fileSystemName: null, changeTime: null, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [] }))
+      : nativePin(paths));
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
       /^\\\\server\\profiles\\tester(?:\\|$)/i.test(path) ? { status: "missing" } : currentEvidence(path, snapshot));
@@ -1843,6 +1849,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       pin.mockRestore();
       vi.mocked(lstatSync).mockImplementation(nativeLstat);
       vi.mocked(readdirSync).mockImplementation(nativeReaddir);
+      pinFacts.mockRestore();
       realpath.mockRestore();
       evidence.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);

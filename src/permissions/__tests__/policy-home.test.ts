@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, sep, resolve } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { expandLeadingTilde, expandShellTildePaths } from "../../shared/home-tilde.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
@@ -12,6 +12,10 @@ import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefault
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
 import { shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();

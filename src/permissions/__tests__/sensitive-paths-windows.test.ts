@@ -5,13 +5,17 @@ import { vi } from "vitest";
 
 import "../../__tests__/support/trusted-powershell.js";
 // Credential-store paths match case-insensitively even when scanned on a POSIX host; both host and sandbox projections must deny them.
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { SENSITIVE_PATH_ENTRIES, isSensitivePath } from "../sensitive-paths.js";
 import { getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
 import { inspectPowerShellCommand, powerShellSensitivePathSignal } from "../rules/powershell-exfiltration.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const PROFILE = "C:/Users/owner";
 
