@@ -73,7 +73,7 @@ describe("classifyTurnEntries", () => {
 
 describe("approvalTriggerMessage", () => {
   const imported: ChatEntry = { kind: "imported_trigger", sessionId: "s", source: "plugin", prompt: "p", summary: "sum",
-    toolCallCount: 0, importedAt: "2026-01-01" };
+    toolCallCount: 0, importedAt: new Date(0).toISOString() };
 
   it("names the message that started the request's turn, not guidance that arrived after the request", () => {
     expect(approvalTriggerMessage([

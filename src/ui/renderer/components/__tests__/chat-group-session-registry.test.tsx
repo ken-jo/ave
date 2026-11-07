@@ -60,7 +60,6 @@ const handleFor = (streaming: boolean, entries: readonly ChatEntry[] = NO_ENTRIE
   resetForNewSession: () => {},
   restoreSubAgentSpawns: () => {},
   ask: async () => {},
-  insertImportedTriggerEntry: () => {},
   currentSessionId: "",
   currentSessionProject: NO_PROJECT,
   loadSession: async () => false,

@@ -624,6 +624,8 @@ describe("staged prompt turn start: live and reloaded", () => {
   it.each([
     ["mcp-prompt-emitted", "mcp-prompt:docs"],
     ["plugin-prompt-emitted", "plugin-prompt:notes:summarize"],
+    ["app-emitted", "app:invoices"],
+    ["plugin-emitted", "overlay:notes"],
   ] as const)("a live %s turn start equals the entry a reload rebuilds", (origin, source) => {
     const envelope = formatStagedEnvelope(stagedOriginFor(origin), "Summarize the open files", source);
     const live = applyUserMessageFrame([], { origin, text: envelope, messageId: "row-1" });

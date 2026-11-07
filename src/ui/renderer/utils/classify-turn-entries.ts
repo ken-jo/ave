@@ -16,6 +16,8 @@ export function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
 export function approvalTriggerMessage(entries: readonly ChatEntry[], requestCreatedAt: number): string | undefined {
   for (const entry of [...entries].reverse()) {
     if (!isTurnStartEntry(entry)) continue;
+    // A guidance card from an MCP App is inserted when the guide is accepted, which can be after the request.
+    if (entry.kind === "imported_trigger" && Date.parse(entry.importedAt) > requestCreatedAt) continue;
     if (entry.kind !== "user") return undefined;
     // An interrupt send starts the next turn, which begins after the pending request; it bears the same ceiling.
     const injected = entry.injectHint === "queue" || entry.injectHint === "sub-agent" || entry.injectHint === "interrupt";
