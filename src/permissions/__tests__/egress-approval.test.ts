@@ -415,6 +415,15 @@ describe("shell egress human fallback termination", () => {
     await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
   });
 
+  it("reports a card that times out after the policy changed as timed out", async () => {
+    const wc = makeWebContents();
+    const gate = new ApprovalGate(wc as never, undefined, 50, { log: vi.fn() } as never);
+    const answer = createRequester(gate, permissionManager)(egressRequest());
+    await cardSent(wc);
+    permissionManager.setMode("default");
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout });
+  });
+
   it("still refuses an allow answered after the policy changed under the card", async () => {
     const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
       permissionManager.setMode("default");
