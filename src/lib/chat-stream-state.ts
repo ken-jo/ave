@@ -14,6 +14,7 @@ import {
   type SubscriptionUsageTelemetry,
 } from "../shared/subscription-runtime.js";
 import { isExternalSurfaceInputOrigin } from "../shared/chat-origin.js";
+import { stagedEnvelopeCard, stagedOriginForInput } from "../shared/staged-origins.js";
 import { t } from "../i18n/index.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/model-pricing.js";
@@ -182,6 +183,8 @@ export type ChatEntry =
       awaitingHostId?: true;
       /** Restored unanswered questions belong to interrupted prior runs; this marker is display-only. */
       restored?: true;
+      /** The host's "Continue" row that resumes an interrupted turn; it is not the user's own words. */
+      resumesInterruptedTurn?: true;
     }
   | {
       kind: "reasoning";
@@ -315,6 +318,18 @@ function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
   return entry?.kind === "user" || entry?.kind === "imported_trigger";
 }
 
+/** A Continue (a branch's auto-resume included) replays the row the transcript ends on, under a new row id. When that row's card
+ * is already drawn with nothing after it but the continue's pending status, the frame names that card rather than a new turn. */
+function replaysTrailingCard(entries: readonly ChatEntry[], prompt: string): boolean {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (!isTurnStartEntry(entry)) continue;
+    return entry.kind === "imported_trigger" && entry.prompt === prompt
+      && entries.slice(index + 1).every((after) => after.kind === "assistant" && after.streaming === true);
+  }
+  return false;
+}
+
 /** Stop at a turn boundary before touching older answers; injected guidance belongs to this turn only while the preceding answer is streaming. */
 function currentTurnAssistantIdx(entries: readonly ChatEntry[]): number {
   let crossedInjectedLine = false;
@@ -360,6 +375,7 @@ export function appendUserEntry(
   entries: ChatEntry[],
   text: string,
   injectHint?: "queue" | "interrupt",
+  resumesInterruptedTurn?: true,
 ): ChatEntry[] {
   // Stamp optimistic entries immediately so live timestamps and day indexing match later history replay.
   return [
@@ -370,6 +386,7 @@ export function appendUserEntry(
       createdAt: Date.now(),
       awaitingHostId: true,
       ...(injectHint ? { injectHint } : {}),
+      ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
     },
   ];
 }
@@ -379,6 +396,16 @@ export function applyUserMessageFrame(
   entries: ChatEntry[],
   frame: { text?: string; origin?: string; messageId?: string; hostSubmitted?: boolean },
 ): ChatEntry[] {
+  // A staged turn (plugin trigger, MCP App message, MCP or plugin prompt) has no optimistic echo. The host announces it once,
+  // only when it accepted the send, so its provenance card appears here and never for a refused send; a reload rebuilds the
+  // same card from the same row.
+  const staged = stagedOriginForInput(frame.origin);
+  if (staged) {
+    const card = stagedEnvelopeCard(typeof frame.text === "string" ? frame.text : "");
+    if (!card || card.kind !== staged || replaysTrailingCard(entries, card.prompt)) return entries;
+    return appendImportedTriggerEntry(entries, { sessionId: crypto.randomUUID(), source: card.source, prompt: card.prompt,
+      summary: card.summary, toolCallCount: 0, importedAt: new Date().toISOString() });
+  }
   // Host-submitted turns have no local echo; text origin alone cannot identify who initiated a turn.
   if (frame.hostSubmitted === true || isExternalSurfaceInputOrigin(frame.origin)) {
     const text = typeof frame.text === "string" ? frame.text : "";

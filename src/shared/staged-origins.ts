@@ -206,3 +206,14 @@ export function parseStagedEnvelopePayload(input: string): StagedEnvelope | null
     body: trimmed.replace(prefix.kind.envelopePrefixPattern, "").trim(),
   };
 }
+
+/** Bound on a staged card's summary: the transcript is a file the user or an import can write, and the summary renders as markdown in host chrome. */
+export const STAGED_CARD_SUMMARY_CAP = 2_000;
+
+/** The provenance card a closed staged envelope renders as, built the same way for a live turn start and a replayed transcript row.
+ * A truncated (unclosed) envelope is text the user can see, not a provenance claim, so it yields null. */
+export function stagedEnvelopeCard(text: string): { kind: StagedOriginKind; source: string; prompt: string; summary: string } | null {
+  const parsed = parseStagedEnvelopePayload(text);
+  if (!parsed || !text.trim().endsWith(`</${parsed.kind.fenceTag}>`)) return null;
+  return { kind: parsed.kind, source: parsed.source, prompt: text, summary: parsed.body.slice(0, STAGED_CARD_SUMMARY_CAP) };
+}

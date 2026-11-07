@@ -161,7 +161,7 @@ describe("bundled argv resolution for a process entry", () => {
     const { root, generationRoot, dataDir } = processFixture();
     symlinkSync(root, join(dataDir, "outside"));
     expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/outside/secret"]))
-      .toThrow(/passes through a symlink inside PLUGIN_DATA/u);
+      .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA/u);
   });
 
   it.runIf(process.platform !== "win32")("refuses a dangling data symlink, whose target a write would create outside", () => {
@@ -169,12 +169,12 @@ describe("bundled argv resolution for a process entry", () => {
     mkdirSync(join(root, "outside"));
     symlinkSync(join(root, "outside", "absent"), join(dataDir, "link"));
     expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/link"]))
-      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+      .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     expect(() => resolveProcessEntryEnvironmentValue(generationRoot, dataDir, "${PLUGIN_DATA}/link", "env"))
-      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+      .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     // Below a dangling link too: the leaf is missing, the link is not.
     expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/link/leaf"]))
-      .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+      .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     expect(existsSync(join(root, "outside", "absent"))).toBe(false);
   });
 
@@ -183,7 +183,7 @@ describe("bundled argv resolution for a process entry", () => {
     mkdirSync(join(dataDir, "real"));
     symlinkSync(join(dataDir, "real"), join(dataDir, "alias"));
     expect(() => resolveProcess(generationRoot, dataDir, ["./bin/x", "${PLUGIN_DATA}/alias/state"]))
-      .toThrow(/passes through a symlink inside PLUGIN_DATA \('alias'\)/u);
+      .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('alias'\)/u);
   });
 
   it("accepts a data path whose leaf, and parents, do not exist yet", () => {
@@ -225,7 +225,7 @@ describe("bundled argv resolution for a process entry", () => {
         expect(resolveToken(viaAncestor, "${PLUGIN_DATA}"), name).toBe(resolvedData);
         expect(resolveToken(viaAncestor, "${PLUGIN_DATA}/state"), name).toBe(join(resolvedData, "state"));
         expect(() => resolveToken(viaAncestor, "${PLUGIN_DATA}/alias/state"), name)
-          .toThrow(/passes through a symlink inside PLUGIN_DATA \('alias'\)/u);
+          .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('alias'\)/u);
         for (const token of ["${PLUGIN_DATA}", "${PLUGIN_DATA}/state"]) {
           expect(() => resolveToken(takenOver, token), `${name} ${token}`)
             .toThrow(/the plugin data root .* is a symlink, not the directory the host created/u);

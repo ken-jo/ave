@@ -1,8 +1,33 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
+import { CONVERSATION_TITLE_MAX_CHARS, truncateCodePoints } from "../../../shared/conversation-title.js";
 
 /** True for entries that start a turn: user messages and imported overlay prompts. */
 export function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
   return entry?.kind === "user" || entry?.kind === "imported_trigger";
+}
+
+/** The user message whose turn raised an approval created at `requestCreatedAt`, for the card's conversation line. Walks back to
+ * that turn's start (`isTurnStartEntry`); an imported prompt, a sub-agent report or an empty row starting it names no message.
+ * A turn start is not bounded by its stamp: a host-submitted or remote row is stamped by the renderer on arrival and can trail
+ * the request it caused, and no later turn starts while this one waits on the approval. Rows injected into the running turn
+ * (queued guidance, sub-agent reports) and an interrupt send are bounded: one that arrived after the request did not cause it. A resume row
+ * ("Continue") is not the user's words, so the walk passes it to the interrupted turn's own message. Undefined means the
+ * caller names the conversation instead. */
+export function approvalTriggerMessage(entries: readonly ChatEntry[], requestCreatedAt: number): string | undefined {
+  for (const entry of [...entries].reverse()) {
+    if (!isTurnStartEntry(entry)) continue;
+    // A guidance card from an MCP App is inserted when the guide is accepted, which can be after the request.
+    if (entry.kind === "imported_trigger" && Date.parse(entry.importedAt) > requestCreatedAt) continue;
+    if (entry.kind !== "user") return undefined;
+    // An interrupt send starts the next turn, which begins after the pending request; it bears the same ceiling.
+    const injected = entry.injectHint === "queue" || entry.injectHint === "sub-agent" || entry.injectHint === "interrupt";
+    if (injected && entry.createdAt !== undefined && entry.createdAt > requestCreatedAt) continue;
+    if (entry.resumesInterruptedTurn === true) continue;
+    if (entry.injectHint === "sub-agent") return undefined;
+    const text = entry.text.replace(/\s+/g, " ").trim();
+    return text ? truncateCodePoints(text, CONVERSATION_TITLE_MAX_CHARS) : undefined;
+  }
+  return undefined;
 }
 
 export type EntryClass = "intermediate" | "live" | "final";
