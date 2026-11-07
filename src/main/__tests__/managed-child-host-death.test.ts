@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const reaper = vi.hoisted(() => ({ retain: vi.fn(), release: vi.fn(), shutdown: vi.fn() }));
 vi.mock("../process-group-reaper.js", () => ({ createProcessGroupReaper: () => reaper }));
 
-import { __resetManagedChildProcessesForTest, getManagedChildProcessCount, spawnManaged } from "../managed-child-processes.js";
+import { spawn } from "node:child_process";
+import { __resetManagedChildProcessesForTest, getManagedChildProcessCount, spawnManaged, trackManagedChildProcess } from "../managed-child-processes.js";
 
 afterEach(() => {
   __resetManagedChildProcessesForTest();
@@ -28,6 +29,22 @@ describe.skipIf(process.platform === "win32")("managed child groups outlive a ki
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(before), { timeout: 5_000, interval: 50 });
     expect(reaper.release).toHaveBeenCalledTimes(1);
     expect(reaper.release).toHaveBeenCalledWith(pgid);
+  });
+
+  it("undoes the whole registration when the reaper refuses the group", async () => {
+    const before = getManagedChildProcessCount();
+    const child = spawn("/bin/sh", ["-c", "sleep 60"], { detached: true, stdio: "ignore" });
+    const listeners = () => ["exit", "close", "error"].map((event) => child.listenerCount(event));
+    const listenersBefore = listeners();
+    reaper.retain.mockImplementationOnce(() => { throw new Error("[process-group-reaper] reaper was spawned without a stdin pipe"); });
+    try {
+      expect(() => trackManagedChildProcess(child, { killProcessGroup: true, label: "refused-fixture" })).toThrow(/without a stdin pipe/);
+      expect(getManagedChildProcessCount()).toBe(before);
+      expect(listeners()).toEqual(listenersBefore);
+    } finally {
+      process.kill(-child.pid!, "SIGKILL");
+    }
+    await once(child, "exit");
   });
 
   it("leaves a child that shares the host's process group to the host", async () => {

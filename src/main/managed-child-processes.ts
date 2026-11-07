@@ -112,13 +112,22 @@ export function trackManagedChildProcess(
   entry.onError = onError;
 
   managedChildren.add(entry);
-  // The quit sweep dies with the host, so a host killed by SIGKILL or a crash left the group reparented and running. The reaper also holds the
-  // group and kills it when the host's end of its pipe closes. Disposal releases it, normally after the group was seen gone; a group that ends
-  // and has its pgid reused before the next disposal poll, in a host that dies in that same interval, is the one case it could signal wrongly.
-  if (reaperHeldGroup !== undefined) hostDeathReaper().retain(reaperHeldGroup);
   child.once("exit", onSettled);
   child.once("close", onSettled);
   child.once("error", onError);
+  // The quit sweep dies with the host, so a host killed by SIGKILL or a crash left the group reparented and running. The reaper also holds the
+  // group and kills it when the host's end of its pipe closes. Disposal releases it: at once when the leader exits with no group left, and
+  // otherwise on the disposal poll (processGroupPollMs, 1 s) that first sees the group gone. The one case the reaper could signal the wrong
+  // group: the leader exited while descendants remained, the last of them exits, and within that poll interval the pgid is reused and the host
+  // dies. A registration that fails is undone whole, so no half-tracked entry is left behind.
+  if (reaperHeldGroup !== undefined) {
+    try {
+      hostDeathReaper().retain(reaperHeldGroup);
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+  }
   if (managedChildProcessAdmissionSealed && isKillable(entry)) {
     if (process.platform === "win32") {
       void forceKillManagedChildProcess(child, "registered after admission seal");
