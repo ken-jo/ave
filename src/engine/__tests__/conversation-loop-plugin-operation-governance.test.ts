@@ -81,6 +81,7 @@ describe("ConversationLoop plugin operation governance", () => {
       auditLogger: auditLogger as never,
       pluginRuntime: {
         listPluginIds: () => [pluginId],
+        isPluginEnabled: () => true,
         getGenerationAccess: () => generationAccess as never,
       },
       pluginOperationGrants: grants,
