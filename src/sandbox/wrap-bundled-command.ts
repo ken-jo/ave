@@ -177,7 +177,8 @@ export async function spawnWindowsBundledProcess(input: {
       extraEnv: { ...sandboxHome.env },
       stdio: ["pipe", "pipe", "pipe"],
       windowsStdio: "relay",
-      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      // srt-win starts only in a directory the sandbox account is granted; the host's own cwd is not one.
+      cwd: input.cwd ?? sandboxHome.path,
       ...(input.userHookShellPlan !== undefined ? { userHookShellPlan: input.userHookShellPlan } : {}),
       refreshStillValid: input.refreshStillValid,
       assertStillValid: () => {

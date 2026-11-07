@@ -109,6 +109,14 @@ describe("spawnWindowsBundledProcess", () => {
     expect(asrtCleanup).not.toHaveBeenCalled();
   });
 
+  it("starts a command that names no directory in its granted sandbox HOME, never the host's cwd", async () => {
+    confinedSpawn.mockImplementationOnce(spawnedAs(brokerChild()));
+    const { cwd: _cwd, ...withoutCwd } = input;
+    const spawned = await spawnWindowsBundledProcess(withoutCwd);
+    expect(confinedSpawn.mock.calls[0]![0]).toMatchObject({ cwd: SANDBOX_HOME });
+    spawned.releaseHold();
+  });
+
   it("grants READ on the runtime children a program needs, never on the runtime boundary itself", async () => {
     confinedSpawn.mockImplementation(spawnedAs(brokerChild()));
     const runtime = join(aveHome(), "runtime");
