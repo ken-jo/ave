@@ -14,7 +14,8 @@ const producers = [
   ["permissions/asrt-sandbox.ts", "buildSandboxConfig", "admitFilesystemPolicy"],
   ["permissions/asrt-sandbox.ts", "buildPerCommandSandboxCustomConfig", "admitFilesystemPolicy"],
   ["permissions/asrt-sandbox.ts", "grantWindowsWorkerFilesystemAccess", "grantWindowsWorkerFilesystemAccessInTurn"],
-  ["permissions/asrt-sandbox.ts", "grantWindowsWorkerFilesystemAccessInTurn", "admitFilesystemPolicy"],
+  ["permissions/asrt-sandbox.ts", "grantWindowsWorkerFilesystemAccessInTurn", "grantWindowsWorkerFilesystemAccessTurnBody"],
+  ["permissions/asrt-sandbox.ts", "grantWindowsWorkerFilesystemAccessTurnBody", "admitFilesystemPolicy"],
   ["permissions/worker-spawn.ts", "spawnWorker", "grantWindowsWorkerFilesystemAccess"],
   ["permissions/windows-acl-grant-holder.ts", "holdWindowsFilesystemGrant", "grantWindowsWorkerFilesystemAccess"],
   ["sandbox/wrap-bundled-command.ts", "spawnWindowsBundledProcess", "holdWindowsFilesystemGrant"],
@@ -58,7 +59,7 @@ test("native ACL grants have one producer admitted before account lookup", () =>
   const wrapper = callsIn(nativeModules[0], "grantWindowsWorkerFilesystemAccess");
   assert.ok(wrapper.includes("windowsGrantTurns"));
   assert.ok(wrapper.includes("grantWindowsWorkerFilesystemAccessInTurn"));
-  const calls = callsIn(nativeModules[0], "grantWindowsWorkerFilesystemAccessInTurn");
+  const calls = callsIn(nativeModules[0], "grantWindowsWorkerFilesystemAccessTurnBody");
   assert.equal(calls.filter(name => name === "grantWindowsAcl").length, 1);
   for (const effect of ["getWindowsSandboxUserStatus", "grantWindowsAcl"]) {
     assert.ok(calls.indexOf("admitFilesystemPolicy") >= 0 && calls.indexOf("admitFilesystemPolicy") < calls.indexOf(effect), effect);
