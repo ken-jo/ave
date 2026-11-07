@@ -15,7 +15,7 @@ import { servePluginChild } from "../../isolation/plugin-child-main.js";
 import type { PluginManifest } from "../../types.js";
 import { MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
 import { pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../../isolation/out-of-process-plugin.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { nativePluginChildFactoryBudgetMs, TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import type { PluginRuntime } from "../../runtime.js";
 
 /** Produces the owned process row-2 admission would return; the mock below wraps it as the admitted holder. */
@@ -209,6 +209,28 @@ describe("native plugin child quarantine through the runtime", () => {
     // A replacement's handshake publishes its own marker; the old withdrawal cannot clear it.
     await expect(runtime.restartPlugin(PLUGIN_ID)).resolves.toBe("started");
     expect(confinement()).toBe("windows-mxc");
+  });
+
+  it("refuses admission at the wall-clock deadline without quarantining and permits a fresh attempt", async () => {
+    await installPlugin(PONG);
+    const child = ownedChild(0);
+    spawnNativeChild.mockReset().mockResolvedValue(child.owned);
+    const release = vi.fn();
+    const runtime = makeTestPluginRuntime({ rootDir: testDir, registryPath, pluginsRoot: installedDir });
+    const now = Date.now();
+    let offset = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now + offset);
+    routeNative(runtime, release, async () => { offset = nativePluginChildFactoryBudgetMs(); });
+    await runtime.startAll();
+    expect(spawnNativeChild).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    const card = runtime.listPluginCards().find((entry) => entry.id === PLUGIN_ID);
+    expect(card?.loadStatus).toBe("failed");
+    expect(card?.lifecycleQuarantined).toBeUndefined();
+    clock.mockRestore();
+    await expect(runtime.addPlugin(PLUGIN_ID)).resolves.toBe("started");
+    expect(spawnNativeChild).toHaveBeenCalledOnce();
+    await runtime.stopAll();
   });
 
   it("never reports a native child whose bring-up failed", async () => {

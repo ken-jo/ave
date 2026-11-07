@@ -851,7 +851,7 @@ export function createOutOfProcessPluginFactory(
     } catch (error) {
       let failure = error;
       if (child) {
-        child.link.terminate("sandbox grant changed during spawn");
+        child.link.terminate(`refused after spawn: ${error instanceof Error ? error.message : String(error)}`);
         try {
           await child.waitForExit?.();
         } catch (cleanupError) {

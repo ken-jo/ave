@@ -908,7 +908,7 @@ class PluginStartupTimeoutError extends Error {
 }
 
 /** The factory attempt a sandbox-envelope registration belongs to; its deadline abandons the attempt's setup. */
-const factoryAttemptDeadline = new AsyncLocalStorage<{ passed: boolean }>();
+const factoryAttemptDeadline = new AsyncLocalStorage<{ passed: boolean; readonly at: number }>();
 
 /** Revoke timed-out factory authority and retain its late instance for cleanup without publishing it. */
 export async function runPluginFactoryWithTimeout<T>(
@@ -916,7 +916,7 @@ export async function runPluginFactoryWithTimeout<T>(
   onLateResolution: (value: T) => Promise<void> | void,
   timeoutMs: number = TOOL_TIMEOUT_POLICY.pluginFactoryMs,
 ): Promise<T> {
-  const deadline = { passed: false };
+  const deadline = { passed: false, at: Date.now() + timeoutMs };
   const operation = Promise.resolve().then(() => factoryAttemptDeadline.run(deadline, factory));
   let timedOut = false;
   try {
@@ -929,7 +929,7 @@ export async function runPluginFactoryWithTimeout<T>(
     if (timedOut) {
       void operation.then(
         (value) => Promise.resolve(onLateResolution(value)).catch(() => undefined),
-        () => undefined,
+        (error: unknown) => log.debug("plugin factory rejected after timeout: %s", error instanceof Error ? error.message : String(error)),
       );
     }
   }
@@ -1367,7 +1367,9 @@ abstract class PluginRuntimeState {
     this.sandboxEnvelopes.set(pluginId, entries);
     return {
       assertCurrent: () => {
-        if (deadline?.passed) throw new Error("plugin-factory-deadline-passed");
+        if (deadline !== undefined && (deadline.passed || Date.now() >= deadline.at)) {
+          throw new Error("plugin-factory-deadline-passed");
+        }
         if (!record.active || record.grants.some((grant) => !isPluginSandboxGrantCovered(grant, pluginRoot, pluginDataDir))) {
           throw new Error("sandbox-grant-outside-ceiling");
         }
