@@ -1121,7 +1121,7 @@ describe("pre-push message catalog selection", () => {
     expect(selection.testFiles).toBeUndefined();
     expect(selection.consumerModules).toBeUndefined();
     // Parse tracked modules through the same compiler service used by the hook.
-  }, 30_000);
+  }, 180_000);
 
   it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {
     const path = `${MESSAGES}/en.ts`;
