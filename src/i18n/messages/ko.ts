@@ -404,6 +404,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_approvalGate
   "be_approvalGate.conversationNotification": "{action} · 대화: {title}",
+  "be_approvalGate.stagedConversationTitle": "{origin}: {title}",
   "be_approvalGate.notificationTitle": "승인이 필요합니다",
   "be_approvalGate.deferredEscalationBody": "거부·검토 대기열 · {action} · {title}",
 

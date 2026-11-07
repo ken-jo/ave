@@ -218,6 +218,15 @@ export function stagedEnvelopeTitle(text: string): { kind: StagedOriginKind; tit
   return { kind: parsed.kind, title, body: parsed.body };
 }
 
+const ENVELOPE_TAG = new RegExp(
+  `</?(?:${[...new Set(STAGED_ORIGIN_KINDS.map((kind) => kind.fenceTag))].join("|")})(?:\\s+source="[^"]*")?\\s*>`, "g");
+
+/** Drop complete staged envelope tags anywhere in a text excerpt, keeping the enclosed body; a tag cut by the excerpt boundary stays. */
+export function stripStagedEnvelopeTags(text: string): string {
+  const stripped = text.replace(ENVELOPE_TAG, "");
+  return stripped === text ? text : stripped.trim();
+}
+
 /** Bound on a staged card's summary: the transcript is a file the user or an import can write, and the summary renders as markdown in host chrome. */
 export const STAGED_CARD_SUMMARY_CAP = 2_000;
 

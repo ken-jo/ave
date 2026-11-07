@@ -480,6 +480,17 @@ describe("MemoryManager.searchSessions — index maintenance", () => {
     expect(hit.sessionId).toBe(id);
     expect(hit.title).toBe("egress-probe");
   });
+
+  it("drops staged envelope tags from match snippets while the source stays searchable", async () => {
+    const id = "20000000-0000-4000-8000-000000000006";
+    await mm.sessions.saveSession(id, [{ role: "user", content: formatAgentPluginTemplatePrompt(EGRESS_PROBE_TEMPLATE, "now") }]);
+    for (const query of ["fetch", "no", "egress-probe"]) {
+      const [hit] = mm.sessions.searchSessions(query);
+      expect(hit.sessionId).toBe(id);
+      expect(hit.matchedMessage).not.toMatch(/<\/?plugin-prompt/);
+      if (query !== "egress-probe") expect(hit.matchedMessage).toContain("TOOL: fetch now");
+    }
+  });
 });
 
 describe("MemoryManager.listSessionEntries", () => {
@@ -518,9 +529,7 @@ describe("MemoryManager.listSessionEntries", () => {
     await mm.sessions.saveSession(sessionId, [
       { role: "user", content: formatAgentPluginTemplatePrompt(EGRESS_PROBE_TEMPLATE, "https://example.com") },
     ]);
-    const [session] = mm.sessions.listSessions();
-    expect(session.title).toBe("egress-probe");
-    expect(session.preview).toBe("TOOL: fetch https://example.com");
+    expect(mm.sessions.listSessions()[0].preview).toBe("TOOL: fetch https://example.com");
   });
 
   it("uses a fallback preview for oversized session files", async () => {

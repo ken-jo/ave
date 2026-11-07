@@ -7,6 +7,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
+import { stagedOriginForInput } from "../shared/staged-origins.js";
 import type { PolicyFile } from "./policy-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { NotificationService } from "../main/notification-service.js";
@@ -852,9 +853,12 @@ export class ApprovalGate {
     };
     const maskedAction = maskSensitiveData(action).masked;
     if (request.sessionId === undefined) return maskedAction;
-    const title = request.sessionId === undefined ? ""
+    const resolved = request.sessionId === undefined ? ""
       : this.conversationTitleResolver?.(request.sessionId)
         ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
+    // A staged turn's title is its prompt name, so the notice names who authored the turn first; the cap trims the title, not the origin.
+    const staged = stagedOriginForInput(request.trustOrigin);
+    const title = staged ? t("be_approvalGate.stagedConversationTitle", { origin: t(staged.labelKey), title: resolved }) : resolved;
     return t("be_approvalGate.conversationNotification", {
       action: maskedAction, title: segment(title),
     });

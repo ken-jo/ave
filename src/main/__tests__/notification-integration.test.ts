@@ -59,6 +59,22 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
     gate.disposeAll();
     await waiting;
   });
+  it.each(["ko", "en"] as const)("names who authored a staged turn ahead of its prompt-name title in %s", async (locale) => {
+    setLocale(locale);
+    const svc = makeFakeNotificationService();
+    const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
+    gate.setConversationTitleResolver(() => "egress-probe");
+    const waiting = gate.requestAndWait({
+      id: "staged-notice", category: "tool", toolName: "read_file", toolCategory: "read", args: { path: "README.md" },
+      reason: "internal", source: "builtin", createdAt: Date.now(), sessionId: "session-1", trustOrigin: "plugin-prompt-emitted",
+    });
+    const notice = vi.mocked(svc.fire).mock.calls[0][0];
+    expect(notice.body).toContain(`${t("trustOriginLabel.pluginPromptEmitted")}: egress-probe`);
+    gate.disposeAll();
+    await waiting;
+    setLocale("ko");
+  });
+
   it("retains the conversation in the bounded notification body for a long action", async () => {
     const svc = makeFakeNotificationService();
     const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
