@@ -2405,19 +2405,26 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 // Each turn captures obligations and reads, stamps, verifies and grants without yielding.
 const windowsGrantTurns = createSerialQueue();
 
-export function grantWindowsWorkerFilesystemAccess(opts: {
-  readonly holderPid: number;
+interface WindowsWorkerFilesystemGrantRequest {
+  // A function starts the holder when the turn starts, so a refused turn starts none.
+  readonly holderPid: number | (() => number);
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
-}): Promise<WindowsWorkerFilesystemGrant> {
+  // Checked when the queued turn starts, before the holder or any ACL change; a throw refuses the turn.
+  readonly assertStillValid?: () => void;
+}
+
+export function grantWindowsWorkerFilesystemAccess(
+  opts: WindowsWorkerFilesystemGrantRequest,
+): Promise<WindowsWorkerFilesystemGrant> {
   return windowsGrantTurns(() => grantWindowsWorkerFilesystemAccessInTurn(opts));
 }
 
-async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
-  readonly holderPid: number;
-  readonly allowRead?: readonly string[];
-  readonly allowWrite?: readonly string[];
-}): Promise<WindowsWorkerFilesystemGrant> {
+async function grantWindowsWorkerFilesystemAccessInTurn(
+  request: WindowsWorkerFilesystemGrantRequest,
+): Promise<WindowsWorkerFilesystemGrant> {
+  const { assertStillValid, holderPid: requestedHolderPid, ...opts } = request;
+  assertStillValid?.();
   if (process.platform === "win32") {
     for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
       const prefix = containsGlobCharsWin(path) ? globPatternBaseDir(toForwardSlashes(path)) : path;
@@ -2535,6 +2542,8 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
   }
 
   assertWindowsSession(session, revision);
+  // Resolved after every refusal above, so a refused turn starts no holder.
+  const holderPid = typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid();
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
       assertWindowsGrantPins(requests, identities);
@@ -2550,7 +2559,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
       // remains unexercised on this host.
       grantWindowsAcl({
         sandboxUserSid,
-        holderPid: opts.holderPid,
+        holderPid,
         read: allowRead,
         write: allowWrite,
         srtWin,
@@ -2559,12 +2568,12 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     } catch (err) {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
-      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin }); }
+      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin }); }
       catch (error) { cleanupError = error; }
       if (!hasWindowsGrantCleanup(requests, outcome)) {
         // Keep confinement active: disabling it would permit host execution fallback.
         session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
-        log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${opts.holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
+        log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
         throw session.windowsDenyFailure;
       }
       throw err;
@@ -2594,7 +2603,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
         if (counts.read === 0) session.windowsLiveGrants.delete(path);
       }
       // Capture srtWin in the closure — the release may run long after the dynamic import scope has gone; it still needs the explicit spawn descriptor (0.0.67 has no implicit vendored fallback).
-      revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
+      revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin });
       if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
         SandboxManager.updateConfig(
           buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),

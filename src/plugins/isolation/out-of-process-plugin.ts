@@ -536,7 +536,11 @@ export async function spawnConfinedPluginChild(
         label: `plugin-child:${spec.pluginId}:asrt-win-acl`,
         allowRead,
         allowWrite,
+        // Refuses a turn that starts after the factory deadline, before any holder or ACL change.
+        assertStillValid: () => spec.assertStillValid?.(),
       });
+      // The deadline may also pass during the turn; a refusal here releases the grant.
+      spec.assertStillValid?.();
     }
     const grant = windowsGrant;
     const { command, baseEnv } = spawnLine;

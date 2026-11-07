@@ -12,9 +12,20 @@
   not provide a callable route.
 - Callable methods are manifest `Tool` objects. The Host selects the active
   plugin scope and the model discovers deferred Tools through `tool_search`.
-- `request_plugin`, explicit host configuration, and carried session scope are
-  the only activation inputs. A disabled plugin is removed from model exposure
-  even if it remains loaded for settings/auth/UI operations.
+- `request_plugin`, explicit host configuration, a user-selected plugin prompt
+  (turn-scoped), and carried session scope are the only activation inputs. A
+  disabled plugin is removed from model exposure even if it remains loaded for
+  settings/auth/UI operations.
+- A user-selected plugin prompt is explicit host configuration: when the user
+  picks an extension's template prompt in host chrome, main resolves the
+  selected template id against the installed templates, binds it to the
+  envelope source that template produces (the source only, not the body or
+  arguments), and passes the owning plugin id to
+  `resolveToolScope()`. The id never comes from prompt text. An unknown,
+  mismatched or non-extension template, or a plugin that is not installed,
+  enabled and allowed, scopes nothing.
+- Scope is not approval. A scoped Tool call still passes the permission
+  decision tree (`docs/architecture/permission-decision-tree.md`) unchanged.
 
 ## Exposure policy
 
@@ -47,6 +58,10 @@ therefore expose only `tool_search` plus builtins.
 ## State transitions
 
 - A successful `request_plugin` activation adds the plugin to the session scope.
+- A user-selected plugin prompt adds its plugin to the current turn only. It is
+  excluded from carried plugin scope and carried Tool names, so the next turn
+  starts without it. A `request_plugin` for the same plugin in that turn
+  promotes it to ordinary carried scope.
 - Tool names promoted by `tool_search` carry forward only while their owner
   remains in scope and enabled.
 - `onPluginDisabled(pluginId)` removes the plugin and its carried Tool names.
@@ -72,7 +87,10 @@ Primary tests:
 
 - `src/engine/__tests__/tool-search-loop.test.ts`
 - `src/engine/__tests__/request-plugin.test.ts`
+- `src/engine/__tests__/plugin-prompt-turn-scope.test.ts`
+- `src/ipc/handlers/__tests__/chat-plugin-prompt-scope.test.ts`
 - `src/plugins/runtime/__tests__/tool-visibility-invariant.test.ts`
 
 They cover eager exposure, the inclusive ceiling, promotion, carry-forward,
-disable pruning, app-only exclusion, and headless MCP isolation.
+disable pruning, app-only exclusion, headless MCP isolation, and turn-only
+plugin-prompt scope.
