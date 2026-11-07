@@ -3192,7 +3192,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mcpTab.stdioExecutableRequired": "stdio 실행 파일을 입력하세요.",
   "mcpTab.serverAddedConnected": "{id} 서버가 추가되고 연결되었습니다.",
   "mcpTab.serverAddedNotConnected": "{id} 서버 설정은 저장되었지만 연결 실패: {warning}",
-  "mcpTab.policyApprovalGuidance": "이 서버를 추가하려면 MCP 정책과 Ave 폴더 내용 검토의 승인이 필요합니다. 1. governance/mcp-policy.json에 이 서버의 승인된 항목을 추가하세요. 2. 설정 > 권한 > Ave 폴더 내용 검토에서 정책 파일 행을 승인하세요. 3. Ave를 재시작하세요.",
+  "mcpTab.policyApprovalGuidance": "이 서버를 추가하려면 MCP 정책과 {homeTrustTitle}의 승인이 필요합니다. 1. Ave 폴더의 governance/mcp-policy.json에 이 서버의 승인된 항목을 추가하세요. 2. 설정 > 권한 > {homeTrustTitle}에서 정책 파일 행을 승인하세요. 3. Ave를 재시작하세요.",
   "mcpTab.openPermissionsButton": "권한 열기",
   "mcpTab.pageTitle": "MCP 서버",
   "mcpTab.pageDescription": "MCP 서버 구성과 도구 노출을 관리합니다",

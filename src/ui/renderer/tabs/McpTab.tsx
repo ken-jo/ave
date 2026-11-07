@@ -513,7 +513,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
             {banner.msg}
             {banner.policyApprovalRequired && (
               <div className="mt-2 space-y-2">
-                <p>{t("mcpTab.policyApprovalGuidance")}</p>
+                <p>{t("mcpTab.policyApprovalGuidance", { homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>
                 {onNavigate && (
                   <Button size="sm" variant="outline" onClick={() => onNavigate("permissions")}>
                     {t("mcpTab.openPermissionsButton")}

@@ -3,8 +3,6 @@ import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
-import { en } from "../../../../i18n/messages/en.js";
-import { ko } from "../../../../i18n/messages/ko.js";
 import { ipcRenderer } from "electron";
 import { mcpApiSurface } from "../../../../preload/mcp-api-surface.js";
 import { McpTab } from "../McpTab.js";
@@ -48,8 +46,11 @@ describe.each(["en", "ko"] as const)("McpTab policy refusal in %s", (locale) => 
     const reason = "Refusal wording from a different host locale";
     const { addConfig, onNavigate } = await openForm(governanceError(1, reason, "mcp-governance-unapproved-server"));
 
-    const guidance = await screen.findByText(t("mcpTab.policyApprovalGuidance"));
-    expect(guidance).toHaveTextContent("governance/mcp-policy.json");
+    const guidance = await screen.findByText(t("mcpTab.policyApprovalGuidance", { homeTrustTitle: t("permissionsTab.homeTrustTitle") }));
+    expect(guidance).toHaveTextContent(t("permissionsTab.homeTrustTitle"));
+    expect(guidance).toHaveTextContent(locale === "en"
+      ? "governance/mcp-policy.json in the Ave folder"
+      : "Ave 폴더의 governance/mcp-policy.json");
     expect(guidance).toHaveTextContent("1.");
     expect(guidance).toHaveTextContent("2.");
     expect(guidance).toHaveTextContent("3.");
@@ -63,28 +64,23 @@ describe.each(["en", "ko"] as const)("McpTab policy refusal in %s", (locale) => 
     addConfig.mockRejectedValueOnce(new Error("Configuration write failed"));
     fireEvent.click(screen.getByRole("button", { name: t("mcpTab.addButton") }));
     await screen.findByText("Configuration write failed");
-    expect(screen.queryByText(t("mcpTab.policyApprovalGuidance"))).toBeNull();
+    expect(screen.queryByText(t("mcpTab.policyApprovalGuidance", { homeTrustTitle: t("permissionsTab.homeTrustTitle") }))).toBeNull();
     expect(screen.queryByRole("button", { name: t("mcpTab.openPermissionsButton") })).toBeNull();
   });
 
-  it.each(["generic", "other-layer", "other-reason", "uncoded-unapproved", "unknown-code"])("omits approval guidance for %s errors", async (kind) => {
+  it.each(["generic", "other-layer", "other-reason", "pending", "revoked", "uncoded-unapproved", "unknown-code"])("omits approval guidance for %s errors", async (kind) => {
     setLocale(locale);
     const reason = t("be_mcpGovernance.unapprovedServer", { id: SERVER_ID });
     const error = kind === "generic" ? new Error("Configuration write failed")
       : kind === "other-layer" ? governanceError(2, reason)
-        : kind === "uncoded-unapproved" ? governanceError(1, reason)
-          : kind === "unknown-code" ? governanceError(1, reason, "mcp-other-refusal")
-            : governanceError(1, t("be_mcpGovernance.transportMismatch", { configTransport: "stdio", approvedTransport: "http" }));
+        : kind === "pending" ? governanceError(1, t("be_mcpGovernance.pendingServer", { id: SERVER_ID }))
+          : kind === "revoked" ? governanceError(1, t("be_mcpGovernance.revokedServer", { id: SERVER_ID, revokedAt: "" }))
+            : kind === "uncoded-unapproved" ? governanceError(1, reason)
+              : kind === "unknown-code" ? governanceError(1, reason, "mcp-other-refusal")
+                : governanceError(1, t("be_mcpGovernance.transportMismatch", { configTransport: "stdio", approvedTransport: "http" }));
     await openForm(error);
     await screen.findByText(error.message);
-    expect(screen.queryByText(t("mcpTab.policyApprovalGuidance"))).toBeNull();
+    expect(screen.queryByText(t("mcpTab.policyApprovalGuidance", { homeTrustTitle: t("permissionsTab.homeTrustTitle") }))).toBeNull();
     expect(screen.queryByRole("button", { name: t("mcpTab.openPermissionsButton") })).toBeNull();
   });
-});
-
-it.each(["mcpTab.policyApprovalGuidance", "mcpTab.openPermissionsButton"] as const)("defines %s in both catalogs", (key) => {
-  for (const catalog of [en, ko]) {
-    expect(Object.hasOwn(catalog, key)).toBe(true);
-    expect(catalog[key].length).toBeGreaterThan(0);
-  }
 });
