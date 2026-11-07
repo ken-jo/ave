@@ -18,10 +18,7 @@ vi.mock("../../shared/tool-timeout-policy.js", async (importOriginal) => {
 });
 
 import { forceKillManagedChildProcess, trackManagedChildProcess, __resetManagedChildProcessesForTest } from "../managed-child-processes.js";
-
-function blockMainThread(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+import { blockMainThread } from "../../__tests__/support/block-main-thread.js";
 
 describe.runIf(process.platform === "win32")("Windows tree kill under a blocked main thread", () => {
   afterEach(() => {

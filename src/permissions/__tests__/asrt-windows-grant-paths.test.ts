@@ -79,7 +79,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += duration; });
-    const revoke = vi.mocked(runtime.revokeWindowsAcl).getMockImplementation()!;
+    const revoke = vi.mocked(runtime.revokeWindowsAcl).getMockImplementation();
+    if (!revoke) throw new Error("revokeWindowsAcl has no mock implementation");
     vi.mocked(runtime.revokeWindowsAcl).mockImplementation(options => { now += duration; return revoke(options); });
     const info = vi.spyOn(console, "log").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -90,11 +91,11 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const releaseLines = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant release timing");
     expect(turnLines).toHaveLength(1);
     expect(releaseLines).toHaveLength(1);
-    expect(turnLines[0]![1]).toEqual({
+    expect(turnLines[0]?.[1]).toEqual({
       preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, totalMs: duration, rows: expect.any(Number),
     });
-    expect(turnLines[0]![1].rows).toBeGreaterThan(0);
-    expect(releaseLines[0]![1]).toEqual({ revokeMs: duration, totalMs: duration });
+    expect(turnLines[0]?.[1].rows).toBeGreaterThan(0);
+    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, totalMs: duration });
     for (const [, fields] of [...turnLines, ...releaseLines]) {
       for (const value of Object.values(fields)) {
         expect(typeof value).toBe("number");
@@ -118,7 +119,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.mocked(integrity.prepareSrtWinExecutable).mockImplementationOnce(source => { now += 5; return source; });
     const resolveSrtWin = runtime.resolveSrtWin;
     vi.spyOn(runtime, "resolveSrtWin").mockImplementation(options => { now += 7; return resolveSrtWin(options); });
-    const user = vi.mocked(runtime.getWindowsSandboxUserStatus).getMockImplementation()!;
+    const user = vi.mocked(runtime.getWindowsSandboxUserStatus).getMockImplementation();
+    if (!user) throw new Error("getWindowsSandboxUserStatus has no mock implementation");
     vi.mocked(runtime.getWindowsSandboxUserStatus).mockImplementation(options => { now += 11; return user(options); });
     vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => {
       now += 17;
@@ -142,7 +144,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0,
       totalMs: now, rows: expect.any(Number),
     });
-    const fields = info.mock.calls.find(([message]) => message === "[asrt-sandbox] windows grant turn timing")![1];
+    const fields = info.mock.calls.find(([message]) => message === "[asrt-sandbox] windows grant turn timing")?.[1];
     expect(fields.preflightMs).toBeGreaterThanOrEqual(3);
     expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
     grant.release();

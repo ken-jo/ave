@@ -32,10 +32,6 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
 
-function blockMainThread(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 /** Record grant order and holder loss without changing real access lists. */
 const windowsGrant = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
@@ -166,6 +162,7 @@ import { holdWindowsFilesystemGrant } from "../../../permissions/windows-acl-gra
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { runPluginFactoryWithTimeout } from "../../runtime/index.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
+import { blockMainThread } from "../../../__tests__/support/block-main-thread.js";
 
 const PLUGIN_ID = "sampleassistant";
 const EMPTY_SCHEMA = { type: "object", properties: {} } as const;
@@ -1861,7 +1858,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(await late()).toMatchObject(DEADLINE_PASSED);
       expect(windowsGrant.events).toEqual(["grant", "release"]);
       expect(spawnConfinedChild).not.toHaveBeenCalled();
-      expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
+      const sandboxHome = windowsGrant.calls[0]?.allowRead.at(-1);
+      expect(sandboxHome).toBeDefined();
+      expect(existsSync(sandboxHome ?? "")).toBe(false);
     });
   });
 
