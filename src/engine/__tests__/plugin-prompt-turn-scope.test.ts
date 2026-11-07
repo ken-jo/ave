@@ -36,6 +36,15 @@ function makeLoop(provider: LLMProvider, opts: {
   approvalGate?: { requestAndWait: (request: { id: string }) => Promise<unknown> };
 } = {}): ConversationLoop {
   const toolRegistry = new ToolRegistry();
+  toolRegistry.register(createDynamicTool({
+    name: "request_plugin",
+    description: "activate a plugin",
+    source: "builtin",
+    category: "read",
+    isReadOnly: () => true,
+    jsonSchema: { type: "object", required: ["pluginId"], properties: { pluginId: { type: "string" } } },
+    execute: async () => ({ output: "unreachable", isError: false }),
+  }));
   for (const [pluginId, name] of [["egress-probe", "egress_probe"], ["other-plugin", "other_tool"]] as const) {
     toolRegistry.register(createDynamicTool({
       name,
@@ -115,6 +124,7 @@ describe("user-selected plugin prompt scope", () => {
 
     await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["egress-probe"]));
 
+    expect(provider.observedToolNames[0]).toContain("egress_probe");
     expect(provider.observedToolNames[0]).not.toContain("other_tool");
     const [result] = toolResults(loop);
     expect(result?.isError).toBe(true);
@@ -136,6 +146,23 @@ describe("user-selected plugin prompt scope", () => {
     expect(results[0]?.content).toContain("egress_probe-ran");
     expect(results[1]?.isError).toBe(true);
     expect(results[1]?.content).toContain("pluginId=egress-probe");
+  });
+
+  it("carries the plugin forward when request_plugin activates it in the prompt turn", async () => {
+    const provider = new ScriptedProvider([
+      [
+        { type: "tool_call", id: "tu-1", name: "request_plugin", input: { pluginId: "egress-probe" } },
+        { type: "message_complete", stopReason: "tool_use" },
+      ],
+      [{ type: "text_delta", text: "activated" }, { type: "message_complete", stopReason: "end_turn" }],
+      [{ type: "text_delta", text: "next" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const loop = makeLoop(provider);
+
+    await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["egress-probe"]));
+    await loop.runTurn("again", undefined, undefined, { ...userKeyboardTurn() });
+
+    expect(provider.observedToolNames[2]).toContain("egress_probe");
   });
 
   it("scopes nothing for an unknown, disabled or non-prompt-origin plugin id", async () => {

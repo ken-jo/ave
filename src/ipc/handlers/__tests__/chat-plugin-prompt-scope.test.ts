@@ -3,6 +3,7 @@ import type { IpcDeps } from "../../types.js";
 import { handleChatSend, type ChatSendContext } from "../chat.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
+import { bindMessageSendPayload, LOOPBACK_CONVERSATION_ACTOR } from "../../../main/conversation-command-port.js";
 
 const completedTurn = { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" } as const;
 
@@ -84,5 +85,12 @@ describe("chat send plugin-prompt scope", () => {
     expect(await scopeFor({
       input: formatAppMessageEnvelope("hello", "app:test-server"), inputOrigin: "app-emitted", pluginPromptId: EXTENSION_TEMPLATE.id,
     })).toBeUndefined();
+  });
+
+  it("never lets a non-desktop transport supply a template selection", () => {
+    const bound = bindMessageSendPayload(LOOPBACK_CONVERSATION_ACTOR, {
+      input: envelope, inputOrigin: "plugin-prompt-emitted", pluginPromptId: EXTENSION_TEMPLATE.id,
+    }) as Record<string, unknown>;
+    expect(bound).not.toHaveProperty("pluginPromptId");
   });
 });
