@@ -46,8 +46,8 @@ function resolveValue(value: string, activation: AgentPluginMcpActivation, label
   else if (value.startsWith("${PLUGIN_ROOT}/") || value.startsWith("./")) resolved = containedReference(value, activation.generationRoot, label);
   else if (value.startsWith("${PLUGIN_DATA}/")) {
     resolved = containedReference(value, activation.dataDir, label);
-    // An env value follows the argv rule: the plugin can repoint a link under PLUGIN_DATA after this check.
-    if (!directory) refusePluginDataSymlinks(realpathSync(activation.dataDir), value.slice("${PLUGIN_DATA}/".length), label);
+    // Env values and cwd follow the argv rule: the plugin can repoint a link under PLUGIN_DATA after this check.
+    refusePluginDataSymlinks(realpathSync(activation.dataDir), value.slice("${PLUGIN_DATA}/".length), label);
   }
   else if (!directory && !value.includes("${") && !CONTROL.test(value)) return value;
   else throw new Error(`${label} is not a declared package or data path`);

@@ -72,7 +72,7 @@ describe("agent plugin MCP runtime resolution", () => {
     expect(() => resolveRuntimeMcp(item.staticServers, { ...item.activation, approvalDigests: {} })).toThrow(/has no approval digest/u);
   });
 
-  describe("PLUGIN_DATA paths in env follow the argv rule", () => {
+  describe("PLUGIN_DATA paths in env and cwd follow the argv rule", () => {
     // The plugin owns PLUGIN_DATA and can repoint a link after the check, so a data path may not pass through one.
     function withDataLink(env: Record<string, string>, args: string[] = ["./server/run"]) {
       const item = fixture("node", args, undefined, env);
@@ -103,6 +103,28 @@ describe("agent plugin MCP runtime resolution", () => {
         CONFIG: join(realpathSync(item.dataDir), "real", "cfg"),
         ROOT_DATA: realpathSync(item.dataDir),
       });
+    });
+
+    it("refuses a cwd that passes through a symlink under PLUGIN_DATA", () => {
+      const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/link");
+      mkdirSync(join(item.dataDir, "real"));
+      symlinkSync(join(item.dataDir, "real"), join(item.dataDir, "link"), "dir");
+      expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
+        .toThrow(/\.cwd passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+    });
+
+    it("refuses a cwd that names a dangling symlink under PLUGIN_DATA", () => {
+      const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/gone");
+      symlinkSync(join(item.dataDir, "missing-target"), join(item.dataDir, "gone"));
+      expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
+        .toThrow(/\.cwd passes through a symlink inside PLUGIN_DATA \('gone'\)/u);
+    });
+
+    it("still accepts a plain directory under PLUGIN_DATA as cwd", () => {
+      const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/work");
+      mkdirSync(join(item.dataDir, "work"));
+      const projection = resolveRuntimeMcp(item.staticServers, item.activation)[0]!;
+      expect(projection.config.transport === "stdio" && projection.config.cwd).toBe(join(realpathSync(item.dataDir), "work"));
     });
 
     it("keeps refusing the same path in args", () => {
