@@ -1,6 +1,6 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
@@ -133,6 +133,17 @@ Notes that are part of the contract:
 - An owner-away turn means the card waits. The default is unlimited; an optional auto-skip after N minutes denies.
 - The user script PreToolUse hook runs in the first stage and is block-only. Argument hooks may rewrite input.
 - Credential stores owned by the host (encryption keys, credential DBs, cookie/token stores) stay admission-denied.
+- **Ave home sandbox read boundary (owner decision 2026-11-07):** the sandbox read deny covers the Ave home as one directory, not as
+  a list of file rows. Every child is denied by default, including children added later. A confined process is re-opened only the
+  children `src/permissions/ave-home-read-boundary.ts` lists (workspace, its own sandbox HOME and temp, its own plugin, agent plugin
+  or MCP server directories, the host runtime layout, Windows container staging), and only where its own wrap grants them. A grant
+  elsewhere in the Ave home is withheld, and a plugin-chosen directory there is refused. `certs` and `sessions` stay on the protected
+  floor and still need their own pierce. Windows stamps an inheritable deny on the root, and the explicit allow on a granted child
+  ranks above it. Linux masks the root with tmpfs and binds the granted children back. macOS denies the subpath and allows the
+  granted children inside it. Host features (preview, document observation) and the write floor keep the per-file rows.
+- Limit of the Ave home boundary: home dotfile rows (`.gitconfig`, `.npmrc`, ...) stay file rows. A long-lived confined child keeps the
+  file mask it was spawned with, and a host rename-over of a masked file replaces the masked inode, so the child can read the new
+  file. This matches the reference hosts. Per-exec shells re-apply the masks on every spawn.
 - User-typed terminal-tab commands are user actions and stay outside this tree.
 
 ## Mode behaviour matrix (owner clarification 2026-10-30)

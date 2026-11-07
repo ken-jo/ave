@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
   floor: vi.fn(() => [] as string[]),
+  boundary: vi.fn((_path: string): string | undefined => undefined),
   wxcExec: vi.fn(async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`),
   registerPort: vi.fn(),
   recordRefusal: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
+  aveHomeReadBoundaryCovering: h.boundary,
   getProtectedReadDenyFloor: h.floor,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
@@ -104,6 +106,23 @@ describe("prepareMxcShellLaunch", () => {
     }
     expect(await portAccepts(launch.proxyPort)).toBe(false);
     expect(h.closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it("grants nothing inside the Ave home outside its re-allowed children", async () => {
+    h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+    const home = String.raw`C:\Users\alice\.ave`;
+    const workspace = String.raw`C:\Users\alice\.ave\workspace\repo`;
+    h.boundary.mockImplementation((path: string) => path.startsWith(`${home}\\`) && !path.startsWith(`${home}\\workspace\\`) ? home : undefined);
+    const launch = await prepareMxcShellLaunch({ ...INPUT, cwd: workspace, filesystem: {
+      allowWrite: [workspace, `${home}\\logs`], allowRead: [`${home}\\traces`, workspace], denyRead: [`${home}\\`], denyWrite: [],
+    } });
+    try {
+      const request = decodeRequest(launch.argv);
+      expect(request["filesystem"]["readwritePaths"]).toEqual([workspace]);
+      expect(JSON.stringify(request["filesystem"])).not.toMatch(/logs|traces/);
+    } finally {
+      await launch.release();
+    }
   });
 
   it("expands a pattern deny over the filesystem by default, denies a placeholder directory whole and leaves links alone", async () => {

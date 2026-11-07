@@ -80,7 +80,8 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
       filesystem: {
         allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
         // An ancestor grant can re-emit a protected deny after the exact hook file carve-out. User hooks need only their own temporary directory.
-        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite,
+        // A host runtime program sits inside the Ave home read deny, so it reads its own runtime directories as on Windows.
+        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...hostRuntimeReads(input.command),
           ...(tmpDir && input.tempPrincipal.kind !== "hook" ? [tmpDir] : [])],
         ...(input.tempPrincipal.kind === "hook" ? { floorPierces: input.ownPluginReads } : {}),
         denyRead: getDefaultSensitiveReadDenyPaths(),

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
-import { getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
+import { aveHomeReadBoundaryCovering, getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
 import {
   SENSITIVE_PATH_ENTRIES,
   canonicalizePathForMatch,
@@ -211,9 +211,11 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  it("still allows a non-secret path on both surfaces", () => {
+  it("still allows a non-secret path on the host, and lets a sandbox wrap re-open it", () => {
     const benign = join(FAKE_AVE_HOME, "plugins", "hello-world", "README.md");
     expect(hostDeniesAsSensitive(benign, FAKE_AVE_HOME)).toBe(false);
-    expect(sandboxDenies(benign)).toBe(false);
+    // The sandbox denies the Ave home as one directory; a plugin's own directory is a re-allowed child.
+    expect(sandboxDenies(benign)).toBe(true);
+    expect(aveHomeReadBoundaryCovering(benign)).toBeUndefined();
   });
 });

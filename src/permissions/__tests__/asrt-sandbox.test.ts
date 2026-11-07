@@ -1294,9 +1294,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions") + (process.platform === "win32" ? sep : ""));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "settings.json"));
+    // The Ave home is denied as one directory; its file rows stay on the write floor only.
+    expect(paths).toContain(FAKE_AVE_HOME);
+    expect(paths).not.toContain(join(FAKE_AVE_HOME, "audit.log"));
+    expect(paths).not.toContain(join(FAKE_AVE_HOME, "settings.json"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "settings.json"));
 
     // Standard credential / secret stores under the real home.
     expect(paths).toContain(join(home, ".ssh"));
@@ -1313,9 +1316,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
     // Ave ~/.ave permission / auth-partition namespaces.
     expect(paths).toContain(join(FAKE_AVE_HOME, "permissions"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "permissions.json"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "policy.json"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "plugins", "auth-partitions.json"));
+    for (const file of [["permissions.json"], ["policy.json"], ["plugins", "auth-partitions.json"]]) {
+      expect(paths).not.toContain(join(FAKE_AVE_HOME, ...file));
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, ...file));
+    }
 
     // Literal pins on the sandbox projection of SENSITIVE_PATH_ENTRIES.
     expect(paths).toContain(join(FAKE_AVE_HOME, "certs"));

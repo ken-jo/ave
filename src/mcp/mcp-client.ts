@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { dirname } from "node:path";
 import type {
   McpHttpServerConfig,
   McpServerConfig,
@@ -1838,7 +1839,8 @@ class StdioTransport implements McpTransport {
         sandboxHome,
         allowWrite,
         // A plugin-bundled server reads its own generation payload under the plugins root it is refused; a server of no plugin reads nothing there.
-        ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
+        // A server of no plugin reads its own install directory, the parent of its sandbox root, inside the Ave home read deny.
+        ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : sandboxRoot ? [dirname(sandboxRoot)] : [],
         tempPrincipal: { kind: "mcp", id: this.config.id },
         egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
       });

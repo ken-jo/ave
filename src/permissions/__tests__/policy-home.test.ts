@@ -82,10 +82,13 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     for (const shellHome of [explicitHome, undefined, home, home.toUpperCase(), join(home, ".")]) {
       vi.stubEnv("HOME", shellHome);
       const homes = shellHome === explicitHome ? [home, explicitHome] : [home];
-      for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
         expect(new Set(denied.map((path) => path.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase())).size).toBe(denied.length);
         for (const root of homes) {
-          for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+          // The read floor denies the Ave home as one directory instead of its file rows.
+          if (floor === "read") expect(denied).toContain(join(root, ".ave") + sep);
+          for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root"
+            && !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
             const path = join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments);
             expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
           }
@@ -146,8 +149,8 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
   });
 
   it("preserves missing directory kinds in deny projections", () => {
-    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
-      for (const entry of SENSITIVE_PATH_ENTRIES) {
+    for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
+      for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
         const path = entry.anchor === "root" ? "/" + entry.segments.join("/")
           : join(entry.anchor === "ave-home" ? join(home, ".ave") : home, ...entry.segments);
         expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
@@ -199,9 +202,12 @@ describe("independent home anchors", () => {
   });
 
   it("retains every sensitive table row and write floor at the passwd home", () => {
-    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+    for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
       for (const root of [home, shellHome, passwd]) {
-        for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+        // The read floor denies each Ave home as one directory instead of its file rows.
+        if (floor === "read") expect(denied).toContain(join(root, ".ave"));
+        for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root"
+          && !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
           expect(denied).toContain(join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments));
         }
       }

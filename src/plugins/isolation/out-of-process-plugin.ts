@@ -27,6 +27,7 @@ import {
   assertExtensionStartAllowed,
   outermostContainingRoots,
   pluginGrantPathsBeyondOwnRoots,
+  aveHomeReadBoundaryCovering,
   protectedReadDenyCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -217,7 +218,8 @@ function resolveUserChosenDirectory(
   }
   // The host guard above pins only the per-platform DEFAULT user data locations. The sandbox floor denies the exact one the host runs with (`--user-data-dir`, XDG_CONFIG_HOME) and
   // any trusted custom deny, and a grant under either would re-open it: the read half everywhere, the write half too on Linux, where bubblewrap binds the root over the deny's mask.
-  const floorDeny = protectedReadDenyCovering(target);
+  // The Ave home is read-denied as a whole outside its re-allowed children, and a grant there would re-open it the same way.
+  const floorDeny = protectedReadDenyCovering(target) ?? aveHomeReadBoundaryCovering(target);
   if (floorDeny !== undefined) {
     rejectEnvelopeGrant(
       inputs.pluginId,
