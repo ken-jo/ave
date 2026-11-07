@@ -1,6 +1,5 @@
-/** Load installed languages and fonts before resolving saved selections. */
+/** Load installed fonts before resolving saved selections. */
 import { useSyncExternalStore } from "react";
-import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import {
   fontAlias,
   isContentAssetUrl,
@@ -10,7 +9,7 @@ import {
 } from "../../shared/installed-content.js";
 import type { GitMarketplaceApi } from "../../shared/git-marketplace.js";
 
-const EMPTY: InstalledContentView = Object.freeze({ languages: [], fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
+const EMPTY: InstalledContentView = Object.freeze({ fonts: [], routineTemplates: [], broken: [] }) as unknown as InstalledContentView;
 const FONT_STYLE_ID = "ave-installed-fonts";
 
 let current: InstalledContentView = EMPTY;
@@ -47,14 +46,8 @@ function applyFonts(fonts: readonly InstalledFontView[]): void {
   style.textContent = fontFaceCss(fonts);
 }
 
-/** Apply `view` to the locale and font registries and tell subscribers. */
-export function applyInstalledContent(view: InstalledContentView, api: InstalledContentApi): void {
-  registerInstalledLocales(view.languages);
-  setInstalledCatalogLoader(async (locale) => {
-    const result = await api.languageMessages(locale);
-    if (!result.ok) throw new Error(`${locale}: ${result.error}`);
-    return result.messages;
-  });
+/** Apply `view` to the font registry and tell subscribers. */
+export function applyInstalledContent(view: InstalledContentView): void {
   applyFonts(view.fonts);
   current = view;
   for (const listener of listeners) listener();
@@ -70,7 +63,7 @@ export function ensureInstalledContent(
   if (!bridge) return Promise.resolve();
   const read = () =>
     bridge.installed().then((result) => {
-      if (result.ok) applyInstalledContent(result.content, bridge);
+      if (result.ok) applyInstalledContent(result.content);
     });
   pending = read();
   // A package installed or removed in the marketplace changes what this window lists.
@@ -80,7 +73,7 @@ export function ensureInstalledContent(
 }
 
 /** Be told whenever the installed content of this window is (re)applied. Returns the unsubscribe function. */
-export function subscribeInstalledContent(listener: () => void): () => void {
+function subscribeInstalledContent(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
@@ -97,7 +90,5 @@ export function resetInstalledContentForTests(): void {
   offCatalogChanged = null;
   offPromptsUpdated?.();
   offPromptsUpdated = null;
-  registerInstalledLocales([]);
-  setInstalledCatalogLoader(null);
   if (typeof document !== "undefined") document.getElementById(FONT_STYLE_ID)?.remove();
 }

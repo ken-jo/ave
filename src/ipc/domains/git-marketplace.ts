@@ -9,7 +9,6 @@ import { isDevModeUnlocked, isE2eMarketplaceSchedulerRun, isE2eTestRuntime } fro
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { t } from "../../i18n/index.js";
-import { messages } from "../../i18n/messages/index.js";
 import { createMarketplaceLogger } from "../../marketplace/log.js";
 import { getBootInstallNotice, getMarketplaceLifetime, setBootInstallNotice, takePendingGitMarketplaceLink } from "../../main/app-state.js";
 import { queryDosDevice } from "../../main/windows-path-kind-launcher.js";
@@ -382,7 +381,6 @@ async function createGitMarketplaceService(
     },
     mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
     folders: { ...folders, home: homedir() },
-    english: messages.en,
     onSyncProgress: events.onSyncProgress,
     onCatalogChanged: events.onCatalogChanged,
     onInstallProgress: events.onInstallProgress,

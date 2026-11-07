@@ -228,7 +228,7 @@ skills/<name>/                   # ave-package.json, SKILL.md, resources
 agents/<name>/                   # ave-package.json, AGENTS.md
 themes/<name>/                   # ave-package.json, theme.json
 fonts/<name>/                    # ave-package.json, font.json, files/
-languages/<name>/                # ave-package.json, language.json, messages.json
+languages/<name>/                # retired; legacy receipts only
 providers/<name>/                # ave-package.json, provider.json
 messaging/<name>/                # ave-package.json, connection.json
 policy/revocations.json          # revocations of this repository's own packages
@@ -396,7 +396,7 @@ interface PackageDescriptor {
 | `agent` | `{ entry: "AGENTS.md" }` | `AGENTS.md` |
 | `theme` | `{ entry: "theme.json" }` | `theme.json`, optional preview image |
 | `font` | `{ entry: "font.json" }` | `font.json`, `files/*.woff2\|woff\|ttf\|otf`, `LICENSE` |
-| `language` | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | those two JSON files |
+| `language` (retired; legacy receipts only) | `{ locale: string; entry: "language.json"; messages: "messages.json" }` | those two JSON files |
 | `provider` | `{ entry: "provider.json" }` | `provider.json`: a preset (today's `MarketplaceProviderPackageAsset` minus `type`), or for a marketplace-eligible built-in vendor `{ providerId, defaultModel?, baseUrl? }` (§5.5) |
 | `messaging-connection` | `{ entry: "connection.json" }` | `connection.json` (today's messaging asset minus `type`) |
 
@@ -587,34 +587,10 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   descriptions refuse bidirectional overrides and invisible characters. It
   applies as inline custom properties with its shell's shadow stack and
   `color-scheme`.
-- **Language** — the locale set is open: any well-formed BCP 47 tag. `en`
-  and `ko` are visible built-ins without installing packages. A package can
-  overlay a compiled locale or add another locale; an installed language registers its locale
-  with its native and English names, and its messages are layered over
-  English, so a key it does not translate reads in English.
-  - A package translates the interface only. `messages.json` may use
-    English catalog keys outside the model-facing set, which always comes
-    from the compiled catalogs: the `be_*` namespace (system prompt, tool and
-    reviewer text), the shell execution environment the system prompt
-    describes, and a message a surface sends as the user's own
-    (`i18n/model-facing.ts`; a static test fails when a key reaches the
-    model from outside it). Missing keys are listed, not refused. Any
-    other key is refused by the repository check and ignored on a device,
-    where it never applies: a package written for another app version names
-    keys this one removed or has since made model-facing, and refusing them
-    would break every installed language whenever the catalog loses a key.
-  - A translation keeps the English placeholder set, and refuses
-    bidirectional overrides and invisible characters: an approval prompt
-    must ask about what it says.
-  - English (`en`, `en-*`) is never installable. A compiled locale is
-    installable only under its exact tag (`ko`, not `ko-KR`) and only from
-    an official or managed source; it lays its keys over the compiled
-    catalog, so removing it keeps that language selected.
-  - One package per locale: a second is refused at install
-    (`PACKAGE_ID_CONFLICT`).
-  - The main process uses installed locales too (dialogs, menus,
-    notifications), `<html lang>` follows the active locale, and an
-    announcement label falls back to English for a locale it does not carry.
+- **Language** — only compiled `en` and `ko` catalogs can be active. Language
+  packages are no longer installable or listed; legacy ledger entries and
+  payloads remain readable and inert until explicitly uninstalled. Legacy
+  locale activations do not produce migration installs.
 - **Font** — `font.json` is `{ family, license, faces: [{ file, weight,
   style }] }`, with a `LICENSE` file required; a face's format comes from
   its extension and its bytes must match it, and a weight range is
@@ -636,9 +612,10 @@ ledger feeds snapshot retention (§2.3) like the plugin registry does.
   settings stay on the old address). Uninstalling the
   package locks the vendor again and drops its key, which may have been
   entered for the package's address.
-- **Selection stays the user's.** Installing does not select a theme,
-  language or font. Removing the selected one puts that setting back to its
-  default; a selected id that is not installed renders the default.
+- **Selection stays the user's.** Installing does not select a theme or font.
+  Removing the selected one puts that setting back to its default; a selected id
+  that is not installed renders the default. Removing a legacy language receipt
+  leaves the compiled language selection unchanged.
 - **Asset scheme.** `ave-content://<token>/<kind>/<name>/<path>` answers only the
   files the loaded store lists (font faces, theme previews), with `nosniff`;
   anything else is 404. The CSP admits it for `img-src` and `font-src` only.
@@ -2038,7 +2015,7 @@ files is a device-management action).
 - Announcements keep the `MarketplaceAnnouncement` contract (levels,
   `startsAt`/`endsAt`, up to three navigation-only actions, app-version
   filtered actions) and the dismissed-ids behavior. Action labels fall back to
-  the `en` label when the active locale is an installed language that the
+  the `en` label when the active locale is a compiled language that the
   announcement does not carry. They are fetched after boot and every 6 hours
   while the update-check switch is on; a failed fetch keeps the list last
   read from the base still in force.
@@ -2250,8 +2227,7 @@ otherwise requires explicit approval and locks user-policy editing; see
 | `ave:marketplace:uninstall` | `PackageKey` | `UninstallResult` |
 | `ave:marketplace:direct:preview` | `{ input; subdir?; ref? } \| { serverJson: string } \| { mcpConfig: string }` | `DirectPackagePreview` |
 | `ave:marketplace:announcements` | — | `MarketplaceAnnouncement[]` |
-| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (themes, languages, fonts, broken packages; §5.5) |
-| `ave:marketplace:content:language-messages` | `locale` | `{ ok: true; messages } \| { ok: false; error: "installed-content-unavailable" \| "language-not-installed" }` |
+| `ave:marketplace:content:installed` | — | `{ ok: true; content: InstalledContent } \| { ok: false; error: "installed-content-unavailable" }` (fonts, routine templates, broken packages; §5.5) |
 | `ave:marketplace:updates:status` | — | `UpdateStatusView` (§13.1) |
 | `ave:marketplace:updates:check` | — | `UpdateStatusView`, when the apply check's discovery and classification end (§7.3) |
 | `ave:marketplace:updates:apply-now` | — | `UpdateStatusView`; the apply queue skips the idle gate (§7.3) |
@@ -2813,7 +2789,7 @@ folder UI and the Updates card (§15.7.1) ship in 0.14.0.
 - Header: search field, **Sources** button, **Add** menu (Add marketplace…,
   Install from Git URL or folder…, Add MCP server…), source filter chips (All sources +
   one per enabled source).
-- Kind tabs: Plugins, MCP, Skills, Agents, Themes, Fonts, Languages,
+- Kind tabs: Plugins, MCP, Skills, Agents, Fonts,
   Providers, Messaging — each with a count.
 - Card: icon, display name, one-line description, **source badge**
   (`Ave Official` with a shield glyph; managed sources with a building glyph
@@ -3122,7 +3098,7 @@ catalogs (en.ts and ko.ts); no raw keys.
 | `dependency-resolver.ts` | kept; runs on the descriptor's authority (§6.2) |
 | settings `backend`, `cloudBaseUrl`, `cloudAllowPrivateNetwork` | removed by a settings migration |
 | settings `updateCheckEnabled`, `updateCheckIntervalMs`, `canaryOptIn`, `skippedPluginUpdates`, `dismissedAnnouncementIds` | kept with the meanings above |
-| settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | converted to ledger entries |
+| settings `installedThemeBundleIds`, `installedLanguagePacks`, `installedProviderPresets`, `installedProviderIds` | provider activations are adopted; legacy language ids remain inert |
 | the fourteen compiled theme bundles outside `moonstone` and `gallery` (`theme/bundles/*.ts`, their `styles.css` blocks, `MARKETPLACE_ELIGIBLE_THEME_BUNDLE_IDS`) | removed; the official theme packages carry the same ids |
 | vendor ids `nousResearch`, `v0` | renamed `nous-research`, `vercel-v0` with a one-time settings and secret migration, because a provider package is named after its vendor id |
 | secret `marketplace.apiKey` and its IPC (`ipc/domains/settings.ts`) | deleted; telemetry no longer reads it |
@@ -3147,9 +3123,9 @@ On first boot of the new version:
   entries are not rewritten (`src/plugins/registry.ts` still derives `admin`
   from `installedBy`, and `PluginRegistryEntryInstallSource` still admits it).
   The migration writes nothing to `packages/default-installs.json`.
-- Activated providers and the Korean language activation are adopted from the
-  official source through ordinary install plans when it lists them; a failed
-  adoption leaves the marker incomplete and is retried at the next boot.
+- Activated providers are adopted from the official source through ordinary
+  install plans when it lists them; a failed adoption leaves the marker incomplete
+  and is retried at the next boot. Legacy language activations remain inert.
 
 ### 16.4 As built
 
@@ -3200,10 +3176,8 @@ Where the sections above and the shipped code differ, the code wins:
   snapshot, and records itself in `packages/legacy-migration.json`: `{
   version: 1, completedAt }` when all content adoption succeeds, otherwise
   `{ version: 1 }`, and the next run retries failed content adoption.
-- **Language keys across app versions.** The upgrade run found every
-  installed language breaking on the first boot of a build whose catalog
-  had lost keys (the switch removes 157). A key outside the interface set is
-  now ignored on a device and refused only by the repository check (§5.5).
+- **Language catalogs.** Only compiled catalogs supply translations; installed
+  language payloads are never parsed or applied.
 - **Web documentation.** The site's server-marketplace pages and their
   twelve screenshots are gone; `/docs/marketplace` explains sources, installs
   and updates, and `/docs/marketplace/authors` is the package-author page

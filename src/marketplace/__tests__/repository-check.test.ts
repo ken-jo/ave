@@ -76,6 +76,15 @@ function index(files: Map<string, unknown>) {
 }
 
 describe("checkMarketplaceRepository", () => {
+  it("reports a language package as retired even when its files are valid", () => {
+    const files = validFiles();
+    index(files).packages.push({ kind: "language", name: "french", path: "languages/french", latest: "1.0.0", versions: [version()] });
+    files.set("languages/french/ave-package.json", descriptor("language", "french", { locale: "fr", entry: "language.json", messages: "messages.json" }));
+    files.set("languages/french/language.json", { locale: "fr", nativeName: "Français", englishName: "French" });
+    files.set("languages/french/messages.json", {});
+    expect(check(files)).toContainEqual({ subject: "language/french", message: "Language packages are retired" });
+  });
+
   it.each([false, true])("validates mixed descriptors while keeping foreign-only descriptors listed (foreign-only %j)", (foreignOnly) => {
     const files = validFiles();
     const input = structuredClone(mixedHostProtocols);

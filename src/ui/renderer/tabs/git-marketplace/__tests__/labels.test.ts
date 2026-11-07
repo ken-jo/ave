@@ -7,6 +7,12 @@ import type { SourceView } from "../../../../../shared/git-marketplace.js";
 import { ENTRY_SUBJECT, OTHER_SUBJECT, allowableWarning, allowRisk, failureCommand, failureText, kindLabel, sourceStatusDetail, sourceStatusLabel, sourceSubject, warningText, type FailureSubject } from "../labels.js";
 
 describe("package kind display vocabulary", () => {
+  it("localizes the kind of a retained language receipt", () => {
+    expect(kindLabel((key) => translate("en", key), "language")).toBe("Languages");
+    expect(kindLabel((key) => translate("ko", key), "language")).toBe("언어");
+  });
+
+
   it("labels code packages as extensions and entry-free bundles as plugins", () => {
     const codePackage = { kind: "plugin" } as const;
     const bundlePackage = { kind: "agent-plugin" } as const;

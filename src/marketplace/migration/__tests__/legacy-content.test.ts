@@ -4,60 +4,43 @@ import { migrateLegacyContent, type LegacyActivations, type LegacyContentKind } 
 
 function harness(activations: LegacyActivations) {
   const adopt = vi.fn(async (_kind: LegacyContentKind, _name: string) => undefined);
-  const release = vi.fn(async () => undefined);
   const warn = vi.fn();
   const installed = vi.fn(async (_kind: LegacyContentKind, _name: string) => false);
-  const run = () => migrateLegacyContent({ activations, listed: (_kind, name) => ["korean", "openrouter"].includes(name), installed, adopt, release, log: { warn } });
-  return { run, adopt, release, warn, installed };
+  const run = () => migrateLegacyContent({ activations, listed: (_kind, name) => ["openrouter"].includes(name), installed, adopt, log: { warn } });
+  return { run, adopt, warn, installed };
 }
 
 describe("legacy content activation", () => {
-  it("adopts languages and providers and releases only legacy locales", async () => {
-    const { run, adopt, release } = harness({ locales: ["ko"], providers: ["openrouter", "openrouter"] });
-    expect(await run()).toEqual({ adopted: [{ source: "ave", kind: "language", name: "korean" }, { source: "ave", kind: "provider", name: "openrouter" }], failed: [] });
-    expect(adopt.mock.calls).toEqual([["language", "korean"], ["provider", "openrouter"]]);
-    expect(release).toHaveBeenCalledWith({ locales: ["ko"] });
+  it("adopts each provider once", async () => {
+    const { run, adopt } = harness({ providers: ["openrouter", "openrouter"] });
+    expect(await run()).toEqual({ adopted: [{ source: "ave", kind: "provider", name: "openrouter" }], failed: [] });
+    expect(adopt.mock.calls).toEqual([["provider", "openrouter"]]);
   });
 
-  it("releases a locale already provided by an installed package", async () => {
-    const { run, installed, adopt, release } = harness({ locales: ["ko"], providers: [] });
-    installed.mockResolvedValue(true);
+  it("does not query or adopt packages without provider activations", async () => {
+    const { run, installed, adopt } = harness({ providers: [] });
     expect(await run()).toEqual({ adopted: [], failed: [] });
+    expect(installed).not.toHaveBeenCalled();
     expect(adopt).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledWith({ locales: ["ko"] });
   });
 
   it("reports missing packages without releasing their activation", async () => {
-    const { run, adopt, release, warn } = harness({ locales: ["fr"], providers: ["gone"] });
+    const { run, adopt, warn } = harness({ providers: ["gone"] });
     expect(await run()).toEqual({ adopted: [], failed: [] });
     expect(adopt).not.toHaveBeenCalled();
-    expect(release).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("releases a locale another package already provides", async () => {
-    const { run, adopt, release } = harness({ locales: ["ko"], providers: [] });
-    adopt.mockRejectedValue(new MarketplaceError("PACKAGE_ID_CONFLICT", "locale already provided"));
+  it("keeps provider conflict handling", async () => {
+    const { run, adopt } = harness({ providers: ["openrouter"] });
+    adopt.mockRejectedValue(new MarketplaceError("PACKAGE_ID_CONFLICT", "id already provided"));
     expect(await run()).toEqual({ adopted: [], failed: [] });
-    expect(release).toHaveBeenCalledWith({ locales: ["ko"] });
   });
 
   it("reports a failed adoption and retains its activation", async () => {
-    const { run, adopt, release } = harness({ locales: ["ko"], providers: [] });
+    const { run, adopt } = harness({ providers: ["openrouter"] });
     adopt.mockRejectedValue(new Error("offline"));
-    expect((await run()).failed).toEqual([{ key: { source: "ave", kind: "language", name: "korean" }, message: "offline" }]);
-    expect(release).not.toHaveBeenCalled();
+    expect((await run()).failed).toEqual([{ key: { source: "ave", kind: "provider", name: "openrouter" }, message: "offline" }]);
   });
 
-  it("reports a failed legacy list write for the next boot to retry", async () => {
-    const { run, release } = harness({ locales: ["ko"], providers: [] });
-    release.mockRejectedValue(new Error("disk full"));
-    expect((await run()).failed).toEqual([{ key: { source: "ave", kind: "language", name: "korean" }, message: "dropping it from the legacy list failed: disk full" }]);
-  });
-
-  it("writes nothing without legacy activations", async () => {
-    const { run, release } = harness({ locales: [], providers: [] });
-    expect(await run()).toEqual({ adopted: [], failed: [] });
-    expect(release).not.toHaveBeenCalled();
-  });
 });

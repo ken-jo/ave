@@ -13,9 +13,9 @@ import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
 const FRENCH = { sourceId: "ave", version: "1.0.0", name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
-function install(content: Partial<InstalledContentView>) {
+function install(content: Partial<InstalledContentView> & { languages?: typeof FRENCH[] }) {
   const view = { languages: [], fonts: [], routineTemplates: [], broken: [], ...content } as InstalledContentView;
-  applyInstalledContent(view, { installed: vi.fn(), languageMessages: vi.fn() } as never);
+  applyInstalledContent(view);
 }
 
 beforeEach(() => {
@@ -31,8 +31,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderAppearance(initial: AppearanceSettings = DEFAULT_APPEARANCE, onOpenMarketplace?: (filter: "language") => void) {
-  return render(<SavedToastProvider value={() => {}}><ThemeProvider initialAppearance={initial}><AppearanceTab onOpenMarketplace={onOpenMarketplace} /></ThemeProvider></SavedToastProvider>);
+function renderAppearance(initial: AppearanceSettings = DEFAULT_APPEARANCE) {
+  return render(<SavedToastProvider value={() => {}}><ThemeProvider initialAppearance={initial}><AppearanceTab /></ThemeProvider></SavedToastProvider>);
 }
 
 describe("Appearance settings", () => {
@@ -55,25 +55,27 @@ describe("Appearance settings", () => {
     expect(document.documentElement).toHaveAttribute("data-shell", "dark");
   });
 
-  it("lists an installed language with its marketplace badge", () => {
+  it("ignores a legacy installed language in the picker", () => {
     install({ languages: [FRENCH] });
-    const { getByTestId } = renderAppearance();
-    expect(getByTestId("language-option-fr")).toHaveAttribute("data-marketplace-installed", "true");
-    expect(getByTestId("appearance-tab:language-marketplace-badge:fr")).toHaveTextContent("마켓플레이스");
-  });
-
-  it("reflects a language installed while the tab is open", async () => {
-    const { getByTestId, queryByTestId } = renderAppearance();
+    const { queryByTestId } = renderAppearance();
     expect(queryByTestId("language-option-fr")).toBeNull();
-    act(() => install({ languages: [FRENCH] }));
-    await waitFor(() => expect(getByTestId("language-option-fr")).toBeTruthy());
+    expect(queryByTestId("appearance-tab:language-marketplace-badge:fr")).toBeNull();
   });
 
-  it("opens the language marketplace filter", () => {
-    const onOpenMarketplace = vi.fn();
-    const { getByTestId } = renderAppearance(DEFAULT_APPEARANCE, onOpenMarketplace);
-    fireEvent.click(getByTestId("appearance-tab:marketplace-languages"));
-    expect(onOpenMarketplace).toHaveBeenCalledWith("language");
+  it("keeps compiled locale options after legacy content is reapplied", () => {
+    const { getByTestId, queryByTestId } = renderAppearance();
+    act(() => install({ languages: [FRENCH] }));
+    expect(queryByTestId("language-option-fr")).toBeNull();
+    expect(getByTestId("language-option-ko")).toBeTruthy();
+  });
+
+  it("does not offer a marketplace language entry point", () => {
+    const { queryByTestId, container } = renderAppearance();
+    expect(queryByTestId("appearance-tab:marketplace-languages")).toBeNull();
+    expect(Array.from(container.querySelectorAll('[data-testid^="language-option-"]')).map((radio) => radio.getAttribute("data-testid"))).toEqual(["language-option-en", "language-option-ko"]);
+    expect(container.querySelector('[data-testid="language-option-en"]')).toHaveAttribute("role", "radio");
+    expect(container.querySelector('[data-testid="language-option-ko"]')).toHaveAttribute("role", "radio");
+    expect(container.querySelector('[data-testid^="appearance-tab:language-marketplace-badge:"]')).toBeNull();
   });
 
   it("offers Korean without an installed language package", () => {
@@ -82,7 +84,7 @@ describe("Appearance settings", () => {
     try {
       const { getByTestId } = renderAppearance();
       expect(getByTestId("language-option-ko")).toHaveTextContent("한국어");
-      expect(getByTestId("language-option-ko")).toHaveAttribute("data-marketplace-installed", "false");
+      expect(getByTestId("language-option-ko")).not.toHaveAttribute("data-marketplace-installed");
       fireEvent.click(getByTestId("language-option-ko"));
       expect(getLocale()).toBe("ko");
     } finally {
@@ -90,7 +92,6 @@ describe("Appearance settings", () => {
     }
   });
 });
-
 
 it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
   const { getByRole, getByTestId, container } = renderAppearance();

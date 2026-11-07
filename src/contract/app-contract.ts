@@ -355,11 +355,9 @@ export const CHANNELS = {
     previewInstallDraft: "ave:plugin-studio:drafts:install-preview",
     installFromFile: "ave:plugin-studio:file:install",
   },
-  // Installed content packages of the git marketplace (blueprint P3): what the
-  // settings pickers list and the catalogs of installed languages. Host-renderer only.
+  // Installed fonts, routine templates and broken packages. Host-renderer only.
   marketplaceContent: {
     installed: "ave:marketplace:content:installed",
-    languageMessages: "ave:marketplace:content:language-messages",
   },
   agents: {
     list: "ave:agents:list",

@@ -186,7 +186,6 @@ export async function folderService(options: {
     ladder: { zip: artifacts, limits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS, artifacts: NO_CACHE as never },
     mcpLimits: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS,
     folders: { ...options.folders, home: options.home ?? "/Users/example" },
-    english: {},
     now,
     revocations: { apply: async () => {} },
     log: { warn: () => {} },

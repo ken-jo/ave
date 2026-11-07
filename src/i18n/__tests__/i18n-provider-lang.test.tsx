@@ -5,11 +5,11 @@ import { render } from "@testing-library/react";
 import { I18nProvider } from "../react.js";
 
 describe("I18nProvider", () => {
-  it("sets the document language to the active locale, installed locales included", () => {
+  it("sets the document language to the active compiled locale", () => {
     const noop = () => {};
     const { rerender } = render(<I18nProvider locale="en" setLocale={noop}>x</I18nProvider>);
     expect(document.documentElement.lang).toBe("en");
-    rerender(<I18nProvider locale="fr" setLocale={noop}>x</I18nProvider>);
-    expect(document.documentElement.lang).toBe("fr");
+    rerender(<I18nProvider locale="ko" setLocale={noop}>x</I18nProvider>);
+    expect(document.documentElement.lang).toBe("ko");
   });
 });

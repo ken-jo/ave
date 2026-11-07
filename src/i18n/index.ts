@@ -7,14 +7,10 @@
  */
 export {
   DEFAULT_LOCALE,
-  SUPPORTED_LOCALES,
-  isDefaultVisibleLocale,
-  isInstalledLocale,
   isLocale,
   isOfficialPackageLocale,
   localeInfo,
   normalizeLocale,
-  registerInstalledLocales,
   visibleLocalesFor,
   type Locale,
 } from "./locale.js";
@@ -24,7 +20,6 @@ export {
   isLocaleMessagesLoaded,
   loadAllLocaleMessages,
   loadLocaleMessages,
-  setInstalledCatalogLoader,
   tryLoadLocaleMessages,
   type MessageKey,
   type Messages,

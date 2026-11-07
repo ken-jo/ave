@@ -1,10 +1,9 @@
 /**
  * Locale catalog registry: English is eager; Korean loads on demand.
  * Each built-in locale has one hand-written catalog, grouped by namespace.
- * Installed language packages overlay compiled interface messages.
  */
 import { en } from "./en.js";
-import { DEFAULT_LOCALE, SUPPORTED_LOCALES, isInstalledLocale, type Locale } from "../locale.js";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type Locale } from "../locale.js";
 
 /**
  * Any translation key. The key space is open (`string`): lookups fall back
@@ -19,17 +18,10 @@ export type MessageRegistry = Partial<Record<Locale, Messages>> & {
   en: Messages;
 };
 
-/** Reads an installed language package's catalog, in whichever process registered it. */
-export type InstalledCatalogLoader = (locale: Locale) => Promise<Messages>;
-
-let installedCatalogLoader: InstalledCatalogLoader | null = null;
-/** Locales whose loaded catalog came from an installed package. */
-const loadedFromInstalled = new Set<Locale>();
-
 /**
  * Loaded catalogs, keyed by locale. Only English is eager: the global default
  * UI language and fallback catalog must be synchronous. Every other locale is
- * a language-pack catalog loaded on demand.
+ * a compiled catalog loaded on demand.
  */
 export const messages: MessageRegistry = {
   en,
@@ -59,22 +51,10 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   if (existing) return existing;
   const pending = pendingLoads.get(locale);
   if (pending) return pending;
-  const installed = isInstalledLocale(locale) && installedCatalogLoader !== null;
-  const compiled = Object.hasOwn(localeLoaders, locale) ? localeLoaders[locale as LazyLocale] : undefined;
-  // A package for a compiled locale translates the interface over the compiled
-  // catalog; model-facing keys, which no package may carry, stay compiled.
-  const loader = installed
-    ? compiled
-      ? async () => {
-          const [base, overlay] = await Promise.all([compiled(), installedCatalogLoader!(locale)]);
-          return { ...base, ...overlay };
-        }
-      : () => installedCatalogLoader!(locale)
-    : compiled;
+  const loader = Object.hasOwn(localeLoaders, locale) ? localeLoaders[locale as LazyLocale] : undefined;
   if (!loader) throw new Error(`no catalog for locale ${locale}`);
   const next = loader().then((catalog) => {
     messages[locale] = catalog;
-    if (installed) loadedFromInstalled.add(locale);
     pendingLoads.delete(locale);
     return catalog;
   }, (err) => {
@@ -83,23 +63,6 @@ export async function loadLocaleMessages(locale: Locale): Promise<Messages> {
   });
   pendingLoads.set(locale, next);
   return next;
-}
-
-/**
- * Register how installed language catalogs are read (after the installed
- * locales themselves). A catalog loaded from a package, or cached for a
- * locale a package now provides, is forgotten: that package may be gone or
- * replaced. Compiled catalogs no package overrides stay loaded.
- */
-export function setInstalledCatalogLoader(loader: InstalledCatalogLoader | null): void {
-  installedCatalogLoader = loader;
-  for (const locale of Object.keys(messages)) {
-    if (locale !== DEFAULT_LOCALE && (loadedFromInstalled.has(locale) || isInstalledLocale(locale))) {
-      delete messages[locale];
-      pendingLoads.delete(locale);
-    }
-  }
-  loadedFromInstalled.clear();
 }
 
 export async function tryLoadLocaleMessages(locale: Locale): Promise<boolean> {

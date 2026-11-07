@@ -459,7 +459,7 @@ export type AvePreloadApi = {
   /** Git marketplace: sources, catalog, install plans and execution (design §13). */
   gitMarketplace: GitMarketplaceApi;
   pluginStudio: PluginStudioApi;
-  /** Installed content packages: languages and fonts, and installed language catalogs. */
+  /** Installed fonts, routine templates and broken packages. */
   installedContent: InstalledContentApi;
   telegramConnection: TelegramConnectionOwnerApi;
 

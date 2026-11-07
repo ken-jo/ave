@@ -72,10 +72,10 @@ export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedCont
 
 export interface StageOptions {
   workRoot: string;
-  english: Readonly<Record<string, string>>;
 }
 
 function asDataPlan(plan: PackagePlan): DataContentPlan {
+  if (plan.kind === "language") throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
   if (!isContentKind(plan.kind) || !isDataContentKind(plan.kind)) {
     throw new Error(`${plan.kind} ${plan.name} is not a content package`);
   }
@@ -110,9 +110,7 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
       version: descriptor.version,
       minAppVersion: descriptor.minAppVersion,
       payload: descriptor.payload,
-      english: options.english,
       sourceOrigin: dataPlan.sourceOrigin,
-      unknownMessageKeys: "ignore",
     });
     return { plan: dataPlan, files, contentSha256: digestOf(files), content, minAppVersion: descriptor.minAppVersion, hostProtocol: descriptor.hostProtocol ?? null };
   } finally {
@@ -132,7 +130,6 @@ export interface ContentActivation {
 
 export interface ContentStoreOptions {
   root: string;
-  english: Readonly<Record<string, string>>;
   activation: ContentActivation;
   now?: () => Date;
 }
@@ -151,7 +148,6 @@ export interface BrokenContent {
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
 
 function claimOf(content: ParsedContent): string | null {
-  if (content.kind === "language") return `the ${content.locale} language`;
   if (content.kind === "font") return `the ${content.family} font family`;
   return null;
 }
@@ -232,6 +228,9 @@ export class ContentStore {
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
   ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
+    if ((staged.plan as PackagePlan).kind === "language") {
+      throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
+    }
     assertAveHomeAcceptsInstalls();
     return this.mutate(async () => {
       const { plan } = staged;
@@ -312,6 +311,8 @@ export class ContentStore {
         throw error;
       });
       for (const kind of await entries(this.options.root)) {
+        // Preserve legacy language payloads, including directories no ledger entry names.
+        if (kind.name === "language") continue;
         if (!kind.isDirectory() || !(CONTENT_KINDS as readonly string[]).includes(kind.name)) continue;
         for (const name of await entries(join(this.options.root, kind.name))) {
           if (!name.isDirectory()) continue;
@@ -333,7 +334,7 @@ export class ContentStore {
     });
   }
 
-  /** Locale and font-family providers must be unique so removing one cannot clear another selection. */
+  /** Font-family providers must be unique so removing one cannot clear another selection. */
   private async assertClaimFree(staged: StagedContent): Promise<void> {
     const claim = claimOf(staged.content);
     if (!claim) return;
@@ -408,6 +409,7 @@ export class ContentStore {
       const loaded: LoadedContent[] = [];
       const broken: BrokenContent[] = [];
       for (const entry of this.ledger.list()) {
+        if (entry.kind === "language") continue;
         const result = await this.loadOne(entry);
         if ("content" in result) loaded.push(result);
         else broken.push(result);
@@ -428,9 +430,7 @@ export class ContentStore {
         name: entry.name,
         version: entry.version,
         payload: null,
-        english: this.options.english,
         sourceOrigin: entry.origin.sourceOrigin === null ? "direct" : entry.origin.sourceOrigin,
-        unknownMessageKeys: "ignore",
       });
       return { entry, content, dir };
     } catch (error) {

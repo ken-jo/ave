@@ -50,7 +50,6 @@ const PACKAGES: ReadonlyArray<readonly [PackageKind, string, string]> = [
   ['skill', 'harbor-review', 'skills/harbor-review'],
   ['agent', 'harbor-guide', 'agents/harbor-guide'],
   ['font', 'harbor-sans', 'fonts/harbor-sans'],
-  ['language', 'harbor-french', 'languages/harbor-french'],
   ['provider', 'harbor-llm', 'providers/harbor-llm'],
   ['messaging-connection', 'harbor-chat', 'messaging/harbor-chat'],
 ];
@@ -227,10 +226,6 @@ function marketplaceTree(version: string): Entry[] {
     file('fonts/harbor-sans/LICENSE', 'SIL Open Font License 1.1\n'),
     file('fonts/harbor-sans/files/HarborSans.woff2', WOFF2),
 
-    file('languages/harbor-french/ave-package.json', descriptorText('language', 'harbor-french', version, { locale: 'fr', entry: 'language.json', messages: 'messages.json' })),
-    file('languages/harbor-french/language.json', jsonText({ locale: 'fr', nativeName: 'Français', englishName: 'French' })),
-    file('languages/harbor-french/messages.json', jsonText({ 'settingsContent.tabMarketplace': version === '1.0.0' ? 'Marché' : 'Place de marché' })),
-
     file('providers/harbor-llm/ave-package.json', descriptorText('provider', 'harbor-llm', version, { entry: 'provider.json' })),
     file('providers/harbor-llm/provider.json', jsonText({
       providerId: 'harbor-llm',
@@ -373,7 +368,6 @@ test.describe('git marketplace lifecycle', () => {
     expect(content.ok).toBe(true);
     if (!content.ok) return;
     expect(content.content.broken).toEqual([]);
-    expect(content.content.languages.map((language) => language.locale)).toContain('fr');
     expect(content.content.fonts.map((font) => font.family)).toContain('Harbor Sans');
     expect(content.content.routineTemplates).toEqual(expect.arrayContaining([
       expect.objectContaining({ packageName: 'harbor-kit', id: 'harbor-daily' }),

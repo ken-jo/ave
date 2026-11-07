@@ -132,6 +132,7 @@ export function aggregateCatalog(inputs: readonly AggregateInput[], context: Ver
       throw new Error(`snapshot of ${snapshot.sourceId} passed as source ${sourceId}`);
     }
     for (const pkg of snapshot.packages) {
+      if (pkg.kind === "language") continue;
       const key = `${sourceId}\u0000${pkg.kind}\u0000${pkg.name}`;
       // Snapshot validation already refuses duplicate claimants; a second row
       // here would be two packages under one install identity.

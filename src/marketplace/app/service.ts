@@ -193,7 +193,7 @@ interface InstalledBaseline {
 }
 
 /** These kinds expose their full consent fingerprint in the catalog, so review needs no staging. */
-const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "font", "language"]);
+const CATALOG_COMPLETE_KINDS: ReadonlySet<PackageKind> = new Set(["skill", "agent", "font"]);
 
 export interface UpdateCandidate extends PackageUpdateOffer {
   facts: UpdateFacts;
@@ -240,6 +240,8 @@ function boundOf(records: readonly InstalledRecord[]): BoundInstall[] {
 /** Only readable versions can be revoked, and only by their own source. */
 function revokedAmong(records: readonly InstalledRecord[], rules: RevocationFeed["rules"]): RevokedInstall[] {
   return records.flatMap((record) => {
+    // Retired language payloads are inert and remain on disk until explicit removal.
+    if (record.kind === "language") return [];
     if (record.sourceId === null || record.version === null) return [];
     const sourceId = record.sourceId;
     const revocation = findRevocation(record.kind, record.name, record.version, rules.filter((rule) => rule.sourceId === sourceId));
@@ -285,7 +287,6 @@ export interface MarketplaceServiceOptions {
   mcpLimits: LadderDeps["limits"];
   /** All folder reads use the supplied filesystem, platform, home and package ceilings. */
   folders: { fs: FolderFs; platform: NodeJS.Platform; home: string; limits: ExportLimits };
-  english: Readonly<Record<string, string>>;
   onSyncProgress?: (progress: SyncProgressView) => void;
   /** Called outside the operation that changed the catalog: work it starts enters an operation of its own. */
   onCatalogChanged?: () => void;
@@ -306,7 +307,7 @@ export interface MarketplaceServiceOptions {
 }
 
 /** Gated kinds remain installed but unloaded on disable; config-based kinds must be removed. */
-const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "font", "language"]);
+const GATED_KINDS: ReadonlySet<PackageKind> = new Set(["plugin", "skill", "agent", "font"]);
 
 const PREVIEW_ID_PREFIX = "preview-";
 
@@ -1448,6 +1449,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   private async plan(request: InstallPlanRequest, adopt: boolean): Promise<InstallPlanView> {
+    if (request.kind === "language") throw new MarketplaceError("CONTENT_RULE_VIOLATION", "Language packages are no longer supported");
     const planned = this.source(request.sourceId);
     // Capture first, then derive the row from that same read.
     const folder = planned.transport === "folder" ? await this.captureFolder(planned.id, request.kind, request.name) : null;
@@ -1700,7 +1702,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   private async stageContent(planId: string, held: HeldPlan & { kind: "content" }, report: boolean): Promise<StagedContent> {
     const { plan } = held;
     if (report) this.progress(planId, "downloading");
-    const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot, english: this.options.english });
+    const stage = (access: RepositoryAccess) => stageContentPackage(plan, access, { workRoot: this.options.workRoot });
     return held.folder ? stage(held.folder.access) : this.repositoryAccess(plan.sourceId, stage);
   }
 

@@ -21,7 +21,7 @@ import {
 } from "../../../../shared/git-marketplace.js";
 
 /** The kind tabs, in the order of design §15.1. */
-export const KIND_ORDER: readonly PackageKind[] = ["agent-plugin", "plugin", "mcp", "skill", "agent", "font", "language", "provider", "messaging-connection"];
+export const KIND_ORDER: readonly PackageKind[] = ["agent-plugin", "plugin", "mcp", "skill", "agent", "font", "provider", "messaging-connection"];
 
 export function kindLabel(t: Translate, kind: PackageKind): string {
   switch (kind) {

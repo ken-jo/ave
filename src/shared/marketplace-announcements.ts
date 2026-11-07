@@ -57,7 +57,7 @@ function isMarketplaceAnnouncementLevel(
 /** One text per compiled language; English is always there. */
 type ActionLabel = { en: string } & Partial<Record<Locale, string>>;
 
-/** Installed locales missing from the announcement use English. */
+/** A missing localized announcement label uses English. */
 export function announcementActionLabel(action: Pick<MarketplaceAnnouncementAction, "label">, locale: Locale): string {
   return action.label[locale] ?? action.label.en;
 }
