@@ -148,7 +148,7 @@
     "mermaid": "^12.3.0",
     "node-pty": "^1.1.0",
     "papaparse": "5.7.0",
-    "pdfjs-dist": "6.5.438",
+    "pdfjs-dist": "6.4.299",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "proper-lockfile": "^4.1.2",

@@ -21,6 +21,13 @@ updates:
       # -> over the 3 s parse budget). Later releases are proposed again.
       - dependency-name: "@napi-rs/canvas"
         versions: ["1.0.11", "1.0.12", "1.0.13", "1.1.0"]
+      # pdfjs-dist 6.5.438 (the first release after 6.4.299) requires
+      # @napi-rs/canvas ^1.0.13. Against our 1.0.10 pin, the installer nests
+      # canvas 1.1.0 under pdfjs-dist, and that build mixes with ours in one
+      # render. Remove this entry together with the canvas entry above once a
+      # canvas release after 1.1.0 passes both checks.
+      - dependency-name: "pdfjs-dist"
+        versions: [">= 6.5.0"]
       # The stale 2021 canary line (React 16/17, no types) sorts above every
       # 7.0.0-beta by semver, so Dependabot offers it as an "upgrade". The range
       # covers only 7.0.0-canary.*; beta and stable releases are still proposed.
