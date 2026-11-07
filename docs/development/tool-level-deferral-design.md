@@ -19,7 +19,8 @@
 - A user-selected plugin prompt is explicit host configuration: when the user
   picks an extension's template prompt in host chrome, main resolves the
   selected template id against the installed templates, binds it to the
-  envelope that template produces, and passes the owning plugin id to
+  envelope source that template produces (the source only, not the body or
+  arguments), and passes the owning plugin id to
   `resolveToolScope()`. The id never comes from prompt text. An unknown,
   mismatched or non-extension template, or a plugin that is not installed,
   enabled and allowed, scopes nothing.

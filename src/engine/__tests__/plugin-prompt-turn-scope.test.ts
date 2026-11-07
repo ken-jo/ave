@@ -1,7 +1,7 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
@@ -31,8 +31,16 @@ const toolThenEnd = (id: string, toolName: string): StreamEvent[][] => [
   [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
 ];
 
+const tempDirs: string[] = [];
+afterAll(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function makeLoop(provider: LLMProvider, opts: {
   disabledPluginIds?: string[];
+  // Null models a runtime without listPluginIds.
+  installedPluginIds?: string[] | null;
+  allowedPluginIds?: string[];
   approvalGate?: { requestAndWait: (request: { id: string }) => Promise<unknown> };
 } = {}): ConversationLoop {
   const toolRegistry = new ToolRegistry();
@@ -45,7 +53,10 @@ function makeLoop(provider: LLMProvider, opts: {
     jsonSchema: { type: "object", required: ["pluginId"], properties: { pluginId: { type: "string" } } },
     execute: async () => ({ output: "unreachable", isError: false }),
   }));
-  for (const [pluginId, name] of [["egress-probe", "egress_probe"], ["other-plugin", "other_tool"]] as const) {
+  // ghost-plugin has a registered tool but is not installed in the runtime.
+  for (const [pluginId, name] of [
+    ["egress-probe", "egress_probe"], ["other-plugin", "other_tool"], ["ghost-plugin", "ghost_tool"],
+  ] as const) {
     toolRegistry.register(createDynamicTool({
       name,
       description: `${pluginId} ${name}`,
@@ -62,16 +73,25 @@ function makeLoop(provider: LLMProvider, opts: {
     systemPromptBuilder: { build: () => "system", setToolScope: () => {} },
     toolRegistry,
     // Default mode: the scope admits the call, the permission tree still decides it.
-    permissionManager: new PermissionManager(join(mkdtempSync(join(tmpdir(), "ave-pscope-")), "permissions.json")),
+    permissionManager: new PermissionManager(join(tempDir(), "permissions.json")),
     ...(opts.approvalGate ? { approvalGate: opts.approvalGate } : {}),
     memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     pluginRuntime: {
-      listPluginIds: () => ["egress-probe", "other-plugin"],
+      ...(opts.installedPluginIds === null
+        ? {}
+        : { listPluginIds: () => opts.installedPluginIds ?? ["egress-probe", "other-plugin"] }),
       isPluginEnabled: (pluginId: string) => !(opts.disabledPluginIds ?? []).includes(pluginId),
     },
+    ...(opts.allowedPluginIds ? { allowedPluginIds: new Set(opts.allowedPluginIds) } : {}),
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;
   return loop;
+}
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ave-pscope-"));
+  tempDirs.push(dir);
+  return dir;
 }
 
 const promptEnvelope = formatAgentPluginTemplatePrompt({
@@ -182,5 +202,42 @@ describe("user-selected plugin prompt scope", () => {
       expect(result?.isError).toBe(true);
       expect(result?.content).toContain("pluginId=egress-probe");
     }
+  });
+
+  it("scopes nothing for a plugin whose tool is registered but which is not installed", async () => {
+    const provider = new ScriptedProvider(toolThenEnd("tu-1", "ghost_tool"));
+    const loop = makeLoop(provider);
+
+    await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["ghost-plugin"]));
+
+    expect(provider.observedToolNames[0]).not.toContain("ghost_tool");
+    const [result] = toolResults(loop);
+    expect(result?.isError).toBe(true);
+    expect(result?.content).toContain("pluginId=ghost-plugin");
+  });
+
+  it("scopes nothing for a plugin outside the session's allowed plugins", async () => {
+    const provider = new ScriptedProvider(toolThenEnd("tu-1", "egress_probe"));
+    const loop = makeLoop(provider, { allowedPluginIds: ["other-plugin"] });
+
+    await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["egress-probe"]));
+
+    expect(provider.observedToolNames[0]).not.toContain("egress_probe");
+    expect(provider.observedToolNames[0]).not.toContain("other_tool");
+    const [result] = toolResults(loop);
+    expect(result?.isError).toBe(true);
+    expect(result?.content).toContain("pluginId=egress-probe");
+  });
+
+  it("scopes nothing when the runtime cannot list installed plugins", async () => {
+    // Exposure only: tool rounds read listPluginIds for request_plugin outside this scope path.
+    const provider = new ScriptedProvider([
+      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const loop = makeLoop(provider, { installedPluginIds: null });
+
+    await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["egress-probe"]));
+
+    expect(provider.observedToolNames[0]).not.toContain("egress_probe");
   });
 });
