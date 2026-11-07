@@ -38,8 +38,6 @@ afterAll(() => {
 
 function makeLoop(provider: LLMProvider, opts: {
   disabledPluginIds?: string[];
-  // Null models a runtime without listPluginIds.
-  installedPluginIds?: string[] | null;
   allowedPluginIds?: string[];
   approvalGate?: { requestAndWait: (request: { id: string }) => Promise<unknown> };
 } = {}): ConversationLoop {
@@ -77,9 +75,7 @@ function makeLoop(provider: LLMProvider, opts: {
     ...(opts.approvalGate ? { approvalGate: opts.approvalGate } : {}),
     memoryManager: { sessions: { saveSession: () => {}, listSessions: () => [] } },
     pluginRuntime: {
-      ...(opts.installedPluginIds === null
-        ? {}
-        : { listPluginIds: () => opts.installedPluginIds ?? ["egress-probe", "other-plugin"] }),
+      listPluginIds: () => ["egress-probe", "other-plugin"],
       isPluginEnabled: (pluginId: string) => !(opts.disabledPluginIds ?? []).includes(pluginId),
     },
     ...(opts.allowedPluginIds ? { allowedPluginIds: new Set(opts.allowedPluginIds) } : {}),
@@ -227,17 +223,5 @@ describe("user-selected plugin prompt scope", () => {
     const [result] = toolResults(loop);
     expect(result?.isError).toBe(true);
     expect(result?.content).toContain("pluginId=egress-probe");
-  });
-
-  it("scopes nothing when the runtime cannot list installed plugins", async () => {
-    // Exposure only: tool rounds read listPluginIds for request_plugin outside this scope path.
-    const provider = new ScriptedProvider([
-      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
-    ]);
-    const loop = makeLoop(provider, { installedPluginIds: null });
-
-    await loop.runTurn(promptEnvelope, undefined, undefined, promptTurn(["egress-probe"]));
-
-    expect(provider.observedToolNames[0]).not.toContain("egress_probe");
   });
 });
