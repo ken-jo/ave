@@ -306,8 +306,11 @@ vi.mock("../../mcp/mcp-governance.js", () => ({
 }));
 vi.mock("../../mcp/mcp-manager.js", () => ({
   McpManager: class {
-    loadFromConfig = vi.fn(async () => [] as unknown[]);
-    connectAll = vi.fn(async () => {});
+    // One configured server, so boot reaches connectAll and its position in the order is observable.
+    loadFromConfig = vi.fn(async () => [{ id: "boot-order-stdio", transport: "stdio" }] as unknown[]);
+    connectAll = vi.fn(async () => {
+      h.rec("mcpConnectAll");
+    });
     disconnectAll = vi.fn(async () => {});
     killSwitch = vi.fn(async () => {});
     listServers = vi.fn(() => [] as unknown[]);
@@ -518,7 +521,8 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setActiveSandboxCapability: vi.fn(),
   setShellSandboxRequestedAtBoot: vi.fn(),
   setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
-  setSandboxBootOutcome: vi.fn(),
+  setSandboxBootOutcome: vi.fn(() => h.rec("sandboxGateDecided")),
+  markSandboxGatePendingAtBoot: vi.fn(() => h.rec("sandboxGatePending")),
   setWindowsSandboxSubstrate: vi.fn(),
   getWindowsSandboxSubstrate: vi.fn(() => null),
 }));
@@ -827,6 +831,11 @@ describe("bootstrap() integration lock", () => {
     // Start alert listeners before uninstall replay encounters plugin alert kinds.
     assertBefore("alertsSetup", "uninstallCleanupReplay");
     assertBefore("alertsSetup", "startPlugins");
+    // The sandbox gate decides confinement before any configured stdio MCP server spawns; a spawn before it runs unconfined.
+    assertBefore("sandboxGateDecided", "mcpConnectAll");
+    assertBefore("sandboxGateDecided", "startPlugins");
+    // Spawns are refused from the start of boot until that decision.
+    assertBefore("sandboxGatePending", "sandboxGateDecided");
   });
 
   // Drive the actual boot closures and require emitHostEvent on every uninstall path; an omitted optional callback silently loses uninstall events.

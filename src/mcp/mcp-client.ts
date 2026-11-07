@@ -73,6 +73,7 @@ import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import {
+  isSandboxGateUndecidedAtBoot,
   markMcpServerWrapped,
   unmarkMcpServerWrapped,
   type McpWrappedOwner,
@@ -1744,6 +1745,13 @@ class StdioTransport implements McpTransport {
   async open(): Promise<void> {
     if (!this.config.command) {
       throw new Error(`[mcp-client] ${t("be_mcpClient.stdioCommandRequired")}`);
+    }
+    // Every route below decides confinement from the boot gate's outcome; before the gate runs, a requested
+    // confinement still reads as off, so spawning now would run the server unconfined. Fail closed.
+    if (isSandboxGateUndecidedAtBoot()) {
+      throw new Error(
+        `[mcp-client] stdio MCP server '${this.config.id}' cannot start before the OS sandbox gate has decided this boot's confinement`,
+      );
     }
     const spawnCommand = resolveStdioSpawnCommand(this.config.command, this.config.args ?? []);
 
