@@ -59,7 +59,7 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
     gate.disposeAll();
     await waiting;
   });
-  it.each(["ko", "en"] as const)("names who authored a staged turn ahead of its prompt-name title in %s", async (locale) => {
+  it.each(["ko", "en"] as const)("names a staged request's origin apart from its conversation title in %s", async (locale) => {
     setLocale(locale);
     const svc = makeFakeNotificationService();
     const gate = new ApprovalGate(makeMockWebContents() as never, undefined, 60_000, undefined, svc);
@@ -69,10 +69,13 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
       reason: "internal", source: "builtin", createdAt: Date.now(), sessionId: "session-1", trustOrigin: "plugin-prompt-emitted",
     });
     const notice = vi.mocked(svc.fire).mock.calls[0][0];
-    expect(notice.body).toContain(`${t("trustOriginLabel.pluginPromptEmitted")}: egress-probe`);
+    expect(notice.body).toBe(t("be_approvalGate.stagedConversationNotification", {
+      action: locale === "ko" ? "README.md 파일 읽기" : "Read README.md file",
+      origin: t("trustOriginLabel.pluginPromptEmitted"), title: "egress-probe",
+    }));
+    if (locale === "ko") expect(notice.body).toBe("README.md 파일 읽기 · 템플릿 프롬프트 · 대화: egress-probe");
     gate.disposeAll();
     await waiting;
-    setLocale("ko");
   });
 
   it("retains the conversation in the bounded notification body for a long action", async () => {

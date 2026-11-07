@@ -853,15 +853,14 @@ export class ApprovalGate {
     };
     const maskedAction = maskSensitiveData(action).masked;
     if (request.sessionId === undefined) return maskedAction;
-    const resolved = request.sessionId === undefined ? ""
+    const title = request.sessionId === undefined ? ""
       : this.conversationTitleResolver?.(request.sessionId)
         ?? resolveConversationTitle({ sessionId: request.sessionId }, t);
-    // A staged turn's title is its prompt name, so the notice names who authored the turn first; the cap trims the title, not the origin.
+    // The origin belongs to the request, not the title: the title names the root conversation's latest message, while a staged origin can come from a sub-agent or from staged guidance inside a typed turn.
     const staged = stagedOriginForInput(request.trustOrigin);
-    const title = staged ? t("be_approvalGate.stagedConversationTitle", { origin: t(staged.labelKey), title: resolved }) : resolved;
-    return t("be_approvalGate.conversationNotification", {
-      action: maskedAction, title: segment(title),
-    });
+    return staged
+      ? t("be_approvalGate.stagedConversationNotification", { action: maskedAction, origin: t(staged.labelKey), title: segment(title) })
+      : t("be_approvalGate.conversationNotification", { action: maskedAction, title: segment(title) });
   }
 
   // Replace the runtime policy immediately from the ave:policy:set IPC handler.
