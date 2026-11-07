@@ -394,4 +394,22 @@ describe("shell egress human fallback termination", () => {
     await expect(createRequester(gate, permissionManager)(egressRequest({ ownerUnattended: true }))).resolves.toEqual({ allow: false, reason: "Nobody can approve this request; do not retry." });
     expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ ownerUnattended: true }));
   });
+
+  it("reports a deny-always answer as the user's deny although its saved rule moves the policy epoch", async () => {
+    const before = permissionManager.getPolicyEpoch();
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+      permissionManager.setRules([{ pattern: "Network(github.com:443)", action: "deny" }]);
+      return { requestId: request.id, choice: "deny-once" as const };
+    }) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    expect(permissionManager.getPolicyEpoch()).not.toBe(before);
+  });
+
+  it("still refuses an allow answered after the policy changed under the card", async () => {
+    const gate = { requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+      permissionManager.setMode("default");
+      return { requestId: request.id, choice: "allow-once" as const, egressScope: "session" as const };
+    }) };
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: "Permission policy changed during network approval." });
+  });
 });
