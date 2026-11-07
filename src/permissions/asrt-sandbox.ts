@@ -333,6 +333,7 @@ interface WindowsLiveGrantCounts {
 
 interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
+  readonly windowsFailedGrantReleases: Map<number, () => void>;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
   windowsDenyRevision: number;
@@ -1984,7 +1985,7 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsFailedGrantReleases: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -2589,6 +2590,19 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   }
 
   let released = false;
+  const revokeGrant = (): void => {
+    let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
+    let cleanupError: unknown;
+    try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin }); }
+    catch (error) { cleanupError = error; }
+    if (!hasWindowsGrantCleanup(requests, outcome)) {
+      session.windowsFailedGrantReleases.set(holderPid, revokeGrant);
+      session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? outcome });
+      log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
+      throw session.windowsDenyFailure;
+    }
+    session.windowsFailedGrantReleases.delete(holderPid);
+  };
   const grant: WindowsWorkerFilesystemGrant = {
     allowRead,
     allowWrite,
@@ -2602,12 +2616,17 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
         if (writable.has(path)) counts.write -= 1;
         if (counts.read === 0) session.windowsLiveGrants.delete(path);
       }
-      // Capture srtWin in the closure — the release may run long after the dynamic import scope has gone; it still needs the explicit spawn descriptor (0.0.67 has no implicit vendored fallback).
-      revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin });
+      try { revokeGrant(); }
+      catch { return; }
       if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
-        SandboxManager.updateConfig(
-          buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
-        );
+        try {
+          SandboxManager.updateConfig(
+            buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+          );
+        } catch (cause) {
+          session.windowsDenyFailure = new Error(`Windows filesystem grant config cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause });
+          log.error(session.windowsDenyFailure);
+        }
       }
     },
   };
@@ -2710,6 +2729,8 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
 export async function resetAsrtSandbox(): Promise<void> {
+  // Retry with each failed holder's original descriptor before forgetting it or permitting host fallback.
+  for (const retry of sandboxSession?.windowsFailedGrantReleases.values() ?? []) retry();
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
