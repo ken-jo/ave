@@ -37,6 +37,8 @@ export async function runStreamedTurn(
     /** DLP-before-send keyboard text used only to mint a host RequestAnchor. */
     requestAnchorRawIntent?: string;
     rolePrompt?: ActiveRolePrompt;
+    /** Plugin of the host-resolved, user-selected plugin prompt; scopes this turn only. */
+    turnScopedPluginIds?: ReadonlySet<string>;
     initialGuidance?: string;
     subAgentReport?: { title?: string };
     approvalReasonPrefix?: string;
@@ -268,6 +270,7 @@ export async function runStreamedTurn(
         ? { requestAnchorRawIntent: options.requestAnchorRawIntent }
         : {}),
       ...(options.rolePrompt ? { rolePrompt: options.rolePrompt } : {}),
+      ...(options.turnScopedPluginIds ? { turnScopedPluginIds: options.turnScopedPluginIds } : {}),
       ...(options.initialGuidance ? { initialGuidance: options.initialGuidance } : {}),
       ...(options.subAgentReport ? { subAgentReport: options.subAgentReport } : {}),
       ...(options.approvalReasonPrefix

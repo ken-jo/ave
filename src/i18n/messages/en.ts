@@ -402,6 +402,7 @@ export const en = {
 
   // be_approvalGate
   "be_approvalGate.conversationNotification": "{action} · Conversation: {title}",
+  "be_approvalGate.stagedConversationNotification": "{action} · {origin} · Conversation: {title}",
   "be_approvalGate.notificationTitle": "Approval required",
   "be_approvalGate.deferredEscalationBody": "Denied; queued · {action} · {title}",
 

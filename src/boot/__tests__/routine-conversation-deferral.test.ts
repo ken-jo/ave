@@ -48,6 +48,7 @@ describe("createRoutineConversationLoop — tool-level deferral", () => {
       // The routine builder takes the main builder's memory use recorder.
       systemPromptBuilder: makeSystemPromptBuilder(),
       pluginRuntime: {
+        listPluginIds: () => ["routine-plugin"],
         listPluginCards: () => [],
       },
     } as unknown as Parameters<typeof createRoutineConversationLoop>[0], {

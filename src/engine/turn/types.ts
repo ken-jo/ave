@@ -182,6 +182,8 @@ export interface RunTurnOptions {
   userKeyboardIntent?: import("../../shared/chat-origin.js").VerifiedUserKeyboardIntent;
   requestAnchorRawIntent?: string;
   rolePrompt?: ActiveRolePrompt;
+  // Host-resolved plugin of the user-selected plugin prompt; honored only for plugin-prompt-emitted turns.
+  turnScopedPluginIds?: ReadonlySet<string>;
   // Preserve user display text when replay folds server attachment bodies into durable input.
   displayText?: string;
   // Host-exit continuation is a host instruction; retain the original user request as the title source.
@@ -353,6 +355,8 @@ export interface ToolScope {
   includeMcp: boolean;
   // Eager mode exposes all eligible schemas; deferral loads active names and catalogs the remainder.
   deferral: boolean;
+  // Plugins scoped by a user-selected plugin prompt for this turn only; excluded from carried scope.
+  turnOnlyPluginIds?: Set<string>;
 }
 
 export interface ToolExposureMetrics {

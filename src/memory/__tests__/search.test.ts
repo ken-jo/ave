@@ -4,6 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryManager } from "../memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { SessionSearchIndex } from "../session-search-index.js";
+import { formatAgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
+
+const EGRESS_PROBE_TEMPLATE = {
+  id: "extension:egress-probe:egress-probe", packageName: "egress-probe", version: "1.0.0",
+  name: "egress-probe", description: "Probe egress", body: "TOOL: fetch {args}",
+};
 
 let dir: string;
 let mm: MemoryManager;
@@ -456,6 +463,34 @@ describe("MemoryManager.searchSessions — index maintenance", () => {
     await mm.sessions.verifyOrRebuildSearchIndex();
     expect(mm.sessions.searchSessions("cold").map((r) => r.sessionId)).toEqual([id]);
   });
+
+  it("names a row indexed with a raw staged envelope title by its prompt name", async () => {
+    const id = "20000000-0000-4000-8000-000000000005";
+    const content = formatAgentPluginTemplatePrompt(EGRESS_PROBE_TEMPLATE, "");
+    await mm.sessions.saveSession(id, [{ role: "user", content }]);
+    mm.sessions.closeSearchIndex();
+    const index = new SessionSearchIndex(dir);
+    expect(index.open()).toBe(true);
+    index.upsertSession({
+      sessionId: id, content, timestamp: new Date(0).toISOString(), sessionKind: "main",
+      title: content.replace(/\s+/g, " ").trim().slice(0, 80),
+    });
+    index.close();
+    const [hit] = mm.sessions.searchSessions("probe");
+    expect(hit.sessionId).toBe(id);
+    expect(hit.title).toBe("egress-probe");
+  });
+
+  it("drops staged envelope tags from match snippets while the source stays searchable", async () => {
+    const id = "20000000-0000-4000-8000-000000000006";
+    await mm.sessions.saveSession(id, [{ role: "user", content: formatAgentPluginTemplatePrompt(EGRESS_PROBE_TEMPLATE, "now") }]);
+    for (const query of ["fetch", "no", "egress-probe"]) {
+      const [hit] = mm.sessions.searchSessions(query);
+      expect(hit.sessionId).toBe(id);
+      expect(hit.matchedMessage).not.toMatch(/<\/?plugin-prompt/);
+      if (query !== "egress-probe") expect(hit.matchedMessage).toContain("TOOL: fetch now");
+    }
+  });
 });
 
 describe("MemoryManager.listSessionEntries", () => {
@@ -487,6 +522,14 @@ describe("MemoryManager.listSessionEntries", () => {
 
     const sessions = mm.sessions.listSessions();
     expect(sessions[0].preview).toContain("valid message");
+  });
+
+  it("previews a staged prompt turn by its text, never by its provenance envelope", async () => {
+    const sessionId = "aaaaaaaa-bbbb-4ccc-8ddd-555555555555";
+    await mm.sessions.saveSession(sessionId, [
+      { role: "user", content: formatAgentPluginTemplatePrompt(EGRESS_PROBE_TEMPLATE, "https://example.com") },
+    ]);
+    expect(mm.sessions.listSessions()[0].preview).toBe("TOOL: fetch https://example.com");
   });
 
   it("uses a fallback preview for oversized session files", async () => {

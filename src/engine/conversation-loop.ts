@@ -921,12 +921,12 @@ export class ConversationLoop {
     return runPreflightGuard(this, projectionContext, abortSignal, callbacks, options);
   }
 
-  resolveToolScope(input: string): ToolScope {
+  resolveToolScope(input: string, turnScopedPluginIds?: ReadonlySet<string>): ToolScope {
     return resolveToolScope(input, this.deps, {
       lastTurnScope: this.lastTurnScope,
       lastTurnToolNames: this.lastTurnToolNames,
       sessionActivatedPluginIds: this.sessionActivatedPluginIds,
-    });
+    }, turnScopedPluginIds);
   }
 
   shouldDeferToolSchemas(activePluginIds: Set<string>): boolean {

@@ -50,13 +50,14 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     inputOrigin: ChatSendInputOrigin,
     userIntent?: UserKeyboardIntentSnapshot,
     personaPromptId?: string,
-    options?: { interrupt?: boolean },
+    options?: { interrupt?: boolean; pluginPromptId?: string },
   ) =>
     ipcRenderer.invoke(CHANNELS.chat.send, {
       input,
       attachments,
       inputOrigin,
       ...(personaPromptId ? { personaPromptId } : {}),
+      ...(options?.pluginPromptId ? { pluginPromptId: options.pluginPromptId } : {}),
       // One Enter gesture authorizes abort-and-send together; consume its intent once.
       ...(options?.interrupt === true ? { interrupt: true } : {}),
       ...((inputOrigin === "user-keyboard" || (inputOrigin === "app-emitted" && options?.interrupt === true))
