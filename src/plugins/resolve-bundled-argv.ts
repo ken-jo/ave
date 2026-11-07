@@ -60,16 +60,26 @@ function containedRootPath(rootReal: string, suffix: string, label: string): str
 /** Data leaves may be missing; every existing component must refuse links, including dangling ones. */
 function containedDataPath(dataDir: string, suffix: string, label: string): string {
   // Resolve trusted root ancestors, verify the root itself, then lstat each component below it.
-  let root: string;
+  const root = pluginDataRoot(dataDir, label);
+  if (!suffix) return root;
+  const candidate = resolve(root, relativeSegments(suffix, label));
+  if (!isResolvedPathWithin(root, candidate)) throw new Error(`${label} escapes PLUGIN_DATA`);
+  refusePluginDataSymlinks(root, suffix, label);
+  return candidate;
+}
+
+/** The canonical PLUGIN_DATA root, refusing a root that is itself a link or not a directory. */
+export function pluginDataRoot(dataDir: string, label: string): string {
   try {
-    root = resolvePluginDataRoot(label, dataDir);
+    return resolvePluginDataRoot(label, dataDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`${label}: PLUGIN_DATA directory is missing`);
     throw error;
   }
-  if (!suffix) return root;
-  const candidate = resolve(root, relativeSegments(suffix, label));
-  if (!isResolvedPathWithin(root, candidate)) throw new Error(`${label} escapes PLUGIN_DATA`);
+}
+
+/** Every existing component of `suffix` below the PLUGIN_DATA `root` must not be a link, including a dangling one. */
+export function refusePluginDataSymlinks(root: string, suffix: string, label: string): void {
   let component = root;
   for (const segment of suffix.split("/")) {
     component = join(component, segment);
@@ -83,12 +93,12 @@ function containedDataPath(dataDir: string, suffix: string, label: string): stri
     }
     if (entry.isSymbolicLink()) {
       throw new Error(
-        `${label} passes through a symlink inside PLUGIN_DATA ('${segment}'); a data path may not use one, `
+        // Node's lstat reports every Windows reparse point (junctions, OneDrive placeholders, dedup files) as a link.
+        `${label} passes through a symlink or reparse point inside PLUGIN_DATA ('${segment}'); a data path may not use one, `
           + "because the plugin can repoint it after this check",
       );
     }
   }
-  return candidate;
 }
 
 type ProcessValue =

@@ -2,7 +2,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { AgentPluginComponents } from "../marketplace/catalog/types.js";
 import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
-import { resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
+import { pluginDataRoot, refusePluginDataSymlinks, resolveBundledArgv } from "../plugins/resolve-bundled-argv.js";
 import { portableLauncherLiteralIndexes } from "./portable-launcher.js";
 import { prepareBundledMcpProjection, type PreparedPluginMcpProjection } from "./plugin-mcp-projection.js";
 
@@ -42,9 +42,14 @@ function containedReference(value: string, root: string, label: string): string 
 function resolveValue(value: string, activation: AgentPluginMcpActivation, label: string, directory: boolean): string {
   let resolved: string;
   if (value === "${PLUGIN_ROOT}") resolved = containedReference(value, activation.generationRoot, label);
-  else if (value === "${PLUGIN_DATA}") resolved = containedReference(value, activation.dataDir, label);
   else if (value.startsWith("${PLUGIN_ROOT}/") || value.startsWith("./")) resolved = containedReference(value, activation.generationRoot, label);
-  else if (value.startsWith("${PLUGIN_DATA}/")) resolved = containedReference(value, activation.dataDir, label);
+  else if (value === "${PLUGIN_DATA}" || value.startsWith("${PLUGIN_DATA}/")) {
+    // Env values and cwd follow the argv rule: the root may not be a link, and neither may anything under it, because the
+    // plugin can repoint a link after this check.
+    const dataRoot = pluginDataRoot(activation.dataDir, label);
+    resolved = containedReference(value, dataRoot, label);
+    if (value !== "${PLUGIN_DATA}") refusePluginDataSymlinks(dataRoot, value.slice("${PLUGIN_DATA}/".length), label);
+  }
   else if (!directory && !value.includes("${") && !CONTROL.test(value)) return value;
   else throw new Error(`${label} is not a declared package or data path`);
   if (directory && (!existsSync(resolved) || !statSync(resolved).isDirectory())) throw new Error(`${label} is not a directory`);
