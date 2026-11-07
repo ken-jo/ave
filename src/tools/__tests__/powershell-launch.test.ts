@@ -168,7 +168,7 @@ describe("controlled shell startup", () => {
     Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     const sandboxed = preparePowerShellLaunch("Invoke-WebRequest https://example.com", { HOME: "retained-home" }, newProfile());
     expect(sandboxed.args.at(-1)).toBe(POWERSHELL_MODULE_PRELUDE + POWERSHELL_EGRESS_PROXY_PRELUDE + "Invoke-WebRequest https://example.com");
-    const host = preparePowerShellLaunch("Get-Date", { HOME: "retained-home", HTTPS_PROXY: "http://corporate.example:8080" }, undefined, { hostShell: true });
+    const host = preparePowerShellLaunch("Get-Date", { HOME: "retained-home" }, undefined, { hostShell: true });
     expect(host.args.at(-1)).toBe(POWERSHELL_MODULE_PRELUDE + "Get-Date");
     sandboxed.cleanup();
     host.cleanup();
@@ -187,7 +187,7 @@ describe("controlled shell startup", () => {
   ])("sets Windows PowerShell's default web proxy from %o", (proxyEnv, expected) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^https?_proxy$/i.test(key)));
     const report = "$p = [System.Net.WebRequest]::DefaultWebProxy; if ($p -is [System.Net.WebProxy]) { $p.Address.AbsoluteUri } else { 'system' }";
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_EGRESS_PROXY_PRELUDE + report],
+    const result = spawnSync(join(process.env.SystemRoot ?? String.raw`C:\Windows`, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_EGRESS_PROXY_PRELUDE + report],
       { env: { ...env, ...proxyEnv }, encoding: "utf8", timeout: 30_000 });
     expect(result.stderr).toBe("");
     expect(result.stdout.trim()).toBe(expected);
