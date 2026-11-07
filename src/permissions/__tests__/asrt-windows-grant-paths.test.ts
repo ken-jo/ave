@@ -126,6 +126,28 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     } finally { granted.release(); }
   });
 
+  it("refuses a queued turn that is no longer valid when it starts, before its holder or any ACL change, and runs the next turn", async () => {
+    await initializeAsrtSandbox({});
+    const started: number[] = [];
+    const holder = (pid: number) => () => { started.push(pid); return pid; };
+    let valid = true;
+    const ahead = grantWindowsWorkerFilesystemAccess({ holderPid: holder(process.pid + 1), allowRead: [target] });
+    const abandoned = grantWindowsWorkerFilesystemAccess({ holderPid: holder(process.pid + 2), allowRead: [target],
+      assertStillValid: () => { if (!valid) throw new Error("plugin-factory-deadline-passed"); } });
+    const next = grantWindowsWorkerFilesystemAccess({ holderPid: holder(process.pid + 3), allowRead: [target] });
+    // Valid when queued; abandoned before its turn starts.
+    valid = false;
+    const settled = await Promise.allSettled([ahead, abandoned, next]);
+    try {
+      expect(settled.map(result => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
+      expect((settled[1] as PromiseRejectedResult).reason).toMatchObject({ message: "plugin-factory-deadline-passed" });
+      expect(started).toEqual([process.pid + 1, process.pid + 3]);
+      expect(vi.mocked(runtime.grantWindowsAcl).mock.calls.map(([call]) => call.holderPid)).toEqual([process.pid + 1, process.pid + 3]);
+    } finally {
+      for (const result of settled) if (result.status === "fulfilled") result.value.release();
+    }
+  });
+
   it.each([false, true])("grants and rechecks distinct case-only objects with correct compensation, replaced=%s", async replaced => {
     await initializeAsrtSandbox({});
     const nativePin = facts.pinWindowsPaths;

@@ -38,26 +38,42 @@ const windowsGrant = vi.hoisted(() => ({
   events: [] as string[],
   lost: [] as Array<(reason: Error) => void>,
   alive: true,
-  /** Holds the grant turn pending until it settles. */
-  turn: undefined as Promise<void> | undefined,
+  /** Labels whose turn applied a grant. */
+  granted: [] as string[],
+  /** Holds the queue on a turn ahead until it settles. */
+  ahead: undefined as Promise<void> | undefined,
+  /** Holds the turn pending after its grant was applied. */
+  applying: undefined as Promise<void> | undefined,
 }));
-vi.mock("../../../permissions/windows-acl-grant-holder.js", () => ({
-  holdWindowsFilesystemGrant: async (opts: { label: string; allowRead: readonly string[]; allowWrite: readonly string[] }) => {
-    windowsGrant.calls.push(opts);
-    windowsGrant.events.push("grant");
-    await windowsGrant.turn;
-    return {
-      assertAlive: () => {
-        if (!windowsGrant.alive) throw new Error("holder gone");
-      },
-      onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
-      // Grant release must be idempotent across every child termination path.
-      release: () => {
-        if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
-      },
-    };
-  },
-}));
+vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
+  const { createSerialQueue } = await vi.importActual<typeof import("../../../lib/with-file-lock.js")>("../../../lib/with-file-lock.js");
+  const turns = createSerialQueue();
+  return {
+    holdWindowsFilesystemGrant: async (opts: {
+      label: string; allowRead: readonly string[]; allowWrite: readonly string[]; assertStillValid?: () => void;
+    }) => {
+      windowsGrant.calls.push(opts);
+      // FIFO turns as in the real grant queue: the check runs when the turn starts, before anything is applied.
+      return turns(async () => {
+        await windowsGrant.ahead;
+        opts.assertStillValid?.();
+        windowsGrant.granted.push(opts.label);
+        windowsGrant.events.push("grant");
+        await windowsGrant.applying;
+        return {
+          assertAlive: () => {
+            if (!windowsGrant.alive) throw new Error("holder gone");
+          },
+          onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
+          // Grant release must be idempotent across every child termination path.
+          release: () => {
+            if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+          },
+        };
+      });
+    },
+  };
+});
 
 /** Use a synthetic POSIX home when emulating Windows to avoid cwd-relative drive paths. */
 const fakeSandboxHome = vi.hoisted(() => ({ on: false }));
@@ -134,6 +150,7 @@ import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
+import { holdWindowsFilesystemGrant } from "../../../permissions/windows-acl-grant-holder.js";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
 import { runPluginFactoryWithTimeout } from "../../runtime/index.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -1437,7 +1454,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
     windowsGrant.events.length = 0;
     windowsGrant.lost.length = 0;
     windowsGrant.alive = true;
-    windowsGrant.turn = undefined;
+    windowsGrant.granted.length = 0;
+    windowsGrant.ahead = undefined;
+    windowsGrant.applying = undefined;
     spawnConfinedChild.mockReset();
     sandbox.active = opts.sandboxActive ?? true;
     fakeSandboxHome.on = true;
@@ -1566,11 +1585,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
     return underFactoryDeadline(() => Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))));
   }
 
-  it("spawns nothing when the factory deadline passes while the grant turn is pending, and releases the grant and HOME", async () => {
+  it("applies no grant when the factory deadline passes while the grant turn is queued, and the next turn still runs", async () => {
     const layout = aveLayout();
     await asWindows(layout, async () => {
-      let settleTurn = (): void => {};
-      windowsGrant.turn = new Promise((resolve) => { settleTurn = resolve; });
+      let settleAhead = (): void => {};
+      windowsGrant.ahead = new Promise((resolve) => { settleAhead = resolve; });
       spawnConfinedChild.mockImplementation(async () => {
         windowsGrant.events.push("spawn");
         throw new Error("spawned past the factory deadline");
@@ -1579,6 +1598,35 @@ describe("on Windows a confined child holds a grant on its own directories for e
       try {
         const { deadline, late } = constructUnderDeadline(layout);
         await until(() => windowsGrant.calls.length === 1);
+        await vi.advanceTimersByTimeAsync(FACTORY_DEADLINE_MS + 1);
+        expect(await deadline).toMatchObject(FACTORY_TIMEOUT);
+        const next = holdWindowsFilesystemGrant({ label: "next-turn", allowRead: [], allowWrite: [] });
+        settleAhead();
+        expect(await late()).toMatchObject(DEADLINE_PASSED);
+        await next;
+        expect(windowsGrant.granted).toEqual(["next-turn"]);
+        expect(spawnConfinedChild).not.toHaveBeenCalled();
+        expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
+      } finally {
+        settleAhead();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("spawns nothing when the factory deadline passes during the grant turn, and releases the grant and HOME", async () => {
+    const layout = aveLayout();
+    await asWindows(layout, async () => {
+      let settleTurn = (): void => {};
+      windowsGrant.applying = new Promise((resolve) => { settleTurn = resolve; });
+      spawnConfinedChild.mockImplementation(async () => {
+        windowsGrant.events.push("spawn");
+        throw new Error("spawned past the factory deadline");
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { deadline, late } = constructUnderDeadline(layout);
+        await until(() => windowsGrant.events.length === 1);
         await vi.advanceTimersByTimeAsync(FACTORY_DEADLINE_MS + 1);
         expect(await deadline).toMatchObject(FACTORY_TIMEOUT);
         settleTurn();

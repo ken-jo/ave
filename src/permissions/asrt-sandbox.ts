@@ -2405,19 +2405,29 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 // Each turn captures obligations and reads, stamps, verifies and grants without yielding.
 const windowsGrantTurns = createSerialQueue();
 
-export function grantWindowsWorkerFilesystemAccess(opts: {
-  readonly holderPid: number;
+interface WindowsWorkerFilesystemGrantRequest {
+  // A function starts the holder when the turn starts, so a refused turn starts none.
+  readonly holderPid: number | (() => number);
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
-}): Promise<WindowsWorkerFilesystemGrant> {
+  // Checked when the queued turn starts, before the holder or any ACL change; a throw refuses the turn.
+  readonly assertStillValid?: () => void;
+}
+
+export function grantWindowsWorkerFilesystemAccess(
+  opts: WindowsWorkerFilesystemGrantRequest,
+): Promise<WindowsWorkerFilesystemGrant> {
   return windowsGrantTurns(() => grantWindowsWorkerFilesystemAccessInTurn(opts));
 }
 
-async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
-  readonly holderPid: number;
-  readonly allowRead?: readonly string[];
-  readonly allowWrite?: readonly string[];
-}): Promise<WindowsWorkerFilesystemGrant> {
+async function grantWindowsWorkerFilesystemAccessInTurn(
+  request: WindowsWorkerFilesystemGrantRequest,
+): Promise<WindowsWorkerFilesystemGrant> {
+  request.assertStillValid?.();
+  const opts = {
+    ...request,
+    holderPid: typeof request.holderPid === "number" ? request.holderPid : request.holderPid(),
+  };
   if (process.platform === "win32") {
     for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
       const prefix = containsGlobCharsWin(path) ? globPatternBaseDir(toForwardSlashes(path)) : path;
