@@ -268,7 +268,8 @@ const status = await worker.request("index_status", { scope: "all" });
 
 `spawnWorker` resolves only after the hello. A worker that writes anything else
 first, answers wrongly or never answers is stopped and the call rejects with
-`worker-control-failed`. A worker's state directory is a sibling of your `data/`
+`worker-control-failed`. Reusing the `workerId` of a worker that is still running or
+stopping rejects with `worker-already-running`. A worker's state directory is a sibling of your `data/`
 directory: your plugin process cannot write it, and a worker that kept its state in
 `data/` must rebuild it in the state directory.
 
