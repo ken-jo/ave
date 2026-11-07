@@ -199,7 +199,7 @@ function parseKeyValueLines(input: string, delimiter: ":" | "="): Record<string,
   );
 }
 
-export function McpTab() {
+export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = {}) {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const formIdPrefix = useId();
@@ -220,11 +220,11 @@ export function McpTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [banner, setBanner] = useState<{ type: "error" | "success"; msg: string } | null>(null);
+  const [banner, setBanner] = useState<{ type: "error" | "success"; msg: string; policyApprovalRequired: boolean } | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBanner = useCallback((type: "error" | "success", msg: string) => {
+  const showBanner = useCallback((type: "error" | "success", msg: string, policyApprovalRequired = false) => {
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
+    setBanner({ type, msg, policyApprovalRequired });
     bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
   }, []);
 
@@ -476,7 +476,13 @@ export function McpTab() {
       notifySaved();
       void fetchAll();
     } catch (e) {
-      showBanner("error", errorMessage(e));
+      const message = errorMessage(e);
+      // The invoke bridge preserves only the manager's localized exception message.
+      const refusal = t("be_mcpManager.governanceValidationFailed", {
+        layer: "1",
+        reason: t("be_mcpGovernance.unapprovedServer", { id: config.id }),
+      });
+      showBanner("error", message, message.includes(refusal));
     } finally {
       setFormBusy(false);
     }
@@ -509,6 +515,16 @@ export function McpTab() {
             }`}
           >
             {banner.msg}
+            {banner.policyApprovalRequired && (
+              <div className="mt-2 space-y-2">
+                <p>{t("mcpTab.policyApprovalGuidance")}</p>
+                {onNavigate && (
+                  <Button size="sm" variant="outline" onClick={() => onNavigate("permissions")}>
+                    {t("mcpTab.openPermissionsButton")}
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
