@@ -8,6 +8,7 @@ import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import {
   NODE_PRESERVE_SYMLINK_FLAGS,
@@ -851,7 +852,7 @@ export function createOutOfProcessPluginFactory(
     } catch (error) {
       let failure = error;
       if (child) {
-        child.link.terminate(`refused after spawn: ${error instanceof Error ? error.message : String(error)}`);
+        child.link.terminate(`refused after spawn: ${errorMessage(error)}`);
         try {
           await child.waitForExit?.();
         } catch (cleanupError) {
