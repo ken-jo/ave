@@ -17,6 +17,7 @@ import type { TurnResult } from "../../engine/conversation-loop.js";
 import type { ParentMailboxEntry } from "../../engine/subagent-message-mailbox.js";
 import { wrapChildReportForParentJudgment } from "../../engine/a2a-subagent-message-codec.js";
 import { parseStagedEnvelope, stagedOriginForInput } from "../../shared/staged-origins.js";
+import { agentPluginPromptEnvelopeSource } from "../../shared/agent-plugin-prompt.js";
 import {
   isSessionFamily,
   isSessionListKindFilter,
@@ -248,6 +249,7 @@ export function parseChatSendPayload(
     inputOrigin?: unknown;
     userActivation?: unknown;
     personaPromptId?: unknown;
+    pluginPromptId?: unknown;
   };
   if (typeof candidate.input !== "string") {
     return { ok: false, error: "invalid-input" };
@@ -274,6 +276,10 @@ export function parseChatSendPayload(
   }
   const personaPrompt = normalizePersonaPromptId(candidate.inputOrigin, candidate.personaPromptId);
   if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
+  // A template selection means something only on a plugin-prompt send; any other shape is dropped and scopes nothing.
+  const pluginPromptId = candidate.inputOrigin === "plugin-prompt-emitted"
+    && typeof candidate.pluginPromptId === "string" && PLUGIN_PROMPT_ID.test(candidate.pluginPromptId)
+    ? candidate.pluginPromptId : undefined;
   return {
     ok: true,
     payload: {
@@ -282,8 +288,25 @@ export function parseChatSendPayload(
       inputOrigin: candidate.inputOrigin,
       ...(candidate.userActivation === true ? { userActivation: true } : {}),
       ...(personaPrompt.personaPromptId ? { personaPromptId: personaPrompt.personaPromptId } : {}),
+      ...(pluginPromptId ? { pluginPromptId } : {}),
     },
   };
+}
+
+const PLUGIN_PROMPT_ID = /^(?:extension|agent-plugin):[a-z][a-z0-9-]{0,62}:[a-z][a-z0-9-]{0,62}$/u;
+
+// Explicit host configuration: the plugin of an installed extension template the user picked, bound to the envelope that template
+// produces. Unknown templates, package templates without a runtime plugin, or a mismatched envelope scope nothing.
+function resolvePluginPromptScope(
+  personaPromptStore: IpcDeps["personaPromptStore"],
+  pluginPromptId: string | undefined,
+  input: string,
+): ReadonlySet<string> | undefined {
+  if (!pluginPromptId || !personaPromptStore) return undefined;
+  const template = personaPromptStore.listTemplates().find((entry) => entry.id === pluginPromptId);
+  if (!template || !template.id.startsWith("extension:")) return undefined;
+  if (parseStagedEnvelope(input)?.source !== agentPluginPromptEnvelopeSource(template)) return undefined;
+  return new Set([template.packageName]);
 }
 
 export interface SanitizedOutgoingTurnContent {
@@ -413,7 +436,8 @@ export async function handleChatSend(
   const expectedSessionId = conversationLoop.getSessionId();
   const parsed = parseChatSendPayload(payload);
   if (!parsed.ok) return { ok: false, error: parsed.error };
-  const { input, attachments, inputOrigin, userActivation, personaPromptId } = parsed.payload;
+  const { input, attachments, inputOrigin, userActivation, personaPromptId, pluginPromptId } = parsed.payload;
+  const turnScopedPluginIds = resolvePluginPromptScope(personaPromptStore, pluginPromptId, input);
   const validated = validateUserContentParts(attachments);
   const streamId = ctx.allocateStreamId();
   const sink = ctx.createStreamEventSink(streamId);
@@ -484,6 +508,7 @@ export async function handleChatSend(
             ? { requestAnchorRawIntent: input }
             : {}),
           ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
+          ...(turnScopedPluginIds ? { turnScopedPluginIds } : {}),
           ...(mailboxTurn
             ? {
                 initialGuidance: mailboxTurn.initialGuidance,

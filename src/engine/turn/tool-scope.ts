@@ -46,6 +46,7 @@ export function resolveToolScope(
     lastTurnToolNames: Set<string> | null;
     sessionActivatedPluginIds: Set<string>;
   },
+  turnScopedPluginIds: ReadonlySet<string> = new Set(),
 ): ToolScope {
     const resetCarryForward = isBuiltinToolInventoryQuestion(input);
     const activePluginIds = new Set(
@@ -79,6 +80,17 @@ export function resolveToolScope(
       }
     }
 
+    // A user-selected plugin prompt scopes its plugin for this turn only: installed, enabled and allowed, or nothing.
+    const turnOnlyPluginIds = new Set<string>();
+    const installedPluginIds = new Set(pluginRuntime?.listPluginIds() ?? []);
+    for (const pluginId of turnScopedPluginIds) {
+      if (activePluginIds.has(pluginId) || !installedPluginIds.has(pluginId)) continue;
+      if (pluginRuntime?.isPluginEnabled?.(pluginId) === false) continue;
+      if (filterAllowedPluginIds(deps, [pluginId]).length === 0) continue;
+      activePluginIds.add(pluginId);
+      turnOnlyPluginIds.add(pluginId);
+    }
+
     // Count only eligible plugin/MCP tools; expose eagerly below the ceiling and defer at or above it.
     const deferral = shouldDeferToolSchemas(deps, activePluginIds);
 
@@ -108,8 +120,16 @@ export function resolveToolScope(
       // Unattended input is untrusted and cannot access arbitrary-egress builtins.
       includeEgress: deps.headless !== true,
       deferral,
+      ...(turnOnlyPluginIds.size > 0 ? { turnOnlyPluginIds } : {}),
     };
   }
+
+// Plugin scope the next turn inherits: everything active except this turn's prompt-only scope.
+export function carriedPluginIds(scope: ToolScope): Set<string> {
+  const carried = new Set(scope.activePluginIds);
+  for (const pluginId of scope.turnOnlyPluginIds ?? []) carried.delete(pluginId);
+  return carried;
+}
 
 function scopedToolNameSet(deps: ConversationLoopDeps, activePluginIds: Set<string>,
 ): Set<string> {
@@ -156,7 +176,7 @@ export function nextCarryForwardToolNames(
     scope: ToolScope,
     toolCalls: Array<{ name: string }>,
   ): Set<string> {
-    const inScopeToolNames = scopedToolNameSet(deps, scope.activePluginIds);
+    const inScopeToolNames = scopedToolNameSet(deps, carriedPluginIds(scope));
     const next = new Set<string>();
 
     for (const name of scope.forcedToolNames) {

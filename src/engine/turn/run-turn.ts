@@ -27,6 +27,7 @@ import { isRemoteControllerBoundToSession } from "../../shared/chat-origin.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
+import { carriedPluginIds } from "./tool-scope.js";
 import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
@@ -546,7 +547,9 @@ async function runTurnInSpan(
     }
 
     // Set tool scope before prompt building so advertised schemas match execution scope.
-    const scope = self.resolveToolScope(input);
+    // Only a host-validated plugin-prompt turn may carry turn-scoped plugin ids.
+    const scope = self.resolveToolScope(input,
+      inputOrigin === "plugin-prompt-emitted" ? options.turnScopedPluginIds : undefined);
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
     const isSubscriptionRuntime = subscriptionRuntime !== undefined;
     const subscriptionAuditRoute = subscriptionRuntime
@@ -656,8 +659,8 @@ async function runTurnInSpan(
       self.history.removeByHostInjectionId(agentMessageInputId);
       agentMessageInputId = null;
     }
-    // Carry newly activated plugin scope into the next turn.
-    self.lastTurnScope = new Set(scope.activePluginIds);
+    // Carry newly activated plugin scope into the next turn; prompt-only scope ends here.
+    self.lastTurnScope = carriedPluginIds(scope);
     // Carry only intentional plugin/MCP tool surface, not unused search promotions.
     self.lastTurnToolNames = self.nextCarryForwardToolNames(
       scope,
