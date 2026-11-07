@@ -82,7 +82,7 @@ export function resolveToolScope(
 
     // A user-selected plugin prompt scopes its plugin for this turn only: installed, enabled and allowed, or nothing.
     const turnOnlyPluginIds = new Set<string>();
-    const installedPluginIds = new Set(pluginRuntime?.listPluginIds() ?? []);
+    const installedPluginIds = new Set(turnScopedPluginIds.size > 0 ? pluginRuntime?.listPluginIds?.() ?? [] : []);
     for (const pluginId of turnScopedPluginIds) {
       if (activePluginIds.has(pluginId) || !installedPluginIds.has(pluginId)) continue;
       if (pluginRuntime?.isPluginEnabled?.(pluginId) === false) continue;
