@@ -84,6 +84,7 @@ let _sandboxGeneration = 0;
 let _shellSandboxRequestedAtBoot = false;
 let _pluginWorkerConfinementRequestedAtBoot = false;
 let _bootOutcome: SandboxBootOutcome | null = null;
+let _sandboxGatePendingAtBoot = false;
 let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
 let _statusChangeListener: (() => void) | undefined;
@@ -158,9 +159,21 @@ export function getSandboxBootOutcome(): SandboxBootOutcome | null {
   return _bootOutcome;
 }
 
+// Mark that this process is booting and its sandbox gate has not run yet. Called once at the start of bootstrap.
+export function markSandboxGatePendingAtBoot(): void {
+  _sandboxGatePendingAtBoot = true;
+}
+
+// True while a boot is in progress and its gate has not recorded an outcome. Until then the boot-frozen confinement
+// request and the active runtime both read as off, so a confinement-deciding spawn must refuse instead of running unconfined.
+export function isSandboxGateUndecidedAtBoot(): boolean {
+  return _sandboxGatePendingAtBoot && _bootOutcome === null;
+}
+
 // @internal — test teardown only.
 export function __resetSandboxBootOutcomeForTest(): void {
   _bootOutcome = null;
+  _sandboxGatePendingAtBoot = false;
 }
 
 // Record which substrate carries Windows shells and extensions this boot (`sandbox-init.ts`), and — when MXC carries the agent shells — the capability their host-shell plans get. That capability is published here and NOT through setActiveSandboxCapability: it describes one launch path (Bash/PowerShell tool commands in an MXC container), not the process-wide runtime, so the workspace terminal and the plugin surfaces, which read the process-wide capability, never inherit it. @internal — only the boot-time sandbox init path and tests should call this.
