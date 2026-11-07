@@ -644,3 +644,22 @@ describe("staged prompt turn start: live and reloaded", () => {
     expect(applyUserMessageFrame([], { origin: "plugin-prompt-emitted", text: envelope, messageId: "row-1" })).toEqual([]);
   });
 });
+
+describe("staged prompt turn start: a Continue replays the trailing row", () => {
+  const envelope = formatStagedEnvelope(stagedOriginFor("mcp-prompt-emitted"), "Summarize the open files", "mcp-prompt:docs");
+  const frame = { origin: "mcp-prompt-emitted", text: envelope, messageId: "replayed-row" };
+  const cards = (entries: ReturnType<typeof historyToEntries>) => entries.filter((entry) => entry.kind === "imported_trigger");
+
+  it("names the restored card instead of drawing a second one, before or after the continue's status", () => {
+    const restored = historyToEntries([historyMessage("user", 0, "earlier"), historyMessage("assistant", 1, "answer"),
+      historyMessage("user", 2, envelope)]);
+    expect(cards(applyUserMessageFrame(restored, frame))).toHaveLength(1);
+    const withStatus = [...restored, { kind: "assistant" as const, text: "Continuing", streaming: true }];
+    expect(cards(applyUserMessageFrame(withStatus, frame))).toHaveLength(1);
+  });
+
+  it("draws a new card when the same prompt runs again after an answered turn", () => {
+    const answered = historyToEntries([historyMessage("user", 0, envelope), historyMessage("assistant", 1, "answer")]);
+    expect(cards(applyUserMessageFrame(answered, frame))).toHaveLength(2);
+  });
+});

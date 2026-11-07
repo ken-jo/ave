@@ -318,6 +318,18 @@ function isTurnStartEntry(entry: ChatEntry | undefined): boolean {
   return entry?.kind === "user" || entry?.kind === "imported_trigger";
 }
 
+/** A Continue (a branch's auto-resume included) replays the row the transcript ends on, under a new row id. When that row's card
+ * is already drawn with nothing after it but the continue's pending status, the frame names that card rather than a new turn. */
+function replaysTrailingCard(entries: readonly ChatEntry[], prompt: string): boolean {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (!isTurnStartEntry(entry)) continue;
+    return entry.kind === "imported_trigger" && entry.prompt === prompt
+      && entries.slice(index + 1).every((after) => after.kind === "assistant" && after.streaming === true);
+  }
+  return false;
+}
+
 /** Stop at a turn boundary before touching older answers; injected guidance belongs to this turn only while the preceding answer is streaming. */
 function currentTurnAssistantIdx(entries: readonly ChatEntry[]): number {
   let crossedInjectedLine = false;
@@ -390,7 +402,7 @@ export function applyUserMessageFrame(
   const staged = stagedOriginForInput(frame.origin);
   if (staged) {
     const card = stagedEnvelopeCard(typeof frame.text === "string" ? frame.text : "");
-    if (!card || card.kind !== staged) return entries;
+    if (!card || card.kind !== staged || replaysTrailingCard(entries, card.prompt)) return entries;
     return appendImportedTriggerEntry(entries, { sessionId: crypto.randomUUID(), source: card.source, prompt: card.prompt,
       summary: card.summary, toolCallCount: 0, importedAt: new Date().toISOString() });
   }

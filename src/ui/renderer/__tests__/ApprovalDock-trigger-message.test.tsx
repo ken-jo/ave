@@ -178,4 +178,22 @@ describe("approval card conversation line", () => {
     await waitFor(() => expect(container.querySelector('[data-testid="overlay-card-primary-action"]')).toBeNull());
     expect(cardsNaming(container, "overlay:refusedsrc")).toBe(0);
   });
+
+  it("draws one card when a branch ending in an MCP prompt auto-resumes", async () => {
+    const envelope = formatStagedEnvelope(stagedOriginFor("mcp-prompt-emitted"), "Remove the scratch folder", "mcp-prompt:docs");
+    const { container, emitChatStream } = await renderApp({
+      hasApiKey: true,
+      history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
+        { index: 0, role: "user", content: "RUNSB: New-Item ./scratch/a.txt" },
+        { index: 1, role: "assistant", content: "Created ./scratch/a.txt" },
+        { index: 2, role: "user", content: envelope, messageId: "branch-row" },
+      ] },
+    });
+    await waitFor(() => expect(cardsNaming(container, "mcp-prompt:docs")).toBe(1));
+    // The continue replays that row: the host truncates it and announces the turn again under a new row id.
+    await act(async () => {
+      emitChatStream({ type: "user_message", origin: "mcp-prompt-emitted", messageId: "replayed-row", text: envelope });
+    });
+    expect(cardsNaming(container, "mcp-prompt:docs")).toBe(1);
+  });
 });
