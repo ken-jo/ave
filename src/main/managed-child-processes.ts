@@ -119,12 +119,20 @@ export function trackManagedChildProcess(
   // group and kills it when the host's end of its pipe closes. Disposal releases it: at once when the leader exits with no group left, and
   // otherwise on the disposal poll (processGroupPollMs, 1 s) that first sees the group gone. The one case the reaper could signal the wrong
   // group: the leader exited while descendants remained, the last of them exits, and within that poll interval the pgid is reused and the host
-  // dies. A registration that fails is undone whole, so no half-tracked entry is left behind.
+  // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
   if (reaperHeldGroup !== undefined) {
     try {
       hostDeathReaper().retain(reaperHeldGroup);
     } catch (error) {
       dispose();
+      try {
+        forceKillProcessTreeSync(child, entry.killProcessGroup, entry.processGroupId);
+      } catch (killError) {
+        log.warn(
+          { pid: child.pid ?? null, label: entry.label, err: errorMessage(killError) },
+          "managed-child: failed to kill a child whose process group the reaper refused",
+        );
+      }
       throw error;
     }
   }

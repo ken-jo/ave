@@ -35,16 +35,19 @@ describe.skipIf(process.platform === "win32")("managed child groups outlive a ki
     const before = getManagedChildProcessCount();
     const child = spawn("/bin/sh", ["-c", "sleep 60"], { detached: true, stdio: "ignore" });
     const listeners = () => ["exit", "close", "error"].map((event) => child.listenerCount(event));
+    const exited = once(child, "exit");
     const listenersBefore = listeners();
     reaper.retain.mockImplementationOnce(() => { throw new Error("[process-group-reaper] reaper was spawned without a stdin pipe"); });
     try {
       expect(() => trackManagedChildProcess(child, { killProcessGroup: true, label: "refused-fixture" })).toThrow(/without a stdin pipe/);
       expect(getManagedChildProcessCount()).toBe(before);
       expect(listeners()).toEqual(listenersBefore);
+      // No owner is left to end it, so the refused child is killed rather than orphaned.
+      const [, signal] = await exited;
+      expect(signal).toBe("SIGKILL");
     } finally {
-      process.kill(-child.pid!, "SIGKILL");
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
     }
-    await once(child, "exit");
   });
 
   it("leaves a child that shares the host's process group to the host", async () => {
