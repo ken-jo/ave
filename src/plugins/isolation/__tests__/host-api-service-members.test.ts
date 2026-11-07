@@ -19,6 +19,7 @@ import type {
   WorkerControlRequestHandler,
 } from "../../types.js";
 import { WorkerControlError } from "../../public-contract.js";
+import { WorkerAlreadyRunningError } from "../../../permissions/worker-spawn.js";
 import type { PluginRuntimeContext } from "../../public-contract.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
@@ -976,6 +977,21 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     }
     expect(harness.child.openSubscriptionCount).toBe(0);
     expect(harness.child.hostGone()).toBe(0);
+  });
+
+  it("preserves a classified worker conflict in the plugin error surface", async () => {
+    const harness = await createServiceHarness({
+      spawnWorker: async () => { throw new WorkerAlreadyRunningError(PLUGIN_ID, "busy"); },
+    });
+    const pending = harness.child.hostApi.spawnWorker!({
+      workerId: "busy", control: "output-only-v1", command: "/bin/true",
+    });
+    await expect(pending).rejects.toBeInstanceOf(PluginHostApiError);
+    await expect(pending).rejects.toMatchObject({
+      code: "worker-already-running", name: "WorkerAlreadyRunningError",
+    });
+    expect(harness.host.openSubscriptionCount).toBe(0);
+    expect(harness.child.openSubscriptionCount).toBe(0);
   });
 
   it("releases the host handle when worker listener setup fails", async () => {
