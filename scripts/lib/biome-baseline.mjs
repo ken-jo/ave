@@ -41,8 +41,13 @@ export function normalizeBiomeDiagnostics(report) {
     counts.set(key, existing);
   }
 
-  return [...counts.values()].sort((left, right) =>
-    entryKey(left).localeCompare(entryKey(right), "en"));
+  // Code-unit order, so the snapshot is byte-identical whatever ICU build sorts it.
+  return [...counts.values()].sort((left, right) => {
+    const leftKey = entryKey(left);
+    const rightKey = entryKey(right);
+    if (leftKey === rightKey) return 0;
+    return leftKey < rightKey ? -1 : 1;
+  });
 }
 
 // `added` holds every entry whose count grew, with the growth as its count;
@@ -64,10 +69,49 @@ export function compareBiomeBaseline(current, baseline) {
   return { added, resolved };
 }
 
+// Growth fails. Shrinkage is only a notice: two changes that each fix the same
+// file's debt would otherwise merge cleanly and leave the default branch red.
+export function evaluateBiomeBaseline(current, baseline, expectedBiomeVersion) {
+  if (baseline?.schemaVersion !== BIOME_BASELINE_SCHEMA_VERSION) {
+    throw new Error(`unsupported Biome baseline schema ${baseline?.schemaVersion}`);
+  }
+  // The JSON reporter is experimental, so a Biome bump must regenerate the snapshot.
+  if (baseline.biomeVersion !== expectedBiomeVersion) {
+    throw new Error(
+      `Biome baseline version ${baseline.biomeVersion} does not match ${expectedBiomeVersion}`
+      + " — run `bun run check:biome:update`",
+    );
+  }
+  if (!Array.isArray(baseline.entries)) {
+    throw new Error("Biome baseline entries must be an array");
+  }
+
+  const { added, resolved } = compareBiomeBaseline(current, baseline.entries);
+  const summary = `baseline passed: ${countBiomeDiagnostics(current)} accepted diagnostics`
+    + ` in ${current.length} file/rule entries`;
+  if (added.length > 0) {
+    return {
+      failure: {
+        message: "new lint diagnostics exceed the reviewed baseline — fix them"
+          + " (`bunx biome lint <file>` shows each one)",
+        details: added.map(formatBiomeEntry),
+      },
+      notice: null,
+      summary,
+    };
+  }
+  const notice = resolved.length === 0 ? null : {
+    message: `${countBiomeDiagnostics(resolved)} diagnostic(s) fixed;`
+      + " run `bun run check:biome:update` to lock in",
+    details: resolved.map(formatBiomeEntry),
+  };
+  return { failure: null, notice, summary };
+}
+
 export function countBiomeDiagnostics(entries) {
   return entries.reduce((total, entry) => total + entry.count, 0);
 }
 
-export function formatBiomeEntry(entry) {
+function formatBiomeEntry(entry) {
   return `${entry.file} ${entry.category} x${entry.count}`;
 }

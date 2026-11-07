@@ -1,14 +1,13 @@
-// Fail on any Biome lint diagnostic the reviewed baseline does not accept, and
-// on baseline entries that no longer exist, so fixed debt shrinks the snapshot.
+// Fail on any Biome lint diagnostic the reviewed baseline does not accept.
+// Fixed diagnostics only print a notice: `check:biome:update` is the ratchet.
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BIOME_BASELINE_SCHEMA_VERSION,
-  compareBiomeBaseline,
   countBiomeDiagnostics,
-  formatBiomeEntry,
+  evaluateBiomeBaseline,
   normalizeBiomeDiagnostics,
 } from "./lib/biome-baseline.mjs";
 import { readJsonFile, writeKnipBaselineAtomicSync } from "./lib/knip-baseline.mjs";
@@ -110,38 +109,15 @@ try {
     );
   } else {
     const baseline = readJsonFile(options.baseline, "biome-baseline.json");
-    if (baseline.schemaVersion !== BIOME_BASELINE_SCHEMA_VERSION) {
-      throw new Error(`unsupported Biome baseline schema ${baseline.schemaVersion}`);
-    }
-    // The JSON reporter is experimental, so a Biome bump must regenerate the snapshot.
-    if (baseline.biomeVersion !== expectedBiomeVersion) {
-      throw new Error(
-        `Biome baseline version ${baseline.biomeVersion} does not match ${expectedBiomeVersion}`
-        + " — run `bun run check:biome:update`",
-      );
-    }
-    if (!Array.isArray(baseline.entries)) {
-      throw new Error("Biome baseline entries must be an array");
-    }
-
-    const { added, resolved } = compareBiomeBaseline(entries, baseline.entries);
-    if (added.length > 0) {
-      fail(
-        "new lint diagnostics exceed the reviewed baseline — fix them"
-        + " (`bunx biome lint <file>` shows each one)",
-        added.map(formatBiomeEntry),
-      );
-    } else if (resolved.length > 0) {
-      fail(
-        `the baseline still lists ${countBiomeDiagnostics(resolved)} diagnostic(s)`
-        + " that no longer exist — run `bun run check:biome:update` to record the removal",
-        resolved.map(formatBiomeEntry),
-      );
+    const { failure, notice, summary } = evaluateBiomeBaseline(entries, baseline, expectedBiomeVersion);
+    if (failure) {
+      fail(failure.message, failure.details);
     } else {
-      console.log(
-        `[biome-gate] baseline passed: ${countBiomeDiagnostics(entries)} accepted diagnostics`
-        + ` in ${entries.length} file/rule entries`,
-      );
+      if (notice) {
+        console.log(`[biome-gate] ${notice.message}`);
+        for (const detail of notice.details) console.log(`  ${detail}`);
+      }
+      console.log(`[biome-gate] ${summary}`);
     }
   }
 } catch (error) {

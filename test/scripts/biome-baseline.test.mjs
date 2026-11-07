@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  BIOME_BASELINE_SCHEMA_VERSION,
   compareBiomeBaseline,
+  evaluateBiomeBaseline,
   normalizeBiomeDiagnostics,
 } from "../../scripts/lib/biome-baseline.mjs";
 
@@ -61,5 +63,54 @@ test("reports count growth as added and count shrinkage as resolved", () => {
   assert.deepEqual(
     compareBiomeBaseline([{ ...accepted[0], count: 1 }], [accepted[0]]).resolved,
     [{ file: "src/a.ts", category: "lint/style/useConst", count: 1 }],
+  );
+});
+
+test("sorts entries by code unit, not locale collation", () => {
+  const entries = normalizeBiomeDiagnostics(report([
+    diagnostic("src/b.ts", "lint/x/y"),
+    diagnostic("src/B.ts", "lint/x/y"),
+    diagnostic("src/a-b.ts", "lint/x/y"),
+    diagnostic("src/a_b.ts", "lint/x/y"),
+  ]));
+  assert.deepEqual(entries.map((entry) => entry.file), ["src/B.ts", "src/a-b.ts", "src/a_b.ts", "src/b.ts"]);
+});
+
+const VERSION = "2.6.5";
+const accepted = [{ file: "src/a.ts", category: "lint/style/useConst", count: 2 }];
+function snapshot(entries = accepted, biomeVersion = VERSION) {
+  return { schemaVersion: BIOME_BASELINE_SCHEMA_VERSION, biomeVersion, entries };
+}
+
+test("check mode fails on growth", () => {
+  const result = evaluateBiomeBaseline(
+    [{ ...accepted[0], count: 3 }],
+    snapshot(),
+    VERSION,
+  );
+  assert.match(result.failure.message, /new lint diagnostics exceed the reviewed baseline/);
+  assert.deepEqual(result.failure.details, ["src/a.ts lint/style/useConst x1"]);
+});
+
+test("check mode passes on shrinkage with a lock-in notice", () => {
+  const result = evaluateBiomeBaseline([{ ...accepted[0], count: 1 }], snapshot(), VERSION);
+  assert.equal(result.failure, null);
+  assert.match(result.notice.message, /^1 diagnostic\(s\) fixed; run `bun run check:biome:update` to lock in$/);
+  assert.deepEqual(result.notice.details, ["src/a.ts lint/style/useConst x1"]);
+  assert.deepEqual(evaluateBiomeBaseline(accepted, snapshot(), VERSION).notice, null);
+});
+
+test("check mode fails on a Biome version or schema mismatch", () => {
+  assert.throws(
+    () => evaluateBiomeBaseline(accepted, snapshot(accepted, "2.6.4"), VERSION),
+    /baseline version 2\.6\.4 does not match 2\.6\.5/,
+  );
+  assert.throws(
+    () => evaluateBiomeBaseline(accepted, { ...snapshot(), schemaVersion: 99 }, VERSION),
+    /unsupported Biome baseline schema 99/,
+  );
+  assert.throws(
+    () => evaluateBiomeBaseline(accepted, { ...snapshot(), entries: null }, VERSION),
+    /entries must be an array/,
   );
 });

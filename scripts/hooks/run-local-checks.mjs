@@ -1219,6 +1219,12 @@ function runRetiredNameGate(repoRoot) {
   run(commands.node, ["--test", "test/scripts/retired-name.test.mjs"], repoRoot);
   run(commands.node, ["scripts/check-retired-name.mjs"], repoRoot);
 }
+// The Biome baseline gate lints the tree in about five seconds, so every
+// pre-push tier runs it too; the full tier and CI get it through `check:gate-core`.
+function runBiomeGate(repoRoot) {
+  run(commands.node, ["--test", "test/scripts/biome-baseline.test.mjs"], repoRoot);
+  run(commands.node, ["scripts/check-biome-baseline.mjs"], repoRoot);
+}
 function runAppCommentOnlyChecks(dir) {
   runAppTypecheckGate(dir, "comment-only checks");
 }
@@ -1263,6 +1269,7 @@ if (stage === "pre-commit") {
     run(commands.node, ["--test", "test/scripts/check-asrt-version-claims.test.mjs"], repoRoot);
     run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     runRetiredNameGate(repoRoot);
+    runBiomeGate(repoRoot);
     console.log(
       `[checks] tier=docs-only pre-push: skipping lint/typecheck/test/build; ${FULL_SUITE_DEFERRED} (${classification.reason})`
     );
@@ -1271,6 +1278,7 @@ if (stage === "pre-commit") {
       `[checks] tier=comment-only pre-push: running typecheck; ${FULL_SUITE_DEFERRED} (${classification.reason})`
     );
     runRetiredNameGate(repoRoot);
+    runBiomeGate(repoRoot);
     runAppCommentOnlyChecks(repoRoot);
   } else if (classification.testOnly) {
     const testCodeFileCount =
@@ -1281,6 +1289,7 @@ if (stage === "pre-commit") {
         `(${classification.reason})`
     );
     runRetiredNameGate(repoRoot);
+    runBiomeGate(repoRoot);
     runAppTargetedVitestChecks(
       repoRoot,
       classification.testFiles,
@@ -1351,6 +1360,7 @@ if (stage === "pre-commit") {
       run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot);
     }
     runRetiredNameGate(repoRoot);
+    runBiomeGate(repoRoot);
     runAppFastSourceChecks(
       repoRoot,
       lockSuites.map(({ suite }) => suite),

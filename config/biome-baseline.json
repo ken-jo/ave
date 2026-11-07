@@ -10383,9 +10383,39 @@
       "count": 2
     },
     {
-      "file": "src/ui/renderer/__tests__/alert-settings.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 14
+      "file": "src/ui/renderer/App.tsx",
+      "category": "lint/complexity/noUselessFragments",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/App.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 10
+    },
+    {
+      "file": "src/ui/renderer/ChatView.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/ChatView.tsx",
+      "category": "lint/style/useImportType",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/ChatView.tsx",
+      "category": "lint/suspicious/noConfusingVoidType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/SettingsContent.tsx",
+      "category": "lint/complexity/useLiteralKeys",
+      "count": 12
+    },
+    {
+      "file": "src/ui/renderer/SettingsContent.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 2
     },
     {
       "file": "src/ui/renderer/__tests__/App-handle-ask.test.tsx",
@@ -10411,11 +10441,6 @@
       "file": "src/ui/renderer/__tests__/App-view-history.test.tsx",
       "category": "lint/style/noNonNullAssertion",
       "count": 6
-    },
-    {
-      "file": "src/ui/renderer/__tests__/appearance-tab.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
     },
     {
       "file": "src/ui/renderer/__tests__/AppNotificationToast.test.tsx",
@@ -10456,11 +10481,6 @@
       "file": "src/ui/renderer/__tests__/AssistantCard.test.tsx",
       "category": "lint/style/useTemplate",
       "count": 3
-    },
-    {
-      "file": "src/ui/renderer/__tests__/chat-entry-revision.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
     },
     {
       "file": "src/ui/renderer/__tests__/ChatComposerDock.test.tsx",
@@ -10533,6 +10553,56 @@
       "count": 2
     },
     {
+      "file": "src/ui/renderer/__tests__/MainToolbar.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/__tests__/PluginConfigTab.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/__tests__/RoutinePanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/__tests__/ToolGroupCard.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/__tests__/ToolGroupCard.test.tsx",
+      "category": "lint/suspicious/noUselessEscapeInString",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/__tests__/TranscriptRenderer.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/__tests__/WorkflowComponents.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 22
+    },
+    {
+      "file": "src/ui/renderer/__tests__/alert-settings.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 14
+    },
+    {
+      "file": "src/ui/renderer/__tests__/appearance-tab.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/__tests__/chat-entry-revision.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
       "file": "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 3
@@ -10553,11 +10623,6 @@
       "count": 2
     },
     {
-      "file": "src/ui/renderer/__tests__/MainToolbar.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
       "file": "src/ui/renderer/__tests__/model-catalog-bootstrap.test.ts",
       "category": "lint/correctness/noComponentHookFactories",
       "count": 2
@@ -10566,16 +10631,6 @@
       "file": "src/ui/renderer/__tests__/plugin-studio-review.test.tsx",
       "category": "lint/style/noNonNullAssertion",
       "count": 1
-    },
-    {
-      "file": "src/ui/renderer/__tests__/PluginConfigTab.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/__tests__/RoutinePanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
     },
     {
       "file": "src/ui/renderer/__tests__/session-gates-reach-off-route.test.tsx",
@@ -10613,546 +10668,6 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/__tests__/ToolGroupCard.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/__tests__/ToolGroupCard.test.tsx",
-      "category": "lint/suspicious/noUselessEscapeInString",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/__tests__/TranscriptRenderer.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/__tests__/WorkflowComponents.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 22
-    },
-    {
-      "file": "src/ui/renderer/App.tsx",
-      "category": "lint/complexity/noUselessFragments",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/App.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 10
-    },
-    {
-      "file": "src/ui/renderer/ChatView.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/ChatView.tsx",
-      "category": "lint/style/useImportType",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/ChatView.tsx",
-      "category": "lint/suspicious/noConfusingVoidType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/AskUserQuestionCard.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 38
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/AttachmentChip.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/BrowserSurfaceTools.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/chat-group-session-registry.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/chat-side-panel-observation.test.tsx",
-      "category": "lint/a11y/useButtonType",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/chat-side-panel-observation.test.tsx",
-      "category": "lint/suspicious/useIterableCallbackReturn",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatSidePanel-agent-browser.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 26
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatSidePanel-terminal-visibility.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 36
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatThumbnailColumn.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ChatThumbnailColumn.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 10
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/command-actions-shortcut.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
-      "category": "lint/a11y/useButtonType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Composer.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ComposerProjectSelector.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
-      "category": "lint/a11y/useButtonType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/DocumentEngineInstallContent.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/EgressGrantsList.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/EgressPermissions.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/HomeContentReview.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 7
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/inline-slash-menu.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/InputActionBar.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 21
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/InterruptedTurnBanner.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MainSurfacePanels.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 10
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/mcp-app-host-context.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 8
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/mcp-app-host-context.test.ts",
-      "category": "lint/style/useTemplate",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/mcp-app-view.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/McpAppFullscreenPanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/McpAppPipPanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/McpAppView.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 36
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MemoryDetailContent.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MemorySaveNotices.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MemorySaveNotices.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MemorySearchPanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/MessageQueuePanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/overlay-alert-cards.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/pane-tree.test.ts",
-      "category": "lint/complexity/useLiteralKeys",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/pane-tree.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 7
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
-      "category": "lint/complexity/useLiteralKeys",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 32
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PermissionModeBadge.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PluginAuthSection.test.tsx",
-      "category": "lint/correctness/noUnusedImports",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PluginUpdatesPill.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
-      "category": "lint/complexity/noUselessFragments",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 46
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/radix-selection-styles.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ReasoningSlider.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 8
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SandboxStatusBadge.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 48
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
-      "category": "lint/style/useImportType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 13
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
-      "category": "lint/a11y/noNoninteractiveTabindex",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
-      "category": "lint/a11y/useButtonType",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/sidechat-child-transcript.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 15
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SideChatView.test.tsx",
-      "category": "lint/complexity/noBannedTypes",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SideChatView.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 20
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/slash-picker-data.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 29
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SlashPicker.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 8
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SpotlightTour.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/SpotlightTour.test.tsx",
-      "category": "lint/style/useImportType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/StarredView.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/terminal-block-anchors.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/TerminalChangeAnnotations.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 12
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/TerminalObservationContent.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 11
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/TerminalObservationContent.test.tsx",
-      "category": "lint/suspicious/useIterableCallbackReturn",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/TokenCostBadge.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-decision-variants.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-egress.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-out-of-dir.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-user-owned-surface.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-live-output.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-mcp-app.test.tsx",
-      "category": "lint/suspicious/noExplicitAny",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-sandbox.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/tour-anchors-trigger.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/TurnChangeDetail.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/UnifiedSearchPanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 11
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkApprovalPlanCard.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkApprovalsBadge.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkApprovalStack.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkBoardLiveCard.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkBoardLiveSteps.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 8
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkBoardPlanDecision.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkBoardRunSession.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkBoardSchedule.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/__tests__/WorkGroup.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/components/AskUserQuestionCard.tsx",
       "category": "lint/correctness/useExhaustiveDependencies",
       "count": 4
@@ -11179,16 +10694,6 @@
     },
     {
       "file": "src/ui/renderer/components/AttachmentChip.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/chat-group-session-registry.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/chat-thumbnail-column.tsx",
       "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
@@ -11343,41 +10848,6 @@
       "count": 6
     },
     {
-      "file": "src/ui/renderer/components/folder-view/__tests__/folder-columns.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/__tests__/FolderView.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 7
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/FileViewer.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/FolderColumn.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
-      "category": "lint/a11y/noStaticElementInteractions",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
       "file": "src/ui/renderer/components/InlineSlashMenu.tsx",
       "category": "lint/a11y/useFocusableInteractive",
       "count": 1
@@ -11415,16 +10885,6 @@
     {
       "file": "src/ui/renderer/components/MarqueeText.tsx",
       "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/mcp-app-bridge.ts",
-      "category": "lint/performance/noAccumulatingSpread",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/mcp-app-bridge/__tests__/handlers.test.ts",
-      "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
     {
@@ -11503,11 +10963,6 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/components/pane-tree.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
       "file": "src/ui/renderer/components/PaneFrame.tsx",
       "category": "lint/a11y/noStaticElementInteractions",
       "count": 1
@@ -11525,76 +10980,6 @@
     {
       "file": "src/ui/renderer/components/PaneFrame.tsx",
       "category": "lint/suspicious/noRedeclare",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/ApprovalDecisionBar.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/ApprovalDecisionBar.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/ApprovalDock.tsx",
-      "category": "lint/a11y/noRedundantRoles",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/AuditPanel.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/EgressDenialsList.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/EgressDenialsList.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/EgressGrantsList.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/EgressHostApprovalCard.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/PermissionModeBadge.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/UpstreamProxySettings.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/permissions/UserOwnedSurfaceApprovalCard.tsx",
-      "category": "lint/a11y/noStaticElementInteractions",
       "count": 1
     },
     {
@@ -11638,71 +11023,6 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/components/schedule/__tests__/ScheduleChatChip.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/__tests__/SchedulePanel.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 14
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/board-schedule.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/chat-link.tsx",
-      "category": "lint/a11y/noLabelWithoutControl",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/chat-link.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/ScheduleChatChip.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
-      "category": "lint/a11y/noLabelWithoutControl",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
-      "category": "lint/a11y/noStaticElementInteractions",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
-      "category": "lint/a11y/useKeyWithClickEvents",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 10
-    },
-    {
-      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/components/SessionGoalPanel.tsx",
       "category": "lint/correctness/useExhaustiveDependencies",
       "count": 2
@@ -11718,6 +11038,21 @@
       "count": 1
     },
     {
+      "file": "src/ui/renderer/components/SideChatView.tsx",
+      "category": "lint/complexity/useOptionalChain",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/SideChatView.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/SideChatView.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
       "file": "src/ui/renderer/components/Sidebar.tsx",
       "category": "lint/a11y/useAriaPropsSupportedByRole",
       "count": 3
@@ -11733,91 +11068,6 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/components/sidebar/__tests__/project-tree-model.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/__tests__/tree-indent-guides.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 16
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
-      "category": "lint/a11y/useFocusableInteractive",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
-      "category": "lint/a11y/useKeyWithClickEvents",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/a11y/noAutofocus",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/a11y/noStaticElementInteractions",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/a11y/useAriaPropsSupportedByRole",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/a11y/useKeyWithClickEvents",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 10
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/suspicious/noConfusingVoidType",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
-      "category": "lint/suspicious/useIterableCallbackReturn",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/SurfaceRow.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/tree-indent-guides.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/sidebar/tree-indent-guides.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/components/SidebarPreview.tsx",
       "category": "lint/complexity/useOptionalChain",
       "count": 1
@@ -11825,21 +11075,6 @@
     {
       "file": "src/ui/renderer/components/SidebarPreview.tsx",
       "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/SideChatView.tsx",
-      "category": "lint/complexity/useOptionalChain",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/SideChatView.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/SideChatView.tsx",
-      "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
     {
@@ -11890,11 +11125,6 @@
     {
       "file": "src/ui/renderer/components/StarredView.tsx",
       "category": "lint/suspicious/noConfusingVoidType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/terminal-block-anchors.ts",
-      "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
     {
@@ -12078,36 +11308,6 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/components/work-approvals/PlanDecisionControls.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/components/work-board/LiveRunPanel.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/components/work-board/LiveRunPanel.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/components/WorkBoardPanel.tsx",
       "category": "lint/a11y/useSemanticElements",
       "count": 2
@@ -12138,6 +11338,816 @@
       "count": 2
     },
     {
+      "file": "src/ui/renderer/components/__tests__/AskUserQuestionCard.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 38
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/AttachmentChip.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/BrowserSurfaceTools.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatSidePanel-agent-browser.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 26
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatSidePanel-terminal-visibility.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 36
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatThumbnailColumn.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ChatThumbnailColumn.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 10
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
+      "category": "lint/a11y/useButtonType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Composer-file-mention.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Composer.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ComposerProjectSelector.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
+      "category": "lint/a11y/useButtonType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/CustomTitleBar.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/DocumentEngineInstallContent.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/EgressGrantsList.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/EgressPermissions.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/HomeContentReview.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 7
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/InputActionBar.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 21
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/InterruptedTurnBanner.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MainSurfacePanels.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 10
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/McpAppFullscreenPanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/McpAppPipPanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/McpAppView.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 36
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MemoryDetailContent.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MemorySaveNotices.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MemorySaveNotices.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MemorySearchPanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/MessageQueuePanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
+      "category": "lint/complexity/useLiteralKeys",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PaneFrame.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 32
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PermissionModeBadge.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PluginAuthSection.test.tsx",
+      "category": "lint/correctness/noUnusedImports",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PluginUpdatesPill.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
+      "category": "lint/complexity/noUselessFragments",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/PtyTerminalView.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 46
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ReasoningSlider.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 8
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SandboxStatusBadge.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SideChatView.test.tsx",
+      "category": "lint/complexity/noBannedTypes",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SideChatView.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 20
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 48
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
+      "category": "lint/style/useImportType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/Sidebar.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 13
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
+      "category": "lint/a11y/noNoninteractiveTabindex",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
+      "category": "lint/a11y/useButtonType",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SidebarPreview.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SlashPicker.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 8
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SpotlightTour.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/SpotlightTour.test.tsx",
+      "category": "lint/style/useImportType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/StarredView.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/TerminalChangeAnnotations.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 12
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/TerminalObservationContent.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 11
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/TerminalObservationContent.test.tsx",
+      "category": "lint/suspicious/useIterableCallbackReturn",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/TokenCostBadge.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-decision-variants.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-egress.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-out-of-dir.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolApprovalContent-user-owned-surface.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-live-output.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-mcp-app.test.tsx",
+      "category": "lint/suspicious/noExplicitAny",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/ToolGroupCard-sandbox.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/TurnChangeDetail.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/UnifiedSearchPanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 11
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkApprovalPlanCard.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkApprovalStack.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkApprovalsBadge.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkBoardLiveCard.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkBoardLiveSteps.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 8
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkBoardPlanDecision.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkBoardRunSession.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkBoardSchedule.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/WorkGroup.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/chat-group-session-registry.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/chat-side-panel-observation.test.tsx",
+      "category": "lint/a11y/useButtonType",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/chat-side-panel-observation.test.tsx",
+      "category": "lint/suspicious/useIterableCallbackReturn",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/command-actions-shortcut.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/inline-slash-menu.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/mcp-app-host-context.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 8
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/mcp-app-host-context.test.ts",
+      "category": "lint/style/useTemplate",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/mcp-app-view.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/overlay-alert-cards.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/pane-tree.test.ts",
+      "category": "lint/complexity/useLiteralKeys",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/pane-tree.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 7
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/radix-selection-styles.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/sidechat-child-transcript.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 15
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/slash-picker-data.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 29
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/terminal-block-anchors.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/components/__tests__/tour-anchors-trigger.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/chat-group-session-registry.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/chat-thumbnail-column.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/FileViewer.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/FolderColumn.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
+      "category": "lint/a11y/noStaticElementInteractions",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/FolderView.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/__tests__/FolderView.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 7
+    },
+    {
+      "file": "src/ui/renderer/components/folder-view/__tests__/folder-columns.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/mcp-app-bridge.ts",
+      "category": "lint/performance/noAccumulatingSpread",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/mcp-app-bridge/__tests__/handlers.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/pane-tree.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/ApprovalDecisionBar.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/ApprovalDecisionBar.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/ApprovalDock.tsx",
+      "category": "lint/a11y/noRedundantRoles",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/AuditPanel.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/EgressDenialsList.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/EgressDenialsList.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/EgressGrantsList.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/EgressHostApprovalCard.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/PermissionJudgeContent.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/PermissionModeBadge.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/UpstreamProxySettings.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/permissions/UserOwnedSurfaceApprovalCard.tsx",
+      "category": "lint/a11y/noStaticElementInteractions",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/ScheduleChatChip.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
+      "category": "lint/a11y/noLabelWithoutControl",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/ScheduleItemPopover.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
+      "category": "lint/a11y/noStaticElementInteractions",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
+      "category": "lint/a11y/useKeyWithClickEvents",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 10
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/SchedulePanel.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/__tests__/ScheduleChatChip.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/__tests__/SchedulePanel.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 14
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/board-schedule.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/chat-link.tsx",
+      "category": "lint/a11y/noLabelWithoutControl",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/schedule/chat-link.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
+      "category": "lint/a11y/useFocusableInteractive",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
+      "category": "lint/a11y/useKeyWithClickEvents",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectCombobox.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/a11y/noAutofocus",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/a11y/noStaticElementInteractions",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/a11y/useAriaPropsSupportedByRole",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/a11y/useKeyWithClickEvents",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 10
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/suspicious/noConfusingVoidType",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/ProjectTree.tsx",
+      "category": "lint/suspicious/useIterableCallbackReturn",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/SurfaceRow.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/__tests__/project-tree-model.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/__tests__/tree-indent-guides.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 16
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/tree-indent-guides.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/sidebar/tree-indent-guides.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/terminal-block-anchors.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/work-approvals/PlanDecisionControls.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/work-approvals/WorkApprovalStack.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/components/work-board/LiveRunPanel.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/components/work-board/LiveRunPanel.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
       "file": "src/ui/renderer/constants.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 3
@@ -12150,6 +12160,21 @@
     {
       "file": "src/ui/renderer/context/__tests__/I18nSettingsProvider.test.tsx",
       "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/dialogs/AgentPluginPromptArgsDialog.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/dialogs/McpPromptArgsDialog.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/dialogs/McpResourceTemplateDialog.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
       "count": 1
     },
     {
@@ -12170,21 +12195,6 @@
     {
       "file": "src/ui/renderer/dialogs/__tests__/McpResourceTemplateDialog.test.tsx",
       "category": "lint/suspicious/noPrototypeBuiltins",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/dialogs/AgentPluginPromptArgsDialog.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/dialogs/McpPromptArgsDialog.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/dialogs/McpResourceTemplateDialog.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
       "count": 1
     },
     {
@@ -12478,6 +12488,31 @@
       "count": 2
     },
     {
+      "file": "src/ui/renderer/preview/BrowserObservationPreview.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/preview/PageDocumentPreview.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/preview/PageDocumentPreview.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/preview/TextDocumentPreview.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/preview/__tests__/PageDocumentPreview.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
       "file": "src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 6
@@ -12494,11 +12529,6 @@
     },
     {
       "file": "src/ui/renderer/preview/__tests__/main-layout-snapshot.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/preview/__tests__/PageDocumentPreview.test.tsx",
       "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
@@ -12558,23 +12588,8 @@
       "count": 1
     },
     {
-      "file": "src/ui/renderer/preview/BrowserObservationPreview.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/preview/composer-targets.ts",
       "category": "lint/complexity/useOptionalChain",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/preview/PageDocumentPreview.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/preview/PageDocumentPreview.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
       "count": 1
     },
     {
@@ -12623,11 +12638,6 @@
       "count": 7
     },
     {
-      "file": "src/ui/renderer/preview/TextDocumentPreview.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
       "file": "src/ui/renderer/preview/use-web-surface-occluder.ts",
       "category": "lint/correctness/useExhaustiveDependencies",
       "count": 1
@@ -12641,16 +12651,6 @@
       "file": "src/ui/renderer/preview/workspace-tabs.ts",
       "category": "lint/correctness/useExhaustiveDependencies",
       "count": 1
-    },
-    {
-      "file": "src/ui/renderer/SettingsContent.tsx",
-      "category": "lint/complexity/useLiteralKeys",
-      "count": 12
-    },
-    {
-      "file": "src/ui/renderer/SettingsContent.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 2
     },
     {
       "file": "src/ui/renderer/state/__tests__/message-queue-store.test.ts",
@@ -12670,86 +12670,6 @@
     {
       "file": "src/ui/renderer/suggested-tasks/use-suggested-tasks.ts",
       "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/DocumentSettingsContent.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/LlmTab.provider-cards.test.tsx",
-      "category": "lint/complexity/useLiteralKeys",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/LlmTab.provider-cards.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 28
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.reviewer-c3.test.tsx",
-      "category": "lint/correctness/noUnusedImports",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx",
-      "category": "lint/correctness/noComponentHookFactories",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 25
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/StartupTab.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/StartupTab.test.tsx",
-      "category": "lint/style/useImportType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/SubscriptionProvidersController.test.tsx",
-      "category": "lint/correctness/useHookAtTopLevel",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/TailnetAccessContent.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/TailnetObserverSection.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/TailnetSetupCard.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/TailnetSetupCard.test.tsx",
-      "category": "lint/style/useTemplate",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/__tests__/WorkBoardApprovalSettingsContent.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
       "count": 2
     },
     {
@@ -12786,136 +12706,6 @@
       "file": "src/ui/renderer/tabs/DiagnosticsSection.tsx",
       "category": "lint/correctness/useExhaustiveDependencies",
       "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/AutoUpdates.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 11
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/fixtures.ts",
-      "category": "lint/suspicious/useIterableCallbackReturn",
-      "count": 6
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/GitMarketplaceTab.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 7
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/GitMarketplaceTab.test.tsx",
-      "category": "lint/suspicious/noTemplateCurlyInString",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/labels.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/MarketplaceProblem.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 4
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/MarketplaceProblem.test.tsx",
-      "category": "lint/style/useImportType",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/SourcesAndAdd.test.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/AddSourceDialog.tsx",
-      "category": "lint/a11y/useAriaPropsSupportedByRole",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/DirectInstallView.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/GitMarketplaceTab.tsx",
-      "category": "lint/a11y/useSemanticElements",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/GitMarketplaceTab.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/MarketplaceProblem.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
-      "category": "lint/a11y/noLabelWithoutControl",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
-      "category": "lint/a11y/noLabelWithoutControl",
-      "count": 8
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
-      "category": "lint/complexity/useOptionalChain",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
-      "category": "lint/suspicious/noArrayIndexKey",
-      "count": 5
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/SourcesView.tsx",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 3
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/SourcesView.tsx",
-      "category": "lint/suspicious/noThenProperty",
-      "count": 2
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/update-review-request.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/UpdateReview.tsx",
-      "category": "lint/a11y/noLabelWithoutControl",
-      "count": 1
-    },
-    {
-      "file": "src/ui/renderer/tabs/git-marketplace/UpdatesCard.tsx",
-      "category": "lint/correctness/useExhaustiveDependencies",
-      "count": 1
     },
     {
       "file": "src/ui/renderer/tabs/LlmTab.tsx",
@@ -13090,6 +12880,216 @@
     {
       "file": "src/ui/renderer/tabs/WebTab.tsx",
       "category": "lint/a11y/useSemanticElements",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/DocumentSettingsContent.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/LlmTab.provider-cards.test.tsx",
+      "category": "lint/complexity/useLiteralKeys",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/LlmTab.provider-cards.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 28
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.reviewer-c3.test.tsx",
+      "category": "lint/correctness/noUnusedImports",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx",
+      "category": "lint/correctness/noComponentHookFactories",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 25
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/StartupTab.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/StartupTab.test.tsx",
+      "category": "lint/style/useImportType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/SubscriptionProvidersController.test.tsx",
+      "category": "lint/correctness/useHookAtTopLevel",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/TailnetAccessContent.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/TailnetObserverSection.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/TailnetSetupCard.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/TailnetSetupCard.test.tsx",
+      "category": "lint/style/useTemplate",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/__tests__/WorkBoardApprovalSettingsContent.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/AddSourceDialog.tsx",
+      "category": "lint/a11y/useAriaPropsSupportedByRole",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/DirectInstallView.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/GitMarketplaceTab.tsx",
+      "category": "lint/a11y/useSemanticElements",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/GitMarketplaceTab.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/MarketplaceProblem.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
+      "category": "lint/a11y/noLabelWithoutControl",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PackageSheet.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
+      "category": "lint/a11y/noLabelWithoutControl",
+      "count": 8
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
+      "category": "lint/complexity/useOptionalChain",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/PluginStudioView.tsx",
+      "category": "lint/suspicious/noArrayIndexKey",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/SourcesView.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/SourcesView.tsx",
+      "category": "lint/suspicious/noThenProperty",
+      "count": 2
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/UpdateReview.tsx",
+      "category": "lint/a11y/noLabelWithoutControl",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/UpdatesCard.tsx",
+      "category": "lint/correctness/useExhaustiveDependencies",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/AutoUpdates.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 11
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/GitMarketplaceTab.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 7
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/GitMarketplaceTab.test.tsx",
+      "category": "lint/suspicious/noTemplateCurlyInString",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/MarketplaceProblem.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 4
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/MarketplaceProblem.test.tsx",
+      "category": "lint/style/useImportType",
+      "count": 1
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/SourcesAndAdd.test.tsx",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 5
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/fixtures.ts",
+      "category": "lint/suspicious/useIterableCallbackReturn",
+      "count": 6
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/__tests__/labels.test.ts",
+      "category": "lint/style/noNonNullAssertion",
+      "count": 3
+    },
+    {
+      "file": "src/ui/renderer/tabs/git-marketplace/update-review-request.ts",
+      "category": "lint/style/noNonNullAssertion",
       "count": 1
     },
     {
