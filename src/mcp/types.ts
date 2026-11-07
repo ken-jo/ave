@@ -1,4 +1,4 @@
-import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../shared/mcp-error-code.js";
+import type { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../shared/mcp-error-code.js";
 import type { ToolSurface } from "../plugins/runtime/tool-visibility.js";
 
 export interface McpGovernancePolicy {
