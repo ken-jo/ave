@@ -78,6 +78,12 @@ describe("native PowerShell AST facts", () => {
     expect(check(summary)).not.toBeNull();
   });
 
+  it.skipIf(process.platform !== "win32").each(["https://x/NUL", "https://x/com1.txt", "https://x/conin$"])(
+    "path-checks %s, a DOS device name Win32 maps out of the path", (operand) => {
+      expect(check(command("curl.exe", [literal("-o"), literal(operand)]))).not.toBeNull();
+    },
+  );
+
   it.skipIf(process.platform !== "win32").each(["https://x/..\\..\\..\\secret", "https://x/a\\..\\..\\escaped"])(
     "path-checks %s, whose backslashes Win32 reads as separators", (operand) => {
       expect(check(command("curl.exe", [literal("-T"), literal(operand)]))).not.toBeNull();

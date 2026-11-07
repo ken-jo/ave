@@ -3147,12 +3147,15 @@ const FILESYSTEM_COMMANDS = new Set([
 
 const NETWORK_URL_OPERAND = /^(?:https?|wss?|ftps?):\/\/[^/\\?#\s]/i;
 
-// A network URL operand, left to the egress proxy. Any command may still open it as a Win32 path (`curl -o`, `tar -xf`), which
-// resolves under the working directory unless it has a backslash or a segment Win32 collapses: all dots, or ending in a dot or
-// space (`x./..` climbs too). Those stay path-checked, so the operand can at most name a file under the working directory.
+const DOS_DEVICE_SEGMENT = /^(?:con|prn|aux|nul|com\d|lpt\d|conin\$|conout\$)(?:\..*)?$/i;
+
+// A network URL operand, left to the egress proxy, skips the path checks. Any command may still open it as a Win32 path
+// (`curl -o`, `tar -xf`): `cwd\https:\host\...`, which cannot be opened through its `scheme:` component unless a segment
+// collapses it. So a backslash, a segment Win32 collapses (all dots, or ending in a dot or space: `x./..` climbs too) and a
+// DOS device name keep the operand path-checked.
 function isNetworkUrlOperand(value: string): boolean {
   if (!NETWORK_URL_OPERAND.test(value) || value.includes("\\")) return false;
-  return value.slice(value.indexOf("//") + 2).split(/[/?#]/).every((segment) => !/[. ]$/.test(segment));
+  return value.slice(value.indexOf("//") + 2).split(/[/?#]/).every((segment) => !/[. ]$/.test(segment) && !DOS_DEVICE_SEGMENT.test(segment));
 }
 
 const canonicalPowerShellTools = new WeakSet<object>();
