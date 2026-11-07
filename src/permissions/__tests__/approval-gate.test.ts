@@ -126,6 +126,27 @@ describe("ApprovalGate", () => {
       setLocale("ko");
     }
   });
+  it("announces the settlement to the window showing the toast, though the request went to another", async () => {
+    const owner = makeMockWebContents();
+    const toastWindow = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire: vi.fn(() => toastWindow) } as never);
+    const pending = gate.requestAndWait(makeRequest({ id: "toast-elsewhere" }));
+    await vi.waitFor(() => expect(sentApprovalCards(owner)).toHaveLength(1));
+    expect(announcedSettledIds(toastWindow)).toEqual([]);
+    gate.resolve("toast-elsewhere", { requestId: "toast-elsewhere", choice: "deny-once", ...lastSentNonceHmac(owner) });
+    await pending;
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-elsewhere"]);
+  });
+  it("announces the settlement to the toast's window when the turn ends before the request is parked", async () => {
+    const toastWindow = makeMockWebContents();
+    const controller = new AbortController();
+    const fire = vi.fn(() => { controller.abort(new Error("turn stopped")); return toastWindow; });
+    const owner = makeMockWebContents();
+    const gate = new ApprovalGate(owner as never, undefined, 1_000, undefined, { fire } as never);
+    await expect(gate.requestAndWait(makeRequest({ id: "toast-aborted", abortSignal: controller.signal }))).resolves.toMatchObject({ choice: "deny-once" });
+    expect(sentApprovalCards(owner)).toEqual([]);
+    expect(announcedSettledIds(toastWindow)).toEqual(["toast-aborted"]);
+  });
   it.each(["timeout", "shutdown", "abort"] as const)("settles %s even when the live owner lookup fails after parking", async (termination) => {
     vi.useFakeTimers();
     const wc = makeMockWebContents();

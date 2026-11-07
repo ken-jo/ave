@@ -892,7 +892,7 @@ export function App() {
   // An approval toast leaves with its request: when the host announces it settled (the toast may name a request this window never
   // queued), or when it leaves this window's queue. The notification fires before the request is queued, so a toast is dropped only
   // once its request has been queued and then left the queue; a request the queue cap evicts is unanswerable here, so its toast goes too.
-  useEffect(() => window.ave?.approval.onSettled((payload: { requestId?: unknown } | undefined) => {
+  useEffect(() => window.ave.approval.onSettled((payload: { requestId?: unknown } | undefined) => {
     if (typeof payload?.requestId === "string" && payload.requestId.length > 0) statusRemoveApprovalToasts(new Set([payload.requestId]));
   }), [statusRemoveApprovalToasts]);
   const queuedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());

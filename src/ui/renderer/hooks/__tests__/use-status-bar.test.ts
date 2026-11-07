@@ -353,6 +353,27 @@ describe("useStatusBar — sequential toast display", () => {
     expect(result.current.pendingCount).toBe(0);
   });
 
+  it("removeToast of a queued toast leaves the head's expiry alone", async () => {
+    const api = statusBarApi();
+    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+
+    let secondId = "";
+    act(() => {
+      result.current.pushToast({ severity: "info", message: "first", ttlMs: 3000 });
+      secondId = result.current.pushToast({ severity: "info", message: "second", ttlMs: 3000 });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    act(() => result.current.removeToast(secondId));
+    expect(result.current.visibleToast?.message).toBe("first");
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(result.current.visibleToast).toBeNull();
+  });
+
   it("removeToast gives the promoted head a full TTL", async () => {
     const api = statusBarApi();
     const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));

@@ -146,7 +146,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     [removeToastsWhere],
   );
 
-    // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
+  // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
   // head's TTL elapses (or removeToast dismisses it early), the next item
   // in the queue becomes the new head and gets its own timer. This prevents
   // a burst of install-result events from rendering multiple toasts at once.

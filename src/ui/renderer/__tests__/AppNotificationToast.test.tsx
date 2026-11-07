@@ -223,6 +223,23 @@ describe("App notification toasts", () => {
     expect(screen.queryByTestId("status-toast-message")).toBeNull();
   });
 
+  it("drops the toast of a queued request whose answer is in flight once the host settles it", async () => {
+    const { emitApproval, emitApprovalSettled, emitNotificationToast } = await renderApp();
+    vi.mocked(window.ave.approval.respond).mockImplementation(() => new Promise(() => undefined));
+    await act(async () => {
+      emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: "request in flight",
+        contextRef: { approvalId: "in-flight", sessionId: MOCK_DEFAULT_SESSION_ID } });
+      emitApproval(approvalRequest({ id: "in-flight", nonce: "nonce-in-flight", sessionId: MOCK_DEFAULT_SESSION_ID }));
+    });
+    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request in flight");
+    await act(async () => fireEvent.click(screen.getByTestId("approve-button")));
+    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request in flight");
+    await act(async () => emitApprovalSettled("in-flight"));
+    await waitFor(() => expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true"));
+    endAnimation(screen.getByTestId("status-bar-presence"));
+    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+  });
+
   it("names an untitled in-panel approval from its first user message", async () => {
     const { emitApproval } = await renderApp({ history: { sessionId: MOCK_DEFAULT_SESSION_ID,
       messages: [{ index: 0, role: "user", content: "Set up diagram views" }] } });
