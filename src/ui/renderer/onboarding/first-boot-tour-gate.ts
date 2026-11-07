@@ -1,9 +1,6 @@
 /** Persisted completion or dismissal suppresses automatic first-boot help. */
 import type { AveApi } from "../types.js";
-
-/** Canonical id of the first-login tour scenario. Must match the scenario registered in `default-tour-scenarios.ts`
- * (`first-boot-essentials`). Centralised here so the gate and any future caller share one literal. */
-export const FIRST_BOOT_SCENARIO_ID = "first-boot-essentials";
+import { FIRST_BOOT_SCENARIO_ID } from "../../../shared/first-boot-tour.js";
 
 /** The shape `api.tour.getState()` resolves to, plus `null` for IPC failure. */
 export type TourStateResult = Awaited<ReturnType<AveApi["tour"]["getState"]>> | null;
