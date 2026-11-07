@@ -3,6 +3,7 @@ import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { WebContents } from "electron";
 import { approvalSurfaceRegistry } from "./approval-surface-registry.js";
+import { CHANNELS } from "../contract/app-contract.js";
 import { t } from "../i18n/index.js";
 import { approvalActionSummary } from "../shared/approval-action-summary.js";
 import { resolveConversationTitle } from "../shared/conversation-title.js";
@@ -275,10 +276,10 @@ export interface ApprovalDecision {
   hmac?: string;
 }
 
-export const IPC_APPROVAL_REQUEST = "ave:approval:request";
-export const IPC_APPROVAL_RESPOND = "ave:approval:respond";
+// The wire names are owned by CHANNELS.approval; these names keep the gate's send sites and its tests readable.
+export const IPC_APPROVAL_REQUEST = CHANNELS.approval.request;
 // main→renderer: one parked request is no longer answerable. A renderer takes its card down when the turn that asked ends, and that covers the case where the surface holding the turn is still on screen. It is not the only way a request ends: the host retires a parked ask when the tile that asked closes, when a navigation lets go of the tile, on timeout, on abort, on shutdown. In those the surface that would have dropped the card has already unmounted, and without this announcement the card outlives its request — answerable on screen, answering nothing.
-export const IPC_APPROVAL_SETTLED = "ave:approval:settled";
+export const IPC_APPROVAL_SETTLED = CHANNELS.approval.settled;
 
 // Host-only timeout provenance; renderer objects can never enter this set.
 const hostTimeoutDecisions = new WeakSet<ApprovalDecision>();

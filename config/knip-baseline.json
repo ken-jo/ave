@@ -179,11 +179,6 @@
     },
     {
       "type": "exports",
-      "file": "src/permissions/approval-gate.ts",
-      "name": "IPC_APPROVAL_RESPOND"
-    },
-    {
-      "type": "exports",
       "file": "src/permissions/evaluation-context.ts",
       "name": "PERMISSION_EVALUATION_CONTEXT_VERSION"
     },
