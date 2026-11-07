@@ -76,7 +76,7 @@ import {
 } from "./bound-host-api-table.js";
 import { openPluginProtocolSession } from "./plugin-protocol-session.js";
 import { spawnMxcPluginChild, type MxcPluginChild, type MxcPluginChildLaunch } from "./mxc-plugin-child.js";
-import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs } from "../../shared/tool-timeout-policy.js";
+import { nativePluginChildFactoryBudgetMs, nativePluginChildStopBudgetMs, TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../shared/tool-timeout-policy.js";
 import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 
 const log = createLogger("out-of-process-plugin");
@@ -437,9 +437,6 @@ export interface ObservedPluginChild {
   readonly exited: Promise<string>;
 }
 
-/** How long a sandboxed Windows child has to start and announce its listener. */
-const WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS = 30_000;
-
 /** The sandboxed Windows launch of the reference runtime: Node's symlink- preserving flags, the child entry, the loopback transport, and the child's environment as one argument. The flags are {@link NODE_PRESERVE_SYMLINK_FLAGS}, which says
  * why. For the child the trade is narrow: the entry path is already the host's real path (decision 33), and the host's integrity and path checks run on its side. The environment is {@link srtWinTargetEnv}'s, which says what stays srt-win's. */
 function windowsLoopbackLaunchLine(
@@ -645,7 +642,7 @@ export async function spawnConfinedPluginChild(
         channel = await connectToAnnouncedChild({
           stdout: child.stdout,
           exited: gone,
-          timeoutMs: WINDOWS_CHANNEL_CONNECT_TIMEOUT_MS,
+          timeoutMs: TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs,
         });
       } catch (error) {
         terminateChild();
@@ -937,15 +934,22 @@ export function createOutOfProcessPluginFactory(
     return session.instance;
   };
   if (spec.prepareMxcChild) nativeFactories.add(factory);
+  else childFactories.add(factory);
   return factory;
 }
 
 const nativeFactories = new WeakSet<RuntimePluginFactory>();
+const childFactories = new WeakSet<RuntimePluginFactory>();
 const nativeInstances = new WeakSet<RuntimePlugin>();
 
-/** The runtime's deadline for one factory call: a native child also needs startup, construct and disposal time. */
+/** The runtime's deadline for one factory call: a native child also needs startup, construct and disposal time, and an srt-win child
+ * (the same test `spawnConfinedPluginChild` grants by) its setup, connect and construct. */
 export function pluginFactoryDeadlineMs(factory: RuntimePluginFactory, fallbackMs: number): number {
-  return nativeFactories.has(factory) ? Math.max(fallbackMs, nativePluginChildFactoryBudgetMs()) : fallbackMs;
+  if (nativeFactories.has(factory)) return Math.max(fallbackMs, nativePluginChildFactoryBudgetMs());
+  if (childFactories.has(factory) && process.platform === "win32" && isPluginWorkerConfinementActive()) {
+    return Math.max(fallbackMs, windowsSrtPluginChildFactoryBudgetMs());
+  }
+  return fallbackMs;
 }
 
 /** The runtime's stop budget for one instance: a native child's stop includes the owned process's disposal deadline. */

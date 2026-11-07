@@ -1114,14 +1114,14 @@ describe("pre-push message catalog selection", () => {
     const path = `${MESSAGES}/en.ts`;
     const after = readFileSync(resolve(root, path), "utf8");
     const before = after.replace(/("shellExecution\.cwd": ")[^"]*"/, '$1old"');
+    // Parses every tracked module through the hook's compiler service: about 75 s on Windows alone.
     const selection = selectMessageCatalogChecks([{ ...modified(path), baseSha: "base", localSha: "local" }], {
       readBlob: (sha) => sha === "base" ? before : after, trackedFiles: tracked, readTrackedFile: readTracked,
     });
     expect(selection.reason).toMatch(/unresolved dynamic message consumer; full checks required$/);
     expect(selection.testFiles).toBeUndefined();
     expect(selection.consumerModules).toBeUndefined();
-    // Parse tracked modules through the same compiler service used by the hook.
-  }, 30_000);
+  }, 180_000);
 
   it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {
     const path = `${MESSAGES}/en.ts`;
