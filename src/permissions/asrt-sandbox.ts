@@ -2423,221 +2423,246 @@ export function grantWindowsWorkerFilesystemAccess(
 async function grantWindowsWorkerFilesystemAccessInTurn(
   request: WindowsWorkerFilesystemGrantRequest,
 ): Promise<WindowsWorkerFilesystemGrant> {
-  const { assertStillValid, holderPid: requestedHolderPid, ...opts } = request;
-  assertStillValid?.();
-  if (process.platform === "win32") {
-    for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
-      const prefix = containsGlobCharsWin(path) ? globPatternBaseDir(toForwardSlashes(path)) : path;
-      assertWindowsGrantGrammar(prefix);
-    }
-  }
-  assertAveHomePrivacyForConfinement();
-  const session = sandboxSession;
-  const SandboxManager = loadedSandboxManagerForRelease;
-  if (!active || _baseTrustedSettings === undefined || session === undefined || SandboxManager === undefined) {
-    throw new Error(
-      "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",
-    );
-  }
-  if (process.platform !== "win32") {
-    throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
-  }
-  const admitted = admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]);
-  const pinned = admittedWindowsPolicies.get(admitted)!;
-  if ([pinned.allowRead, pinned.allowWrite].some(entries =>
-    entries !== undefined && existingWindowsGrants(entries).length !== entries.length)) {
-    throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
-  }
-  checkWindowsSandboxStampTargets(pinned);
-  const {
-    getWindowsSandboxUserStatus,
-    grantWindowsAcl,
-    stampWindowsAcl,
-    revokeWindowsAcl,
-    resolveSrtWin,
-  } = await import("@anthropic-ai/sandbox-runtime");
-
-  if (sandboxSession !== session || !active) {
-    throw new Error("Windows filesystem grant session was reset");
-  }
-  assertWindowsDenyProtection();
-
-  const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
-  const user = getWindowsSandboxUserStatus({ srtWin });
-  const sandboxUserSid = user.sid;
-  if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
-    throw new Error(
-      "grantWindowsWorkerFilesystemAccess: Windows sandbox user is not provisioned",
-    );
-  }
-
-  const requestedWrite = windowsPinnedPaths(existingWindowsGrants(pinned.allowWrite ?? []));
-  const requestedRead = [
-    ...windowsPinnedPaths(existingWindowsGrants(pinned.allowRead ?? [])),
-    ...requestedWrite,
-  ];
-
-  for (const path of requestedRead) assertWindowsGrantGrammar(path);
-  const pins = pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar });
-  const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
-  const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
-  const allowRead = requests.map(request => request.path);
-  const allowWrite = requests.slice(requestedRead.length - requestedWrite.length).map(request => request.path);
-  assertWindowsGrantBoundaries(allowRead, allowWrite);
-  checkWindowsSandboxStampTargets(pinned);
-
-  const settings = withWorkerUnixSockets(_baseTrustedSettings);
-  const revision = session.windowsDenyRevision;
-  const liveGrants = snapshotWindowsLiveGrants(session);
-  const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
-    allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
-    allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
-  });
-  const rows: { path: string; read: boolean }[] = [];
-  for (const kind of ["denyRead", "denyWrite"] as const) {
-    // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
-    for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
-      const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
-      const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
-      const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
-      if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant)
-        || lexicalWindowsOverlap(grant, boundary))) continue;
-      if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
-      // Preserve each obligation: folded spellings can name different objects.
-      rows.push({ path, read: kind === "denyRead" });
-    }
-  }
-  const targets = rows.map(row => row.path);
-  const previous = readWindowsDenyAcls(targets, sandboxUserSid);
-  assertWindowsSession(session, revision);
-  const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
-  const denyWrite = targets;
-  if (targets.length > 0) {
-    let stampFailure: unknown;
-    try {
-      stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin });
-    } catch (error) {
-      stampFailure = error;
-      log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
-    }
-    // Verify even after a partial stamp. Never release the session holder on failure.
-    try {
-      const native = readWindowsDenyAcls(targets, sandboxUserSid);
-      const readTargets = new Set(denyRead);
-      for (const [index, row] of rows.entries()) {
-        const state = native[index]!;
-        const mask = readTargets.has(row.path) ? WINDOWS_READ_DENY_MASK : WINDOWS_WRITE_DENY_MASK;
-        if ((state.denyMask & mask) !== mask || (state.parentMask & 0x40) !== 0x40
-          || (state.directory && (state.inheritableMask & mask) !== mask)) {
-          throw new Error("Windows deny DACL verification failed");
-        }
+  const started = performance.now();
+  const timing = { userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: 0 };
+  let denyRows = 0;
+  const timeStep = <T>(key: keyof typeof timing, operation: () => T): T => {
+    const stepStarted = performance.now();
+    try { return operation(); }
+    finally { timing[key] += performance.now() - stepStarted; }
+  };
+  try {
+    const { assertStillValid, holderPid: requestedHolderPid, ...opts } = request;
+    assertStillValid?.();
+    if (process.platform === "win32") {
+      for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
+        const prefix = containsGlobCharsWin(path) ? globPatternBaseDir(toForwardSlashes(path)) : path;
+        assertWindowsGrantGrammar(prefix);
       }
-    } catch (error) {
-      // Keep activity sealed on so callers cannot fall back to host execution.
-      session.windowsDenyFailure = new Error("Windows deny DACL verification failed; reset the sandbox session", { cause: error });
-      throw session.windowsDenyFailure;
     }
-    if (stampFailure !== undefined) throw stampFailure;
-  }
+    assertAveHomePrivacyForConfinement();
+    const session = sandboxSession;
+    const SandboxManager = loadedSandboxManagerForRelease;
+    if (!active || _baseTrustedSettings === undefined || session === undefined || SandboxManager === undefined) {
+      throw new Error(
+        "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",
+      );
+    }
+    if (process.platform !== "win32") {
+      throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
+    }
+    const admitted = admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
+    if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]);
+    const pinned = admittedWindowsPolicies.get(admitted)!;
+    if ([pinned.allowRead, pinned.allowWrite].some(entries =>
+      entries !== undefined && existingWindowsGrants(entries).length !== entries.length)) {
+      throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
+    }
+    checkWindowsSandboxStampTargets(pinned);
+    const {
+      getWindowsSandboxUserStatus,
+      grantWindowsAcl,
+      stampWindowsAcl,
+      revokeWindowsAcl,
+      resolveSrtWin,
+    } = await import("@anthropic-ai/sandbox-runtime");
 
-  assertWindowsSession(session, revision);
-  // Resolved after every refusal above, so a refused turn starts no holder.
-  const holderPid = typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid();
-  if (allowRead.length > 0 || allowWrite.length > 0) {
-    try {
-      assertWindowsGrantPins(requests, identities);
-      // srt-win writes the DACL by name: a swap between the pre-pin and native write
-      // cannot be excluded. Only the post-pin and revoke detect that remaining window.
-      // A swap restored before the post-pin is undetected; a crash before it skips
-      // compensation. After holder exit, a later native ACL operation prunes its
-      // tracked hold; sweepStaleSrtWinDirectories cleans stale helper copies.
-      // Neither recovers a by-name grant to an object absent from that ledger.
-      // Root protection is point-in-time: a garbage-collected loop's roots drop out
-      // even if an ACL holder survives, and later root changes do not revalidate
-      // existing grants. Provider-backed non-surrogate (cloud) ancestor descent
-      // remains unexercised on this host.
-      grantWindowsAcl({
-        sandboxUserSid,
-        holderPid,
-        read: allowRead,
-        write: allowWrite,
-        srtWin,
-      });
-      assertWindowsGrantPins(requests, identities);
-    } catch (err) {
+    if (sandboxSession !== session || !active) {
+      throw new Error("Windows filesystem grant session was reset");
+    }
+    assertWindowsDenyProtection();
+
+    const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    const user = timeStep("userStatusMs", () => getWindowsSandboxUserStatus({ srtWin }));
+    const sandboxUserSid = user.sid;
+    if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
+      throw new Error(
+        "grantWindowsWorkerFilesystemAccess: Windows sandbox user is not provisioned",
+      );
+    }
+
+    const requestedWrite = windowsPinnedPaths(existingWindowsGrants(pinned.allowWrite ?? []));
+    const requestedRead = [
+      ...windowsPinnedPaths(existingWindowsGrants(pinned.allowRead ?? [])),
+      ...requestedWrite,
+    ];
+
+    for (const path of requestedRead) assertWindowsGrantGrammar(path);
+    const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
+    const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
+    const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
+    const allowRead = requests.map(request => request.path);
+    const allowWrite = requests.slice(requestedRead.length - requestedWrite.length).map(request => request.path);
+    assertWindowsGrantBoundaries(allowRead, allowWrite);
+    checkWindowsSandboxStampTargets(pinned);
+
+    const settings = withWorkerUnixSockets(_baseTrustedSettings);
+    const revision = session.windowsDenyRevision;
+    const liveGrants = snapshotWindowsLiveGrants(session);
+    const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
+      allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
+      allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
+    });
+    const rows: { path: string; read: boolean }[] = [];
+    for (const kind of ["denyRead", "denyWrite"] as const) {
+      // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
+      for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
+        const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
+        const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
+        const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
+        if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant)
+          || lexicalWindowsOverlap(grant, boundary))) continue;
+        if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
+        // Preserve each obligation: folded spellings can name different objects.
+        rows.push({ path, read: kind === "denyRead" });
+      }
+    }
+    const targets = rows.map(row => row.path);
+    denyRows = rows.length;
+    const previous = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
+    assertWindowsSession(session, revision);
+    const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
+    const denyWrite = targets;
+    if (targets.length > 0) {
+      let stampFailure: unknown;
+      try {
+        timeStep("stampMs", () => stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin }));
+      } catch (error) {
+        stampFailure = error;
+        log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
+      }
+      // Verify even after a partial stamp. Never release the session holder on failure.
+      try {
+        const native = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
+        const readTargets = new Set(denyRead);
+        for (const [index, row] of rows.entries()) {
+          const state = native[index]!;
+          const mask = readTargets.has(row.path) ? WINDOWS_READ_DENY_MASK : WINDOWS_WRITE_DENY_MASK;
+          if ((state.denyMask & mask) !== mask || (state.parentMask & 0x40) !== 0x40
+            || (state.directory && (state.inheritableMask & mask) !== mask)) {
+            throw new Error("Windows deny DACL verification failed");
+          }
+        }
+      } catch (error) {
+        // Keep activity sealed on so callers cannot fall back to host execution.
+        session.windowsDenyFailure = new Error("Windows deny DACL verification failed; reset the sandbox session", { cause: error });
+        throw session.windowsDenyFailure;
+      }
+      if (stampFailure !== undefined) throw stampFailure;
+    }
+
+    assertWindowsSession(session, revision);
+    // Resolved after every refusal above, so a refused turn starts no holder.
+    const holderPid = typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid();
+    if (allowRead.length > 0 || allowWrite.length > 0) {
+      try {
+        timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
+        // srt-win writes the DACL by name: a swap between the pre-pin and native write
+        // cannot be excluded. Only the post-pin and revoke detect that remaining window.
+        // A swap restored before the post-pin is undetected; a crash before it skips
+        // compensation. After holder exit, a later native ACL operation prunes its
+        // tracked hold; sweepStaleSrtWinDirectories cleans stale helper copies.
+        // Neither recovers a by-name grant to an object absent from that ledger.
+        // Root protection is point-in-time: a garbage-collected loop's roots drop out
+        // even if an ACL holder survives, and later root changes do not revalidate
+        // existing grants. Provider-backed non-surrogate (cloud) ancestor descent
+        // remains unexercised on this host.
+        timeStep("grantMs", () => grantWindowsAcl({
+          sandboxUserSid,
+          holderPid,
+          read: allowRead,
+          write: allowWrite,
+          srtWin,
+        }));
+        timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
+      } catch (err) {
+        let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
+        let cleanupError: unknown;
+        let exitedOk = true;
+        try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
+        catch (error) { cleanupError = error; }
+        if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
+          // Keep confinement active: disabling it would permit host execution fallback.
+          session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
+          log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
+          throw session.windowsDenyFailure;
+        }
+        throw err;
+      }
+    }
+
+    const writable = new Set(allowWrite);
+    for (const path of allowRead) {
+      const counts = session.windowsLiveGrants.get(path) ?? { read: 0, write: 0 };
+      counts.read += 1;
+      if (writable.has(path)) counts.write += 1;
+      session.windowsLiveGrants.set(path, counts);
+    }
+
+    let released = false;
+    let revokeMs = 0;
+    const revokeGrant = (): boolean => {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
       let exitedOk = true;
+      const revokeStarted = performance.now();
       try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
       catch (error) { cleanupError = error; }
+      finally { revokeMs = performance.now() - revokeStarted; }
       if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
-        // Keep confinement active: disabling it would permit host execution fallback.
-        session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
+        session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? outcome });
         log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
-        throw session.windowsDenyFailure;
+        return false;
       }
-      throw err;
-    }
-  }
-
-  const writable = new Set(allowWrite);
-  for (const path of allowRead) {
-    const counts = session.windowsLiveGrants.get(path) ?? { read: 0, write: 0 };
-    counts.read += 1;
-    if (writable.has(path)) counts.write += 1;
-    session.windowsLiveGrants.set(path, counts);
-  }
-
-  let released = false;
-  const revokeGrant = (): boolean => {
-    let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
-    let cleanupError: unknown;
-    let exitedOk = true;
-    try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
-    catch (error) { cleanupError = error; }
-    if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
-      session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? outcome });
-      log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
-      return false;
-    }
-    return true;
-  };
-  const grant: WindowsWorkerFilesystemGrant = {
-    allowRead,
-    allowWrite,
-    release: () => {
-      if (released) return;
-      released = true;
-      for (const path of allowRead) {
-        const counts = session.windowsLiveGrants.get(path);
-        if (counts === undefined) continue;
-        counts.read -= 1;
-        if (writable.has(path)) counts.write -= 1;
-        if (counts.read === 0) session.windowsLiveGrants.delete(path);
-      }
-      if (!revokeGrant()) return;
-      if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
+      return true;
+    };
+    const grant: WindowsWorkerFilesystemGrant = {
+      allowRead,
+      allowWrite,
+      release: () => {
+        if (released) return;
+        released = true;
+        const releaseStarted = performance.now();
         try {
-          SandboxManager.updateConfig(
-            buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
-          );
-        } catch (cause) {
-          session.windowsDenyFailure = new Error(`Windows filesystem grant config cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause });
-          log.error(session.windowsDenyFailure);
+          for (const path of allowRead) {
+            const counts = session.windowsLiveGrants.get(path);
+            if (counts === undefined) continue;
+            counts.read -= 1;
+            if (writable.has(path)) counts.write -= 1;
+            if (counts.read === 0) session.windowsLiveGrants.delete(path);
+          }
+          if (!revokeGrant()) return;
+          if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
+            try {
+              SandboxManager.updateConfig(
+                buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+              );
+            } catch (cause) {
+              session.windowsDenyFailure = new Error(`Windows filesystem grant config cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause });
+              log.error(session.windowsDenyFailure);
+            }
+          }
+        } finally {
+          const fields = { revokeMs, totalMs: performance.now() - releaseStarted };
+          log.info(fields, "windows grant release timing");
+          if (fields.totalMs > 5000) log.warn(fields, "windows grant release timing");
         }
-      }
-    },
-  };
-  try {
-    SandboxManager.updateConfig(
-      buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
-    );
-  } catch (error) {
-    grant.release();
-    throw error;
+      },
+    };
+    try {
+      SandboxManager.updateConfig(
+        buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+      );
+    } catch (error) {
+      grant.release();
+      throw error;
+    }
+    return grant;
+  } finally {
+    const fields = { ...timing, totalMs: performance.now() - started, rows: denyRows };
+    log.info(fields, "windows grant turn timing");
+    if (fields.totalMs > 5000) log.warn(fields, "windows grant turn timing");
   }
-  return grant;
 }
 
 function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[]): void {

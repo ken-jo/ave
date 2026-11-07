@@ -70,6 +70,57 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {
+    await initializeAsrtSandbox({ denyRead: [join(target, "denied")] });
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+    })));
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += duration; });
+    const revoke = vi.mocked(runtime.revokeWindowsAcl).getMockImplementation()!;
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementation(options => { now += duration; return revoke(options); });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    grant.release();
+    grant.release();
+    const turnLines = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant turn timing");
+    const releaseLines = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant release timing");
+    expect(turnLines).toHaveLength(1);
+    expect(releaseLines).toHaveLength(1);
+    expect(turnLines[0]![1]).toEqual({
+      userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, totalMs: duration, rows: expect.any(Number),
+    });
+    expect(turnLines[0]![1].rows).toBeGreaterThan(0);
+    expect(releaseLines[0]![1]).toEqual({ revokeMs: duration, totalMs: duration });
+    for (const [, fields] of [...turnLines, ...releaseLines]) {
+      for (const value of Object.values(fields)) {
+        expect(typeof value).toBe("number");
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value).toBeGreaterThanOrEqual(0);
+      }
+      expect(JSON.stringify(fields)).not.toContain(target);
+      expect(JSON.stringify(fields)).not.toMatch(/[\\/]/);
+    }
+    const warnings = warn.mock.calls.filter(([message]) => /windows grant (turn|release) timing/.test(String(message)));
+    expect(warnings).toHaveLength(duration > 5000 ? 2 : 0);
+    if (duration > 5000) expect(warnings).toEqual([...turnLines, ...releaseLines]);
+  });
+
+  it("logs elapsed grant time when the native grant throws", async () => {
+    await initializeAsrtSandbox({});
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += 6000; throw new Error("grant interrupted"); });
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: target, status: "revoked" }]);
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] })).rejects.toThrow("grant interrupted");
+    expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, totalMs: 6000 }));
+    expect(warn).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, totalMs: 6000 }));
+  });
+
   it.for(["junction", "dir"] as const)("grants the resolved %s target and retains its native identity", async (type, context) => {
     const link = join(fixture, "link");
     try { symlinkSync(target, link, type); }
