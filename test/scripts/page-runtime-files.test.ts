@@ -40,6 +40,30 @@ describe("packaged PDF page renderer files", () => {
     expect(() => assertCanvasRuntimeFiles(root, "linux", "x64")).toThrow("does not match");
   });
 
+  it("refuses a second canvas nested under another package", () => {
+    const root = mkdtempSync(join(tmpdir(), "canvas-package-")); roots.push(root);
+    writeCanvasRuntimePackage(root, "linux", "x64");
+    expect(() => assertCanvasRuntimeFiles(root, "linux", "x64")).not.toThrow();
+    writeCanvasRuntimePackage(join(root, "pdfjs-dist", "node_modules"), "linux", "x64", "1.1.0");
+    expect(() => assertCanvasRuntimeFiles(root, "linux", "x64")).toThrow(`installed more than once: ${join("pdfjs-dist", "node_modules", "@napi-rs", "canvas")}`);
+    rmSync(join(root, "pdfjs-dist"), { recursive: true });
+    writeFixtureFile(root, "@scope/pkg/node_modules/@napi-rs/canvas-linux-x64-gnu/package.json", "{}");
+    expect(() => assertCanvasRuntimeFiles(root, "linux", "x64")).toThrow(join("@scope", "pkg", "node_modules", "@napi-rs", "canvas-linux-x64-gnu"));
+  });
+
+  it("refuses a nested canvas inside the packaged archive", () => {
+    expect(() => assertPdfRuntimeEntries([...PDF_ENTRIES, "/node_modules/@napi-rs/canvas/index.js"])).not.toThrow();
+    expect(() => assertPdfRuntimeEntries([...PDF_ENTRIES, "/node_modules/pdfjs-dist/node_modules/@napi-rs/canvas/index.js"])).toThrow("installed more than once");
+    expect(() => assertPdfRuntimeEntries([...PDF_ENTRIES, "node_modules\\pdfjs-dist\\node_modules\\@napi-rs\\canvas-win32-x64-msvc\\skia.node"])).toThrow("installed more than once");
+  });
+
+  it("installs exactly one canvas, the pinned one pdf.js shares", () => {
+    // The host's own install: its native package and no nested copy.
+    expect(() => assertCanvasRuntimeFiles(join(repo, "node_modules"), process.platform, process.arch)).not.toThrow();
+    const pinned = (JSON.parse(read("package.json")) as { dependencies: Record<string, string> }).dependencies["@napi-rs/canvas"];
+    expect(JSON.parse(read("node_modules/@napi-rs/canvas/package.json")).version).toBe(pinned);
+  });
+
   it("requires pdf.js fonts, wasm decoders and notices, and refuses the script sandbox", () => {
     expect(() => assertPdfRuntimeEntries(PDF_ENTRIES)).not.toThrow();
     expect(() => assertPdfRuntimeEntries(PDF_ENTRIES.map((entry) => entry.slice(1).replaceAll("/", "\\")))).not.toThrow();
