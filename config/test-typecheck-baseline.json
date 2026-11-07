@@ -4,7 +4,6 @@
   "files": {
     "src/__tests__/ipc-bridge-permissions.test.ts": 16,
     "src/__tests__/ipc-bridge-runtime-handlers.test.ts": 1,
-    "src/__tests__/packaging-discipline-source.test.ts": 1,
     "src/__tests__/preload.test.ts": 2,
     "src/api/__tests__/a2a-exact-replay-handler.test.ts": 2,
     "src/api/__tests__/a2a-exact-replay-store.test.ts": 1,
