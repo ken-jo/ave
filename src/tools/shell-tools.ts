@@ -3127,6 +3127,9 @@ const FILESYSTEM_COMMANDS = new Set([
   "test-path",
 ]);
 
+// Filesystem cmdlets never take a URL, so their operands keep path checks.
+const NETWORK_URL_OPERAND = /^(?:https?|wss?|ftps?):\/\/[^/\\?#\s]/i;
+
 const canonicalPowerShellTools = new WeakSet<object>();
 
 export function isCanonicalPowerShellTool(tool: unknown): tool is Tool & PowerShellTool {
@@ -3460,10 +3463,12 @@ export function findPowerShellAstPathViolation(
   if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   const structural = validatePowerShellAst(ast);
   if (structural) return { kind: "dynamic-path", reason: `PowerShell command blocked: ${structural}` };
-  const inspect = (argument: PowerShellArgument, effect: "read" | "write", literalPath = false): ShellPathPolicyViolation | null => {
-    if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath) : null;
+  const inspect = (argument: PowerShellArgument, effect: "read" | "write", literalPath = false, networkUrls = false): ShellPathPolicyViolation | null => {
+    if (argument.kind === "parameter") return argument.argument ? inspect(argument.argument, effect, literalPath, networkUrls) : null;
     if (argument.kind !== "literal") return { kind: "dynamic-path", reason: "PowerShell path argument is unresolved", candidate: argument.text };
     const path = argument.value;
+    // A network URL names a destination the egress proxy and its card govern, not a file. `file:`, UNC and empty-authority forms stay paths.
+    if (networkUrls && NETWORK_URL_OPERAND.test(path)) return null;
     if (path.startsWith("~") || (!literalPath && /[*?\[\]]/.test(path)) || /^[a-z][a-z0-9_-]*:(?![\\/])/i.test(path)) {
       return { kind: "dynamic-path", reason: "PowerShell provider, home or wildcard path requires an explicit ordinary path", candidate: argument.text };
     }
@@ -3505,7 +3510,7 @@ export function findPowerShellAstPathViolation(
         positional += 1;
         if (["set-content", "add-content", "set-item", "set-itemproperty"].includes(name) && positional > 1) continue;
       }
-      const violation = inspect(argument, index === 1 && runtimeReads.length > 0 ? "read" : effect); if (violation) return violation;
+      const violation = inspect(argument, index === 1 && runtimeReads.length > 0 ? "read" : effect, false, !FILESYSTEM_COMMANDS.has(name)); if (violation) return violation;
     }
   }
   return null;
