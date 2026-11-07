@@ -21,6 +21,11 @@ updates:
       # -> over the 3 s parse budget). Later releases are proposed again.
       - dependency-name: "@napi-rs/canvas"
         versions: ["1.0.11", "1.0.12", "1.0.13", "1.1.0"]
+      # The stale 2021 canary line (React 16/17, no types) sorts above every
+      # 7.0.0-beta by semver, so Dependabot offers it as an "upgrade". The range
+      # covers only 7.0.0-canary.*; beta and stable releases are still proposed.
+      - dependency-name: "react-data-grid"
+        versions: [">= 7.0.0-canary, < 7.0.0-canaryz"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
