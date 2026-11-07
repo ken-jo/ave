@@ -81,20 +81,20 @@ describe("agent plugin MCP runtime resolution", () => {
       return item;
     }
 
-    it("refuses an env value that passes through a symlink under PLUGIN_DATA", () => {
+    it.runIf(process.platform !== "win32")("refuses an env value that passes through a symlink under PLUGIN_DATA", () => {
       const item = withDataLink({ CONFIG: "${PLUGIN_DATA}/link/cfg" });
       expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
-        .toThrow(/env\.CONFIG passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+        .toThrow(/env\.CONFIG passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     });
 
-    it("refuses an env value that names a dangling symlink under PLUGIN_DATA", () => {
+    it.runIf(process.platform !== "win32")("refuses an env value that names a dangling symlink under PLUGIN_DATA", () => {
       const item = fixture("node", ["./server/run"], undefined, { CONFIG: "${PLUGIN_DATA}/gone" });
       symlinkSync(join(item.dataDir, "missing-target"), join(item.dataDir, "gone"));
       expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
-        .toThrow(/env\.CONFIG passes through a symlink inside PLUGIN_DATA \('gone'\)/u);
+        .toThrow(/env\.CONFIG passes through a symlink or reparse point inside PLUGIN_DATA \('gone'\)/u);
     });
 
-    it("still resolves an env value whose PLUGIN_DATA path has no link, existing or not", () => {
+    it.runIf(process.platform !== "win32")("still resolves an env value whose PLUGIN_DATA path has no link, existing or not", () => {
       const item = withDataLink({ CONFIG: "${PLUGIN_DATA}/real/cfg", ROOT_DATA: "${PLUGIN_DATA}" });
       const projection = resolveRuntimeMcp(item.staticServers, item.activation)[0]!;
       expect(projection.config.transport).toBe("stdio");
@@ -105,19 +105,19 @@ describe("agent plugin MCP runtime resolution", () => {
       });
     });
 
-    it("refuses a cwd that passes through a symlink under PLUGIN_DATA", () => {
+    it.runIf(process.platform !== "win32")("refuses a cwd that passes through a symlink under PLUGIN_DATA", () => {
       const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/link");
       mkdirSync(join(item.dataDir, "real"));
       symlinkSync(join(item.dataDir, "real"), join(item.dataDir, "link"), "dir");
       expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
-        .toThrow(/\.cwd passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+        .toThrow(/\.cwd passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     });
 
-    it("refuses a cwd that names a dangling symlink under PLUGIN_DATA", () => {
+    it.runIf(process.platform !== "win32")("refuses a cwd that names a dangling symlink under PLUGIN_DATA", () => {
       const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/gone");
       symlinkSync(join(item.dataDir, "missing-target"), join(item.dataDir, "gone"));
       expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
-        .toThrow(/\.cwd passes through a symlink inside PLUGIN_DATA \('gone'\)/u);
+        .toThrow(/\.cwd passes through a symlink or reparse point inside PLUGIN_DATA \('gone'\)/u);
     });
 
     it("still accepts a plain directory under PLUGIN_DATA as cwd", () => {
@@ -127,10 +127,35 @@ describe("agent plugin MCP runtime resolution", () => {
       expect(projection.config.transport === "stdio" && projection.config.cwd).toBe(join(realpathSync(item.dataDir), "work"));
     });
 
-    it("keeps refusing the same path in args", () => {
+    // The host creates PLUGIN_DATA; a root that is itself a link could be repointed after the check, in any form.
+    it.runIf(process.platform !== "win32").each([
+      ["env, bare", undefined, { CONFIG: "${PLUGIN_DATA}" }, /env\.CONFIG: the plugin data root .* is a symlink/u],
+      ["env, subpath", undefined, { CONFIG: "${PLUGIN_DATA}/cfg" }, /env\.CONFIG: the plugin data root .* is a symlink/u],
+      ["cwd, bare", "${PLUGIN_DATA}", undefined, /\.cwd: the plugin data root .* is a symlink/u],
+      ["cwd, subpath", "${PLUGIN_DATA}/work", undefined, /\.cwd: the plugin data root .* is a symlink/u],
+    ] as const)("refuses a symlinked PLUGIN_DATA root (%s)", (_case, cwd, env, message) => {
+      const item = fixture("node", ["./server/run"], cwd, env ? { ...env } : undefined);
+      mkdirSync(join(item.dataDir, "work"));
+      const linkedRoot = `${item.dataDir}-link`;
+      symlinkSync(item.dataDir, linkedRoot, "dir");
+      expect(() => resolveRuntimeMcp(item.staticServers, { ...item.activation, dataDir: linkedRoot })).toThrow(message);
+    });
+
+    it("still resolves bare and subpath PLUGIN_DATA env and cwd against a plain root", () => {
+      const item = fixture("node", ["./server/run"], "${PLUGIN_DATA}/work", { BARE: "${PLUGIN_DATA}", SUB: "${PLUGIN_DATA}/cfg" });
+      mkdirSync(join(item.dataDir, "work"));
+      const projection = resolveRuntimeMcp(item.staticServers, item.activation)[0]!;
+      expect(projection.config.transport).toBe("stdio");
+      if (projection.config.transport !== "stdio") return;
+      const dataRoot = realpathSync(item.dataDir);
+      expect(projection.config.cwd).toBe(join(dataRoot, "work"));
+      expect(projection.config.env).toMatchObject({ BARE: dataRoot, SUB: join(dataRoot, "cfg") });
+    });
+
+    it.runIf(process.platform !== "win32")("keeps refusing the same path in args", () => {
       const item = withDataLink({}, ["./server/run", "${PLUGIN_DATA}/link/cfg"]);
       expect(() => resolveRuntimeMcp(item.staticServers, item.activation))
-        .toThrow(/passes through a symlink inside PLUGIN_DATA \('link'\)/u);
+        .toThrow(/passes through a symlink or reparse point inside PLUGIN_DATA \('link'\)/u);
     });
   });
 });
