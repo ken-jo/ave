@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { historyToEntries } from "../history.js";
 import { sessionHistoryToEntries } from "../../hooks/use-sessions.js";
-import { EMPTY_ASSISTANT_RESPONSE_TEXT } from "../../../../lib/chat-stream-state.js";
+import { EMPTY_ASSISTANT_RESPONSE_TEXT, applyUserMessageFrame } from "../../../../lib/chat-stream-state.js";
+import { formatStagedEnvelope, stagedOriginFor } from "../../../../shared/staged-origins.js";
 
 type HistoryMessage = Parameters<typeof historyToEntries>[0][number];
 
@@ -612,5 +613,53 @@ describe("historyToEntries", () => {
       expect(entries[0]).toMatchObject({ kind: "user" });
       expect((entries[0] as { injectHint?: string }).injectHint).toBeUndefined();
     });
+  });
+});
+
+describe("staged prompt turn start: live and reloaded", () => {
+  const card = (entries: ReturnType<typeof historyToEntries>) => entries.map((entry) => entry.kind === "imported_trigger"
+    ? { kind: entry.kind, source: entry.source, prompt: entry.prompt, summary: entry.summary, toolCallCount: entry.toolCallCount }
+    : entry);
+
+  it.each([
+    ["mcp-prompt-emitted", "mcp-prompt:docs"],
+    ["plugin-prompt-emitted", "plugin-prompt:notes:summarize"],
+    ["app-emitted", "app:invoices"],
+    ["plugin-emitted", "overlay:notes"],
+  ] as const)("a live %s turn start equals the entry a reload rebuilds", (origin, source) => {
+    const envelope = formatStagedEnvelope(stagedOriginFor(origin), "Summarize the open files", source);
+    const live = applyUserMessageFrame([], { origin, text: envelope, messageId: "row-1" });
+    // What the host writes for the same turn (run-turn importedTrigger meta), and an older row recovered from its envelope.
+    const reloaded = historyToEntries([historyMessage("user", 0, envelope, { messageId: "row-1", importedTrigger: {
+      sessionId: "history-imported-s-1", source, prompt: envelope, summary: "Summarize the open files", toolCallCount: 0,
+      importedAt: new Date(0).toISOString() } })]);
+    const legacy = historyToEntries([historyMessage("user", 0, envelope)]);
+    expect(live).toHaveLength(1);
+    expect(card(live)).toEqual(card(reloaded));
+    expect(card(live)).toEqual(card(legacy));
+  });
+
+  it("adds no card for a prompt frame whose envelope does not match its origin", () => {
+    const envelope = formatStagedEnvelope(stagedOriginFor("mcp-prompt-emitted"), "x", "mcp-prompt:docs");
+    expect(applyUserMessageFrame([], { origin: "plugin-prompt-emitted", text: envelope, messageId: "row-1" })).toEqual([]);
+  });
+});
+
+describe("staged prompt turn start: a Continue replays the trailing row", () => {
+  const envelope = formatStagedEnvelope(stagedOriginFor("mcp-prompt-emitted"), "Summarize the open files", "mcp-prompt:docs");
+  const frame = { origin: "mcp-prompt-emitted", text: envelope, messageId: "replayed-row" };
+  const cards = (entries: ReturnType<typeof historyToEntries>) => entries.filter((entry) => entry.kind === "imported_trigger");
+
+  it("names the restored card instead of drawing a second one, before or after the continue's status", () => {
+    const restored = historyToEntries([historyMessage("user", 0, "earlier"), historyMessage("assistant", 1, "answer"),
+      historyMessage("user", 2, envelope)]);
+    expect(cards(applyUserMessageFrame(restored, frame))).toHaveLength(1);
+    const withStatus = [...restored, { kind: "assistant" as const, text: "Continuing", streaming: true }];
+    expect(cards(applyUserMessageFrame(withStatus, frame))).toHaveLength(1);
+  });
+
+  it("draws a new card when the same prompt runs again after an answered turn", () => {
+    const answered = historyToEntries([historyMessage("user", 0, envelope), historyMessage("assistant", 1, "answer")]);
+    expect(cards(applyUserMessageFrame(answered, frame))).toHaveLength(2);
   });
 });

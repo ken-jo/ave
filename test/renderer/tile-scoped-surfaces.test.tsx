@@ -274,7 +274,8 @@ describe("overlay cards with two tiles", () => {
         title: "notes",
         summary: "suggested target",
         running: false,
-        pendingPrompt: "<untrusted-plugin>notes</untrusted-plugin>",
+        // A valid staged envelope: the host accepts it, and its accepted turn draws the card from the prompt.
+        pendingPrompt: '<imported-from-proactive source="overlay:notes">\nsuggested target\n</imported-from-proactive>',
         createdAt: new Date().toISOString(),
       });
     });
@@ -307,7 +308,8 @@ describe("overlay cards with two tiles", () => {
         title: "notes",
         summary: "fresh target",
         running: false,
-        pendingPrompt: "<untrusted-plugin>notes</untrusted-plugin>",
+        // A valid staged envelope: the host accepts it, and its accepted turn draws the card from the prompt.
+        pendingPrompt: '<imported-from-proactive source="overlay:notes">\nfresh target\n</imported-from-proactive>',
         createdAt: new Date().toISOString(),
       });
     });

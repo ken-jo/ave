@@ -12,7 +12,8 @@ import { detectFromStream } from "../../../lib/stream-markers.js";
 import type { SerializedHistoryMessage } from "../../../shared/chat-history.js";
 import {
   isStagedTurnSource,
-  parseStagedEnvelopePayload,
+  STAGED_CARD_SUMMARY_CAP,
+  stagedEnvelopeCard,
 } from "../../../shared/staged-origins.js";
 
 export type PersistedHistoryMessage = SerializedHistoryMessage;
@@ -131,6 +132,7 @@ export function historyToEntries(
           : {}),
         ...(m.createdAt !== undefined ? { createdAt: m.createdAt } : {}),
         ...(m.messageId !== undefined ? { messageId: m.messageId } : {}),
+        ...(m.resumesInterruptedTurn === true ? { resumesInterruptedTurn: true as const } : {}),
         restored: true,
       });
     } else if (m.role === "assistant") {
@@ -257,14 +259,6 @@ function visibleUserText(message: PersistedHistoryMessage): string {
   return textContent(message.content);
 }
 
-/**
- * Bound on the replayed provenance summary. The persisted transcript is a file the
- * user (or a conversation IMPORT) can write, and this string is rendered as
- * markdown in host chrome — the live path caps it at staging time, so replay caps
- * it too rather than trusting the row.
- */
-const REPLAYED_SUMMARY_CAP = 2_000;
-
 function importedTriggerFromMessage(
   message: PersistedHistoryMessage,
 ): Extract<ChatEntry, { kind: "imported_trigger" }> | null {
@@ -275,7 +269,7 @@ function importedTriggerFromMessage(
       sessionId: message.importedTrigger.sessionId,
       source: message.importedTrigger.source,
       prompt: message.importedTrigger.prompt,
-      summary: message.importedTrigger.summary.slice(0, REPLAYED_SUMMARY_CAP),
+      summary: message.importedTrigger.summary.slice(0, STAGED_CARD_SUMMARY_CAP),
       toolCallCount: message.importedTrigger.toolCallCount,
       importedAt: message.importedTrigger.importedAt,
     };
@@ -284,16 +278,14 @@ function importedTriggerFromMessage(
   // from the envelope still present in the content — for whichever staged
   // kind wrote it. A CLOSED envelope is required: a truncated one is text
   // the user can see, not a provenance claim worth rendering as a card.
-  const content = textContent(message.content);
-  const parsed = parseStagedEnvelopePayload(content);
-  if (!parsed) return null;
-  if (!content.trim().endsWith(`</${parsed.kind.fenceTag}>`)) return null;
+  const card = stagedEnvelopeCard(textContent(message.content));
+  if (!card) return null;
   return {
     kind: "imported_trigger",
     sessionId: `history-imported-${message.index}`,
-    source: parsed.source,
-    prompt: textContent(message.content),
-    summary: parsed.body.slice(0, REPLAYED_SUMMARY_CAP),
+    source: card.source,
+    prompt: card.prompt,
+    summary: card.summary,
     toolCallCount: 0,
     importedAt:
       message.createdAt !== undefined

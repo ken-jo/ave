@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { getApi } from "../api-client.js";
 import type { RoutineFiredPayload } from "../../../shared/routines-types.js";
 import type { AlertCardClosedReason } from "../../../shared/alerts-types.js";
-import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 import {
   routeToSuggestionsSession,
   type OverlayContextValue,
@@ -262,26 +261,17 @@ export function useRoutineOverlay({
     return { item, source, pendingPrompt, tile };
   }, [registry]);
 
-  /** Insert the staged prompt into `tile` and start its turn; the card is then spent. */
+  /** Start `tile`'s turn with the staged prompt; the card is then spent. */
   const runInsertion = useCallback((
     overlayItemId: string,
-    { item, source, pendingPrompt, tile }: NonNullable<ReturnType<typeof resolveInsertion>>,
+    { source, pendingPrompt, tile }: NonNullable<ReturnType<typeof resolveInsertion>>,
   ) => {
     alertSnapshotChangesRef.current?.add(overlayItemId);
     overlayItemsRef.current.delete(overlayItemId);
 
-    // Insert as imported_trigger entry — staged provenance preserved, NOT a plain user bubble (architecture §9 plugin
-    // provenance contract; same rule for apps).
-    tile.insertImportedTriggerEntry({
-      sessionId: source.kind === "alert" ? source.alertId : source.eventId,
-      source: source.kind === "app" ? `app:${source.serverId}`
-        : source.kind === "alert" && source.pluginId === ALERT_HOST_PLUGIN_ID ? `host:${source.kindId}` : `plugin:${source.pluginId}`,
-      prompt: pendingPrompt,
-      summary: item.summary,
-    });
-
-    // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both modes skip the user-bubble append since the
-    // imported_trigger marker already represents the staged prompt.
+    // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both modes skip the user-bubble append: the transcript
+    // shows the staged prompt as an imported_trigger card once the host accepts the turn (architecture §9 plugin provenance
+    // contract; same rule for apps), so a refused send leaves no card behind.
     void tile.ask(
       pendingPrompt,
       source.kind === "app" ? "app-message" : "trigger-import",

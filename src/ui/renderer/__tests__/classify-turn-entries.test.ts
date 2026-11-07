@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
-import { classifyTurnEntries, isTurnStartEntry } from "../utils/classify-turn-entries.js";
+import { approvalTriggerMessage, classifyTurnEntries, isTurnStartEntry } from "../utils/classify-turn-entries.js";
 import { userEntry } from "../../../__tests__/test-helpers.js";
 
 const assistant = (text: string, extra: Partial<Extract<ChatEntry, { kind: "assistant" }>> = {}): ChatEntry => ({
@@ -68,5 +68,62 @@ describe("classifyTurnEntries", () => {
     expect(entryTurnStartMap.get(3)).toBe(2);
     expect(entryClassMap.get(1)).toBe("final");
     expect(entryClassMap.get(3)).toBe("final");
+  });
+});
+
+describe("approvalTriggerMessage", () => {
+  const imported: ChatEntry = { kind: "imported_trigger", sessionId: "s", source: "plugin", prompt: "p", summary: "sum",
+    toolCallCount: 0, importedAt: new Date(0).toISOString() };
+
+  it("names the message that started the request's turn, not guidance that arrived after the request", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "restored first" },
+      assistant("done"),
+      { kind: "user", text: "RUNSB:\n Remove-Item", createdAt: 100 },
+      { kind: "user", text: "late guidance", injectHint: "queue", createdAt: 300 },
+      { kind: "user", text: "late report", injectHint: "sub-agent", createdAt: 300 },
+    ], 200)).toBe("RUNSB: Remove-Item");
+  });
+
+  it("names guidance that reached the turn before the request", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "first", createdAt: 100 },
+      { kind: "user", text: "also delete the logs", injectHint: "queue", createdAt: 150 },
+    ], 200)).toBe("also delete the logs");
+  });
+
+  it("names no message when an imported prompt or a sub-agent report started the turn", () => {
+    expect(approvalTriggerMessage([{ kind: "user", text: "B", createdAt: 100 }, assistant("a"), imported], 200)).toBeUndefined();
+    expect(approvalTriggerMessage([{ kind: "user", text: "B", createdAt: 100 }, assistant("a"),
+      { kind: "user", text: "report", injectHint: "sub-agent", createdAt: 150 }], 200)).toBeUndefined();
+    expect(approvalTriggerMessage([assistant("hi")], 200)).toBeUndefined();
+  });
+
+  it("passes a resume row to the interrupted turn's own message", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "RUNSB: Remove-Item -Recurse ./scratch", createdAt: 100 },
+      assistant("partial", { interrupted: true }),
+      { kind: "user", text: "Continue", resumesInterruptedTurn: true, createdAt: 150 },
+    ], 200)).toBe("RUNSB: Remove-Item -Recurse ./scratch");
+  });
+
+  it("names a host-submitted turn whose row the renderer stamped after the request", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "B", createdAt: 100 },
+      assistant("a"),
+      { kind: "user", text: "remote C", origin: "remote-control", createdAt: 300 },
+    ], 200)).toBe("remote C");
+  });
+
+  it("does not name an interrupt send that drained after the request", () => {
+    expect(approvalTriggerMessage([
+      { kind: "user", text: "B", createdAt: 100 },
+      assistant("a"),
+      { kind: "user", text: "send now", injectHint: "interrupt", createdAt: 300 },
+    ], 200)).toBe("B");
+  });
+
+  it("cuts a long message by code points", () => {
+    expect(approvalTriggerMessage([{ kind: "user", text: `${"a".repeat(79)}😀 tail` }], 200)).toBe(`${"a".repeat(79)}😀`);
   });
 });

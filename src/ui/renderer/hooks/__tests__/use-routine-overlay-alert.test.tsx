@@ -61,10 +61,9 @@ function setup(
     },
   };
   const ask = vi.fn();
-  const insertImportedTriggerEntry = vi.fn();
   const startNewChat = vi.fn(async () => true);
   const registry = {
-    read: vi.fn((id: string) => (id === TILE ? { ask, insertImportedTriggerEntry, startNewChat } : undefined)),
+    read: vi.fn((id: string) => (id === TILE ? { ask, startNewChat } : undefined)),
     readTiles: vi.fn(() => tiles),
   };
   const onSuggestionStaged = vi.fn();
@@ -86,7 +85,6 @@ function setup(
     api,
     queueAdd,
     ask,
-    insertImportedTriggerEntry,
     queueDismiss,
     onSuggestionStaged,
     startNewChat,
@@ -109,7 +107,6 @@ describe("useRoutineOverlay — alert cards", () => {
     expect(s.queueDismiss).toHaveBeenCalledWith(ALERT.id);
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
     expect(s.ask).not.toHaveBeenCalled();
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
   });
 
   it("keeps a live refresh instead of overwriting it with an older snapshot", async () => {
@@ -135,12 +132,10 @@ describe("useRoutineOverlay — alert cards", () => {
     });
     expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", reason);
     s.ask.mockClear();
-    s.insertImportedTriggerEntry.mockClear();
     await act(async () => { snapshot.resolve([ALERT]); await snapshot.promise; });
     expect(s.queueAdd).not.toHaveBeenCalled();
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction(ALERT.id, TILE); });
     expect(s.ask).not.toHaveBeenCalled();
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
   });
 
   it("allows a fresh show after withdrawal without reviving the withdrawn snapshot", async () => {
@@ -163,25 +158,18 @@ describe("useRoutineOverlay — alert cards", () => {
     expect(s.queueAdd).not.toHaveBeenCalled();
   });
 
-  it("records host provenance while retaining the staged turn and close acknowledgement", async () => {
+  it("starts the staged turn for a host alert and acknowledges the close", async () => {
     const s = setup();
     s.show({ ...ALERT, source: { kind: "alert", pluginId: "@host", kindId: "due-soon", alertId: "abc" } });
     await act(async () => { await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE); });
-    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith(expect.objectContaining({ source: "host:due-soon" }));
     expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
     expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
   });
-  it("inserts a confirmed alert as the plugin's imported trigger and starts the tile's turn", async () => {
+  it("starts the tile's turn for a confirmed alert; the host-accepted turn draws its card", async () => {
     const s = setup();
     s.show(ALERT);
     await act(async () => {
       await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
-    });
-    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith({
-      sessionId: "abc",
-      source: "plugin:fixturemail",
-      prompt: ALERT.pendingPrompt,
-      summary: ALERT.summary,
     });
     expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
   });
@@ -194,7 +182,6 @@ describe("useRoutineOverlay — alert cards", () => {
     await act(async () => {
       await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
     });
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.ask).not.toHaveBeenCalled();
   });
 
@@ -262,7 +249,6 @@ describe("useRoutineOverlay — the dedicated Suggestions conversation", () => {
     await act(async () => {
       await s.hook.result.current.handlePluginPrimaryAction("alert:abc", TILE);
     });
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.ask).not.toHaveBeenCalled();
     expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
   });
@@ -277,11 +263,7 @@ describe("useRoutineOverlay — continue a suggestion in a new conversation", ()
     });
     expect(s.startNewChat).toHaveBeenCalledTimes(1);
     expect(s.startNewChat.mock.invocationCallOrder[0]!)
-      .toBeLessThan(s.insertImportedTriggerEntry.mock.invocationCallOrder[0]!);
-    expect(s.insertImportedTriggerEntry).toHaveBeenCalledWith(expect.objectContaining({
-      source: "plugin:fixturemail",
-      prompt: ALERT.pendingPrompt,
-    }));
+      .toBeLessThan(s.ask.mock.invocationCallOrder[0]!);
     expect(s.ask).toHaveBeenCalledWith(ALERT.pendingPrompt, "trigger-import");
     expect(s.api.alerts.cardClosed).toHaveBeenCalledWith("abc", "accepted");
   });
@@ -295,7 +277,6 @@ describe("useRoutineOverlay — continue a suggestion in a new conversation", ()
       await s.hook.result.current.handleContinueInNewConversation("alert:abc", TILE);
     });
     expect(s.queueAdd).toHaveBeenCalledWith(routed(ALERT));
-    expect(s.insertImportedTriggerEntry).not.toHaveBeenCalled();
     expect(s.ask).not.toHaveBeenCalled();
     expect(s.api.alerts.cardClosed).not.toHaveBeenCalled();
 

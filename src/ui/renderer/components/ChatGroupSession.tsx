@@ -902,7 +902,6 @@ export function ChatGroupSession({
     applyLoadedSession, applyInitialSession, clearForNewChat,
     resetForNewSession, restoreSubAgentSpawns,
     ask: handleAsk,
-    insertImportedTriggerEntry,
     currentSessionId,
     currentSessionProject,
     loadSession: async (sessionId: string) => (await handleLoadSessionAndRefresh(sessionId)) !== false,
@@ -1037,9 +1036,6 @@ export function ChatGroupSession({
             return handleAsk(envelope, "app-message", intent, {
               ...opts,
               onRefused: () => setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource }),
-              onAccepted: () => {
-                insertImportedTriggerEntry({ sessionId: crypto.randomUUID(), source: appSource, prompt: envelope, summary: q });
-              },
             });
           }
           return handleAsk(q, "default", intent, opts);
