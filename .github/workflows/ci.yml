@@ -800,6 +800,7 @@ jobs:
           src/data/__tests__/node-secret-encryption.test.ts
           src/data/__tests__/settings-store-atomic-write.test.ts
           src/main/__tests__/codex-conversation-runtime.test.ts
+          src/main/__tests__/managed-child-tree-kill-starved.test.ts
           src/main/__tests__/managed-child-tree-termination.test.ts
           src/memory/__tests__/code-checkpoints-storage-errors.test.ts
           src/permissions/__tests__/asrt-sandbox-mxc-proxy.test.ts

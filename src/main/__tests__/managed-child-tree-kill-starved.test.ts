@@ -42,14 +42,14 @@ describe.runIf(process.platform === "win32")("Windows tree kill under a blocked 
 
     const termination = forceKillManagedChildProcess(child, "starved watchdog");
     // taskkill (a separate process) runs and exits while the host cannot run callbacks; the 2 s watchdog expires meanwhile.
-    blockMainThread(6_000);
+    blockMainThread(10_000);
     await termination;
     await exited;
 
     const failed = warn.mock.calls.filter((call) => call.includes("managed-child: taskkill /T /F failed"));
     expect(failed).toEqual([]);
-    expect(info).toHaveBeenCalledWith(expect.objectContaining({ targetPid: child.pid, targetGone: true, exitCode: null, elapsedMs: expect.any(Number) }), "managed-child: taskkill /T /F succeeded");
-    const success = info.mock.calls.find((call) => call.includes("managed-child: taskkill /T /F succeeded"));
-    expect(success?.[0].elapsedMs).toBeGreaterThanOrEqual(6_000);
+    expect(info).toHaveBeenCalledWith(expect.objectContaining({ targetPid: child.pid, elapsedMs: expect.any(Number) }), "managed-child: taskkill watchdog expired after the target exited");
+    const success = info.mock.calls.find((call) => call.includes("managed-child: taskkill watchdog expired after the target exited"));
+    expect(success?.[0].elapsedMs).toBeGreaterThanOrEqual(9_900);
   }, 20_000);
 });

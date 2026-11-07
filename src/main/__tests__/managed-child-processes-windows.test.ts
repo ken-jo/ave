@@ -131,7 +131,7 @@ describe("Windows managed process tree termination", () => {
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
     await completion;
     expect(warn).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledWith(expect.objectContaining({ targetPid: 4321, targetGone: true, exitCode: null, elapsedMs: TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs, budgetExceeded: true }), "managed-child: taskkill /T /F succeeded");
+    expect(info).toHaveBeenCalledWith({ targetPid: 4321, attempt: 1, elapsedMs: TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs }, "managed-child: taskkill watchdog expired after the target exited");
     expect(runners).toHaveLength(1);
     expect(child.kill).not.toHaveBeenCalled();
     expect(child.listenerCount("exit")).toBe(evidence === "exit" ? 0 : 1);

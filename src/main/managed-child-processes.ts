@@ -492,10 +492,11 @@ function forceKillProcessTree(
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
       const result = await runWindowsTreeKill(child, pid);
-      if (result.exitCode === 0 || result.targetGone) {
-        log.info({ targetPid: pid, attempt, ...result }, "managed-child: taskkill /T /F succeeded");
+      if (result.targetGone) {
+        log.info({ targetPid: pid, attempt, elapsedMs: result.elapsedMs }, "managed-child: taskkill watchdog expired after the target exited");
         return;
       }
+      if (result.exitCode === 0) return;
       // 128: the root is already gone, so no /T pass can reach its tree again.
       if (result.exitCode === TASKKILL_PROCESS_NOT_FOUND) break;
       log.warn({ targetPid: pid, attempt, ...result }, "managed-child: taskkill /T /F failed");
