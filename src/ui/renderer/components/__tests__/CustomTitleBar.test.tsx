@@ -186,6 +186,25 @@ describe("CustomTitleBar", () => {
     });
   });
 
+  describe("no bottom rule under the band", () => {
+    // The owner removed the band's underline on every platform; the tile cards below carry the only edge.
+    function expectNoRule(band: HTMLElement) {
+      expect(band).not.toHaveClass("border-b");
+      expect(band.className).not.toMatch(/(^|\s)(border-b|border-border|shadow)\S*/);
+    }
+    it.each([
+      ["macOS", true, "native", "custom-titlebar-darwin"],
+      ["Windows", false, "trailing", "custom-titlebar"],
+      ["Linux", false, "leading", "custom-titlebar"],
+    ] as const)("%s band", (_name, darwin, controls, testId) => {
+      setupBridges(darwin, controls);
+      expectNoRule(render(<CustomTitleBar />).getByTestId(testId));
+    });
+    it("plain band without a bridge", () => {
+      expectNoRule(render(<CustomTitleBar><span>path</span></CustomTitleBar>).getByTestId("custom-titlebar-plain"));
+    });
+  });
+
   describe("missing bridge (non-Electron environment)", () => {
     it("renders nothing if avePlatform is absent", () => {
       delete (window as unknown as Record<string, unknown>).avePlatform;
