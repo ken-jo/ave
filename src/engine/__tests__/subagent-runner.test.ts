@@ -13,6 +13,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
+import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
   SubAgentRunner,
@@ -1400,6 +1401,7 @@ describe("SubAgentToolScope — one meaning per value", () => {
 describe("SubAgentRunner — what each tool scope grants", () => {
   function scopeProbeRegistry(): ToolRegistry {
     const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createReadToolResultChunkTool());
     for (const [name, category] of [
       ["read_file", "read"],
       ["run_shell", "shell"],
@@ -1456,6 +1458,7 @@ describe("SubAgentRunner — what each tool scope grants", () => {
     const advertised = await advertisedToolNames(PARENT_ALL_TOOL_SCOPE);
     expect(advertised).toEqual(expect.arrayContaining(["read_file", "run_shell"]));
     expect(advertised).not.toContain("agent_spawn");
+    expect(advertised.filter((name) => name === "read_tool_result_chunk")).toHaveLength(1);
   });
 
   it("grants named tools and session recovery for `exactly`", async () => {

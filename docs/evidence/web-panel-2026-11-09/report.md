@@ -1,5 +1,15 @@
 # Side-panel browser repair report
 
+## Review corrections after d614d1623
+
+Understood as: repair each of the four independent review findings in its own local commit, prove each with a failing regression, repeat the requested validation, and compare the cross-site native failure with the same scenario on the clone's origin/main. No push.
+
+### Recovery tool registration
+
+The scope-probe and frozen-resume registries now include the same recovery-tool registration as boot. Both regressions failed before the fix. Child registry composition now registers recovery only when the nonempty scope does not already contain that tool, using the factory's name. This preserves the inherited implementation, deny-all scope and frozen resume scope. Cold review found no additional gap in that guard.
+
+`AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/engine/__tests__/subagent-runner.test.ts src/engine/__tests__/subagent-resume.test.ts -t 'whole parent registry|does NOT expose a tool'`: RED, 2 failed / 139 filtered (`finding1-red.log`). The same command without `-t` passed 2 files / 141 tests (`finding1-green.log`). Evidence is local under `/private/tmp/webfix-review/`.
+
 Branch: fix/web-panel-site-permission. Base: origin/main 44988dfe6.
 Four commits, in requested order. No push. Tracked tree clean after commits.
 Dependencies were not installed; the existing node_modules junction was retained. No web/ files changed. No baselines extended. Every touched test file is present in the ci.yml Windows list.

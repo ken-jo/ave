@@ -2305,7 +2305,8 @@ export class SubAgentRunner {
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
     const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
-    if (scopedRegistry.listAll().length > 0) scopedRegistry.register(createReadToolResultChunkTool());
+    const recoveryTool = createReadToolResultChunkTool();
+    if (scopedRegistry.listAll().length > 0 && !scopedRegistry.findByName(recoveryTool.name)) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });

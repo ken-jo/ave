@@ -10,6 +10,7 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
+import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
 import { makeSubagentLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import {
@@ -864,6 +865,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   it("does NOT expose a tool the parent registry gained AFTER the spawn (scope frozen to meta.sourceTools)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("orig_tool"));
+    toolRegistry.register(createReadToolResultChunkTool());
     const subStore = makeSubStore();
     const runner = makeRunner(toolRegistry, subStore);
 
