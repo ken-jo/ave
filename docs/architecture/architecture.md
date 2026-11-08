@@ -163,11 +163,12 @@ overload emits resynchronization without interrupting the native download or
 throwing through its Save callback. Observation adds no download approval or
 automatic open behavior.
 
-A live preview shows the agent's hidden main browser pane in the owning
+A live preview shows the agent's retained hidden browser surface in the owning
 conversation's notices row above the composer: an activity strip beside a
 128x80 thumbnail button with a live badge. Clicking focuses the still-assigned
-original pane; moved or closed tabs do nothing. Only panes hidden by the group
-layout qualify, not merely unfocused panes or side-panel tabs. It is bound
+original surface; moved or closed tabs do nothing. Browser panes hidden by the
+group layout and conversation tabs in a closed panel or behind another panel
+tab qualify; merely unfocused visible panes do not. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
 action for that renderer tab, and never falls back to another tab. Main admits
 only a tab that the acting session leases or owns, or whose owner's direct
@@ -179,7 +180,7 @@ cross-origin navigation does not. User takeover, user navigation, idleness,
 session end and window or frame loss stop it. It reuses the guest's existing in-
 process debugger session through Chromium's screencast: it never attaches a
 debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
-every third compositor frame, and at most four forwarded per second with one
+including the first compositor frame of a static page, and at most four forwarded per second with one
 unrendered frame in flight. Main acknowledges every Chromium frame on receipt,
 independently of renderer delivery. The screencast is re-armed on each main-
 frame commit and after two seconds without a frame while Chromium reports the

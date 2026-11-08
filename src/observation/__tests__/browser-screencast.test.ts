@@ -56,7 +56,7 @@ describe("agent browser screencast", () => {
   it("starts one bounded JPEG screencast on the existing session", () => {
     screencast.start();
     expect(session.sent).toEqual([{ method: "Page.startScreencast", params: { format: "jpeg", quality: OBSERVATION_LIMITS.previewJpegQuality,
-      maxWidth: OBSERVATION_LIMITS.previewMaxWidth, maxHeight: OBSERVATION_LIMITS.previewMaxHeight, everyNthFrame: 3 } }]);
+      maxWidth: OBSERVATION_LIMITS.previewMaxWidth, maxHeight: OBSERVATION_LIMITS.previewMaxHeight, everyNthFrame: 1 } }]);
     expect(() => screencast.start()).toThrow("already started");
   });
 

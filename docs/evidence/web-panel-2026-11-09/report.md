@@ -1,5 +1,23 @@
 # Side-panel browser repair report
 
+## Current follow-up corrections after 23df511d9
+
+Scope: repair exhaustive builtin action presentation, static parked main-session preview delivery, and model-turn-end live browser cleanup. One local commit per item; no push. Permission requirements and decision-tree ordering remain unchanged. Earlier sections retain their historical validation scope.
+
+### Static parked main-session preview
+
+Root cause: the screencast requested only every third compositor frame. A static, never-revealed page can paint without producing a third frame, leaving the real conversation thumbnail at Updating with zero preview messages. The previous native fixture revealed the guest before parking it and animated the page every 100 ms, so it missed this case.
+
+The screencast now admits the first compositor frame. Existing JPEG size/quality caps, four forwarded frames per second, one unrendered frame in flight, immediate native acknowledgement and one queued newest frame remain unchanged. Upstream JPEG generation/native traffic can increase on animated pages; the forwarding limit does not claim to cap encoding cost. No debugger attachment, capture API, effect authorization or model-facing capability was added.
+
+RED: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts --output=/private/tmp/webfix-round2/native-static-red`: 1 failed because no decoded thumbnail appeared after 15 seconds; captured preview messages were empty while the real guest reported visible/1024x768 and no native focus (native-static-red.log). No observation events or frames were injected.
+
+GREEN: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts --output=/private/tmp/webfix-round2/native-static-green`: 1 passed (6.5 seconds). The final regression asserts the panel remains closed, actual IPC frames name the real tool tab, the thumbnail image decodes, and a second static page across a different origin updates that image. Model responses are loopback fixtures; tool execution, approval, observation, guest and screencast are real. The screenshots in trace.zip were visually checked. The run emitted a native listener-limit warning; it did not establish sustained listener growth.
+
+`AVE_TEST_TMP_ROOT=/private/tmp/webfix-round2/test-tmp bun run test:vitest -- run src/observation/__tests__/browser-screencast.test.ts src/ui/renderer/preview/__tests__/browser-observation-preview.test.tsx`: 2 files / 27 tests passed (preview-unit.log). `bun run build:main` passed (static-main-build.log). Independent review found no production correctness/privacy blocker; the requested documentation and explicit closed-panel assertions were added.
+
+Files: src/observation/browser-screencast.ts; src/observation/__tests__/browser-screencast.test.ts; test/e2e/ui/main-session-browser-preview.spec.ts; docs/architecture/architecture.md; this report. Local receipts are under /private/tmp/webfix-round2/.
+
 ## Review corrections after d614d1623
 
 Understood as: repair each of the four independent review findings in its own local commit, prove each with a failing regression, repeat the requested validation, and compare the cross-site native failure with the same scenario on the clone's origin/main. No push.
