@@ -5,7 +5,7 @@ import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 
 export type SidebarPreviewData =
   | { kind: "browser"; title: string; url?: string; imageDataUrl?: string }
-  | { kind: "conversation"; title: string; message?: string; modifiedAt: string | number; running?: boolean }
+  | { kind: "conversation"; title: string; message?: string; modifiedAt: string | number; running?: boolean; waiting?: boolean }
   | { kind: "terminal"; title: string; command?: string };
 
 interface PreviewRequest {
@@ -202,6 +202,11 @@ export function SidebarPreviewCard({ id, preview }: { id: string; preview: Sideb
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{formatRelativeSessionTime(preview.modifiedAt, t)}</span>
           {preview.running && <span className="rounded-full border border-border px-1.5 text-dense">{t("sidebarPreview.running")}</span>}
+          {preview.waiting && (
+            <span className="rounded-full border border-warning/(--opacity-medium) px-1.5 text-dense text-warning" data-testid="sidebar-preview-waiting">
+              {t("pendingAnswerDot.label")}
+            </span>
+          )}
         </div>
       </>}
     </div>

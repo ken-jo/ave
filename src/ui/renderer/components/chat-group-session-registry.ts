@@ -15,6 +15,8 @@ export interface SideChatSurface {
   sessionId: string;
   askQuestions: readonly AskUserQuestionRequest[];
   shown: boolean;
+  /** A turn is running in the side chat. Its parent conversation reads as working while it does. */
+  streaming: boolean;
 }
 
 const NO_SESSION_IDS: ReadonlySet<string> = new Set();
@@ -291,6 +293,28 @@ export interface PendingAnswers {
   sideChatSessionIds: ReadonlySet<string>;
   /** Requests no conversation owns, in queue order — the focused pane's lane draws these. */
   unattributed: readonly ApprovalRequest[];
+}
+
+/**
+ * Every conversation a turn is running in, for the agent status slot. A conversation stays working while any of its chats
+ * is — its own turn or its side chat's — so a side chat marks its own row and its parent's, the parent named the way
+ * `pendingAnswers` names it (the listed origin, else the tile holding it). One selector, so the sidebar row, the tile
+ * header and the tab cannot disagree about what is running.
+ */
+export function workingSessionIds(
+  tiles: readonly TileSession[],
+  sessions: readonly { id: string; originSessionId?: string }[],
+): ReadonlySet<string> {
+  const working = new Set<string>();
+  for (const tile of tiles) {
+    if (tile.streaming && tile.sessionId) working.add(tile.sessionId);
+    const side = tile.sideChat;
+    if (side === null || !side.streaming) continue;
+    working.add(side.sessionId);
+    const parent = sessions.find((session) => session.id === side.sessionId)?.originSessionId ?? tile.sessionId;
+    if (parent) working.add(parent);
+  }
+  return working;
 }
 
 /** One selector marks all parked approvals, questions, deferred asks and overlays; navigation controls signal only cards

@@ -1,13 +1,14 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
@@ -1149,6 +1150,54 @@ describe("mandatory sandbox control-file writes", () => {
     expect(Buffer.byteLength(JSON.stringify(policy.denyWrite))).toBeLessThan(32_768);
   });
 
+  it("refuses aggregate metadata growth with actionable folder guidance", () => {
+    const grants = Array.from({ length: 48 }, (_, index) => join(root, `project-${index}-${"x".repeat(100)}`));
+    for (const grant of grants) {
+      mkdirSync(join(grant, ".git"), { recursive: true });
+      writeFileSync(join(grant, ".git", "HEAD"), "ref: refs/heads/main\n");
+    }
+    expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy(grants)))
+      .toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it.each([65_536, 65_537])("bounds the whole serialized policy at %i bytes independently of discovery", bytes => {
+    const target = `/p/${"x".repeat(bytes - 7)}`;
+    expect(Buffer.byteLength(JSON.stringify([target]))).toBe(bytes);
+    const check = () => assertSandboxWritePolicySize([target], new Set([target]));
+    if (bytes === 65_536) expect(check).not.toThrow();
+    else expect(check).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it("overflows discovery even with a two-character simulated temp root", () => {
+    const simulatedTemp = "/p";
+    const entries = Array.from({ length: 48 }, (_, index) =>
+      ["config", "config.worktree", "hooks", "commondir", "gitdir", "remotes", "branches"].map(name =>
+        `${simulatedTemp}/project-${index}-${"x".repeat(100)}/.git/${name}`)).flat();
+    expect(Buffer.byteLength(JSON.stringify(entries))).toBeGreaterThan(32_768);
+    expect(() => assertSandboxWritePolicySize(entries, new Set())).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it.each(["en", "ko"] as const)("localizes policy overflow guidance in %s", locale => {
+    const previous = getLocale();
+    try {
+      setLocale(locale);
+      expect(() => assertSandboxWritePolicySize(["x".repeat(65_536)], new Set()))
+        .toThrow(locale === "en" ? "grant fewer or narrower write folders" : "쓰기 허용 폴더 수를 줄이거나");
+    } finally { setLocale(previous); }
+  });
+
+  it.each(["en", "ko"] as const)("points at configured denies when they dominate overflow in %s", locale => {
+    const previous = getLocale();
+    try {
+      setLocale(locale);
+      const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
+      expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
+        .toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
+      expect(() => assertSandboxWritePolicySize(entries, undefined, entries.slice(0, 1)))
+        .toThrow(t("sandboxPolicy.tooLarge"));
+    } finally { setLocale(previous); }
+  });
+
   it.each(["gitdir", "commondir"])("keeps a discovered %s deny above a retained child grant", (kind) => {
     const broad = join(root, "broad");
     const checkout = join(root, "workspace", "checkout");
@@ -1186,12 +1235,13 @@ describe("mandatory sandbox control-file writes", () => {
     vi.mocked(filesystem.opendirSync).mockImplementation((...args) => {
       const directory = openDirectory(...args);
       if (String(args[0]) === original) {
-        rmSync(alias); symlinkSync(replacement, alias, "dir");
+        unlinkSync(alias); symlinkSync(replacement, alias, "dir");
         if (exhausted) vi.spyOn(directory, "readSync").mockReturnValue(file);
       }
       return directory;
     });
     const policy = buildMandatorySandboxWritePolicy([alias]);
+    expect(realpathSync(alias)).toBe(replacement);
     expect(policy.allowWrite).toEqual(exhausted ? [] : [original]);
     if (!exhausted && process.platform !== "linux") expect(policy.denyWrite).toContain(join(original, ".git"));
     expect(policy.denyWrite).not.toContain(join(replacement, ".git"));

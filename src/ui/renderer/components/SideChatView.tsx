@@ -309,8 +309,8 @@ function SideChatSession({
   // questions to this panel and marks the way here while a card waits off screen.
   const publishSideChatSurface = chatContext?.publishSideChatSurface;
   useEffect(() => {
-    publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown });
-  }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned]);
+    publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown, streaming: isStreaming });
+  }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned, isStreaming]);
   // Withdrawn on unmount only: a tile whose side chat is gone must not keep reporting a session that nothing draws any more.
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
   const [draft, setDraft] = useState("");

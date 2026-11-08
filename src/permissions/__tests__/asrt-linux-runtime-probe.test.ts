@@ -702,6 +702,18 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
 });
 
 describe("configured profile launch on macOS", () => {
+  it("refuses an oversized encoded probe before spawning and releases its listener", async () => {
+    setProcessPlatform("darwin");
+    h.wrapWithSandboxArgv.mockResolvedValue({ argv: ["/bin/sh", "-c", "x".repeat(196_609)], env: {} });
+    const failure = await initializeAsrtSandbox({ allowedDomains: [] }).catch((error: unknown) => error);
+    expect(isAsrtMacRuntimeProbeError(failure)).toBe(true);
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.closeInvocationListener).toHaveBeenCalledOnce();
+    expect(h.cleanupAfterCommand).toHaveBeenCalledOnce();
+    expect(h.reset).toHaveBeenCalledOnce();
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+
   it("publishes activity only after the configured profile executes", async () => {
     setProcessPlatform("darwin");
     const argv = ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/bin/sh", "-c", "true"];

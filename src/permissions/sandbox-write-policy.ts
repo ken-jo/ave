@@ -12,6 +12,7 @@ import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
 import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
+import { t } from "../i18n/index.js";
 
 // Git execution controls use recursive platform-specific rules and Linux rescans; exclude .git from this shared floor so objects/refs remain writable without creating absent mountpoints. Keep .gitconfig and .githooks denied.
 export function isSandboxGitMetadataEntry(entry: string): boolean {
@@ -32,7 +33,20 @@ const MAX_GIT_SCAN_ENTRIES = 16_384;
 const MAX_GIT_METADATA_BYTES = 65_536;
 const MAX_GIT_METADATA_TOTAL_BYTES = 1_048_576;
 const MAX_GIT_ROOT_POLICY_BYTES = 16_384;
-const MAX_GIT_POLICY_BYTES = 32_768;
+const MAX_GIT_DISCOVERY_POLICY_BYTES = 32_768;
+// Reserve most of a conservative 256 KiB execution budget for profile expansion, other rules and environment.
+const MAX_WRITE_DENY_POLICY_BYTES = 65_536;
+
+export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEntry[], mandatoryPaths?: ReadonlySet<string>, configuredDenies: readonly FilesystemPathEntry[] = []): void {
+  const discovery = mandatoryPaths === undefined ? [] : entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+  const totalBytes = Buffer.byteLength(JSON.stringify(entries));
+  if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES
+    || totalBytes > MAX_WRITE_DENY_POLICY_BYTES) {
+    const configuredDominates = totalBytes > MAX_WRITE_DENY_POLICY_BYTES
+      && Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
+    throw new Error(t(configuredDominates ? "sandboxPolicy.configuredDeniesTooLarge" : "sandboxPolicy.tooLarge"));
+  }
+}
 const MAX_MISSING_PATH_ANCESTORS = 64;
 const MAX_REPOSITORY_ANCESTORS = 256;
 const GIT_CONTROL_ENTRIES = [
@@ -900,6 +914,7 @@ export function buildMandatorySandboxWritePolicy(
     ...(userDataDir === undefined ? [] : [settingsFilePath(userDataDir)]),
   ]);
   const budget = { entries: MAX_GIT_SCAN_ENTRIES, metadataBytes: MAX_GIT_METADATA_TOTAL_BYTES };
+  const mandatoryPaths = new Set(paths);
   const routingPins = new Set<string>();
   const roots = [...new Set(rootSnapshots.map(root => root.physical))];
   addInheritedGitHookPaths(roots, paths, routingPins, budget);
@@ -984,10 +999,11 @@ export function buildMandatorySandboxWritePolicy(
       || !roots.some(root => isPhysicalPathWithin(root, path))) routingPins.add(path);
   }
   // Preserve both the directory entry and its target when a setting is a link.
-  const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => [
-    path,
-    resolvePolicyDenyPath(path),
-  ]))];
+  const resolvedDenyPaths = [...new Set([...paths].flatMap((path) => {
+    const physical = resolvePolicyDenyPath(path);
+    if (mandatoryPaths.has(path)) mandatoryPaths.add(physical);
+    return [path, physical];
+  }))];
   // Resolve every child first so a linked loader keeps its physical deny even
   // when its lexical spelling is already covered by a denied parent directory.
   // Windows may omit an inherited deny during ACL narrowing; retain its full
@@ -1000,7 +1016,8 @@ export function buildMandatorySandboxWritePolicy(
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
   if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
-  if (Buffer.byteLength(JSON.stringify(entries)) > MAX_GIT_POLICY_BYTES) throw new Error("Sandbox Git write policy exceeds its size limit");
+  // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
+  assertSandboxWritePolicySize(entries, mandatoryPaths);
   return {
     allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries,
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),

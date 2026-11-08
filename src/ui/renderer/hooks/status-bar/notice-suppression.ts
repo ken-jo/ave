@@ -39,7 +39,7 @@ export function suppressNotice(kind: string): void {
 }
 
 /** Whether any notice kind is silenced, so the settings reset can say there is nothing to undo. */
-export function hasSuppressedNotices(): boolean {
+function hasSuppressedNotices(): boolean {
   return read().size > 0;
 }
 

@@ -103,8 +103,10 @@ describe("App notification toasts", () => {
       emitApproval(approvalRequest({ id: "notice-write", sessionId: MOCK_DEFAULT_SESSION_ID }));
     });
     await screen.findByTestId("tool-approval-panel");
+    // The approval names the conversation the way its sidebar row does: by the row's title, not the row's whole text
+    // (which also carries the status the row's button speaks).
     expect(screen.getByTestId("approval-conversation").textContent).toContain(
-      screen.getByTestId(`sidebar-session-${MOCK_DEFAULT_SESSION_ID}`).textContent,
+      screen.getByTestId(`sidebar-conversation-title-${MOCK_DEFAULT_SESSION_ID}`).textContent,
     );
     expect(screen.getAllByText(`현재 화면 뒤에 있는 대화의 요청: ${title}`)).toHaveLength(1);
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);

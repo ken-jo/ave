@@ -10,6 +10,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { SandboxManager as RealSandboxManager, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { recoverWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, releaseAsrtSandboxForExit, resetAsrtSandbox } from "../asrt-sandbox.js";
+import { aveHome } from "../../shared/ave-home.js";
 import {
   getSrtWinArchitecture,
   isSrtWinRuntimeReleasePending,
@@ -116,23 +117,74 @@ describe("sandbox runtime release at exit", () => {
     expect(existsSync(executable)).toBe(true);
   });
 
-  it("completes the release when srt-win dropped rows it cannot release, and logs their counts without paths", async () => {
-    const dropped = (status: string) => ({ path: "D:\\work\\private-target", status });
+  it("logs stable redacted target keys for every dropped release row", async () => {
+    vi.stubEnv("HOME", "D:\\Users\\alice");
+    vi.stubEnv("USERPROFILE", "D:\\Users\\alice");
+    const dropped = (status: string, path: string) => ({ path, status });
+    const appTarget = join(aveHome(), "settings.json");
     setWindowsAclReleaseForTesting({
       sandboxUserSid: "S-1-5-21-1", srtWin: executable,
-      revoke: ({ onExit }) => { onExit(true); return [dropped("missing"), dropped("revoked")]; },
-      restore: ({ onExit }) => { onExit(true); return [dropped("mismatch")]; },
+      revoke: ({ onExit }) => { onExit(true); return [dropped("missing", appTarget), dropped("revoked", "unused")]; },
+      restore: ({ onExit }) => { onExit(true); return [
+        dropped("mismatch", appTarget.toUpperCase().replace(/\\/g, "/")),
+        dropped("mismatch", "D:\\Users\\alice\\.config\\ave\\hooks"),
+        dropped("mismatch", "d:/USERS/ALICE/.config/ave/hooks"),
+        dropped("mismatch", "D:\\unknown\\alice\\private-target"),
+        dropped("mismatch", "d:/UNKNOWN/ALICE/private-target"),
+      ]; },
     });
     manager.reset.mockImplementation(() => RealSandboxManager.reset());
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await releaseAsrtSandboxForExit();
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), "grant revoke missing x1, deny restore mismatch x1");
-      expect(JSON.stringify(warn.mock.calls)).not.toContain("private-target");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"),
+        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(per-file floor; identity changed\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("private-target");
+      expect(logged.toLowerCase()).not.toContain("alice");
+      for (const args of warn.mock.calls) {
+        for (const argument of args) expect(String(argument)).not.toContain(aveHome());
+      }
+      expect(logged).toContain("may remain on earlier aside copies or targets of dropped rows");
     } finally {
       warn.mockRestore();
+      vi.unstubAllEnvs();
     }
+  });
+
+  it.each([
+    ["settings.json", " (per-file floor; identity changed)"],
+    ["permissions.json", " (per-file floor; identity changed)"],
+    ["policy.json", " (per-file floor; identity changed)"],
+    ["ave-secrets.json", " (per-file floor; identity changed)"],
+    ["mcp/servers.json", " (per-file floor; identity changed)"],
+    ["AGENTS.md", " (per-file floor; identity changed)"],
+    ["settings.json.other", ""],
+    ["config", ""],
+  ])("labels the per-file floor row for %s without changing release outcomes", async (name, label) => {
+    const target = join(aveHome(), ...name.split("/"));
+    const restore = vi.fn(({ onExit }: { onExit?: (ok: boolean) => void }) => {
+      onExit?.(true);
+      return [{ path: target, status: "mismatch" }];
+    });
+    setWindowsAclReleaseForTesting({
+      sandboxUserSid: "S-1-5-21-1", srtWin: executable,
+      revoke: ({ onExit }) => { onExit(true); return []; }, restore,
+    });
+    manager.reset.mockImplementation(() => RealSandboxManager.reset());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await releaseAsrtSandboxForExit();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("an explicit ACE may remain on earlier aside copies or targets of dropped rows"),
+        `deny restore mismatch x1 [<ave-home>\\${name.replace(/\//g, "\\").toLowerCase()}${label}]`,
+      );
+      expect(restore).toHaveBeenCalledOnce();
+      await RealSandboxManager.reset();
+      expect(restore).toHaveBeenCalledOnce();
+      expect(isSrtWinRuntimeReleasePending()).toBe(false);
+    } finally { warn.mockRestore(); }
   });
 
   it("does nothing once the runtime is already reset", async () => {

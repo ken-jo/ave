@@ -1,8 +1,11 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import * as windowsHelpers from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
@@ -35,6 +38,33 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async (im
 }));
 
 useVerifiedAveHomePrivacy();
+
+function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prependArgs: string[] }): string {
+  const require = createRequire(import.meta.url);
+  const helperUrl = pathToFileURL(require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")).href;
+  const pure = new Set(["parseWindowsBinShell", "expandWindowsFsPaths", "rankWindowsFsAccess", "parseWindowsSandboxError",
+    "windowsInstallInstructions", "windowsStateDir", "setWindowsAclRecoveryListener"]);
+  const substitutes: Record<string, string> = {
+    resolveSrtWin: "() => fixture",
+    checkWindowsDependenciesAsync: "() => Promise.resolve({ errors: [], warnings: [] })",
+    getWindowsSandboxUserStatusAsync: '() => Promise.resolve({ provisioned: true, credPresent: true, sid: "S-1-5-21-1001" })',
+    verifyWindowsWfpEgress: "() => Promise.resolve()",
+    recoverWindowsAcl: "() => ({ deadBrokers: 0, acesRevoked: 0 })",
+  };
+  const adapter = join(root, "windows-adapter.mjs");
+  writeFileSync(adapter, [
+    `import * as actual from ${JSON.stringify(helperUrl)};`,
+    `const fixture = ${JSON.stringify(srtWin)};`,
+    'function guard(args) { if (!args.some(arg => arg?.srtWin?.exe === fixture.exe && JSON.stringify(arg.srtWin.prependArgs) === JSON.stringify(fixture.prependArgs))) throw new Error("Fixture srtWin required"); }',
+    ...Object.entries(windowsHelpers).map(([name, value]) => {
+      const implementation = substitutes[name] ?? `actual.${name}`;
+      return typeof value !== "function" ? `export const ${name} = actual.${name};`
+        : pure.has(name) || name === "resolveSrtWin" ? `export const ${name} = ${implementation};`
+        : `export const ${name} = (...args) => { guard(args); return (${implementation})(...args); };`;
+    }),
+  ].join("\n"));
+  return adapter;
+}
 
 describe.runIf(process.platform === "win32")("Windows deny target handoff", () => {
   let root: string;
@@ -91,6 +121,74 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
     return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
   }
+
+  it("rejects runtime helpers that omit the fixture or resolve a bundled executable", async () => {
+    const srtWin = { exe: process.execPath, prependArgs: [join(root, "fixture.mjs")] };
+    const adapter = await import(/* @vite-ignore */ pathToFileURL(writeFixtureWindowsAdapter(root, srtWin)).href);
+    for (const name of ["getWindowsSandboxUserStatusAsync", "stampWindowsAcl", "restoreWindowsAcl", "grantWindowsAcl", "revokeWindowsAcl", "getSrtWinPath"]) {
+      expect(() => adapter[name]({})).toThrow("Fixture srtWin required");
+      expect(() => adapter[name]({ srtWin: { exe: "bundled/srt-win.exe", prependArgs: [] } })).toThrow("Fixture srtWin required");
+    }
+    await expect(adapter.getWindowsSandboxUserStatusAsync({ srtWin })).resolves.toMatchObject({ provisioned: true });
+  });
+
+  it("ledgers and releases account-profile denies while the application home is isolated", async () => {
+    const account = join(root, "bob");
+    const target = join(account, ".config", "ave", "hooks");
+    mkdirSync(target, { recursive: true });
+    vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: account });
+    expect(process.env.AVE_HOME?.startsWith(account)).toBe(false);
+    const ledger = join(root, "held-rows.json");
+    const calls = join(root, "release-calls.json");
+    const script = join(root, "acl-ledger.mjs");
+    writeFileSync(script, [
+      'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+      `const ledger = ${JSON.stringify(ledger)};`,
+      `const calls = ${JSON.stringify(calls)};`,
+      'const command = process.argv[3];',
+      'const holder = process.argv[process.argv.indexOf("--holder-pid") + 1];',
+      'const filter = process.argv.includes("--path") ? process.argv[process.argv.indexOf("--path") + 1] : undefined;',
+      'let rows = existsSync(ledger) ? JSON.parse(readFileSync(ledger, "utf8")) : [];',
+      'const history = existsSync(calls) ? JSON.parse(readFileSync(calls, "utf8")) : [];',
+      'history.push({ command, holder }); writeFileSync(calls, JSON.stringify(history));',
+      'let outcomes = [];',
+      'if (command === "stamp") {',
+      '  const input = JSON.parse(readFileSync(0, "utf8"));',
+      `  rows = input.denyRead.map(path => path.replace(/[\\\\/]+$/, "")).filter(path => path === ${JSON.stringify(target)}).flatMap(path => [{ path, holder, kind: "deny-read" }, { path: ${JSON.stringify(dirname(target))}, holder, kind: "deny-delete-child" }]);`,
+      '} else if (command === "restore") {',
+      '  const selected = row => row.holder === holder && (!filter || row.path === filter || row.path.startsWith(filter + "\\\\"));',
+      '  outcomes = rows.filter(selected).map(row => ({ path: row.path, status: "revoked" }));',
+      '  rows = rows.filter(row => !selected(row));',
+      '}',
+      'writeFileSync(ledger, JSON.stringify(rows));',
+      'process.stdout.write(JSON.stringify(outcomes));',
+    ].join("\n"));
+    const srtWin = { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] };
+    // Native dependency imports bypass module spies; substitute only the helper adapter in an isolated runtime copy.
+    const require = createRequire(import.meta.url);
+    const managerUrl = pathToFileURL(require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js"));
+    const adapter = writeFixtureWindowsAdapter(root, srtWin);
+    const isolated = join(root, "sandbox-manager.mjs");
+    writeFileSync(isolated, readFileSync(managerUrl, "utf8").replace(/from '(\.[^']+)'/g, (_, specifier: string) =>
+      `from ${JSON.stringify(specifier === "./windows-sandbox-utils.js" ? pathToFileURL(adapter).href : new URL(specifier, managerUrl).href)}`));
+    const { SandboxManager: isolatedManager } = await import(/* @vite-ignore */ pathToFileURL(isolated).href) as typeof import("@anthropic-ai/sandbox-runtime");
+    vi.spyOn(manager, "initialize").mockImplementation(async next => {
+      config = next;
+      await isolatedManager.initialize({ ...next, network: { ...next.network, httpProxyPort: 18080, socksProxyPort: 18081 } });
+    });
+    vi.spyOn(manager, "reset").mockImplementation(() => isolatedManager.reset());
+    await initializeAsrtSandbox({});
+    expect(paths(config?.filesystem.denyRead)).toContain(target);
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([
+      { path: target, holder: String(process.pid), kind: "deny-read" },
+      { path: dirname(target), holder: String(process.pid), kind: "deny-delete-child" },
+    ]);
+    await resetAsrtSandbox();
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
+    expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual(
+      ["stamp", "revoke", "restore"].map(command => ({ command, holder: String(process.pid) })),
+    );
+  });
 
   it("preserves machine read protection when a parent receives a write grant", async () => {
     captureRuntime();
