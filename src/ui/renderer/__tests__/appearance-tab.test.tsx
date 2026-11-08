@@ -133,26 +133,27 @@ describe("Window glass tint", () => {
       media: query, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {},
     }));
   }
-  function renderOnMac(initial: AppearanceSettings, glass: boolean) {
-    (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: true };
+  // A window on an OS with a material (macOS, Windows 11 22H2+), as preload marks it; `glass` is whether main drew the material.
+  function renderWithMaterial(initial: AppearanceSettings, glass: boolean) {
+    document.documentElement.setAttribute("data-glass-capable", "");
     if (glass) document.documentElement.setAttribute("data-glass", "");
     const { api } = makeMockAveApi({ settings: { appearance: initial } });
     const view = render(<SavedToastProvider value={() => {}}><ThemeProvider api={api as never} initialAppearance={initial}><AppearanceTab /></ThemeProvider></SavedToastProvider>);
     return { api, view };
   }
   afterEach(() => {
-    delete (window as unknown as Record<string, unknown>).avePlatform;
     document.documentElement.removeAttribute("data-glass");
+    document.documentElement.removeAttribute("data-glass-capable");
   });
 
-  it("is absent off macOS", () => {
+  it("is absent on an OS without a material", () => {
     const { queryByTestId } = renderAppearance();
     expect(queryByTestId("appearance-glass-tint")).toBeNull();
   });
 
   it("previews while dragging and saves when the drag ends", () => {
     stubReducedTransparency(false);
-    const { api, view } = renderOnMac({ ...DEFAULT_APPEARANCE, mode: "light" }, true);
+    const { api, view } = renderWithMaterial({ ...DEFAULT_APPEARANCE, mode: "light" }, true);
     const slider = view.getByRole("slider", { name: "창 유리 틴트" }) as HTMLInputElement;
     expect(slider.disabled).toBe(false);
     expect(slider.value).toBe("0");
@@ -172,7 +173,7 @@ describe("Window glass tint", () => {
     ["blur", (el: HTMLElement) => fireEvent.blur(el)],
   ])("saves a previewed tint when the gesture ends in %s", (_name, end) => {
     stubReducedTransparency(false);
-    const { api, view } = renderOnMac({ ...DEFAULT_APPEARANCE, mode: "dark" }, true);
+    const { api, view } = renderWithMaterial({ ...DEFAULT_APPEARANCE, mode: "dark" }, true);
     const slider = view.getByRole("slider", { name: "창 유리 틴트" });
     fireEvent.change(slider, { target: { value: "40" } });
     end(slider);
@@ -181,21 +182,21 @@ describe("Window glass tint", () => {
 
   it("saves nothing for a key that moved nothing", () => {
     stubReducedTransparency(false);
-    const { api, view } = renderOnMac(DEFAULT_APPEARANCE, true);
+    const { api, view } = renderWithMaterial(DEFAULT_APPEARANCE, true);
     fireEvent.keyUp(view.getByRole("slider", { name: "창 유리 틴트" }), { key: "Tab" });
     expect(api.updateSettings).not.toHaveBeenCalledWith(expect.objectContaining({ appearance: expect.objectContaining({ glassTint: expect.anything() }) }));
   });
 
   it("is disabled with the reason when reduce transparency is on", () => {
     stubReducedTransparency(true);
-    const { view } = renderOnMac(DEFAULT_APPEARANCE, true);
+    const { view } = renderWithMaterial(DEFAULT_APPEARANCE, true);
     expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
     expect(view.getByText(/투명도 줄이기/)).toBeTruthy();
   });
 
   it("is disabled when the window was created without the material", () => {
     stubReducedTransparency(false);
-    const { view } = renderOnMac(DEFAULT_APPEARANCE, false);
+    const { view } = renderWithMaterial(DEFAULT_APPEARANCE, false);
     expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
   });
 });

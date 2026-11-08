@@ -163,11 +163,11 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   }
 
   // Win / Linux: band hosts the toolbar content on the left + middle, with the native − □ × cluster pinned to the trailing
-  // corner.
+  // corner. `ave-glass-clear` lets Windows Mica show through the band as macOS vibrancy does; it is inert without `data-glass`.
   return (
     <div
       data-testid="custom-titlebar"
-      className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
+      className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
       style={{
         paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
         // @ts-expect-error — Electron-specific CSS extension

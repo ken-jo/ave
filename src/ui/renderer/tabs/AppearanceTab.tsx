@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
 import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
-import { getApi, isDarwin } from "../api-client.js";
+import { getApi } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
@@ -443,8 +443,8 @@ function useReducedTransparency(): boolean {
 }
 
 /**
- * How much of the card colour covers the macOS window material. macOS only: elsewhere the window is opaque and there is nothing
- * to tune. The slider repaints on every step and saves when the drag (or key press) ends. With reduce transparency on — now, or
+ * How much of the card colour covers the window material (macOS vibrancy, Windows 11 22H2+ Mica). Offered only where main says the OS has
+ * a material (`data-glass-capable`): elsewhere the window is opaque and there is nothing to tune. The slider repaints on every step and saves when the drag (or key press) ends. With reduce transparency on — now, or
  * when this window was created, which is when main decides the material (`data-glass`) — it is shown disabled with the reason.
  */
 function GlassTintControl() {
@@ -455,7 +455,7 @@ function GlassTintControl() {
   // A previewed value not yet saved. Every way a gesture can end (release, cancel, lost capture, key up, blur) commits it once;
   // the later ones of the same gesture find nothing pending, and a key that moved nothing (Tab) saves nothing.
   const pendingRef = useRef(false);
-  if (!isDarwin()) return null;
+  if (!document.documentElement.hasAttribute("data-glass-capable")) return null;
   const available = !reducedNow && document.documentElement.hasAttribute("data-glass");
   const tint = appearance.glassTint ?? DEFAULT_GLASS_TINT;
   const commit = (event: { currentTarget: HTMLInputElement }) => {

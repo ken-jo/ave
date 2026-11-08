@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { release } from "node:os";
 import { resolve } from "node:path";
 
 type Listener = (...args: unknown[]) => void;
@@ -162,18 +163,22 @@ describe("main windows", () => {
     expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "tokyo-night" } });
   });
 
-  it("creates the window over the macOS material only on darwin with transparency allowed, and tells its renderer", () => {
-    const darwin = process.platform === "darwin";
+  it("creates the window over the system material only where the OS has one and transparency is allowed, and tells its renderer", async () => {
+    const { mainWindowGlassMaterial } = await import("../window-chrome.js");
+    const material = mainWindowGlassMaterial(process.platform, release());
     const win = open();
-    const options = win.options as { vibrancy?: string; backgroundColor?: string; transparent?: boolean };
+    const options = win.options as { vibrancy?: string; backgroundMaterial?: string; backgroundColor?: string; transparent?: boolean };
     expect(options.transparent).toBeUndefined();
-    expect(options.vibrancy).toBe(darwin ? "under-window" : undefined);
-    expect(readAppearance(win)).toMatchObject({ ok: true, glass: darwin });
+    expect(options.vibrancy).toBe(material === "vibrancy" ? "under-window" : undefined);
+    expect(options.backgroundMaterial).toBe(material === "mica" ? "mica" : undefined);
+    expect(readAppearance(win)).toMatchObject({ ok: true, glass: material === null ? "unsupported" : "on" });
     electronMock.nativeTheme.prefersReducedTransparency = true;
     try {
       const opaque = open();
-      expect((opaque.options as { vibrancy?: string }).vibrancy).toBeUndefined();
-      expect(readAppearance(opaque)).toMatchObject({ ok: true, glass: false });
+      const opaqueOptions = opaque.options as { vibrancy?: string; backgroundMaterial?: string };
+      expect(opaqueOptions.vibrancy).toBeUndefined();
+      expect(opaqueOptions.backgroundMaterial).toBeUndefined();
+      expect(readAppearance(opaque)).toMatchObject({ ok: true, glass: material === null ? "unsupported" : "reduced" });
     } finally {
       electronMock.nativeTheme.prefersReducedTransparency = false;
     }

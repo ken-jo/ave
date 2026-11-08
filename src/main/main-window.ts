@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { release } from "node:os";
 import { pathToFileURL } from "node:url";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "./main-paths.js";
@@ -8,9 +9,9 @@ import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
-import { getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, syncNativeThemeSource } from "./window-chrome.js";
+import { getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, mainWindowGlassMaterial, syncNativeThemeSource } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
-import type { InitialAppearanceResult } from "../shared/initial-appearance.js";
+import type { InitialAppearanceResult, InitialGlassState } from "../shared/initial-appearance.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import { normalizeAppearance } from "../shared/appearance-settings.js";
 import { settingsFilePath } from "../data/settings-store.js";
@@ -68,13 +69,20 @@ function readCurrentAppearance() {
   return normalizeAppearance(stored);
 }
 
-// Main windows created with the macOS material, by renderer. Main reads the OS reduce-transparency switch ONCE, at creation, and
+// Main windows created with the system material (macOS vibrancy, Windows Mica), by renderer. Main reads the OS reduce-transparency switch ONCE, at creation, and
 // the renderer's `data-glass` follows that reading. Main does not follow the switch afterwards: the v45.2.1 docs list no
 // `nativeTheme` event for `prefersReducedTransparency` (https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#event-updated
 // names only the dark-colours, high-contrast and inverted-scheme values). A live change is honoured by the renderer alone:
 // `@media (prefers-reduced-transparency: reduce)` in styles.css paints the whole shell opaque over the material. Turning the
 // switch back off restores glass in that window; a window created with it on stays opaque until a new window is opened.
 const glassContents = new WeakSet<WebContents>();
+// The material this OS can draw, whatever the switch says; fixed for the process.
+const glassMaterial = mainWindowGlassMaterial(process.platform, release());
+
+function initialGlassState(contents: WebContents): InitialGlassState {
+  if (glassContents.has(contents)) return "on";
+  return glassMaterial === null ? "unsupported" : "reduced";
+}
 
 let initialAppearanceRegistered = false;
 function registerInitialAppearance(): void {
@@ -86,7 +94,7 @@ function registerInitialAppearance(): void {
     if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
       result = { ok: false, error: "unauthorized-frame" };
     } else {
-      try { result = { ok: true, appearance: readCurrentAppearance(), glass: glassContents.has(event.sender) }; }
+      try { result = { ok: true, appearance: readCurrentAppearance(), glass: initialGlassState(event.sender) }; }
       catch (error) {
         log.warn({ err: error }, "Could not read current appearance");
         result = { ok: false, error: "appearance-unavailable" };
@@ -113,7 +121,7 @@ export function createWindow(
 
   // The native appearance follows the app's light/dark choice before the material is first drawn.
   syncNativeThemeSource(readCurrentAppearance().mode);
-  const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
+  const glass = mainWindowGlassEnabled(glassMaterial, nativeTheme.prefersReducedTransparency);
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
@@ -123,8 +131,8 @@ export function createWindow(
     autoHideMenuBar: false,
     // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
     ...getCommonChromeOptions(),
-    // macOS: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
-    ...getMainWindowGlassOptions(glass),
+    // macOS / Windows 11 22H2+: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
+    ...getMainWindowGlassOptions(glass ? glassMaterial : null),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

@@ -76,6 +76,11 @@ describe("CustomTitleBar", () => {
       expect(queryByTestId("custom-titlebar-darwin")).toBeNull();
     });
 
+    it("lets the window material show through the band, as on macOS", () => {
+      const { getByTestId } = render(<CustomTitleBar />);
+      expect(getByTestId("custom-titlebar")).toHaveClass("ave-glass-clear");
+    });
+
     it("renders minimize, maximize, and close buttons", () => {
       const { getByTestId } = render(<CustomTitleBar />);
       expect(getByTestId("titlebar-minimize")).toBeTruthy();
