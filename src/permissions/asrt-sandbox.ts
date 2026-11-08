@@ -5,6 +5,7 @@ import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwner
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
@@ -2120,12 +2121,32 @@ function logWindowsAclRecovery({ deadBrokers, acesRevoked }: WindowsAclRecoveryR
 
 // srt-win dropped these rows without releasing them (`mismatch`: the path now names another object, whose ACE is left as it was, so a deny stays
 // fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds.
-// Redacted target keys identify dropped rows without paths. A test double's reset() may resolve with nothing.
+// Match redactFsPath's <home> convention, with the more specific <ave-home> first.
+// Keys fold case/slashes and strip extended prefixes. Unknown roots use a process-private
+// HMAC key: correlation lasts this process, and logs cannot confirm guessed usernames.
+const windowsAclLogKey = randomBytes(32);
+function windowsAclTargetKey(target: string): string {
+  const canonical = (path: string): string => win32.normalize(stripExtendedPathPrefix(path)).replace(/[\\/]+$/, "").toLowerCase();
+  const path = canonical(target);
+  let homes: string[] = [];
+  try { homes = policyHomeAnchors(); } catch { /* Unknown homes use opaque keys. */ }
+  const roots: [string, string][] = [
+    [aveHome(), "<ave-home>"],
+    ...[...homes, process.env.HOME, process.env.USERPROFILE].filter((home): home is string => !!home)
+      .sort((a, b) => b.length - a.length).map(home => [home, "<home>"] as [string, string]),
+  ];
+  for (const [root, label] of roots) {
+    const base = canonical(root);
+    if (path === base || path.startsWith(`${base}\\`)) return label + path.slice(base.length);
+  }
+  return `<outside-home>:${createHmac("sha256", windowsAclLogKey).update(path).digest("hex").slice(0, 24)}`;
+}
+
 function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
   const unreleased = report?.windowsAclUnreleased ?? [];
   if (unreleased.length === 0) return;
-  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); inspect retained ACLs using target keys",
-    unreleased.map(({ step, status, count, rowKeys }) => `${step} ${status} x${count} [${rowKeys.join(",")}]`).join(", "));
+  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); an explicit ACE may remain on a moved-aside copy",
+    unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(windowsAclTargetKey).join(",")}]`).join(", "));
 }
 
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
