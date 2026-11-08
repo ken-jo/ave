@@ -189,3 +189,15 @@ describe("browser workspace panel", () => {
     expect(api.find).toHaveBeenNthCalledWith(3, expect.objectContaining({ text: "needle", findNext: false }));
   });
 });
+
+it("shows an actual option for a site factor outside the preset list", async () => {
+ const { props, stateChanged } = setup();
+ render(<BrowserWorkspacePanel {...props} />);
+ await act(async () => { await Promise.resolve(); });
+ act(() => stateChanged({ ...STATE, revision: 2, tabs: [{ ...STATE.tabs[0]!, zoomFactor: 1.728 }] }));
+ const select = screen.getByLabelText("browserWorkspace.zoom") as HTMLSelectElement;
+ expect(select.value).toBe("1.728");
+ expect(select.selectedOptions[0]?.textContent).toBe("173%");
+ fireEvent.change(select, { target: { value: "1.25" } });
+ expect(props.api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.25 });
+});

@@ -1,3 +1,4 @@
+import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import type { DownloadItem, WebContents } from "electron";
 import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserBookmarkRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
@@ -82,7 +83,7 @@ export class BrowserWorkspaceService {
   zoom(windowId: number, request: BrowserZoomRequest): { factor: number } {
     if (!parseBrowserWorkspaceRequest("zoom", request)) throw new Error("bad-request");
     const guest = this.target(windowId, request).guest;
-    guest.setZoomFactor(request.factor);
+    setBrowserGuestZoomFactor(guest, request.factor);
     this.notify();
     return { factor: guest.getZoomFactor() };
   }
