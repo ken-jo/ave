@@ -1110,6 +1110,7 @@ function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number,
 function adapterFixture(options: {
   agent?: boolean;
   focusRestored?: boolean;
+  guestZoom?: number;
   hostKnown?: boolean;
   registry?: BrowserTabRegistry<never>;
   router?: WindowTouchRouter;
@@ -1124,7 +1125,8 @@ function adapterFixture(options: {
   const router = options.router ?? new WindowTouchRouter();
   const registry = (options.registry ?? new BrowserTabRegistry()) as BrowserTabRegistry<never>;
   let attached = false;
-  const echo = { on: true };
+  const zoom = { factor: options.guestZoom ?? 1 };
+  const echo = { on: true, factor: zoom.factor };
   const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
@@ -1133,13 +1135,13 @@ function adapterFixture(options: {
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
       if (method === "Runtime.evaluate") return { result: { value: { width: laidOut ? 1024 : 0, height: laidOut ? 768 : 0, visible: laidOut } } };
       const result = await cdp.send(method, params);
+      const x = Math.fround((params?.x as number) * Math.fround(echo.factor));
+      const y = Math.fround((params?.y as number) * Math.fround(echo.factor));
       if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
-        registry.userInput(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
+        registry.userInput(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x, y, button: "left", clickCount: 1 });
       }
       // The native echo of a pointer move: the page point and its screen point.
       if (echo.on && method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
-        const x = params.x as number;
-        const y = params.y as number;
         guestEvents.emit("input-event", {}, {
           type: "mouseMove", x, y,
           globalX: HOST_CONTENT.x + PAGE_IN_WINDOW.x + x,
@@ -1155,9 +1157,10 @@ function adapterFixture(options: {
   let url = "https://a.example/form";
   const touches: string[] = [];
   const guest = Object.assign(guestEvents, {
-    id: options.guestId ?? 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
+    id: options.guestId ?? 101, isDestroyed: (): boolean => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
     mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents, touches,
     getBackgroundThrottling: () => true, setBackgroundThrottling: vi.fn(),
+    getZoomFactor: () => zoom.factor,
     // What the guest tracking does with a page's native touch input.
     report: (input: { type: string; _modifiers: number }) => {
       if (input.type === "touchStart") touches.push("touchStart");
@@ -1202,7 +1205,7 @@ function adapterFixture(options: {
       approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId, controlGeneration: scope.controlGeneration },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
-  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, layoutOps, navigate: (next: string) => {
+  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, zoom, layoutOps, navigate: (next: string) => {
     url = next;
     cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
     registry.navigationStarted(guest.id, url);
@@ -1410,6 +1413,74 @@ it("finishes a parked link navigation without borrowing or restoring native focu
   await expect(actions.click(live, ref)).resolves.toBeUndefined();
   expect(layoutOps.filter(op => op === "capture-focus" || op === "restore-focus" || op === "focus")).toEqual([]);
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
+});
+
+it.each([
+  { factor: 0.9, nativeX: 87.29999542236328, nativeY: 579.5999755859375 },
+  { factor: 1.25, nativeX: 121.25, nativeY: 805 },
+  { factor: 1.5, nativeX: 145.5, nativeY: 966 },
+])("confirms native pointer coordinates at page zoom $factor without scaling the page input", async ({ factor, nativeX, nativeY }) => {
+  const { cdp, actions, approve, guest } = adapterFixture({ agent: true, guestZoom: factor });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => method === "DOM.getContentQuads"
+    ? { quads: [[48, 633, 146, 633, 146, 655, 48, 655]] } : send(method, params));
+  const nativeMoves: unknown[] = [];
+  guest.on("input-event", (_event, input) => { if (input.type === "mouseMove") nativeMoves.push(input); });
+  await expect(onFakeClock(() => actions.click(live, ref))).resolves.toBeUndefined();
+  expect(nativeMoves).toEqual([expect.objectContaining({ x: nativeX, y: nativeY })]);
+  expect(cdp.calls.find(call => call.method === "Input.dispatchMouseEvent")?.params).toMatchObject({ x: 97, y: 644 });
+  expect(cdp.calls.find(call => call.method === "Input.dispatchTouchEvent")?.params).toMatchObject({ touchPoints: [{ x: 97, y: 644 }] });
+});
+
+it.each(["unscaled-echo", "changed-before-echo", "changed-before-contact"])("refuses %s at nondefault page zoom before pressing", async change => {
+  const { cdp, actions, approve, echo, zoom } = adapterFixture({ agent: true, guestZoom: 1.25 });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  if (change === "unscaled-echo") echo.factor = 1;
+  const send = cdp.send.bind(cdp);
+  let moved = false;
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") {
+      moved = true;
+      if (change === "changed-before-echo") zoom.factor = 1.5;
+    }
+    if (moved && method === "Page.getLayoutMetrics" && change === "changed-before-contact") zoom.factor = 1.5;
+    return result;
+  });
+  await expect(onFakeClock(() => actions.click(live, ref))).rejects.toMatchObject({ code: "no-pointer-position" });
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+});
+
+it("ignores a destroyed guest before reading its native zoom in a pointer echo", async () => {
+  const { cdp, guest, actions, approve } = adapterFixture({ agent: true, guestZoom: 1.25 });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  let destroyed = false;
+  vi.spyOn(guest, "isDestroyed").mockImplementation(() => destroyed);
+  const readZoom = vi.spyOn(guest, "getZoomFactor").mockImplementation(() => {
+    if (destroyed) throw new Error("native zoom getter called after destruction");
+    return 1.25;
+  });
+  const listenerCount = guest.listenerCount("input-event");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") destroyed = true;
+    return result;
+  });
+  await expect(onFakeClock(() => actions.click(live, ref))).rejects.toMatchObject({ code: "no-pointer-position" });
+  expect(readZoom.mock.results.every(result => result.type === "return")).toBe(true);
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+  expect(guest.listenerCount("input-event")).toBe(listenerCount);
 });
 
 it("reports the page a clicked link commits after the click is acknowledged", async () => {
@@ -2002,11 +2073,11 @@ it("refuses selection outside the main document without running the selection sc
 describe("native intercepted drag lifetime", () => {
   let nextGuestId = 600;
   async function fixture(options: {
-    payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean;
+    guestZoom?: number; payload?: unknown; noEvent?: boolean; beforePress?: boolean; disableFails?: boolean;
     stopAfterDrop?: boolean; loseDropAck?: boolean; stopAfterEnter?: boolean; targetCancelFails?: boolean;
     stop?: "caller" | "human" | "navigation";
   } = {}) {
-    const fixture = adapterFixture({ guestId: nextGuestId++ });
+    const fixture = adapterFixture({ guestId: nextGuestId++, guestZoom: options.guestZoom });
     const { cdp, guest, registry, actions, approve, tab, navigate } = fixture;
     cdp.nodes = page([ax("a", "button", "Start", { backendDOMNodeId: 11 }), ax("b", "button", "End", { backendDOMNodeId: 12 })]);
     cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
@@ -2043,6 +2114,13 @@ describe("native intercepted drag lifetime", () => {
     });
     return { ...fixture, tab, run: () => actions.drag(actionLive, refs[0]!, refs[1]!), drops: () => cdp.calls.filter((call) => call.method === "Input.dispatchDragEvent" && call.params?.type === "drop") };
   }
+
+  it.each([0.9, 1.25, 1.5])("matches native drag press receipts at page zoom %s", async guestZoom => {
+    const f = await fixture({ guestZoom });
+    await expect(f.run()).resolves.toBeUndefined();
+    expect(f.drops()).toHaveLength(1);
+    expect(f.tab.controlMode).toBe("agent-active");
+  });
 
   it("ends source interception before enter/over/drop and releases the payload listener", async () => {
     const f = await fixture();

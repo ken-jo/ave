@@ -1537,6 +1537,11 @@ the guest's original throttling state.
 Pointer input uses guest-local viewport coordinates. Native node hit testing adds
 the measured document scroll offset to that point; host placement is never added.
 The exact main-frame subtree and live document lease remain checked before input.
+App zoom preserves each guest's independent per-site zoom. Protocol input remains
+in guest CSS pixels; native local pointer receipts use guest-zoomed DIP coordinates,
+with float32 precision for both the factor and product. Only receipt expectations
+are converted, without host zoom or device scale. Zoom must remain unchanged across
+pointer confirmation and touch contact; a destroyed guest cannot provide a receipt.
 
 ### Typed page actions and browser chrome
 

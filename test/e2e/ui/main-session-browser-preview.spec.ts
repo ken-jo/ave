@@ -6,11 +6,16 @@ import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWind
 
 // A static, never-revealed page must deliver its first picture through the real observation and screencast path.
 test.use({ trace: "on" });
-for (const { deviceScale, previewShown } of [{ deviceScale: 1, previewShown: true }, { deviceScale: 2, previewShown: false }]) {
-  test(`clicks a scrolled link across origins in a parked main session at scale ${deviceScale} with preview ${previewShown}`, () => exerciseParkedClick(deviceScale, previewShown));
+for (const deviceScale of [1, 2]) {
+  for (const appZoom of [0.9, 1, 1.25, 1.5]) {
+    for (const guestZoom of appZoom === 1 ? [1, 1.25] : [1, appZoom]) {
+      test(`clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
+    }
+  }
 }
 
-async function exerciseParkedClick(deviceScale: number, previewShown: boolean): Promise<void> {
+async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZoom: number): Promise<void> {
+  const previewShown = deviceScale === 1;
   test.setTimeout(90_000);
   const model = "static-browser-preview-fixture";
   let stage = 0;
@@ -55,6 +60,17 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
     if (stage === 1) { tool(response, "browser_navigate", { url: firstUrl }); return; }
     if (stage === 2) {
       tabId = /"tabId"\s*:\s*"(tab-\d+)"/.exec(text)?.[1] ?? "";
+      if (!ctx) throw new Error("Browser fixture unavailable");
+      const zoom = await ctx.page.evaluate(async ({ url, factor }) => {
+        const workspace = window.aveApi.browserWorkspace;
+        const state = await workspace?.getState();
+        const target = state?.ok ? state.value.tabs.find(tab => tab.url === url) : undefined;
+        if (!workspace || !target) throw new Error("Browser zoom target unavailable");
+        const result = await workspace.zoom({ tabId: target.tabId, documentGeneration: target.documentGeneration, factor });
+        if (!result.ok) throw new Error("Browser zoom request refused");
+        return result.value.factor;
+      }, { url: firstUrl, factor: guestZoom });
+      expect(zoom).toBeCloseTo(guestZoom);
       tool(response, "browser_snapshot", { tabId, interactive: true }); return;
     }
     if (stage === 3) {
@@ -82,10 +98,14 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
     await ctx.app.evaluate(({ app }, delayHitMs) => {
-      const capture = globalThis as unknown as { clickMeasurements: unknown[] };
+      const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[] };
       capture.clickMeasurements = [];
+      capture.pointerEchoes = [];
       app.on("web-contents-created", (_event, contents) => {
         if (contents.getType() !== "webview") return;
+        contents.on("input-event", (_event, input) => {
+          if (input.type === "mouseMove") capture.pointerEchoes.push({ input, guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor() });
+        });
         const protocol = contents.debugger;
         const send = protocol.sendCommand.bind(protocol);
         let nodeId: number | undefined;
@@ -106,7 +126,7 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
             delayed = true;
             await new Promise(resolve => setTimeout(resolve, delayHitMs));
           }
-          const geometry = async () => ({ ts: Date.now(), focused: contents.isFocused(), throttled: contents.getBackgroundThrottling(),
+          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(), focused: contents.isFocused(), throttled: contents.getBackgroundThrottling(),
             layout: await send("Page.getLayoutMetrics"),
             box: nodeId === undefined ? null : await send("DOM.getBoxModel", { backendNodeId: nodeId }),
             viewport: await send("Runtime.evaluate", { expression: "({ width: innerWidth, height: innerHeight, deviceScale: devicePixelRatio, scrollX, scrollY, visibility: document.visibilityState })", returnByValue: true }),
@@ -122,7 +142,14 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
         };
       });
     }, previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250);
-    await setWindowSize(ctx.app, 1200, 640);
+    await setWindowSize(ctx.app, 1200, 800);
+    const hostFactor = await ctx.app.evaluate(({ BrowserWindow }, factor) => {
+      const window = BrowserWindow.getAllWindows().find(candidate => candidate.isVisible());
+      if (!window) throw new Error("App zoom target unavailable");
+      window.webContents.setZoomFactor(factor);
+      return window.webContents.getZoomFactor();
+    }, appZoom);
+    expect(hostFactor).toBeCloseTo(appZoom);
     const { page } = ctx;
     const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
@@ -169,13 +196,28 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
         const guests = await ctx.app.evaluate(async ({ webContents }) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getType() === "webview").map(async contents => ({ url: contents.getURL(), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))));
         console.log("Static parked guest layout", guests);
         await test.info().attach("static-preview-guests.json", { body: JSON.stringify(guests), contentType: "application/json" });
+      }
+      await test.info().attach("static-preview.png", { body: await page.screenshot(), contentType: "image/png" });
+      await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
+      firstPicture = await preview.locator("img").getAttribute("src");
     }
-    await test.info().attach("static-preview.png", { body: await page.screenshot(), contentType: "image/png" });
-    await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
-    firstPicture = await preview.locator("img").getAttribute("src");
+    if (deviceScale === 1 && appZoom === 1.25 && guestZoom === 1.25) {
+      for (const level of [1, 2]) {
+        const updated = await page.evaluate(level => window.aveApi.updateSettings({ appearance: { zoomLevel: level } }), level);
+        expect(updated).toMatchObject({ appearance: { zoomLevel: level } });
+        const factors = await ctx.app.evaluate(({ BrowserWindow, webContents }, url) => ({
+          host: BrowserWindow.getAllWindows().find(window => window.isVisible())?.webContents.getZoomFactor(),
+          guest: webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url)?.getZoomFactor(),
+        }), firstUrl);
+        expect(factors.host).toBeCloseTo(1.2 ** level);
+        expect(factors.guest).toBeCloseTo(guestZoom);
+      }
+      await ctx.app.evaluate(({ BrowserWindow }, factor) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.webContents.setZoomFactor(factor), appZoom);
     }
     const parkedLayout = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, frames: [...document.querySelectorAll<HTMLElement>('[data-testid="web-surface-frame"]')].map(frame => ({ rect: frame.getBoundingClientRect().toJSON(), visibility: getComputedStyle(frame).visibility, opacity: getComputedStyle(frame).opacity, pointerEvents: getComputedStyle(frame).pointerEvents })) }));
-    expect(parkedLayout.frames).toEqual([expect.objectContaining({ pointerEvents: "none", rect: expect.objectContaining({ width: 1024, height: 768 }) })]);
+    expect(parkedLayout.frames).toEqual([expect.objectContaining({ pointerEvents: "none" })]);
+    expect(parkedLayout.frames[0]?.rect.width).toBeCloseTo(1024, 1);
+    expect(parkedLayout.frames[0]?.rect.height).toBeCloseTo(768, 1);
     if (previewShown) expect(parkedLayout.frames[0]).toMatchObject({ opacity: "0", visibility: "visible" });
     await test.info().attach("parked-placement.json", { body: JSON.stringify(parkedLayout), contentType: "application/json" });
     expect(clickRef).toMatch(/^e\d+$/);
@@ -188,9 +230,13 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
       await test.info().attach("static-cross-site-preview.png", { body: await page.screenshot(), contentType: "image/png" });
       await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
     }
-    const hits = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: unknown[] }).clickMeasurements);
+    const hits = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: Array<{ hostZoom?: number; guestZoom: number }> }).clickMeasurements);
     expect(hits).toHaveLength(3);
-    for (const hit of hits) expect(hit).toMatchObject({ focused: false, throttled: false, result: { backendNodeId: expect.any(Number), frameId: expect.any(String) } });
+    for (const hit of hits) {
+      expect(hit).toMatchObject({ focused: false, throttled: false, result: { backendNodeId: expect.any(Number), frameId: expect.any(String) } });
+      expect(hit.hostZoom).toBeCloseTo(appZoom);
+      expect(hit.guestZoom).toBeCloseTo(guestZoom);
+    }
     expect(requestedTools).toEqual(["browser_navigate", "browser_snapshot", "browser_click", "browser_snapshot"]);
     expect(toolResults[2]).toContain(secondUrl);
     expect(toolResults[3]).toContain("Example destination");
@@ -220,6 +266,9 @@ async function exerciseParkedClick(deviceScale: number, previewShown: boolean): 
       if (ctx) {
         console.log("Activity operations", JSON.stringify(await ctx.page.evaluate(() => (window as unknown as { activityOps: unknown[] }).activityOps)));
         const measurements = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: unknown[] }).clickMeasurements);
+        const echoes = await ctx.app.evaluate(() => (globalThis as unknown as { pointerEchoes: unknown[] }).pointerEchoes);
+        console.log("Native zoom pointer measurements", JSON.stringify(echoes));
+        await test.info().attach("native-pointer-echoes.json", { body: JSON.stringify(echoes, null, 2), contentType: "application/json" });
         console.log("Parked click hit-test count", measurements.length);
         await test.info().attach("parked-click-geometry.json", { body: JSON.stringify(measurements, null, 2), contentType: "application/json" });
       }

@@ -1027,9 +1027,20 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
+// Protocol input stays in guest CSS pixels; native local receipts use zoomed float32 DIP coordinates.
+function nativeInputPoint(guest: WebContents, x: unknown, y: unknown) {
+  const zoom = guest.getZoomFactor();
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)
+    || !Number.isFinite(zoom) || zoom <= 0) {
+    throw new BrowserActionError("no-pointer-position", "the page has no valid native pointer coordinates");
+  }
+  return { x: Math.fround(x * Math.fround(zoom)), y: Math.fround(y * Math.fround(zoom)), zoom };
+}
+
 // Pointer echoes prove the native page recipient before contact; both pointer and touch dispatch use viewport coordinates.
 function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostContentOrigin) {
   let positionKnown = false;
+  let positionZoom: number | undefined;
   type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
   return {
     // The exact page point and its native screen echo must be observed before a contact starts.
@@ -1037,14 +1048,14 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
       // An echo that never comes must leave no earlier receipt behind for the press that follows.
       positionKnown = false;
-      const point = { x: params.x, y: params.y };
+      const point = nativeInputPoint(guest, params.x, params.y);
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
       let timer: ReturnType<typeof setTimeout>;
       const echo = new Promise<PointerEcho | null>((resolve) => {
         timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
         onInput = (_event, input) => {
-          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
-          if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
+          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y || guest.isDestroyed() || guest.getZoomFactor() !== point.zoom) return;
+          if (!Number.isFinite(input.globalX) || !Number.isFinite(input.globalY)) return;
           clearTimeout(timer);
           resolve(input);
         };
@@ -1060,8 +1071,9 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
           try {
             const seen = await echo;
             const host = hostContentOrigin(guest);
-            if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
+            if (!seen || !host || guest.getZoomFactor() !== point.zoom) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
             positionKnown = true;
+            positionZoom = point.zoom;
           } finally { stop(); }
         },
       };
@@ -1071,7 +1083,7 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
       if (method !== "Input.dispatchTouchEvent") return params;
       const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
       if (points.length === 0) return params;
-      if (!positionKnown) {
+      if (!positionKnown || guest.getZoomFactor() !== positionZoom) {
         throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
       }
       return params;
@@ -1161,7 +1173,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       if (phase === "touchStart") touchOpen = true;
       if (phase === "touchMove") touchMoved = true;
       if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
-        attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
+        const point = nativeInputPoint(guest, params.x, params.y);
+        attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: point.x, y: point.y, button: "left", clickCount: 1 });
       }
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
       if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1 && nativeDrag) nativeDrag.awaitingPayload = true;

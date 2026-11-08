@@ -1,5 +1,37 @@
 # Side-panel browser repair report
 
+## Current app and page zoom correction after 720ea39c7
+
+Scope: parked ref-clicks under independent app/page zoom, with device scale 1 and 2. Permission ordering, frame/subtree checks, owner/control leases, takeover and native recipient checks remain intact. No push.
+
+### Coordinate root cause and failure-first evidence
+
+The earlier exploratory failure was guest page zoom 1.25, not a measurement of host app zoom. Native app-only factors 0.9, 1.25 and 1.5 with page zoom 1 already clicked successfully. The page point was correctly computed from guest CSS quads; the failure was comparing those CSS coordinates directly with native local input receipts, whose coordinates are scaled by the guest's own zoom.
+
+Measured native values:
+
+| Host factor | Guest factor | Protocol CSS point | Native local receipt |
+| --- | --- | --- | --- |
+| 1.25 | 1 | (97,837) | (97,837) |
+| 1 | 1.25 | (97,491) | (121.25,613.75) |
+| 1.25 | 1.25 | (97,645) | (121.25,806.25) |
+| 1.5 | 1.5 | (97,645) | (145.5,967.5) |
+| 0.9 | 0.9 | (97,644) | (87.29999542236328,579.5999755859375) |
+
+The last row establishes float32 precision for both the factor and scaled point. Plain double multiplication or only rounding the final product is insufficient. Receipt expectations now convert with `Math.fround(cssCoordinate * Math.fround(guestZoom))`. CDP mouse/touch/drag points and document hit tests stay in guest CSS coordinates. Host zoom, host placement and device scale are not multipliers in this conversion. The same boundary conversion applies to native mouse press/release expectations, preserving exact one-shot drag correlation. Pointer confirmation still requires exact local coordinates, finite global coordinates and the legitimate host. Zoom changes before echo, settlement or touch contact refuse the action. A synchronous native echo handler checks destruction before reading the native zoom getter.
+
+Native RED: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts -g 'app zoom (0.9|1.25|1.5) page zoom .* scale 1' --output=/private/tmp/webfix-zoom/native-coordinate-red` produced 2 successful app-only cases and 2 genuine guest-zoom pointer-echo failures (1.25/1.5). The two 0.9 cases stopped at a test-only exact rectangle assertion: host CSS layout measured 1023.9931×767.9861 instead of exact 1024×768. That assertion now allows subpixel layout rounding. The separate clean 0.9 run, `... -g 'app zoom 0.9 page zoom .* scale 1' --output=/private/tmp/webfix-zoom/native-small-zoom-red`, then produced 1 app-only pass and 1 guest-zoom pointer-echo failure. Neither setup failure is counted as a product-coordinate failure.
+
+Unit RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-zoom/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-actions.test.ts -t 'page zoom'`: 6 failed / 166 filtered (`unit-red.log`). Three click cases pin measured native coordinates and unchanged CSS dispatch; three drag cases cover scaled native press receipts. Additional regressions refuse unscaled echoes and zoom changes before echo/contact. Independent review found a destroyed-native-getter hazard in the new event callback; `-t 'destroyed guest before reading'` first failed once / 175 filtered (`destroyed-echo-red.log`). The destruction guard fixes it without accepting an absent receipt. Final browser-actions suite: 176 passed (`unit-final.log`).
+
+### Native matrix and settings path
+
+The parked-click spec now runs app factors 0.9, 1, 1.25 and 1.5 at each device scale 1 and 2 (8 cases), plus matched host/page pairs 0.9/0.9, 1.25/1.25 and 1.5/1.5 at both scales (6 more cases). The original independent host1/page1.25 failure is also retained at both scales (2 more cases, 16 parked cases total). All use real approval, tool execution, snapshot refs, guest input and second-origin navigation. The model response and sites are loopback fixtures; no action result, node hit or native receipt is stubbed. Every guarded hit records and asserts the actual host and guest factors, along with unfocused/unthrottled state. Traces attach quads, box model, layout/visual viewport, native echoes and screenshots.
+
+Exact host factors are set on the native app webContents because persisted appearance zoom levels accept integers and map to powers of 1.2; a fractional logarithmic level would normalize to 0 and falsely test default zoom. Guest factors are set through the shipped workspace zoom API. The host1.25/page1.25/scale1 case also changes actual appearance settings to integer levels 1 and 2, measures host1.2/1.44 while guest1.25 remains unchanged, restores host1.25, then clicks the parked ref. An initial test-only `.ok` assertion used the wrong settings response shape; it was corrected to assert returned AppSettings and the actual factors. The blocked case subsequently passed (`native-settings-recheck.log`: 1 passed). The first matrix run's other 17 scenarios passed. The final rebuilt app passed all 18 original scenarios (14 parked cases plus 4 existing browser flows) with the corrected settings check and final destruction guard: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts test/e2e/ui/browser-observation-preview.spec.ts --output=/private/tmp/webfix-zoom/native-verified` (18 passed, 2.2 minutes). The two added host1/page1.25 cases passed with `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts -g 'app zoom 1 page zoom 1.25 scale' --output=/private/tmp/webfix-zoom/native-original-zoom` (2 passed, 15.0 seconds). All 16 parked cases and 4 existing flows therefore pass; there is no remaining tested zoom failure.
+
+Files: src/main/browser/browser-actions.ts; src/main/browser/__tests__/browser-actions.test.ts; test/e2e/ui/main-session-browser-preview.spec.ts; docs/architecture/architecture.md; this report.
+
 ## Current parked ref-click correction after 9fb7c1832
 
 Scope: parked guest ref-clicking with the panel closed and reconciliation of earlier cross-site receipts. Permission decisions and ASK → LIVE ordering are unchanged. No push.
@@ -64,7 +96,7 @@ AVE_TEST_TMP_ROOT=/private/tmp/webfix-click/test-tmp bun run test:vitest -- run 
 
 The first broad run under the restricted execution environment had 2 failures / 2290 passed / 3 skips: document journal reconciliation and the native governed spreadsheet command failed; the latter reported sandbox wrapper exit 71. The journal failure was not isolated separately. The three-file recheck with that capability passed 39 tests (`failed-gates-recheck.log`), and the complete final selection then passed as recorded above. A test-only boolean return annotation fixed the one newly detected test type error; the baseline did not grow. No test skip/only or gate relaxation was added.
 
-The scale-1 cross-site screenshot and the turn-ended retained-tab screenshot were visually inspected: the closed-panel live thumbnail displays origin two; after completion the browser page remains viewable with no live strip, thumbnail or agent-control badge. The exact historical No-node signature, an entire hidden app window and the original real-model/provider session were not reverified. A separate exploratory page-zoom 1.25 run reached the correct node but failed the native pointer-move echo check (`native-zoom-red.log`); that nondefault-zoom failure remains unresolved. The retained default-zoom regression and read-only live guest both use zoom 1. The native fixture uses loopback model responses and sites but real approval, tool execution, guest, input, observation and renderer paths. The 11-destroyed-listener warning remains an observation, not evidence of a diagnosed growing listener leak. No remote CI, push or merge was performed.
+The scale-1 cross-site screenshot and the turn-ended retained-tab screenshot were visually inspected: the closed-panel live thumbnail displays origin two; after completion the browser page remains viewable with no live strip, thumbnail or agent-control badge. The exact historical No-node signature, an entire hidden app window and the original real-model/provider session were not reverified. A separate exploratory page-zoom 1.25 run reached the correct node but failed the native pointer-move echo check (`native-zoom-red.log`); that historical failure is superseded by the app/page zoom correction above. The retained default-zoom regression and read-only live guest both use zoom 1. The native fixture uses loopback model responses and sites but real approval, tool execution, guest, input, observation and renderer paths. The 11-destroyed-listener warning remains an observation, not evidence of a diagnosed growing listener leak. No remote CI, push or merge was performed.
 
 ## Current follow-up corrections after 23df511d9
 
