@@ -3,6 +3,12 @@ import { t } from "../i18n/index.js";
 
 const MAX_SANDBOX_WRAPPER_BYTES = 196_608;
 
+export function assertMacSandboxWrapperSize(argv: readonly string[]): void {
+  if (argv.reduce((bytes, word) => bytes + Buffer.byteLength(word) + 1, 0) > MAX_SANDBOX_WRAPPER_BYTES) {
+    throw new Error(t("sandboxPolicy.tooLarge"));
+  }
+}
+
 const GIT_MARKER_FILTER = '(regex #"/\\.[gG][iI][tT]$")';
 const GIT_METADATA_RULES = [
   // Match the entry itself: an existing directory's children remain writable.
@@ -30,6 +36,7 @@ export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[];
   }
   const argv = words.map((word, index) => index === profileIndex ? `${profile}\n${GIT_METADATA_RULES}` : word.value);
   const command = argv.map(quoteSandboxWrappedWord).join(" ");
-  if (Buffer.byteLength(command) > MAX_SANDBOX_WRAPPER_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
-  return { ...wrapped, argv: [wrapped.argv[0]!, "-c", command] };
+  const hardened = { ...wrapped, argv: [wrapped.argv[0]!, "-c", command] };
+  assertMacSandboxWrapperSize(hardened.argv);
+  return hardened;
 }

@@ -33,7 +33,7 @@ import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -2091,6 +2091,7 @@ async function verifyAsrtRuntime(
       { commandId: invocation.token, denyUnixSockets: true },
     );
     wrapped = true;
+    if (process.platform === "darwin") assertMacSandboxWrapperSize(probe.argv);
     await executeAsrtRuntimeProbe(process.platform === "linux" ? hardenLinuxSandboxWrap(probe) : probe, abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error) || isAsrtMacRuntimeProbeError(error)) throw error;
