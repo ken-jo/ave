@@ -424,7 +424,8 @@ export function AppearanceTab() {
                   }`}
                 >
                   <span className="block whitespace-nowrap">{t(opt.label)}</span>
-                  <span className="block whitespace-nowrap text-dense">{Math.round(opt.value * 16)}px{opt.value === FONT_SIZE_SCALE_DEFAULT ? ` · ${t("appearanceTab.fontSizeDefault")}` : ""}</span>
+                  <span className="block whitespace-nowrap text-dense">{Math.round(opt.value * 16)}px</span>
+                  {opt.value === FONT_SIZE_SCALE_DEFAULT && <span className="block text-dense">{t("appearanceTab.fontSizeDefault")}</span>}
                 </button>
               );
             })}

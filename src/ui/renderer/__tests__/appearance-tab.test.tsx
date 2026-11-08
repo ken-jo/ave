@@ -240,3 +240,19 @@ it("offers the zoom row with percent, limits and reset", async () => {
  expect(zoom.getByRole("button", { name: /Ctrl\+-/ })).toBeDisabled();
  expect(zoom.getByText("23%")).toBeInTheDocument();
 });
+
+it.each(["en", "ko"] as const)("puts the default marker on its own line in %s", (locale) => {
+ const previous = getLocale();
+ act(() => setLocale(locale));
+ try {
+  const view = renderAppearance();
+  const chip = within(view.getByTestId("font-size-scale")).getAllByRole("radio")[1]!;
+  const marker = within(chip).getByText(locale === "en" ? "Default" : "기본값");
+  expect(marker).toHaveClass("block");
+  expect(marker).not.toHaveClass("whitespace-nowrap");
+  expect(marker).not.toHaveTextContent("14px");
+  expect(within(chip).getByText("14px")).not.toBe(marker);
+ } finally {
+  act(() => setLocale(previous));
+ }
+});
