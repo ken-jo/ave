@@ -12,7 +12,7 @@ vi.mock("../browser-tab-registry.js", () => ({
 import { preserveBrowserGuestZoom, setBrowserGuestZoomFactor, trackBrowserGuest } from "../browser-guest-tracking.js";
 
 function guest() {
-  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter(), session: {}, getURL: () => "https://a.example/", isDestroyed: () => false, getZoomFactor: vi.fn(() => 1), setZoomFactor: vi.fn() });
+  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter(), session: {}, getURL: (): string => "https://a.example/", isDestroyed: () => false, getZoomFactor: vi.fn(() => 1), setZoomFactor: vi.fn() });
 }
 
 beforeEach(() => vi.clearAllMocks());

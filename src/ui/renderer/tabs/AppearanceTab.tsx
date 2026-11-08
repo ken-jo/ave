@@ -559,12 +559,14 @@ function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof use
       <label className="text-dense text-muted-foreground">{t("appearanceTab.terminalFamily")}</label>
       <div role="radiogroup" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
         onKeyDown={handleRadioGroupKeyDown} className="flex flex-wrap gap-2">
-        {CODE_FONT_PRESETS.map((preset, index) => <button key={preset.value} type="button" role="radio"
+        {CODE_FONT_PRESETS.map((preset, index) => (
+          // biome-ignore lint/a11y/useSemanticElements: Button radios support roving focus and arrow-key selection.
+          <button key={preset.value} type="button" role="radio"
           aria-checked={activePreset === preset.value} tabIndex={activePreset === preset.value || (activePreset === "custom" && index === 0) ? 0 : -1}
           style={{ fontFamily: preset.stack }} onClick={() => updateFont({ family: preset.stack })}
           className={activePreset === preset.value ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs transition-colors text-primary-foreground" : "rounded-full border border-border px-3 py-1 text-xs transition-colors text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"}>
           {t(preset.label)}
-        </button>)}
+        </button>))}
       </div>
       <FontFamilyCustomInput initial={activePreset === "custom" ? font.family : ""}
         label={t("appearanceTab.codeFontCustomAriaLabel")} onCommit={(family) => updateFont({ family: family || DEFAULT_APPEARANCE.terminalFont.family })} />

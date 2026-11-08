@@ -246,7 +246,8 @@ it.each(["en", "ko"] as const)("puts the default marker on its own line in %s", 
  act(() => setLocale(locale));
  try {
   const view = renderAppearance();
-  const chip = within(view.getByTestId("font-size-scale")).getAllByRole("radio")[1]!;
+  const chip = within(view.getByTestId("font-size-scale")).getAllByRole("radio")[1];
+  if (!chip) throw new Error("Missing default chip");
   const marker = within(chip).getByText(locale === "en" ? "Default" : "기본값");
   expect(marker).toHaveClass("block");
   expect(marker).not.toHaveClass("whitespace-nowrap");

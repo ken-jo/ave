@@ -86,7 +86,8 @@ it("coalesces a pending same-direction wheel gesture into bounded steps", async 
  const listeners = new Map<string, (event: { preventDefault: () => void }, direction: "in" | "out") => void>();
  bindAppWindowZoom({ webContents: { setVisualZoomLevelLimits: vi.fn(async () => {}), on: (name: string, handler: never) => listeners.set(name, handler) } } as never);
  let release!: () => void;
- const originalPatch = state.patch.getMockImplementation()!;
+ const originalPatch = state.patch.getMockImplementation();
+ if (!originalPatch) throw new Error("Missing patch implementation");
  state.patch.mockImplementationOnce(async (patch) => {
   await new Promise<void>((resolve) => { release = resolve; });
   await originalPatch(patch);

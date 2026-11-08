@@ -30,7 +30,7 @@ function enqueueZoomCommand(command: ZoomCommand, steps: () => number = () => 1)
 export function applyAppZoomLevel(level: number | undefined): void {
   for (const win of getMainWindows()) {
     if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
-      // Embedded app and plugin frames follow shell zoom; browser guests retain their own per-site factor.
+      // MCP app and plugin frames follow shell zoom; browser guests retain their own per-site factor.
       preserveBrowserGuestZoom(win.id, () => win.webContents.setZoomLevel(normalizeZoomLevel(level)));
     }
   }
@@ -49,7 +49,7 @@ export function bindAppWindowZoom(win: BrowserWindow): void {
       wheelBatch.steps = Math.min(MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL, wheelBatch.steps + 1);
       return;
     }
-    const batch = { command, steps: 1 };
+    const batch: { command: ZoomCommand; steps: number } = { command, steps: 1 };
     wheelBatch = batch;
     void enqueueZoomCommand(command, () => {
       if (wheelBatch === batch) wheelBatch = undefined;
