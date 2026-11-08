@@ -65,8 +65,48 @@ describe("ToolApprovalContent identity strip", () => {
     expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("Review");
   });
 
-  it("keeps the generic fallback title", () => {
-    renderApproval({ ...baseRequest(), toolName: "read_file", toolCategory: "read" }, vi.fn());
+  it.each(["en", "ko"] as const)("describes protected reads before their tool identity in %s", (locale) => {
+    setLocale(locale);
+    const decide = vi.fn();
+    renderApproval({ ...baseRequest(), toolName: "read_file", toolCategory: "read", args: { path: "./private.env" },
+      target: { filePath: "/workspace/private.env" } }, decide);
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "이 파일을 읽어도 될까요?" : "Read this file?");
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("/workspace/private.env");
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();
+    expect(decide).not.toHaveBeenCalled();
+  });
+
+  it.each(["en", "ko"] as const)("describes the copy source and destination in %s", (locale) => {
+    setLocale(locale);
+    renderApproval({ ...baseRequest(), toolName: "copy_path", toolCategory: "write",
+      args: { sourcePath: "./source", destinationPath: "./copy" },
+      approvalMemory: { kind: "key", key: "copy", scope: { kind: "transfer", sourcePath: "/workspace/source", destinationPath: "/workspace/copy", overwrite: false } } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "이 파일이나 폴더를 복사해도 될까요?" : "Copy this file or folder?");
+    const primary = screen.getByTestId("approval-action-primary");
+    expect(primary).toHaveTextContent(locale === "ko" ? "원본: /workspace/source" : "From: /workspace/source");
+    expect(primary).toHaveTextContent(locale === "ko" ? "대상: /workspace/copy" : "To: /workspace/copy");
+  });
+
+  it.each(["en", "ko"] as const)("describes the fetched URL in %s", (locale) => {
+    setLocale(locale);
+    renderApproval({ ...baseRequest(), toolName: "web_fetch", toolCategory: "network", args: { url: "https://docs.example/page" } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "이 페이지를 가져와도 될까요?" : "Fetch this page?");
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("https://docs.example/page");
+  });
+
+  it.each(["en", "ko"] as const)("describes choosing upload files and the page destination in %s", (locale) => {
+    setLocale(locale);
+    renderApproval({ ...baseRequest(), toolName: "browser_upload", toolCategory: "network", args: { tabId: "browser:2", ref: "e4" },
+      approvalMemory: { kind: "key", key: "upload", scope: { kind: "browser-origin", origin: "https://upload.example", tabOpener: "agent" } } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "업로드할 파일을 선택할까요?" : "Choose files to upload?");
+    const primary = screen.getByTestId("approval-action-primary");
+    expect(primary).toHaveTextContent(locale === "ko" ? "업로드 대상: https://upload.example" : "Upload destination: https://upload.example");
+    expect(primary).toHaveTextContent(locale === "ko" ? "페이지 요소: e4" : "Page element: e4");
+  });
+
+  it("keeps the fallback for an unknown builtin action", () => {
+    renderApproval({ ...baseRequest(), toolName: "unknown_action", toolCategory: "meta" }, vi.fn());
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.toolApprovalTitle"));
   });
 

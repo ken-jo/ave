@@ -24,6 +24,14 @@ GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vites
 
 Native Mac evidence: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts -g 'selects in a parked guest|streams a bounded live preview' --output=/private/tmp/webfix-review/native-fixed`: 2 passed (native-fixed.log). The parked test verifies final select value b, zero native focus events during selection, forced focus returned, zero real key deliveries to the guest, and composer typing. Traces/screenshots and parked-focus.json are under native-fixed. Builds: `bun run build:main`, `bun run build:renderer` passed. The second scenario includes the separate navigation-gate correction documented when committed.
 
+### Builtin action summaries
+
+The remaining protected read, copy, fetch and upload cards now lead with their actual actions in both locales. Reads prefer the captured canonical path; copies show canonical source/destination; fetch shows URL; upload describes the next native file-picker step, destination and page element, without inventing filenames. Only presentation and catalog code changed. Unknown actions keep the fallback. Independent review found no objection or approval-order change.
+
+RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx`: 8 failed / 14 passed (finding4-red.log).
+
+GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx src/ui/renderer/__tests__/ApprovalDock.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-allowed-choices.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-agent-action.test.tsx src/i18n/__tests__`: 10 files / 121 tests passed (finding4-consumers.log). `bun run check:i18n-catalog`: 2 locales / 5800 keys passed. Native screenshots of these four cards were not rerun; rendered consumer tests verify their summaries and existing choices.
+
 ## Historical implementation and validation
 
 The following sections retain their original commit, base and validation context. Current corrections and validation are above and in the final validation section; old limitations are not current pass claims.
