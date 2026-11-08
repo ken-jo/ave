@@ -64,13 +64,20 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
     }
     if (column.status === "error") {
       const lockedOut = column.error === "permission-denied";
+      // Locked out, retrying changes nothing until access is granted, so revealing the folder (to grant it) is the primary
+      // action; for any other failure retry leads.
       return (
         <EmptyState align="center" className="flex-1 py-6" data-testid="folder-column-error"
           icon={lockedOut ? <Lock className="h-4 w-4 text-warning" /> : <File className="h-4 w-4" />}
           title={t(lockedOut ? "folderView.lockedTitle" : column.error === "not-found" ? "folderView.goneTitle" : "folderView.failedTitle")}
           description={lockedOut ? t("folderView.lockedBody") : undefined}
-          action={{ label: t("folderView.retry"), icon: <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />, onClick: onRetry, testId: "folder-column-retry" }}
-          links={column.error !== "not-found" ? [{ label: t(revealKey()), onClick: onReveal, testId: "folder-column-reveal" }] : undefined} />
+          {...(lockedOut ? {
+            action: { label: t(revealKey()), onClick: onReveal, testId: "folder-column-reveal" },
+            links: [{ label: t("folderView.retry"), onClick: onRetry, testId: "folder-column-retry" }],
+          } : {
+            action: { label: t("folderView.retry"), icon: <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />, onClick: onRetry, testId: "folder-column-retry" },
+            links: column.error !== "not-found" ? [{ label: t(revealKey()), onClick: onReveal, testId: "folder-column-reveal" }] : undefined,
+          })} />
       );
     }
     if (column.entries.length === 0) {

@@ -218,6 +218,9 @@ describe("FolderView", () => {
 
     fireEvent.click(row(`${ROOT}/deploy/keys`));
     const error = await screen.findByTestId("folder-column-error");
+    // Locked out: revealing the folder to grant access leads, retry is the link beside it.
+    expect(within(error).getByTestId("folder-column-reveal").className).toContain("bg-primary");
+    expect(within(error).getByTestId("folder-column-retry").className).toContain("underline-offset-4");
     const calls = listDir.mock.calls.filter(([path]) => path === `${ROOT}/deploy/keys`).length;
     fireEvent.click(within(error).getByTestId("folder-column-retry"));
     await waitFor(() => expect(listDir.mock.calls.filter(([path]) => path === `${ROOT}/deploy/keys`).length).toBe(calls + 1));
