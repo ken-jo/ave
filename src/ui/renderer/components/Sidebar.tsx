@@ -213,8 +213,7 @@ export interface SidebarProps {
   suggestionsPendingCount?: number;
 }
 
-// The aside starts below the band on darwin, where the traffic lights would cover the rail; without a preload bridge no
-// native alignment applies.
+// Shortcut labels follow the OS modifier; without a preload bridge they read as Ctrl.
 function isDarwinPlatform(): boolean {
   return (
     (window as unknown as { avePlatform?: { isDarwin: boolean } }).avePlatform?.isDarwin ?? false
@@ -1051,7 +1050,6 @@ export function Sidebar({
     : runtimeUnavailable
       ? t("formatIpcError.subscriptionChatUnavailable")
       : settingsNeedsApiKey ? t("mainToolbar.apiKeyRequired") : undefined;
-  // On darwin the OS traffic lights sit over the top-left corner, so the rail and the list start below the band there.
   const darwin = isDarwinPlatform();
   const homeChord = darwin ? "⌘0" : "Ctrl+0";
 
@@ -1192,7 +1190,8 @@ export function Sidebar({
         // Pushed, the cards sit under the docked panels' band; an overlaying list is the floating surface of the moment and must
         // cover everything the tile draws.
         overlayOpen ? "z-50" : "z-30",
-        darwin ? "top-(--shell-card-top-darwin)" : "top-(--shell-card-top)",
+        // Below the title band on every platform, on the tiles' top line.
+        "top-(--shell-card-top)",
       ].join(" ")}
       // The aside overlays the Electron drag band. Mark it no-drag so its controls stay clickable.
       style={{
