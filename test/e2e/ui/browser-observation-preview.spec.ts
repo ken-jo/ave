@@ -9,7 +9,10 @@ test.use({ trace: "on" });
 
 type PreviewCapture = { previewMessages: (BrowserObservationPreviewMessage & { receivedAt: number })[]; observed: AgentObservationEvent[] };
 
-test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", async () => {
+test("keeps a parked agent guest visible to its animation clock", () => exercisePreview("parked"));
+test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", () => exercisePreview("navigation"));
+
+async function exercisePreview(scope: "parked" | "navigation"): Promise<void> {
   test.setTimeout(150_000);
   const model = "browser-preview-fixture";
   let stage = 0;
@@ -128,6 +131,8 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     approvals = (async () => {
       const deadline = Date.now() + 100_000;
       while (approving && Date.now() < deadline) {
+        const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
+        if (await site.isVisible()) await site.click();
         const button = page.getByTestId(TEST_IDS.approvalDock).getByTestId(TEST_IDS.approveButton).first();
         if (await button.isVisible()) await button.click();
         await page.waitForTimeout(100);
@@ -157,6 +162,27 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     }, rendererTabId);
     const guestFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${rendererTabId}"]`);
     await expect(guestFrame).toHaveCSS("visibility", "visible");
+    // Measure inside the real parked guest; a visible shell rect alone cannot prove its animation clock is running.
+    const app = ctx.app;
+    const measureLiveness = () => app.evaluate(async ({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getURL() === url);
+      if (!guest) throw new Error("Parked preview guest unavailable");
+      return await guest.executeJavaScript(`new Promise(resolve => {
+        let frames = 0;
+        let done = false;
+        let frameId = 0;
+        const started = performance.now();
+        const tick = () => { if (!done) { frames += 1; frameId = requestAnimationFrame(tick); } };
+        frameId = requestAnimationFrame(tick);
+        setTimeout(() => {
+          done = true;
+          cancelAnimationFrame(frameId);
+          resolve({ visibilityState: document.visibilityState, frames, elapsedMs: performance.now() - started,
+            width: innerWidth, height: innerHeight });
+        }, 750);
+      })`) as { visibilityState: string; frames: number; elapsedMs: number; width: number; height: number };
+    }, firstUrl);
+    const activeLiveness = await measureLiveness();
     const hiddenAt = Date.now();
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
     const thumbnailRow = page.getByTestId("conversation-browser-observation");
@@ -169,6 +195,15 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     await expect(guestFrame).toHaveAttribute("inert", "");
     expect(await guestFrame.evaluate((element) => element.contains(document.activeElement))).toBe(false);
     expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(1);
+    const liveness = await measureLiveness();
+    console.log("Guest liveness", { active: activeLiveness, parked: liveness });
+    await test.info().attach("parked-guest-liveness.json", { body: JSON.stringify({ active: activeLiveness, parked: liveness }, null, 2), contentType: "application/json" });
+    expect(liveness.visibilityState).toBe("visible");
+    expect(liveness.width).toBeGreaterThan(0);
+    expect(liveness.height).toBeGreaterThan(0);
+    expect(liveness.frames).toBeGreaterThanOrEqual(10);
+    expect(liveness.frames / liveness.elapsedMs).toBeGreaterThanOrEqual(activeLiveness.frames / activeLiveness.elapsedMs / 2);
+    if (scope === "parked") return;
     const decoded: { src: string; ts: number }[] = [];
     const deadline = Date.now() + 3_200;
     while (Date.now() < deadline) {
@@ -299,4 +334,4 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
       }
     }
   }
-});
+}
