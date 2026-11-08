@@ -1209,6 +1209,26 @@ function adapterFixture(options: {
   } };
 }
 
+it("replaces site gate disposal across independently loaded action adapters", async () => {
+  const { actions, approve, registry, guest, cdp } = adapterFixture();
+  const live = { ...await approve("browser_press_key"), authorizeSite: vi.fn(async () => {}) };
+  const nextActions = createBrowserPageActions(registry, browserOrigin, () => HOST_CONTENT, {
+    decodePng: () => { throw new Error("no image decoder in this fixture"); }, record: () => {},
+  });
+  const destroyedBefore = guest.listenerCount("destroyed");
+  for (const adapter of [actions, nextActions]) {
+    await adapter.pressKey(live, "Escape");
+    await adapter.settle(live);
+    expect(guest.listenerCount("destroyed")).toBe(destroyedBefore + 1);
+  }
+  cdp.events.emit("message", "Fetch.requestPaused", {
+    requestId: "later-adapter", frameId: "main", resourceType: "Document", request: { url: "https://a.example/next" },
+  });
+  await vi.waitFor(() => expect(cdp.calls.filter(call => call.method === "Fetch.continueRequest" && call.params?.requestId === "later-adapter")).toHaveLength(1));
+  guest.emit("destroyed");
+  expect(guest.listenerCount("destroyed")).toBe(destroyedBefore);
+});
+
 it("disposes a closed page session without reading its destroyed guest or throwing synchronous send errors", async () => {
   vi.useFakeTimers();
   try {

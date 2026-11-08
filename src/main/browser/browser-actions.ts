@@ -1417,6 +1417,9 @@ function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: Abort
   } };
 }
 
+// Fresh adapters share page interception and its native destruction cleanup.
+const siteGates = new WeakMap<WebContents, BrowserSiteNavigationGate>();
+
 // The page actions over real guests, as browser-tools.ts calls them. `origin` is the tools' own origin rule, passed in so both sides use one definition.
 export function createBrowserPageActions(
   attribution: InputAttribution,
@@ -1432,7 +1435,6 @@ export function createBrowserPageActions(
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
     return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
   };
-  const siteGates = new WeakMap<WebContents, BrowserSiteNavigationGate>();
   const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal) => {
     if (!live.authorizeSite) return;
     setBrowserPopupNavigation(live);

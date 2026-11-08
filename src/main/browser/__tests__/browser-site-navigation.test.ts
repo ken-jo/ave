@@ -3,14 +3,34 @@ import { gateBrowserSiteNavigation } from "../browser-site-navigation.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
 function navigation() {
-  let event: (method: string, params: Record<string, unknown>) => void = () => {};
+  const listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
   const send = vi.fn(async (method: string) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "main" } } } : {});
-  const cdp: CdpSession = { send, onEvent: (listener) => { event = listener; return () => { event = () => {}; }; } };
-  const paused = (id: string, url: string, frameId = "main") => event("Fetch.requestPaused", { requestId: id, frameId, resourceType: "Document", request: { url, method: "POST", postData: "unchanged" } });
+  const cdp: CdpSession = { send, onEvent: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+  const paused = (id: string, url: string, frameId = "main") => {
+    for (const event of listeners) event("Fetch.requestPaused", { requestId: id, frameId, resourceType: "Document", request: { url, method: "POST", postData: "unchanged" } });
+  };
   return { cdp, send, paused };
 }
 
 describe("browser site navigation admission", () => {
+  it("replaces a previous action's gate on the same page session", async () => {
+    const n = navigation();
+    const previousAuthorization = vi.fn(async () => {});
+    const previous = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => false, authorize: previousAuthorization });
+    const authorize = vi.fn(async () => {});
+    const current = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize });
+    n.paused("next-action", "https://other.example/path");
+    await vi.waitFor(() => expect(n.send).toHaveBeenCalledWith("Fetch.continueRequest", { requestId: "next-action" }));
+    expect(previousAuthorization).not.toHaveBeenCalled();
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(n.send).not.toHaveBeenCalledWith("Fetch.failRequest", expect.anything());
+    // Cleanup from an older action cannot remove the current page's gate.
+    previous();
+    n.paused("later-action", "https://other.example/later");
+    await vi.waitFor(() => expect(n.send).toHaveBeenCalledWith("Fetch.continueRequest", { requestId: "later-action" }));
+    expect(authorize).toHaveBeenCalledTimes(2);
+    current();
+  });
   it("holds click and submit navigation until consent without replaying the request", async () => {
     const n = navigation();
     let allow = () => {};

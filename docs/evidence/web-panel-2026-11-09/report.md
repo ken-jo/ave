@@ -32,6 +32,16 @@ RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest 
 
 GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx src/ui/renderer/__tests__/ApprovalDock.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-allowed-choices.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-agent-action.test.tsx src/i18n/__tests__`: 10 files / 121 tests passed (finding4-consumers.log). `bun run check:i18n-catalog`: 2 locales / 5800 keys passed. Native screenshots of these four cards were not rerun; rendered consumer tests verify their summaries and existing choices.
 
+### Cross-site navigation and interceptor lifetime
+
+The original cross-site scenario passes on origin/main 8a73d6a2fab572fdd5c09808da85df23524f79b4. In a detached same-clone worktree `/private/tmp/webfix/ave-main-check`, `bun run build` passed, then `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts -g 'streams a bounded live preview' --output=/private/tmp/webfix-review/native-main` passed 1 test (main-build.log, main-e2e.log). Thus the historical ERR_FAILED was a branch regression.
+
+Actual native diagnostic showed three handlers handling one interception ID: obsolete policies aborted it, then the current one tried to continue the invalidated ID. The boot loader creates fresh action adapters; factory-local gate ownership left stale handlers and destroyed callbacks attached to the retained page session. Gate and full-disposal ownership now share the session/guest lifetime, synchronously retiring the prior handler and native destruction callback. Stale cleanup cannot remove the replacement. Approval policies and request bytes are unchanged. Temporary diagnostics were removed. Independent review found no objection.
+
+RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-site-navigation.test.ts -t 'replaces a previous'`: 1 failed / 4 filtered (navigation-red.log). `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-actions.test.ts -t 'replaces site gate disposal'`: 1 failed / 164 filtered (navigation-disposal-red.log), two destroyed listeners instead of one.
+
+GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-site-navigation.test.ts src/main/browser/__tests__/browser-actions.test.ts`: 2 files / 170 tests passed (navigation-green-final.log). `bun run build:main` passed. `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts --output=/private/tmp/webfix-review/native-all`: 4 passed in 29.5 seconds (native-all.log), covering parked liveness, parked focus/selection, renderer evaluation after guest close, and live preview across a cross-site commit. Retained traces/screenshots are under native-all. These results supersede the historical ERR_FAILED below.
+
 ## Historical implementation and validation
 
 The following sections retain their original commit, base and validation context. Current corrections and validation are above and in the final validation section; old limitations are not current pass claims.

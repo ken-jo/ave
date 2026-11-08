@@ -16,7 +16,11 @@ export interface BrowserSiteNavigationGate {
   assertAllowed(): void;
 }
 
+// Action adapters can be short-lived; request interception belongs to the shared page session.
+const sessionGates = new WeakMap<CdpSession, () => void>();
+
 export async function gateBrowserSiteNavigation(cdp: CdpSession, mainFrameId: string, policy: BrowserNavigationPolicy): Promise<BrowserSiteNavigationGate> {
+  sessionGates.get(cdp)?.();
   const pending = new Set<string>();
   let pausedAt: number | undefined;
   let pausedMs = 0;
@@ -62,13 +66,16 @@ export async function gateBrowserSiteNavigation(cdp: CdpSession, mainFrameId: st
       }
     })();
   });
-  try { await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }); }
-  catch (error) { stopped = true; unwatch(); throw error; }
   const stop = () => {
+    if (stopped) return;
     stopped = true;
     for (const requestId of pending) void cdp.send("Fetch.failRequest", { requestId, errorReason: "Aborted" }).catch(() => {});
     pending.clear();
     unwatch();
+    if (sessionGates.get(cdp) === stop) sessionGates.delete(cdp);
   };
+  sessionGates.set(cdp, stop);
+  try { await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }] }); }
+  catch (error) { stop(); throw error; }
   return Object.assign(stop, { waiting: () => pending.size > 0, pausedMs: () => pausedMs + (pausedAt === undefined ? 0 : Date.now() - pausedAt), assertAllowed: () => { if (failure) throw failure; } });
 }
