@@ -639,7 +639,12 @@ export function ChatGroupSession({
     turnSignalTracker.noteUserStop();
     // chatAbort resolves only after the turn settles as interrupted, so the badge lands exactly when the stream stops — the
     // initiator marks it, not a "[중단됨]" literal pushed through the delta stream by the engine.
-    try { await api.chatAbort(); } catch { /* no-op */ }
+    try {
+      await api.chatAbort();
+    } catch {
+      // The abort never reached the turn, so it is still running and its end is the agent's again.
+      turnSignalTracker.clearUserStop();
+    }
     markLastAssistantInterrupted();
   }, [api, markLastAssistantInterrupted, turnSignalTracker]);
 

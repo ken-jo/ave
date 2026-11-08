@@ -595,6 +595,18 @@ describe("handleAsk — a send while a turn is still running", () => {
     expect(setErrorWithThought).not.toHaveBeenCalled();
   });
 
+  it("takes the marker back when an interrupting send fails for any other reason", async () => {
+    const chatSend = vi.fn(async () => { throw new Error("ipc channel closed"); });
+    const { result, markLastAssistantInterrupted, unmarkLastAssistantInterrupted } = setup({ chatSend, streaming: true, attachments: [] });
+
+    await act(async () => {
+      await result.current.handleAsk("new direction");
+    });
+
+    expect(markLastAssistantInterrupted).toHaveBeenCalledTimes(1);
+    expect(unmarkLastAssistantInterrupted).toHaveBeenCalledTimes(1);
+  });
+
   it("in the real transcript: the streaming answer wears the badge and the new question lands after it", async () => {
     const { result, chat, emitChatStream } = setup({ streaming: true, attachments: [], realChatState: true });
     act(() => chat().appendUserEntry("first"));
