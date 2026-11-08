@@ -177,6 +177,8 @@ export const en = {
   "appearanceTab.glassTintReducedHint": "Unavailable while Reduce transparency is on in macOS Accessibility settings; the window stays opaque.",
   "appearanceTab.glassTintKeywords": "transparency, translucent, vibrancy, glass, opacity",
   "appearanceTab.terminalTitle": "Code and terminal font",
+  "appearanceTab.previewUser": "Please explain this code.",
+  "appearanceTab.previewAssistant": "Here is an example that prints a greeting.",
   "appearanceTab.codeFontSystem": "System monospace",
   "appearanceTab.codeFontCustomAriaLabel": "Custom code font stack",
   "appearanceTab.terminalFamily": "Font family",

@@ -179,6 +179,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "appearanceTab.glassTintReducedHint": "macOS 손쉬운 사용에서 '투명도 줄이기'가 켜져 있어 사용할 수 없습니다. 창은 불투명하게 유지됩니다.",
   "appearanceTab.glassTintKeywords": "투명도, 반투명, 유리, 글래스, 불투명도",
   "appearanceTab.terminalTitle": "코드 및 터미널 글꼴",
+  "appearanceTab.previewUser": "이 코드를 설명해 주세요.",
+  "appearanceTab.previewAssistant": "결과를 출력하는 예제입니다.",
   "appearanceTab.codeFontSystem": "시스템 고정폭",
   "appearanceTab.codeFontCustomAriaLabel": "사용자 정의 코드 폰트 stack",
   "appearanceTab.terminalFamily": "글꼴 패밀리",

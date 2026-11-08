@@ -110,3 +110,21 @@ it("steps code metrics, disables at bounds and rolls back failed saves", async (
  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace", fontSize: "12px", lineHeight: "1.2" });
  expect(notifySaved).not.toHaveBeenCalled();
 });
+
+it("keeps one live chat preview above both font sections before saving completes", async () => {
+ api.updateSettings.mockImplementationOnce(() => new Promise(() => {}));
+ const view = render(<AppearanceTab />);
+ const preview = screen.getByTestId("font-chat-preview");
+ expect(preview).toHaveTextContent("이 코드를 설명해 주세요.");
+ expect(preview).toHaveTextContent("결과를 출력하는 예제입니다.");
+ expect(screen.getByTestId("terminal-font-preview").textContent!.split("\n")).toHaveLength(2);
+ const firstFontSection = view.container.querySelector('[data-settings-section="appearance-font"]')!;
+ expect(preview.compareDocumentPosition(firstFontSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ fireEvent.click(within(screen.getByTestId("font-family-presets")).getAllByRole("radio")[1]!);
+ expect(preview.style.fontFamily).toContain("Pretendard");
+ const previousSize = preview.style.fontSize;
+ fireEvent.click(within(screen.getByTestId("font-size-scale")).getAllByRole("radio")[0]!);
+ expect(preview.style.fontSize).not.toBe(previousSize);
+ fireEvent.click(within(screen.getByTestId("code-font-presets")).getAllByRole("radio")[1]!);
+ expect(screen.getByTestId("terminal-font-preview").style.fontFamily).toContain("JetBrains Mono");
+});

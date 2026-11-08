@@ -279,6 +279,8 @@ export function AppearanceTab() {
   const { t } = useTranslation();
   const { mode, setMode, darkScheme, lightScheme, setScheme } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
+  const terminal = useTerminalFontPreferences();
+  const { appearance } = useTheme();
   const notifySaved = useNotifySaved();
   const installedContent = useInstalledContent();
   const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
@@ -338,7 +340,14 @@ export function AppearanceTab() {
         <GlassTintControl />
       </SettingsSection>
 
-      {/* ── 폰트 ────────────────────────────────────── */}
+      <div data-testid="font-chat-preview" className="space-y-3 rounded-md border border-border p-3 text-sm"
+        style={{ fontFamily: family === "system" ? HOST_FONT_STACK : family,
+          fontSize: "calc(var(--type-size-14) * " + sizeScale / (appearance.font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT) + ")" }}>
+        <p className="ml-auto w-fit max-w-full rounded-md bg-message-user px-3 py-2 text-message-user-foreground">{t("appearanceTab.previewUser")}</p>
+        <p>{t("appearanceTab.previewAssistant")}</p>
+        <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded bg-muted p-3 font-mono"
+          style={{ fontFamily: terminal.font.family, fontSize: terminal.font.size, lineHeight: terminal.font.lineHeight }}>{"const greeting = 'Hello, Ave';\nconsole.log(greeting);"}</pre>
+      </div>
       <SettingsSection
         data-settings-section="appearance-font"
         title={t("appearanceTab.fontSectionTitle")}
@@ -421,7 +430,7 @@ export function AppearanceTab() {
         </div>
       </SettingsSection>
 
-      <TerminalFontSection />
+      <TerminalFontSection {...terminal} />
 
     </div>
   );
@@ -507,8 +516,7 @@ const CODE_FONT_PRESETS: ReadonlyArray<FontFamilyPreset> = [
   { value: "sf-mono", label: "SF Mono / Menlo", stack: '"SF Mono", Menlo, ui-monospace, monospace' },
 ];
 
-function TerminalFontSection() {
-  const { t } = useTranslation();
+function useTerminalFontPreferences() {
   const notifySaved = useNotifySaved();
   const { appearance } = useTheme();
   const [font, setFont] = useState(appearance.terminalFont);
@@ -520,6 +528,11 @@ function TerminalFontSection() {
     setFailed(false);
     void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => { setFailed(true); setFont(appearance.terminalFont); });
   };
+  return { font, failed, updateFont };
+}
+
+function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof useTerminalFontPreferences>) {
+  const { t } = useTranslation();
   const activePreset = presetForStack(font.family, CODE_FONT_PRESETS);
   return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
     {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
@@ -543,10 +556,6 @@ function TerminalFontSection() {
       <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
         format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
     </div>
-    <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded border border-border p-4"
-      style={{ fontFamily: font.family, fontSize: font.size, lineHeight: font.lineHeight }}>
-      {"$ printf 'Hello, Ave\\n'\nHello, Ave\n0123456789  Aa Bb 가나"}
-    </pre>
   </SettingsSection>;
 }
 
