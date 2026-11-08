@@ -80,7 +80,12 @@ const glassStates = new WeakMap<WebContents, InitialGlassState>();
 function initialGlassState(contents: WebContents): InitialGlassState {
   const state = glassStates.get(contents);
   // Only windows createWindow made reach here (the caller checks ownership), and each records its state when it is made.
-  if (state === undefined) throw new Error("Main window has no recorded glass state");
+  if (state === undefined) {
+    // The renderer only sees "Initial appearance unavailable"; the cause has to reach the main log.
+    const error = new Error("Main window has no recorded glass state");
+    log.error({ err: error, webContentsId: contents.id }, "Initial appearance requested by a main window with no recorded glass state");
+    throw error;
+  }
   return state;
 }
 
