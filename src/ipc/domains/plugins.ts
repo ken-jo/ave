@@ -329,6 +329,11 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
           return pluginConfigError("no-such-plugin", `unknown plugin: ${pluginId}`);
         }
         log.error(`plugin enabled-state change failed (${pluginId}): %s`, message);
+        const committedEnabled = pluginRuntime.isPluginEnabled(pluginId);
+        if (committedEnabled === enabled) {
+          emitHostEvent("plugin.enabled-changed", { pluginId, enabled: committedEnabled });
+          broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled: committedEnabled });
+        }
         return pluginConfigError("toggle-failed", "plugin enabled state could not be changed");
       }
       emitHostEvent("plugin.enabled-changed", { pluginId, enabled });

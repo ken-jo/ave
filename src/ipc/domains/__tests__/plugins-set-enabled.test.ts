@@ -80,6 +80,7 @@ async function setup() {
     pluginRuntime: {
       listPluginIds: vi.fn((): string[] => ["com.example.meeting"]),
       setPluginEnabled,
+      isPluginEnabled: vi.fn(() => true),
       callFromUi,
       getPluginManifest: vi.fn(() => pluginManifest),
       setConfigOverride: vi.fn(),
@@ -334,6 +335,22 @@ describe("ave:plugins:set-enabled", () => {
     expect(hostEventMock.emit).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).not.toHaveBeenCalledWith("ave:plugins:enabled-changed", expect.anything());
+    }
+  });
+
+  it("broadcasts a committed disable while reporting unfinished retirement", async () => {
+    const { deps, setPluginEnabled, appWindows } = await setup();
+    deps.pluginRuntime.isPluginEnabled.mockReturnValue(false);
+    setPluginEnabled.mockRejectedValueOnce(new Error("generation stop is unconfirmed; retry the enabled-state change"));
+    const result = await invoke("ave:plugins:set-enabled", "com.example.meeting", false);
+    expect(result).toMatchObject({ ok: false, error: "toggle-failed" });
+    expect(hostEventMock.emit).toHaveBeenCalledWith("plugin.enabled-changed", {
+      pluginId: "com.example.meeting", enabled: false,
+    });
+    for (const win of appWindows) {
+      expect(win.webContents.send).toHaveBeenCalledWith("ave:plugins:enabled-changed", {
+        pluginId: "com.example.meeting", enabled: false,
+      });
     }
   });
 });

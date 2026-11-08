@@ -9,6 +9,11 @@ import { createNoopHostApiForTests } from "../sandbox.js";
 import type { PluginRegistryTrust } from "../../types.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { sha256Hex } from "../../../lib/hex-digest-equal.js";
+import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
+import { SkillStore } from "../../../main/skill-store.js";
+import { PersonaPromptStore } from "../../../main/persona-prompt-store.js";
+import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
+import { withPluginInstallLock } from "../../install-lifecycle.js";
 import {
   buildInstallReceipt,
   installReceiptPath,
@@ -127,6 +132,8 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     releaseRegistryCommit();
     await makeTreeWritable(testDir);
     await rm(testDir, { recursive: true, force: true });
@@ -478,6 +485,102 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
+  });
+
+  it.each([[2500, false], [12000, false], [12000, true]] as const)("recovers a committed disable after a %s ms release, queued enable=%s", async (releaseMs, queuedEnable) => {
+    const runtime = makeRuntime();
+    const lifecycle = new PluginBundleLifecycle({
+      pluginRuntime: runtime,
+      receiptCacheRoot: testDir,
+      skillStore: new SkillStore({ userDir: join(testDir, "skills") }),
+      skillOverlay: { clearPluginGeneration: vi.fn() },
+      personaPromptStore: new PersonaPromptStore({ userDir: join(testDir, "prompts") }),
+      hookManager: new ScriptHookManager(),
+      revokeOperationGeneration: vi.fn(),
+      onContributionsUpdated: vi.fn(),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration: vi.fn(async () => ({ records: [], predecessorServerIds: [], predecessorToolNames: [],
+          registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false })),
+        publishBundledGeneration: vi.fn(),
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+      loopbackManager: {
+        prepareGeneration: vi.fn(async () => ({})),
+        prepareRemoval: vi.fn(() => ({})),
+        publishGeneration: vi.fn(), postPublishGeneration: vi.fn(),
+        discardGeneration: vi.fn(async () => undefined), retireGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+    runtime.setGenerationAccess(lifecycle);
+    await runtime.startAll();
+    const projection = runtime.getRuntimeGenerationProjection("se-plugin");
+    expect(projection).toBeDefined();
+    if (!projection?.instance.stop) throw new Error("Plugin stop fixture is missing");
+    let entered!: () => void;
+    const inStop = new Promise<void>(resolve => { entered = resolve; });
+    const originalStop = projection.instance.stop.bind(projection.instance);
+    let stopped = false;
+    const stop = vi.spyOn(projection.instance, "stop").mockImplementation(async () => {
+      entered();
+      await new Promise(resolve => setTimeout(resolve, releaseMs));
+      await originalStop();
+      stopped = true;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let outcome: { error?: unknown } | undefined;
+    const disable = runtime.setPluginEnabled("se-plugin", false).then(
+      () => { outcome = {}; }, error => { outcome = { error }; },
+    );
+    await inStop;
+    await vi.waitFor(() => expect(outcome).toBeDefined(), { timeout: 20000 });
+    await disable;
+    if (releaseMs > 6000) {
+      expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
+        loadStatus: "failed", installFailureMessage: expect.stringContaining("unconfirmed; retry"),
+      });
+      await expect(runtime.restartPlugin("se-plugin")).rejects.toThrow("shutdown is unconfirmed");
+    }
+    expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+    expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+    expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
+      active: false, runtimeLoaded: false,
+    });
+    const registry = JSON.parse(await readFile(registryPath, "utf8"));
+    expect(registry.plugins[0].enabled).toBe(false);
+    if (releaseMs > 6000) expect(outcome?.error).toBeDefined();
+    else expect(outcome?.error).toBeUndefined();
+    expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
+    let unlock: (() => void) | undefined;
+    let locked: (() => void) | undefined;
+    const lockReady = new Promise<void>(resolve => { locked = resolve; });
+    const lockHeld = queuedEnable ? withPluginInstallLock("se-plugin", async () => {
+      locked?.();
+      await new Promise<void>(resolve => { unlock = resolve; });
+    }) : undefined;
+    if (lockHeld) await lockReady;
+    const enable = queuedEnable ? runtime.setPluginEnabled("se-plugin", true) : undefined;
+    await vi.advanceTimersByTimeAsync(releaseMs);
+    await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 20000 });
+    unlock?.();
+    await lockHeld;
+    if (enable) {
+      await enable;
+      await withPluginInstallLock("se-plugin", async () => undefined);
+      expect(runtime.isPluginEnabled("se-plugin")).toBe(true);
+    } else {
+      await runtime.setPluginEnabled("se-plugin", false);
+      expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
+    }
+    expect(stop).toHaveBeenCalledTimes(1);
+    const journal = JSON.parse(await readFile(join(testDir, "plugin-retirement-journal.json"), "utf8"));
+    expect(journal.retirements).toEqual([]);
+    if (!enable) await runtime.setPluginEnabled("se-plugin", true);
+    await expect(runtime.call("se_ping")).resolves.toBe("pong");
+    await runtime.setPluginEnabled("se-plugin", false);
+    expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
   });
 
   /** After restart a disabled install remains discoverable but has no admitted runtime until receipt verification. */
