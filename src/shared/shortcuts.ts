@@ -108,7 +108,9 @@ const MODIFIER_ALIASES: Readonly<Record<string, "commandOrControl" | "command" |
 
 const NAMED_KEYS = [
   "Enter", "Tab", "Space", "Esc", "Backspace", "Delete", "Up", "Down", "Left", "Right",
-  "Home", "End", "PageUp", "PageDown", "Plus", "num0", "numadd", "numsub",
+  "Home", "End", "Insert", "PageUp", "PageDown", "Plus",
+  "num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9",
+  "numdec", "numadd", "numsub", "nummult", "numdiv",
 ] as const;
 const NAMED_KEY_ALIASES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(NAMED_KEYS.map((name) => [name.toLowerCase(), name])),
@@ -248,11 +250,13 @@ const MODIFIER_KEY_NAMES: ReadonlySet<string> = new Set(["Control", "Shift", "Al
  * key, or Shift turning 1 into "!". */
 function eventKeyToken(event: ShortcutKeyEvent): string | null {
   const key = event.key;
-  if (event.code === "Numpad0" && key === "0") return "num0";
+  const numpadDigit = /^Numpad([0-9])$/.exec(event.code ?? "");
+  if (numpadDigit && key === numpadDigit[1]) return `num${numpadDigit[1]}`;
+  if (event.code === "NumpadDecimal" && (key === "." || key === ",")) return "numdec";
   if (event.code === "NumpadAdd" && key === "+") return "numadd";
   if (event.code === "NumpadSubtract" && key === "-") return "numsub";
-  if (event.code?.startsWith("Numpad")) return null;
-  if (event.code === "Equal" && event.shiftKey && key === "+") return "=";
+  if (event.code === "NumpadMultiply" && key === "*") return "nummult";
+  if (event.code === "NumpadDivide" && key === "/") return "numdiv";
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
   if (key === "ArrowDown") return "Down";
@@ -278,30 +282,11 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
   const key = eventKeyToken(event);
-  return (chord.key === "Plus" ? event.key === "+" && !event.code?.startsWith("Numpad") : key === chord.key)
+  return key === chord.key
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt
     && event.shiftKey === chord.shift;
-}
-
-/** Cover every matching class: recorded singleton keys and printed plus with its code-dependent recording. */
-function bindingWitnessEvents(accelerators: readonly (string | null)[], platform: ShortcutPlatform): ShortcutKeyEvent[] {
-  return accelerators.flatMap((accelerator) => {
-    const parsed = parseAccelerator(accelerator);
-    if (!parsed) return [];
-    const chord = resolveChord(parsed, platform);
-    const modifiers = { metaKey: chord.meta, ctrlKey: chord.ctrl, altKey: chord.alt, shiftKey: chord.shift };
-    return [
-      { key: chord.key === "Plus" ? "+" : chord.key, ...modifiers },
-      { key: "+", code: "Equal", ...modifiers },
-    ];
-  });
-}
-
-/** Some single event matches both bindings; compatibility is defined by the matcher itself. */
-export function bindingsOverlap(a: string | null, b: string | null, platform: ShortcutPlatform): boolean {
-  return bindingWitnessEvents([a, b], platform).some((event) => matchesAccelerator(a, event, platform) && matchesAccelerator(b, event, platform));
 }
 
 export type RecordedAccelerator =
@@ -587,24 +572,6 @@ function scopesOverlap(a: ShortcutScope, b: ShortcutScope): boolean {
   return a === b || WINDOW_WIDE_SCOPES.has(a) || WINDOW_WIDE_SCOPES.has(b);
 }
 
-/** Choose by recorded identity, then registry order, before any renderer listener acts.
- * Layered meanings and fixed contextual keys retain their focus guards. */
-export function matchesResolvedShortcut(id: ShortcutId, event: ShortcutKeyEvent, input: ShortcutResolutionInput, platform: ShortcutPlatform): boolean {
-  const definition = shortcutDefinition(id);
-  if (definition.layeredOn !== undefined) return matchesResolvedShortcut(definition.layeredOn as ShortcutId, event, input, platform);
-  const accelerator = resolveShortcut(id, input, platform);
-  if (!matchesAccelerator(accelerator, event, platform)) return false;
-  const recorded = acceleratorFromEvent(event, platform);
-  const identity = recorded.kind === "accelerator" ? chordSignature(recorded.accelerator, platform) : null;
-  const candidates = resolveShortcuts(input, platform).filter((row) => row.definition.layeredOn === undefined
-    && scopesOverlap(definition.scope, row.definition.scope)
-    && (definition.readOnly === undefined || row.rebindable || row.id === id)
-    && bindingsOverlap(accelerator, row.accelerator, platform)
-    && matchesAccelerator(row.accelerator, event, platform));
-  const winner = candidates.find((row) => chordSignature(row.accelerator as string, platform) === identity) ?? candidates[0];
-  return winner?.id === id;
-}
-
 /** Ids of rows that share a chord with another row whose scope overlaps theirs. Two fixed rows never count: they are
  * designed to coexist (Enter sends in the composer and opens a tree row) and the user could not change either. A layered
  * row is the same key by definition, so it is not a conflict either. */
@@ -617,10 +584,7 @@ export function conflictingShortcutIds(rows: readonly ResolvedShortcut[], platfo
       const b = keyed[j];
       if (!a.rebindable && !b.rebindable) continue;
       if (!scopesOverlap(a.definition.scope, b.definition.scope)) continue;
-      const nativeOverlap = (!a.rebindable || !b.rebindable)
-        && nativeAcceleratorIdentity(a.accelerator, platform) !== null
-        && nativeAcceleratorIdentity(a.accelerator, platform) === nativeAcceleratorIdentity(b.accelerator, platform);
-      if (!nativeOverlap && !bindingsOverlap(a.accelerator, b.accelerator, platform)) continue;
+      if (chordSignature(a.accelerator as string, platform) !== chordSignature(b.accelerator as string, platform)) continue;
       conflicts.add(a.id);
       conflicts.add(b.id);
     }
@@ -659,6 +623,8 @@ export function shortcutBindingRefusal(
 ): ShortcutBindingRefusal | null {
   if (!isShortcutId(id)) return { reason: "unknown-shortcut" };
   if (!isRebindableShortcut(id)) return { reason: "read-only" };
+  const owner = fixedShortcutOwner(accelerator, platform);
+  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
   const parsed = parseAccelerator(accelerator);
   if (!parsed || canonicalAccelerator(accelerator) !== accelerator) return { reason: "malformed" };
   const chord = resolveChord(parsed, platform);
@@ -668,10 +634,8 @@ export function shortcutBindingRefusal(
   if (platform === "other" && chord.meta) return { reason: "os-reserved" };
   const signature = chordSignature(accelerator, platform);
   if (OS_RESERVED[platform].some((reserved) => chordSignature(reserved, platform) === signature)) return { reason: "os-reserved" };
-  const owner = fixedShortcutOwner(accelerator, platform);
-  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
   const toggle = resolveShortcut("system.toggleWindow", input, platform);
-  if (toggle !== null && nativeAcceleratorIdentity(toggle, platform) === nativeAcceleratorIdentity(accelerator, platform)) {
+  if (toggle !== null && chordSignature(toggle, platform) === signature) {
     return { reason: "fixed-key", ownerId: "system.toggleWindow" };
   }
   return null;
@@ -756,13 +720,13 @@ export function applyShortcutBindingsPatch(
     for (let j = i + 1; j < rows.length; j++) {
       const a = rows[i];
       const b = rows[j];
-      if (!scopesOverlap(a.definition.scope, b.definition.scope) || !bindingsOverlap(a.accelerator, b.accelerator, platform)) continue;
-      const priorA = before.find((row) => row.id === a.id)?.accelerator ?? null;
-      const priorB = before.find((row) => row.id === b.id)?.accelerator ?? null;
-      const worsened = bindingWitnessEvents([a.accelerator, b.accelerator], platform).some((event) =>
-        matchesAccelerator(a.accelerator, event, platform) && matchesAccelerator(b.accelerator, event, platform)
-        && !(matchesAccelerator(priorA, event, platform) && matchesAccelerator(priorB, event, platform)));
-      if (!worsened) continue;
+      if (!scopesOverlap(a.definition.scope, b.definition.scope) || a.accelerator === null || b.accelerator === null
+        || chordSignature(a.accelerator, platform) !== chordSignature(b.accelerator, platform)) continue;
+      const priorA = before.find((row) => row.id === a.id)?.accelerator;
+      const priorB = before.find((row) => row.id === b.id)?.accelerator;
+      if (priorA != null && priorB != null
+        && chordSignature(priorA, platform) === chordSignature(a.accelerator, platform)
+        && chordSignature(priorB, platform) === chordSignature(b.accelerator, platform)) continue;
       throw new ShortcutBindingsPatchError("Shortcut bindings overlap.");
     }
   }

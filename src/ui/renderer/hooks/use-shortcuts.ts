@@ -4,7 +4,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import {
   formatAccelerator,
-  matchesResolvedShortcut,
+  matchesAccelerator,
   NO_SHORTCUT_OVERRIDES,
   resolveShortcut,
   type ShortcutId,
@@ -53,7 +53,7 @@ function shortcutAccelerator(id: ShortcutId): string | null {
 export function matchesShortcut(id: ShortcutId, event: ShortcutKeyEvent): boolean {
   if (captureActive) return false;
   const platform = rendererShortcutPlatform();
-  return matchesResolvedShortcut(id, event, current, platform);
+  return matchesAccelerator(resolveShortcut(id, current, platform), event, platform);
 }
 
 /** The binding as the platform writes it ("⌘K" / "Ctrl+K"), or null when the command has no key. */

@@ -6,8 +6,6 @@ import {
   acceleratorKeycaps,
   applyShortcutBindingsPatch,
   canonicalAccelerator,
-  bindingsOverlap,
-  matchesResolvedShortcut,
   nativeAcceleratorIdentity,
   conflictingShortcutIds,
   formatAccelerator,
@@ -62,80 +60,6 @@ describe("native reservation identity", () => {
   });
 });
 
-describe("printed plus and equals", () => {
-  it.each(["darwin", "other"] as const)("keeps renderer matching and conflicts layout-sensitive on %s", (platform) => {
-    const equals = ev("=", { code: "Digit0", altKey: true, shiftKey: true });
-    const plus = ev("+", { code: "BracketRight", altKey: true, shiftKey: true });
-    const physical = ev("+", { code: "Equal", altKey: true, shiftKey: true });
-    for (const [event, binding] of [[equals, "Alt+Shift+="], [plus, "Alt+Shift+Plus"], [physical, "Alt+Shift+="]] as const) {
-      expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator: binding });
-      expect(matchesAccelerator(binding, event, platform)).toBe(true);
-      expect(matchesAccelerator(binding === "Alt+Shift+=" ? "Alt+Shift+Plus" : "Alt+Shift+=", event, platform)).toBe(event === physical);
-    }
-    const persisted = { "app.search": "Alt+Shift+Plus" };
-    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, persisted, platform);
-    expect(loadShortcutBindings(bindings, platform)).toEqual({ bindings: persisted, dropped: [] });
-    for (const event of [physical, plus]) {
-      expect(matchesAccelerator(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, platform), event, platform)).toBe(true);
-    }
-    expect(matchesAccelerator(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, platform), equals, platform)).toBe(false);
-    expect(matchesAccelerator(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, platform), { ...physical, shiftKey: false }, platform)).toBe(false);
-    const rows = resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" } }, platform);
-    expect([...conflictingShortcutIds(rows, platform)].sort()).toEqual(["app.commandPalette", "app.search"]);
-    const duplicate = resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+Plus" } }, platform);
-    expect(conflictingShortcutIds(duplicate, platform).has("app.search")).toBe(true);
-    expect(shortcutBindingRefusal("app.search", "Alt+Shift+Plus", platform, { ...NO_SHORTCUT_OVERRIDES, enabled: true, toggleWindow: "Alt+Shift+=" })).toEqual({ reason: "fixed-key", ownerId: "system.toggleWindow" });
-  });
-});
-
-describe("overlapping printed plus bindings", () => {
-  it.each(["darwin", "other"] as const)("refuses shifted equals pairs atomically on %s", (platform) => {
-    const bindings = { "app.search": "Alt+Shift+Plus" };
-    for (const pair of [
-      { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" },
-      { "app.commandPalette": "Alt+Shift+=", "app.search": "Alt+Shift+Plus" },
-    ]) {
-      expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, pair, platform)).toThrow(/overlap/);
-    }
-    expect(() => applyShortcutBindingsPatch({ ...NO_SHORTCUT_OVERRIDES, bindings }, { "app.commandPalette": "Alt+Shift+=" }, platform)).toThrow(/overlap/);
-    expect(applyShortcutBindingsPatch({ ...NO_SHORTCUT_OVERRIDES, bindings }, { "app.search": null, "app.commandPalette": "Alt+Shift+=" }, platform)).toEqual({ "app.commandPalette": "Alt+Shift+=" });
-    expect(bindings).toEqual({ "app.search": "Alt+Shift+Plus" });
-  });
-});
-
-describe("shifted plus identity", () => {
-  it.each(["darwin", "other"] as const)("reserves equivalent zoom spellings and records physical Equal on %s", (platform) => {
-    const primary = platform === "darwin" ? { metaKey: true } : { ctrlKey: true };
-    const event = ev("+", { code: "Equal", shiftKey: true, ...primary });
-    expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator: "CommandOrControl+Shift+=" });
-    for (const modifier of ["CommandOrControl", "CmdOrCtrl", platform === "darwin" ? "Command" : "Control"]) {
-      for (const key of ["Plus", "="]) {
-        const binding = `${modifier}+Shift+${key}`;
-        const canonical = canonicalAccelerator(binding);
-        if (canonical === null) throw new Error("Expected accelerator");
-        expect(fixedShortcutOwner(binding, platform)?.id).toBe("menu.zoomInShifted");
-        expect(shortcutBindingRefusal("app.search", canonical, platform, NO_SHORTCUT_OVERRIDES)).toEqual({ reason: "fixed-key", ownerId: "menu.zoomInShifted" });
-        expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": binding }, platform)).toThrow();
-        expect(loadShortcutBindings({ "app.search": binding }, platform).bindings).toEqual({});
-        expect(normalizeShortcuts({ toggleWindow: binding, enabled: true }, { ...NO_SHORTCUT_OVERRIDES }, platform, () => {}).toggleWindow).toBeNull();
-        const conflicts = conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": binding } }, platform), platform);
-        expect(conflicts.has("app.search")).toBe(true);
-        expect(conflicts.has("menu.zoomInShifted")).toBe(true);
-        expect(matchesAccelerator(binding, event, platform)).toBe(true);
-      }
-    }
-    for (const shiftKey of [false, true]) {
-      const elsewhere = ev("+", { code: "BracketRight", altKey: true, shiftKey });
-      const binding = shiftKey ? "Alt+Shift+Plus" : "Alt+Plus";
-      expect(acceleratorFromEvent(elsewhere, platform)).toEqual({ kind: "accelerator", accelerator: binding });
-      expect(matchesAccelerator(binding, elsewhere, platform)).toBe(true);
-      expect(matchesAccelerator(shiftKey ? "Alt+Shift+=" : "Alt+=", elsewhere, platform)).toBe(false);
-      expect(loadShortcutBindings({ "app.search": binding }, platform).bindings).toEqual({ "app.search": binding });
-      expect(matchesAccelerator(binding, ev("+", { code: "NumpadAdd", altKey: true, shiftKey }), platform)).toBe(false);
-    }
-  });
-});
-
 describe("keypad identity", () => {
   const keys = [
     ["0", "Numpad0", "num0", "0", "menu.resetZoom", "Num 0"],
@@ -166,10 +90,10 @@ describe("keypad identity", () => {
     const home = resolveShortcut("project.openHome", NO_SHORTCUT_OVERRIDES, platform);
     expect(matchesAccelerator(home, ev("0", { code: "Digit0", ...primary }), platform)).toBe(true);
     expect(matchesAccelerator(home, ev("0", { code: "Numpad0", ...primary }), platform)).toBe(false);
-    expect(acceleratorFromEvent(ev("Insert", { code: "Numpad0", ...primary }), platform)).toEqual({ kind: "unsupported" });
+    expect(acceleratorFromEvent(ev("Insert", { code: "Numpad0", ...primary }), platform)).toEqual({ kind: "accelerator", accelerator: "CommandOrControl+Insert" });
     expect(matchesAccelerator("CommandOrControl+num0", ev("Insert", { code: "Numpad0", ...primary }), platform)).toBe(false);
-    expect(matchesAccelerator("CommandOrControl+End", ev("End", { code: "Numpad1", ...primary }), platform)).toBe(false);
-    expect(acceleratorFromEvent(ev("End", { code: "Numpad1", ...primary }), platform)).toEqual({ kind: "unsupported" });
+    expect(matchesAccelerator("CommandOrControl+End", ev("End", { code: "Numpad1", ...primary }), platform)).toBe(true);
+    expect(acceleratorFromEvent(ev("End", { code: "Numpad1", ...primary }), platform)).toEqual({ kind: "accelerator", accelerator: "CommandOrControl+End" });
   });
 });
 
@@ -524,70 +448,69 @@ describe("persisted bindings", () => {
 });
 
 
-describe("event overlap policy", () => {
-  it.each(["darwin", "other"] as const)("retains old overlaps while permitting independent edits and repairs on %s", (platform) => {
-    const persisted = { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" };
-    const loaded = loadShortcutBindings(persisted, platform);
-    expect(loaded).toEqual({ bindings: persisted, dropped: [] });
-    const current = { ...NO_SHORTCUT_OVERRIDES, bindings: loaded.bindings };
-    expect([...conflictingShortcutIds(resolveShortcuts(current, platform), platform)].sort()).toEqual(["app.commandPalette", "app.search"]);
-    expect(applyShortcutBindingsPatch(current, { "workspace.openReview": "Alt+F2" }, platform)).toEqual({ ...persisted, "workspace.openReview": "Alt+F2" });
-    expect(applyShortcutBindingsPatch(current, {}, platform)).toEqual(persisted);
-    for (const id of ["app.search", "app.commandPalette"] as const) {
-      const expected = { ...persisted };
-      delete (expected as Partial<typeof persisted>)[id];
-      expect(applyShortcutBindingsPatch(current, { [id]: null }, platform)).toEqual(expected);
-    }
-    expect(() => applyShortcutBindingsPatch(current, { "app.commandPalette": "Alt+Shift+Plus" }, platform)).toThrow(/overlap/);
-    const duplicate = { ...current, bindings: { ...persisted, "app.commandPalette": "Alt+Shift+Plus" } };
-    expect(applyShortcutBindingsPatch(duplicate, { "app.commandPalette": "Alt+Shift+=" }, platform)).toEqual(persisted);
-    const physical = ev("+", { code: "Equal", altKey: true, shiftKey: true });
-    for (const id of ["app.search", "app.commandPalette"] as const) {
-      expect(matchesResolvedShortcut(id, physical, current, platform)).toBe(id === "app.commandPalette");
-      expect(matchesResolvedShortcut(id, { ...physical, code: "BracketRight" }, current, platform)).toBe(id === "app.search");
-      expect(matchesResolvedShortcut(id, physical, duplicate, platform)).toBe(id === "app.commandPalette");
-    }
-    expect(persisted).toEqual({ "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" });
-  });
-
-  it.each(["darwin", "other"] as const)("keeps all keypad codes exclusive and ordinary plus compatible on %s", (platform) => {
-    for (const shiftKey of [false, true]) {
-      const prefix = shiftKey ? "Alt+Shift+" : "Alt+";
-      const patch = { "app.search": `${prefix}Plus`, "app.commandPalette": `${prefix}numadd` };
-      const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, patch, platform);
-      const current = { ...NO_SHORTCUT_OVERRIDES, bindings };
+describe("token identity", () => {
+  it.each(["darwin", "other"] as const)("records and matches every keypad token on %s", (platform) => {
+    const keys = [
+      ...Array.from({ length: 10 }, (_, n) => [String(n), `Numpad${n}`, `num${n}`]),
+      [".", "NumpadDecimal", "numdec"], [",", "NumpadDecimal", "numdec"],
+      ["+", "NumpadAdd", "numadd"], ["-", "NumpadSubtract", "numsub"],
+      ["*", "NumpadMultiply", "nummult"], ["/", "NumpadDivide", "numdiv"], ["Enter", "NumpadEnter", "Enter"],
+      ["Insert", "Numpad0", "Insert"], ["End", "Numpad1", "End"], ["ArrowDown", "Numpad2", "Down"],
+      ["PageDown", "Numpad3", "PageDown"], ["ArrowLeft", "Numpad4", "Left"], ["ArrowRight", "Numpad6", "Right"],
+      ["Home", "Numpad7", "Home"], ["ArrowUp", "Numpad8", "Up"], ["PageUp", "Numpad9", "PageUp"], ["Delete", "NumpadDecimal", "Delete"],
+    ];
+    for (const [key, code, token] of keys) {
+      const event = ev(key, { code, altKey: true, shiftKey: true });
+      const accelerator = `Alt+Shift+${token}`;
+      expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator });
+      expect(canonicalAccelerator(accelerator)).toBe(accelerator);
+      expect(matchesAccelerator(accelerator, event, platform)).toBe(true);
+      expect(matchesAccelerator(accelerator, { ...event, shiftKey: false }, platform)).toBe(false);
+      const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": accelerator }, platform);
       expect(loadShortcutBindings(bindings, platform)).toEqual({ bindings, dropped: [] });
-      expect(conflictingShortcutIds(resolveShortcuts(current, platform), platform).size).toBe(0);
-      expect(bindingsOverlap(patch["app.search"], patch["app.commandPalette"], platform)).toBe(false);
-      for (const code of ["NumpadAdd", "Numpad0", "NumpadSubtract", "Numpad1"]) {
-        for (const key of ["+", "=", "-"]) {
-          const event = ev(key, { code, altKey: true, shiftKey });
-          for (const ordinary of ["Plus", "=", "-"]) expect(matchesAccelerator(`${prefix}${ordinary}`, event, platform)).toBe(false);
-        }
-      }
-      for (const code of [undefined, "Equal", "BracketRight", "Digit0", "KeyA"]) {
-        expect(matchesAccelerator(`${prefix}Plus`, ev("+", { code, altKey: true, shiftKey }), platform)).toBe(true);
-      }
-      const event = ev("+", { code: "NumpadAdd", altKey: true, shiftKey });
-      expect(matchesResolvedShortcut("app.search", event, current, platform)).toBe(false);
-      expect(matchesResolvedShortcut("app.commandPalette", event, current, platform)).toBe(true);
+    }
+    const primary = platform === "darwin" ? { metaKey: true } : { ctrlKey: true };
+    for (const code of ["Enter", "NumpadEnter"]) {
+      expect(matchesAccelerator(resolveShortcut("composer.sendNow", NO_SHORTCUT_OVERRIDES, platform), ev("Enter", { code, ...primary }), platform)).toBe(true);
     }
   });
 
-  it.each(["darwin", "other"] as const)("derives symmetric overlap from matching events and resolved modifiers on %s", (platform) => {
-    const keys = ["Plus", "=", "-", "0", "num0", "numadd", "numsub", "F2", "K", "Enter"];
-    for (const shift of ["", "Shift+"]) {
-      for (const a of keys) for (const b of keys) {
-        const left = `Alt+${shift}${a}`;
-        const right = `Alt+${shift}${b}`;
-        const expected = a === b || (shift !== "" && [a, b].includes("Plus") && [a, b].includes("="));
-        expect(bindingsOverlap(left, right, platform)).toBe(expected);
-        expect(bindingsOverlap(right, left, platform)).toBe(expected);
-        expect(bindingsOverlap(left, `Control+${shift}${b}`, platform)).toBe(false);
+  it.each(["darwin", "other"] as const)("uses printed plus for US shifted equals and keeps equals distinct on %s", (platform) => {
+    const persisted = { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" };
+    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, persisted, platform);
+    expect(loadShortcutBindings(bindings, platform)).toEqual({ bindings: persisted, dropped: [] });
+    expect(conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings }, platform), platform).size).toBe(0);
+    for (const code of ["Equal", "BracketRight"]) {
+      const event = ev("+", { code, altKey: true, shiftKey: true });
+      expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator: "Alt+Shift+Plus" });
+      expect(matchesAccelerator(bindings["app.search"] ?? null, event, platform)).toBe(true);
+      expect(matchesAccelerator(bindings["app.commandPalette"] ?? null, event, platform)).toBe(false);
+    }
+    const duplicate = { ...NO_SHORTCUT_OVERRIDES, bindings: { ...persisted, "app.commandPalette": "Alt+Shift+Plus" } };
+    expect([...conflictingShortcutIds(resolveShortcuts(duplicate, platform), platform)].sort()).toEqual(["app.commandPalette", "app.search"]);
+    expect(applyShortcutBindingsPatch(duplicate, { "workspace.openReview": "Alt+F2" }, platform)).toEqual({ ...duplicate.bindings, "workspace.openReview": "Alt+F2" });
+    expect(applyShortcutBindingsPatch(duplicate, { "app.commandPalette": null }, platform)).toEqual({ "app.search": "Alt+Shift+Plus" });
+    for (const patch of [
+      { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+Plus" },
+      { "app.commandPalette": "Alt+Shift+Plus", "app.search": "Alt+Shift+Plus" },
+    ]) expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, patch, platform)).toThrow(/overlap/);
+  });
+
+  it.each(["darwin", "other"] as const)("drops and reports every fixed zoom alias on %s", (platform) => {
+    const primary = platform === "darwin" ? "Cmd" : "Ctrl";
+    for (const token of ["=", "Shift+=", "Plus", "Shift+Plus", "numadd", "-", "Shift+-", "numsub", "num0"]) {
+      for (const modifier of ["CommandOrControl", "CmdOrCtrl", primary, `${primary}+${primary}`]) {
+        const accelerator = `${modifier}+${token}`;
+        const owner = fixedShortcutOwner(accelerator, platform);
+        expect(owner).not.toBeNull();
+        expect(shortcutBindingRefusal("app.search", accelerator, platform, NO_SHORTCUT_OVERRIDES)).toEqual({ reason: "fixed-key", ownerId: owner?.id });
+        expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": accelerator }, platform)).toThrow(/fixed-key/);
+        const dropped = [{ id: "app.search", value: accelerator, reason: "fixed-key" }];
+        expect(loadShortcutBindings({ "app.search": accelerator }, platform)).toEqual({ bindings: {}, dropped });
+        const reports: unknown[] = [];
+        expect(normalizeShortcuts({ toggleWindow: accelerator, bindings: { "app.search": accelerator } }, NO_SHORTCUT_OVERRIDES, platform, (entries) => reports.push(...entries))).toEqual(NO_SHORTCUT_OVERRIDES);
+        expect(reports).toEqual(dropped);
       }
     }
-    expect(bindingsOverlap("CommandOrControl+K", platform === "darwin" ? "Command+K" : "Control+K", platform)).toBe(true);
-    expect(bindingsOverlap(null, "Alt+F2", platform)).toBe(false);
-    expect(bindingsOverlap("invalid", "Alt+F2", platform)).toBe(false);
   });
 });

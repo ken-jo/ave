@@ -45,22 +45,27 @@ afterEach(() => {
 });
 
 describe("ShortcutsTab", () => {
-  it.each(["darwin", "other"] as const)("refuses shifted Equal and preserves another plus location on %s", async (platform) => {
+  it.each(["darwin", "other"] as const)("refuses every fixed zoom chord and records printed plus on %s", async (platform) => {
     const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
     try {
       const api = installApi();
       render(<Harness api={api} />);
       fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
-      for (const [code, shiftKey] of [["Equal", true], ["BracketRight", false], ["BracketRight", true]] as const) {
-        press({ key: "+", code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
-        expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko["be_main.menuZoomIn"]);
+      for (const [key, code, shiftKey, labelKey] of [
+        ["=", "Equal", false, "be_main.menuZoomIn"], ["+", "Equal", true, "be_main.menuZoomIn"],
+        ["+", "BracketRight", false, "be_main.menuZoomIn"], ["+", "BracketRight", true, "be_main.menuZoomIn"],
+        ["+", "NumpadAdd", false, "be_main.menuZoomIn"], ["-", "Minus", false, "be_main.menuZoomOut"],
+        ["-", "Minus", true, "be_main.menuZoomOut"], ["-", "NumpadSubtract", false, "be_main.menuZoomOut"],
+        ["0", "Numpad0", false, "be_main.menuResetZoom"],
+      ] as const) {
+        press({ key, code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+        expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko[labelKey]);
         expect(api.updateSettings).not.toHaveBeenCalled();
       }
-      expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko["be_main.menuZoomIn"]);
       expect(api.updateSettings).not.toHaveBeenCalled();
       expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");
-      press({ key: "+", code: "BracketRight", altKey: true });
-      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "Alt+Plus" } } }));
+      press({ key: "+", code: "Equal", shiftKey: true, altKey: true });
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "Alt+Shift+Plus" } } }));
     } finally {
       platformSpy.mockRestore();
     }
@@ -83,10 +88,10 @@ describe("ShortcutsTab", () => {
     await waitFor(() => expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key, code, altKey: true }))).toBe(true));
   });
 
-  it.each(["darwin", "other"] as const)("badges a retained shifted plus overlap on %s", async (platform) => {
+  it.each(["darwin", "other"] as const)("badges identical retained bindings on %s", async (platform) => {
     const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
     try {
-      const api = installApi({ "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" });
+      const api = installApi({ "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+Plus" });
       render(<Harness api={api} />);
       expect(await screen.findByTestId("shortcuts:conflict-app.search")).toBeTruthy();
       expect(screen.getByTestId("shortcuts:conflict-app.commandPalette")).toBeTruthy();

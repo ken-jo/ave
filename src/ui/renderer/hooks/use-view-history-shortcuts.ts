@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
-  matchesResolvedShortcut,
+  matchesAccelerator,
+  resolveShortcut,
   type ShortcutKeyEvent,
   type ShortcutPlatform,
   type ShortcutResolutionInput,
@@ -35,8 +36,8 @@ export function viewHistoryIntent(
 ): "back" | "forward" | null {
   if (isShortcutCaptureActive()) return null;
   const platform: ShortcutPlatform = darwin ? "darwin" : "other";
-  if (matchesResolvedShortcut("app.viewBack", event, input, platform)) return "back";
-  if (matchesResolvedShortcut("app.viewForward", event, input, platform)) return "forward";
+  if (matchesAccelerator(resolveShortcut("app.viewBack", input, platform), event, platform)) return "back";
+  if (matchesAccelerator(resolveShortcut("app.viewForward", input, platform), event, platform)) return "forward";
   return null;
 }
 

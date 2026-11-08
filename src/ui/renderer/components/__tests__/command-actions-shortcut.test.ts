@@ -61,29 +61,6 @@ describe("workspace launcher shortcuts", () => {
 });
 
 
-describe("ambiguous shortcut dispatch", () => {
-  it.each([true, false])("selects one winner independently of listener order with darwin=%s", (darwin) => {
-    setPlatform(darwin);
-    setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" } });
-    const event = keyEvent({ key: "+", code: "Equal", altKey: true, shiftKey: true });
-    for (const ids of [["app.search", "app.commandPalette"], ["app.commandPalette", "app.search"]] as const) {
-      expect(ids.filter((id) => matchesShortcut(id, event))).toEqual(["app.commandPalette"]);
-      expect(ids.filter((id) => matchesShortcut(id, { ...event, code: "BracketRight" }))).toEqual(["app.search"]);
-    }
-    setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.commandPalette": "Alt+Shift+Plus", "app.search": "Alt+Shift+Plus" } });
-    expect(matchesShortcut("app.commandPalette", event)).toBe(true);
-    expect(matchesShortcut("app.search", event)).toBe(false);
-    for (const shiftKey of [false, true]) {
-      const prefix = shiftKey ? "Alt+Shift+" : "Alt+";
-      setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": `${prefix}Plus`, "app.commandPalette": `${prefix}numadd` } });
-      const keypad = keyEvent({ key: "+", code: "NumpadAdd", altKey: true, shiftKey });
-      expect(matchesShortcut("app.search", keypad)).toBe(false);
-      expect(matchesShortcut("app.commandPalette", keypad)).toBe(true);
-    }
-  });
-});
-
-
 it.each([true, false])("dispatches the real search and palette handlers once with darwin=%s", (darwin) => {
   setPlatform(darwin);
   setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" } });
@@ -96,15 +73,15 @@ it.each([true, false])("dispatches the real search and palette handlers once wit
   });
   const press = (code: string) => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", code, altKey: true, shiftKey: true })); });
   press("Equal");
-  expect(toggleSlashPicker).toHaveBeenCalledTimes(1);
-  expect(hook.result.current.open).toBe(false);
+  expect(toggleSlashPicker).not.toHaveBeenCalled();
+  expect(hook.result.current.open).toBe(true);
   press("BracketRight");
-  expect(toggleSlashPicker).toHaveBeenCalledTimes(1);
+  expect(toggleSlashPicker).not.toHaveBeenCalled();
   expect(hook.result.current.open).toBe(true);
   act(() => hook.result.current.closeOverlay());
   setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+numadd" } });
   press("NumpadAdd");
-  expect(toggleSlashPicker).toHaveBeenCalledTimes(2);
+  expect(toggleSlashPicker).toHaveBeenCalledTimes(1);
   expect(hook.result.current.open).toBe(false);
   hook.unmount();
 });
