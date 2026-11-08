@@ -42,6 +42,101 @@ RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest 
 
 GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-site-navigation.test.ts src/main/browser/__tests__/browser-actions.test.ts`: 2 files / 170 tests passed (navigation-green-final.log). `bun run build:main` passed. `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts --output=/private/tmp/webfix-review/native-all`: 4 passed in 29.5 seconds (native-all.log), covering parked liveness, parked focus/selection, renderer evaluation after guest close, and live preview across a cross-site commit. Retained traces/screenshots are under native-all. These results supersede the historical ERR_FAILED below.
 
+### Popup consent and command lifetime
+
+The native callback now retains popup outcomes for the exact originating lease. The click awaits site admission and child opening before releasing control; failures become `Browser popup could not open: ...` in its tool result. A shared exact-guest/lease lifecycle follows document-controller replacements, while takeover, caller cancellation, command failure and lease loss cancel admission before a late grant. Page input retains its document guard. Intercepted navigation combines executor and adapter lifetimes; terminal adapter paths abort before detaching watches. This preserves ASK → LIVE, grant choices and approval requirements.
+
+RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/tools/__tests__/browser-tools.test.ts -t 'keeps popup consent|cancels popup consent'`: 3 failed / 86 filtered (finding3-red.log), demonstrating prematurely released leases. Additional independent-review regressions: `-t 'keeps popup consent'` failed 1 / passed 1 / filtered 89 when the opener moved documents; `-t 'originating click fails'` failed 1 / filtered 93 because consent survived command failure; `-t 'cancels intercepted'` failed 4 / filtered 94 for this-site/any-site and unchanged/changed documents. All use the same wrapper and test file; receipts: finding3-navigation-red.log, finding3-failure-red.log, finding3-intercept-red.log.
+
+GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/tools/__tests__/browser-tools.test.ts src/main/browser/__tests__/browser-popup-navigation.test.ts src/main/browser/__tests__/browser-actions.test.ts`: 3 files / 265 tests passed (finding3-green.log). These tests connect the actual executor, approval gate, permission manager, grant store, tab registry and popup/interception routers with controlled page-action/guest fixtures. They verify no late exact-site or any-site grant, no stale request continuation, denial as a click error, retained lease during approval and real registry child binding before success. Final independent review found no objections.
+
+### Final validation for the review corrections
+
+Final selected branch/consumer validation passed 57 files / 1774 tests (final-tests.log). The first broad run exposed four stale source-contract assertions for the new sealed selection and local focus preparation. Their allowlist is now restricted to the exact owning modules/methods, the renamed main-document proof is checked, and the new focus suites are registered in the cross-platform job. No baseline was expanded. Exact command:
+
+```sh
+AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/__tests__/preload-shape.test.ts src/boot/steps/__tests__/workflow-stores-approval-gate.test.ts src/engine/__tests__/a2a-subagent-message-bus.test.ts src/engine/__tests__/conversation-history-trim.test.ts src/engine/__tests__/conversation-loop-guidance.test.ts src/engine/__tests__/conversation-loop-rounds.test.ts src/engine/__tests__/subagent-approval-provenance.test.ts src/engine/__tests__/subagent-resume.test.ts src/engine/__tests__/subagent-runner.test.ts src/engine/__tests__/suggested-replies.test.ts src/engine/turn/__tests__/directory-instructions.test.ts src/ipc/__tests__/channel-inventory.test.ts src/ipc/domains/__tests__/browser.test.ts src/ipc/handlers/__tests__/chat-subagent-mailbox.test.ts src/main/__tests__/browser-observation-preview.test.ts src/main/__tests__/browser-preview-guest.test.ts src/main/browser/__tests__/browser-actions.test.ts src/main/browser/__tests__/browser-guest-tracking.test.ts src/main/browser/__tests__/browser-popup-navigation.test.ts src/main/browser/__tests__/browser-select-script.test.ts src/main/browser/__tests__/browser-site-navigation.test.ts src/main/browser/__tests__/browser-tab-activity.test.ts src/main/browser/__tests__/browser-tab-registry.test.ts src/main/browser/__tests__/browser-tools-source.test.ts src/permissions/__tests__/approval-gate.test.ts src/permissions/__tests__/browser-site-card.test.ts src/permissions/__tests__/browser-site-permissions.test.ts src/permissions/__tests__/rules-store-and-decision.test.ts src/permissions/__tests__/session-scope-end.test.ts src/prompts/__tests__/suggested-replies-contract.test.ts src/shared/__tests__/conversation-title.test.ts src/shared/__tests__/tool-result-trim.test.ts src/tools/__tests__/agent-browser-observation.test.ts src/tools/__tests__/agent-spawn-background.test.ts src/tools/__tests__/browser-tools.test.ts src/tools/__tests__/executor-approval-memory-skip-integration.test.ts src/ui/renderer/__tests__/ApprovalDock.test.tsx src/ui/renderer/__tests__/ChatView.test.tsx src/ui/renderer/__tests__/TranscriptRenderer.test.tsx src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-agent-action.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-allowed-choices.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx src/ui/renderer/hooks/__tests__/use-chat-state-remote-turn.test.tsx src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx src/ui/renderer/preview/__tests__/host-focus-memory.test.ts test/renderer/chat-columns.test.tsx test/renderer/main-panels.test.tsx src/i18n/__tests__
+```
+
+| Command from clone | Final result |
+|---|---|
+| `bun run typecheck` | PASS, zero diagnostics |
+| `bun run check:knip` | PASS, baseline held |
+| `bun run check:biome` | PASS, baseline held |
+| `bun run check:sot-shapes` | PASS, 6 tests; baseline held |
+| `bun run check:i18n-catalog` | PASS, 2 locales / 5800 keys |
+| `bun run check:gate-core` | PASS, 11 component checks / 55 script tests |
+| `bun run check:typecheck-tests` | PASS against existing 208-file / 921-error baseline, no new errors |
+| `bun run build:main` | PASS |
+| `bun run build:renderer` | PASS |
+
+Final native command: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts --output=/private/tmp/webfix-review/native-final`: **4 passed** (36.3 seconds). After guest close, five renderer evaluation samples were 7.49, 11.72, 1.16, 1.79 and 1.10 ms; preview count and post-close frames were both zero. All local receipts are under `/private/tmp/webfix-review/`, including native traces/screenshots and JSON measurements. No new hot loop was observed in this run.
+
+Not verified: a native popup-consent E2E and new screenshots of the four localized builtin cards were not run. Popup lifetime is covered by the connected executor/router regressions; cards by rendered consumers in both locales. This was a local Mac run; Windows/Linux runtime and remote CI were not run. Test-typecheck passing means no baseline growth, not zero historical test diagnostics. No push was performed.
+
+### Changed files by correction
+
+Recovery registration:
+
+- `docs/evidence/web-panel-2026-11-09/report.md`
+- `src/engine/__tests__/subagent-resume.test.ts`
+- `src/engine/__tests__/subagent-runner.test.ts`
+- `src/engine/subagent-runner.ts`
+
+Parked focus:
+
+- `.github/workflows/ci.yml`
+- `docs/architecture/architecture.md`
+- `docs/architecture/permission-policy-design.md`
+- `docs/evidence/web-panel-2026-11-09/report.md`
+- `src/ipc/domains/__tests__/browser.test.ts`
+- `src/ipc/domains/browser.ts`
+- `src/main/browser/__tests__/browser-actions.test.ts`
+- `src/main/browser/__tests__/browser-guest-tracking.test.ts`
+- `src/main/browser/__tests__/browser-select-script.test.ts`
+- `src/main/browser/__tests__/browser-tab-registry.test.ts`
+- `src/main/browser/__tests__/browser-tools-source.test.ts`
+- `src/main/browser/browser-action-guard.ts`
+- `src/main/browser/browser-actions.ts`
+- `src/main/browser/browser-guest-tracking.ts`
+- `src/main/browser/browser-select-script.ts`
+- `src/main/browser/browser-tab-registry.ts`
+- `src/shared/browser-surface.ts`
+- `src/ui/renderer/components/WebSurfaceLayer.tsx`
+- `src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx`
+- `src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts`
+- `src/ui/renderer/preview/__tests__/host-focus-memory.test.ts`
+- `src/ui/renderer/preview/agent-browser-bridge.ts`
+- `test/e2e/ui/browser-observation-preview.spec.ts`
+
+Builtin action summaries:
+
+- `docs/evidence/web-panel-2026-11-09/report.md`
+- `src/i18n/messages/en.ts`
+- `src/i18n/messages/ko.ts`
+- `src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx`
+- `src/ui/renderer/components/permissions/approval-action.ts`
+
+Cross-site navigation:
+
+- `docs/evidence/web-panel-2026-11-09/report.md`
+- `src/main/browser/__tests__/browser-actions.test.ts`
+- `src/main/browser/__tests__/browser-site-navigation.test.ts`
+- `src/main/browser/browser-actions.ts`
+- `src/main/browser/browser-site-navigation.ts`
+
+Popup lifetime:
+
+- `docs/architecture/architecture.md`
+- `docs/architecture/permission-policy-design.md`
+- `docs/evidence/web-panel-2026-11-09/report.md`
+- `src/main/browser/__tests__/browser-popup-navigation.test.ts`
+- `src/main/browser/browser-actions.ts`
+- `src/main/browser/browser-control-lifecycle.ts`
+- `src/main/browser/browser-popup-navigation.ts`
+- `src/tools/__tests__/browser-tools.test.ts`
+- `src/tools/browser-tools-execute.ts`
+
 ## Historical implementation and validation
 
 The following sections retain their original commit, base and validation context. Current corrections and validation are above and in the final validation section; old limitations are not current pass claims.

@@ -26,6 +26,7 @@ import { ToolRegistry } from "../registry.js";
 import { browserOrigin, createBrowserTools, type BrowserActionTab, type BrowserPageActions } from "../browser-tools.js";
 import { gateBrowserSiteNavigation } from "../../main/browser/browser-site-navigation.js";
 import type { CdpSession } from "../../main/browser/browser-action-guard.js";
+import { handleAgentBrowserPopup, setBrowserPopupNavigation } from "../../main/browser/browser-popup-navigation.js";
 import { fenceBrowserContent } from "../browser-tools-execute.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { runWithAgentObservationTurn } from "../agent-observation-context.js";
@@ -377,6 +378,142 @@ describe("browser tools", () => {
       expect(h.manager.browserSites.allows(HOST_SESSION, "https://restricted.example/")).toBe(false);
       expect(h.manager.browserSites.allows(HOST_SESSION, "https://another.example/")).toBe(false);
     }
+  });
+
+  it.each([false, true])("keeps popup consent inside the click lease through opener navigation: %s", async navigateOpener => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      expect(handleAgentBrowserPopup(tab.guest, "https://popup.example/", false)).toBe(true);
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+    try {
+      expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).not.toBeNull();
+      expect(h.ops).toHaveLength(before);
+      if (navigateOpener) {
+        h.tabs.documentChanged(tab.guest.id);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(h.gate.pendingCount).toBe(1);
+      }
+    } finally { answer(); }
+    await vi.waitFor(() => expect(h.ops.length).toBe(before + 1));
+    const popup = new FakeGuest(900, "about:blank");
+    h.tabs.guestAttached(popup, 1);
+    const requestId = h.ops.at(-1)?.requestId;
+    if (!requestId) throw new Error("Missing popup request");
+    h.tabs.bindTab(1, { tabId: "renderer-popup", webContentsId: popup.id, requestId });
+    expect((await action).isError).toBe(false);
+    expect(popup.url).toBe("https://popup.example/");
+    expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).toBeNull();
+  });
+
+  it.each([["this-site", false], ["this-site", true], ["any-site", false], ["any-site", true]] as const)("cancels intercepted %s consent after a failed input and document transition %s", async (siteChoice, changeDocument) => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ siteChoice, onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const calls: string[] = [];
+    let event: Parameters<CdpSession["onEvent"]>[0] = () => {};
+    const cdp: CdpSession = { send: async method => { calls.push(method); }, onEvent: listener => { event = listener; return () => {}; } };
+    let clickFailed = false;
+    h.page.actions.click = async target => {
+      if (!target.authorizeSite) throw new Error("Missing site authorization");
+      const adapterSignal = new AbortController().signal;
+      const gate = await gateBrowserSiteNavigation(cdp, "main", { active: () => true, signal: adapterSignal, authorize: target.authorizeSite });
+      event("Fetch.requestPaused", { requestId: "intercepted", frameId: "main", resourceType: "Document", request: { url: "https://pending.example/" } });
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      if (changeDocument) {
+        h.tabs.documentChanged(tab.guest.id);
+        await Promise.resolve();
+      }
+      gate();
+      clickFailed = true;
+      throw new Error("input failed after requesting navigation");
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(clickFailed).toBe(true));
+    try { await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0)); }
+    finally { answer(); }
+    expect((await action).isError).toBe(true);
+    expect(calls).not.toContain("Fetch.continueRequest");
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://pending.example/")).toBe(false);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://other.example/")).toBe(false);
+  });
+
+  it("cancels pending popup consent when the originating click fails", async () => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    let clickFailed = false;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      clickFailed = true;
+      throw new Error("click failed after opening a popup");
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(clickFailed).toBe(true));
+    try { await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0)); }
+    finally { answer(); }
+    expect((await action).isError).toBe(true);
+    expect(h.ops).toHaveLength(before);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+  });
+
+  it("reports popup denial on the originating click instead of a successful click", async () => {
+    const h = harness({ denySite: true });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+    };
+    const result = await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Browser popup could not open");
+    expect(h.ops).toHaveLength(before);
+    expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).toBeNull();
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+  });
+
+  it.each([["this-site", false], ["this-site", true], ["any-site", false], ["any-site", true]] as const)("cancels popup consent without a late %s grant after document transition %s", async (siteChoice, navigateOpener) => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ siteChoice, onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+    const live = h.tabs.liveTabInWindow(tab.handle, 1);
+    if (!live) throw new Error("Missing originating tab");
+    try {
+      expect(live.lease).not.toBeNull();
+      if (navigateOpener) {
+        h.tabs.documentChanged(tab.guest.id);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(h.gate.pendingCount).toBe(1);
+      }
+      if (live.lease) h.tabs.releaseControl(tab.handle, live.lease.id);
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0));
+    } finally { answer(); }
+    const result = await action;
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/popup|cancel|released/i);
+    expect(h.ops).toHaveLength(before);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://other.example/")).toBe(false);
   });
 
   it("asks a human for exfiltration even after any-site consent", async () => {

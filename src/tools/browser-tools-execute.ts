@@ -8,6 +8,8 @@ import { toolSessionId } from "./base.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
+import { browserControlLifecycle } from "../main/browser/browser-control-lifecycle.js";
+import { awaitBrowserPopupNavigation } from "../main/browser/browser-popup-navigation.js";
 import type { BrowserGuest } from "../main/browser/browser-tab-registry.js";
 import {
   BROWSER_PRESSABLE_KEYS,
@@ -189,7 +191,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     return fresh.ok ? { ...fresh, signal: AbortSignal.any([fresh.signal, target.signal]) } : fresh;
   };
 
-  const pageTarget = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>): BrowserActionTab<G> => {
+  const pageTarget = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>, leaseSignal?: AbortSignal): BrowserActionTab<G> => {
+    const popupSignal = leaseSignal ?? target.signal;
     const scope = authorizedApprovalMemoryScope(ctx);
     if (scope?.kind !== "browser-origin" || scope.tabId === undefined || scope.documentId === undefined) {
       throw new Error("Missing browser approval identity");
@@ -203,18 +206,19 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           const guest = tab.guest;
           const leaseId = tab.lease?.id;
           if (!ctx.authorizeBrowserSite || !leaseId) throw new Error("Missing browser site authority");
-          await ctx.authorizeBrowserSite(url, signal ?? target.signal);
+          const authorizationSignal = leaseSignal ? AbortSignal.any([leaseSignal, ...(signal ? [signal] : [])]) : signal ?? target.signal;
+          await ctx.authorizeBrowserSite(url, authorizationSignal);
           if (tab.guest !== guest || guest?.isDestroyed() || tab.lease?.id !== leaseId || tab.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
           tab.agentOrigin = browserOrigin(url);
         },
         openSitePopup: async (url: string) => {
           const checked = validUrl(url);
-          if (!checked.ok || target.resolved.tab.lease?.id === undefined || target.signal.aborted) throw new Error("Browser popup authority unavailable");
+          if (!checked.ok || target.resolved.tab.lease?.id === undefined || popupSignal.aborted) throw new Error("Browser popup authority unavailable");
           const guest = target.resolved.tab.guest;
           const leaseId = target.resolved.tab.lease?.id;
           const result = await openAgentTab(checked, ctx, () => {
             if (target.resolved.tab.guest !== guest || guest?.isDestroyed() || target.resolved.tab.lease?.id !== leaseId || target.resolved.tab.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser popup authority changed");
-          });
+          }, popupSignal);
           if (result.isError) throw new Error(result.output);
         },
       } : {}),
@@ -251,12 +255,23 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
   const runMutation = (ctx: ToolExecutionContext, target: Extract<ReturnType<typeof live>, { ok: true }>,
     action: BrowserObservationAction,
-    work: (actions: BrowserPageActions<G>, onTarget: ((element: BrowserObservationElement, downloadUrl?: string) => void) | undefined) => Promise<ToolExecutionResult>,
+    work: (actions: BrowserPageActions<G>, onTarget: ((element: BrowserObservationElement, downloadUrl?: string) => void) | undefined, leaseSignal: AbortSignal) => Promise<ToolExecutionResult>,
     expectedDownloadUrl?: string) => safely(async () => {
     const lease = deps.tabs.acquireControl(target.resolved.tab, actorOf(ctx, deps));
-    try { return await observeAgentBrowserCommand(target.resolved.tab, action,
-      async (onTarget) => work(await deps.loadActions(), onTarget), ctx.abortSignal, expectedDownloadUrl); }
-    finally { deps.tabs.releaseControl(target.resolved.tab.handle, lease.id); }
+    let lifecycle: ReturnType<typeof browserControlLifecycle> | undefined;
+    try {
+      const guest = target.resolved.tab.guest;
+      if (!guest) throw new Error("Browser tab unavailable");
+      lifecycle = browserControlLifecycle({ tab: target.resolved.tab, signal: target.signal, leaseId: lease.id, ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, guest);
+      const leaseSignal = lifecycle.signal;
+      return await observeAgentBrowserCommand(target.resolved.tab, action,
+      async (onTarget) => {
+        const result = await work(await deps.loadActions(), onTarget, leaseSignal);
+        const guest = target.resolved.tab.guest;
+        if (guest) await awaitBrowserPopupNavigation(guest, lease.id);
+        return result;
+      }, ctx.abortSignal, expectedDownloadUrl); }
+    finally { lifecycle?.cancel(); deps.tabs.releaseControl(target.resolved.tab.handle, lease.id); }
   });
 
   // Model URLs allow only HTTP(S) without embedded credentials.
@@ -270,51 +285,60 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     return { ok: true, url: checked.url, origin };
   };
 
-  const openAgentTab = async (url: { url: string; origin: string }, ctx: ToolExecutionContext, beforeOpen: () => void = () => {}): Promise<ToolExecutionResult> => {
+  const openAgentTab = async (url: { url: string; origin: string }, ctx: ToolExecutionContext, beforeOpen: () => void = () => {}, lifecycleSignal?: AbortSignal): Promise<ToolExecutionResult> => {
       const scope = policy.windowOf(toolSessionId(ctx));
       if (!scope) return failure(NO_WINDOW);
       const opening = policy.tabNewTarget(scope);
       if (!opening.ok) return failure(opening.reason);
       const authorizeSite = ctx.authorizeBrowserSite;
       if (!authorizeSite) return failure("Missing browser site authorization");
-      await authorizeSite(url.url);
-      ctx.abortSignal?.throwIfAborted();
+      const openingSignal = lifecycleSignal ? AbortSignal.any([lifecycleSignal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]) : ctx.abortSignal;
+      await authorizeSite(url.url, openingSignal);
+      openingSignal?.throwIfAborted();
       beforeOpen();
       const outcome = await deps.tabs.requestTabOp(
         scope.windowId,
         { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),
           actor: actorOf(ctx, deps), active: false },
-        signalOptions(ctx),
+        openingSignal ? { signal: openingSignal } : {},
       );
       if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
       const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
       if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
       const guest = tab.guest;
-      await (await deps.loadActions()).prepare({ tab, signal: ctx.abortSignal ?? new AbortController().signal });
+      await (await deps.loadActions()).prepare({ tab, signal: openingSignal ?? new AbortController().signal });
+      openingSignal?.throwIfAborted();
+      beforeOpen();
       const documentId = tab.documentId;
-      const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
+      const signal = AbortSignal.any([tab.actions.signal, ...(openingSignal ? [openingSignal] : [])]);
       // Install the origin guard before navigating the blank bound view or following redirects.
       const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));
-      try { return await observeAgentBrowserCommand(tab, "tab-open", () => run(async (actions) => {
+      let lifecycle: ReturnType<typeof browserControlLifecycle> | undefined;
+      try {
+        if (!guest) throw new Error("Browser tab unavailable");
+        lifecycle = browserControlLifecycle({ tab, signal: tab.actions.signal, leaseId: lease.id, ...(openingSignal ? { callerSignal: openingSignal } : {}) }, guest);
+        const leaseSignal = lifecycle.signal;
+        return await observeAgentBrowserCommand(tab, "tab-open", () => run(async (actions) => {
         const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
         if (!fresh || signal.aborted || fresh.guest !== guest || fresh.documentId !== documentId || fresh.opener !== "agent") {
           return failure("the new tab changed before navigation; nothing was done. Call again.");
         }
         const current = () => {
-          if (fresh.guest !== guest || guest?.isDestroyed() || fresh.lease?.id !== lease.id || fresh.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
+          if (fresh.guest !== guest || guest?.isDestroyed() || fresh.lease?.id !== lease.id || fresh.controlMode === "human-paused" || leaseSignal.aborted) throw new Error("Browser site authority changed");
         };
         const loaded = await actions.navigate({ tab: fresh, signal, leaseId: lease.id,
-          authorizeSite: async (destination, lifecycleSignal) => { await authorizeSite(destination, lifecycleSignal ?? signal); current(); fresh.agentOrigin = browserOrigin(destination); },
+          authorizeSite: async (destination, lifecycleSignal) => { await authorizeSite(destination, AbortSignal.any([leaseSignal, ...(lifecycleSignal ? [lifecycleSignal] : [])])); current(); fresh.agentOrigin = browserOrigin(destination); },
           openSitePopup: async (destination) => {
             const next = validUrl(destination);
             if (!next.ok) throw new Error("Invalid browser popup destination");
             current();
-            const result = await openAgentTab(next, ctx, current);
+            const result = await openAgentTab(next, ctx, current, leaseSignal);
             if (result.isError) throw new Error(result.output);
           },
           ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
+        if (guest) await awaitBrowserPopupNavigation(guest, lease.id);
         return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
-      }), ctx.abortSignal, url.url); } finally { deps.tabs.releaseControl(tab.handle, lease.id); }
+      }), ctx.abortSignal, url.url); } finally { lifecycle?.cancel(); deps.tabs.releaseControl(tab.handle, lease.id); }
   };
 
   const validRef = (input: BrowserToolInput): string | null =>
@@ -331,12 +355,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     if (!target.ok) return target.result;
     const changed = unchangedSinceApproval(ctx, target.resolved);
     if (changed) return changed;
-    return runMutation(ctx, target, PAGE_OBSERVATION_ACTIONS[name], async (actions, onTarget) => {
+    return runMutation(ctx, target, PAGE_OBSERVATION_ACTIONS[name], async (actions, onTarget, leaseSignal) => {
       const fresh = recheck(input, ctx, target);
       if (!fresh.ok) return fresh.result;
       const changed = unchangedSinceApproval(ctx, fresh.resolved);
       if (changed) return changed;
-      await act(actions, { ...pageTarget(ctx, fresh), onObservationTarget: onTarget }, input);
+      await act(actions, { ...pageTarget(ctx, fresh, leaseSignal), onObservationTarget: onTarget }, input);
       const outcome = await actions.settle({ tab: fresh.resolved.tab, signal: ctx.abortSignal ?? new AbortController().signal });
       return fenced({
         tabId: target.resolved.tab.handle,
@@ -472,7 +496,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = navigationUnchangedSinceApproval(ctx, target.resolved, url.origin);
       if (changed) return changed;
-      return runMutation(ctx, target, "navigate", async (actions) => {
+      return runMutation(ctx, target, "navigate", async (actions, _onTarget, leaseSignal) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = navigationUnchangedSinceApproval(ctx, fresh.resolved, url.origin);
@@ -485,7 +509,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           const changed = navigationUnchangedSinceApproval(ctx, current.resolved, url.origin);
           if (changed) return changed;
         }
-        const loaded = await actions.navigate(pageTarget(ctx, fresh), url.url, url.origin);
+        const loaded = await actions.navigate(pageTarget(ctx, fresh, leaseSignal), url.url, url.origin);
         return fenced({ tabId: target.resolved.tab.handle, url: loaded.url, title: target.resolved.tab.guest?.getTitle() ?? "" });
       }, url.url);
     },
@@ -507,12 +531,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
-      return runMutation(ctx, target, "upload", async (actions) => {
+      return runMutation(ctx, target, "upload", async (actions, _onTarget, leaseSignal) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
         if (changed) return changed;
-        const result = await actions.upload(pageTarget(ctx, fresh), input.ref as string, { windowId: target.windowId, sessionId: actorOf(ctx, deps).sessionId, pickFiles: deps.pickUploadFiles });
+        const result = await actions.upload(pageTarget(ctx, fresh, leaseSignal), input.ref as string, { windowId: target.windowId, sessionId: actorOf(ctx, deps).sessionId, pickFiles: deps.pickUploadFiles });
         return fenced({ tabId: target.resolved.tab.handle, ...result });
       });
     },

@@ -1480,6 +1480,13 @@ through the tool releases its association and reports that the page was retained
 User chrome close destroys the actual tab; window/app shutdown releases its
 resources.
 
+Agent new-window callbacks queue site admission and tab opening under the
+originating command's exact guest and lease. The command awaits that outcome
+before releasing control and reports popup errors. Document transitions preserve
+that lease lifetime; command failure, takeover, cancellation or lease loss aborts
+pending admission before a late grant can be recorded. Adapter cancellation and
+the command lifetime both constrain intercepted navigation consent.
+
 Native popups enter the registry only through the validated child-window
 callback. They keep the owning window, guarded session, opener relationship,
 and sandbox; they can have a tool handle without a renderer tab slot. Popups

@@ -1611,7 +1611,12 @@ continue an unchanged admitted request, or abort a refused request. It does not
 read response bodies or rewrite request headers, methods or bodies. Agent
 popups use the same site gate; body-bearing popups are refused rather than
 converted to another request. User takeover and lease loss invalidate pending
-loads. Sensitive input, irreversible-submit guards, explicit rules and human
+loads. Popup admission and opening remain within the originating command's
+exact guest and control lease; the command awaits their outcome and reports
+opening failures. Document transitions under that same lease preserve consent,
+while command failure or authority loss aborts pending consent before grants
+can be recorded. An adapter signal cannot extend the command's lease lifetime.
+Sensitive input, irreversible-submit guards, explicit rules and human
 exfiltration consent remain in force.
 
 ### User-owned surface choices

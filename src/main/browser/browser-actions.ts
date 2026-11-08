@@ -1,5 +1,6 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
 import { browserLayoutReady } from "./browser-layout-probe.js";
 import { createBrowserTabActivity } from "./browser-tab-activity.js";
@@ -10,7 +11,7 @@ import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-t
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
-import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
+import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
 import { BrowserActionError, frameTree, mainDocumentContainsNode, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
@@ -1381,42 +1382,6 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   };
 }
 
-// The approved load may change documents; caller and control cancellation still stop it.
-function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: AbortSignal; stop(): void } {
-  throwIfAborted(live.signal);
-  const controller = new AbortController();
-  let stopped = false;
-  let unwatch = () => {};
-  const valid = () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused"
-    && live.leaseId !== undefined && live.tab.lease?.id === live.leaseId;
-  if (!valid() || (live.approval && (live.approval.tabId !== live.tab.handle || live.approval.documentId !== live.tab.documentId
-    || live.approval.controlGeneration !== live.tab.controlGeneration))) {
-    throw new BrowserActionError("document-changed", "the navigation target or control lease changed before loading");
-  }
-  const cancelCaller = () => controller.abort(live.callerSignal?.reason ?? new Error("navigation cancelled"));
-  const destroyed = () => controller.abort(new Error("the browser tab was closed"));
-  const watch = (signal: AbortSignal) => {
-    if (stopped || controller.signal.aborted) return;
-    unwatch();
-    const changed = () => {
-      if (signal.reason instanceof BrowserDocumentChangedError && !live.callerSignal?.aborted && valid()) {
-        // The registry installs the new document controller after aborting the previous one. Observe that controller at the next microtask boundary.
-        queueMicrotask(() => { if (!stopped) { if (valid()) watch(live.tab.actions.signal); else destroyed(); } });
-      } else controller.abort(signal.reason);
-    };
-    signal.addEventListener("abort", changed, { once: true });
-    unwatch = () => { signal.removeEventListener("abort", changed); };
-    if (signal.aborted) changed();
-  };
-  live.callerSignal?.addEventListener("abort", cancelCaller, { once: true });
-  if (live.callerSignal?.aborted) cancelCaller();
-  guest.once("destroyed", destroyed);
-  watch(live.signal);
-  return { signal: controller.signal, stop: () => {
-    stopped = true; unwatch(); live.callerSignal?.removeEventListener("abort", cancelCaller); guest.removeListener("destroyed", destroyed);
-  } };
-}
-
 // Fresh adapters share page interception and its native destruction cleanup.
 const siteGates = new WeakMap<WebContents, BrowserSiteNavigationGate>();
 
@@ -1456,7 +1421,10 @@ export function createBrowserPageActions(
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-    const lifecycle = navigationLifecycle(live, guest);
+    const lifecycle = browserControlLifecycle(live, guest, listener => {
+      guest.once("destroyed", listener);
+      return () => { guest.removeListener("destroyed", listener); };
+    });
     actionNavigations.get(guest)?.stop();
     actionNavigations.delete(guest);
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
@@ -1468,13 +1436,13 @@ export function createBrowserPageActions(
       }
     } catch (err) {
       navigation.stop();
-      lifecycle.stop();
+      lifecycle.cancel();
       throw err;
     }
     actionNavigations.set(guest, {
       get requested() { return navigation.requested; },
       outcome: (_signal, maxMs) => navigation.outcome(lifecycle.signal, maxMs, siteGates.get(guest)),
-      stop: () => { navigation.stop(); lifecycle.stop(); },
+      stop: () => { navigation.stop(); lifecycle.cancel(); },
     });
   });
   return {
@@ -1509,12 +1477,15 @@ export function createBrowserPageActions(
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-      const lifecycle = navigationLifecycle(live, guest);
+      const lifecycle = browserControlLifecycle(live, guest, listener => {
+        guest.once("destroyed", listener);
+        return () => { guest.removeListener("destroyed", listener); };
+      });
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
         return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined);
       }
-      finally { lifecycle.stop(); }
+      finally { lifecycle.cancel(); }
     }),
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
