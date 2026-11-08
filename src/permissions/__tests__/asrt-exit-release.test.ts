@@ -143,7 +143,9 @@ describe("sandbox runtime release at exit", () => {
       const logged = JSON.stringify(warn.mock.calls);
       expect(logged).not.toContain("private-target");
       expect(logged.toLowerCase()).not.toContain("alice");
-      expect(logged).not.toContain(aveHome());
+      for (const args of warn.mock.calls) {
+        for (const argument of args) expect(String(argument)).not.toContain(aveHome());
+      }
       expect(logged).toContain("may remain on a moved-aside copy");
     } finally {
       warn.mockRestore();
