@@ -121,20 +121,21 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const buttonClass = "titlebar-btn h-full w-(--chrome-window-button-width) rounded-none text-muted-foreground";
   const minimize = (
     <Button key="minimize" data-testid="titlebar-minimize" type="button" variant="ghost" size="icon" onClick={handleMinimize}
-      title={t("customTitleBar.minimize")} className={`${buttonClass} titlebar-btn-minimize hover:bg-accent hover:text-foreground`}>
+      title={t("customTitleBar.minimize")} aria-label={t("customTitleBar.minimize")} className={`${buttonClass} titlebar-btn-minimize hover:bg-accent hover:text-foreground`}>
       <Minus size={14} />
     </Button>
   );
   const maximize = (
     <Button key="maximize" data-testid="titlebar-maximize" type="button" variant="ghost" size="icon" onClick={handleMaximize}
       title={isMaximized ? t("customTitleBar.restore") : t("customTitleBar.maximize")}
+      aria-label={isMaximized ? t("customTitleBar.restore") : t("customTitleBar.maximize")}
       className={`${buttonClass} titlebar-btn-maximize hover:bg-accent hover:text-foreground`}>
       {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
     </Button>
   );
   const close = (
     <Button key="close" data-testid="titlebar-close" type="button" variant="ghost" size="icon" onClick={handleClose}
-      title={t("customTitleBar.close")} className={`${buttonClass} titlebar-btn-close hover:bg-destructive hover:text-destructive-foreground`}>
+      title={t("customTitleBar.close")} aria-label={t("customTitleBar.close")} className={`${buttonClass} titlebar-btn-close hover:bg-destructive hover:text-destructive-foreground`}>
       <X size={14} />
     </Button>
   );

@@ -184,6 +184,18 @@ describe("CustomTitleBar", () => {
       });
       expect(getByTestId("titlebar-maximize").title).toBe("이전 크기로");
     });
+
+    it("names each window button for assistive tech, maximize switching to restore", async () => {
+      const { getByRole, getByTestId } = render(<CustomTitleBar />);
+      expect(getByTestId("titlebar-minimize")).toHaveAttribute("aria-label", "최소화");
+      expect(getByTestId("titlebar-maximize")).toHaveAttribute("aria-label", "최대화");
+      expect(getByTestId("titlebar-close")).toHaveAttribute("aria-label", "닫기");
+      expect(getByRole("button", { name: "최소화" })).toHaveAttribute("data-testid", "titlebar-minimize");
+      expect(getByRole("button", { name: "최대화" })).toHaveAttribute("data-testid", "titlebar-maximize");
+      expect(getByRole("button", { name: "닫기" })).toHaveAttribute("data-testid", "titlebar-close");
+      await act(async () => { maxListener?.(true); });
+      expect(getByRole("button", { name: "이전 크기로" })).toHaveAttribute("aria-label", "이전 크기로");
+    });
   });
 
   describe("no bottom rule under the band", () => {
