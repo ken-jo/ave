@@ -110,7 +110,7 @@ describe("SideChatView — New button gating during streaming", () => {
     const overlay = dock.getByTestId("status-bar-presence");
     expect(overlay.className).toContain("absolute");
     expect(overlay.className).toContain("bottom-full");
-    expect(overlay.className).toContain("z-50");
+    expect(overlay.className).toContain("z-30");
     expect(warning).toHaveTextContent(t("useChatState.fallbackToast", event));
     expect(warning.compareDocumentPosition(dock.getByTestId("composer-textarea")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

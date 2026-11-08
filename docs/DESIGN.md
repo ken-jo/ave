@@ -99,7 +99,7 @@
   - Elevation uses `--surface-hairline`, `--elevation-raised`, and `--elevation-floating` rather than raw `shadow-xl`/`shadow-2xl`.
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
-  - Docked auxiliary panels use `z-40`; all floating overlays (dialog, popover, command picker, tooltip, toast) share the `z-50` band and rely on portal/mount order within it.
+  - Transient notices use `z-30`, below request cards and docked auxiliary panels at `z-40`. Other floating overlays (dialog, popover, command picker, tooltip) share `z-50` and rely on portal/mount order within it.
   - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
   - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:
@@ -563,7 +563,8 @@ determine whether a tile can split or a panel can dock.
       follows the queue head — errors in its `role="alert"` region, everything else in its
       `role="status"` region — and the visible notice itself is not live, so a remounted notice
       can never swallow the next announcement;
-    - transient notices float in the `z-50` band and never move the layout; persistent banners stay in flow;
+    - transient notices float at `z-30`, below request cards, and never move the layout; persistent banners stay in flow;
+    - window notices stay within the content header band (`--chrome-band-height`), above pane bodies and independent of banner height, so they cannot cover request cards across stacking contexts;
     - a request with its own card (approval or ask-user question) sends no in-app toast;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one

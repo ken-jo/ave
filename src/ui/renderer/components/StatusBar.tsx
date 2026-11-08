@@ -14,7 +14,7 @@ const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 /** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
-  /** Composer docks float notices above their anchor; the window floats them below it. */
+  /** Composer docks float notices above their anchor; the window uses the content header band. */
   toastPlacement?: "above" | "below";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
@@ -154,7 +154,7 @@ export function StatusBar(props: StatusBarProps) {
       ) : null}
       {visibleToast !== null && (hasContent || leaving) ? (
         <div
-          className={`pointer-events-none absolute inset-x-0 z-50 flex justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "top-2"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          className={`pointer-events-none absolute inset-x-0 z-30 flex justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "top-0"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
           data-testid="status-bar-presence"
           data-leaving={leaving ? "true" : undefined}
           onAnimationEnd={onAnimationEnd}
@@ -162,7 +162,7 @@ export function StatusBar(props: StatusBarProps) {
           <NoticeToast
             key={visibleToast.id}
             toast={visibleToast}
-            className="pointer-events-auto"
+            className={toastPlacement === "above" ? "pointer-events-auto" : "pointer-events-auto max-h-(--chrome-band-height) overflow-y-auto"}
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}

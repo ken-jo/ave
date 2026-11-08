@@ -68,10 +68,11 @@ describe("StatusBar", () => {
     const { rerender } = render(<StatusBar persistent={[persistent()]} visibleToast={toast()} onToastDismiss={() => {}} />);
     const overlay = screen.getByTestId("status-bar-presence");
     expect(overlay.className).toContain("absolute");
-    expect(overlay.className).toContain("z-50");
-    expect(overlay.className).toContain("top-2");
+    expect(overlay.className).toContain("z-30");
+    expect(overlay.className).toContain("top-0");
     expect(overlay.className).toContain("pointer-events-none");
     expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
+    expect(screen.getByTestId("status-toast").className).toContain("max-h-(--chrome-band-height)");
     expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
 
     rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);

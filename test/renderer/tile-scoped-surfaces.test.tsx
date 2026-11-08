@@ -2296,7 +2296,7 @@ describe("notices with two tiles", () => {
     const overlay = toastDock.querySelector<HTMLElement>('[data-testid="status-bar-presence"]')!;
     expect(overlay.className).toMatch(/\babsolute\b/);
     expect(overlay.className).toContain("bottom-full");
-    expect(overlay.className).toContain("z-50");
+    expect(overlay.className).toContain("z-30");
     expect(toastDock.parentElement!.closest(".overflow-x-hidden")).toBeNull();
   });
 

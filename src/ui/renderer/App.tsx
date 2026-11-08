@@ -2527,6 +2527,17 @@ export function App() {
                     className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
+                    <StatusBar
+                      persistent={statusPersistent}
+                      visibleToast={statusVisibleToast}
+                      pendingCount={statusPendingCount}
+                      onToastClick={handleStatusToastClick}
+                      onToastDismiss={(toast) => statusRemoveToast(toast.id)}
+                      onToastSuppress={(toast) => {
+                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
+                        statusSuppressToastKind(toast.kind);
+                      }}
+                    />
                     <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
                       {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
                       <RetiredProviderNotice
@@ -2544,17 +2555,6 @@ export function App() {
                       />
                     </div>
                     <NoticeLiveRegion toast={statusVisibleToast} />
-                    <StatusBar
-                      persistent={statusPersistent}
-                      visibleToast={statusVisibleToast}
-                      pendingCount={statusPendingCount}
-                      onToastClick={handleStatusToastClick}
-                      onToastDismiss={(toast) => statusRemoveToast(toast.id)}
-                      onToastSuppress={(toast) => {
-                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
-                        statusSuppressToastKind(toast.kind);
-                      }}
-                    />
                   </div>
                   <DevToolsPanel
                     api={api}
