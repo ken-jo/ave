@@ -93,9 +93,26 @@ describe("protected home configuration", () => {
     const first = readdirSync(dir).find(name => name.startsWith("settings.json.post-migration-"));
     if (!first) throw new Error("Expected preserved copy");
     expect(statSync(join(dir, first), { bigint: true }).ino).not.toBe(original);
+    expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Interrupted source deletion");
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
     vi.mocked(unlinkSync).mockImplementation(unlink);
     expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Legacy configuration preserved at");
     expect(existsSync(path)).toBe(false);
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
+  });
+
+  it.skipIf(process.platform === "win32")("does not reuse a POSIX aside with different bytes", () => {
+    const dir = home();
+    mkdirSync(dir, { recursive: true });
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    writeFileSync(source, "outside edit");
+    writeFileSync(previous, "different bytes");
+    const aside = asideOf(_cleanupRootConfigurationForTest(dir), dir, "settings.json");
+    expect(aside).not.toBe(previous);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(readFileSync(previous, "utf8")).toBe("different bytes");
+    expect(existsSync(source)).toBe(false);
   });
 
   it.skipIf(process.platform === "win32").each(["settings.json", "policy.json", "ave-secrets.json"])("copies POSIX root %s into a new inode before unlinking", name => {

@@ -193,11 +193,21 @@ function cleanupRootConfiguration(home: string): string[] {
           if (current.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
           if (identical) unlinkSync(path);
           else {
-            const asideName = `${name}.post-migration-${new Date().toISOString().replace(/[-:.]/g, "")}`;
-            const aside = join(sourceRoot, asideName);
-            const reservation = openSync(aside, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-            try { writeFileSync(reservation, contents); fsyncSync(reservation); }
-            finally { closeSync(reservation); }
+            let asideName = readdirSync(sourceRoot).find(candidate => {
+              if (!candidate.startsWith(`${name}.post-migration-`)) return false;
+              const preserved = openSync(join(sourceRoot, candidate), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+              try {
+                const opened = fstatSync(preserved);
+                return opened.isFile() && opened.size === contents.length && readFileSync(preserved).equals(contents);
+              } finally { closeSync(preserved); }
+            });
+            if (asideName === undefined) {
+              asideName = `${name}.post-migration-${new Date().toISOString().replace(/[-:.]/g, "")}`;
+              const aside = join(sourceRoot, asideName);
+              const reservation = openSync(aside, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+              try { writeFileSync(reservation, contents); fsyncSync(reservation); }
+              finally { closeSync(reservation); }
+            }
             fsyncSync(root);
             const copied = lstatSync(path);
             if (copied.ino !== identity.ino || copied.dev !== identity.dev || copied.size !== identity.size

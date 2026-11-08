@@ -78,9 +78,26 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     if (!first) throw new Error("Expected preserved copy");
     expect(statSync(join(dir, first), { bigint: true }).ino).not.toBe(original);
     expect(readFileSync(join(dir, first), "utf8")).toBe("outside edit");
+    expect(native("[HomeDirectoryDacl]::CleanupConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false)", dir, interrupted))
+      .toContain("Interrupted source deletion");
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
     expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("Legacy configuration preserved at");
     expect(existsSync(source)).toBe(false);
-    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toHaveLength(2);
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toHaveLength(1);
+  });
+
+  it("does not reuse an aside with different bytes", () => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    writeFileSync(source, "outside edit");
+    writeFileSync(previous, "different bytes");
+    const aside = asideOf(migrateAveHomeConfiguration(dir), dir, "settings.json");
+    expect(aside).not.toBe(previous);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(readFileSync(previous, "utf8")).toBe("different bytes");
+    expect(existsSync(source)).toBe(false);
   });
 
   it("moves a large root source aside and commits the defaults", () => {

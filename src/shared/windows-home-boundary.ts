@@ -373,13 +373,29 @@ public static class HomeDirectoryDacl {
                 if (recorded.Success && recorded.Groups[1].Value == hash) {
                   if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
                 } else {
-                  string aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
-                  // A fresh file inherits the parent DACL; copying bytes never transfers source ACEs.
-                  using (var copy = OpenRelative(home, aside, user, 2, false, true, false))
-                  using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
-                    input.Position = 0;
-                    input.CopyTo(output);
-                    output.Flush(true);
+                  string aside = null;
+                  foreach (string candidate in RepairEntries(home)) {
+                    if (!candidate.StartsWith(name + ".post-migration-", StringComparison.Ordinal)) continue;
+                    using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {
+                      if (preserved == null || (Attributes(preserved) & 0x410) != 0) throw new InvalidOperationException("Preserved configuration is not a regular file");
+                      using (var previous = new System.IO.FileStream(preserved, System.IO.FileAccess.Read)) {
+                        if (previous.Length != input.Length) continue;
+                        input.Position = 0;
+                        bool identical = true;
+                        for (long offset = 0; identical && offset < input.Length; offset++) identical = input.ReadByte() == previous.ReadByte();
+                        if (identical) { aside = candidate; break; }
+                      }
+                    }
+                  }
+                  if (aside == null) {
+                    aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
+                    // A fresh file inherits the parent DACL; copying bytes never transfers source ACEs.
+                    using (var copy = OpenRelative(home, aside, user, 2, false, true, false))
+                    using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+                      input.Position = 0;
+                      input.CopyTo(output);
+                      output.Flush(true);
+                    }
                   }
                   if (!Delete(source, user)) throw new InvalidOperationException("Legacy configuration source deletion failed");
                   diagnostics.Add("Legacy configuration preserved at " + System.IO.Path.Combine(path, aside));
