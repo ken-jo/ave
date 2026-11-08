@@ -1,6 +1,6 @@
-import "../../../../test/renderer/setup.js";
+import { setContainerWidths } from "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { MainToolbar } from "../MainToolbar.js";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
@@ -80,14 +80,29 @@ describe("MainToolbar", () => {
       bootstrapStatus: { status: { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } }, onDismiss: vi.fn(), onRetry: vi.fn() },
     }));
     const slot = screen.getByTestId("main-toolbar-drag-band");
-    expect(slot).toHaveClass("flex-1", "min-w-0");
+    expect(slot).toHaveClass("flex-1", "min-w-min");
     expect(slot).toContainElement(screen.getByTestId("window-notice-slot"));
     expect(slot.closest('[style*="no-drag"]')).toBeNull();
     const crumb = screen.getByTestId("view-path-breadcrumb");
     expect(crumb.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const chip = screen.getByTestId("bootstrap-status-pill");
     expect(slot.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId("main-toolbar").className).toContain("max-sm:[&_[data-toolbar-pill-label]]:hidden");
+    expect(screen.getByTestId("main-toolbar").className).toContain("data-[compact=true]:[&_[data-toolbar-pill-label]]:hidden");
+  });
+
+  it("compacts labels before the breadcrumb yields and releases compaction when content fits", async () => {
+    renderWithProvider(defaultProps({ appUpdateState: { kind: "available", version: "9.9.9" } }));
+    const toolbar = screen.getByTestId("main-toolbar");
+    const controls = screen.getByTestId("toolbar-status-controls");
+    Object.defineProperty(toolbar, "clientWidth", { configurable: true, value: 200 });
+    Object.defineProperty(toolbar, "scrollWidth", { configurable: true, get: () => toolbar.dataset.compact ? 200 : 300 });
+    await act(async () => { setContainerWidths({ canvasWidth: 200 }); });
+    expect(toolbar).toHaveAttribute("data-compact", "true");
+    expect(screen.getByTestId("app-update-badge-available")).toHaveAccessibleName(/9.9.9/);
+    expect(controls).toHaveClass("min-w-0", "overflow-x-auto");
+    Object.defineProperty(toolbar, "scrollWidth", { configurable: true, value: 100 });
+    await act(async () => { setContainerWidths({ canvasWidth: 600 }); });
+    expect(toolbar).not.toHaveAttribute("data-compact");
   });
 
   it("lines the lifecycle pills up in one row, app update first", () => {
@@ -156,6 +171,7 @@ describe("MainToolbar", () => {
 });
 
 afterEach(() => {
+  setContainerWidths({ canvasWidth: Infinity, shellWidth: Infinity });
   vi.unstubAllGlobals();
 });
 

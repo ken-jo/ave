@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { setWindowSize } from "./seeded-electron.js";
 import type { ElectronApplication, Locator } from "playwright";
 import { test, expect } from "./fixtures.js";
@@ -176,6 +177,99 @@ test(`title bar notices leave every routed toolbar clickable at ${width}px`, asy
     await expect(page.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "expanded");
   }
 });
+}
+
+for (const zoomLevel of [1, 2]) {
+  test(`combined update offers keep sticky notice controls reachable at 360px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
+    await setWindowSize(app, 360, 640);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.evaluate(async (zoomLevel) => {
+      await window.aveApi.updateSettings({ appearance: { zoomLevel } });
+    }, zoomLevel);
+    await expect(page.getByTestId("zoom-indicator")).toBeVisible();
+    await activateView(app, "settings");
+    await expect(page.getByRole("searchbox")).toBeVisible();
+    await app.evaluate(({ BrowserWindow }, channels) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents;
+      contents?.send(channels.update.state, { kind: "available", version: "9.9.9" });
+      contents?.send(channels.marketplace.updatesAvailable, [{
+        key: { sourceId: "ave", kind: "plugin", name: "notice-update" },
+        displayName: "Notice update", from: "1.0.0", to: "2.0.0", state: "manual",
+      }]);
+      contents?.send(channels.plugins.installResult, {
+        slug: "notice-install", success: false, error: "install-failed", message: "The install could not finish. Review the settings and try again.",
+      });
+    }, CHANNELS);
+    const slot = page.getByTestId("window-notice-slot");
+    const toast = slot.getByTestId("status-toast");
+    await expect(toast).toHaveAttribute("data-severity", "error");
+    await expect(page.getByTestId("marketplace-update-action")).toBeVisible();
+    await expect(page.getByTestId("app-update-badge-available")).toBeVisible();
+    const assertUnclippedHit = async (control: Locator) => {
+      const hit = await control.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        let clipped = false;
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          const bounds = parent.getBoundingClientRect();
+          if (style.overflowX !== "visible" && (box.left < bounds.left - 0.5 || box.right > bounds.right + 0.5)) clipped = true;
+        }
+        return { width: box.width, height: box.height,
+          hit: element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)),
+          left: box.left, right: box.right, viewport: window.innerWidth, clipped,
+        };
+      });
+      expect(hit.width).toBeGreaterThan(0);
+      expect(hit.height).toBeGreaterThan(0);
+      expect(hit.left).toBeGreaterThanOrEqual(0);
+      expect(hit.right).toBeLessThanOrEqual(hit.viewport);
+      expect(hit.clipped, JSON.stringify(hit)).toBe(false);
+      expect(hit.hit, JSON.stringify(hit)).toBe(true);
+    };
+    const updateStyle = await page.getByTestId("app-update-badge-available").evaluate((element) => {
+      const icon = element.querySelector("svg");
+      if (!icon) throw new Error("Missing compact update icon");
+      const box = icon.getBoundingClientRect();
+      return { iconWidth: box.width, iconHeight: box.height, color: getComputedStyle(icon).color,
+        background: getComputedStyle(element).backgroundColor, opacity: getComputedStyle(icon).opacity };
+    });
+    expect(updateStyle.iconWidth).toBeGreaterThan(0);
+    expect(updateStyle.iconHeight).toBeGreaterThan(0);
+    const stylePath = testInfo.outputPath("compact-update-style.json");
+    await writeFile(stylePath, JSON.stringify(updateStyle, null, 2));
+    await testInfo.attach("compact-update-style", { path: stylePath, contentType: "application/json" });
+    const dismiss = toast.getByTestId("status-toast-dismiss");
+    await assertUnclippedHit(dismiss);
+    await assertUnclippedHit(page.getByTestId("app-update-badge-available"));
+    await assertUnclippedHit(page.getByTestId(TEST_IDS.viewPathBack));
+    await expectControlReceivesClick(page.getByTestId(TEST_IDS.viewPathBack));
+    await expect(page.getByTestId("composer-textarea").first()).toBeVisible();
+    await expect(toast).toBeVisible();
+    expect(await toast.getAttribute("title")).toBe(await page.getByTestId("window-notice-strip").getByTestId("notice-live-assertive").textContent());
+    // Capture the physical content bounds: page screenshots crop when the shell is zoomed.
+    const capture = await app.evaluate(async ({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!win) throw new Error("Missing main window");
+      const image = await win.webContents.capturePage();
+      return { png: image.toPNG().toString("base64"), size: image.getSize(), bounds: win.getContentBounds() };
+    });
+    expect(capture.size).toEqual({ width: 360, height: 640 });
+    expect(capture.bounds.width).toBe(360);
+    await writeFile(testInfo.outputPath(`notice-controls-360-zoom-${zoomLevel}.png`), Buffer.from(capture.png, "base64"));
+    const pluginUpdate = page.getByTestId("marketplace-update-action");
+    await pluginUpdate.scrollIntoViewIfNeeded();
+    await assertUnclippedHit(pluginUpdate);
+    await assertUnclippedHit(dismiss);
+    await expectControlReceivesClick(dismiss);
+    await expect(toast).toHaveCount(0);
+    // The optional open action has the same hard control floor as dismissal.
+    await showWindowNotice(app);
+    await expect(toast).toBeVisible();
+    await assertUnclippedHit(toast.getByRole("button", { name: /Learn more|자세히 알아보기/ }));
+    await assertUnclippedHit(dismiss);
+    await expectControlReceivesClick(dismiss);
+    await expect(toast).toHaveCount(0);
+  });
 }
 
 providerTest.describe("side-chat notice delivery", () => {

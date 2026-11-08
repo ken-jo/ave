@@ -76,7 +76,7 @@ export function StatusBar(props: StatusBarProps) {
   return (
     <TooltipProvider>
     <footer
-      className="relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
+      className={`relative flex w-full ${titlebar ? "min-w-min" : "min-w-0"} items-center gap-3 text-dense text-muted-foreground`}
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -160,7 +160,7 @@ export function StatusBar(props: StatusBarProps) {
       {visibleToast !== null && (hasContent || leaving) ? (
         <div
           className={titlebar
-            ? `pointer-events-none relative flex w-full min-w-0 justify-end ${leaving ? "ave-anim-fade-out" : "ave-anim-fade-in"}`
+            ? `pointer-events-none relative flex w-full min-w-min justify-end ${leaving ? "ave-anim-fade-out" : "ave-anim-fade-in"}`
             : `pointer-events-none absolute inset-x-0 bottom-full z-30 mb-2 flex items-start justify-end ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
           data-testid="status-bar-presence"
           data-leaving={leaving ? "true" : undefined}
@@ -224,21 +224,19 @@ export function NoticeToast({
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}
+      title={titlebar ? toast.message : undefined}
       style={titlebar ? { WebkitAppRegion: "no-drag" } as CSSProperties : undefined}
-      className={`${chatSurface()} ave-anim-fade-in flex min-w-0 w-full max-w-[min(100%,24rem)] text-input-bar-foreground ${titlebar ? "@container/notice h-(--chrome-control-height) items-center gap-0.5 px-1 text-dense" : "items-start gap-2 px-3 py-2 text-body-sm"}${className ? ` ${className}` : ""}`}
+      className={`${chatSurface()} ave-anim-fade-in flex w-full max-w-[min(100%,24rem)] text-input-bar-foreground ${titlebar ? "min-w-min h-(--chrome-control-height) items-center gap-0.5 px-1 text-dense" : "min-w-0 items-start gap-2 px-3 py-2 text-body-sm"}${className ? ` ${className}` : ""}`}
     >
       <span className={`${titlebar ? "h-1.5 w-1.5" : "mt-1 h-2 w-2"} shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
       {wrap ? (
         <span className="min-w-0 flex-1 break-words text-left [overflow-wrap:anywhere]" data-testid="status-toast-message">{toast.message}</span>
       ) : (
-        <MarqueeText text={toast.message} className="flex-1 text-left" data-testid="status-toast-message" />
+        <MarqueeText text={toast.message} className={`${titlebar ? "w-0 " : ""}flex-1 text-left`} data-testid="status-toast-message" />
       )}
       {openable ? (
-        <button type="button" onClick={() => onOpen?.(toast)} className={`${linkClass}${titlebar ? " min-w-0 max-w-[40%]" : ""}`} aria-label={t("statusBar.toastDetailsAction")} title={t("statusBar.toastDetailsAction")}>
-          {titlebar ? <>
-            <ArrowUpRight className="h-3 w-3 @[12rem]/notice:hidden" aria-hidden="true" />
-            <span className="hidden truncate @[12rem]/notice:block">{t("statusBar.toastDetailsAction")}</span>
-          </> : t("statusBar.toastDetailsAction")}
+        <button type="button" onClick={() => onOpen?.(toast)} className={linkClass} aria-label={t("statusBar.toastDetailsAction")} title={t("statusBar.toastDetailsAction")}>
+          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastDetailsAction")}
         </button>
       ) : toast.action ? (
         <button
@@ -247,15 +245,12 @@ export function NoticeToast({
             toast.action?.run();
             onDismiss(toast);
           }}
-          className={`${linkClass}${titlebar ? " min-w-0 max-w-[40%]" : ""}`}
+          className={linkClass}
           data-testid="status-toast-action"
           aria-label={toast.action.label}
           title={toast.action.label}
         >
-          {titlebar ? <>
-            <ArrowUpRight className="h-3 w-3 @[12rem]/notice:hidden" aria-hidden="true" />
-            <span className="hidden truncate @[12rem]/notice:block">{toast.action.label}</span>
-          </> : toast.action.label}
+          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : toast.action.label}
         </button>
       ) : null}
       {toast.suppressible && onSuppress ? (

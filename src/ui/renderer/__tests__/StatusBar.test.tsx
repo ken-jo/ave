@@ -116,8 +116,10 @@ describe("StatusBar", () => {
     const actionLabel = "Open the detailed explanation of this notice and the available recovery steps";
     rerender(<StatusBar persistent={[]} toastPlacement="titlebar" visibleToast={toast({ action: { label: actionLabel, run } })} onToastDismiss={onDismiss} />);
     const action = screen.getByRole("button", { name: actionLabel });
-    expect(action).toHaveClass("max-w-[40%]");
-    expect(action.querySelector("span")).toHaveClass("truncate");
+    expect(action).toHaveClass("shrink-0");
+    expect(action.querySelector("svg")).not.toBeNull();
+    expect(surface).toHaveClass("min-w-min");
+    expect(screen.getByTestId("status-toast")).toHaveAttribute("title");
     expect(screen.getByTestId("status-toast-dismiss")).toBeVisible();
     fireEvent.click(action);
     expect(run).toHaveBeenCalledOnce();

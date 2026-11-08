@@ -83,6 +83,7 @@ export function ToolbarStatusPill({
           aria-disabled={disabled}
           title={title}
           aria-label={ariaLabel}
+          data-toolbar-pill=""
           data-testid={testId}
         >
           {busy ? <Loader size={12} icon={Icon} /> : <Icon className="h-3 w-3" />}

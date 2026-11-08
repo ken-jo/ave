@@ -2026,7 +2026,7 @@ export function App() {
   );
 
   const windowNotice = (
-    <div className="min-w-0 w-full" data-testid="window-notice-slot">
+    <div className="min-w-min w-full" data-testid="window-notice-slot">
       <StatusBar
         persistent={[]}
         toastPlacement="titlebar"

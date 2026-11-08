@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
 import { ZoomIndicator } from "./components/ZoomControls.js";
 import { ViewHistoryNav, ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
@@ -73,13 +74,33 @@ export function MainToolbar({
   workApprovals,
 }: MainToolbarProps) {
   const { t } = useTranslation();
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const updateCompaction = () => {
+      delete toolbar.dataset.compact;
+      const controls = toolbar.querySelector<HTMLElement>('[data-toolbar-controls]');
+      if (toolbar.scrollWidth > toolbar.clientWidth || (controls && controls.scrollWidth > controls.clientWidth)) {
+        toolbar.dataset.compact = "true";
+      }
+    };
+    updateCompaction();
+    const resize = new ResizeObserver(updateCompaction);
+    resize.observe(toolbar);
+    const content = new MutationObserver(updateCompaction);
+    content.observe(toolbar, { childList: true, characterData: true, subtree: true });
+    void document.fonts?.ready.then(updateCompaction);
+    return () => { resize.disconnect(); content.disconnect(); };
+  }, []);
   // The toolbar content lives IN the window-control band (CustomTitleBar): back / forward and the location path on the
   // leading edge, then a spacer (it stays a drag region) that pushes the status controls to the far-right edge. Each control
   // is wrapped `no-drag` so the surrounding band stays draggable.
   return (
     <div
+      ref={toolbarRef}
       data-testid="main-toolbar"
-      className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight) sm:gap-(--chrome-gap) max-sm:[&_[data-toolbar-pill-label]]:hidden max-sm:[&_[data-toolbar-pill-trailing]]:hidden"
+      className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight) sm:gap-(--chrome-gap) data-[compact=true]:[&_[data-toolbar-pill-label]]:hidden data-[compact=true]:[&_[data-toolbar-pill-trailing]]:hidden data-[compact=true]:[&_[data-toolbar-pill]]:w-(--chrome-control-height) data-[compact=true]:[&_[data-toolbar-pill]]:px-0"
     >
       {/* ── Location path, on the band's LEADING edge. The band itself reserves
           the sidebar card's width (CustomTitleBar's `leadClearance`), so this
@@ -97,22 +118,16 @@ export function MainToolbar({
           onForward={viewNav.onForward}
         />
       </NoDrag>
-      <NoDrag className="flex min-w-0 max-w-[45%] shrink items-center">
+      <NoDrag className="hidden min-w-0 max-w-[45%] shrink-0 items-center overflow-hidden md:flex in-data-[compact=true]:shrink">
         <ViewPathBreadcrumb segments={viewNav.segments} onSelectSegment={viewNav.onSelectSegment} />
       </NoDrag>
 
-      {/* ── Spacer pushes the trailing controls to the far-right edge (stays drag) */}
-      <div className="flex min-w-0 flex-1 items-center justify-end overflow-hidden" data-testid="main-toolbar-drag-band">
+      {/* The intrinsic minimum comes from the notice controls, even when its message has no width. */}
+      <div className="flex min-w-min flex-1 items-center justify-end" data-testid="main-toolbar-drag-band">
         {notice}
       </div>
 
-      <NoDrag className="empty:hidden">
-        <ZoomIndicator />
-      </NoDrag>
-      <NoDrag>
-        <RemoteA2AActionButton />
-      </NoDrag>
-
+      <div data-toolbar-controls="" data-testid="toolbar-status-controls" className="flex min-w-0 shrink items-center gap-(--chrome-gap-tight) overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {/* ── Lifecycle status pills, app-wide first then plugin-wide: app update,
           plugin updates, managed-plugin bootstrap. Each is permanent (NOT a
           toast) until acted on, and each renders nothing in its resting state,
@@ -130,7 +145,7 @@ export function MainToolbar({
 
           The app-update download step is the user's first explicit consent.
           Never download before the user's explicit click. */}
-      <NoDrag className="empty:hidden">
+      <NoDrag className="shrink-0 empty:hidden">
         <AppUpdateBadge
           state={appUpdateState}
           inFlight={appUpdateInFlight}
@@ -141,27 +156,34 @@ export function MainToolbar({
       </NoDrag>
 
       {pluginUpdates && (
-        <NoDrag className="empty:hidden">
+        <NoDrag className="shrink-0 empty:hidden">
           <PluginUpdatesPill {...pluginUpdates} />
         </NoDrag>
       )}
 
+      <NoDrag className="shrink-0 empty:hidden">
+        <ZoomIndicator />
+      </NoDrag>
+      <NoDrag className="shrink-0 empty:hidden">
+        <RemoteA2AActionButton />
+      </NoDrag>
+
       {bootstrapStatus && (
-        <NoDrag className="empty:hidden">
+        <NoDrag className="shrink-0 empty:hidden">
           <BootstrapStatusPill {...bootstrapStatus} />
         </NoDrag>
       )}
 
       {/* 확인 필요: renders nothing at zero and until its first result, like the pills above. */}
       {workApprovals && (
-        <NoDrag className="empty:hidden">
+        <NoDrag className="shrink-0 empty:hidden">
           <WorkApprovalsBadge {...workApprovals} />
         </NoDrag>
       )}
 
       {/* Development controls stay at the trailing edge of the title band. */}
       {isDevMode() && onOpenDevTools !== undefined && (
-        <NoDrag className="hidden sm:inline-flex">
+        <NoDrag className="hidden shrink-0 sm:inline-flex">
           <ToolbarStatusPill
             tone="warning"
             icon={Wrench}
@@ -176,6 +198,8 @@ export function MainToolbar({
           />
         </NoDrag>
       )}
+
+      </div>
 
       {/* The work-panel toggle used to sit here. It moved into the chat
           group's own header: the panel shows what THAT conversation is doing,
