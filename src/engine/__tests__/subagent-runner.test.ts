@@ -138,6 +138,53 @@ describe("SubAgentRunner approval-owner setup", () => {
   });
 });
 
+
+describe("SubAgentRunner pending approval status", () => {
+  it.each(["allow", "deny", "cancel"] as const)("reports a child's user approval until %s settles it", async (answer) => {
+    const contents = makeMockWebContents();
+    const gate = new ApprovalGate(contents as never);
+    const registry = new ToolRegistry();
+    const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry, { approvalGate: gate }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager() });
+    const parentId = "approval-parent";
+    let childId = "";
+    let resumed = false;
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => { finish = resolve; });
+    const hasProvider = vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    const turn = vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async function (this: ConversationLoop) {
+      childId = this.sessionId;
+      await gate.requestAndWait({ id: "pending-site", createdAt: Date.now(), toolName: "browser_tab_new", args: { url: "https://a.example/path" }, browserSite: "https://a.example:443", forceExplicit: true, durableApprovalRecordAllowed: false, category: "tool", source: "builtin", sessionId: childId, reason: "Open requested page" });
+      resumed = true;
+      await finishing;
+      return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+    });
+    const running = runner.spawn({ title: "page reader", instructions: "Read the requested page", originSessionId: parentId, toolScope: DENY_ALL_TOOL_SCOPE });
+    try {
+      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+      const expected = { status: "waiting", taskState: A2ATaskState.INPUT_REQUIRED, pendingApproval: { toolName: "browser_tab_new", target: "https://a.example:443" } };
+      expect(runner.getRunStatus(childId, parentId)).toMatchObject(expected);
+      expect(runner.listRunStatuses(parentId)).toEqual([expect.objectContaining(expected)]);
+      expect(runner.getRunStatus(childId, "another-parent")).toBeNull();
+      const statusTool = createAgentStatusTool({ getRunner: () => runner });
+      const result = await statusTool.execute({ id: childId }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId: parentId } });
+      expect(JSON.parse(result.output)).toMatchObject({ run: expected });
+      const request = contents.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST)![1] as ApprovalRequest;
+      if (answer === "cancel") gate.cancelPendingRequest(request.id, childId, "caller-abort");
+      else gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac, ...(answer === "allow" ? { browserSiteChoice: "this-site" as const } : {}) }, contents as never);
+      await vi.waitFor(() => expect(resumed).toBe(true));
+      expect(gate.pendingCount).toBe(0);
+      expect(runner.getRunStatus(childId, parentId)).toMatchObject({ status: "running" });
+      expect(runner.getRunStatus(childId, parentId)).not.toHaveProperty("pendingApproval");
+    } finally {
+      gate.disposeAll();
+      finish();
+      await running;
+      turn.mockRestore(); refresh.mockRestore(); hasProvider.mockRestore();
+    }
+  });
+});
+
 function createInMemoryMailboxNamespace() {
   let stored: unknown;
   let rejectNextWrite = false;

@@ -397,7 +397,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_agentSpawn.resumeInvalidGuidance": "이 resumeId 는 다시는 재개할 수 없습니다 — 거부 사유가 구조적(task 상태/소유권/영속 메타데이터 불일치)이므로 같은 resumeId 재시도는 매번 동일하게 실패합니다. 재시도하지 마세요. 작업이 여전히 필요하면 새 sub-agent 로 시작하고, 원래 에이전트를 이어갈 수 없었음을 사용자에게 알리세요.",
   "be_agentSpawn.resumeProviderRejectedGuidance": "이 요청 자체를 provider 가 거부했습니다 — 일시적 장애가 아닙니다. provider 는 생성 전에 요청을 검증하며 동일한 요청은 매번 동일하게 거부하므로, 같은 resumeId 재시도는 빠져나올 수 없는 루프입니다. sub-agent 히스토리는 온전하고 여전히 재개 가능하지만, 요청이 달라진 뒤에만 가능합니다: 모델이나 provider 를 바꾸거나, 더 좁은 tool 범위의 새 sub-agent 로 작업을 이어가세요. 조용히 재시도하지 말고 provider 오류 원문을 사용자에게 보고하세요.",
   "be_agentSpawn.emptySummaryFallback": "작업 상태: {taskState} — 서브에이전트가 요약을 남기지 않았습니다. agent_spawn(resumeId: \"{resumeId}\") 로 재개해 상세를 확인하세요.",
-  "be_agentSpawn.statusToolDescription": "활성 또는 최근 sub-agent 실행을 조회합니다. id 로 spawnId 또는 childSessionId 를 넘기고, 생략하면 추적 중인 실행을 모두 나열합니다. 여기에는 살아 있는 실행만 나옵니다 — 앱 재시작 후 이 대화에 남아 있는 sub-agent 는 agent_list 가 보여줍니다.",
+  "be_agentSpawn.statusToolDescription": "활성 또는 최근 sub-agent 실행을 조회합니다. id 로 spawnId 또는 childSessionId 를 넘기고, 생략하면 추적 중인 실행을 모두 나열합니다. pendingApproval이 있는 waiting 실행은 표시된 도구와 대상에 대한 사용자 결정을 기다립니다. 같은 작업을 중복 실행하지 말고 결정을 기다리세요. 여기에는 살아 있는 실행만 나옵니다 — 앱 재시작 후 이 대화에 남아 있는 sub-agent 는 agent_list 가 보여줍니다.",
   "be_agentSpawn.statusRestoredHint": "이 프로세스에는 살아 있는 run 이 없지만, 이 대화의 sub-agent {count} 개가 재시작 후에도 남아 있습니다. run 목록이 비었다고 해서 그 작업이 끝난 것이 아닙니다 — agent_list 를 호출하면 resumeId 와 상태까지 확인할 수 있습니다.",
 
   /** Alert interface strings and the host's declared due-soon templates. */

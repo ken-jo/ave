@@ -29,6 +29,7 @@ import type {
   ApprovalGate,
   ApprovalDecision,
   ApprovalRequestInput,
+  PendingApprovalSummary,
 } from "../permissions/approval-gate.js";
 import {
   isModelComplexityLevel,
@@ -474,6 +475,7 @@ export interface SubAgentRunSnapshot {
   title: string;
   status: SubAgentRunStatus;
   taskState: A2AProjectedTaskState;
+  pendingApproval?: PendingApprovalSummary;
   startedAt: string;
   updatedAt: string;
   toolCallCount: number;
@@ -2062,12 +2064,16 @@ export class SubAgentRunner {
   }
 
   private snapshotRun(run: TrackedSubAgentRun): SubAgentRunSnapshot {
+    const pendingApproval = run.status === "running"
+      ? this.deps.parentDeps.approvalGate?.pendingSessionApproval?.(run.childSessionId)
+      : null;
     return {
       ...(run.spawnId ? { spawnId: run.spawnId } : {}),
       childSessionId: run.childSessionId,
       title: run.title,
-      status: run.status,
-      taskState: run.taskState,
+      status: pendingApproval ? "waiting" : run.status,
+      taskState: pendingApproval ? A2ATaskState.INPUT_REQUIRED : run.taskState,
+      ...(pendingApproval ? { pendingApproval } : {}),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       toolCallCount: run.toolCallCount,

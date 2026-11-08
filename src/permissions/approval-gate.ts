@@ -102,6 +102,11 @@ interface EgressHostApproval {
   readonly projectCwd?: string;
 }
 
+export interface PendingApprovalSummary {
+  toolName: string;
+  target: string;
+}
+
 export interface ApprovalRequest {
   browserSite?: string;
   // Display-only title derived from host-tracked child provenance.
@@ -1946,6 +1951,22 @@ export class ApprovalGate {
       riskCeilingAtApproval: entry.riskCeilingAtApproval,
       verdictAtApproval: entry.verdictAtApproval,
     };
+  }
+
+  // A status projection uses display-masked fields only, never the raw execution arguments.
+  pendingSessionApproval(sessionId: string): PendingApprovalSummary | null {
+    for (const entry of this.pending.values()) {
+      if (entry.sessionId !== sessionId || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) continue;
+      const request = entry.rendererRequest;
+      const args = request?.args;
+      const fields = args !== null && typeof args === "object" ? args as Record<string, unknown> : {};
+      const target = request?.browserSite ?? request?.outOfAllowedDir?.candidatePath
+        ?? request?.egressHost?.host
+        ?? [fields.url, fields.path, fields.file_path, fields.command, fields.tabId].find((value): value is string => typeof value === "string")
+        ?? entry.toolName;
+      return { toolName: entry.toolName, target: maskSensitiveData(target).masked.slice(0, 500) };
+    }
+    return null;
   }
 
   // Pending cards for this renderer's currently hosted sessions and terminals. Reloaded or moved conversations recover their signed cards without disclosing other windows' requests.
