@@ -45,7 +45,7 @@ afterEach(() => {
 });
 /** The launcher hints and keys are platform-specific; these cases are written for a Mac. */
 function onMac(): void {
-  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: true };
+  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: true, windowControls: "native" };
 }
 
 let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;

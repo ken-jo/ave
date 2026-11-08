@@ -9,7 +9,7 @@ function keyEvent(over: Partial<KeyboardEvent>): Pick<KeyboardEvent, "key" | "co
 }
 
 function setPlatform(isDarwin: boolean): void {
-  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin };
+  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
 }
 
 afterEach(() => {
