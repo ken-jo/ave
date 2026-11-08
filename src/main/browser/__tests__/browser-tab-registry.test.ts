@@ -19,6 +19,7 @@ class FakeGuest implements BrowserGuest {
     return this.title;
   }
   isFocused(): boolean { return this.focused; }
+  focus(): void { this.focused = true; }
 }
 
 function setup() {
@@ -840,6 +841,25 @@ describe("scoped browser control", () => {
     expect(registry.listTabs(1)).toEqual([]);
     expect(registry.liveRendererTab(1, "page")).toBeNull();
     expect(registry.listTabs(2)).toHaveLength(1);
+  });
+
+  it.each([false, true])("focuses only an awake leased owned background guest with another surface shown: %s", async (shown) => {
+    const { registry, tab, guest, ops } = await owned();
+    if (shown) {
+      attachTab(registry, { tabId: "other", webContentsId: 72 });
+      registry.setActiveSurface(1, { kind: "browser", tabId: "other" });
+    }
+    registry.acquireControl(tab, ACTOR);
+    expect(registry.setAgentTabAwake(71, true)).toBe(true);
+    const count = ops.length;
+    await expect(registry.focusGuest(71)).resolves.toBeUndefined();
+    expect(guest.isFocused()).toBe(true);
+    expect(ops).toHaveLength(count);
+    expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
+    registry.releaseFocus(71);
+    expect(ops.at(-1)?.request.op).toBe("restore-focus");
+    registry.userInput(71, { type: "keyDown" });
+    await expect(registry.focusGuest(71)).rejects.toThrow("active control");
   });
 
   it("focuses only the bound active renderer slot and waits for actual guest focus", async () => {

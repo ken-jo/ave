@@ -1153,7 +1153,7 @@ function adapterFixture(options: {
   });
   registry.guestAttached(guest as never, 1);
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
-  registry.setRendererLink({ sendControl: () => {}, sendTabOp: (_windowId, request) => {
+  registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
     layoutOps.push(request.op);
     if (request.op === "wake") laidOut = true;
     if (request.op === "sleep") laidOut = false;
@@ -1855,6 +1855,29 @@ it("releases the native pointer observer when dispatch fails", async () => {
   });
   await expect(actions.hover(live, ref)).rejects.toThrow("Native dispatch refused");
   expect(guest.listenerCount("input-event")).toBe(before);
+});
+
+it.each([false, true])("selects in an awake owned background guest without revealing the panel: %s", async (otherShown) => {
+  const { cdp, actions, approve, guest, registry, tab, layoutOps } = adapterFixture({ agent: true });
+  let nativeFocused = false;
+  Object.assign(guest, { isFocused: () => nativeFocused, focus: () => { nativeFocused = true; cdp.focusPage(); } });
+  if (otherShown) registry.setActiveSurface(1, { kind: "browser", tabId: "other" });
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11, value: { value: "B" } }),
+    ax("option", "option", "B", { backendDOMNodeId: 21, properties: [{ name: "selected", value: { value: true } }] })]);
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.describeNode" && params?.backendNodeId === 11) return { node: { nodeName: "SELECT", backendNodeId: 11,
+      children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
+    return send(method, params);
+  });
+  const live = await approve("browser_select");
+  const shot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+  await expect(actions.select(live, ref, "b")).resolves.toBeUndefined();
+  expect(cdp.inputs()).toEqual(Array(4).fill("Input.dispatchKeyEvent"));
+  expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
+  expect(layoutOps).not.toContain("select");
+  expect(layoutOps).toContain("restore-focus");
 });
 
 it("sends no selection keys when native focus proof is unavailable", async () => {

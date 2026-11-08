@@ -109,6 +109,7 @@ export interface BrowserGuest {
   getTitle(): string;
   // Native focus capability; operations that require it reject when unavailable.
   isFocused?(): boolean;
+  focus?(): void;
 }
 
 /** Every tab a layout keeps: shown in a pane, hidden but still open (`openSurfaces`), or in a side panel — each once. A hidden tab
@@ -227,6 +228,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly selectedOwnedTabs = new Map<string, string>();
+  private readonly awakeGuests = new Set<number>();
   private readonly handleByWindowTab = new Map<string, string>();
   // A takeover before bind must also prevent a pending new-tab request from granting control later.
   private readonly userOwnedTabs = new Set<string>();
@@ -460,6 +462,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   guestDestroyed(guestId: number): void {
+    this.awakeGuests.delete(guestId);
     const guest = this.attached.get(guestId)?.guest;
     this.attached.delete(guestId);
     this.injectedTouches.delete(guestId);
@@ -887,6 +890,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const signal = tab.actions.signal;
     const documentId = tab.documentId;
     const generation = tab.controlGeneration;
+    const backgroundFocus = () => tab.targetKind === "embedded" && tab.opener === "agent" && tab.owner !== null
+      && tab.owner.sessionId === tab.lease?.actor.sessionId && this.awakeGuests.has(guestId) && typeof guest.focus === "function";
     const assertCurrent = () => {
       if (signal.aborted) throw signal.reason;
       if (this.tabs.get(tab.handle) !== tab || tab.guest !== guest || guest.isDestroyed()
@@ -894,7 +899,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         throw new Error("the browser focus target changed");
       }
       if (this.link?.isWindowVisible?.(tab.windowId) !== true) throw new Error("browser input window is hidden or unavailable");
-      if (tab.targetKind === "embedded" && this.activeBrowserTab(tab.windowId) !== tab.handle) {
+      if (tab.targetKind === "embedded" && this.activeBrowserTab(tab.windowId) !== tab.handle && !backgroundFocus()) {
         throw new Error("the browser focus target is not the active visible surface");
       }
     };
@@ -913,7 +918,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       this.activePopup.set(tab.windowId, tab.handle);
       return;
     }
-    if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
+    if (backgroundFocus() && this.activeBrowserTab(tab.windowId) !== tab.handle) {
+      guest.focus!();
+    } else if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
     })) throw new Error("no browser renderer can focus this guest");
     const deadline = Date.now() + FOCUS_RECEIPT_MAX_MS;
@@ -1269,9 +1276,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const tab = [...this.tabs.values()].find((entry) => entry.guest?.id === guestId);
     if (!tab || tab.rendererTabId === null || !this.isLive(tab)
       || awake && (tab.opener !== "agent" || tab.owner === null || tab.controlMode === "human-paused")) return false;
-    return this.link?.sendTabOp(tab.windowId, {
+    const sent = this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-layout-${this.nextRequest++}`, op: awake ? "wake" : "sleep", tabId: tab.rendererTabId,
     }) === true;
+    if (sent && awake) this.awakeGuests.add(guestId);
+    else this.awakeGuests.delete(guestId);
+    return sent;
   }
 
   metadataChanged(guestId: number): void {
@@ -1349,6 +1359,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.attached.clear();
     this.tabs.clear();
     this.selectedOwnedTabs.clear();
+    this.awakeGuests.clear();
     this.handleByWindowTab.clear();
     this.userOwnedTabs.clear();
     this.pausedControllers.clear();
