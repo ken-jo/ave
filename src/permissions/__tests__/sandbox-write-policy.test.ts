@@ -1186,10 +1186,16 @@ describe("mandatory sandbox control-file writes", () => {
     } finally { setLocale(previous); }
   });
 
-  it("bounds the final union including explicitly configured denies", () => {
-    const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
-    expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
-      .toThrow(t("sandboxPolicy.tooLarge"));
+  it.each(["en", "ko"] as const)("points at configured denies when they dominate overflow in %s", locale => {
+    const previous = getLocale();
+    try {
+      setLocale(locale);
+      const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
+      expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
+        .toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
+      expect(() => assertSandboxWritePolicySize(entries, undefined, [entries[0]!]))
+        .toThrow(t("sandboxPolicy.tooLarge"));
+    } finally { setLocale(previous); }
   });
 
   it.each(["gitdir", "commondir"])("keeps a discovered %s deny above a retained child grant", (kind) => {

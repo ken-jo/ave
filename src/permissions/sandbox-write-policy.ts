@@ -37,11 +37,14 @@ const MAX_GIT_DISCOVERY_POLICY_BYTES = 32_768;
 // Reserve most of a conservative 256 KiB execution budget for profile expansion, other rules and environment.
 const MAX_WRITE_DENY_POLICY_BYTES = 65_536;
 
-export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEntry[], mandatoryPaths?: ReadonlySet<string>): void {
+export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEntry[], mandatoryPaths?: ReadonlySet<string>, configuredDenies: readonly FilesystemPathEntry[] = []): void {
   const discovery = mandatoryPaths === undefined ? [] : entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+  const totalBytes = Buffer.byteLength(JSON.stringify(entries));
   if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES
-    || Buffer.byteLength(JSON.stringify(entries)) > MAX_WRITE_DENY_POLICY_BYTES) {
-    throw new Error(t("sandboxPolicy.tooLarge"));
+    || totalBytes > MAX_WRITE_DENY_POLICY_BYTES) {
+    const configuredDominates = totalBytes > MAX_WRITE_DENY_POLICY_BYTES
+      && Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
+    throw new Error(t(configuredDominates ? "sandboxPolicy.configuredDeniesTooLarge" : "sandboxPolicy.tooLarge"));
   }
 }
 const MAX_MISSING_PATH_ANCESTORS = 64;

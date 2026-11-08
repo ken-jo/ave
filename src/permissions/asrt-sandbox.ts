@@ -594,8 +594,8 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
   return admitted;
 }
 
-function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted: object): Partial<FilesystemConfig> {
-  assertSandboxWritePolicySize(filesystem.denyWrite ?? []);
+function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted: object, configuredDenies: readonly FilesystemPathEntry[]): Partial<FilesystemConfig> {
+  assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, configuredDenies);
   if (process.platform !== "win32") return filesystem;
   const pinned = admittedWindowsPolicies.get(admitted);
   if (pinned === undefined) throw new Error("Filesystem policy was not admitted");
@@ -700,7 +700,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     protectedFloor: Object.freeze(protectedFloor),
     floorPierces: Object.freeze([...pierces]),
   });
-  assertSandboxWritePolicySize(policy.denyWrite);
+  assertSandboxWritePolicySize(policy.denyWrite, undefined, admitted.denyWrite);
   const assertStillValid = (): void => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
@@ -851,7 +851,7 @@ export function buildPerCommandSandboxCustomConfig(
       );
       onGitControlSnapshot?.(snapshot);
     }
-    return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants)) as FilesystemConfig };
+    return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants, grants.denyWrite)) as FilesystemConfig };
   });
 }
 
@@ -1913,7 +1913,7 @@ export function buildSandboxConfig(
 
   return {
     network,
-    filesystem: finishFilesystemPolicy(filesystem, trustedSettings) as FilesystemConfig,
+    filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? []) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
