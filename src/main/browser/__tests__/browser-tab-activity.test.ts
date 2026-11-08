@@ -64,6 +64,43 @@ it("restores the original throttling only after the final independent adapter fi
   expect(page.setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
 });
 
+it("shares one wake and bounded destruction listeners across eleven fresh adapters", async () => {
+  vi.useFakeTimers();
+  const setAwake = vi.fn((_id: number, _awake: boolean) => true);
+  const warnings = vi.spyOn(process, "emitWarning");
+  const page = guest(1);
+  try {
+    for (let index = 0; index < 10; index++) {
+      const withActivity = createBrowserTabActivity((id, awake) => setAwake(id, awake));
+      await withActivity(page, new AbortController().signal, async () => true, async () => {});
+      expect(page.listenerCount("destroyed")).toBe(1);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    const finish = deferred<void>();
+    const lastAdapter = createBrowserTabActivity((id, awake) => setAwake(id, awake));
+    const lastAction = lastAdapter(page, new AbortController().signal, async () => true, () => finish.promise);
+    try {
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs * 2);
+      expect(setAwake.mock.calls).toEqual([[1, true]]);
+      expect(page.listenerCount("destroyed")).toBe(1);
+      expect(page.getBackgroundThrottling()).toBe(false);
+    } finally {
+      finish.resolve();
+      await lastAction;
+    }
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs);
+    expect(setAwake.mock.calls).toEqual([[1, true], [1, false]]);
+    expect(page.setBackgroundThrottling.mock.calls).toEqual([[false], [true]]);
+    expect(page.getBackgroundThrottling()).toBe(true);
+    expect(page.listenerCount("destroyed")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(warnings.mock.calls.filter(([warning]) => warning instanceof Error
+      && warning.name === "MaxListenersExceededWarning")).toEqual([]);
+  } finally {
+    warnings.mockRestore();
+  }
+});
+
 it("does not put a shared guest to sleep when only one adapter is cancelled", async () => {
   vi.useFakeTimers();
   const setAwake = vi.fn((_id: number, _awake: boolean) => true);
