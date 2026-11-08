@@ -11,6 +11,8 @@ import type { InstalledContentView } from "../../../shared/installed-content.js"
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
+import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
+
 const FRENCH = { sourceId: "ave", version: "1.0.0", name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
 function install(content: Partial<InstalledContentView> & { languages?: typeof FRENCH[] }) {
@@ -199,4 +201,60 @@ describe("Window glass tint", () => {
     const { view } = renderWithMaterial(DEFAULT_APPEARANCE, false);
     expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
   });
+});
+
+it("renders size segments at one body size with nominal pixels and a default", () => {
+  const view = renderAppearance();
+  const chips = within(view.getByTestId("font-size-scale")).getAllByRole("radio");
+  chips.forEach((chip, index) => {
+    expect(chip.style.fontSize).toBe("");
+    expect(chip).toHaveClass("text-sm");
+    expect(chip).toHaveTextContent(`${12 + index * 2}px`);
+  });
+  expect(chips[1]).toHaveTextContent("기본값");
+});
+
+it("renders each interface preset in its saved stack with the host default", async () => {
+ const view = renderAppearance();
+ const presets = within(view.getByTestId("font-family-presets")).getAllByRole("radio");
+ expect(presets[0]?.style.fontFamily).toBe(HOST_FONT_STACK);
+ const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+ for (const preset of presets.slice(1)) {
+   fireEvent.click(preset);
+   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { font: { family: preset.style.fontFamily } } });
+ }
+});
+
+it("offers the zoom row with percent, limits and reset", async () => {
+ const view = renderAppearance();
+ const zoom = within(view.getByRole("group", { name: "확대/축소" }));
+ expect(zoom.getByText("100%")).toBeInTheDocument();
+ expect(zoom.getByRole("button", { name: /Num0/ })).toBeDisabled();
+ const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+=/ }));
+ expect(zoom.getByRole("button", { name: /Ctrl\+=/ })).toBeDisabled();
+ expect(zoom.getByText("430%")).toBeInTheDocument();
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 8 } });
+ fireEvent.click(zoom.getByRole("button", { name: /Num0/ }));
+ expect(zoom.getByText("100%")).toBeInTheDocument();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+-/ }));
+ expect(zoom.getByRole("button", { name: /Ctrl\+-/ })).toBeDisabled();
+ expect(zoom.getByText("23%")).toBeInTheDocument();
+});
+
+it.each(["en", "ko"] as const)("puts the default marker on its own line in %s", (locale) => {
+ const previous = getLocale();
+ act(() => setLocale(locale));
+ try {
+  const view = renderAppearance();
+  const chip = within(view.getByTestId("font-size-scale")).getAllByRole("radio")[1];
+  if (!chip) throw new Error("Missing default chip");
+  const marker = within(chip).getByText(locale === "en" ? "Default" : "기본값");
+  expect(marker).toHaveClass("block");
+  expect(marker).not.toHaveClass("whitespace-nowrap");
+  expect(marker).not.toHaveTextContent("14px");
+  expect(within(chip).getByText("14px")).not.toBe(marker);
+ } finally {
+  act(() => setLocale(previous));
+ }
 });

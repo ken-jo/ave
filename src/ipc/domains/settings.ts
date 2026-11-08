@@ -105,7 +105,7 @@ export async function rendererSettingsSnapshot(
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
 export async function broadcastSettingsSnapshot(
-  deps: IpcDeps,
+  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow">,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
   const snapshot = deps.settingsService.getAll();

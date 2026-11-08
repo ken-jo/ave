@@ -876,7 +876,7 @@
     background-color: hsl(var(--kbd-bg));
     border: 1px solid hsl(var(--kbd-border));
     border-radius: 0.25rem;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
     font-size: 0.85em;
     line-height: 1.2;
     color: hsl(var(--foreground));

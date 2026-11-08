@@ -21,6 +21,7 @@ import {
   type GlobalShortcutsDeps,
 } from "../global-shortcuts.js";
 import type { ShortcutSettings } from "../../shared/shortcuts.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 function makeDeps(overrides: Partial<GlobalShortcutsDeps> = {}): GlobalShortcutsDeps {
   return {
@@ -41,6 +42,31 @@ beforeEach(() => {
 });
 
 describe("reconcileGlobalShortcuts", () => {
+  it.each(["darwin", "win32"] as const)("never registers fixed keypad chords on %s", (platform) => {
+    const original = process.platform;
+    try {
+      setProcessPlatform(platform);
+      const deps = makeDeps();
+      for (const token of ["num0", "numadd", "numsub", "=", "-", "Shift+-", "Shift+Shift+-", "Shift+Shift+=", "Shift+Plus", "Shift+=", "Plus", "NotAKey", "__proto__"]) {
+        for (const modifier of ["CommandOrControl", "CmdOrCtrl", "CommandOrControl+CommandOrControl", platform === "darwin" ? "Cmd+Cmd" : "Ctrl+Ctrl", platform === "darwin" ? "Command+Cmd+Meta+Super" : "Control+Ctrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+          const accelerator = `${modifier}+${token}`;
+          expect(reconcileGlobalShortcuts({ toggleWindow: accelerator, enabled: true }, deps)).toEqual({ status: "invalid", accelerator });
+          expect(deps.register).not.toHaveBeenCalled();
+          expect(deps.notifyFailure).toHaveBeenLastCalledWith(accelerator);
+        }
+      }
+      for (const accelerator of ["Alt+num0", "Alt+numadd", "Alt+numsub", "Alt+End", "Alt+Plus", "Alt+F1", "AltGr+F2"]) {
+        expect(reconcileGlobalShortcuts({ toggleWindow: accelerator, enabled: true }, deps)).toEqual({ status: "registered", accelerator });
+        expect(deps.register).toHaveBeenLastCalledWith(accelerator, deps.onToggle);
+      }
+      vi.mocked(deps.register).mockClear();
+      expect(reconcileGlobalShortcuts({ toggleWindow: "CommandOrControl+num0", enabled: true }, deps).status).toBe("invalid");
+      expect(deps.unregister).toHaveBeenLastCalledWith("AltGr+F2");
+      expect(deps.register).not.toHaveBeenCalled();
+    } finally {
+      setProcessPlatform(original);
+    }
+  });
   it("registers the accelerator when enabled + accelerator present", () => {
     const deps = makeDeps();
     const outcome = reconcileGlobalShortcuts(

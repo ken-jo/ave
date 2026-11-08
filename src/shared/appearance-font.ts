@@ -12,7 +12,8 @@ export interface AppearanceFontSettings {
   sizeScale?: FontSizeScale;
 }
 
-const _FONT_FAMILY_RE = /^[\p{L}\p{N} ,"'_-]+$/u;
+const FONT_FAMILY_LIST = /^ *(?:"[\p{L}\p{N} ,_'-]+"|'[\p{L}\p{N} ,_"-]+'|(?:--|-?[_\p{L}])[\p{L}\p{N}_-]*(?: +(?:--|-?[_\p{L}])[\p{L}\p{N}_-]*)*)(?: *, *(?:"[\p{L}\p{N} ,_'-]+"|'[\p{L}\p{N} ,_"-]+'|(?:--|-?[_\p{L}])[\p{L}\p{N}_-]*(?: +(?:--|-?[_\p{L}])[\p{L}\p{N}_-]*)*))* *$/u;
+const CSS_WIDE_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-layer", "default"]);
 // Allow enough characters for the longest installed font name plus the host stack.
 const _FONT_FAMILY_MAX = 256;
 
@@ -20,5 +21,6 @@ export function isValidFontFamilyOverride(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
     && value.length <= _FONT_FAMILY_MAX
-    && _FONT_FAMILY_RE.test(value);
+    && FONT_FAMILY_LIST.test(value)
+    && value.match(/"[^"]*"|'[^']*'|[^,"']+/g)?.every((family) => !CSS_WIDE_KEYWORDS.has(family.trim().toLowerCase())) === true;
 }

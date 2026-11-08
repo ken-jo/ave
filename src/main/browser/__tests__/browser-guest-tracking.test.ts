@@ -9,10 +9,10 @@ vi.mock("../browser-tab-registry.js", () => ({
   browserTabRegistry: registry,
   isUserActionInputType: (type: string) => ["keyDown", "rawKeyDown", "char", "mouseDown", "mouseWheel"].includes(type),
 }));
-import { trackBrowserGuest } from "../browser-guest-tracking.js";
+import { preserveBrowserGuestZoom, setBrowserGuestZoomFactor, trackBrowserGuest } from "../browser-guest-tracking.js";
 
 function guest() {
-  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter() });
+  return Object.assign(new EventEmitter(), { id: 71, debugger: new EventEmitter(), session: {}, getURL: (): string => "https://a.example/", isDestroyed: () => false, getZoomFactor: vi.fn(() => 1), setZoomFactor: vi.fn() });
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -52,4 +52,34 @@ describe("native browser guest tracking", () => {
     contents.emit("destroyed");
     expect(registry.guestDestroyed.mock.calls).toEqual([[71]]);
   });
+});
+
+it("restores browser site zoom on attach, app zoom changes, and site navigation", () => {
+ const contents = guest();
+ let factor = 0.58;
+ let url = "https://a.example/";
+ contents.getURL = () => url;
+ contents.getZoomFactor.mockImplementation(() => factor);
+ contents.setZoomFactor.mockImplementation((next: number) => { factor = next; });
+ const native = contents as unknown as WebContents;
+ trackBrowserGuest(native, 3);
+ expect(factor).toBe(1);
+ setBrowserGuestZoomFactor(native, 1.25);
+ preserveBrowserGuestZoom(() => { factor = 1.728; });
+ expect(factor).toBe(1.25);
+ url = "https://b.example/";
+ contents.emit("did-navigate");
+ expect(factor).toBe(1);
+ setBrowserGuestZoomFactor(native, 1.5);
+ url = "https://a.example/back";
+ factor = 0.58;
+ contents.emit("did-finish-load");
+ expect(factor).toBe(1.25);
+ const appFrame = { setZoomFactor: vi.fn() };
+ preserveBrowserGuestZoom(() => {});
+ expect(appFrame.setZoomFactor).not.toHaveBeenCalled();
+ contents.emit("destroyed");
+ contents.setZoomFactor.mockClear();
+ preserveBrowserGuestZoom(() => {});
+ expect(contents.setZoomFactor).not.toHaveBeenCalled();
 });

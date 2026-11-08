@@ -53,3 +53,24 @@ describe("appearance-font — shared frame-0 / write-time guards", () => {
     expect(isValidFontFamilyOverride(null)).toBe(false);
   });
 });
+
+it("rejects malformed font lists while allowing quoted and multiword family names", () => {
+ for (const bad of [",,", "Foo,,Bar", ",Foo", "Foo,", "Foo 'Bar'", "'Foo' Bar", "'Foo", "123font", "inherit", "Foo, initial", "   "]) {
+  expect(isValidFontFamilyOverride(bad), bad).toBe(false);
+ }
+ for (const good of ['"Example Mono", monospace', "'Example Font', sans-serif", "맑은 고딕, monospace", "Foo Bar", '"Odd, Name", monospace', '"123font"', '"inherit"']) {
+  expect(isValidFontFamilyOverride(good), good).toBe(true);
+ }
+});
+
+it("treats commas and CSS-wide words inside quotes as part of one family", () => {
+ for (const keyword of ["inherit", "initial", "unset", "revert", "revert-layer", "default"]) {
+  for (const quote of ['"', "'"]) {
+   expect(isValidFontFamilyOverride(` ${quote}Foo, ${keyword}, Bar${quote}, monospace`)).toBe(true);
+   expect(isValidFontFamilyOverride(`${quote}Foo, ${keyword}, Bar${quote}, ${keyword}`)).toBe(false);
+   expect(isValidFontFamilyOverride(`${keyword}, ${quote}Foo, ${keyword}, Bar${quote}`)).toBe(false);
+  }
+  expect(isValidFontFamilyOverride(`Foo ${keyword} Bar, monospace`)).toBe(true);
+  expect(isValidFontFamilyOverride(`Foo, ${keyword.toUpperCase()}, Bar`)).toBe(false);
+ }
+});

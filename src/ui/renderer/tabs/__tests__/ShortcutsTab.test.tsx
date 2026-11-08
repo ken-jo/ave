@@ -1,9 +1,10 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 import { applyShortcutBindingsPatch, type ShortcutSettings } from "../../../../shared/shortcuts.js";
 import { __resetShortcutsForTest, matchesShortcut, useShortcutSettingsSync } from "../../hooks/use-shortcuts.js";
+import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import type { AveApi } from "../../types.js";
 import { ShortcutsTab } from "../ShortcutsTab.js";
 import { ko } from "../../../../i18n/messages/ko.js";
@@ -44,6 +45,64 @@ afterEach(() => {
 });
 
 describe("ShortcutsTab", () => {
+  it.each(["darwin", "other"] as const)("refuses every fixed zoom chord and records printed plus on %s", async (platform) => {
+    const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
+    try {
+      const api = installApi();
+      render(<Harness api={api} />);
+      fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
+      for (const [key, code, shiftKey, labelKey] of [
+        ["=", "Equal", false, "be_main.menuZoomIn"], ["+", "Equal", true, "be_main.menuZoomIn"],
+        ["+", "BracketRight", false, "be_main.menuZoomIn"], ["+", "BracketRight", true, "be_main.menuZoomIn"],
+        ["+", "NumpadAdd", false, "be_main.menuZoomIn"], ["-", "Minus", false, "be_main.menuZoomOut"],
+        ["-", "Minus", true, "be_main.menuZoomOut"], ["-", "NumpadSubtract", false, "be_main.menuZoomOut"],
+        ["0", "Numpad0", false, "be_main.menuResetZoom"],
+      ] as const) {
+        press({ key, code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+        expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko[labelKey]);
+        expect(api.updateSettings).not.toHaveBeenCalled();
+      }
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");
+      press({ key: "+", code: "Equal", shiftKey: true, altKey: true });
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "Alt+Shift+Plus" } } }));
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ["0", "Numpad0", "num0", "be_main.menuResetZoom"],
+    ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],
+    ["-", "NumpadSubtract", "numsub", "be_main.menuZoomOut"],
+  ] as const)("refuses fixed keypad %s then records an Alt binding", async (key, code, token, labelKey) => {
+    const api = installApi();
+    render(<Harness api={api} />);
+    fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
+    press({ key, code, ctrlKey: true });
+    expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko[labelKey]);
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");
+    press({ key, code, altKey: true });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": `Alt+${token}` } } }));
+    await waitFor(() => expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key, code, altKey: true }))).toBe(true));
+  });
+
+  it.each(["darwin", "other"] as const)("badges identical retained bindings on %s", async (platform) => {
+    const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
+    try {
+      const api = installApi({ "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+Plus" });
+      render(<Harness api={api} />);
+      expect(await screen.findByTestId("shortcuts:conflict-app.search")).toBeTruthy();
+      expect(screen.getByTestId("shortcuts:conflict-app.commandPalette")).toBeTruthy();
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("shortcuts:reset-app.search"));
+      await waitFor(() => expect(screen.queryByTestId("shortcuts:conflict-app.commandPalette")).toBeNull());
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it("groups rows by scope, shows platform keycaps, and marks fixed rows with their reason", async () => {
     installApi();
     render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
@@ -55,6 +114,28 @@ describe("ShortcutsTab", () => {
     expect(screen.queryByTestId("shortcuts:record-edit.copy")).toBeNull();
     expect(screen.getByTestId("shortcuts:reason-edit.copy").textContent).toBe(ko["shortcutsTab.readOnly.edit"]);
     expect(screen.getByTestId("shortcuts:reason-system.toggleWindow").textContent).toBe(ko["shortcutsTab.readOnly.global"]);
+  });
+
+  it("lists primary and alternate zoom keys as fixed menu commands", async () => {
+    installApi();
+    render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
+    await screen.findByTestId("shortcuts:row-app.search");
+    const rows = [
+      ["menu.zoomIn", "be_main.menuZoomIn", "Ctrl="],
+      ["menu.zoomInShifted", "be_main.menuZoomIn", "CtrlShift="],
+      ["menu.zoomInKeypad", "be_main.menuZoomIn", "CtrlNum +"],
+      ["menu.zoomOut", "be_main.menuZoomOut", "Ctrl-"],
+      ["menu.zoomOutShifted", "be_main.menuZoomOut", "CtrlShift-"],
+      ["menu.zoomOutKeypad", "be_main.menuZoomOut", "CtrlNum −"],
+      ["menu.resetZoom", "be_main.menuResetZoom", "CtrlNum 0"],
+    ] as const;
+    for (const [id, labelKey, keycaps] of rows) {
+      const row = screen.getByTestId(`shortcuts:row-${id}`);
+      expect(within(row).getByText(ko[labelKey])).toBeTruthy();
+      expect(Array.from(screen.getByTestId(`shortcuts:fixed-${id}`).querySelectorAll("kbd"), (key) => key.textContent).join("")).toBe(keycaps);
+      expect(screen.queryByTestId(`shortcuts:record-${id}`)).toBeNull();
+      expect(screen.getByTestId(`shortcuts:reason-${id}`).textContent).toBe(ko["shortcutsTab.readOnly.zoom"]);
+    }
   });
 
   it("filters by search over labels and keys", async () => {

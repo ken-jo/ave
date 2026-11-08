@@ -66,7 +66,7 @@ export function normalizeShortcuts(
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
     const accel = normalizeAccelerator(obj.toggleWindow);
-    if (accel !== null) result.toggleWindow = accel;
+    result.toggleWindow = accel !== null && nativeAcceleratorIdentity(accel, platform) !== null && fixedShortcutOwner(accel, platform) === null ? accel : null;
   }
   if (typeof obj.enabled === "boolean") {
     result.enabled = obj.enabled;
@@ -108,7 +108,9 @@ const MODIFIER_ALIASES: Readonly<Record<string, "commandOrControl" | "command" |
 
 const NAMED_KEYS = [
   "Enter", "Tab", "Space", "Esc", "Backspace", "Delete", "Up", "Down", "Left", "Right",
-  "Home", "End", "PageUp", "PageDown", "Plus",
+  "Home", "End", "Insert", "PageUp", "PageDown", "Plus",
+  "num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9",
+  "numdec", "numadd", "numsub", "nummult", "numdiv",
 ] as const;
 const NAMED_KEY_ALIASES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(NAMED_KEYS.map((name) => [name.toLowerCase(), name])),
@@ -123,6 +125,51 @@ function canonicalKeyToken(token: string): string | null {
   if (/^f([1-9]|1[0-9]|2[0-4])$/i.test(token)) return token.toUpperCase();
   if (PUNCTUATION_KEYS.has(token)) return token;
   return NAMED_KEY_ALIASES[token.toLowerCase()] ?? null;
+}
+
+const NATIVE_KEY_CODES: Readonly<Record<string, number>> = {
+  backspace: 8, tab: 9, enter: 13, return: 13, capslock: 20, esc: 27, escape: 27, space: 32,
+  pageup: 33, pagedown: 34, end: 35, home: 36, left: 37, up: 38, right: 39, down: 40,
+  printscreen: 44, insert: 45, delete: 46,
+  nummult: 106, numadd: 107, numsub: 109, numdec: 110, numdiv: 111, numlock: 144, scrolllock: 145,
+  volumemute: 173, volumedown: 174, volumeup: 175, medianexttrack: 176, mediaprevioustrack: 177,
+  mediastop: 178, mediaplaypause: 179,
+  ";": 186, "=": 187, plus: 187, ",": 188, "-": 189, ".": 190, "/": 191, "`": 192,
+  "[": 219, "\\": 220, "]": 221, "'": 222,
+};
+const NATIVE_SHIFTED_KEYS: Readonly<Record<string, string>> = {
+  "!": "1", '"': "'", "#": "3", "$": "4", "%": "5", "&": "7", "(": "9", ")": "0",
+  "*": "8", plus: "=", ":": ";", "<": ",", ">": ".", "?": "/", "@": "2", "^": "6",
+  _: "-", "{": "[", "|": "\\", "}": "]", "~": "`",
+};
+
+/** Native key code plus modifier set; null means the reservation cannot be proven safe.
+ * Pinned v45.2.2: shell/browser/ui/accelerator_util.cc:27-58 ORs flags and adds implicit Shift;
+ * shell/common/keyboard_util.cc:17-108,110-259,266-276 defines aliases and shifted key codes. */
+export function nativeAcceleratorIdentity(input: unknown, platform: ShortcutPlatform): string | null {
+  if (typeof input !== "string" || input.length > MAX_ACCELERATOR_LEN || /[^\x20-\x7e]/.test(input)) return null;
+  const modifiers = new Set<string>();
+  let keyCode: number | undefined;
+  for (const part of input.split("+").map((token) => token.trim().toLowerCase()).filter(Boolean)) {
+    const modifier = part === "altgr" ? "G" : part === "shift" ? "S"
+      : part === "alt" || part === "option" ? "A"
+      : part === "control" || part === "ctrl" ? "C"
+      : part === "commandorcontrol" || part === "cmdorctrl" ? (platform === "darwin" ? "M" : "C")
+      : part === "command" || part === "cmd" || part === "super" || part === "meta" ? "M" : null;
+    if (modifier !== null) {
+      modifiers.add(modifier);
+      continue;
+    }
+    const shifted = Object.hasOwn(NATIVE_SHIFTED_KEYS, part) ? NATIVE_SHIFTED_KEYS[part] : undefined;
+    if (shifted !== undefined) modifiers.add("S");
+    const token = shifted ?? part;
+    const code = /^[a-z0-9]$/.test(token) ? token.toUpperCase().charCodeAt(0)
+      : /^f([1-9]|1[0-9]|2[0-4])$/.test(token) ? 111 + Number(token.slice(1))
+      : /^num[0-9]$/.test(token) ? 96 + Number(token.slice(3)) : Object.hasOwn(NATIVE_KEY_CODES, token) ? NATIVE_KEY_CODES[token] : undefined;
+    if (code === undefined) return null;
+    keyCode = code;
+  }
+  return keyCode === undefined ? null : `${[...modifiers].sort().join("")}+${keyCode}`;
 }
 
 function parseAccelerator(input: unknown): ParsedAccelerator | null {
@@ -175,7 +222,8 @@ function chordSignature(accelerator: string, platform: ShortcutPlatform): string
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return null;
   const chord = resolveChord(parsed, platform);
-  return `${chord.meta ? "M" : ""}${chord.ctrl ? "C" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}+${chord.key}`;
+  const key = chord.key;
+  return `${chord.meta ? "M" : ""}${chord.ctrl ? "C" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}+${key}`;
 }
 
 /** Minimal shape of the fields read from a key event; DOM and React events both fit. `code` is optional so a test can
@@ -196,12 +244,19 @@ const CODE_PUNCTUATION: Readonly<Record<string, string>> = {
 
 const MODIFIER_KEY_NAMES: ReadonlySet<string> = new Set(["Control", "Shift", "Alt", "Meta", "OS", "AltGraph", "CapsLock", "Fn", "Hyper", "Super"]);
 
-/** The key token an event pressed. The layout's printed key wins, as in native menu accelerators and VS Code: ⌘A on
+/** The key token an event pressed. Printable keypad keys retain their keypad identity. Otherwise the printed key wins: ⌘A on
  * AZERTY is the key printed A, and ⌘K on Dvorak is the key printed K. The physical `code` is the fallback only when the
  * printed key is not a bindable ASCII token: Option turning ⌥S into "ß", a Hangul input source reporting a jamo, a dead
  * key, or Shift turning 1 into "!". */
 function eventKeyToken(event: ShortcutKeyEvent): string | null {
   const key = event.key;
+  const numpadDigit = /^Numpad([0-9])$/.exec(event.code ?? "");
+  if (numpadDigit && key === numpadDigit[1]) return `num${numpadDigit[1]}`;
+  if (event.code === "NumpadDecimal" && (key === "." || key === ",")) return "numdec";
+  if (event.code === "NumpadAdd" && key === "+") return "numadd";
+  if (event.code === "NumpadSubtract" && key === "-") return "numsub";
+  if (event.code === "NumpadMultiply" && key === "*") return "nummult";
+  if (event.code === "NumpadDivide" && key === "/") return "numdiv";
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
   if (key === "ArrowDown") return "Down";
@@ -226,7 +281,8 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
-  return eventKeyToken(event) === chord.key
+  const key = eventKeyToken(event);
+  return key === chord.key
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt
@@ -259,11 +315,15 @@ export function acceleratorFromEvent(event: ShortcutKeyEvent, platform: Shortcut
   return { kind: "accelerator", accelerator: parts.join("+") };
 }
 
+const KEYPAD_KEY_LABELS = { num0: "Num 0", numadd: "Num +", numsub: "Num −" };
+
 const DARWIN_KEY_GLYPHS: Readonly<Record<string, string>> = {
+  ...KEYPAD_KEY_LABELS,
   Enter: "↩", Tab: "⇥", Esc: "⎋", Backspace: "⌫", Delete: "⌦", Up: "↑", Down: "↓", Left: "←", Right: "→",
   PageUp: "⇞", PageDown: "⇟", Home: "↖", End: "↘", Plus: "+",
 };
 const OTHER_KEY_LABELS: Readonly<Record<string, string>> = {
+  ...KEYPAD_KEY_LABELS,
   Up: "↑", Down: "↓", Left: "←", Right: "→", Plus: "+",
 };
 
@@ -340,6 +400,7 @@ interface LayeredShortcut extends ShortcutDefinitionBase {
 export type ShortcutDefinition = KeyedShortcut | LayeredShortcut;
 
 const both = (accelerator: string) => ({ darwin: accelerator, other: accelerator });
+const ZOOM = { reasonKey: "shortcutsTab.readOnly.zoom" } as const;
 const EDIT = { reasonKey: "shortcutsTab.readOnly.edit" } as const;
 const TYPING = { reasonKey: "shortcutsTab.readOnly.typing" } as const;
 const LIST = { reasonKey: "shortcutsTab.readOnly.list" } as const;
@@ -370,6 +431,13 @@ export const SHORTCUTS = [
   // Native menu
   { id: "menu.settings", scope: "menu", handledBy: "menu", labelKey: "shortcuts.label.openSettings", defaults: both("CommandOrControl+,") },
   { id: "menu.newWindow", scope: "menu", handledBy: "menu", labelKey: "be_main.menuNewWindow", defaults: both("CommandOrControl+Shift+N") },
+  { id: "menu.zoomIn", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+="), readOnly: ZOOM },
+  { id: "menu.zoomInShifted", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+Shift+="), readOnly: ZOOM },
+  { id: "menu.zoomInKeypad", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+numadd"), readOnly: ZOOM },
+  { id: "menu.zoomOut", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+-"), readOnly: ZOOM },
+  { id: "menu.zoomOutShifted", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+Shift+-"), readOnly: ZOOM },
+  { id: "menu.zoomOutKeypad", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+numsub"), readOnly: ZOOM },
+  { id: "menu.resetZoom", scope: "menu", handledBy: "menu", labelKey: "be_main.menuResetZoom", defaults: both("CommandOrControl+num0"), readOnly: ZOOM },
   // Electron role items: their keys are the platform's standard editing keys.
   { id: "edit.undo", scope: "menu", handledBy: "os", labelKey: "be_main.menuUndo", defaults: both("CommandOrControl+Z"), readOnly: EDIT },
   { id: "edit.redo", scope: "menu", handledBy: "os", labelKey: "be_main.menuRedo", defaults: { darwin: "CommandOrControl+Shift+Z", other: "CommandOrControl+Y" }, readOnly: EDIT },
@@ -438,6 +506,19 @@ export function defaultAccelerator(id: ShortcutId, platform: ShortcutPlatform): 
   return entry.defaults[platform];
 }
 
+/** The fixed registry row that owns this chord, excluding the separately configured global toggle. */
+export function fixedShortcutOwner(accelerator: string, platform: ShortcutPlatform): ShortcutDefinition | null {
+  const signature = nativeAcceleratorIdentity(accelerator, platform);
+  if (signature === null) return null;
+  for (const entry of SHORTCUTS) {
+    const row = entry as ShortcutDefinition;
+    if (!row.readOnly || row.layeredOn !== undefined || row.id === "system.toggleWindow") continue;
+    const fixed = row.defaults[platform];
+    if (fixed !== null && nativeAcceleratorIdentity(fixed, platform) === signature) return row;
+  }
+  return null;
+}
+
 /** What the user's settings contribute to resolution: their rebinds and the OS-wide toggle they set under Startup. */
 export interface ShortcutResolutionInput {
   bindings: ShortcutBindings;
@@ -496,18 +577,16 @@ function scopesOverlap(a: ShortcutScope, b: ShortcutScope): boolean {
  * row is the same key by definition, so it is not a conflict either. */
 export function conflictingShortcutIds(rows: readonly ResolvedShortcut[], platform: ShortcutPlatform): Set<ShortcutId> {
   const conflicts = new Set<ShortcutId>();
-  const keyed = rows
-    .filter((row) => row.accelerator !== null && row.definition.layeredOn === undefined)
-    .map((row) => ({ row, signature: chordSignature(row.accelerator as string, platform) }));
+  const keyed = rows.filter((row) => row.accelerator !== null && row.definition.layeredOn === undefined);
   for (let i = 0; i < keyed.length; i++) {
     for (let j = i + 1; j < keyed.length; j++) {
       const a = keyed[i];
       const b = keyed[j];
-      if (a.signature === null || a.signature !== b.signature) continue;
-      if (!a.row.rebindable && !b.row.rebindable) continue;
-      if (!scopesOverlap(a.row.definition.scope, b.row.definition.scope)) continue;
-      conflicts.add(a.row.id);
-      conflicts.add(b.row.id);
+      if (!a.rebindable && !b.rebindable) continue;
+      if (!scopesOverlap(a.definition.scope, b.definition.scope)) continue;
+      if (chordSignature(a.accelerator as string, platform) !== chordSignature(b.accelerator as string, platform)) continue;
+      conflicts.add(a.id);
+      conflicts.add(b.id);
     }
   }
   return conflicts;
@@ -535,8 +614,7 @@ export type ShortcutBindingRefusal =
   | { reason: "fixed-key"; ownerId: ShortcutId };
 
 /** Why `accelerator` cannot be bound to `id` on `platform`, or null when it can. The settings page shows the reason and
- * the store refuses the same patch, so neither side persists what the other would reject. Duplicating another rebindable
- * row's key is allowed: that is a conflict, shown with a badge, not a refusal. */
+ * the store refuses the same patch, so neither side persists what the other would reject. Pairwise overlaps are checked at patch time; persisted overlaps remain visible as conflicts. */
 export function shortcutBindingRefusal(
   id: string,
   accelerator: string,
@@ -545,6 +623,8 @@ export function shortcutBindingRefusal(
 ): ShortcutBindingRefusal | null {
   if (!isShortcutId(id)) return { reason: "unknown-shortcut" };
   if (!isRebindableShortcut(id)) return { reason: "read-only" };
+  const owner = fixedShortcutOwner(accelerator, platform);
+  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
   const parsed = parseAccelerator(accelerator);
   if (!parsed || canonicalAccelerator(accelerator) !== accelerator) return { reason: "malformed" };
   const chord = resolveChord(parsed, platform);
@@ -554,9 +634,9 @@ export function shortcutBindingRefusal(
   if (platform === "other" && chord.meta) return { reason: "os-reserved" };
   const signature = chordSignature(accelerator, platform);
   if (OS_RESERVED[platform].some((reserved) => chordSignature(reserved, platform) === signature)) return { reason: "os-reserved" };
-  for (const row of resolveShortcuts(input, platform)) {
-    if (row.rebindable || row.accelerator === null || row.definition.layeredOn !== undefined) continue;
-    if (chordSignature(row.accelerator, platform) === signature) return { reason: "fixed-key", ownerId: row.id };
+  const toggle = resolveShortcut("system.toggleWindow", input, platform);
+  if (toggle !== null && chordSignature(toggle, platform) === signature) {
+    return { reason: "fixed-key", ownerId: "system.toggleWindow" };
   }
   return null;
 }
@@ -633,6 +713,22 @@ export function applyShortcutBindingsPatch(
     if (refusal !== null) throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} refused (${refusal.reason}): ${value}`);
     if (value === defaultAccelerator(id, platform)) delete next[id];
     else next[id] = value;
+  }
+  const before = resolveShortcuts(current, platform);
+  const rows = resolveShortcuts({ ...current, bindings: next }, platform).filter((row) => row.rebindable);
+  for (let i = 0; i < rows.length; i++) {
+    for (let j = i + 1; j < rows.length; j++) {
+      const a = rows[i];
+      const b = rows[j];
+      if (!scopesOverlap(a.definition.scope, b.definition.scope) || a.accelerator === null || b.accelerator === null
+        || chordSignature(a.accelerator, platform) !== chordSignature(b.accelerator, platform)) continue;
+      const priorA = before.find((row) => row.id === a.id)?.accelerator;
+      const priorB = before.find((row) => row.id === b.id)?.accelerator;
+      if (priorA != null && priorB != null
+        && chordSignature(priorA, platform) === chordSignature(a.accelerator, platform)
+        && chordSignature(priorB, platform) === chordSignature(b.accelerator, platform)) continue;
+      throw new ShortcutBindingsPatchError("Shortcut bindings overlap.");
+    }
   }
   return next;
 }

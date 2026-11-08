@@ -101,3 +101,5 @@ export function useTheme(): ThemeContextValue {
   if (!context) throw new Error("useTheme() must be used inside <ThemeProvider>");
   return context;
 }
+
+export function useOptionalTheme(): ThemeContextValue | null { return useContext(ThemeContext); }

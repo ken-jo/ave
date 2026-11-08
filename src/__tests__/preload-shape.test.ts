@@ -150,6 +150,7 @@ describe("preload contextBridge world shape lock", () => {
             "lineHeight",
             "size",
           ],
+          "zoomLevel": "number",
         },
         "ave": {
           "approval": [

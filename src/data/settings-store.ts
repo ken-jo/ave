@@ -1,3 +1,4 @@
+import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
@@ -77,6 +78,8 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
+  fixedShortcutOwner,
+  nativeAcceleratorIdentity,
   applyShortcutBindingsPatch,
   normalizeShortcuts,
   shortcutPlatformOf,
@@ -1085,6 +1088,7 @@ export class SettingsService {
       acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "glassTint", patch.glassTint, isGlassTint, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "zoomLevel", patch.zoomLevel, isZoomLevel, "appearance", PATCHED_FIELD);
       if ("language" in patch) nextAppearance.language = normalizeLocale(patch.language);
       const fontPatch = patch.font;
       if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {
@@ -1232,7 +1236,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null) {
+        if (accel !== null && nativeAcceleratorIdentity(accel, shortcutPlatformOf(process.platform)) !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(

@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAppBootstrap } from "../../hooks/use-app-bootstrap.js";
+import { useSearch } from "../../hooks/use-search.js";
+import type { AveApi } from "../../types.js";
 import { NO_SHORTCUT_OVERRIDES } from "../../../../shared/shortcuts.js";
 import { __resetShortcutsForTest, matchesShortcut, setShortcutCaptureActive, setShortcutSettings, shortcutHint } from "../../hooks/use-shortcuts.js";
 import { WORKSPACE_TAB_LAUNCHER } from "../command-actions.js";
@@ -53,4 +58,30 @@ describe("workspace launcher shortcuts", () => {
       if (item.shortcutId !== null) expect(shortcutHint(item.shortcutId)).not.toBeNull();
     }
   });
+});
+
+
+it.each([true, false])("dispatches the real search and palette handlers once with darwin=%s", (darwin) => {
+  setPlatform(darwin);
+  setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" } });
+  const toggleSlashPicker = vi.fn();
+  const { api } = makeMockAveApi();
+  const hook = renderHook(() => {
+    const search = useSearch([]);
+    useAppBootstrap({ api: api as unknown as AveApi, refreshViews: vi.fn(), refreshCards: vi.fn(), checkApiKey: vi.fn(), setActiveView: vi.fn(), onOpenSettings: vi.fn(), toggleSlashPicker });
+    return search;
+  });
+  const press = (code: string) => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "+", code, altKey: true, shiftKey: true })); });
+  press("Equal");
+  expect(toggleSlashPicker).not.toHaveBeenCalled();
+  expect(hook.result.current.open).toBe(true);
+  press("BracketRight");
+  expect(toggleSlashPicker).not.toHaveBeenCalled();
+  expect(hook.result.current.open).toBe(true);
+  act(() => hook.result.current.closeOverlay());
+  setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+numadd" } });
+  press("NumpadAdd");
+  expect(toggleSlashPicker).toHaveBeenCalledTimes(1);
+  expect(hook.result.current.open).toBe(false);
+  hook.unmount();
 });

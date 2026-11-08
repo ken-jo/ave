@@ -290,3 +290,27 @@ describe("queued app provenance", () => {
     expect(s.interceptSubmit).not.toHaveBeenCalled();
   });
 });
+
+describe("immediate send keys", () => {
+  it.each([true, false])("sends from ordinary and keypad Enter with darwin=%s", async (darwin) => {
+    const platform = (window as unknown as { avePlatform?: unknown }).avePlatform;
+    (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: darwin, windowControls: darwin ? "native" : "trailing" };
+    try {
+      for (const streaming of [false, true]) for (const code of ["Enter", "NumpadEnter"]) {
+        const s = setup({ streaming });
+        try {
+          const event = new KeyboardEvent("keydown", { key: "Enter", code, metaKey: darwin, ctrlKey: !darwin, bubbles: true, cancelable: true });
+          await act(async () => { s.textarea.dispatchEvent(event); });
+          expect(event.defaultPrevented).toBe(true);
+          expect(s.onAsk).toHaveBeenCalledExactlyOnceWith("App draft", expect.anything(), { injectHint: "interrupt", appSource: SOURCE });
+          expect(s.result.current.draft).toEqual({ text: "" });
+        } finally {
+          s.unmount();
+          s.textarea.remove();
+        }
+      }
+    } finally {
+      (window as unknown as { avePlatform?: unknown }).avePlatform = platform;
+    }
+  });
+});

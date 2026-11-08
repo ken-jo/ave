@@ -14,7 +14,7 @@ import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { acceleratorFromEvent, normalizeAccelerator } from "../../../shared/shortcuts.js";
+import { acceleratorFromEvent, fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator } from "../../../shared/shortcuts.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
@@ -74,6 +74,7 @@ export function StartupTab() {
   // halfway through typing.
   const [corpCaCommonName, setCorpCaCommonName] = useState(DEFAULT_CORP_CA_COMMON_NAME);
   const [capturing, setCapturing] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   // App shortcuts stay quiet while a key is being recorded, or recording ⌘⇧T would also reopen a closed surface.
   useEffect(() => {
     setShortcutCaptureActive(capturing);
@@ -222,27 +223,36 @@ export function StartupTab() {
       e.stopPropagation();
       // Escape cancels capture without changing the binding.
       if (e.key === "Escape") {
+        setCaptureError(null);
         setCapturing(false);
         return;
       }
       const recorded = acceleratorFromEvent(e, rendererShortcutPlatform());
       if (recorded.kind !== "accelerator") return; // modifier-only or unbindable press — keep waiting for a key.
       const normalized = normalizeAccelerator(recorded.accelerator);
-      if (normalized === null) return;
+      if (normalized === null || nativeAcceleratorIdentity(normalized, rendererShortcutPlatform()) === null) return;
+      const owner = fixedShortcutOwner(normalized, rendererShortcutPlatform());
+      if (owner !== null) {
+        setCaptureError(t("startupTab.shortcutReserved", { label: t(owner.labelKey) }));
+        return;
+      }
+      setCaptureError(null);
       setToggleWindow(normalized);
       setCapturing(false);
       persistShortcuts({ toggleWindow: normalized });
     },
-    [capturing, persistShortcuts],
+    [capturing, persistShortcuts, t],
   );
 
   const handleClearAccelerator = useCallback(() => {
+    setCaptureError(null);
     setToggleWindow(null);
     setCapturing(false);
     persistShortcuts({ toggleWindow: null });
   }, [persistShortcuts]);
 
   const startCapture = useCallback(() => {
+    setCaptureError(null);
     setCapturing(true);
     // Focus the capture box so keydown lands here.
     requestAnimationFrame(() => captureInputRef.current?.focus());
@@ -323,6 +333,7 @@ export function StartupTab() {
               </Button>
             </div>
           </div>
+          {captureError !== null ? <p role="alert" className="text-xs text-warning">{captureError}</p> : null}
           {enabled && toggleWindow === null ? (
             <p className="text-xs text-warning">
               {t("startupTab.shortcutEnabledNoAccelerator")}

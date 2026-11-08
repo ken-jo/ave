@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as shortcutRegistry from "../../shared/shortcuts.js";
 import { applyShortcutBindingsPatch, shortcutPlatformOf, type ShortcutSettings } from "../../shared/shortcuts.js";
 
 const setApplicationMenu = vi.fn();
@@ -31,6 +32,7 @@ function menuItems(): { label?: string; accelerator?: string }[] {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   setApplicationMenu.mockClear();
   shortcuts = null;
 });
@@ -41,6 +43,19 @@ describe("application menu accelerators", () => {
     expect(createSettingsMenuItem().accelerator).toBe("CommandOrControl+,");
     refreshApplicationMenu();
     expect(menuItems().find((item) => item.label === "be_main.menuNewWindow")?.accelerator).toBe("CommandOrControl+Shift+N");
+  });
+
+  it("reads every zoom accelerator through its registry id", async () => {
+    const resolve = vi.spyOn(shortcutRegistry, "resolveShortcut");
+    const { createZoomMenuItems } = await import("../app-menu.js");
+    const ids = [
+    "menu.zoomIn", "menu.zoomInShifted", "menu.zoomInKeypad",
+    "menu.zoomOut", "menu.zoomOutShifted", "menu.zoomOutKeypad", "menu.resetZoom",
+  ] as const;
+    const expected = ids.map((id) => shortcutRegistry.resolveShortcut(id, base, platform));
+    resolve.mockClear();
+    expect(createZoomMenuItems().map((item) => item.accelerator)).toEqual(expected);
+    expect(resolve.mock.calls.map(([id]) => id)).toEqual(ids);
   });
 
   it("follow a rebind, and return to the default on reset", async () => {

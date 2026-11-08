@@ -4,6 +4,8 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { StartupTab } from "../StartupTab.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../../shared/tool-timeout-policy.js";
+import * as shortcutHooks from "../../hooks/use-shortcuts.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 const STARTUP_SETTINGS = {
   ...MOCK_DEFAULT_SETTINGS,
@@ -17,6 +19,47 @@ function installApi(settings: Record<string, unknown> = STARTUP_SETTINGS) {
 }
 
 describe("StartupTab", () => {
+  describe.each(["darwin", "other"] as const)("fixed toggle reservations on %s", (platform) => {
+    it.each([
+      ["0", "Numpad0", "num0", "be_main.menuResetZoom"],
+      ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],
+      ["-", "NumpadSubtract", "numsub", "be_main.menuZoomOut"],
+      ["+", "Equal", "Shift+Plus", "be_main.menuZoomIn", true],
+      ["=", "Equal", "=", "be_main.menuZoomIn", false],
+      ["-", "Minus", "-", "be_main.menuZoomOut", false],
+      ["-", "Minus", "Shift+-", "be_main.menuZoomOut", true],
+      ["+", "BracketRight", "Shift+Plus", "be_main.menuZoomIn", true],
+      ["+", "BracketRight", "Plus", "be_main.menuZoomIn"],
+    ] as const)("refuses fixed %s, keeps the prior value and continues recording", async (key, code, token, labelKey, shiftKey = false) => {
+      const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
+      try {
+        const api = installApi({ ...STARTUP_SETTINGS, shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+        const { findByTestId, getByRole, queryByRole } = render(<StartupTab />);
+        const capture = await findByTestId("startup-accelerator-capture");
+        await waitFor(() => expect(capture.textContent).toBe("Alt+F1"));
+        fireEvent.click(await findByTestId("startup-accelerator-record"));
+        fireEvent.keyDown(capture, { key, code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+        expect(getByRole("alert").textContent).toContain(ko[labelKey]);
+        expect(api.updateSettings).not.toHaveBeenCalled();
+        expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
+        fireEvent.keyDown(capture, { key: "Escape" });
+        expect(capture.textContent).toBe("Alt+F1");
+        fireEvent.click(await findByTestId("startup-accelerator-record"));
+        fireEvent.keyDown(capture, { key, code, shiftKey, ctrlKey: platform === "other", metaKey: platform === "darwin" });
+        fireEvent.keyDown(capture, { key, code, shiftKey, altKey: true });
+        expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: `Alt+${token}` } });
+        expect(capture.textContent).toBe(`Alt+${token}`);
+        expect(queryByRole("alert")).toBeNull();
+        fireEvent.click(await findByTestId("startup-accelerator-record"));
+        const calls = api.updateSettings.mock.calls.length;
+        fireEvent.keyDown(capture, { key: "End", code: "Numpad1", altKey: true });
+        expect(api.updateSettings).toHaveBeenCalledTimes(calls + 1);
+        expect(api.updateSettings).toHaveBeenLastCalledWith({ shortcuts: { toggleWindow: "Alt+End" } });
+      } finally {
+        platformSpy.mockRestore();
+      }
+    });
+  });
   it("loads persisted settings on mount", async () => {
     installApi({
       ...STARTUP_SETTINGS,
