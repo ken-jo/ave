@@ -7,6 +7,7 @@ import {
 } from "../../shared/accessibility-signals.js";
 import { useCallback } from "react";
 import type { AppSettings } from "./types.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { playAccessibilitySignalSound } from "./accessibility-signal-sounds.js";
 import { useSettingsSnapshot, type SettingsSnapshotApi } from "./hooks/use-settings-snapshot.js";
 
@@ -56,7 +57,7 @@ export class AccessibilitySignalEngine {
   private start(id: AccessibilitySignalId): void {
     // A cue that cannot play must not break the event that raised it; the failure is reported, not hidden.
     void this.deps.play(id).catch((err: unknown) => {
-      console.warn(`[accessibility-signal] ${id} did not play:`, err instanceof Error ? err.message : String(err));
+      console.warn(`[accessibility-signal] ${id} did not play:`, errorMessage(err));
     });
   }
 }
