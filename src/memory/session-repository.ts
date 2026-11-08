@@ -902,8 +902,14 @@ export class SessionRepository {
     try {
       unchanged = readFileSync(targetPath).equals(Buffer.from(lines, "utf8"));
     } catch { /* Write when the existing transcript cannot be compared. */ }
-    if (unchanged) syncExistingFileSync(targetPath);
-    else writeUtf8FileAtomicSync(targetPath, lines);
+    if (unchanged) {
+      try {
+        syncExistingFileSync(targetPath);
+      } catch {
+        // Retry through the atomic writer when in-place durability cannot be confirmed.
+        writeUtf8FileAtomicSync(targetPath, lines);
+      }
+    } else writeUtf8FileAtomicSync(targetPath, lines);
     this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
     this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
     const ids = rowIdsOf(messages);

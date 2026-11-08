@@ -24,7 +24,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 vi.mock("../../lib/atomic-file.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/atomic-file.js")>();
-  return { ...actual, syncExistingFileSync: vi.fn(actual.syncExistingFileSync) };
+  return { ...actual, syncExistingFileSync: vi.fn(actual.syncExistingFileSync), writeUtf8FileAtomicSync: vi.fn(actual.writeUtf8FileAtomicSync) };
 });
 
 describe("SessionRepository", () => {
@@ -39,13 +39,21 @@ describe("SessionRepository", () => {
   afterEach(async () => {
     appendFault.datasync = false;
     vi.mocked(syncExistingFileSync).mockReset();
+    vi.mocked(writeUtf8FileAtomicSync).mockReset();
     const actual = await vi.importActual<typeof import("../../lib/atomic-file.js")>("../../lib/atomic-file.js");
     vi.mocked(syncExistingFileSync).mockImplementation(actual.syncExistingFileSync);
+    vi.mocked(writeUtf8FileAtomicSync).mockImplementation(actual.writeUtf8FileAtomicSync);
     repository.closeSearchIndex();
     await cleanupTmpDir(dir);
   });
 
-  it.each(["success", "file", "directory"] as const)("confirms durability after a failed append with %s sync outcome", async (outcome) => {
+  it.each([
+    { outcome: "success", writeFails: false },
+    { outcome: "file", writeFails: false },
+    { outcome: "directory", writeFails: false },
+    { outcome: "file", writeFails: true },
+    { outcome: "directory", writeFails: true },
+  ] as const)("confirms durability after a failed append with $outcome sync outcome and write failure $writeFails", async ({ outcome, writeFails }) => {
     const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
     const first = { role: "user", content: "Save", meta: { messageId: "row-first" } };
     const second = { role: "assistant", content: "Saved", meta: { messageId: "row-second" } };
@@ -73,15 +81,23 @@ describe("SessionRepository", () => {
       }));
     }
 
+    const content = readFileSync(path, "utf8");
+    vi.mocked(writeUtf8FileAtomicSync).mockClear();
+    if (writeFails) {
+      vi.mocked(writeUtf8FileAtomicSync).mockImplementationOnce(() => { throw new Error("atomic write failed"); });
+    }
     const save = repository.saveSession(sessionId, [first, second]);
-    if (outcome === "success") {
-      await save;
-      expect(existsSync(sidecar)).toBe(false);
-    } else {
-      await expect(save).rejects.toThrow(outcome === "file" ? "durability sync failed" : "parent directory sync failed");
+    if (writeFails) {
+      await expect(save).rejects.toThrow("atomic write failed");
       expect(existsSync(sidecar)).toBe(true);
+    } else {
+      await expect(save).resolves.toBeUndefined();
+      expect(existsSync(sidecar)).toBe(false);
     }
     expect(syncExistingFileSync).toHaveBeenCalledExactlyOnceWith(path);
+    if (outcome === "success") expect(writeUtf8FileAtomicSync).not.toHaveBeenCalled();
+    else expect(writeUtf8FileAtomicSync).toHaveBeenCalledExactlyOnceWith(path, content);
+    expect(readFileSync(path, "utf8")).toBe(content);
   });
 
   it("retries directory durability after a rename committed but its directory sync failed", async () => {
