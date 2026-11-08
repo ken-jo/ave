@@ -648,6 +648,7 @@ jobs:
           src/ui/renderer/__tests__/appearance-tab.test.tsx
           src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx
           src/ui/renderer/theme/__tests__/ThemeProvider-initial-theme.test.tsx
+          src/shared/__tests__/appearance-font.test.ts
           src/shared/__tests__/appearance-settings.test.ts
           src/shared/__tests__/app-zoom.test.ts
           src/main/browser/__tests__/browser-guest-tracking.test.ts

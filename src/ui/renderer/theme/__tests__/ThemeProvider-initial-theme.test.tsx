@@ -27,3 +27,8 @@ it("projects the code font onto all mono consumers and restores a fallback", () 
  render(<ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family: "" } }}><Probe /></ThemeProvider>);
  expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(DEFAULT_APPEARANCE.terminalFont.family);
 });
+
+it.each(["Missing Mono", "'Odd, monospace, Name'", '"monospace"'])("adds a generic code fallback to %s", (family) => {
+ render(<ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont, family } }}><Probe /></ThemeProvider>);
+ expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(family + ", monospace");
+});

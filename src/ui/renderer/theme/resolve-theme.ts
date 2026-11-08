@@ -141,7 +141,10 @@ export function applySchemeColors(scheme: ColorScheme, doc: Document = document)
 export function applyAppearance(appearance: AppearanceSettings, doc: Document = document, prefersDark = doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false): ResolvedTheme {
   const theme = applySchemeColors(resolveAppearanceScheme(appearance, prefersDark), doc);
   applyUiFont(appearance.font, doc);
-  doc.documentElement.style.setProperty("--font-mono", appearance.terminalFont?.family || DEFAULT_APPEARANCE.terminalFont.family);
+  const codeFamily = appearance.terminalFont?.family || DEFAULT_APPEARANCE.terminalFont.family;
+  const families = codeFamily.match(/"[^"]*"|'[^']*'|[^,"']+/g) ?? [];
+  const hasGeneric = families.some((family) => /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded|math|emoji|fangsong)$/i.test(family.trim()));
+  doc.documentElement.style.setProperty("--font-mono", hasGeneric ? codeFamily : codeFamily + ", monospace");
   // The one glass token, for the shell being painted. Only `html[data-glass]` rules read it, so a window without the material
   // carries it unused.
   doc.documentElement.style.setProperty("--glass-tint-alpha", String(glassTintAlpha(appearance.glassTint ?? DEFAULT_GLASS_TINT, theme.shell)));

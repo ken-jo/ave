@@ -53,3 +53,12 @@ describe("appearance-font — shared frame-0 / write-time guards", () => {
     expect(isValidFontFamilyOverride(null)).toBe(false);
   });
 });
+
+it("rejects malformed font lists while allowing quoted and multiword family names", () => {
+ for (const bad of [",,", "Foo,,Bar", ",Foo", "Foo,", "Foo 'Bar'", "'Foo' Bar", "'Foo", "123font", "inherit", "Foo, initial", "   "]) {
+  expect(isValidFontFamilyOverride(bad), bad).toBe(false);
+ }
+ for (const good of ['"Example Mono", monospace', "'Example Font', sans-serif", "맑은 고딕, monospace", "Foo Bar", '"Odd, Name", monospace', '"123font"', '"inherit"']) {
+  expect(isValidFontFamilyOverride(good), good).toBe(true);
+ }
+});
