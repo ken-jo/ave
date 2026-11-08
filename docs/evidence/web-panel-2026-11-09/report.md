@@ -681,3 +681,103 @@ The existing native preview fixture now has a dedicated parked-guest scope. Its 
 `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts -g 'keeps a parked agent guest'` passed 1 test. On this Mac, active: visible, 44 frames / 750.9 ms, 474×621; parked: visible, 46 frames / 751.9 ms, 474×621 (`/private/tmp/webfix-validation/item3-e2e.log`). No throttling was observed under this foreground-window, live-preview condition. Production guest preferences are unchanged. This does not establish behavior with the entire app hidden or without a live preview.
 
 The original broader navigation scope also reached and passed the parked measurement (46 frames / 752.3 ms) but failed later on a second-origin navigation with `ERR_FAILED`; its remaining cross-site/takeover assertions are not verified here (`item3-navigation-baseline.log`). The dedicated scope isolates the requested liveness check without removing that broader test. The runtime emitted an 11-destroyed-listener warning; that warning alone does not identify a growing listener count or explain the reported renderer stall. Cold review prompted the same-guest active baseline instead of inferring normal frame rate from a nonzero count alone.
+
+## N4: reproduced close-time exception
+
+No hot-loop defect was found in the composer preview or approval-card paths: observation snapshots are cached, subscriptions use stable methods, the visibility interval is cleared, the placement loop settles, card observers disconnect, and screencast stop clears its watchdog/flush timers. The native close diagnostic did expose a different concrete cause of apparent UI unresponsiveness. Destroying an agent guest called a site-gate disposal callback whose transport re-read the destroyed guest's debugger property. The native error was caught by an uncaught-exception monitor as `TypeError: Object has been destroyed`. A one-second process sample showed the main thread waiting in `NSAlert runModal`; this was a modal wait, not evidence of a renderer CPU loop.
+
+The action and preview transports now retain the debugger handle obtained while the guest is alive for listener removal. Their promised send methods also convert synchronous native command throws into rejections, which the existing cancellation/closed-session handlers consume. Site authorization, navigation rules, lease checks and approval decisions are unchanged. The pending-authorization regression verifies that a late authorization does not continue navigation after destruction. No speculative preview/card patch was made.
+
+Two focused regressions first failed with one unhandled rejection (`item4-red.log`). After the fix, four lifecycle/action suites passed 196 tests; the final combined selection passed 33 files / 922 tests, and four additional browser consumers passed 221 tests. A test-only type correction was then verified by the one affected regression (1 passed / 159 filtered) and the test-typecheck gate; no baseline was extended. Native report replay, parked liveness and agent-close diagnostics passed 3 tests. The final close diagnostic recorded main-renderer CDP evaluation times of 7.22, 1.52, 22.82, 1.34 and 1.83 ms, zero remaining previews and zero late frames. This verifies the reproduced failure path; it does not establish that the original real-model run's 60-second delay had exactly the same cause. Cold review checked captured-handle lifetime, rejected-command handling and late authorization.
+
+## Final local validation for these four items
+
+All commands ran from `/private/tmp/webfix/ave`. Logs and native artifacts are under `/private/tmp/webfix-validation/`; they are local and uncommitted. The following commands were actually run:
+
+```sh
+AVE_TEST_TMP_ROOT=/private/tmp/webfix-validation/test-tmp bun run test:vitest -- run src/shared/__tests__/conversation-title.test.ts src/shared/__tests__/chat-history-meta.test.ts src/engine/__tests__/conversation-loop-guidance.test.ts "src/engine/__tests__/a2a-subagent-message-bus.test.ts" "src/engine/__tests__/a2a-wake-drain.test.ts" src/engine/__tests__/conversation-history-user-quotes.test.ts src/engine/turn/__tests__/turn-entry-classification.test.ts src/ipc/handlers/__tests__/chat-subagent-mailbox.test.ts src/ipc/domains/__tests__/chat-verbatim.test.ts src/memory/__tests__/session-repository.test.ts src/ui/renderer/hooks/__tests__/use-chat-state-remote-turn.test.tsx src/ui/renderer/__tests__/TranscriptRenderer.test.tsx src/ui/renderer/utils/__tests__/history.test.ts src/ui/renderer/__tests__/ChatView.test.tsx src/ui/renderer/__tests__/classify-turn-entries.test.ts src/prompts/__tests__/suggested-replies-contract.test.ts src/prompts/__tests__/system-prompt-builder.test.ts src/engine/__tests__/suggested-replies.test.ts src/ui/renderer/hooks/__tests__/use-chat-state-suggested-replies.test.tsx "src/i18n/__tests__" src/observation/__tests__/browser-screencast.test.ts src/main/__tests__/browser-observation-preview.test.ts src/ui/renderer/preview/__tests__/browser-observation-preview.test.tsx src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx src/ui/renderer/__tests__/ApprovalDock.test.tsx src/main/browser/__tests__/browser-actions.test.ts src/main/__tests__/browser-preview-guest.test.ts
+AVE_TEST_TMP_ROOT=/private/tmp/webfix-validation/test-tmp bun run test:vitest -- run src/tools/__tests__/browser-tools.test.ts src/main/browser/__tests__/browser-site-navigation.test.ts src/main/browser/__tests__/browser-tab-registry.test.ts src/main/browser/__tests__/browser-tools-source.test.ts
+AVE_TEST_TMP_ROOT=/private/tmp/webfix-validation/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-actions.test.ts -t "disposes a closed page session"
+TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts test/e2e/ui/subagent-report.spec.ts -g 'keeps a parked agent guest|measures renderer evaluation|host reports replay' --output=/private/tmp/webfix-validation/native-final
+bun run typecheck
+bun run check:knip
+bun run check:biome
+bun run check:sot-shapes
+bun run check:i18n-catalog
+bun run check:gate-core
+bun run check:typecheck-tests
+bun run build
+bun run build:renderer
+bun run build:main
+git -C /private/tmp/webfix/ave diff c7a39683b --check
+```
+
+| Command | Result | Log |
+| --- | --- | --- |
+| Combined test wrapper | 33 files / 922 passed | final-vitest.log |
+| Additional browser consumers | 4 files / 221 passed | item4-consumers.log |
+| Final type-only test correction | 1 passed / 159 filtered | item4-final-test.log |
+| Changed native flows | 3 passed | final-e2e.log; native-final/ traces and attachments |
+| typecheck | exit 0 | typecheck.log |
+| check:knip | baseline passed: 5 devDependencies, 5 duplicates, 42 exports, 7 files, 140 types | knip.log |
+| check:biome | baseline held: 13456 accepted diagnostics / 2851 entries | biome.log |
+| check:sot-shapes | 6 checker tests passed; baseline held | sot-shapes.log |
+| check:i18n-catalog | 2 locales / 5794 keys | i18n.log |
+| check:gate-core | exit 0; 55 checker tests passed; 0 duplicate helpers across 2578 test files | gate-core.log |
+| check:typecheck-tests | baseline held: 208 files / 921 pre-existing errors | typecheck-tests.log |
+| build / build:renderer / build:main | passed; main rebuilt after the teardown fix | build.log; item1-renderer-build.log; item4-build-main.log |
+| diff whitespace | passed | command output |
+
+The broader native cross-site scope was rerun after the fix and still fails at navigation to the local fixture's second origin with `ERR_FAILED`: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts -g 'streams a bounded live preview'` (navigation-recheck.log). Its later assertions remain unverified. No permission change was attempted to make that scenario pass. The earlier real-model multi-child run, a hidden app window, and parked guests without a live preview were not rerun. The native 11-destroyed-listener warning remains; no growing listener count was demonstrated. No remote CI, push or merge was performed.
+
+### Item file inventory
+
+8099ec417a4b2962520e999427d238d10a51c498 fix(chat): preserve host report origin to prevent user steering and title changes
+
+```text
+docs/evidence/web-panel-2026-11-09/report.md
+src/engine/__tests__/a2a-subagent-message-bus.test.ts
+src/engine/__tests__/conversation-loop-guidance.test.ts
+src/engine/a2a-subagent-message-bus.ts
+src/engine/conversation-loop.ts
+src/engine/turn/query-loop.ts
+src/engine/turn/run-turn.ts
+src/engine/turn/types.ts
+src/ipc/domains/chat.ts
+src/ipc/handlers/__tests__/chat-subagent-mailbox.test.ts
+src/ipc/handlers/chat-stream.ts
+src/ipc/handlers/chat.ts
+src/shared/__tests__/conversation-title.test.ts
+src/shared/conversation-title.ts
+src/ui/renderer/ChatView.tsx
+src/ui/renderer/__tests__/TranscriptRenderer.test.tsx
+src/ui/renderer/hooks/__tests__/use-chat-state-remote-turn.test.tsx
+test/e2e/ui/subagent-report.spec.ts
+```
+
+6d2a5da9f56fd1c90e6231480a63d76b1b9ea2a7 fix(prompts): describe reply syntax to avoid echoed placeholders
+
+```text
+docs/evidence/web-panel-2026-11-09/report.md
+src/i18n/messages/en.ts
+src/i18n/messages/ko.ts
+src/prompts/__tests__/suggested-replies-contract.test.ts
+```
+
+76a235ae0bd542b1d6b504b31d609c73f37f64b5 test(browser): compare parked guest animation with its visible baseline
+
+```text
+docs/evidence/web-panel-2026-11-09/report.md
+test/e2e/ui/browser-observation-preview.spec.ts
+```
+
+Close-time exception fix (fourth item; SHA supplied in the final handoff):
+
+```text
+src/main/__tests__/browser-preview-guest.test.ts
+src/main/browser-observation-preview.ts
+src/main/browser/__tests__/browser-actions.test.ts
+src/main/browser/browser-actions.ts
+test/e2e/ui/browser-observation-preview.spec.ts
+docs/evidence/web-panel-2026-11-09/report.md
+```

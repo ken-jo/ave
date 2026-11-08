@@ -42,20 +42,23 @@ async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted
 }
 
 async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+  let pageDebugger: WebContents["debugger"];
   try {
-    if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
+    pageDebugger = guest.debugger;
+    if (!pageDebugger.isAttached()) pageDebugger.attach("1.3");
   } catch (err) {
     throw new BrowserActionError(
       "debugger-unavailable",
       `cannot control this tab (${(err as Error).message}); close its developer tools and try again`,
     );
   }
+  // The guest's native property becomes unreadable at destruction; its session still owns listener cleanup.
   const session: CdpSession = {
-    send: (method, params) => guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>,
+    send: async (method, params) => pageDebugger.sendCommand(method, params ?? {}) as Promise<unknown>,
     onEvent: (listener) => {
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
-      guest.debugger.on("message", onMessage);
-      return () => { guest.debugger.removeListener("message", onMessage); };
+      pageDebugger.on("message", onMessage);
+      return () => { pageDebugger.removeListener("message", onMessage); };
     },
   };
   await session.send("DOM.enable");

@@ -1198,6 +1198,38 @@ function adapterFixture(options: {
   } };
 }
 
+it("disposes a closed page session without reading its destroyed guest or throwing synchronous send errors", async () => {
+  vi.useFakeTimers();
+  try {
+    const { actions, approve, guest, cdp } = adapterFixture({ agent: true });
+    const live = await approve("browser_press_key");
+    const pageDebugger = guest.debugger;
+    const sendCommand = pageDebugger.sendCommand.bind(pageDebugger);
+    let destroyed = false;
+    vi.spyOn(pageDebugger, "sendCommand").mockImplementation((method, params) => {
+      if (destroyed) throw new Error("Object has been destroyed");
+      return sendCommand(method, params);
+    });
+    let finishAuthorization = () => {};
+    const authorization = new Promise<void>((resolve) => { finishAuthorization = resolve; });
+    await actions.pressKey({ ...live, authorizeSite: () => authorization }, "Escape");
+    await actions.settle(live);
+    cdp.events.emit("message", "Fetch.requestPaused", {
+      requestId: "pending-navigation", frameId: "main", resourceType: "Document", request: { url: "https://a.example/next" },
+    });
+    destroyed = true;
+    Object.defineProperty(guest, "isDestroyed", { value: () => true });
+    Object.defineProperty(guest, "debugger", { get: () => { throw new Error("Object has been destroyed"); } });
+    expect(() => guest.emit("destroyed")).not.toThrow();
+    finishAuthorization();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pageDebugger.listenerCount("message")).toBe(0);
+    expect(cdp.calls).not.toContainEqual({ method: "Fetch.continueRequest", params: { requestId: "pending-navigation" } });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.each(["allow", "deny", "takeover", "destroy"])("holds the original action lease through delayed site approval: %s", async (answer) => {
   vi.useFakeTimers();
   try {
