@@ -1237,7 +1237,7 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(result.isError).toBe(false);
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
-  expect(tab.opener).toBe(destination.includes("b.example") ? "user" : "agent");
+  expect(tab.opener).toBe("agent");
 });
 
 it("reports the page a clicked link commits after the click is acknowledged", async () => {

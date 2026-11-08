@@ -50,6 +50,8 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly signal: AbortSignal;
   readonly leaseId?: string;
   readonly callerSignal?: AbortSignal;
+  readonly authorizeSite?: (url: string) => Promise<void>;
+  readonly openSitePopup?: (url: string) => Promise<void>;
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number; readonly controlGeneration: number };
   readonly onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void;
 }
@@ -108,6 +110,14 @@ const canonicalBrowserTools = new WeakSet<object>();
 export function userOwnedBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Extract<ApprovalMemoryScope, { kind: "browser-origin" }> | undefined {
   return canonicalBrowserTools.has(tool) && memory?.kind === "key" && memory.scope.kind === "browser-origin" && memory.scope.tabOpener === "user"
     ? memory.scope : undefined;
+}
+
+export function isCanonicalBrowserTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null && canonicalBrowserTools.has(tool);
+}
+
+export function agentBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): true | undefined {
+  return canonicalBrowserTools.has(tool) && tool.name !== BROWSER_TOOL.upload && memory?.kind === "key" && (memory.scope.kind === "browser-agent-tabs" || memory.scope.kind === "browser-origin" && memory.scope.tabOpener === "agent") ? true : undefined;
 }
 
 export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {

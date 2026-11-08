@@ -1,5 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
+import { gateBrowserSiteNavigation } from "./browser-site-navigation.js";
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
@@ -738,13 +740,14 @@ export async function navigate(
   approvedOrigin: string,
   signal: AbortSignal,
   originOf: (url: string) => string | null,
+  siteGateInstalled = false,
 ): Promise<{ url: string }> {
   throwIfAborted(signal);
   if (originOf(url) !== approvedOrigin) throw new BrowserActionError("unapproved-origin", "the requested URL does not match the approved origin");
   let refusedRedirect: string | null = null;
   const onRedirect = (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => {
     if (!details.isMainFrame) return;
-    if (originOf(details.url) !== approvedOrigin) {
+    if (originOf(details.url) === null || !siteGateInstalled && originOf(details.url) !== approvedOrigin) {
       refusedRedirect = details.url;
       details.preventDefault();
       guest.stop();
@@ -1384,12 +1387,28 @@ export function createBrowserPageActions(
   hostContentOrigin: HostContentOrigin,
   previewHost: AgentPreviewHost,
 ): BrowserPageActions<WebContents> {
+  const siteGates = new WeakMap<WebContents, () => void>();
+  const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession) => {
+    if (!live.authorizeSite) return;
+    setBrowserPopupNavigation(live);
+    siteGates.get(guest)?.();
+    const frameId = (await frameTree(session)).frame.id;
+    const stop = await gateBrowserSiteNavigation(session, frameId, {
+      userControlled: () => live.tab.opener === "user" || live.tab.controlMode === "human-paused",
+      active: () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused" && live.tab.lease?.id === live.leaseId && !live.callerSignal?.aborted,
+      authorize: live.authorizeSite,
+    });
+    const dispose = () => { stop(); guest.removeListener("destroyed", dispose); };
+    siteGates.set(guest, dispose);
+    guest.once("destroyed", dispose);
+  };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
   const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    await installSiteGate(live, guest, session);
     actionNavigations.get(guest)?.stop();
     actionNavigations.delete(guest);
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
@@ -1435,8 +1454,10 @@ export function createBrowserPageActions(
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      await installSiteGate(live, guest, session);
       const lifecycle = navigationLifecycle(live, guest);
-      try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf); }
+      try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined); }
       finally { lifecycle.stop(); }
     },
     settle: async (live: LiveTab) => {

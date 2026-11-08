@@ -541,6 +541,15 @@ describe("scoped browser control", () => {
     return { ...state, guest, tab: state.registry.liveTab("tab-1")! };
   }
 
+  it("retains agent provenance while an active lease requests a new origin", async () => {
+    const { registry, tab } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.navigationStarted(71, "https://b.example/");
+    expect(tab.opener).toBe("agent");
+    expect(tab.agentOrigin).toBe("https://a.example:443");
+    registry.releaseControl(tab.handle, lease.id);
+  });
+
   it("persists native takeover through new calls, document events and a remount until explicit Resume", async () => {
     const { registry, tab } = await owned();
     const lease = registry.acquireControl(tab, ACTOR);

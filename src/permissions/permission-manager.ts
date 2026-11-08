@@ -1,3 +1,4 @@
+import { BrowserSitePermissions } from "./browser-site-permissions.js";
 import { inspectShellPermissionPaths } from "./rules/literal-shell-inspection.js";
 import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
@@ -203,6 +204,7 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  agentBrowser?: true;
   rationaleAvailable?: boolean;
   userOwnedBrowser?: UserOwnedBrowserScope;
   hostTerminalTurn?: HostTerminalCommandScope;
@@ -247,7 +249,7 @@ export interface PermissionCheckContext {
   permissionStoreError?: string;
 }
 
-type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
+type HostTerminalPermissionContext = Pick<PermissionCheckContext, "agentBrowser" | "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
@@ -584,6 +586,7 @@ export class PermissionManager {
   // Reviewer evidence services, wired at boot.
   private reviewerClassifier: TracingRiskClassifier | null = null;
   private surfaceReviewer: RiskClassifier["reviewUserOwnedSurface"];
+  readonly browserSites = new BrowserSitePermissions();
   private readonly userOwnedSurfaceChoices = new UserOwnedSurfaceStore();
   private reviewerDisabled = false;
   private reviewerModel: string | undefined;
@@ -1041,12 +1044,13 @@ export class PermissionManager {
     this.judgeBreaker.forget(this.resolveJudgeRootSession(rootSessionId));
     const droppedRules = this.sessionRules.delete(rootSessionId);
     const dropped = this.floorSessionGrants.delete(rootSessionId) || droppedRules;
+    const clearedSites = this.browserSites.clearMatching(sessionId => approvalConversationRoot(sessionId) === rootSessionId);
     const clearedSurfaces = this.userOwnedSurfaceChoices.clearMatching(sessionId => approvalConversationRoot(sessionId) === rootSessionId);
     if (dropped) {
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
     }
-    return dropped || clearedSurfaces;
+    return dropped || clearedSurfaces || clearedSites;
   }
 
   // remove a rules-language rule from the user-global or a project scope.
@@ -1368,7 +1372,8 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
-    const hostTerminalContext = context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
+    const hostTerminalContext = context?.agentBrowser || context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
+      agentBrowser: context.agentBrowser,
       ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,
       trustOrigin: context.trustOrigin, sessionId: context.sessionId,
       remoteControllerAuthority: context.remoteControllerAuthority, headless: context.headless, approvalSurface: context.approvalSurface,
@@ -1384,6 +1389,7 @@ export class PermissionManager {
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
+      ...(hostTerminalContext?.agentBrowser ? { agentBrowser: true as const } : {}),
       ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface,
         // A scheduled wake turn does not inherit the conversation's shared choice; it asks, the default.
         choice: sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
@@ -1407,7 +1413,7 @@ export class PermissionManager {
       reasonCode: decision.reasonCode,
       pipelineRequest: request,
       ...(decision.requiresCodeCheckpoint ? { requiresCodeCheckpoint: true as const } : {}),
-      ...(decision.outcome === "ask-forced" || request.manualRerun && decision.outcome === "ask" ? { forceModal: true } : {}),
+      ...(decision.outcome === "ask-forced" || (request.manualRerun || request.agentBrowser && request.exfiltration !== undefined) && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
     this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });

@@ -10,6 +10,12 @@ import type { RiskLevel } from "./permission-review-status.js";
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
 export type UserApprovalScope = "session" | "persistent" | "global";
 
+export type BrowserSiteChoice = "this-site" | "any-site";
+
+export function isBrowserSiteChoice(value: unknown): value is BrowserSiteChoice {
+  return value === "this-site" || value === "any-site";
+}
+
 export type UserOwnedSurface = "browser" | "host-terminal";
 export type UserOwnedSurfaceChoice = "allow" | "auto" | "ask";
 

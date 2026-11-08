@@ -645,6 +645,15 @@ jobs:
         working-directory: ave
         run: >
           bun run test --
+          src/tools/__tests__/browser-tools.test.ts
+          src/permissions/__tests__/browser-site-permissions.test.ts
+          src/permissions/__tests__/browser-site-card.test.ts
+          src/main/browser/__tests__/browser-site-navigation.test.ts
+          src/main/browser/__tests__/browser-popup-navigation.test.ts
+          src/main/browser/__tests__/browser-tab-registry.test.ts
+          src/main/browser/__tests__/browser-actions.test.ts
+          src/main/browser/__tests__/browser-tools-source.test.ts
+          src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx
           src/permissions/__tests__/allowed-directories-nfd-root.test.ts
           src/permissions/__tests__/mxc-extension-admission.test.ts
           src/permissions/__tests__/mxc-sdk-packaging.test.ts

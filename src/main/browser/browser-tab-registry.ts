@@ -934,7 +934,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (tab.guest?.id !== guestId) continue;
       tab.documentId++;
       this.invalidateActions(tab, new BrowserDocumentChangedError());
-      this.checkProvenance(tab, url);
+      this.checkProvenance(tab, url, true);
       this.broadcastControl(tab.windowId);
     }
   }
@@ -1283,10 +1283,11 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return true;
   }
 
-  private checkProvenance(tab: BrowserTabRecord<G>, url: string): void {
+  private checkProvenance(tab: BrowserTabRecord<G>, url: string, agentNavigation = false): void {
     // The initial empty document is never an independently approved site.
     if (url === "" || url === "about:blank") return;
     if (tab.opener !== "agent" || browserOrigin(url) === tab.agentOrigin) return;
+    if (agentNavigation && tab.lease !== null && tab.controlMode === "agent-active") return;
     tab.opener = "user";
     tab.agentOrigin = null;
     this.invalidateActions(tab, "the approved page origin changed");

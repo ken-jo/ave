@@ -24,6 +24,7 @@ import { SOURCE_BADGE } from "../constants.js";
 import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/use-approval.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
+import { BrowserSiteApprovalCard } from "./permissions/BrowserSiteApprovalCard.js";
 import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
@@ -335,14 +336,8 @@ function rememberScopeText(
     case "command":
       return t("toolApprovalDialog.rememberScopeCommand", { path });
     case "browser-origin":
-      return t(
-        memory.scope.tabOpener === "agent"
-          ? "toolApprovalDialog.rememberScopeBrowserAgentOrigin"
-          : "toolApprovalDialog.rememberScopeBrowserUserOrigin",
-        { toolName, origin: memory.scope.origin },
-      );
     case "browser-agent-tabs":
-      return t("toolApprovalDialog.rememberScopeBrowserAgentTabs", { toolName });
+      return t("toolApprovalDialog.siteSessionOnly");
     case "terminal-command":
       return t("toolApprovalDialog.rememberScopeTerminalCommand", { cwd: memory.scope.cwd });
   }
@@ -877,6 +872,7 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
+  if (request.browserSite !== undefined) return <BrowserSiteApprovalCard key={request.id} request={request} interactionLocked={interactionLocked} onDecide={onDecide} />;
   if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
     return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}

@@ -1599,6 +1599,21 @@ from each other. Origin approval is not a complete browser network firewall.
 The [architecture](architecture.md#browser-and-terminal-workspace) owns state,
 tab lifetimes, and presentation; this section owns effect authorization.
 
+### Agent-opened site consent
+
+The [decision tree](permission-decision-tree.md) records the owner decision of
+2026-11-08: builtin browser tool use is allowed in agent-opened tabs, while
+loading a new origin requires this-site or any-site session consent. Site
+grants never persist or pass to children. The host checks each top-level
+document request before dispatch, including redirect and input-driven loads.
+The navigation admission module alone may enable document-request interception,
+continue an unchanged admitted request, or abort a refused request. It does not
+read response bodies or rewrite request headers, methods or bodies. Agent
+popups use the same site gate; body-bearing popups are refused rather than
+converted to another request. User takeover and lease loss invalidate pending
+loads. Sensitive input, irreversible-submit guards, explicit rules and human
+exfiltration consent remain in force.
+
 ### User-owned surface choices
 
 The [decision tree's resolved browser and host-terminal contracts](permission-decision-tree.md#resolved-conflicts-with-existing-invariants-lead-decision-2026-10-30-from-inventory-review) govern user-owned browser tabs and the user's host terminal. Being a user-owned surface does not itself create a forced one-shot floor. The first eligible agent action offers one shared card:

@@ -96,6 +96,7 @@ function fakeActions() {
     settle: async (target) => ({ url: target.tab.guest!.url }),
     navigate: async (target, url) => {
       calls.push({ action: "navigate", tab: target.tab.handle, args: [url] });
+      await target.authorizeSite?.(url);
       target.tab.guest!.url = url;
       return { url };
     },
@@ -146,6 +147,8 @@ describe("browser tools", () => {
   /** Window 1 hosts the conversation (and its child); window 2 hosts another. Every card is answered
    * allow, remembered for the session when the card allows remembering. `onCard` runs while the card is open. */
   function harness(options: {
+    siteChoice?: import("../../shared/permissions-events.js").BrowserSiteChoice;
+    denySite?: boolean;
     surfaceChoice?: UserOwnedSurfaceChoice;
     denySurface?: boolean;
     logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
@@ -218,7 +221,8 @@ describe("browser tools", () => {
           options.onCard?.(request);
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
-            choice: options.denySurface && request.userOwnedSurface ? "deny-once" : "allow-once",
+            choice: options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
+            ...(!options.denySite && request.browserSite ? { browserSiteChoice: options.siteChoice ?? "this-site" } : {}),
             ...(!options.denySurface && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: options.surfaceChoice ?? "ask" } : {}),
             nonce: request.nonce,
             hmac: request.hmac,
@@ -266,6 +270,56 @@ describe("browser tools", () => {
     };
     return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
+
+  it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
+    const h = harness();
+    const tab = await h.agentTab("https://a.example");
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/first" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0].browserSite).toBe("https://b.example:443");
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/second" })).isError).toBe(false);
+    expect((await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(1);
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "http://b.example/" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(2);
+    h.manager.endSession(HOST_SESSION);
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/again" });
+    expect(h.cards).toHaveLength(3);
+  });
+
+  it("keeps any-site consent separate from user-owned tabs and child sessions", async () => {
+    const h = harness({ siteChoice: "any-site" });
+    const tab = await h.agentTab("https://a.example");
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" });
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "http://c.example:8080/" });
+    expect(h.cards).toHaveLength(1);
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/child" }, CHILD_SESSION);
+    expect(h.cards).toHaveLength(2);
+    const user = h.userTab("https://b.example/");
+    await h.run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    expect(h.cards.at(-1)?.userOwnedSurface).toBe("browser");
+    const before = h.page.calls.length;
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "file:///example" })).isError).toBe(true);
+    expect(h.page.calls).toHaveLength(before);
+  });
+
+  it("asks a human for exfiltration even after any-site consent", async () => {
+    const h = harness({ siteChoice: "any-site", mode: "allow" });
+    const tab = await h.agentTab("https://a.example");
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" });
+    const before = h.cards.length;
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/?token=secret" });
+    expect(h.cards.length).toBeGreaterThan(before);
+    expect(h.cards.at(-1)?.browserSite).toBeUndefined();
+  });
+
+  it("does not load a denied site or retain the denied choice", async () => {
+    const h = harness({ denySite: true });
+    const tab = await h.agentTab("https://a.example");
+    for (let i = 0; i < 2; i += 1) expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" })).isError).toBe(true);
+    expect(h.cards).toHaveLength(2);
+    expect(h.page.calls).toHaveLength(0);
+  });
 
   function browserObservations() {
     const completed: Array<{ identity: ObservationIdentity; detail: BrowserObservationDetail; downloadUrl?: string }> = [];
@@ -363,7 +417,7 @@ describe("browser tools", () => {
     expect(result.output).toContain("browser_navigate");
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
     // The category never follows pane state, so the call is asked like any network open before it is refused.
-    expect(h.cards.map((card) => card.toolName)).toEqual([BROWSER_TOOL.tabNew]);
+    expect(h.cards).toHaveLength(0);
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
   });
 
@@ -438,8 +492,8 @@ describe("browser tools", () => {
       tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
     }
     expect((await opening).isError).toBe(false);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: browserOrigin("https://evil.com") } });
+    expect(cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
+    expect(cards.at(-1)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
   });
 
   it("reads an agent tab without asking and asks again when the user selects Ask", async () => {
@@ -666,13 +720,12 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.action)).toEqual(["click", "type", "navigate"]);
   });
 
-  it("remembers an action per origin in an agent tab, for the session only", async () => {
+  it("allows agent page actions without a tool approval", async () => {
     const { run, cards, page, agentTab } = harness();
     const agent = await agentTab("https://a.example/");
     await run(BROWSER_TOOL.type, { tabId: agent.handle, ref: "e1", text: "hello" });
     await run(BROWSER_TOOL.type, { tabId: agent.handle, ref: "e2", text: "world" });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "browser-origin", tabOpener: "agent" } });
+    expect(cards).toHaveLength(0);
     expect(page.calls.filter((call) => call.action === "type").map((call) => call.args.slice(0, 2))).toEqual([["e1", "hello"], ["e2", "world"]]);
   });
 
@@ -701,7 +754,8 @@ describe("browser tools", () => {
 
   it("re-checks an agent tab the user took over while the card was open", async () => {
     let takeOver: (() => void) | undefined;
-    const { run, page, agentTab, tabs } = harness({ onCard: () => takeOver?.() });
+    const { run, page, agentTab, tabs, manager } = harness({ onCard: () => takeOver?.() });
+    manager.setRules([{ pattern: BROWSER_TOOL.pressKey, action: "ask" }]);
     const agent = await agentTab("https://a.example/");
     takeOver = () => tabs.stop(1, `renderer-${agent.guest.id}`);
     const result = await run(BROWSER_TOOL.pressKey, { tabId: agent.handle, key: "Enter" });
@@ -723,8 +777,8 @@ describe("browser tools", () => {
     expect(invalidNavigationCards).toHaveLength(1);
     expect(invalidNavigationCards[0].requireExplicit).toBe(true);
     expect(JSON.stringify(invalidNavigationCards[0].args)).not.toContain("user:pw@");
-    expect(invalidNavigationCards[0].allowedChoices).toBeUndefined();
-    expect(invalidNavigationCards[0].persistentAllowAllowed).toBe(true);
+    expect(invalidNavigationCards[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(invalidNavigationCards[0].persistentAllowAllowed).toBe(false);
     expect(invalidNavigationCards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.isError).toBe(true);
@@ -813,7 +867,7 @@ describe("browser tools", () => {
     expect(page.calls).toEqual([]);
   });
 
-  it("remembers the origin while passing each invocation's fresh tab and document identity", async () => {
+  it("passes each agent invocation's fresh tab and document identity without a card", async () => {
     const { run, cards, page, tabs, agentTab } = harness();
     const first = await agentTab("https://a.example/first");
     const second = await agentTab("https://a.example/second");
@@ -821,7 +875,7 @@ describe("browser tools", () => {
     const secondTab = tabs.liveTab(second.handle)!;
     Object.assign(secondTab, { documentId: 7 });
     expect((await run(BROWSER_TOOL.click, { tabId: second.handle, ref: "e1" })).isError).toBe(false);
-    expect(cards).toHaveLength(1);
+    expect(cards).toHaveLength(0);
     expect(page.targets.map((target) => (target as unknown as { approval: unknown }).approval)).toEqual([
       { tabId: first.handle, origin: "https://a.example:443", documentId: expect.any(Number), controlGeneration: expect.any(Number) },
       { tabId: second.handle, origin: "https://a.example:443", documentId: 7, controlGeneration: expect.any(Number) },
@@ -939,7 +993,7 @@ describe("browser tools", () => {
     expect(tab.lease).toBeNull();
   });
 
-  it("uses ordinary session approval for agent-tab uploads and accepts no host paths", async () => {
+  it("asks for each agent-tab upload and accepts no host paths", async () => {
     const { run, cards, page, agentTab, browserTools } = harness();
     const agent = await agentTab("https://a.example/");
     for (let call = 0; call < 2; call++) {
@@ -947,8 +1001,9 @@ describe("browser tools", () => {
       expect(result.isError).toBe(false);
       expect(browserHeader(result.output)).toMatchObject({ status: "selected", files: [{ name: "chosen.txt", bytes: 12 }] });
     }
-    expect(cards).toHaveLength(1);
-    expect(cards[0].allowedChoices).toBeUndefined();
+    expect(cards).toHaveLength(2);
+    expect(cards[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(cards[0].exactRecordAllowed).toBe(false);
     expect(cards[0].userOwnedSurface).toBeUndefined();
     expect(cards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     expect((await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1", path: "/tmp/secret" })).isError).toBe(true);
@@ -1023,7 +1078,7 @@ describe("browser tools", () => {
     tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
     const result = await opening;
     expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "agent" } });
+    expect(cards[0]).toMatchObject({ browserSite: "https://a.example:443", exactRecordAllowed: false });
     expect(result.isError).toBe(false);
     expect(result.output).toContain('"url":"https://a.example/start"');
     expect(result.output).toContain('"openedBy":"agent"');
@@ -1072,6 +1127,7 @@ describe("browser tools", () => {
       // A borrowed tab has a resumable controller while retaining user lifetime.
       h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
     }
+    h.manager.setRules([{ pattern: BROWSER_TOOL.tabClose, action: "ask" }]);
     const before = h.ops.length;
     const result = await h.run(BROWSER_TOOL.tabClose, { tabId: tab.handle });
     expect(changed).toBe(true);

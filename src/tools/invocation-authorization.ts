@@ -1,5 +1,5 @@
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { userOwnedBrowserScopeOf } from "./browser-tools.js";
+import { agentBrowserScopeOf, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { isConfinedHostShellExecution, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
@@ -381,6 +381,7 @@ export async function authorizeToolInvocation(
             admissionDenial: context.admissionDenial,
             ...(hostTerminalScope ? { hostTerminalTurn: hostTerminalScope } : {}),
             userOwnedBrowser: userOwnedBrowserScopeOf(tool, invocationPermissionContext.approvalMemory),
+            agentBrowser: agentBrowserScopeOf(tool, invocationPermissionContext.approvalMemory),
             trustOrigin: invocationPermissionContext.trustOrigin,
             paths: context.paths,
             secretRead: context.secretRead,

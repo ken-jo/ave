@@ -25,6 +25,7 @@ export interface PermissionDecisionRequest {
   shell?: { sandboxed: boolean; readOnlyProven: boolean; unproven: boolean; destructive: boolean; escalated?: boolean };
   reviewer?: { level?: "low" | "medium" | "high"; status: "success" | "error" | "abort"; breakerOpen?: boolean };
   manualRerun?: boolean;
+  agentBrowser?: true;
   userOwnedSurface?: { kind: UserOwnedSurface; choice: UserOwnedSurfaceChoice };
 }
 
@@ -94,7 +95,7 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
   }
   if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
   if (request.rules?.ask !== undefined) {
-    return request.userOwnedSurface
+    return request.userOwnedSurface || request.agentBrowser
       ? askHuman(request, "rule-ask", request.rules.ask)
       : applyMode(request, "rule-ask", request.rules.ask);
   }
@@ -109,6 +110,11 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
       return askHuman(request, "user-owned-surface-human-required", "The action needs human confirmation.");
     }
     return askHuman(request, "user-owned-surface-ask", "Choose how to approve actions on this user-owned surface.");
+  }
+  if (request.agentBrowser) {
+    if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
+    if (request.exfiltration) return askHuman(request, "exfiltration-guardrail", request.exfiltration.reason);
+    return { outcome: "allow", reasonCode: "agent-browser-tool", reason: "Browser tool use is allowed; site loads require separate consent." };
   }
   if (request.rules?.allow !== undefined) {
     return { outcome: "allow", reasonCode: "rule-allow", reason: request.rules.allow };

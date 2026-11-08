@@ -197,6 +197,27 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     return {
       tab: target.resolved.tab,
       signal: target.signal,
+      ...(target.resolved.opener === "agent" ? {
+        authorizeSite: async (url: string) => {
+          const tab = target.resolved.tab;
+          const guest = tab.guest;
+          const leaseId = tab.lease?.id;
+          if (!ctx.authorizeBrowserSite || !leaseId) throw new Error("Missing browser site authority");
+          await ctx.authorizeBrowserSite(url);
+          if (tab.guest !== guest || guest?.isDestroyed() || tab.lease?.id !== leaseId || tab.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
+          tab.agentOrigin = browserOrigin(url);
+        },
+        openSitePopup: async (url: string) => {
+          const checked = validUrl(url);
+          if (!checked.ok || target.resolved.tab.lease?.id === undefined || target.signal.aborted) throw new Error("Browser popup authority unavailable");
+          const guest = target.resolved.tab.guest;
+          const leaseId = target.resolved.tab.lease?.id;
+          const result = await openAgentTab(checked, ctx, () => {
+            if (target.resolved.tab.guest !== guest || guest?.isDestroyed() || target.resolved.tab.lease?.id !== leaseId || target.resolved.tab.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser popup authority changed");
+          });
+          if (result.isError) throw new Error(result.output);
+        },
+      } : {}),
       ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}),
       approval: { tabId: scope.tabId, origin: scope.origin, documentId: scope.documentId, controlGeneration: scope.controlGeneration! },
       ...(target.resolved.tab.lease ? { leaseId: target.resolved.tab.lease.id } : {}),
@@ -247,6 +268,52 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       return { ok: false, result: failure("refused: only http:// and https:// URLs without credentials can be opened (file:, javascript:, data: and other schemes are denied)") };
     }
     return { ok: true, url: checked.url, origin };
+  };
+
+  const openAgentTab = async (url: { url: string; origin: string }, ctx: ToolExecutionContext, beforeOpen: () => void = () => {}): Promise<ToolExecutionResult> => {
+      const scope = policy.windowOf(toolSessionId(ctx));
+      if (!scope) return failure(NO_WINDOW);
+      const opening = policy.tabNewTarget(scope);
+      if (!opening.ok) return failure(opening.reason);
+      const authorizeSite = ctx.authorizeBrowserSite;
+      if (!authorizeSite) return failure("Missing browser site authorization");
+      await authorizeSite(url.url);
+      ctx.abortSignal?.throwIfAborted();
+      beforeOpen();
+      const outcome = await deps.tabs.requestTabOp(
+        scope.windowId,
+        { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),
+          actor: actorOf(ctx, deps), active: false },
+        signalOptions(ctx),
+      );
+      if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
+      const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
+      if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
+      const documentId = tab.documentId;
+      const guest = tab.guest;
+      const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
+      // Install the origin guard before navigating the blank bound view or following redirects.
+      const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));
+      try { return await observeAgentBrowserCommand(tab, "tab-open", () => run(async (actions) => {
+        const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
+        if (!fresh || signal.aborted || fresh.guest !== guest || fresh.documentId !== documentId || fresh.opener !== "agent") {
+          return failure("the new tab changed before navigation; nothing was done. Call again.");
+        }
+        const current = () => {
+          if (fresh.guest !== guest || guest?.isDestroyed() || fresh.lease?.id !== lease.id || fresh.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
+        };
+        const loaded = await actions.navigate({ tab: fresh, signal, leaseId: lease.id,
+          authorizeSite: async (destination) => { await authorizeSite(destination); current(); fresh.agentOrigin = browserOrigin(destination); },
+          openSitePopup: async (destination) => {
+            const next = validUrl(destination);
+            if (!next.ok) throw new Error("Invalid browser popup destination");
+            current();
+            const result = await openAgentTab(next, ctx, current);
+            if (result.isError) throw new Error(result.output);
+          },
+          ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
+        return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
+      }), ctx.abortSignal, url.url); } finally { deps.tabs.releaseControl(tab.handle, lease.id); }
   };
 
   const validRef = (input: BrowserToolInput): string | null =>
@@ -405,6 +472,14 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (!fresh.ok) return fresh.result;
         const changed = navigationUnchangedSinceApproval(ctx, fresh.resolved, url.origin);
         if (changed) return changed;
+        if (fresh.resolved.opener === "agent") {
+          if (!ctx.authorizeBrowserSite) return failure("Missing browser site authorization");
+          await ctx.authorizeBrowserSite(url.url);
+          const current = recheck(input, ctx, fresh);
+          if (!current.ok) return current.result;
+          const changed = navigationUnchangedSinceApproval(ctx, current.resolved, url.origin);
+          if (changed) return changed;
+        }
         const loaded = await actions.navigate(pageTarget(ctx, fresh), url.url, url.origin);
         return fenced({ tabId: target.resolved.tab.handle, url: loaded.url, title: target.resolved.tab.guest?.getTitle() ?? "" });
       }, url.url);
@@ -462,36 +537,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     [BROWSER_TOOL.tabNew]: async (input, ctx) => {
       const url = validUrl(input.url);
       if (!url.ok) return url.result;
-      const scope = policy.windowOf(toolSessionId(ctx));
-      if (!scope) return failure(NO_WINDOW);
-      const opening = policy.tabNewTarget(scope);
-      if (!opening.ok) return failure(opening.reason);
       const authorized = authorizedApprovalMemoryScope(ctx);
-      if (authorized?.kind !== "browser-origin" || authorized.origin !== url.origin) {
-        return failure("this tab was not approved for that URL; nothing was done. Call it again to ask.");
-      }
-      const outcome = await deps.tabs.requestTabOp(
-        scope.windowId,
-        { op: "new", url: url.url, sessionId: scope.hostSessionId, ...(opening.inTabId === undefined ? {} : { inTabId: opening.inTabId }),
-          actor: actorOf(ctx, deps), active: false },
-        signalOptions(ctx),
-      );
-      if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
-      const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
-      if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
-      const documentId = tab.documentId;
-      const guest = tab.guest;
-      const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
-      // Install the origin guard before navigating the blank bound view or following redirects.
-      const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));
-      try { return await observeAgentBrowserCommand(tab, "tab-open", () => run(async (actions) => {
-        const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
-        if (!fresh || signal.aborted || fresh.guest !== guest || fresh.documentId !== documentId || fresh.opener !== "agent") {
-          return failure("the new tab changed before navigation; nothing was done. Call again.");
-        }
-        const loaded = await actions.navigate({ tab: fresh, signal, leaseId: lease.id, ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
-        return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
-      }), ctx.abortSignal, url.url); } finally { deps.tabs.releaseControl(tab.handle, lease.id); }
+      if (authorized?.kind !== "browser-origin" || authorized.origin !== url.origin) return failure("this tab was not approved for that URL; nothing was done. Call it again to ask.");
+      return openAgentTab(url, ctx);
     },
 
     [BROWSER_TOOL.tabClose]: async (input, ctx) => {

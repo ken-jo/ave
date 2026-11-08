@@ -61,7 +61,9 @@ describe("browser tool CDP surface", () => {
   it.each(MODULES)("%s names only allow-listed DevTools methods", (path) => {
     const source = readFileSync(join(REPO, path), "utf8");
     const named = [...source.matchAll(CDP_LITERAL)].map((match) => match[1]!);
-    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method))).toEqual([]);
+    const siteNavigation = path === "src/main/browser/browser-site-navigation.ts";
+    const siteMethods = new Set(["Fetch.requestPaused", "Fetch.continueRequest", "Fetch.failRequest", "Fetch.enable"]);
+    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method)))).toEqual([]);
     for (const forbidden of [
       /\bRuntime\./,
       /\bNetwork\./,
@@ -72,6 +74,7 @@ describe("browser tool CDP surface", () => {
       /\bexecuteJavaScript\b/,
       /\.cookies\b/,
     ]) {
+      if (siteNavigation && forbidden.source === "\\bFetch\\.") continue;
       expect(source, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
     }
   });
