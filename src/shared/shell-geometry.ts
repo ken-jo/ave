@@ -6,6 +6,9 @@ export const MAIN_WINDOW_HEIGHT = 768;
 export const MAIN_WINDOW_MIN_WIDTH = 360;
 export const MAIN_WINDOW_MIN_HEIGHT = 640;
 
+/** The window band every Ave window draws at its top; px, mirrored by `--chrome-band-height`. */
+export const CHROME_BAND_HEIGHT = 36;
+
 /** Keep button position aligned with the chrome band and control centers. */
 export const TRAFFIC_LIGHT_POSITION = { x: 18, y: 12 } as const;
 

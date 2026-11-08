@@ -21,7 +21,11 @@ describe("link/auth shell titlebar", () => {
     expect(order(buildTitlebarHtml({ platform: "darwin", title: "Link" }))).toEqual([]);
   });
 
-  it("sizes each button to the shared window-button width", () => {
-    expect(buildTitlebarCss()).toMatch(/\.titlebar-btn \{\s*width: 44px;/);
+  it("takes its sizes from the shared shell geometry", () => {
+    const css = buildTitlebarCss();
+    expect(css).toMatch(/\.titlebar-btn \{\s*width: 44px;\s*height: 36px;/);
+    expect(css).toMatch(/\.titlebar \{\s*height: 36px;\s*flex: 0 0 36px;/);
+    expect(css).toMatch(/\.title \{\s*min-width: 0;\s*padding-left: 12px;/);
+    expect(css).toContain(".titlebar-leading .title { padding-right: 12px; }");
   });
 });

@@ -2,7 +2,7 @@
 // bright flash while keeping shell rendering independent of theme IPC.
 
 import { t } from "../i18n/index.js";
-import { WINDOW_CONTROL_BUTTON_WIDTH, windowControlsPlacement } from "../shared/shell-geometry.js";
+import { BAND_EDGE_PAD, CHROME_BAND_HEIGHT, WINDOW_CONTROL_BUTTON_WIDTH, windowControlsPlacement } from "../shared/shell-geometry.js";
 
 export const TITLEBAR_COLORS = {
   light: { background: "#f3f2ed", foreground: "#1c1917" },
@@ -16,7 +16,7 @@ export interface TitlebarShellOptions {
   title: string;
 }
 
-// Render the titlebar root <div>. macOS gets a 36px drag-only strip (matches Win/Linux height so chrome looks consistent and OS traffic lights center
+// Render the titlebar root <div>. macOS gets a band-height drag-only strip (matches Win/Linux height so chrome looks consistent and OS traffic lights center
 // cleanly); Windows gets a full bar with title + min/max/close trailing; Linux puts close/min/max first, as the main window's band does
 // (`windowControlsPlacement` in shared/shell-geometry.ts).
 export function buildTitlebarHtml({ platform }: TitlebarShellOptions): string {
@@ -78,8 +78,8 @@ export function buildTitlebarCss(): string {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
     }
     .titlebar {
-      height: 36px;
-      flex: 0 0 36px;
+      height: ${CHROME_BAND_HEIGHT}px;
+      flex: 0 0 ${CHROME_BAND_HEIGHT}px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -90,15 +90,15 @@ export function buildTitlebarCss(): string {
       -webkit-app-region: drag;
     }
     .titlebar-leading { justify-content: flex-start; }
-    .titlebar-leading .title { padding-right: 12px; }
+    .titlebar-leading .title { padding-right: ${BAND_EDGE_PAD}px; }
     .titlebar-mac {
-      height: 36px;
-      flex: 0 0 36px;
+      height: ${CHROME_BAND_HEIGHT}px;
+      flex: 0 0 ${CHROME_BAND_HEIGHT}px;
       background: transparent;
     }
     .title {
       min-width: 0;
-      padding-left: 12px;
+      padding-left: ${BAND_EDGE_PAD}px;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
@@ -114,7 +114,7 @@ export function buildTitlebarCss(): string {
     }
     .titlebar-btn {
       width: ${WINDOW_CONTROL_BUTTON_WIDTH}px;
-      height: 36px;
+      height: ${CHROME_BAND_HEIGHT}px;
       border: 0;
       border-radius: 0;
       display: grid;
