@@ -15,130 +15,167 @@ async function showApproval(app: ElectronApplication, sessionId: string, id: str
   }, { channel: CHANNELS.approval.request, sessionId, id });
 }
 
-async function expectAnswerReceivesClick(button: Locator) {
+async function expectControlReceivesClick(button: Locator) {
   await expect(button).toBeVisible();
   expect(await button.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
   })).toBe(true);
   const target = await button.elementHandle();
-  if (!target) throw new Error("Missing answer button");
+  if (!target) throw new Error("Missing control");
   await target.evaluate((element) => element.addEventListener("click", () => element.setAttribute("data-answer-clicked", "true"), { once: true }));
   await button.click();
   expect(await target.evaluate((element) => element.getAttribute("data-answer-clicked"))).toBe("true");
   await target.dispose();
 }
 
-for (const width of [360, 1243]) {
-test(`transient window and composer notices preserve bounds and card access at ${width}px`, async ({ app, mainWindow }, testInfo) => {
-  await setWindowSize(app, width, 640);
-  await mainWindow.emulateMedia({ reducedMotion: "reduce" });
-  const canvas = mainWindow.getByTestId(TEST_IDS.routeCanvas);
-  const composer = mainWindow.getByTestId("composer-textarea").first();
-  await expect(composer).toBeVisible();
-  await mainWindow.evaluate(() => document.fonts.ready);
-  const canvasBounds = await canvas.boundingBox();
-  const composerBounds = await composer.boundingBox();
-
+async function showWindowNotice(app: ElectronApplication) {
   await app.evaluate(({ BrowserWindow }, channel) => {
     BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
-      kind: "system", title: "Ready", body: "Window notice", sticky: true,
+      kind: "system", title: "Ready", body: "A sticky window notice with a long message that must leave every control available", sticky: true,
     });
   }, CHANNELS.notification.toast);
-  const strip = mainWindow.getByTestId("window-notice-overlay");
-  const windowToast = strip.getByTestId("status-toast");
-  await expect(windowToast).toBeVisible();
-  await expect(windowToast).toHaveCSS("opacity", "1");
-  await expect(strip.getByTestId("status-bar-presence")).toHaveCSS("opacity", "1");
-  await expect.poll(() => canvas.boundingBox()).toEqual(canvasBounds);
-  expect(await composer.boundingBox()).toEqual(composerBounds);
-  const geometry = await windowToast.evaluate((toast) => {
-    const overlay = toast.parentElement;
-    if (!overlay) throw new Error("Missing notice overlay");
-    const box = overlay.getBoundingClientRect();
-    const card = toast.getBoundingClientRect();
-    const x = box.left - 1;
-    const y = card.top + card.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    return {
-      position: getComputedStyle(overlay).position,
-      zIndex: getComputedStyle(overlay).zIndex,
-      pointerEvents: getComputedStyle(overlay).pointerEvents,
-      toastPointerEvents: getComputedStyle(toast).pointerEvents,
-      width: card.width,
-      available: box.width,
-      cardTop: card.top,
-      cardLeft: card.left,
-      hitInside: toast.contains(document.elementFromPoint(card.left + card.width / 2, card.top + card.height / 2)),
-      passedThrough: hit !== null && !overlay.contains(hit),
-    };
-  });
-  expect(geometry).toMatchObject({ position: "absolute", zIndex: "30", pointerEvents: "none", toastPointerEvents: "auto", passedThrough: true });
-  expect(geometry.hitInside, JSON.stringify(geometry)).toBe(true);
-  expect(geometry.width).toBeLessThanOrEqual(Math.min(geometry.available, 384));
-  const header = mainWindow.getByTestId("pane-header");
-  const headerBounds = await header.boundingBox();
-  const toastBounds = await windowToast.boundingBox();
-  if (!headerBounds || !toastBounds || !composerBounds) throw new Error("Missing chrome or notice bounds");
-  expect(toastBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
-  expect(toastBounds.y + toastBounds.height).toBeLessThanOrEqual(composerBounds.y);
-  await expectAnswerReceivesClick(header.getByTestId("pane-action-conversation.pin"));
+}
+
+async function activateView(app: ElectronApplication, viewKey: string) {
+  await app.evaluate(({ BrowserWindow }, { channel, viewKey }) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { viewKey });
+  }, { channel: CHANNELS.view.activate, viewKey });
+}
+
+for (const width of [360, 1243]) {
+test(`title bar notices leave every routed toolbar clickable at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
+  await setWindowSize(app, width, 640);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const canvas = page.getByTestId(TEST_IDS.routeCanvas);
+  const composer = page.getByTestId("composer-textarea").first();
+  await expect(composer).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  const canvasBounds = await canvas.boundingBox();
+  const composerBounds = await composer.boundingBox();
+  const slot = page.getByTestId("window-notice-slot");
+  const toast = slot.getByTestId("status-toast");
+  const titlebar = page.getByTestId("custom-titlebar-darwin");
+
+  async function checkSlot() {
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveCSS("opacity", "1");
+    const geometry = await toast.evaluate((element) => {
+      const notice = element.getBoundingClientRect();
+      const slot = element.closest('[data-testid="main-toolbar-drag-band"]');
+      const band = element.closest('[data-testid^="custom-titlebar"]');
+      if (!slot || !band) throw new Error("Notice is outside the title bar slot");
+      const free = slot.getBoundingClientRect();
+      const bar = band.getBoundingClientRect();
+      return {
+        left: notice.left, right: notice.right, top: notice.top, bottom: notice.bottom,
+        width: notice.width, height: notice.height, freeLeft: free.left, freeRight: free.right,
+        bandTop: bar.top, bandBottom: bar.bottom,
+        region: getComputedStyle(element).getPropertyValue("-webkit-app-region"),
+        slotRegion: getComputedStyle(slot).getPropertyValue("-webkit-app-region"),
+        transform: getComputedStyle(element).transform,
+      };
+    });
+    expect(geometry.left).toBeGreaterThanOrEqual(geometry.freeLeft);
+    expect(geometry.right).toBeLessThanOrEqual(geometry.freeRight);
+    expect(geometry.top).toBeGreaterThanOrEqual(geometry.bandTop);
+    expect(geometry.bottom).toBeLessThanOrEqual(geometry.bandBottom);
+    expect(geometry.height).toBeLessThanOrEqual(28);
+    expect(geometry.width).toBeLessThanOrEqual(384);
+    expect(geometry).toMatchObject({ region: "no-drag", slotRegion: "drag", transform: "none" });
+    await expect(toast.getByRole("button", { name: /Learn more|자세히 알아보기/ })).toBeVisible();
+    await expect(toast.getByTestId("status-toast-dismiss")).toBeVisible();
+    expect(await canvas.boundingBox()).toEqual(canvasBounds);
+  }
+
+  await showWindowNotice(app);
+  await checkSlot();
+  const header = page.locator('[data-testid="pane-header"]:visible');
+  await expectControlReceivesClick(header.getByTestId("pane-action-conversation.pin"));
   await expect(header.getByTestId("pane-action-conversation.unpin")).toBeVisible();
-  await expect(windowToast).toBeVisible();
-  const titleControl = mainWindow.getByTestId("bootstrap-status-pill");
-  await expectAnswerReceivesClick(titleControl);
-  await expect(titleControl).toHaveCount(0);
-  await expect(windowToast).toBeVisible();
-  expect(await canvas.boundingBox()).toEqual(canvasBounds);
   expect(await composer.boundingBox()).toEqual(composerBounds);
-  const sessionId = await mainWindow.evaluate(async () => (await window.aveApi.chatSessions({ kind: "main" })).current);
+  const titleControl = page.getByTestId("bootstrap-status-pill");
+  await expectControlReceivesClick(titleControl);
+  await expect(titleControl).toHaveCount(0);
+  // The notice uses only spare title-bar width, including after a status chip disappears.
+  await checkSlot();
+  if (width >= 640) {
+    await expectControlReceivesClick(page.getByTestId("dev-tools-toggle"));
+    await expect(page.getByTestId("dev-tools-panel")).toBeVisible();
+    await page.getByTestId("dev-tools-panel").getByRole("button", { name: /Close|닫기/ }).click();
+  }
+  await page.screenshot({ path: testInfo.outputPath("window-notice-conversation.png") });
+  const sessionId = await page.evaluate(async () => (await window.aveApi.chatSessions({ kind: "main" })).current);
   if (!sessionId) throw new Error("Missing current session");
   await showApproval(app, sessionId, "window-notice-approval");
-  await expect(mainWindow.getByTestId("approval-dock")).toBeVisible();
-  const noticeBounds = await windowToast.boundingBox();
-  const cardBounds = await mainWindow.getByTestId("approval-dock").boundingBox();
+  const card = page.getByTestId("approval-dock");
+  await expect(card).toBeVisible();
+  const noticeBounds = await toast.boundingBox();
+  const cardBounds = await card.boundingBox();
   if (!noticeBounds || !cardBounds) throw new Error("Missing notice or card bounds");
   expect(noticeBounds.y + noticeBounds.height).toBeLessThanOrEqual(cardBounds.y);
-  // Verify stacking at an actual overlap inside the reading area, then restore the normal top anchor.
-  await strip.evaluate((element, cardTop) => {
-    if (!element.parentElement) throw new Error("Missing reading area");
-    element.style.top = `${cardTop - element.parentElement.getBoundingClientRect().top + 8}px`;
-  }, cardBounds.y);
-  const cardOwnsOverlap = await windowToast.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    const card = document.querySelector('[data-testid="approval-dock"]');
-    return card?.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
-  });
-  expect(cardOwnsOverlap).toBe(true);
-  await expectAnswerReceivesClick(mainWindow.getByTestId("approve-button"));
-  await strip.evaluate((element) => element.style.removeProperty("top"));
+  await expectControlReceivesClick(page.getByTestId("approve-button"));
   await app.evaluate(({ BrowserWindow }, channel) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { requestId: "window-notice-approval" }), CHANNELS.approval.settled);
-  await mainWindow.screenshot({ path: testInfo.outputPath("window-notice-overlay.png") });
-  await windowToast.getByTestId("status-toast-dismiss").click();
-  await expect(windowToast).toHaveCount(0);
+  await toast.getByTestId("status-toast-dismiss").click();
+  await expect(toast).toHaveCount(0);
   expect(await canvas.boundingBox()).toEqual(canvasBounds);
 
+  for (const route of ["settings", "work-board", "web"]) {
+    await activateView(app, route);
+    const control = route === "settings" ? page.getByRole("searchbox")
+      : route === "work-board" ? page.getByTestId("work-board-show-schedule")
+      : page.getByTestId("web-panel-address");
+    await expect(control).toBeVisible();
+    const controlBounds = await control.boundingBox();
+    const headerBounds = await page.locator('[data-testid="pane-header"]:visible').boundingBox();
+    await showWindowNotice(app);
+    await checkSlot();
+    expect(await control.boundingBox()).toEqual(controlBounds);
+    expect(await page.locator('[data-testid="pane-header"]:visible').boundingBox()).toEqual(headerBounds);
+    await expectControlReceivesClick(control);
+    if (route !== "work-board") await expect(control).toBeFocused();
+    await page.screenshot({ path: testInfo.outputPath(`window-notice-${route}.png`) });
+    // Both history controls remain live while the sticky notice follows navigation.
+    await expectControlReceivesClick(page.getByTestId(TEST_IDS.viewPathBack));
+    await expectControlReceivesClick(page.getByTestId("view-path-forward"));
+    await expect(control).toBeVisible();
+    await expect(toast).toBeVisible();
+    await toast.getByTestId("status-toast-dismiss").click();
+    await expect(toast).toHaveCount(0);
+    expect(await canvas.boundingBox()).toEqual(canvasBounds);
+    expect(await control.boundingBox()).toEqual(controlBounds);
+  }
+
+  await activateView(app, "home");
+  await expect(composer).toBeVisible();
   await app.evaluate(({ BrowserWindow }, { channel, chatGroupId }) => {
     BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { chatGroupId, from: "primary/model", to: "secondary/model" });
   }, { channel: CHANNELS.chat.fallback, chatGroupId: MAIN_CHAT_GROUP_ID });
-  const composerToast = mainWindow.getByTestId("composer-toast-dock").getByTestId("status-toast");
+  const composerToast = page.getByTestId("composer-toast-dock").getByTestId("status-toast");
   await expect(composerToast).toBeVisible();
   await expect(composerToast).toHaveCSS("opacity", "1");
   expect(await composer.boundingBox()).toEqual(composerBounds);
   expect(await canvas.boundingBox()).toEqual(canvasBounds);
-  expect(await composerToast.evaluate((toast) => {
-    const card = toast.getBoundingClientRect();
-    return toast.contains(document.elementFromPoint(card.left + card.width / 2, card.top + card.height / 2));
-  })).toBe(true);
+  const localNoticeBounds = await composerToast.boundingBox();
+  const headerBounds = await header.boundingBox();
+  if (!localNoticeBounds || !headerBounds || !composerBounds) throw new Error("Missing conversation bounds");
+  expect(localNoticeBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
+  expect(localNoticeBounds.y + localNoticeBounds.height).toBeLessThanOrEqual(composerBounds.y);
+  await expectControlReceivesClick(header.getByTestId("pane-action-conversation.unpin"));
   await showApproval(app, sessionId, "composer-notice-approval");
-  await expectAnswerReceivesClick(mainWindow.getByTestId("approve-button"));
+  await expectControlReceivesClick(page.getByTestId("approve-button"));
   await app.evaluate(({ BrowserWindow }, channel) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { requestId: "composer-notice-approval" }), CHANNELS.approval.settled);
-  await mainWindow.screenshot({ path: testInfo.outputPath("composer-notice-overlay.png") });
+  await page.screenshot({ path: testInfo.outputPath("composer-notice-overlay.png") });
   await composerToast.getByTestId("status-toast-dismiss").click();
   await expect(composerToast).toHaveCount(0);
   expect(await composer.boundingBox()).toEqual(composerBounds);
+  await showWindowNotice(app);
+  const sidebarToggle = titlebar.locator('[data-testid="sidebar-show"], [data-testid="sidebar-collapse-toggle"]');
+  if (await sidebarToggle.count()) {
+    await expectControlReceivesClick(sidebarToggle);
+    await expect(page.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "expanded");
+  }
 });
-
 }
 
 providerTest.describe("side-chat notice delivery", () => {
@@ -189,6 +226,15 @@ providerTest.describe("side-chat notice delivery", () => {
       await expect(toast).toContainText("local-model");
       expect(await composer.boundingBox()).toEqual(before.composer);
       expect(await transcript.boundingBox()).toEqual(before.transcript);
+      const newSession = side.getByTestId("side-chat-new");
+      const toolbarBounds = await newSession.boundingBox();
+      const contentBounds = await side.getByTestId("side-chat-content").boundingBox();
+      const toastBounds = await toast.boundingBox();
+      if (!toolbarBounds || !contentBounds || !toastBounds || !before.composer) throw new Error("Missing side chat bounds");
+      expect(contentBounds.y).toBeGreaterThanOrEqual(toolbarBounds.y + toolbarBounds.height);
+      expect(toastBounds.y).toBeGreaterThanOrEqual(contentBounds.y);
+      expect(toastBounds.y + toastBounds.height).toBeLessThanOrEqual(before.composer.y);
+      await expectControlReceivesClick(page.getByRole("tab", { name: /Side chat/ }));
       const answer = card.getByRole("option", { name: "Continue", exact: true });
       expect(await answer.evaluate((element) => {
         const box = element.getBoundingClientRect();

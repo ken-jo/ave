@@ -188,8 +188,6 @@ export interface ChatGroupSessionProps {
   api: AveApi;
   registry: ChatGroupSessionRegistry;
   env: ChatGroupEnvironment;
-  /** Window-owned transient notice, drawn only in the focused visible conversation. */
-  contentNotice?: ReactNode;
   /** The frame chrome this tile renders inside, given the tile's own actions. */
   children: (frame: {
     actions: ReturnType<typeof buildChatGroupActions>;
@@ -247,7 +245,7 @@ export interface ChatGroupSessionProps {
  */
 export function ChatGroupSession({
   hiddenBrowserTabIds, onFocusObservedBrowser,
-  chatGroupId, api: windowApi, registry, env, children, contentNotice, panelOpen, focused, hidden,
+  chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
   paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange, revealMessage, onMessageRevealHandled,
 }: ChatGroupSessionProps) {
   const { t } = useTranslation();
@@ -1101,7 +1099,6 @@ export function ChatGroupSession({
         slashPickerOpen={env.slashPickerOpen}
         onSlashPickerOpenChange={env.onSlashPickerOpenChange}
         statusBar={tileStatusBar}
-        contentNotice={contentNotice}
         onAttachmentWarning={handleAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
         onColumnsVisibilityChange={setColumnsVisibility}

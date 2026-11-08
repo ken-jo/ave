@@ -234,6 +234,10 @@
   45%  { transform: scale(1.22); opacity: 0.88; }
   100% { transform: scale(1); opacity: 1; }
 }
+@keyframes ave-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
 @keyframes ave-fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -292,6 +296,7 @@
   .ave-anim-pop         { animation: ave-pop var(--motion-base) var(--motion-ease-out) both; }
   .ave-anim-star        { animation: ave-star-throb var(--motion-slow) var(--motion-ease-out) both; }
   .ave-anim-fade-in     { animation: ave-fade-in var(--motion-fast) var(--motion-ease-out) both; }
+  .ave-anim-fade-out    { animation: ave-fade-out var(--motion-fast) var(--motion-ease-out) both; }
   .ave-anim-slide-down  { animation: ave-slide-down var(--motion-base) var(--motion-ease-out) both; }
   .ave-anim-slide-up    { animation: ave-slide-up var(--motion-base) var(--motion-ease-out) both; }
   .ave-anim-zoom-in     { animation: ave-zoom-in var(--motion-base) var(--motion-ease-out) both; }

@@ -512,6 +512,7 @@ function SideChatSession({
         </Button>
       </div>
 
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="side-chat-content">
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollViewportRef}
@@ -669,6 +670,7 @@ function SideChatSession({
         interactionLocked={approvalHead !== null && approvals.lockedRequestId === approvalHead.id}
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
+      </div>
     </div>
   );
 }

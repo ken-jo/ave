@@ -74,6 +74,22 @@ describe("MainToolbar", () => {
     expect(screen.queryByTestId("sidebar-collapse-toggle")).toBeNull();
   });
 
+  it("reserves the notice slot between breadcrumbs and status controls without marking the free space no-drag", () => {
+    renderWithProvider(defaultProps({
+      notice: <div data-testid="window-notice-slot">Notice</div>,
+      bootstrapStatus: { status: { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } }, onDismiss: vi.fn(), onRetry: vi.fn() },
+    }));
+    const slot = screen.getByTestId("main-toolbar-drag-band");
+    expect(slot).toHaveClass("flex-1", "min-w-0");
+    expect(slot).toContainElement(screen.getByTestId("window-notice-slot"));
+    expect(slot.closest('[style*="no-drag"]')).toBeNull();
+    const crumb = screen.getByTestId("view-path-breadcrumb");
+    expect(crumb.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const chip = screen.getByTestId("bootstrap-status-pill");
+    expect(slot.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("main-toolbar").className).toContain("max-sm:[&_[data-toolbar-pill-label]]:hidden");
+  });
+
   it("lines the lifecycle pills up in one row, app update first", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },

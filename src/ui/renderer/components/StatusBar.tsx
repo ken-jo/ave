@@ -1,9 +1,9 @@
 import { chatSurface } from "./chat-surface.js";
-import { useRef, useState, type AnimationEvent } from "react";
+import { useRef, useState, type AnimationEvent, type CSSProperties } from "react";
 import type { PersistentItem, StatusBarSeverity, ToastItem } from "../hooks/use-status-bar.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { X } from "lucide-react";
+import { ArrowUpRight, EyeOff, X } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import { MarqueeText } from "./MarqueeText.js";
 import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
@@ -16,8 +16,8 @@ const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 /** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
-  /** Composer notices float above their anchor; content notices float below it. */
-  toastPlacement?: "above" | "below";
+  /** Conversation notices float above their dock; window notices stay in the title bar slot. */
+  toastPlacement?: "above" | "titlebar";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
   /** Number of toasts queued behind the visible one. */
@@ -70,12 +70,13 @@ export function StatusBar(props: StatusBarProps) {
 
   const { visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
     hasContent ? props : lastContentRef.current;
-  const { persistent, toastPlacement = "below" } = props;
+  const { persistent, toastPlacement = "above" } = props;
+  const titlebar = toastPlacement === "titlebar";
 
   return (
     <TooltipProvider>
     <footer
-      className={`relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground${toastPlacement === "below" ? " h-full" : ""}`}
+      className="relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -158,7 +159,9 @@ export function StatusBar(props: StatusBarProps) {
       ) : null}
       {visibleToast !== null && (hasContent || leaving) ? (
         <div
-          className={`pointer-events-none absolute inset-x-0 z-30 flex items-start justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "inset-y-0"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          className={titlebar
+            ? `pointer-events-none relative flex w-full min-w-0 justify-end ${leaving ? "ave-anim-fade-out" : "ave-anim-fade-in"}`
+            : `pointer-events-none absolute inset-x-0 bottom-full z-30 mb-2 flex items-start justify-end ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
           data-testid="status-bar-presence"
           data-leaving={leaving ? "true" : undefined}
           onAnimationEnd={onAnimationEnd}
@@ -166,7 +169,8 @@ export function StatusBar(props: StatusBarProps) {
           <NoticeToast
             key={visibleToast.id}
             toast={visibleToast}
-            className={toastPlacement === "below" ? "pointer-events-auto max-h-full overflow-y-auto" : "pointer-events-auto"}
+            className="pointer-events-auto"
+            variant={titlebar ? "titlebar" : "standard"}
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}
@@ -195,6 +199,7 @@ export function NoticeToast({
   onOpen,
   onSuppress,
   wrap = false,
+  variant = "standard",
   className,
 }: {
   toast: ToastItem;
@@ -206,7 +211,9 @@ export function NoticeToast({
   onOpen?: (toast: ToastItem) => void;
   onSuppress?: (toast: ToastItem) => void;
   className?: string;
+  variant?: "standard" | "titlebar";
 }) {
+  const titlebar = variant === "titlebar";
   const linkClass =
     "shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const openable = toast.notification !== undefined && typeof onOpen === "function";
@@ -217,17 +224,21 @@ export function NoticeToast({
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}
-      className={`${chatSurface()} ave-anim-fade-in flex min-w-0 w-full max-w-[min(100%,24rem)] items-start gap-2 px-3 py-2 text-body-sm text-input-bar-foreground${className ? ` ${className}` : ""}`}
+      style={titlebar ? { WebkitAppRegion: "no-drag" } as CSSProperties : undefined}
+      className={`${chatSurface()} ave-anim-fade-in flex min-w-0 w-full max-w-[min(100%,24rem)] text-input-bar-foreground ${titlebar ? "@container/notice h-(--chrome-control-height) items-center gap-0.5 px-1 text-dense" : "items-start gap-2 px-3 py-2 text-body-sm"}${className ? ` ${className}` : ""}`}
     >
-      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
+      <span className={`${titlebar ? "h-1.5 w-1.5" : "mt-1 h-2 w-2"} shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
       {wrap ? (
         <span className="min-w-0 flex-1 break-words text-left [overflow-wrap:anywhere]" data-testid="status-toast-message">{toast.message}</span>
       ) : (
         <MarqueeText text={toast.message} className="flex-1 text-left" data-testid="status-toast-message" />
       )}
       {openable ? (
-        <button type="button" onClick={() => onOpen?.(toast)} className={linkClass}>
-          {t("statusBar.toastDetailsAction")}
+        <button type="button" onClick={() => onOpen?.(toast)} className={`${linkClass}${titlebar ? " min-w-0 max-w-[40%]" : ""}`} aria-label={t("statusBar.toastDetailsAction")} title={t("statusBar.toastDetailsAction")}>
+          {titlebar ? <>
+            <ArrowUpRight className="h-3 w-3 @[12rem]/notice:hidden" aria-hidden="true" />
+            <span className="hidden truncate @[12rem]/notice:block">{t("statusBar.toastDetailsAction")}</span>
+          </> : t("statusBar.toastDetailsAction")}
         </button>
       ) : toast.action ? (
         <button
@@ -236,21 +247,26 @@ export function NoticeToast({
             toast.action?.run();
             onDismiss(toast);
           }}
-          className={linkClass}
+          className={`${linkClass}${titlebar ? " min-w-0 max-w-[40%]" : ""}`}
           data-testid="status-toast-action"
+          aria-label={toast.action.label}
+          title={toast.action.label}
         >
-          {toast.action.label}
+          {titlebar ? <>
+            <ArrowUpRight className="h-3 w-3 @[12rem]/notice:hidden" aria-hidden="true" />
+            <span className="hidden truncate @[12rem]/notice:block">{toast.action.label}</span>
+          </> : toast.action.label}
         </button>
       ) : null}
       {toast.suppressible && onSuppress ? (
-        <button type="button" onClick={() => onSuppress(toast)} className={linkClass} data-testid="status-toast-suppress">
-          {t("statusBar.toastSuppressAction")}
+        <button type="button" onClick={() => onSuppress(toast)} className={linkClass} data-testid="status-toast-suppress" aria-label={t("statusBar.toastSuppressAction")} title={t("statusBar.toastSuppressAction")}>
+          {titlebar ? <EyeOff className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastSuppressAction")}
         </button>
       ) : null}
       <button
         type="button"
         onClick={() => onDismiss(toast)}
-        className="mt-[-0.125rem] inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className={`${titlebar ? "h-5 w-5" : "mt-[-0.125rem] h-6 w-6"} inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring`}
         aria-label={t("statusBar.toastDismissAriaLabel")}
         data-testid="status-toast-dismiss"
       >

@@ -31,6 +31,8 @@ function isDevMode(): boolean {
 }
 
 export interface MainToolbarProps {
+  /** Window notice in the free space between navigation and status controls. */
+  notice?: React.ReactNode;
   /** Current location path. Rendered on the band's leading edge, immediately after the sidebar-clearance reserve. */
   viewNav: ViewPathNavProps;
   streaming: boolean;
@@ -56,6 +58,7 @@ export interface MainToolbarProps {
 }
 
 export function MainToolbar({
+  notice,
   viewNav,
   streaming: _streaming,
   hasApiKey: _hasApiKey,
@@ -76,7 +79,7 @@ export function MainToolbar({
   return (
     <div
       data-testid="main-toolbar"
-      className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight) sm:gap-(--chrome-gap)"
+      className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight) sm:gap-(--chrome-gap) max-sm:[&_[data-toolbar-pill-label]]:hidden max-sm:[&_[data-toolbar-pill-trailing]]:hidden"
     >
       {/* ── Location path, on the band's LEADING edge. The band itself reserves
           the sidebar card's width (CustomTitleBar's `leadClearance`), so this
@@ -94,12 +97,14 @@ export function MainToolbar({
           onForward={viewNav.onForward}
         />
       </NoDrag>
-      <NoDrag className="flex min-w-0 max-w-[45%] shrink-0 items-center">
+      <NoDrag className="flex min-w-0 max-w-[45%] shrink items-center">
         <ViewPathBreadcrumb segments={viewNav.segments} onSelectSegment={viewNav.onSelectSegment} />
       </NoDrag>
 
       {/* ── Spacer pushes the trailing controls to the far-right edge (stays drag) */}
-      <div className="min-w-0 flex-1 sm:min-w-[64px]" aria-hidden="true" data-testid="main-toolbar-drag-band" />
+      <div className="flex min-w-0 flex-1 items-center justify-end overflow-hidden" data-testid="main-toolbar-drag-band">
+        {notice}
+      </div>
 
       <NoDrag className="empty:hidden">
         <ZoomIndicator />

@@ -1,5 +1,5 @@
 /** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode, type MouseEvent } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -33,7 +33,7 @@ export interface CustomTitleBarProps {
   children?: ReactNode;
   /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
   leadClearance?: number;
-  /** Keep a plain control band when it holds the only way to reopen navigation. */
+  /** Keep a plain control band for navigation and window notices in fullscreen. */
   keepVisibleInFullscreen?: boolean;
 }
 
@@ -68,7 +68,10 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
   const handleClose = useCallback(() => { void getWindowBridge().close(); }, []);
-  const handleDoubleClick = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
+  const handleDoubleClick = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (event.target instanceof Element && event.target.closest('[data-testid="status-toast"]')) return;
+    void getWindowBridge().toggleMaximize();
+  }, []);
 
   // Early returns (all AFTER hooks have been called):
   // - No preload bridge → non-Electron environment (jsdom / Storybook / SSR).
@@ -151,7 +154,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const controls = (
     <div
       data-testid="titlebar-controls"
-      className={`${leading ? "absolute top-0 left-0" : "ml-auto"} flex h-(--chrome-band-height) items-stretch`}
+      className={`${leading ? "absolute top-0 left-0" : "ml-auto"} flex h-(--chrome-band-height) shrink-0 items-stretch`}
       style={{
         // @ts-expect-error — Electron-specific CSS extension
         WebkitAppRegion: "no-drag",

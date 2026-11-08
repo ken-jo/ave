@@ -53,7 +53,6 @@ function WebPanelBody({
   guest,
   navigation,
   onNavigate,
-  contentNotice,
 }: {
   api: AveApi;
   surface: MainSurface;
@@ -61,7 +60,6 @@ function WebPanelBody({
   guest: GuestElement | null;
   navigation: GuestNavigation;
   onNavigate: (url: string) => void;
-  contentNotice?: ReactNode;
 }) {
   const { t } = useTranslation();
   const shownUrl = navigation.url ?? surface.url ?? "";
@@ -133,15 +131,12 @@ function WebPanelBody({
       {error ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="web-panel-address-error">{error}</div>
       ) : null}
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="web-panel-content">
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
           {...(surface.agentRequestId === undefined ? {} : { bindRequestId: surface.agentRequestId })} />
       ) : (
         <EmptyState align="center" className="min-h-0 flex-1" data-testid="web-panel-empty" title={t("mainPanels.webEmpty")} />
       )}
-      {contentNotice}
-      </div>
     </div>
   );
 }
@@ -324,7 +319,6 @@ export function SurfacePane({
   return (
     <PaneFrame
       {...frame}
-      contentNotice={surface.kind === "browser" ? null : frame.contentNotice}
       trailing={trailing}
       // Always published: the work panel closes with the same transition it opens with.
       asideSlot
@@ -360,7 +354,6 @@ export function SurfacePane({
             guest={guest}
             navigation={navigation}
             onNavigate={(url) => onNavigate(surface.tabId, url)}
-            contentNotice={frame.contentNotice}
           />
         )}
       </div>

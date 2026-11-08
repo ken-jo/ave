@@ -2026,9 +2026,10 @@ export function App() {
   );
 
   const windowNotice = (
-    <div className="pointer-events-none absolute inset-x-3 inset-y-2 z-30 overflow-hidden" data-testid="window-notice-overlay">
+    <div className="min-w-0 w-full" data-testid="window-notice-slot">
       <StatusBar
         persistent={[]}
+        toastPlacement="titlebar"
         visibleToast={statusVisibleToast}
         pendingCount={statusPendingCount}
         onToastClick={handleStatusToastClick}
@@ -2051,7 +2052,6 @@ export function App() {
     /** Routed views retain the conversation tile's focus, split and maximize controls; close returns to the conversation. */
     const asTile = {
       focused: chatGroups.focusedId === paneId,
-      contentNotice: chatGroups.focusedId === paneId ? windowNotice : null,
       onFocus: () => chatGroups.focus(paneId),
       lane: paneLane(paneId),
       // Routed frames retain the conversation's pending-answer cards in their settle slot.
@@ -2392,7 +2392,7 @@ export function App() {
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
-                keepVisibleInFullscreen={sidebarHidden || sidebarCollapsed}
+                keepVisibleInFullscreen
                 leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? RAIL_BAND_LEAD : COLLAPSED_RAIL_RESERVE + sidebarWidth + CONTENT_TITLE_INSET}
               >
                 {/* With the list folded, the button that unfolds it is the band's first control (case 21). */}
@@ -2428,6 +2428,7 @@ export function App() {
                   </Button>
                 )}
                 <MainToolbar
+                  notice={windowNotice}
                   viewNav={viewNav}
                   streaming={streaming}
                   hasApiKey={effectiveLlmReady}
@@ -2538,7 +2539,7 @@ export function App() {
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
-                  {/* Persistent banners reserve space; the focused pane owns the window notice's content anchor. */}
+                  {/* Persistent banners reserve space; transient window notices use the title bar slot. */}
                   <div
                     className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
@@ -2731,7 +2732,6 @@ export function App() {
                                     revealMessage={memoryMessageReveal}
                                     onMessageRevealHandled={handleMemoryMessageRevealHandled}
                                     env={chatGroupEnvironment}
-                                    contentNotice={!group.hidden && chatGroups.focusedId === group.id && paneView === "home" ? windowNotice : null}
                                     panelOpen={group.panelOpen}
                                     thumbnailOpen={group.thumbnailOpen}
                                     onThumbnailOpenChange={(open) => chatGroups.setThumbnailOpen(group.id, open)}
@@ -2821,7 +2821,7 @@ export function App() {
                       </SurfaceMovesContext.Provider>
                     </ErrorBoundary>
                   </div>
-                  {/* Conversation notices float above the composer; window notices stay in the reading area.
+                  {/* Conversation notices float above the composer; window notices use the title bar.
                       The composer's own status sub-row keeps showing
                       the ring / permission / model cells. The conversation's tool
                       activity is derived inside ChatView and shown by the right-docked

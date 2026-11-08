@@ -99,7 +99,7 @@
   - Elevation uses `--surface-hairline`, `--elevation-raised`, and `--elevation-floating` rather than raw `shadow-xl`/`shadow-2xl`.
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
-  - Transient notices use `z-30`, below request cards and docked auxiliary panels at `z-40`. Other floating overlays (dialog, popover, command picker, tooltip) share `z-50` and rely on portal/mount order within it.
+  - Conversation notices use `z-30`, below request cards and docked auxiliary panels at `z-40`. Other floating overlays (dialog, popover, command picker, tooltip) share `z-50` and rely on portal/mount order within it.
   - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
   - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:
@@ -115,8 +115,8 @@
     at the 12/14/16 icon steps, never a raw `animate-spin`. Under `prefers-reduced-motion` it
     stands still and the adjacent label or disabled control carries the busy state; pulses on
     skeletons and activity dots stop the same way (`motion-reduce:animate-none`).
-  - Transient notices float and fade on `--motion-fast` using opacity and transform only;
-    `ave-anim-notice-in/-out` keeps the toast mounted through its exit without changing layout.
+  - Notices fade on `--motion-fast` without changing layout: opacity only in the title bar,
+    opacity and transform above conversation docks. Each stays mounted through its exit.
 - Imagery/iconography:
   - Use lucide icons for actions and categories when available.
   - Icon sizes (de-facto standard): 14px (`h-3.5 w-3.5`) is the default in dense chrome and buttons; 12px (`h-3 w-3`) inline beside captions/metadata; 16px (`h-4 w-4`) in comfortable rows and dialogs. Larger sizes are reserved for identity marks (plugin/app icons), not actions.
@@ -563,8 +563,8 @@ determine whether a tile can split or a panel can dock.
       follows the queue head — errors in its `role="alert"` region, everything else in its
       `role="status"` region — and the visible notice itself is not live, so a remounted notice
       can never swallow the next announcement;
-    - transient notices float at `z-30`, below request cards, and never move the layout; persistent banners stay in flow;
-    - window notices float at the focused pane’s content top-right, below headers and tab strips, clipped to the reading area above the composer and beneath decision cards;
+    - transient notices never move the layout; conversation notices float at `z-30`, below request cards and clipped below their pane toolbar and above the composer; persistent banners stay in flow;
+    - window notices occupy the title bar’s free slot between the breadcrumb and status chips, clear of navigation and window controls; one line, capped at `24rem`, with opacity-only motion and only the notice opting out of dragging;
     - a request with its own card (approval or ask-user question) sends no in-app toast;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one

@@ -86,8 +86,8 @@ export function ToolbarStatusPill({
           data-testid={testId}
         >
           {busy ? <Loader size={12} icon={Icon} /> : <Icon className="h-3 w-3" />}
-          <span>{label}</span>
-          {trailing}
+          <span data-toolbar-pill-label="">{label}</span>
+          {trailing ? <span data-toolbar-pill-trailing="">{trailing}</span> : null}
         </Button>
       </TooltipTrigger>
       <TooltipContent>{title}</TooltipContent>

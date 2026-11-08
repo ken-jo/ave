@@ -77,11 +77,10 @@ describe("StatusBar", () => {
     const overlay = screen.getByTestId("status-bar-presence");
     expect(overlay.className).toContain("absolute");
     expect(overlay.className).toContain("z-30");
-    expect(overlay.className).toContain("inset-y-0");
+    expect(overlay.className).toContain("bottom-full");
     expect(overlay.className).toContain("pointer-events-none");
     expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
     expect(screen.getByTestId("status-toast").className).not.toContain("max-h-(--chrome-band-height)");
-    expect(screen.getByTestId("status-toast").className).toContain("max-h-full");
     expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
 
     rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);
@@ -94,6 +93,40 @@ describe("StatusBar", () => {
   it("floats composer notices above their anchor", () => {
     render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} toastPlacement="above" />);
     expect(screen.getByTestId("status-bar-presence").className).toContain("bottom-full");
+  });
+
+  it("keeps title bar notices in their single-line slot with only opacity motion and interactive notice controls", () => {
+    const onOpen = vi.fn();
+    const onDismiss = vi.fn();
+    const notice = toast({ severity: "error", notification: { kind: "system", contextRef: {} } });
+    const { rerender } = render(<StatusBar persistent={[]} visibleToast={notice} toastPlacement="titlebar" pendingCount={2} onToastClick={onOpen} onToastDismiss={onDismiss} />);
+    const presence = screen.getByTestId("status-bar-presence");
+    expect(presence).toHaveClass("relative", "ave-anim-fade-in", "pointer-events-none");
+    expect(presence).not.toHaveClass("absolute", "ave-anim-notice-in");
+    const surface = screen.getByTestId("status-toast");
+    expect(surface).toHaveClass("h-(--chrome-control-height)", "items-center", "max-w-[min(100%,24rem)]");
+    expect((surface.style as unknown as Record<string, string>).WebkitAppRegion).toBe("no-drag");
+    expect((presence.style as unknown as Record<string, string>).WebkitAppRegion).toBeUndefined();
+    expect(screen.getByText("+2")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /자세히 알아보기|Learn more/ }));
+    expect(onOpen).toHaveBeenCalledWith(notice);
+    fireEvent.click(screen.getByTestId("status-toast-dismiss"));
+    expect(onDismiss).toHaveBeenCalledWith(notice);
+    const run = vi.fn();
+    const actionLabel = "Open the detailed explanation of this notice and the available recovery steps";
+    rerender(<StatusBar persistent={[]} toastPlacement="titlebar" visibleToast={toast({ action: { label: actionLabel, run } })} onToastDismiss={onDismiss} />);
+    const action = screen.getByRole("button", { name: actionLabel });
+    expect(action).toHaveClass("max-w-[40%]");
+    expect(action.querySelector("span")).toHaveClass("truncate");
+    expect(screen.getByTestId("status-toast-dismiss")).toBeVisible();
+    fireEvent.click(action);
+    expect(run).toHaveBeenCalledOnce();
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+    rerender(<StatusBar persistent={[]} visibleToast={null} toastPlacement="titlebar" onToastDismiss={onDismiss} />);
+    expect(presence).toHaveClass("ave-anim-fade-out");
+    expect(presence).not.toHaveClass("ave-anim-notice-out");
+    endAnimation(presence);
+    expect(screen.queryByTestId("status-toast")).toBeNull();
   });
 
   it("renders persistent items with label and value", () => {
