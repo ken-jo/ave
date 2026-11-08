@@ -207,9 +207,9 @@ the installed package.
     downgraded, relocated and noRow are completed releases, as are the
     legacy restored/alreadyOriginal. mismatch and missing already deleted
     the holder row, so a retry changes nothing; a mismatched object's ACE is
-    left as it was (a deny stays fail-closed) and the next boot's recovery
-    handles leftovers. reset() resolves with those counted per step in
-    `SandboxResetReport.windowsAclUnreleased` (no paths). srt-win not
+    left as it was (a deny stays fail-closed). Recovery cannot revisit
+    rows already dropped. reset() resolves with those counted per step in
+    `SandboxResetReport.windowsAclUnreleased` (in-process targets for host redaction). srt-win not
     running (undefined), a non-zero exit or any other status is a failure:
     reset() finishes the rest of the teardown, then rejects with
     `WindowsSandboxError` code `acl_release_failed`, naming only step and
@@ -1702,7 +1702,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e81355720485d0c1 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f8775045900 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1838,7 +1838,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -143,11 +258,49 @@ export interface ISandboxManager {
+@@ -143,11 +258,50 @@ export interface ISandboxManager {
      getMaskedFileStore(): MaskedFileStore;
      updateConfig(newConfig: SandboxRuntimeConfig): void;
      cleanupAfterCommand(): void;
@@ -1865,12 +1865,13 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
-+/** Ave patch (ACL release outcome): what reset() could not release and will not retry. Counts only; no paths. */
++/** Ave patch (ACL release outcome): what reset() could not release and will not retry. Raw targets for in-process host redaction; never log this report. */
 +export interface SandboxResetReport {
 +    windowsAclUnreleased: {
 +        step: 'grant revoke' | 'deny restore';
 +        status: 'mismatch' | 'missing';
 +        count: number;
++        targets: string[];
 +    }[];
 +}
 +/**
@@ -1891,7 +1892,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e8135572
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54..bf01699a7 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd999eaabd 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -3582,7 +3583,7 @@ index 810b0aa54..bf01699a7 100644
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3448,55 @@ async function reset() {
+@@ -2123,28 +3448,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -3593,6 +3594,8 @@ index 810b0aa54..bf01699a7 100644
 -        const log = (kind, e) => {
 -            if (!ok.has(e.status)) {
 -                logForDebugging(`[Sandbox Windows] ${kind}: '${e.path}' ${e.status} — ` +
+-                    `ACE may be left in place; resolve and run ` +
+-                    `\`srt-win acl recover\` to clear`, { level: 'warn' });
 +        // Ave patch (ACL release outcome): srt-win's AceRelease statuses
 +        // (vendor/srt-win-src/src/state_db.rs:1066-1097 at v0.0.80).
 +        // revoked, stillHeld, downgraded (another holder remains, ACE
@@ -3618,12 +3621,11 @@ index 810b0aa54..bf01699a7 100644
 +            for (const e of entries) {
 +                if (released.has(e.status))
 +                    continue;
-+                logForDebugging(`[Sandbox Windows] ${step}: '${e.path}' ${e.status} — ` +
-                     `ACE may be left in place; resolve and run ` +
-                     `\`srt-win acl recover\` to clear`, { level: 'warn' });
 +                if (stale.has(e.status)) {
 +                    const key = `${step}\n${e.status}`;
-+                    aclReleaseStale.set(key, (aclReleaseStale.get(key) ?? 0) + 1);
++                    const targets = aclReleaseStale.get(key) ?? [];
++                    targets.push(e.path);
++                    aclReleaseStale.set(key, targets);
 +                }
 +                else {
 +                    aclReleaseFailures.push(`${step} ${e.status}`);
@@ -3655,7 +3657,7 @@ index 810b0aa54..bf01699a7 100644
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3574,8 @@ async function reset() {
+@@ -2222,6 +3573,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -3664,7 +3666,7 @@ index 810b0aa54..bf01699a7 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3583,36 @@ async function reset() {
+@@ -2229,7 +3582,36 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -3693,15 +3695,15 @@ index 810b0aa54..bf01699a7 100644
 +        throw new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`);
 +    }
 +    return {
-+        windowsAclUnreleased: [...aclReleaseStale].map(([key, count]) => {
++        windowsAclUnreleased: [...aclReleaseStale].map(([key, targets]) => {
 +            const [step, status] = key.split('\n');
-+            return { step, status, count };
++            return { step, status, count: targets.length, targets };
 +        }),
 +    };
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2336,6 +3719,12 @@ export const SandboxManager = {
+@@ -2336,6 +3718,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

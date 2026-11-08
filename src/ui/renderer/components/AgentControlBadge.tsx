@@ -29,12 +29,12 @@ export function AgentControlBadge({ mode, onPause, onResume }: {
   };
   return (
     <div
-      className="flex min-w-0 flex-1 items-center gap-1 text-[11px]"
+      className="flex min-w-0 flex-1 items-center gap-1 text-dense"
       role="status"
       data-testid="agent-browser-control-badge"
       title={t(paused ? "agentBrowser.pausedHint" : "agentBrowser.controllingHint")}
     >
-      <Bot className="h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
+      <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate font-medium">{t(paused ? "agentBrowser.paused" : "agentBrowser.controlling")}</span>
       {failed && <span role="alert" title={t("agentBrowser.controlFailed")}
         className="min-w-0 truncate text-destructive">{t("agentBrowser.controlFailed")}</span>}
@@ -42,7 +42,7 @@ export function AgentControlBadge({ mode, onPause, onResume }: {
         type="button"
         size="sm"
         variant="outline"
-        className="h-6 gap-1 px-2 text-[11px]"
+        className="h-6 gap-1 px-2 text-dense"
         onClick={() => { void change(); }}
         disabled={pending}
         aria-label={t(paused ? "agentBrowser.resumeLabel" : "agentBrowser.stopLabel")}

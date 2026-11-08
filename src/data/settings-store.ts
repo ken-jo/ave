@@ -77,7 +77,9 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
+  applyShortcutBindingsPatch,
   normalizeShortcuts,
+  shortcutPlatformOf,
   type ShortcutSettings,
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
@@ -86,6 +88,7 @@ import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
+import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode, type AccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import {
   marketplaceProviderPresetSecretInvalidationIds,
   mergeLlmPatch,
@@ -565,8 +568,12 @@ export interface WebViewSettings {
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
 
 export interface SystemSettings {
-  /** Use the default OS sound for background turn-completion notifications. Default true. */
-  turnCompletionSoundEnabled?: boolean;
+  /** Accessibility signal modes (`../shared/accessibility-signals.js`): a short sound when an agent turn completes, when a
+   * decision card waits for the user, and when a turn fails. The renderer plays them; turn-end OS notifications stay silent so
+   * a background completion never sounds twice. Defaults "unfocused", "unfocused", "off". */
+  signalTurnFinished?: AccessibilitySignalMode;
+  signalApprovalNeeded?: AccessibilitySignalMode;
+  signalTurnFailed?: AccessibilitySignalMode;
   closeBehavior: SystemCloseBehavior;
   /** Launch Ave automatically at OS login. Applied via `app.setLoginItemSettings({ openAtLogin })` (see
    * `src/main/startup-launch.ts`). Default `false`. No-op in dev (unpackaged) builds; the login item would point at the Electron dev binary. */
@@ -951,6 +958,10 @@ export class SettingsService {
     if (partial.permissions !== undefined && (!partial.permissions || typeof partial.permissions !== "object" || Array.isArray(partial.permissions) || Object.keys(partial.permissions).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes(partial.permissions.ownerAwayAutoSkipMinutes))) {
       throw new OwnerAwayAutoSkipSettingsError();
     }
+    // Validated before anything is applied, so a refused rebind leaves the whole patch unapplied.
+    const nextShortcutBindings = partial.shortcuts?.bindings === undefined
+      ? undefined
+      : applyShortcutBindingsPatch(this.settings.shortcuts, partial.shortcuts.bindings, shortcutPlatformOf(process.platform));
     const previousSettings = this.getAll();
     const nextMarketplace = partial.marketplace
       ? normalizeMarketplace({
@@ -1139,7 +1150,9 @@ export class SettingsService {
           log.warn("system.corpCaCommonName patch ignored (not a usable certificate name)");
         }
       }
-      acceptField(next, "turnCompletionSoundEnabled", partial.system.turnCompletionSoundEnabled, isBooleanValue, "system", PATCHED_FIELD);
+      for (const key of Object.values(ACCESSIBILITY_SIGNAL_SETTING_KEYS)) {
+        acceptField(next, key, partial.system[key], isAccessibilitySignalMode, "system", PATCHED_FIELD);
+      }
       // Launch-at-startup + launch-minimized booleans (same validate-at- boundary pattern as localApiServer: invalid → keep prior value).
       const rawLaunchAtStartup = partial.system.launchAtStartup;
       acceptField(next, "launchAtStartup", rawLaunchAtStartup, isBooleanValue, "system", PATCHED_FIELD);
@@ -1230,6 +1243,7 @@ export class SettingsService {
       }
       const rawEnabled = partial.shortcuts.enabled;
       acceptField(nextShortcuts, "enabled", rawEnabled, isBooleanValue, "shortcuts", PATCHED_FIELD);
+      if (nextShortcutBindings !== undefined) nextShortcuts.bindings = nextShortcutBindings;
       this.settings.shortcuts = nextShortcuts;
     }
     if (partial.pluginConfigs) {
@@ -1247,7 +1261,7 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    for (const key of ["permissions", "appearance"] as const) {
+    for (const key of ["permissions", "appearance", "shortcuts"] as const) {
       if (!partial[key]) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
@@ -1719,7 +1733,9 @@ export class SettingsService {
         documents: normalizeDocuments(parsed.documents),
         workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
-        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
+        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts, shortcutPlatformOf(process.platform), (dropped) => {
+          log.warn(`shortcuts.bindings: dropped ${dropped.length} stored rebind(s) this build refuses: ${JSON.stringify(dropped)}`);
+        }),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
         alerts: normalizeAlertSettings(parsed.alerts, appVersion),

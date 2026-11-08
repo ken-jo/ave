@@ -81,15 +81,15 @@ export function InlineSlashMenu({
               {item.label}
             </span>
             {item.hint && (
-              <span className="ml-auto truncate text-[11px] text-muted-foreground">{item.hint}</span>
+              <span className="ml-auto truncate text-dense text-muted-foreground">{item.hint}</span>
             )}
-            <span className="ml-1 shrink-0 text-[10px] uppercase text-muted-foreground/(--opacity-strong)">
+            <span className="ml-1 shrink-0 text-tiny uppercase text-muted-foreground/(--opacity-strong)">
               {catLabel(item.category)}
             </span>
           </div>
         );
       })}
-      <div className="px-2 pb-1 pt-1.5 text-[10px] text-muted-foreground">
+      <div className="px-2 pb-1 pt-1.5 text-tiny text-muted-foreground">
         {t("slashPicker.inlineHint")}
       </div>
     </div>,

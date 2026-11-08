@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Loader } from "../../../components/ui/loader.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 
 /** Lifecycle subjects share one pill shape and height; tones come from semantic theme tokens. */
@@ -77,14 +78,14 @@ export function ToolbarStatusPill({
         <Button
           variant="ghost"
           size="sm"
-          className={`h-(--chrome-control-height) gap-1 border px-2 text-[11px] font-medium aria-disabled:opacity-60 ${TONE_CLASS[tone]} ${TONE_INERT_CLASS[tone]}${busy ? " cursor-progress" : ""}`}
+          className={`h-(--chrome-control-height) gap-1 border px-2 text-dense font-medium aria-disabled:opacity-60 ${TONE_CLASS[tone]} ${TONE_INERT_CLASS[tone]}${busy ? " cursor-progress" : ""}`}
           onClick={disabled ? undefined : onClick}
           aria-disabled={disabled}
           title={title}
           aria-label={ariaLabel}
           data-testid={testId}
         >
-          <Icon className={busy ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
+          {busy ? <Loader size={12} icon={Icon} /> : <Icon className="h-3 w-3" />}
           <span>{label}</span>
           {trailing}
         </Button>

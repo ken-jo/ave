@@ -252,10 +252,10 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["subscription-runtimes"], kind: "dir", why: "subscription credentials, executable grants, and host-owned runtime state" },
   { anchor: "ave-home", segments: ["keys"], kind: "dir", why: "signing / encryption keys" },
   { anchor: "ave-home", segments: ["config"], kind: "dir", why: "permission settings, user policy, and legacy secrets" },
-  { anchor: "ave-home", segments: ["ave-secrets.json"], kind: "file", rotations: true, why: "legacy consolidated secrets file, and the copies a configuration commit moves aside" },
-  { anchor: "ave-home", segments: ["settings.json"], kind: "file", rotations: true, why: "app settings + permission configuration, and the copies a configuration commit moves aside" },
-  { anchor: "ave-home", segments: ["permissions.json"], kind: "file", rotations: true, why: "legacy/current permission settings file, and the copies a configuration commit moves aside" },
-  { anchor: "ave-home", segments: ["policy.json"], kind: "file", rotations: true, why: "policy SOT, and the copies a configuration commit moves aside" },
+  { anchor: "ave-home", segments: ["ave-secrets.json"], kind: "file", rotations: true, why: "legacy consolidated secrets file, and fresh copies preserved by configuration cleanup" },
+  { anchor: "ave-home", segments: ["settings.json"], kind: "file", rotations: true, why: "app settings + permission configuration, and fresh copies preserved by configuration cleanup" },
+  { anchor: "ave-home", segments: ["permissions.json"], kind: "file", rotations: true, why: "permission settings and protected backup names; staged replacement deletes the previous file" },
+  { anchor: "ave-home", segments: ["policy.json"], kind: "file", rotations: true, why: "policy SOT, and fresh copies preserved by configuration cleanup" },
   {
     anchor: "ave-home",
     segments: ["permissions"],
@@ -268,7 +268,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     segments: ["audit.log"],
     kind: "file",
     rotations: true,
-    why: "audit log + rotated archives",
+    why: "audit log and compressed archives created as new files before the original is deleted",
   },
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", access: "read-only", why: "saved conversation integrity" },
   { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
@@ -284,7 +284,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   // `config/.ave-trust-manifest.json` is covered by the `config` row. `runtime` has no row: see the runtime note in
   // ave-home-configuration.test.ts (a deny there would land on the boundary's own Windows DACL).
   // Files, not the `mcp` directory: each server's own sandbox data lives under `mcp/<id>/sandbox` and stays writable to it.
-  { anchor: "ave-home", segments: ["mcp", "servers.json"], kind: "file", rotations: true, why: "MCP server definitions and their environment, and the .bak copy (home content trust input)" },
+  { anchor: "ave-home", segments: ["mcp", "servers.json"], kind: "file", rotations: true, why: "MCP server definitions, environment, and protected backup names; staged replacement deletes the previous file (home content trust input)" },
   { anchor: "ave-home", segments: ["governance", "mcp-policy.json"], kind: "file", why: "MCP governance policy (home content trust input)" },
   { anchor: "ave-home", segments: ["marketplaces"], kind: "dir", why: "marketplace sources, pins and snapshots (home content trust input)" },
   { anchor: "ave-home", segments: ["plugins", "registry.json"], kind: "file", why: "installed extension registry (home content trust input)" },

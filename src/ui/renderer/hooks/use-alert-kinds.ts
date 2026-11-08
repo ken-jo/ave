@@ -6,7 +6,6 @@ import type { AveApi } from "../types.js";
 export function useAlertKinds(api: AveApi | null | undefined) {
   const [rows, setRows] = useState<AlertKindRow[]>([]);
   const [osEnabled, setOsEnabled] = useState(false);
-  const [turnCompletionSoundEnabled, setTurnCompletionSoundEnabled] = useState(true);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const generation = useRef(0);
@@ -19,7 +18,6 @@ export function useAlertKinds(api: AveApi | null | undefined) {
       if (!Array.isArray(kinds)) throw new Error("Invalid alert kinds response");
       setRows(kinds);
       setOsEnabled(settings.alerts.osNotificationsEnabled);
-      setTurnCompletionSoundEnabled(settings.system.turnCompletionSoundEnabled ?? true);
       setFailed(false);
       setLoaded(true);
     } catch {
@@ -31,5 +29,5 @@ export function useAlertKinds(api: AveApi | null | undefined) {
     void refresh();
     return () => { ++generation.current; unsubscribe?.(); };
   }, [api, refresh]);
-  return { rows, osEnabled, turnCompletionSoundEnabled, failed, loaded, refresh };
+  return { rows, osEnabled, failed, loaded, refresh };
 }

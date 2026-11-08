@@ -16,6 +16,7 @@ import {
   Store,
   Info,
   Rocket,
+  Keyboard,
   Network,
   ChevronLeft,
   ChevronRight,
@@ -24,7 +25,7 @@ import {
 import { cn } from "../../lib/utils.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { SETTINGS_NARROW_ENTER_WIDTH, SETTINGS_NARROW_EXIT_WIDTH } from "../../shared/shell-geometry.js";
-import { SavedToastFloating, SavedToastProvider } from "./context/SavedToastContext.js";
+import { SavedToastFloating, SavedToastProvider, useSavedNotice } from "./context/SavedToastContext.js";
 import type { AveApi } from "./types.js";
 import { RolesTab } from "./tabs/RolesTab.js";
 import { PermissionsTab } from "./tabs/PermissionsTab.js";
@@ -40,6 +41,7 @@ import { PluginConfigTab } from "./tabs/PluginConfigTab.js";
 import { GitMarketplaceTab } from "./tabs/git-marketplace/GitMarketplaceTab.js";
 import { AboutTab, useAppInfo } from "./tabs/AboutTab.js";
 import { StartupTab } from "./tabs/StartupTab.js";
+import { ShortcutsTab } from "./tabs/ShortcutsTab.js";
 import { useSettingsOrchestration } from "./hooks/use-settings-orchestration.js";
 import { useSettingsSectionArrival } from "./hooks/use-settings-tab.js";
 import { useDebouncedSave } from "./hooks/use-debounced-save.js";
@@ -73,6 +75,7 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
       { value: "chat", icon: MessageSquare, labelKey: SETTINGS_TAB_LABEL_KEYS["chat"] },
       { value: "web", icon: Globe, labelKey: SETTINGS_TAB_LABEL_KEYS["web"] },
       { value: "startup", icon: Rocket, labelKey: SETTINGS_TAB_LABEL_KEYS["startup"] },
+      { value: "shortcuts", icon: Keyboard, labelKey: SETTINGS_TAB_LABEL_KEYS.shortcuts },
     ],
   },
   {
@@ -184,9 +187,8 @@ export function SettingsContent({
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState(0);
 
-  // Count save notifications monotonically so two saves in one millisecond still retrigger the toast.
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const notifySaved = useCallback(() => setSavedAt((n) => (n ?? 0) + 1), []);
+  // Each save replaces the one "Saved" notice in its own queue, so a second save restarts its time.
+  const { notifySaved, visibleToast: savedToast, dismiss: dismissSavedToast } = useSavedNotice();
   const handleSaved = useCallback(() => {
     notifySaved();
     onSaved();
@@ -351,7 +353,7 @@ export function SettingsContent({
           right pane) so the user sees it even after scrolling deep into
           a tab. Top-center placement keeps it in the spot the eye lands
           immediately after clicking Save. */}
-      <SavedToastFloating at={savedAt} />
+      <SavedToastFloating toast={savedToast} onDismiss={dismissSavedToast} />
 
       {/* Nav column. Wide: fixed sidebar (w-48 + border-r) that scrolls
           independently and stays put while the right pane scrolls. Narrow: the
@@ -409,7 +411,7 @@ export function SettingsContent({
                 empty header string (the trailing About item) renders a thin
                 divider instead, separating it as a standalone footer entry. */}
             {group.group ? (
-              <div className="select-none px-3 pb-1 pt-3 font-mono text-[11px] font-medium uppercase tracking-wider text-muted-foreground first:pt-0">
+              <div className="select-none px-3 pb-1 pt-3 font-mono text-dense font-medium uppercase tracking-wider text-muted-foreground first:pt-0">
                 {t(group.group)}
               </div>
             ) : (
@@ -435,7 +437,7 @@ export function SettingsContent({
                   {isPermissions && pendingPermissions > 0 && (
                     <span
                       className={cn(
-                        "rounded-full bg-destructive px-1.5 py-0.5 text-[10px] leading-none text-destructive-foreground",
+                        "rounded-full bg-destructive px-1.5 py-0.5 text-tiny leading-none text-destructive-foreground",
                         !isNarrow && "ml-auto",
                       )}
                     >
@@ -458,7 +460,7 @@ export function SettingsContent({
           every release after the one it was typed in. */}
       <div className="shrink-0 border-t px-3 py-2.5">
         <span
-          className="text-[11px] tabular-nums text-muted-foreground/(--opacity-strong) select-none"
+          className="text-dense tabular-nums text-muted-foreground/(--opacity-strong) select-none"
           data-testid="settings-nav-app-version"
         >
           {appInfo ? `v${appInfo.version}` : null}
@@ -524,11 +526,11 @@ export function SettingsContent({
           >
             <div className="min-w-0">
               <p className="font-medium">{t("settingsContent.saveErrorMessage", { tab: s.lastSaveError.tab })}</p>
-              <p className="text-[11px] opacity-80">{s.lastSaveError.message}</p>
+              <p className="text-dense opacity-80">{s.lastSaveError.message}</p>
             </div>
             <button
               type="button"
-              className="text-[11px] underline opacity-80 hover:opacity-100"
+              className="text-dense underline opacity-80 hover:opacity-100"
               onClick={s.clearLastSaveError}
             >
               {t("settingsContent.closeButton")}
@@ -632,6 +634,7 @@ export function SettingsContent({
           </TabsContent>
 
           <TabsContent value="startup" className={tabContentCls}><StartupTab /></TabsContent>
+          <TabsContent value="shortcuts" className={tabContentCls}><ShortcutsTab /></TabsContent>
           <TabsContent value="permissions" className={tabContentCls}>
             <PermissionsTab
               exactDenyDraft={exactDenyDraft}

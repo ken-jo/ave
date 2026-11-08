@@ -106,7 +106,7 @@ export function SurfaceRow({
           aria-current={current ? "page" : undefined}
           title={label}
           data-testid={`sidebar-surface-${surface.tabId}`}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-body-sm focus-visible:outline-none"
         >
           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
             {surface.kind === "browser" && faviconUrl && faviconUrl !== failedFavicon
@@ -119,7 +119,7 @@ export function SurfaceRow({
       {status ? (
         <span
           className={[
-            "flex shrink-0 items-center gap-1 pr-1 text-[10px] group-hover:hidden group-focus-within:hidden",
+            "flex shrink-0 items-center gap-1 pr-1 text-tiny group-hover:hidden group-focus-within:hidden",
             status.tone === "attention" ? "text-warning" : "text-muted-foreground",
           ].join(" ")}
           data-testid={`sidebar-surface-status-${surface.tabId}`}

@@ -123,7 +123,9 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       localApiServer: s.localApiServer,
       launchAtStartup: s.launchAtStartup,
       launchMinimized: s.launchMinimized,
-      turnCompletionSoundEnabled: s.turnCompletionSoundEnabled,
+      signalTurnFinished: s.signalTurnFinished,
+      signalApprovalNeeded: s.signalApprovalNeeded,
+      signalTurnFailed: s.signalTurnFailed,
 
     };
   }

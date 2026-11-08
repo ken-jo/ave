@@ -128,11 +128,11 @@ function ActivitySection({
       <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <Icon className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-          <h3 className="truncate text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+          <h3 className="truncate text-dense font-semibold uppercase tracking-normal text-muted-foreground">
             {title}
           </h3>
         </div>
-        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-tiny font-medium tabular-nums text-muted-foreground">
           {visibleItems.length}
         </span>
       </div>
@@ -150,21 +150,21 @@ function ActivitySection({
               <span className="min-w-0 flex-1">
                 <span className="block truncate leading-4 text-foreground">{item.label}</span>
                 {!web && item.detail && (
-                  <span className="block truncate text-[10px] leading-4 text-muted-foreground">
+                  <span className="block truncate text-tiny leading-4 text-muted-foreground">
                     {item.detail}
                   </span>
                 )}
               </span>
               {item.operation && !incompleteToolStatusLabelKey(item.status) && (
                 <span
-                  className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${operationClass(item.operation)}`}
+                  className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-tiny ${operationClass(item.operation)}`}
                   data-testid="tool-activity-operation"
                 >
                   {t(`chatPreviewRail.fileOperation.${item.operation}`)}
                 </span>
               )}
               {label && (
-                <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${statusClass(item.status)}`}>
+                <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-tiny ${statusClass(item.status)}`}>
                   {label}
                 </span>
               )}
@@ -228,9 +228,9 @@ function DashboardStat({
     <div className="min-w-0 bg-card px-1.5 py-1">
       <div className="flex items-center justify-center gap-1">
         <Icon className="h-2.5 w-2.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="font-mono text-[10px] font-medium tabular-nums">{count}</span>
+        <span className="font-mono text-tiny font-medium tabular-nums">{count}</span>
       </div>
-      <span className="mt-0.5 block truncate text-center text-[8px] leading-3 text-muted-foreground">
+      <span className="mt-0.5 block truncate text-center text-tiny leading-3 text-muted-foreground">
         {label}
       </span>
     </div>
@@ -369,13 +369,13 @@ function ToolCallRow({ call }: { call: ToolCallActivityItem }) {
       <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block truncate font-mono leading-4 text-foreground">{call.name}</span>
-        <span className="block truncate text-[10px] leading-4 text-muted-foreground">{meta.join(" · ")}</span>
+        <span className="block truncate text-tiny leading-4 text-muted-foreground">{meta.join(" · ")}</span>
         {call.argument && (
-          <span className="block truncate text-[10px] leading-4 text-muted-foreground">{call.argument}</span>
+          <span className="block truncate text-tiny leading-4 text-muted-foreground">{call.argument}</span>
         )}
       </span>
       {label && (
-        <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] ${statusClass(call.status)}`}>
+        <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-tiny ${statusClass(call.status)}`}>
           {label}
         </span>
       )}
@@ -403,7 +403,7 @@ export function ToolActivityWorkspace({ activity }: { activity: ToolActivityStat
           />
         ) : (
           <section className="border-t border-border px-3 py-2.5">
-            <h3 className="mb-1 text-[11px] font-semibold uppercase text-muted-foreground">
+            <h3 className="mb-1 text-dense font-semibold uppercase text-muted-foreground">
               {t("toolActivity.pluginCallsTitle")}
             </h3>
             <p className="text-xs text-muted-foreground">{t("toolActivity.noPluginCalls")}</p>
@@ -414,11 +414,11 @@ export function ToolActivityWorkspace({ activity }: { activity: ToolActivityStat
         <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <Wrench className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-            <h3 className="truncate text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+            <h3 className="truncate text-dense font-semibold uppercase tracking-normal text-muted-foreground">
               {t("toolActivity.toolCallsTitle")}
             </h3>
           </div>
-          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-tiny font-medium tabular-nums text-muted-foreground">
             {activity.toolCalls.length}
           </span>
         </div>

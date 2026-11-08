@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import React, { useCallback, useEffect, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -156,10 +157,10 @@ export function AuditTab() {
             </div>
             {top3.length > 0 && (
               <div className="space-y-1">
-                <p className="text-[11px] text-muted-foreground">{t("auditTab.statsTopTypes")}</p>
+                <p className="text-dense text-muted-foreground">{t("auditTab.statsTopTypes")}</p>
                 {top3.map(([typeName, count]) => (
                   <div key={typeName} className="flex items-center gap-2">
-                    <span className="w-20 truncate text-[11px] font-mono">{typeName}</span>
+                    <span className="w-20 truncate text-dense font-mono">{typeName}</span>
                     <div className="flex-1 rounded-full bg-muted h-2 overflow-hidden">
                       {/* Runtime fill ratio flows through the --progress CSS
                           variable so the bar geometry stays in classes. */}
@@ -168,7 +169,7 @@ export function AuditTab() {
                         style={{ "--progress": `${Math.round((count / maxCount) * 100)}%` } as React.CSSProperties}
                       />
                     </div>
-                    <span className="w-8 text-right text-[11px] tabular-nums">{count}</span>
+                    <span className="w-8 text-right text-dense tabular-nums">{count}</span>
                   </div>
                 ))}
               </div>
@@ -180,7 +181,7 @@ export function AuditTab() {
         <SettingsSection data-settings-section="audit-filter" title={t("auditTab.filterTitle")}>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
+              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
               <Input
                 type="date"
                 className="h-8 text-xs"
@@ -190,7 +191,7 @@ export function AuditTab() {
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
+              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
               <Input
                 type="date"
                 className="h-8 text-xs"
@@ -235,7 +236,7 @@ export function AuditTab() {
           title={result.total > 0 ? t("auditTab.resultsWithCount", { count: result.total.toLocaleString() }) : t("auditTab.resultsTitle")}
           actions={
             totalPages > 1 ? (
-              <div className="flex items-center gap-1 text-[11px]">
+              <div className="flex items-center gap-1 text-dense">
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
                   disabled={page === 0}
@@ -262,7 +263,7 @@ export function AuditTab() {
           )}
 
           {!loading && result.entries.length === 0 && !error && (
-            <p className="py-4 text-center text-xs text-muted-foreground italic">{t("auditTab.emptyState")}</p>
+            <EmptyState align="center" className="px-0 py-4" title={t("auditTab.emptyState")} />
           )}
 
           {result.entries.length > 0 && (
@@ -295,13 +296,13 @@ export function AuditTab() {
                           onClick={() => setExpandedIdx(isExpanded ? null : i)}
                         >
                           <td
-                            className="px-3 py-1.5 font-mono text-[10px] text-muted-foreground whitespace-nowrap"
+                            className="px-3 py-1.5 font-mono text-tiny text-muted-foreground whitespace-nowrap"
                             data-testid="audit-row-time"
                           >
                             {ts === undefined ? "—" : formatMediumDateTime(ts)}
                           </td>
                           <td className="px-3 py-1.5">
-                            <Badge className={`text-[10px] ${badgeClass}`}>{rowType}</Badge>
+                            <Badge className={`text-tiny ${badgeClass}`}>{rowType}</Badge>
                           </td>
                           <td className="px-3 py-1.5 text-muted-foreground font-mono">
                             {routeOrTool ?? "—"}
@@ -313,7 +314,7 @@ export function AuditTab() {
                         {isExpanded && (
                           <tr className="border-b last:border-0 bg-muted/(--opacity-muted)">
                             <td colSpan={4} className="px-3 py-2">
-                              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-[10px]">
+                              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-tiny">
                                 {JSON.stringify(entry, null, 2)}
                               </pre>
                             </td>

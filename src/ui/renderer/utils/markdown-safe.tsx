@@ -36,7 +36,7 @@ function BlockedImage({ alt, src }: { alt?: string | undefined; src?: string | u
     <span
       data-testid="markdown-blocked-image"
       title={src ? `Blocked remote image: ${src}` : "Blocked remote image"}
-      className="inline-flex items-center gap-1 rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 align-middle font-mono text-[11px] text-muted-foreground"
+      className="inline-flex items-center gap-1 rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 align-middle font-mono text-dense text-muted-foreground"
     >
       🚫 {label}
       {host ? ` · ${host}` : ""}

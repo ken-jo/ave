@@ -1,7 +1,7 @@
 import { SidebarPreviewProvider, SidebarPreviewTrigger, type SidebarPreviewData } from "./SidebarPreview.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
-import { PendingAnswerDot } from "./PendingAnswerDot.js";
+import { AgentStatusGlyph } from "./AgentStatusGlyph.js";
 import {
   Blocks,
   ChevronDown,
@@ -49,6 +49,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens — one map, so a row and the header it
 // produces cannot disagree.
@@ -337,7 +338,7 @@ function NavItem({
       data-viewkey={dataViewKey}
       data-tour-anchor={tourAnchor}
       className={[
-        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         isActive
           ? `${toneStyle.active} font-medium`
@@ -430,14 +431,19 @@ function NavGroup({ group, label, icon, containsActive, attention = false, colla
       {containsActive && (
         <span className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-full ${toneStyle.bar}`} />
       )}
-      <span className="h-4 w-4 flex items-center justify-center">{icon}</span>
-      {attention ? <PendingAnswerDot testId={`sidebar-group-${group}-pending-answer`} /> : null}
+      <AgentStatusGlyph
+        size="md"
+        mark={icon}
+        working={false}
+        badge={attention ? "waiting" : null}
+        badgeTestId={`sidebar-group-${group}-pending-answer`}
+      />
     </button>
   ) : (
     <button
       {...triggerProps}
       className={[
-        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         containsActive ? `${toneStyle.active} font-medium` : `text-muted-foreground ${toneStyle.hover}`,
       ].join(" ")}
@@ -445,9 +451,14 @@ function NavGroup({ group, label, icon, containsActive, attention = false, colla
       {containsActive && (
         <span className={`absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full ${toneStyle.bar}`} />
       )}
-      <span className="shrink-0 h-4 w-4 flex items-center justify-center">{icon}</span>
+      <AgentStatusGlyph
+        size="md"
+        mark={icon}
+        working={false}
+        badge={attention ? "waiting" : null}
+        badgeTestId={`sidebar-group-${group}-pending-answer`}
+      />
       <span className="min-w-0 truncate flex-1 text-left">{label}</span>
-      {attention ? <PendingAnswerDot inline testId={`sidebar-group-${group}-pending-answer`} /> : null}
       <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 opacity-60" />
     </button>
   );
@@ -551,7 +562,7 @@ function FailedPluginNavItem({
   });
   const trailingSlot = (
     <span
-      className="rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-destructive"
+      className="rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-destructive"
       aria-label={t("sidebar.pluginDoctorRequiredAriaLabel")}
     >
       {t("sidebar.pluginDoctorBadge")}
@@ -613,7 +624,7 @@ function InactivePluginNavItem({
   });
   const trailingSlot = (
     <span
-      className="rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
+      className="rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground"
       aria-label={t("sidebar.pluginInactiveAriaLabel")}
     >
       {t("sidebar.pluginInactiveBadge")}
@@ -780,6 +791,7 @@ export function Sidebar({
   suggestionsPendingCount = 0,
 }: SidebarProps) {
   const { t } = useTranslation();
+  const searchHint = useShortcutHint("app.search") ?? "";
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
   const allProjects = projectSelection?.kind === "all";
@@ -1141,7 +1153,7 @@ export function Sidebar({
       footer={(
         <>
           <RailButton
-            label={t("mainToolbar.unifiedSearch")}
+            label={t("mainToolbar.unifiedSearch", { shortcut: searchHint })}
             icon={<Search className="h-4 w-4" />}
             onClick={onOpenUnifiedSearch}
             data-testid="sidebar-search"
@@ -1241,7 +1253,7 @@ export function Sidebar({
               <ProjectMark project={selectedProject} name={shownName} />
               <span className="min-w-0 truncate">{shownName}</span>
               {selectedProject?.isDefault ? (
-                <span className="shrink-0 rounded border border-border px-1 text-[10px] font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
+                <span className="shrink-0 rounded border border-border px-1 text-tiny font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
               ) : null}
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
@@ -1273,14 +1285,14 @@ export function Sidebar({
             aria-keyshortcuts={darwin ? "Meta+0" : "Control+0"}
             data-testid="sidebar-project-home"
             className={[
-              "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+              "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
               activeView === "project-home" ? "bg-primary/(--opacity-subtle) font-medium text-primary" : "hover:bg-accent hover:text-accent-foreground",
             ].join(" ")}
           >
             <House className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate text-left">{t("sidebar.projectHomeRow", { name: shownName })}</span>
-            <kbd className="shrink-0 text-[11px] font-normal text-muted-foreground">{homeChord}</kbd>
+            <kbd className="shrink-0 text-dense font-normal text-muted-foreground">{homeChord}</kbd>
           </button>
         </div>
         <div className="mx-2 h-px shrink-0 bg-border" aria-hidden="true" />

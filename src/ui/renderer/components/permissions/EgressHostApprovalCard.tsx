@@ -117,10 +117,10 @@ function NetworkDecisionRow({
     <div className="min-w-0 space-y-1">
       <ApprovalDecisionBar model={model} state={state} disabled={disabled} onCommit={answer} compact={compact} stackWhenNarrow={compact} />
       {error ? (
-        <p className="text-[11px] text-destructive" role="alert" data-testid="egress-approval-save-error">{error}</p>
+        <p className="text-dense text-destructive" role="alert" data-testid="egress-approval-save-error">{error}</p>
       ) : null}
       {warning ? (
-        <p className="text-[11px] font-medium text-warning" role="note" data-testid="egress-approval-save-warning">{warning}</p>
+        <p className="text-dense font-medium text-warning" role="note" data-testid="egress-approval-save-warning">{warning}</p>
       ) : null}
     </div>
   );

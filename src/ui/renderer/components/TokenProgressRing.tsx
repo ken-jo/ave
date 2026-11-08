@@ -106,7 +106,7 @@ export function TokenProgressRing({
           strokeDasharray={circumference}
           strokeDashoffset={fillOffset}
           strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 300ms ease" }}
+          style={{ transition: "stroke-dashoffset var(--motion-layout) var(--motion-ease-standard)" }}
         />
       </svg>
     </button>
@@ -131,7 +131,7 @@ export function TokenProgressRing({
         className="min-w-[220px] p-3 text-xs tabular-nums"
         data-testid="token-progress-ring-detail"
       >
-        <div className="mb-1 text-[10px] uppercase tracking-wider opacity-60">
+        <div className="mb-1 text-tiny uppercase tracking-wider opacity-60">
           {t("tokenProgressRing.projectedInputHeading")}
         </div>
         <div className="space-y-0.5">

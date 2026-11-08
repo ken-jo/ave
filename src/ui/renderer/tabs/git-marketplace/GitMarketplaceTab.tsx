@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -84,7 +85,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{entry.displayName}</span>
-          <span className="line-clamp-2 text-[11px] text-muted-foreground">{entry.description || entry.key.name}</span>
+          <span className="line-clamp-2 text-dense text-muted-foreground">{entry.description || entry.key.name}</span>
         </span>
       </button>
       {entry.incompatibility && (
@@ -92,29 +93,29 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
       )}
       <div className="mt-auto flex flex-wrap items-center gap-1.5">
         {entry.sourceOrigin && (
-          <Badge variant={entry.sourceOrigin === "official" ? "default" : "outline"} className="h-5 max-w-[10rem] truncate px-1.5 text-[10px]" title={originLabel(t, entry.sourceOrigin)}>
+          <Badge variant={entry.sourceOrigin === "official" ? "default" : "outline"} className="h-5 max-w-[10rem] truncate px-1.5 text-tiny" title={originLabel(t, entry.sourceOrigin)}>
             {entry.sourceOrigin === "official" ? originLabel(t, "official") : entry.sourceLabel}
           </Badge>
         )}
         <SourceBadges badges={entry.sourceBadges} testId={`git-marketplace:card:${entry.key.sourceId ?? "unbound"}:${entry.key.name}:badge`} />
-        {!bound && entry.key.kind === "agent-plugin" && <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{t("pluginStudio.createdHere")}</Badge>}
-        <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, entry.key.kind)}</Badge>
+        {!bound && entry.key.kind === "agent-plugin" && <Badge variant="outline" className="h-5 px-1.5 text-tiny">{t("pluginStudio.createdHere")}</Badge>}
+        <Badge variant="secondary" className="h-5 px-1.5 text-tiny">{kindLabel(t, entry.key.kind)}</Badge>
         {entry.key.kind === "agent-plugin" && ["installed", "unbound", "update", "installed-elsewhere", "source-removed"].includes(entry.state.state)
-          && <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+          && <DropdownMenu><DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="h-6 px-2 text-dense"
             data-testid={`plugin-studio:export-installed:${entry.key.name}`}>{t("pluginStudio.exportInstalled")}</Button></DropdownMenuTrigger>
             <DropdownMenuContent><DropdownMenuItem onSelect={() => onExport(false)}>{t("pluginStudio.exportPortable")}</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => onExport(true)}>{t("pluginStudio.exportCompatible")}</DropdownMenuItem></DropdownMenuContent>
           </DropdownMenu>}
         {entry.required ? (
-          <span className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title={t("gitMarketplace.state.requiredHint")}>
+          <span className="ml-auto rounded px-1.5 py-0.5 text-tiny font-medium text-muted-foreground" title={t("gitMarketplace.state.requiredHint")}>
             {t("gitMarketplace.state.required")}
           </span>
         ) : bound ? (
-          <button type="button" onClick={onOpen} className={cn("ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium", stateTone(entry))} data-testid="git-marketplace:card:state">
+          <button type="button" onClick={onOpen} className={cn("ml-auto rounded px-1.5 py-0.5 text-tiny font-medium", stateTone(entry))} data-testid="git-marketplace:card:state">
             {stateLabel(t, entry.state)}
           </button>
         ) : (
-          <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-[11px]" onClick={onUninstallUnbound}>
+          <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-dense" onClick={onUninstallUnbound}>
             {t("gitMarketplace.uninstall.button")}
           </Button>
         )}
@@ -452,7 +453,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                   {notice.forYou.map((key) => (
                     <li key={`${key.sourceId}:${key.kind}:${key.name}`} className="flex items-center gap-2">
                       <span>{kindLabel(t, key.kind)} · <span className="font-mono">{key.name}</span></span>
-                      <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-[11px]" onClick={() => void uninstallFromNotice(key)} data-testid={`git-marketplace:boot-notice:uninstall:${key.kind}:${key.name}`}>
+                      <Button size="sm" variant="outline" className="ml-auto h-6 px-2 text-dense" onClick={() => void uninstallFromNotice(key)} data-testid={`git-marketplace:boot-notice:uninstall:${key.kind}:${key.name}`}>
                         {t("gitMarketplace.uninstall.button")}
                       </Button>
                     </li>
@@ -498,11 +499,11 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
                             {" · "}<span className="font-mono">{item.from} → {item.to}</span>
                             {item.state !== "applied" && <> · {updateStateLabel(t, item.state)}</>}
                           </span>
-                          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setExpandedNotice((current) => (current === id ? null : id))} data-testid="git-marketplace:boot-notice:what-changed">
+                          <Button size="sm" variant="ghost" className="h-6 px-2 text-dense" onClick={() => setExpandedNotice((current) => (current === id ? null : id))} data-testid="git-marketplace:boot-notice:what-changed">
                             {t("gitMarketplace.updates.whatChanged")}
                           </Button>
                           {item.state === "approval-pending" && (
-                            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => reviewApplied(item)} data-testid="git-marketplace:boot-notice:review">
+                            <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={() => reviewApplied(item)} data-testid="git-marketplace:boot-notice:review">
                               {t("gitMarketplace.updates.review")}
                             </Button>
                           )}
@@ -599,9 +600,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             {catalog === null ? (
               <p className="text-xs text-muted-foreground">{t("gitMarketplace.loading")}</p>
             ) : entries.length === 0 ? (
-              <p className="py-6 text-center text-xs text-muted-foreground" data-testid="git-marketplace:empty">
-                {sources.some((source) => source.status.state === "never-synced" || source.status.state === "syncing") ? t("gitMarketplace.emptySyncing") : t("gitMarketplace.empty")}
-              </p>
+              <EmptyState align="center" className="px-0 py-6" data-testid="git-marketplace:empty"
+                title={sources.some((source) => source.status.state === "never-synced" || source.status.state === "syncing") ? t("gitMarketplace.emptySyncing") : t("gitMarketplace.empty")} />
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-2" data-testid="git-marketplace:cards">
                 {entries.map((entry) => (

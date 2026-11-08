@@ -5,6 +5,7 @@ import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwner
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
@@ -32,7 +33,7 @@ import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -40,7 +41,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
@@ -594,7 +595,8 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
   return admitted;
 }
 
-function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted: object): Partial<FilesystemConfig> {
+function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted: object, configuredDenies: readonly FilesystemPathEntry[]): Partial<FilesystemConfig> {
+  assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, configuredDenies);
   if (process.platform !== "win32") return filesystem;
   const pinned = admittedWindowsPolicies.get(admitted);
   if (pinned === undefined) throw new Error("Filesystem policy was not admitted");
@@ -699,6 +701,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     protectedFloor: Object.freeze(protectedFloor),
     floorPierces: Object.freeze([...pierces]),
   });
+  assertSandboxWritePolicySize(policy.denyWrite, undefined, admitted.denyWrite);
   const assertStillValid = (): void => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
@@ -849,7 +852,7 @@ export function buildPerCommandSandboxCustomConfig(
       );
       onGitControlSnapshot?.(snapshot);
     }
-    return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants)) as FilesystemConfig };
+    return { filesystem: Object.freeze(finishFilesystemPolicy(fs, grants, grants.denyWrite)) as FilesystemConfig };
   });
 }
 
@@ -1922,7 +1925,7 @@ export function buildSandboxConfig(
 
   return {
     network,
-    filesystem: finishFilesystemPolicy(filesystem, trustedSettings) as FilesystemConfig,
+    filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? []) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
@@ -2100,6 +2103,7 @@ async function verifyAsrtRuntime(
       { commandId: invocation.token, denyUnixSockets: true },
     );
     wrapped = true;
+    if (process.platform === "darwin") assertMacSandboxWrapperSize(probe.argv);
     await executeAsrtRuntimeProbe(process.platform === "linux" ? hardenLinuxSandboxWrap(probe) : probe, abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error) || isAsrtMacRuntimeProbeError(error)) throw error;
@@ -2131,13 +2135,41 @@ function logWindowsAclRecovery({ deadBrokers, acesRevoked }: WindowsAclRecoveryR
 }
 
 // srt-win dropped these rows without releasing them (`mismatch`: the path now names another object, whose ACE is left as it was, so a deny stays
-// fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds; the next boot's ACL recovery handles leftovers.
-// Counts only, never paths. A test double's reset() may resolve with nothing.
+// fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds.
+// Match redactFsPath's <home> convention, with the more specific <ave-home> first.
+// Keys fold case/slashes and strip extended prefixes. Unknown roots use a process-private
+// HMAC key: correlation lasts this process, and logs cannot confirm guessed usernames.
+const windowsAclLogKey = randomBytes(32);
+function windowsAclTargetKey(target: string): string {
+  const canonical = (path: string): string => win32.normalize(stripExtendedPathPrefix(path)).replace(/[\\/]+$/, "").toLowerCase();
+  const path = canonical(target);
+  let homes: string[] = [];
+  try { homes = policyHomeAnchors(); } catch { /* Unknown homes use opaque keys. */ }
+  const roots: [string, string][] = [
+    [aveHome(), "<ave-home>"],
+    ...[...homes, process.env.HOME, process.env.USERPROFILE].filter((home): home is string => !!home)
+      .sort((a, b) => b.length - a.length).map(home => [home, "<home>"] as [string, string]),
+  ];
+  for (const [root, label] of roots) {
+    const base = canonical(root);
+    if (path === base || path.startsWith(`${base}\\`)) return label + path.slice(base.length);
+  }
+  return `<outside-home>:${createHmac("sha256", windowsAclLogKey).update(path).digest("hex").slice(0, 24)}`;
+}
+
+function windowsAclTargetLabel(target: string, status: string): string {
+  const key = windowsAclTargetKey(target);
+  const entry = SENSITIVE_PATH_ENTRIES.find(entry => entry.anchor === "ave-home" && entry.kind === "file"
+    && aveHomeReadBoundaryRoots().some(root => windowsAclTargetKey(join(root, ...entry.segments)) === key));
+  if (!entry) return key;
+  return `${key} (per-file floor${status === "mismatch" ? "; identity changed" : ""})`;
+}
+
 function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
   const unreleased = report?.windowsAclUnreleased ?? [];
   if (unreleased.length === 0) return;
-  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); next-boot ACL recovery handles leftovers",
-    unreleased.map(({ step, status, count }) => `${step} ${status} x${count}`).join(", "));
+  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); an explicit ACE may remain on earlier aside copies or targets of dropped rows",
+    unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(target => step === "deny restore" ? windowsAclTargetLabel(target, status) : windowsAclTargetKey(target)).join(",")}]`).join(", "));
 }
 
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
@@ -2957,7 +2989,7 @@ function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome
   for (const row of outcome) {
     if (WINDOWS_GRANT_STALE_STATUSES.has(row.status)) staleCounts.set(row.status, (staleCounts.get(row.status) ?? 0) + 1);
   }
-  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); next-boot ACL recovery handles leftovers",
+  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); recovery cannot revisit dropped rows",
     [...staleCounts].map(([status, count]) => `${status} x${count}`).join(", "));
   // A clean empty ledger means the holder was already removed or pruned. Dropped release paths require a non-zero exit.
   if (outcome.length === 0) return true;

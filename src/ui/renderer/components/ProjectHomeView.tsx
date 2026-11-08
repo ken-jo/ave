@@ -57,7 +57,7 @@ export function ProjectHomeView({ project, projects, projectName, surfaces, onOp
             ) : groups.map((group) => (
               <div key={group.project.projectRoot} className="min-w-0">
                 {project ? null : (
-                  <p className="mt-2 truncate text-[11px] font-medium text-muted-foreground first:mt-0">{projectName(group.project)}</p>
+                  <p className="mt-2 truncate text-dense font-medium text-muted-foreground first:mt-0">{projectName(group.project)}</p>
                 )}
                 <ul className="min-w-0">
                   {group.surfaces.map((surface) => (

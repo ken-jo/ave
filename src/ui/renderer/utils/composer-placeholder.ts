@@ -1,6 +1,7 @@
 import { t } from "../../../i18n/runtime.js";
 import { isDarwin } from "../api-client.js";
 import type { SuggestedRepliesSnapshot } from "../hooks/use-suggested-replies.js";
+import { shortcutHint } from "../hooks/use-shortcuts.js";
 
 export function hasActiveSuggestedReplies(suggestedReplies: SuggestedRepliesSnapshot): boolean {
   return !suggestedReplies.isDismissed && suggestedReplies.text !== null;
@@ -20,7 +21,7 @@ export function computeComposerPlaceholder(opts: {
   if (opts.suggestedReplies && hasActiveSuggestedReplies(opts.suggestedReplies)) {
     return "";
   }
-  if (opts.streaming) return t("composerPlaceholder.streamingHint");
+  if (opts.streaming) return t("composerPlaceholder.streamingHint", { shortcut: shortcutHint("composer.sendNow") ?? "" });
   // Choose the paste modifier by platform, not locale; substitute it into one translatable sentence.
   return t("composerPlaceholder.defaultHint", {
     pasteModifier: isDarwin() ? "⌘" : "Ctrl",

@@ -9,7 +9,7 @@ interface FileChangeBadgeProps {
 
 export function FileChangeBadge({ change, operationTitle }: FileChangeBadgeProps) {
   return <>
-    <span className="shrink-0 font-mono text-[11px]" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{change.countsKnown ? change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{change.countsKnown ? change.removed : "—"}</span></span>
-    <span title={operationTitle} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(change.operation))}>{fileChangeLetter(change.operation)}</span>
+    <span className="shrink-0 font-mono text-dense" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{change.countsKnown ? change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{change.countsKnown ? change.removed : "—"}</span></span>
+    <span title={operationTitle} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-tiny font-semibold", fileChangeBadgeClass(change.operation))}>{fileChangeLetter(change.operation)}</span>
   </>;
 }

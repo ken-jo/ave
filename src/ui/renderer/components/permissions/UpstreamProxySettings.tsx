@@ -125,7 +125,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
     <div className="mt-3 space-y-3 border-t pt-3" data-testid="upstream-proxy-settings">
       <div className="space-y-0.5">
         <p className="text-sm font-medium">{translate("upstreamProxySettings.title")}</p>
-        <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.description")}</p>
+        <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.description")}</p>
       </div>
       <RadioGroup
         value={mode}
@@ -144,7 +144,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
             />
             <Label htmlFor={`upstream-proxy-mode-${entry.mode}`} className="cursor-pointer flex-col items-start gap-0.5">
               <div className="text-sm">{translate(entry.label)}</div>
-              <div className="text-[11px] font-normal text-muted-foreground">{translate(entry.hint)}</div>
+              <div className="text-dense font-normal text-muted-foreground">{translate(entry.hint)}</div>
             </Label>
           </div>
         ))}
@@ -159,41 +159,41 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
           }}
         >
           <div className="space-y-1">
-            <Label htmlFor="upstream-proxy-url" className="text-[12px]">{translate("upstreamProxySettings.urlLabel")}</Label>
+            <Label htmlFor="upstream-proxy-url" className="text-body-sm">{translate("upstreamProxySettings.urlLabel")}</Label>
             <Input
               id="upstream-proxy-url"
               data-testid="upstream-proxy-url"
-              className="h-8 font-mono text-[12px]"
+              className="h-8 font-mono text-body-sm"
               value={manualUrl}
               autoComplete="off"
               spellCheck={false}
               placeholder={translate("upstreamProxySettings.urlPlaceholder")}
               onChange={(event) => setManualUrl(event.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.urlHint")}</p>
+            <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.urlHint")}</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="upstream-proxy-bypass" className="text-[12px]">{translate("upstreamProxySettings.bypassLabel")}</Label>
+            <Label htmlFor="upstream-proxy-bypass" className="text-body-sm">{translate("upstreamProxySettings.bypassLabel")}</Label>
             <Input
               id="upstream-proxy-bypass"
               data-testid="upstream-proxy-bypass"
-              className="h-8 font-mono text-[12px]"
+              className="h-8 font-mono text-body-sm"
               value={bypass}
               autoComplete="off"
               spellCheck={false}
               placeholder={translate("upstreamProxySettings.bypassPlaceholder")}
               onChange={(event) => setBypass(event.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.bypassHint")}</p>
+            <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.bypassHint")}</p>
           </div>
           {view?.hasCredentials ? (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground" data-testid="upstream-proxy-credentials">
+            <div className="flex flex-wrap items-center gap-2 text-dense text-muted-foreground" data-testid="upstream-proxy-credentials">
               <span>{translate("upstreamProxySettings.credentialsStored")}</span>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 px-2 text-[12px]"
+                className="h-7 px-2 text-body-sm"
                 disabled={busy}
                 data-testid="upstream-proxy-clear-credentials"
                 onClick={() => void save({ clearCredentials: true })}
@@ -202,7 +202,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
               </Button>
             </div>
           ) : null}
-          <Button type="submit" size="sm" className="h-7 px-3 text-[12px]" disabled={busy} data-testid="upstream-proxy-save">
+          <Button type="submit" size="sm" className="h-7 px-3 text-body-sm" disabled={busy} data-testid="upstream-proxy-save">
             {translate("upstreamProxySettings.save")}
           </Button>
         </form>
@@ -218,15 +218,15 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
         />
         <div className="min-w-0 space-y-0.5">
           <p className="text-sm">{translate("upstreamProxySettings.resolvesNamesLabel")}</p>
-          <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.resolvesNamesHint")}</p>
+          <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.resolvesNamesHint")}</p>
         </div>
       </div>
-      <p className="text-[11px] text-muted-foreground">{translate("upstreamProxySettings.authNote")}</p>
+      <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.authNote")}</p>
       {error !== null ? (
-        <p role="alert" className="text-[11px] text-destructive" data-testid="upstream-proxy-error">{error}</p>
+        <p role="alert" className="text-dense text-destructive" data-testid="upstream-proxy-error">{error}</p>
       ) : null}
       {notice !== null ? (
-        <p role="status" className="text-[11px] text-muted-foreground" data-testid="upstream-proxy-notice">{notice}</p>
+        <p role="status" className="text-dense text-muted-foreground" data-testid="upstream-proxy-notice">{notice}</p>
       ) : null}
       <EffectiveUpstream diagnostic={view?.diagnostic ?? null} />
     </div>
@@ -258,7 +258,7 @@ function sourceText(diagnostic: UpstreamProxyDiagnostic, translate: (key: string
 function EffectiveUpstream({ diagnostic }: { diagnostic: UpstreamProxyDiagnostic | null }): ReactElement {
   const { t: translate } = useTranslation();
   return (
-    <div className="space-y-0.5 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground" data-testid="upstream-proxy-effective">
+    <div className="space-y-0.5 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground" data-testid="upstream-proxy-effective">
       <p className="font-medium text-foreground">
         {translate("upstreamProxySettings.effectiveHeading", { url: diagnostic?.url ?? "https://example.com/" })}
       </p>

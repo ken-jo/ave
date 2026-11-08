@@ -27,11 +27,11 @@ export function ViewModeBanner({
       <div className="flex min-w-0 flex-col gap-0.5">
         <span
           data-testid="view-mode-banner-title"
-          className="text-[12px] font-semibold text-[hsl(var(--action-view))]"
+          className="text-body-sm font-semibold text-[hsl(var(--action-view))]"
         >
           {t("viewModeBanner.title", { compactNum: viewMode.compactNum })}
         </span>
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-tiny text-muted-foreground">
           {t("viewModeBanner.messageRange", { slicedRangeEnd: viewMode.slicedRangeEnd })}
         </span>
       </div>
@@ -39,7 +39,7 @@ export function ViewModeBanner({
         type="button"
         data-testid="view-mode-exit-btn"
         onClick={onExit}
-        className="shrink-0 rounded-md border border-[hsl(var(--action-view)/0.4)] bg-[hsl(var(--action-view)/0.12)] px-3 py-1.5 text-[11px] font-medium text-[hsl(var(--action-view))] transition-colors hover:bg-[hsl(var(--action-view)/0.2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--action-view)/0.5)]"
+        className="shrink-0 rounded-md border border-[hsl(var(--action-view)/0.4)] bg-[hsl(var(--action-view)/0.12)] px-3 py-1.5 text-dense font-medium text-[hsl(var(--action-view))] transition-colors hover:bg-[hsl(var(--action-view)/0.2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--action-view)/0.5)]"
         aria-label={t("viewModeBanner.exitAriaLabel")}
       >
         {t("viewModeBanner.exitButton")}

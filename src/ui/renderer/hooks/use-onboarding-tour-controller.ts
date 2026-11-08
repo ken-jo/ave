@@ -5,6 +5,7 @@ import { LLM_VENDORS } from "../../../shared/llm-vendor-defaults.js";
 import { hasSeenFirstBootTour } from "../onboarding/first-boot-tour-gate.js";
 import { FIRST_BOOT_SCENARIO_ID } from "../../../shared/first-boot-tour.js";
 import { BLOCKING_SURFACE_SELECTOR } from "../../../shared/test-ids.js";
+import { matchesShortcut } from "./use-shortcuts.js";
 
 type Api = ReturnType<typeof getApi>;
 
@@ -115,8 +116,7 @@ export function useOnboardingTourController(
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.key !== "?" && event.key !== "/") return;
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.isComposing) return;
+      if (event.isComposing || !matchesShortcut("app.startTour", event)) return;
       if (
         document.querySelector(
           BLOCKING_SURFACE_SELECTOR,

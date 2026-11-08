@@ -1257,7 +1257,7 @@ export class ApprovalGate {
       }
     }
 
-    // surface a system notification when an approval is about to block the user. Approval is the most user-visible gate; default to urgent so the OS toast plays sound even when window is backgrounded.
+    // surface a system notification when an approval is about to block the user. Approval is the most user-visible gate, so the OS toast is critical; its sound is the renderer's approval-needed accessibility signal.
     // The window showing this request's toast, which need not be one the request is sent to; every exit from here on, a throw included, tells it the request settled.
     let toastSurface: WebContents | null = null;
     try {

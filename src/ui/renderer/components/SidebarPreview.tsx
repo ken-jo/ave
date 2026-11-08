@@ -5,7 +5,7 @@ import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 
 export type SidebarPreviewData =
   | { kind: "browser"; title: string; url?: string; imageDataUrl?: string }
-  | { kind: "conversation"; title: string; message?: string; modifiedAt: string | number; running?: boolean }
+  | { kind: "conversation"; title: string; message?: string; modifiedAt: string | number; running?: boolean; waiting?: boolean }
   | { kind: "terminal"; title: string; command?: string };
 
 interface PreviewRequest {
@@ -191,7 +191,7 @@ export function SidebarPreviewCard({ id, preview }: { id: string; preview: Sideb
     const url = new URL(preview.url);
     domain = url?.protocol === "file:" ? t("sidebarPreview.localFile") : url?.hostname ?? "";
   }
-  return <div id={id} role="tooltip" data-testid="sidebar-preview" className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-xl text-[13px] motion-reduce:transition-none">
+  return <div id={id} role="tooltip" data-testid="sidebar-preview" className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground ave-surface-floating text-body-sm motion-reduce:transition-none">
     {preview.kind === "browser" && preview.imageDataUrl && <img className="h-[150px] w-full object-cover object-top border-b border-border" src={preview.imageDataUrl} alt="" />}
     {preview.kind === "terminal" && preview.command && <div className="truncate px-3 py-2 font-mono text-xs" style={{ background: "hsl(var(--p-code-dark-bg))", color: "hsl(var(--p-code-dark-fg))" }}>❯ {preview.command}</div>}
     <div className="flex flex-col gap-1 px-3 py-2.5">
@@ -201,7 +201,12 @@ export function SidebarPreviewCard({ id, preview }: { id: string; preview: Sideb
         {preview.message && <div className="line-clamp-2 break-words">{preview.message}</div>}
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{formatRelativeSessionTime(preview.modifiedAt, t)}</span>
-          {preview.running && <span className="rounded-full border border-border px-1.5 text-[11px]">{t("sidebarPreview.running")}</span>}
+          {preview.running && <span className="rounded-full border border-border px-1.5 text-dense">{t("sidebarPreview.running")}</span>}
+          {preview.waiting && (
+            <span className="rounded-full border border-warning/(--opacity-medium) px-1.5 text-dense text-warning" data-testid="sidebar-preview-waiting">
+              {t("pendingAnswerDot.label")}
+            </span>
+          )}
         </div>
       </>}
     </div>

@@ -21,7 +21,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
@@ -1227,26 +1227,30 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
   });
 
   it("refuses a helper-covering write grant even when the Git scan budget narrows it away", () => {
-    // The temp root the helper copy lives in is shared with sibling test files;
-    // once it holds more entries than the Git-control scan may visit, the write
-    // policy withdraws the root. The refusal must not depend on that.
+    // Scan only this file's private helper root. A sibling's linked marker in
+    // the shared parent must not preempt the budget and refusal assertions.
     const hostPlatform = process.platform;
     let filler: string | undefined;
+    let sibling: string | undefined;
     try {
       setProcessPlatform("win32");
       const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
-      const root = dirname(dirname(dirname(executable)));
+      const root = dirname(dirname(executable));
       filler = mkdtempSync(join(root, "scan-budget-"));
       for (let group = 0; group < 180; group += 1) {
         mkdirSync(join(filler, `g${group}`));
         for (let file = 0; file < 100; file += 1) writeFileSync(join(filler, `g${group}`, `f${file}`), "");
       }
+      sibling = mkdtempSync(join(dirname(dirname(dirname(executable))), "sibling-linked-marker-"));
+      mkdirSync(join(sibling, "metadata"));
+      symlinkSync(join(sibling, "metadata"), join(sibling, ".git"), "junction");
       expect(buildMandatorySandboxWritePolicy([root]).narrowedWriteRoots)
         .toEqual([{ root: realpathSync(root), reason: "entry-budget" }]);
       expect(() => buildSandboxConfig({ allowWrite: [root] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
     } finally {
       setProcessPlatform(hostPlatform);
+      if (sibling !== undefined) rmSync(sibling, { recursive: true, force: true });
       if (filler !== undefined) rmSync(filler, { recursive: true, force: true });
     }
   });

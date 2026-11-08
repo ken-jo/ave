@@ -90,7 +90,7 @@ export function ProjectCombobox({ ariaLabel, placeholder, sectionsFor, initialAc
         {options.length === 0 ? <p className="px-2 py-3 text-sm text-muted-foreground">{emptyText}</p> : null}
         {sections.map((section) => (
           <div key={section.key} role="group" aria-label={section.heading} className="border-b border-border py-1 last:border-b-0">
-            {section.heading ? <p className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{section.heading}</p> : null}
+            {section.heading ? <p className="px-2 pb-1 pt-1.5 text-dense font-medium text-muted-foreground">{section.heading}</p> : null}
             {section.options.map((option) => (
               <div
                 key={option.key}
@@ -107,13 +107,13 @@ export function ProjectCombobox({ ariaLabel, placeholder, sectionsFor, initialAc
               >
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center">{option.icon}</span>
                 <span className="min-w-0 flex-1 truncate" title={option.label}>{option.label}</span>
-                {option.detail ? <span className="shrink-0 text-[11px] text-muted-foreground">{option.detail}</span> : null}
+                {option.detail ? <span className="shrink-0 text-dense text-muted-foreground">{option.detail}</span> : null}
               </div>
             ))}
           </div>
         ))}
       </div>
-      <p className="mt-1 flex items-center gap-2 border-t border-border px-2 pt-1.5 text-[11px] text-muted-foreground" aria-hidden="true">
+      <p className="mt-1 flex items-center gap-2 border-t border-border px-2 pt-1.5 text-dense text-muted-foreground" aria-hidden="true">
         <kbd className="rounded border border-border px-1">↑↓</kbd>{t("sidebar.menuKeyMove")}
         <kbd className="rounded border border-border px-1">Enter</kbd>{t("sidebar.menuKeyOpen")}
         <kbd className="rounded border border-border px-1">Esc</kbd>{t("sidebar.menuKeyClose")}

@@ -1,9 +1,11 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
+import { EmptyState } from "../../../../components/ui/empty-state.js";
+import { Loader } from "../../../../components/ui/loader.js";
 import { RunMetrics } from "./RunMetrics.js";
 import type { RoutineRunMetrics } from "../../../../shared/routines-types.js";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
+import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/ui/popover.js";
@@ -107,7 +109,7 @@ function statusClass(status: EntryStatus): string {
 }
 
 function StatusIcon({ status }: { status: EntryStatus }) {
-  if (status === "running") return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />;
+  if (status === "running") return <Loader size={12} />;
   if (status === "paused") return <Pause className="h-3 w-3 shrink-0" aria-hidden="true" />;
   if (status === "failed" || status === "missed" || status === "orphaned") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
   return <Repeat2 className="h-3 w-3 shrink-0" aria-hidden="true" />;
@@ -358,7 +360,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         aria-label={chipLabel(entry)}
         style={style}
         onClick={(e) => e.stopPropagation()}
-        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-[11px] leading-tight ${statusClass(entry.status)} ${entry.routine.targetSessionId ? CONNECTED_BAR : ""} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
+        className={`flex min-w-0 overflow-hidden rounded border px-1.5 text-left text-dense leading-tight ${statusClass(entry.status)} ${entry.routine.targetSessionId ? CONNECTED_BAR : ""} ${twoLine ? "flex-col justify-center gap-0.5" : "items-center gap-1"} ${extraClass}`}
       >
         <span className="flex min-w-0 items-center gap-1">
           <StatusIcon status={entry.status} />
@@ -367,7 +369,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
           {(!twoLine || entry.metrics !== undefined) && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
         </span>
         {twoLine && entry.metrics === undefined && <span className="min-w-0 truncate font-semibold">{routineTitle(entry.routine)}</span>}
-        <RunMetrics metrics={entry.metrics} className="text-[10px] text-inherit" />
+        <RunMetrics metrics={entry.metrics} className="text-tiny text-inherit" />
       </button>
     ));
 
@@ -386,7 +388,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   const timeGrid = (days: readonly Date[]) => (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="grid border-b text-xs" style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(0, 1fr))` }}>
-        <div className="py-2 text-center text-[10px] text-muted-foreground">{gmtLabel(today)}</div>
+        <div className="py-2 text-center text-tiny text-muted-foreground">{gmtLabel(today)}</div>
         {days.map((d) => {
           const count = scheduledEntries.filter((e) => sameDay(new Date(e.atMs), d)).length;
           const isToday = sameDay(d, today);
@@ -402,7 +404,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         <div className="relative grid" style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(0, 1fr))`, height: 24 * PX_PER_HOUR }}>
           <div className="relative">
             {Array.from({ length: 24 }, (_, h) => (
-              <div key={h} className="absolute right-2 text-[10px] tabular-nums text-muted-foreground" style={{ top: h * PX_PER_HOUR - 6 }}>
+              <div key={h} className="absolute right-2 text-tiny tabular-nums text-muted-foreground" style={{ top: h * PX_PER_HOUR - 6 }}>
                 {h > 0 ? `${pad(h)}:00` : ""}
               </div>
             ))}
@@ -457,7 +459,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                     <PopoverTrigger asChild>
                       <button
                         type="button"
-                        className="absolute right-0.5 z-10 rounded border bg-background px-1 text-[10px] font-semibold shadow-sm"
+                        className="absolute right-0.5 z-10 rounded border bg-background px-1 text-tiny font-semibold shadow-sm"
                         style={{ top: o.top + CHIP_PX + 2 }}
                         onClick={(e) => e.stopPropagation()}
                         data-testid="schedule-more"
@@ -484,8 +486,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
         </div>
       </div>
       {shutdownRecords.length > 0 && (
-        <div className="grid border-t text-[11px]" style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(0, 1fr))` }} data-testid="schedule-shutdown-row">
-          <div className="py-1.5 text-center text-[10px] text-muted-foreground">{t("schedulePanel.onShutdownRow")}</div>
+        <div className="grid border-t text-dense" style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(0, 1fr))` }} data-testid="schedule-shutdown-row">
+          <div className="py-1.5 text-center text-tiny text-muted-foreground">{t("schedulePanel.onShutdownRow")}</div>
           {days.map((day) => {
             const ran = entries.filter((e) => e.routine.trigger === "shutdown" && sameDay(new Date(e.atMs), day));
             const pendingToday = sameDay(day, today)
@@ -519,8 +521,8 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                   <span className="flex min-w-0 items-center gap-1">
                     <span className="min-w-0 truncate font-semibold">{routineTitle(e.routine)}</span>
                     {e.routine.targetSessionId && (
-                      <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-info/(--opacity-subtle) px-1 text-[10px] font-medium text-info">
-                        <AlarmClock className="h-2.5 w-2.5" aria-hidden="true" />{t("schedulePanel.connectedBadge")}
+                      <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-info/(--opacity-subtle) px-1 text-tiny font-medium text-info">
+                        <AlarmClock className="h-3 w-3" aria-hidden="true" />{t("schedulePanel.connectedBadge")}
                       </span>
                     )}
                   </span>
@@ -541,7 +543,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
   };
 
   const monthGrid = (days: readonly Date[]) => (
-    <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-[auto_repeat(6,minmax(0,1fr))] overflow-hidden text-[11px]" data-testid="schedule-month">
+    <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-[auto_repeat(6,minmax(0,1fr))] overflow-hidden text-dense" data-testid="schedule-month">
       {days.slice(0, 7).map((d) => (
         <div key={`h${d.getDay()}`} className="border-b py-1.5 text-center text-xs text-muted-foreground">{weekdayLabel(d)}</div>
       ))}
@@ -644,11 +646,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
       {loaded && visibleCount === 0 && invalid.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center" data-testid="schedule-empty">
-          <div className="pointer-events-auto max-w-sm rounded-lg border bg-background p-5 text-center shadow-e3">
-            <div className="text-sm font-semibold">{t("schedulePanel.emptyTitle")}</div>
-            <p className="mt-1 text-xs text-muted-foreground">{t("schedulePanel.emptyHint")}</p>
-            <Button size="sm" className="mt-3" onClick={() => setCreate({})}><Plus className="mr-1 h-3.5 w-3.5" />{t("schedulePanel.add")}</Button>
-          </div>
+          <EmptyState align="center" className="pointer-events-auto max-w-sm rounded-lg border bg-background p-5 shadow-e3"
+            title={t("schedulePanel.emptyTitle")} description={t("schedulePanel.emptyHint")}
+            action={{ label: t("schedulePanel.add"), icon: <Plus className="h-3.5 w-3.5" aria-hidden="true" />, onClick: () => setCreate({}) }} />
         </div>
       )}
 

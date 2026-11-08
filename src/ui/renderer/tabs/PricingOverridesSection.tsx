@@ -1,5 +1,6 @@
 /** Reject malformed pricing rows before saving because normalization silently drops them. Overrides correct reported spend
  * and CSV export. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -131,12 +132,10 @@ export function PricingOverridesSection() {
       />
 
       {rows.length === 0 ? (
-        <p className="mt-3 text-xs text-muted-foreground" data-testid="llm-pricing-overrides-empty">
-          {t("llmTab.pricingOverridesEmpty")}
-        </p>
+        <EmptyState className="mt-3 p-0" data-testid="llm-pricing-overrides-empty" title={t("llmTab.pricingOverridesEmpty")} />
       ) : (
         <div className="mt-3 space-y-2" data-testid="llm-pricing-overrides-rows">
-          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,6rem)_minmax(0,6rem)_auto] gap-2 text-[11px] text-muted-foreground">
+          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,6rem)_minmax(0,6rem)_auto] gap-2 text-dense text-muted-foreground">
             <span>{t("llmTab.pricingOverridesColVendor")}</span>
             <span>{t("llmTab.pricingOverridesColModel")}</span>
             <span>{t("llmTab.pricingOverridesColInput")}</span>
@@ -220,7 +219,7 @@ export function PricingOverridesSection() {
           {t("common.save")}
         </Button>
         {incomplete && (
-          <Label className="text-[11px] text-warning" data-testid="llm-pricing-override-incomplete">
+          <Label className="text-dense text-warning" data-testid="llm-pricing-override-incomplete">
             {t("llmTab.pricingOverridesIncomplete")}
           </Label>
         )}

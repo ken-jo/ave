@@ -11,14 +11,14 @@ it("preserves sibling count and operation spans for known and unknown counts", (
   const operation = screen.getByTestId("chat-side-panel-file-change-operation");
   expect(Array.from(container.children)).toEqual([counts, operation]);
   expect(counts.tagName).toBe("SPAN");
-  expect(counts.className).toBe("shrink-0 font-mono text-[11px]");
+  expect(counts.className).toBe("shrink-0 font-mono text-dense");
   expect(counts).toHaveTextContent("+8 −2");
   expect(counts.children[0]).toHaveClass("text-(--file-change-add-fg)");
   expect(counts.children[1]).toHaveClass("text-(--file-change-delete-fg)");
   expect(operation.tagName).toBe("SPAN");
   expect(operation).toHaveTextContent("A");
   expect(operation).toHaveAttribute("title", "생성");
-  expect(operation.className).toBe("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold bg-(--file-change-add-bg) text-(--file-change-add-fg)");
+  expect(operation.className).toBe("flex size-4 shrink-0 items-center justify-center rounded text-tiny font-semibold bg-(--file-change-add-bg) text-(--file-change-add-fg)");
 
   rerender(<FileChangeBadge change={{ ...change, countsKnown: false, operation: "delete" }} operationTitle="Delete" />);
   expect(counts).toHaveTextContent("+— −—");

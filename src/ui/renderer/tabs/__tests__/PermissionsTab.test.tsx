@@ -163,32 +163,24 @@ afterEach(() => {
 });
 
 describe("PermissionsTab hook quarantine notice", () => {
-  it("cancels a pending banner on unmount without a later state update or error", async () => {
+  it("keeps an error banner until it is dismissed, and leaves nothing pending on unmount", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const expiry = vi.fn();
-    const schedule = globalThis.setTimeout;
-    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number, ...args: unknown[]) => {
-      if (delay === LONG_TOAST_TTL_MS) return schedule(() => { expiry(); callback(); }, delay);
-      return schedule(callback, delay, ...args);
-    }) as typeof setTimeout);
     try {
       const api = installApi([[]]);
       api.permission.setMode.mockResolvedValueOnce({ ok: false, mode: "default" });
       const view = await act(async () => render(<PermissionsTab />));
       await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-      expect(screen.getByText(t("permissionsTab.errorModeChangeFailed")).closest('[role="alert"]')).toBeTruthy();
-      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent(t("permissionsTab.errorModeChangeFailed"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS * 4); });
+      expect(screen.getByText(t("permissionsTab.errorModeChangeFailed"))).toBeTruthy();
 
       view.unmount();
       await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS + 1); });
-
-      expect(expiry).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
       expect(error).not.toHaveBeenCalled();
     } finally {
       cleanup();
-      timeout.mockRestore();
       error.mockRestore();
       vi.useRealTimers();
     }
@@ -238,7 +230,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(onExactDenySaved).toHaveBeenCalledWith("approval-exact-1");
     expect(onDiscardExactDeny).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.settingsPageTitle)).toHaveFocus());
-    expect(screen.getByRole("status")).toHaveTextContent("plugin:meeting_list_preps");
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("plugin:meeting_list_preps");
   });
 
   it("keeps an exact-deny draft focused and cancellable when unrelated Settings loading fails", async () => {
@@ -1038,7 +1030,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     const api = await togglePending("shell");
     api.relaunchApp.mockResolvedValue({ ok: false, error: "relaunch-in-progress" });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
-    expect(screen.getByRole("alert")).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
+    expect(screen.getAllByRole("alert").find((el) => !el.hasAttribute("data-notice-live"))).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
   });
 
   it("keeps a refused restart open with the localized reason", async () => {

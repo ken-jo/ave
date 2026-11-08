@@ -52,7 +52,7 @@ export function Calendar({
         ),
         month_grid: "w-full border-collapse",
         weekdays: "flex",
-        weekday: "w-8 rounded-md text-[11px] font-medium text-muted-foreground",
+        weekday: "w-8 rounded-md text-dense font-medium text-muted-foreground",
         week: "flex w-full mt-0.5",
         day: "relative h-8 w-8 p-0 text-center text-xs",
         day_button: cn(

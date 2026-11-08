@@ -12785,7 +12785,7 @@
     {
       "file": "src/ui/renderer/tabs/PluginAlertsSection.tsx",
       "category": "lint/a11y/noLabelWithoutControl",
-      "count": 3
+      "count": 2
     },
     {
       "file": "src/ui/renderer/tabs/PluginConfigTab.tsx",

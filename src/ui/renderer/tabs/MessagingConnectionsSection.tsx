@@ -83,20 +83,20 @@ function MessagingConnectionCatalog({ api, connection, rowId }: {
   const { docsUrl } = connection;
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-muted-foreground">{connection.summary}</p>
+      <p className="text-dense text-muted-foreground">{connection.summary}</p>
       <div className="space-y-1">
-        <p className="text-[11px] font-medium">
+        <p className="text-dense font-medium">
           {t("remoteSurfacesTab.messagingCredentialsLabel")}
         </p>
         <ul className="space-y-0.5">
           {connection.credentials.map((credential) => (
             <li
               key={credential.key}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+              className="flex items-center gap-1.5 text-dense text-muted-foreground"
             >
               <span>{credential.label}</span>
               {credential.secret && (
-                <Badge variant="outline" className="h-4 px-1 text-[9px]">
+                <Badge variant="outline" className="h-4 px-1 text-tiny">
                   {t("remoteSurfacesTab.messagingSecretBadge")}
                 </Badge>
               )}
@@ -106,7 +106,7 @@ function MessagingConnectionCatalog({ api, connection, rowId }: {
       </div>
       {connection.egress && connection.egress.length > 0 && (
         <p
-          className="text-[11px] text-muted-foreground"
+          className="text-dense text-muted-foreground"
           data-testid={`${rowId}:egress`}
         >
           {t("remoteSurfacesTab.messagingEgressLabel", {
@@ -203,7 +203,7 @@ function MarketplaceConnectionRow({ api, connection, expanded, onToggle }: {
     >
       <div className="space-y-3">
         <p
-          className="text-[11px] text-muted-foreground"
+          className="text-dense text-muted-foreground"
           data-testid={`${rowId}:unavailable`}
         >
           {t("remoteSurfacesTab.messagingUnavailableHelp")}

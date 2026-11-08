@@ -89,6 +89,18 @@ public static class HomeDirectoryDacl {
   public static readonly System.Collections.Generic.List<string> CleanupWarnings = new System.Collections.Generic.List<string>();
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out long attributes, uint size);
+  [StructLayout(LayoutKind.Sequential)]
+  private struct FileInformation {
+    public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+    public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+  }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation information);
+  private static FileInformation FileIdentity(SafeFileHandle handle) {
+    FileInformation information;
+    if (!GetFileInformationByHandle(handle, out information)) throw new Win32Exception(Marshal.GetLastWin32Error(), "File identity is unavailable");
+    return information;
+  }
   [DllImport("advapi32.dll")]
   private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
   [DllImport("ntdll.dll")]
@@ -373,8 +385,43 @@ public static class HomeDirectoryDacl {
                 if (recorded.Success && recorded.Groups[1].Value == hash) {
                   if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
                 } else {
-                  string aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
-                  Rename(source, home, aside, false);
+                  string aside = null;
+                  var sourceIdentity = FileIdentity(source);
+                  foreach (string candidate in RepairEntries(home)) {
+                    if (!candidate.StartsWith(name + ".post-migration-", StringComparison.Ordinal)) continue;
+                    try {
+                      using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {
+                        if (preserved == null || (Attributes(preserved) & 0x410) != 0) continue;
+                        var identity = FileIdentity(preserved);
+                        if (identity.Links != 1 || (identity.Volume == sourceIdentity.Volume && identity.IndexHigh == sourceIdentity.IndexHigh && identity.IndexLow == sourceIdentity.IndexLow)) continue;
+                        var descriptor = new RawSecurityDescriptor(ReadDescriptor(preserved), 0);
+                        if (descriptor.Owner == null || descriptor.Owner.Value != user.Value || descriptor.DiscretionaryAcl == null) continue;
+                        bool explicitAce = false;
+                        foreach (GenericAce ace in descriptor.DiscretionaryAcl) {
+                          if ((ace.AceFlags & AceFlags.Inherited) == 0) { explicitAce = true; break; }
+                        }
+                        if (explicitAce) continue;
+                        using (var previous = new System.IO.FileStream(preserved, System.IO.FileAccess.Read)) {
+                          if (previous.Length != input.Length) continue;
+                          input.Position = 0;
+                          bool identical = true;
+                          for (long offset = 0; identical && offset < input.Length; offset++) identical = input.ReadByte() == previous.ReadByte();
+                          if (identical) { aside = candidate; break; }
+                        }
+                      }
+                    } catch (Exception) { continue; }
+                  }
+                  if (aside == null) {
+                    aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
+                    // A fresh file inherits the parent DACL; copying bytes never transfers source ACEs.
+                    using (var copy = OpenRelative(home, aside, user, 2, false, true, false))
+                    using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+                      input.Position = 0;
+                      input.CopyTo(output);
+                      output.Flush(true);
+                    }
+                  }
+                  if (!Delete(source, user)) throw new InvalidOperationException("Legacy configuration source deletion failed");
                   diagnostics.Add("Legacy configuration preserved at " + System.IO.Path.Combine(path, aside));
                 }
               }

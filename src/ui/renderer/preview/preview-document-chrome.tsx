@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, File, FileCode, FileImage, FileText, Presentation, RefreshCw, Sheet } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Loader } from "../../../components/ui/loader.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { DocumentObservationStatus } from "../../../shared/agent-observation.js";
@@ -75,8 +76,8 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2 py-1" data-testid="document-preview-header">
       <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <h3 className="max-w-[45%] shrink truncate text-[13px] font-semibold" title={name}>{name}</h3>
-      <span title={path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" data-testid="preview-document-path">{parent}</span>
+      <h3 className="max-w-[45%] shrink truncate text-body-sm font-semibold" title={name}>{name}</h3>
+      <span title={path} className="min-w-0 flex-1 truncate font-mono text-dense text-muted-foreground" data-testid="preview-document-path">{parent}</span>
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         {canOpenExternal && canOpenInDefaultApp(path) ? <Button type="button" size="icon-xs" variant="ghost"
           aria-label={t("chatPreviewRail.openDefaultApp")} title={t("chatPreviewRail.openDefaultApp")}
@@ -86,7 +87,7 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
         </Button>
         {onReload ? <Button type="button" size="icon-xs" variant="ghost" disabled={refreshing}
           aria-label={t("chatPreviewRail.tableReload")} title={t("chatPreviewRail.tableReload")} onClick={onReload}>
-          <RefreshCw aria-hidden="true" className={cn("h-3.5 w-3.5", refreshing && "motion-safe:animate-spin")} />
+          {refreshing ? <Loader size={14} icon={RefreshCw} /> : <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />}
         </Button> : null}
       </div>
     </div>
@@ -110,7 +111,7 @@ function ObservationRecency({ ts }: { ts: number }) {
     return () => clearInterval(timer);
   }, [ts]);
   return <time dateTime={new Date(ts).toISOString()} title={new Date(ts).toLocaleTimeString()}
-    className="ml-auto shrink-0 text-[10px]">{formatRelativeSessionTime(ts, t)}</time>;
+    className="ml-auto shrink-0 text-tiny">{formatRelativeSessionTime(ts, t)}</time>;
 }
 
 /** Only authenticated observation state gives a passive viewer its agent activity strip. */
@@ -128,7 +129,7 @@ export function PreviewDocumentLiveStrip({ status, summary, ts, error, label, so
   const statusText = error ?? label ?? t(OBSERVATION_STATUS_KEYS[status!]);
   return (
     <div role={interrupted ? "alert" : "status"} data-testid={`${source}-preview-live-strip`}
-      className={cn("flex min-w-0 shrink-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 text-[11px] text-agent",
+      className={cn("flex min-w-0 shrink-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 text-dense text-agent",
         source === "browser" ? "h-7 whitespace-nowrap" : "py-1.5",
         interrupted && "bg-destructive/(--opacity-subtle) text-destructive")}>
       {status && !error ? <span aria-hidden="true" className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-current", status === "reconciling" && "motion-safe:animate-pulse")} /> : null}
@@ -141,6 +142,6 @@ export function PreviewDocumentLiveStrip({ status, summary, ts, error, label, so
 }
 
 export function PreviewDocumentFooter({ children }: { children: ReactNode }) {
-  return <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-t pt-1.5 text-[11px] text-muted-foreground"
+  return <div className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-t pt-1.5 text-dense text-muted-foreground"
     data-testid="document-preview-footer">{children}</div>;
 }

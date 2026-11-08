@@ -67,7 +67,7 @@ function extensionOf(descriptor: PreviewContentDescriptor): string {
 
 function TextRenderer({ descriptor }: { descriptor: PreviewContentDescriptor }) {
   return (
-    <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+    <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-dense leading-relaxed text-foreground [overflow-wrap:anywhere]">
       {descriptor.text}
     </pre>
   );
@@ -85,7 +85,7 @@ export function CodePreview({ descriptor }: { descriptor: PreviewContentDescript
   return (
     <div className="ave-code-lines min-w-0" data-testid="preview-code" data-highlighted={tree ? "true" : undefined}>
       {descriptor.truncated ? (
-        <div className="border-b px-3 py-1 text-[11px] text-muted-foreground" data-testid="preview-code-truncated">
+        <div className="border-b px-3 py-1 text-dense text-muted-foreground" data-testid="preview-code-truncated">
           {t("folderView.codeFirstLines", { count: lines.length.toLocaleString() })}
         </div>
       ) : null}
@@ -162,8 +162,8 @@ function MermaidBlock({ code, onRendered, onPending }: { code: string; onRendere
     // Never blank: fall back to the raw fenced source (§6.10.6).
     return (
       <div className="space-y-1" data-testid="chat-side-panel-mermaid-fallback">
-        <div className="text-[11px] text-muted-foreground">{t("chatPreviewRail.diagramRenderFailed")}</div>
-        <pre className="max-h-(--preview-block-max-height-compact) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+        <div className="text-dense text-muted-foreground">{t("chatPreviewRail.diagramRenderFailed")}</div>
+        <pre className="max-h-(--preview-block-max-height-compact) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-dense leading-relaxed text-foreground [overflow-wrap:anywhere]">
           {code}
         </pre>
       </div>

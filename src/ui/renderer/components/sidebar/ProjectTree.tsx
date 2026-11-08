@@ -21,7 +21,7 @@ import type { SessionSummary } from "../../hooks/use-sessions.js";
 import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 import { useActiveSurface, surfaceUsedAt } from "../../preview/active-surface.js";
 import { useExitedTerminals, useTerminalAttention } from "../../preview/terminal-attention.js";
-import { PendingAnswerDot } from "../PendingAnswerDot.js";
+import { AgentStatusGlyph, agentStatusLabels } from "../AgentStatusGlyph.js";
 import { SidebarPreviewTarget, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
 import { CHAT_SESSION_DRAG_TYPE } from "../pane-drop.js";
 import { projectTestId } from "./ProjectCombobox.js";
@@ -59,7 +59,7 @@ export interface SidebarAddFlow {
 export interface ConversationRowActions {
   isArchived: (sessionId: string) => boolean;
   isUnread: (sessionId: string) => boolean;
-  /** A turn is running in some tile that holds this conversation. */
+  /** A turn is running in this conversation or one of its chats (`workingSessionIds`). */
   isResponding: (sessionId: string) => boolean;
   onRename: (sessionId: string, title: string) => void | Promise<void>;
   onSetArchived: (sessionId: string, archived: boolean) => void | Promise<void>;
@@ -109,7 +109,7 @@ function InlineRename({
       placeholder={t("sidebar.renamePlaceholder")}
       aria-label={t("sidebar.renamePlaceholder")}
       data-testid={testId}
-      className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-[12px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-body-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       onChange={(event) => setValue(event.target.value)}
       onClick={(event) => event.stopPropagation()}
       // Blur abandons rather than commits. A rename that lands because focus moved is a rename the user never confirmed.
@@ -172,12 +172,12 @@ function SessionRow({
   onOpenMenu?: (event: MouseEvent<HTMLElement>) => void;
   /** Marked unread — drawn as a dot plus a heavier title. */
   unread?: boolean;
-  /** This conversation's turn is parked on a request, on screen or not — the yellow dot says "interrupted here, something is
-   * waiting for an answer". */
+  /** This conversation's turn is parked on a request, on screen or not — the warning badge on the glyph says "interrupted
+   * here, something is waiting for an answer". */
   pendingAnswer?: boolean;
   /** Suggestions waiting in this conversation — drawn as a count. Only the dedicated Suggestions conversation has any. */
   pendingCount?: number;
-  /** A turn is running here — the kind glyph gives way to a pulsing dot. */
+  /** A turn is running here, in this conversation or one of its chats — the kind glyph gives way to the loader. */
   responding?: boolean;
   /** Archived — kept legible but visibly set aside. */
   archived?: boolean;
@@ -189,8 +189,16 @@ function SessionRow({
   const time = formatRelativeSessionTime(session.modifiedAt, t);
   const pinLabel = isPinned ? t("sidebar.unpinConversation") : t("sidebar.pinConversation");
   const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
-  const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding });
+  const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding, waiting: pendingAnswer && pendingCount === 0 });
   const rowPreview = sidebarPreviewRowProps(renaming ? null : preview);
+  // The Suggestions row's count stands in for the waiting badge. The slot is hidden from assistive tech, so the row's button
+  // says what the slot shows: a non-main family's name first (the chat family stays unnamed — on a list that is mostly chats,
+  // naming each would read the same word down the column), then the state.
+  const statusBadge = pendingAnswer && pendingCount === 0 ? "waiting" : null;
+  const spokenSlot = [
+    ...(family === "main" ? [] : [familyLabel]),
+    ...agentStatusLabels(t, Boolean(responding), statusBadge),
+  ];
   return (
     <div
       role="treeitem"
@@ -250,38 +258,29 @@ function SessionRow({
             <Pin className={`h-3 w-3 ${isPinned ? "fill-current" : ""}`} />
           </button>
         ) : null}
-        {responding ? (
-          /** A turn is running here. The pulse is the signal; with reduced motion the dot stands still and the label carries it. Same
-           * square as the glyph, hidden the same way under the pin. */
-          <span
-            role="img"
-            aria-label={t("sidebar.sessionResponding")}
-            title={t("sidebar.sessionResponding")}
-            data-testid={`sidebar-session-responding-${session.id}`}
-            className={[
-              "flex h-3.5 w-3.5 items-center justify-center",
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-          >
-            <span className="h-2 w-2 rounded-full bg-primary animate-pulse motion-reduce:animate-none" />
-          </span>
-        ) : (
-          /* Family labels remain available to assistive tech. The main chat
-             glyph stays hidden from it: on a list that is mostly chats, naming each
-             one would read the same word down the whole column. */
-          <MessageSquareText
-            className={[
-              "h-3.5 w-3.5",
-              // Hidden — not removed. The glyph keeps reserving the square so the swap costs no layout.
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-            data-testid={`sidebar-conversation-glyph-${session.id}`}
-            data-session-family={family}
-            {...(family === "main"
-              ? { "aria-hidden": "true" as const }
-              : { role: "img", "aria-label": familyLabel })}
-          />
-        )}
+        {/* The agent status slot: the kind glyph at rest, the loader in its place while a turn runs, and the corner badge
+            while a turn is parked on a card. Mark and loader are hidden — not removed — under the pin, so the swap costs no
+            layout; the badge stays readable over it. */}
+        <AgentStatusGlyph
+          working={Boolean(responding)}
+          badge={statusBadge}
+          hiddenFromAccessibility
+          workingTestId={`sidebar-session-responding-${session.id}`}
+          badgeTestId={`sidebar-pending-answer-${session.id}`}
+          markClassName={isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
+          // Positioned after the pin, so it must let the pin take the click.
+          className="pointer-events-none"
+          mark={
+            /* Decorative here: the whole slot is hidden from assistive tech, and the row's button names the family (non-main
+               rows) and the state in its sr-only text instead. */
+            <MessageSquareText
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+              data-testid={`sidebar-conversation-glyph-${session.id}`}
+              data-session-family={family}
+            />
+          }
+        />
       </span>
       {renaming && onCommitRename && onCancelRename ? (
         <div className="flex min-w-0 flex-1 items-center px-2 py-1">
@@ -299,7 +298,7 @@ function SessionRow({
           type="button"
           tabIndex={-1}
           aria-current={active ? "page" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-body-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={`sidebar-session-${session.id}`}
           data-session-family={family}
           title={family === "main" ? session.title : familyLabel}
@@ -331,25 +330,27 @@ function SessionRow({
               data-testid={`sidebar-session-unread-${session.id}`}
             />
           ) : null}
-          <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
+          <span
+            className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}
+            data-testid={`sidebar-conversation-title-${session.id}`}
+          >
             {session.title}
           </span>
+          {spokenSlot.length > 0 ? <span className="sr-only">{spokenSlot.join(", ")}</span> : null}
           {pendingCount > 0 ? (
             <span
-              className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground tabular-nums"
+              className="shrink-0 rounded-full bg-primary px-1.5 text-tiny font-semibold leading-4 text-primary-foreground tabular-nums"
               aria-label={t("sidebar.suggestionsPendingCount", { count: pendingCount })}
               data-testid={`sidebar-pending-count-${session.id}`}
             >
               {pendingCount}
             </span>
-          ) : pendingAnswer ? (
-            <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
         </SidebarPreviewTarget>
       )}
       {time ? (
-        <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
+        <span className="shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
           {time}
         </span>
       ) : null}
@@ -717,6 +718,7 @@ export function ProjectTree({
           active={false}
           family={session.family}
           pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
+          responding={conversationActions?.isResponding(session.id)}
           {...(open ? { onOpenFamilyRow: open } : {})}
           onOpenMenu={(event) => openNativeContextMenu(event, "conversation", familyMenu)}
           t={t}
@@ -724,7 +726,7 @@ export function ProjectTree({
         {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
           // Under its row's text, so it takes the row's indent and carries on the lines that run past the row.
           <div
-            className="relative truncate pl-7 text-[10px] text-muted-foreground"
+            className="relative truncate pl-7 text-tiny text-muted-foreground"
             style={treeIndentStyle(level, 1.75)}
             data-testid={`sidebar-former-pane-${session.id}`}
           >
@@ -927,7 +929,7 @@ export function ProjectTree({
             title={root}
             data-testid={`sidebar-project-toggle-${testId}`}
             // px-2 puts the chevron where every other row puts its leading icon, so the guide under the group lines up.
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-foreground focus-visible:outline-none"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-body-sm font-medium text-foreground focus-visible:outline-none"
           >
             {expanded
               ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -936,10 +938,10 @@ export function ProjectTree({
             {pinned ? <Pin className="h-3 w-3 shrink-0 fill-current text-primary" aria-hidden="true" /> : null}
             <span className="min-w-0 flex-1 truncate">{name}</span>
             {project.isDefault ? (
-              <span className="shrink-0 rounded border border-border px-1 text-[10px] font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
+              <span className="shrink-0 rounded border border-border px-1 text-tiny font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
             ) : null}
             {expanded ? null : (
-              <span className="shrink-0 pr-1 text-[11px] font-normal tabular-nums text-muted-foreground group-hover:hidden" data-testid={`sidebar-project-count-${testId}`}>
+              <span className="shrink-0 pr-1 text-dense font-normal tabular-nums text-muted-foreground group-hover:hidden" data-testid={`sidebar-project-count-${testId}`}>
                 {count}
               </span>
             )}
@@ -986,7 +988,7 @@ export function ProjectTree({
             key={line.key}
             role="presentation"
             data-testid={`sidebar-tree-header-${line.bucket}`}
-            className="sticky top-0 z-10 bg-card px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground"
+            className="sticky top-0 z-10 bg-card px-2 pb-1 pt-2 text-dense font-medium text-muted-foreground"
           >
             {t(BUCKET_LABEL_KEYS[line.bucket])}
           </div>
@@ -1014,7 +1016,7 @@ export function ProjectTree({
             data-testid={`sidebar-tree-more-${line.scope === "project" ? "project" : projectTestId(line.scope.slice("group:".length), "group")}`}
             onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(line.key); }}
             onClick={() => showMore(line.scope, page)}
-            className={`relative w-full cursor-pointer rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
+            className={`relative w-full cursor-pointer rounded-md px-2 py-1 text-left text-dense text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
             style={treeIndentStyle(line.level, 0.5)}
           >
             <TreeIndentGuides guides={row.guides} />
@@ -1024,7 +1026,7 @@ export function ProjectTree({
       }
       case "empty":
         return (
-          <div key={line.key} role="presentation" className="relative px-2 py-1.5 text-[11px] text-muted-foreground" style={treeIndentStyle(line.level, 0.5)}>
+          <div key={line.key} role="presentation" className="relative px-2 py-1.5 text-dense text-muted-foreground" style={treeIndentStyle(line.level, 0.5)}>
             <TreeIndentGuides guides={lineGuides(line.key)} />
             {t("sidebar.noProjectSessions")}
           </div>
@@ -1152,7 +1154,7 @@ export function ProjectTree({
         /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
         <div
           data-testid="sidebar-project-root-warning"
-          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-[11px]"
+          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
         >
           <div className="font-medium text-destructive">{t("composerProjectSelector.rootWarningTitle")}</div>
           <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">
@@ -1186,7 +1188,7 @@ export function ProjectTree({
         <button
           type="button"
           onClick={() => setShowArchived((value) => !value)}
-          className="mt-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="mt-1 w-full rounded-md px-2 py-1 text-left text-dense text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           aria-pressed={showArchived}
           data-testid="sidebar-toggle-archived"
         >

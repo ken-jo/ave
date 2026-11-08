@@ -1,9 +1,9 @@
 // The work approval of a stored plan (permission-decision-tree.md "Work approvals"): approve and run, send back with a note, or reject.
 // It is the user's own decision on the item, not a tool-approval card, so it waits without a timeout and survives a restart. The buttons
 // send the run id and the stored plan hash, never the plan text. Used by the 확인 필요 plan card and by the work item's detail.
+import { Loader } from "../../../../components/ui/loader.js";
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Textarea } from "../../../../components/ui/textarea.js";
@@ -119,7 +119,7 @@ export function PlanText({ plan, testIdPrefix }: { plan: string; testIdPrefix: s
     <div className="space-y-2">
       {rows.map((row) => (
         <div key={row.id} data-testid={`${testIdPrefix}-section-${row.id}`}>
-          <h5 className="text-[11px] font-semibold text-muted-foreground">{row.label}</h5>
+          <h5 className="text-dense font-semibold text-muted-foreground">{row.label}</h5>
           <Markdown text={sections[row.id]} />
         </div>
       ))}
@@ -196,12 +196,12 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
   const busy = pending !== null;
   const label = (decision: WorkPlanDecision, idle: string) => (pending === decision ? t(PENDING_LABEL[decision]) : idle);
   const spinner = (decision: WorkPlanDecision) =>
-    pending === decision ? <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden /> : null;
+    pending === decision ? <Loader size={12} className="mr-1" /> : null;
 
   if (gone) {
     return (
       <div className="space-y-2" data-testid={`${p}-gone`}>
-        <p role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-2 text-[11px] text-destructive" data-testid={`${p}-decision-error`}>
+        <p role="alert" className="rounded-md border border-destructive/(--opacity-medium) p-2 text-dense text-destructive" data-testid={`${p}-decision-error`}>
           {error} {t("workApprovals.planNothingRan")}
         </p>
         <div className="flex justify-end">
@@ -216,7 +216,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
   return (
     <div className="space-y-2">
       {stale && (
-        <p role="status" className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) p-2 text-[11px]" data-testid={`${p}-stale`}>
+        <p role="status" className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) p-2 text-dense" data-testid={`${p}-stale`}>
           {t("workBoard.planDecisionStale")}
         </p>
       )}
@@ -239,7 +239,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
         rows={2}
         data-testid={`${p}-note`}
       />
-      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 text-dense text-muted-foreground">
         <span>{t("workApprovals.planNoteHelper")}</span>
         <span className="shrink-0 tabular-nums" data-testid={`${p}-note-count`}>{note.length} / {MAX_PLAN_NOTE_LENGTH}</span>
       </div>
@@ -275,7 +275,7 @@ export function PlanDecisionControls({ api, itemId, runId, planHash, stale, onDe
         </Button>
       </div>
       {error !== null && (
-        <p role="alert" className="text-[11px] text-destructive" data-testid={`${p}-decision-error`}>{error}</p>
+        <p role="alert" className="text-dense text-destructive" data-testid={`${p}-decision-error`}>{error}</p>
       )}
     </div>
   );

@@ -109,7 +109,7 @@ function pathSegments(path: string): string[] {
 
 function TextBlock({ text }: { text: string }) {
   return (
-    <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+    <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-dense leading-relaxed text-foreground [overflow-wrap:anywhere]">
       {text}
     </pre>
   );
@@ -122,8 +122,8 @@ function DetailHeader({ target }: { target: ChatPreviewTarget }) {
         <span className="text-muted-foreground">{targetIcon(target.kind)}</span>
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{target.title}</h3>
       </div>
-      <div className="mt-1 flex flex-wrap gap-1 text-[10.5px] text-muted-foreground">
-        <Badge variant="outline" className="px-1 py-0 text-[10px]">{target.kind}</Badge>
+      <div className="mt-1 flex flex-wrap gap-1 text-dense text-muted-foreground">
+        <Badge variant="outline" className="px-1 py-0 text-tiny">{target.kind}</Badge>
         <span className="truncate">{target.subtitle ?? target.sourceLabel}</span>
       </div>
     </div>
@@ -158,10 +158,6 @@ export function PreviewDetail({ api, sessionId, target, visible }: { api: AveApi
       <PreviewBody api={api} sessionId={sessionId} target={target} observe={visible} />
     </div>
   );
-}
-
-export function EmptyState({ children }: { children: string }) {
-  return <div className="p-4 text-xs text-muted-foreground">{children}</div>;
 }
 
 /** "Open file" for an image preview: absent for a type the default app is not given, and a refusal says why. */
@@ -271,7 +267,7 @@ export function PreviewBody({
   if (target.kind === "diff") {
     return (
       <div className="space-y-3">
-        <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
+        <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-dense [overflow-wrap:anywhere]">
           {target.path}
         </div>
         <FileEditDiff data={target.diff} />
@@ -359,7 +355,7 @@ export function BrowserDocumentViewer({ target }: { target: Extract<ChatPreviewT
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background" data-testid="chat-side-panel-browser-viewer">
-      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-3 text-[11px] text-muted-foreground">
+      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-3 text-dense text-muted-foreground">
         <Code2 className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate">{target.payload.title ?? target.title}</span>
       </div>
@@ -484,7 +480,7 @@ export function UrlDocumentViewer({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background" data-testid="chat-side-panel-url-viewer">
       {showHeader ? (
-        <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-[11px] text-muted-foreground">
+        <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-dense text-muted-foreground">
           <Globe className="h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{displayedUrl}</span>
           <Tooltip>

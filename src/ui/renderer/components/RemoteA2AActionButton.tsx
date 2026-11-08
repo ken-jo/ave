@@ -214,7 +214,7 @@ export function RemoteA2AActionButton() {
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2 text-[10.5px] text-muted-foreground hover:text-foreground"
+              className="h-7 gap-1.5 px-2 text-dense text-muted-foreground hover:text-foreground"
               data-testid="remote-a2a-trigger"
               aria-label={t("remoteA2aActionButton.triggerAria")}
             >
@@ -235,21 +235,21 @@ export function RemoteA2AActionButton() {
             </span>
             {t("remoteA2aActionButton.panelTitle")}
           </div>
-          <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{t("remoteA2aActionButton.panelDescription")}</p>
+          <p className="mt-1 text-dense leading-4 text-muted-foreground">{t("remoteA2aActionButton.panelDescription")}</p>
         </div>
         <div className="space-y-3 p-3">
           <div className="space-y-1.5">
-            <Label htmlFor="remote-a2a-target" className="text-[11px]">{t("remoteA2aActionButton.agentLabel")}</Label>
+            <Label htmlFor="remote-a2a-target" className="text-dense">{t("remoteA2aActionButton.agentLabel")}</Label>
             <NativeSelect id="remote-a2a-target" value={selected} onChange={(event) => setSelected(event.target.value)} data-testid="remote-a2a-target">
               {targets.map((target) => <option key={target.targetAgentId} value={target.targetAgentId}>{target.label}</option>)}
             </NativeSelect>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="remote-a2a-intent" className="text-[11px]">{t("remoteA2aActionButton.messageLabel")}</Label>
+            <Label htmlFor="remote-a2a-intent" className="text-dense">{t("remoteA2aActionButton.messageLabel")}</Label>
             <Textarea id="remote-a2a-intent" value={intent} onChange={(event) => setIntent(event.target.value)} maxLength={8_192} rows={4} placeholder={t("remoteA2aActionButton.messagePlaceholder")} data-testid="remote-a2a-intent" />
           </div>
           <div className="flex items-center justify-between gap-3">
-            <p className="min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground" data-testid="remote-a2a-status" data-state={status?.state ?? "idle"}>{statusCopy(status, t)}</p>
+            <p className="min-w-0 flex-1 truncate text-dense text-muted-foreground" data-testid="remote-a2a-status" data-state={status?.state ?? "idle"}>{statusCopy(status, t)}</p>
             <Button type="button" size="sm" className="h-7 shrink-0 gap-1.5" disabled={!canSend} onClick={() => void send()} data-testid="remote-a2a-send">
               <Send className="h-3.5 w-3.5" aria-hidden="true" />
               {sending ? t("remoteA2aActionButton.waiting") : t("remoteA2aActionButton.send")}
@@ -257,16 +257,16 @@ export function RemoteA2AActionButton() {
           </div>
           {status?.reply ? (
             <div className="space-y-1" data-testid="remote-a2a-reply">
-              <Label className="text-[11px]">{t("remoteA2aActionButton.replyLabel")}</Label>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/(--opacity-subtle) p-2 text-[11px] leading-4 text-foreground" data-testid="remote-a2a-reply-text">{status.reply.text}</pre>
+              <Label className="text-dense">{t("remoteA2aActionButton.replyLabel")}</Label>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/(--opacity-subtle) p-2 text-dense leading-4 text-foreground" data-testid="remote-a2a-reply-text">{status.reply.text}</pre>
               {status.reply.truncated ? (
-                <p className="text-[10.5px] text-muted-foreground" data-testid="remote-a2a-reply-truncated">{t("remoteA2aActionButton.replyTruncated")}</p>
+                <p className="text-dense text-muted-foreground" data-testid="remote-a2a-reply-truncated">{t("remoteA2aActionButton.replyTruncated")}</p>
               ) : null}
             </div>
           ) : null}
           {recent.length > 1 ? (
             <div className="space-y-1.5">
-              <Label htmlFor="remote-a2a-recent" className="text-[11px]">{t("remoteA2aActionButton.recentLabel")}</Label>
+              <Label htmlFor="remote-a2a-recent" className="text-dense">{t("remoteA2aActionButton.recentLabel")}</Label>
               <NativeSelect
                 id="remote-a2a-recent"
                 value={taskHandle ?? ""}
@@ -287,18 +287,18 @@ export function RemoteA2AActionButton() {
           {taskHandle && (status?.taskAvailable || status?.recoveryEligible) ? (
             <div className="flex items-center gap-1.5 border-t border-border pt-2" data-testid="remote-a2a-task-actions">
               {status?.taskAvailable ? <>
-                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[10.5px]" disabled={sending} onClick={() => void runTaskAction("get")} data-testid="remote-a2a-get">
+                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-dense" disabled={sending} onClick={() => void runTaskAction("get")} data-testid="remote-a2a-get">
                   <RefreshCw className="h-3 w-3" aria-hidden="true" /> {t("remoteA2aActionButton.refresh")}
                 </Button>
-                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[10.5px]" disabled={!canSend || status.taskState !== "TASK_STATE_INPUT_REQUIRED"} onClick={() => void runTaskAction("resume")} data-testid="remote-a2a-resume">
+                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-dense" disabled={!canSend || status.taskState !== "TASK_STATE_INPUT_REQUIRED"} onClick={() => void runTaskAction("resume")} data-testid="remote-a2a-resume">
                   <Send className="h-3 w-3" aria-hidden="true" /> {t("remoteA2aActionButton.resume")}
                 </Button>
-                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[10.5px]" disabled={sending || terminal} onClick={() => void runTaskAction("cancel")} data-testid="remote-a2a-cancel">
+                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-dense" disabled={sending || terminal} onClick={() => void runTaskAction("cancel")} data-testid="remote-a2a-cancel">
                   <Square className="h-3 w-3" aria-hidden="true" /> {t("remoteA2aActionButton.cancel")}
                 </Button>
               </> : null}
               {status?.recoveryEligible ? (
-                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[10.5px]" disabled={sending} onClick={() => void runTaskAction("replay")} data-testid="remote-a2a-replay">
+                <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-dense" disabled={sending} onClick={() => void runTaskAction("replay")} data-testid="remote-a2a-replay">
                   <RotateCcw className="h-3 w-3" aria-hidden="true" /> {t("remoteA2aActionButton.replay")}
                 </Button>
               ) : null}

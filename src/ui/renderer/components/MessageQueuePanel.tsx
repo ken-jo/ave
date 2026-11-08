@@ -6,6 +6,7 @@ import { Badge } from "../../../components/ui/badge.js";
 import { isQueueItemPending, type MessageQueueStore, type MessageQueueItem } from "../state/message-queue-store.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
 
 interface MessageQueuePanelProps {
   store: MessageQueueStore;
@@ -18,6 +19,7 @@ interface MessageQueuePanelProps {
 
 export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQueuePanelProps) {
   const { t } = useTranslation();
+  const sendNowHint = useShortcutHint("composer.sendNow") ?? "";
   const items = useSyncExternalStore<readonly MessageQueueItem[]>(
     store.subscribe,
     () => store.getItems(),
@@ -65,13 +67,13 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
         )}
         <MessageSquarePlus className="h-3 w-3 shrink-0 text-info" />
         <span className="font-medium">{t("messageQueuePanel.panelTitle")}</span>
-        <Badge variant="outline" className="px-1 py-0 text-[10px] font-semibold text-info">
+        <Badge variant="outline" className="px-1 py-0 text-tiny font-semibold text-info">
           {items.length}
         </Badge>
         {selectedCount > 0 && (
           <span className="min-w-0 truncate text-muted-foreground">
             · <span className="font-medium text-foreground">{t("messageQueuePanel.selectedCount", { count: selectedCount })}</span>
-            <span className="ml-1 text-[10px]">{t("messageQueuePanel.cmdEnterHint")}</span>
+            <span className="ml-1 text-tiny">{t("messageQueuePanel.cmdEnterHint", { shortcut: sendNowHint })}</span>
           </span>
         )}
         {heldByApproval ? (
@@ -265,7 +267,7 @@ function MessageQueueRow({
         aria-label={item.selected ? t("messageQueuePanel.deselectAriaLabel") : t("messageQueuePanel.selectAriaLabel")}
         aria-pressed={item.selected}
       >
-        {item.selected ? <Check className="h-2.5 w-2.5" strokeWidth={3} /> : null}
+        {item.selected ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
       </button>
       {editing ? (
         <input
@@ -306,7 +308,7 @@ function MessageQueueRow({
       )}
       {!editing && handoffInProgress && (
         <span
-          className="shrink-0 rounded border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+          className="shrink-0 rounded border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-1.5 py-0.5 text-tiny font-medium text-foreground"
           title={t("messageQueuePanel.handoffInProgressTitle")}
           data-testid="message-queue-row-handoff-in-progress"
         >
@@ -315,7 +317,7 @@ function MessageQueueRow({
       )}
       {!editing && handedOff && (
         <span
-          className="shrink-0 rounded border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+          className="shrink-0 rounded border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-1.5 py-0.5 text-tiny font-medium text-foreground"
           title={t("messageQueuePanel.handedOffTitle")}
           data-testid="message-queue-row-handed-off"
         >
@@ -365,12 +367,12 @@ function MessageQueueRow({
             onClick={onSendNow}
             /** `text-info` at 10px only reaches 4.1:1 on the panel — under AA. The label rests in the readable foreground and the
              * panel's hue carries the hover/focus state instead, where it is decoration rather than the thing you have to read. */
-            className="inline-flex h-5 items-center gap-0.5 rounded border border-transparent px-1.5 text-[10px] font-medium text-foreground transition-colors hover:border-info/(--opacity-medium) hover:bg-info/(--opacity-subtle) hover:text-info motion-reduce:transition-none"
+            className="inline-flex h-5 items-center gap-0.5 rounded border border-transparent px-1.5 text-tiny font-medium text-foreground transition-colors hover:border-info/(--opacity-medium) hover:bg-info/(--opacity-subtle) hover:text-info motion-reduce:transition-none"
             aria-label={t("messageQueuePanel.sendNowAriaLabel")}
             title={t("messageQueuePanel.sendNowTitle")}
             data-testid="message-queue-row-send-now-button"
           >
-            <ArrowUp className="h-2.5 w-2.5" />
+            <ArrowUp className="h-3 w-3" />
             {t("messageQueuePanel.sendNowLabel")}
           </button>
           <button

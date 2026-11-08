@@ -1,9 +1,10 @@
 /** Use a per-server partition with no node integration and isolated context. A CSP-protected proxy embeds the app in a
  * sandboxed inner frame so window.parent is a distinct frame; bridge messages cross the relay preload and webview IPC. */
+import { Loader } from "../../../components/ui/loader.js";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiPayload, McpUiResourceBundle } from "../../../mcp/types.js";
-import { Loader2, AlertCircle, PlugZap, ExternalLink } from "lucide-react";
+import { AlertCircle, PlugZap, ExternalLink } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { mcpAppPartitionName } from "../../../shared/mcp-app-partition.js";
 // The card-size bounds SoT. `ui/notifications/size-changed` and the payload's `height`
@@ -330,31 +331,31 @@ export function McpAppView({
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">
-      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-dense text-muted-foreground">
         <span className="truncate">{payload.title ?? t("mcpAppView.titleFallback")}</span>
-        <span className="text-[10px] opacity-60">
+        <span className="text-tiny opacity-60">
           {t("mcpAppView.sandboxBadge")}
         </span>
       </div>
       {disabled ? (
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }} data-testid="mcp-app-disconnected">
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }} data-testid="mcp-app-disconnected">
           <PlugZap className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{t("mcpAppView.serverDisconnected")}</span>
         </div>
       ) : error ? (
-        <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-destructive">
+        <div className="flex items-center gap-2 px-3 py-3 text-dense text-destructive">
           <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{error}</span>
         </div>
       ) : mountDisplayMode === "inline" && location.kind !== "inline" ? (
         // Only dormant home mounts render away placeholders; no webview or bridge exists there until guarded revival.
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }} data-testid={`mcp-app-${location.kind}`}>
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }} data-testid={`mcp-app-${location.kind}`}>
           <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{location.kind === "pip" ? t("mcpAppView.openInPip") : t("mcpAppView.openInFullscreen")}</span>
         </div>
       ) : !bundle ? (
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }}>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }}>
+          <Loader size={14} />
           <span>{t("mcpAppView.loading")}</span>
         </div>
       ) : (

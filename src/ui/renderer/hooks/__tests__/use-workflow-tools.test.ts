@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { useWorkflowTools } from "../use-workflow-tools.js";
 import type { AveApi } from "../../types.js";
 import type { AgentSpawnEvent } from "../../../../tools/agent-spawn.js";
+import { AccessibilitySignalEngine, setAccessibilitySignalEngineForTest } from "../../accessibility-signal-engine.js";
 
 function renderWorkflowTools(
   options?: Parameters<typeof useWorkflowTools>[1],
@@ -223,5 +224,22 @@ describe("useWorkflowTools", () => {
     });
 
     expect(result.current.askQuestions.map((q) => q.id)).toEqual(["stranded", "live"]);
+  });
+
+  it("sounds the approval-needed signal once for a question this tile draws", () => {
+    const play = vi.fn(async () => {});
+    setAccessibilitySignalEngineForTest(new AccessibilitySignalEngine({ isWindowFocused: () => false, play }));
+    try {
+      const first = renderWorkflowTools({ ownsSession: (sessionId) => sessionId === "mine" });
+      const second = renderWorkflowTools({ ownsSession: (sessionId) => sessionId === "mine" });
+      act(() => {
+        first.onAsk(ask("q-mine", "mine"));
+        second.onAsk(ask("q-mine", "mine"));
+        first.onAsk(ask("q-other", "other"));
+      });
+      expect(play).toHaveBeenCalledExactlyOnceWith("approvalNeeded");
+    } finally {
+      setAccessibilitySignalEngineForTest(null);
+    }
   });
 });

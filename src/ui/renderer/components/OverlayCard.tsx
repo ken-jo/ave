@@ -1,8 +1,9 @@
 // Only summaries and session ids enter overlay cards; full content stays in conversation sessions. Proposal dispositions
 // are stored answers, not timed snoozes.
 
+import { Loader } from "../../../components/ui/loader.js";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import {
   Card,
@@ -132,7 +133,7 @@ export function OverlayCard({
         <div className="flex flex-wrap items-start justify-between gap-2">
           <CardTitle className="flex min-w-14 flex-1 items-center gap-1.5 text-sm">
             {running ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-action-view" />
+              <Loader size={14} className="text-action-view" />
             ) : (
               <span className="text-action-view">●</span>
             )}
@@ -178,7 +179,7 @@ export function OverlayCard({
             </Button>
           </div>
         </div>
-        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-[11px]">
+        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-dense">
           {kind === "plugin" && pluginId && (
             <span className="contents" data-testid="plugin-provenance">
               <span
@@ -192,7 +193,7 @@ export function OverlayCard({
               </span>
               {displayNameLabel && (
                 <span
-                  className="min-w-14 max-w-full flex-1 truncate text-[10px] opacity-60"
+                  className="min-w-14 max-w-full flex-1 truncate text-tiny opacity-60"
                   role="group"
                   aria-label={displayNameLabel}
                   title={displayNameLabel}
@@ -256,7 +257,7 @@ export function OverlayCard({
               <Button
                 size="sm"
                 variant="ghost"
-                className="mt-1 h-6 gap-1 px-1 text-[11px] text-muted-foreground hover:text-foreground"
+                className="mt-1 h-6 gap-1 px-1 text-dense text-muted-foreground hover:text-foreground"
                 data-testid="overlay-card-expand-toggle"
                 aria-expanded={expanded}
                 onClick={() => onExpandedChange(!expanded)}

@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, MessageSquareText, Pin, RefreshCw, X as XIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -561,7 +562,7 @@ export function StarredView({
           <div className="min-w-max">
             <div
               data-testid="heatmap-month-labels"
-              className="mb-1 grid h-4 gap-1 pl-7 text-[10px] leading-4 text-muted-foreground"
+              className="mb-1 grid h-4 gap-1 pl-7 text-tiny leading-4 text-muted-foreground"
               style={{ gridTemplateColumns: `repeat(${heatmapWeekCount}, 0.625rem)` }}
             >
               {heatmapMonthLabels.map((month) => (
@@ -577,7 +578,7 @@ export function StarredView({
             <div className="flex gap-2">
               <div
                 data-testid="heatmap-weekday-labels"
-                className="grid w-5 shrink-0 grid-rows-7 gap-1 text-[10px] leading-[0.625rem] text-muted-foreground"
+                className="grid w-5 shrink-0 grid-rows-7 gap-1 text-tiny leading-[0.625rem] text-muted-foreground"
               >
                 {heatmapWeekdays.map((weekday, index) => (
                   <span key={`${weekday}-${index}`}>{weekday}</span>
@@ -618,7 +619,7 @@ export function StarredView({
         <section data-testid="insights-conversations-panel" className="flex h-(--insights-panel-height) min-h-0 flex-col overflow-hidden rounded-md border bg-background lg:h-full">
           <div className="flex items-center justify-between border-b px-3 py-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("starredView.sessionsTitle")}</h3>
-            <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+            <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-tiny font-semibold text-muted-foreground">
               {conversationsForDay.length}
             </span>
           </div>
@@ -631,7 +632,7 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {conversationsForDay.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">{t("starredView.projectChatsEmpty")}</div>
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.projectChatsEmpty")} />
             ) : (
               <div className="space-y-1.5 p-2">
                 {conversationsForDay.map((conversation) => (
@@ -669,7 +670,7 @@ export function StarredView({
         <section data-testid="insights-pins-panel" className="flex h-(--insights-panel-height) min-h-0 flex-col overflow-hidden rounded-md border bg-background lg:h-full">
           <div className="flex items-center justify-between border-b px-3 py-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("starredView.starredTitle")}</h3>
-            <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+            <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-tiny font-semibold text-muted-foreground">
               {starredForDay.length}
             </span>
           </div>
@@ -682,13 +683,13 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {starredForDay.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">{t("starredView.emptyState")}</div>
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.emptyState")} />
             ) : (
               <div className="space-y-2 p-2">
                 {starredForDay.map((s) => (
                   <div key={s.id} className="rounded-md border bg-muted/(--opacity-light) transition-colors hover:border-border">
-                    <div className="flex items-center gap-2 border-b px-3 py-1.5 text-[11px] text-muted-foreground">
-                      <Badge variant="outline" className="text-[10px]">{s.role}</Badge>
+                    <div className="flex items-center gap-2 border-b px-3 py-1.5 text-dense text-muted-foreground">
+                      <Badge variant="outline" className="text-tiny">{s.role}</Badge>
                       <span>{formatMediumDateTime(s.starredAt)}</span>
                       <span className="font-mono opacity-60">#{shortSessionId(s.sessionId)}</span>
                       <Button variant="ghost" size="icon-xs" className="ml-auto hover:bg-muted" title={t("starredView.unstar")} onClick={() => { void api.starredRemove({ id: s.id }).then(() => refreshStarred()); }}>

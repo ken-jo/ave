@@ -196,7 +196,7 @@ export function SessionTasksPanel({
         <div className="flex items-center gap-2 px-3 py-1.5">
           <ListChecks className="h-3 w-3" />
           <span className="font-medium">{t("sessionTasksPanel.panelTitle")}</span>
-          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+          <Badge variant="outline" className="px-1 py-0 text-tiny">
             {completedCount}/{visible.length}
           </Badge>
           {allComplete && (
@@ -222,7 +222,7 @@ export function SessionTasksPanel({
             return (
               <li
                 key={it.id}
-                className={`flex items-start gap-2 transition-opacity duration-200 ${
+                className={`flex items-start gap-2 transition-opacity duration-[var(--motion-normal)] ${
                   active ? activePulse : ""
                 }`}
                 data-testid={active ? "session-tasks-active-row" : "session-tasks-row"}
@@ -244,12 +244,12 @@ export function SessionTasksPanel({
                   }`}
                 />
                 <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${meta.cls}`}
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-tiny font-medium transition-colors ${meta.cls}`}
                 >
                   {t(meta.labelKey)}
                 </span>
                 <span
-                  className={`min-w-0 flex-1 transition-opacity duration-200 ${
+                  className={`min-w-0 flex-1 transition-opacity duration-[var(--motion-normal)] ${
                     it.status === "completed" ? "line-through opacity-70" : ""
                   }`}
                 >

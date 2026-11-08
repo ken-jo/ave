@@ -1,9 +1,13 @@
 // Shared DOM setup owns cleanup, polyfills and explicit intersection delivery.
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { _clearTerminalFileReviewForTest } from "../../src/ui/renderer/preview/terminal-file-review.js";
 import { clearComposerDrafts } from "../../src/ui/renderer/state/composer-draft-store.js";
+
+// A notice strip's screen-reader region repeats the visible notice's text (NoticeLiveRegion). Text queries look for what is
+// drawn, so they skip that copy; announcements are asserted on the region itself by test id.
+configure({ defaultIgnore: "script, style, [data-notice-live]" });
 
 const stubbedGlobals = new Map<string, unknown>();
 

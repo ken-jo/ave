@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import type {
   PermissionReviewSuggestionPayload,
   PermissionReviewSuggestionReason,
@@ -34,32 +33,27 @@ type ReviewSuggestionState =
   | null;
 
 export interface UsePermissionSignalsResult {
-  userApprovalHitToast: UserApprovalHitPayload | null;
   reviewerSuggestion: ReviewerSuggestion | null;
 }
 
-/** Permission-memory hits expire as toasts; reviewer suggestions remain until user action because their approval card may
- * not be visible yet. Validate both IPC payloads. */
-export function usePermissionSignals(): UsePermissionSignalsResult {
-  const [userApprovalHitToast, setUserApprovalHitToast] = useState<
-    UserApprovalHitPayload | null
-  >(null);
-  const userApprovalHitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+/** Permission-memory hits are reported through the caller's notice queue (one visible notice at a time, held behind modals);
+ * reviewer suggestions remain until user action because their approval card may not be visible yet. Validate both IPC
+ * payloads. */
+export function usePermissionSignals(
+  { onUserApprovalHit }: { onUserApprovalHit: (payload: UserApprovalHitPayload) => void },
+): UsePermissionSignalsResult {
+  const onUserApprovalHitRef = useRef(onUserApprovalHit);
+  onUserApprovalHitRef.current = onUserApprovalHit;
   const [reviewSuggestion, setReviewSuggestion] =
     useState<ReviewSuggestionState>(null);
 
-  // Subscribe to user-approval-hit broadcasts. Returned closure both
-  // unsubscribes the IPC listener and cancels any in-flight dismiss timer.
-  // Defense-in-depth structural validation of the
-  // IPC payload — TS type guarantees only compile-time; a future bug in
-  // permission-manager emitting `null` / `""` / `"critical"` would otherwise
+  // Subscribe to user-approval-hit broadcasts. Defense-in-depth structural validation of the IPC payload — TS type
+  // guarantees only compile-time; a future bug in permission-manager emitting `null` / `""` / `"critical"` would otherwise
   // propagate to `.toUpperCase()` (throws) or render unexpected text.
   useEffect(() => {
     const api = window.ave;
     if (!api) return;
-    const unsubscribe = api.permission.onUserApprovalHit((payload) => {
+    return api.permission.onUserApprovalHit((payload) => {
       if (
         !payload ||
         typeof payload.toolName !== "string" ||
@@ -75,20 +69,8 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
         );
         return;
       }
-      if (userApprovalHitTimerRef.current) {
-        clearTimeout(userApprovalHitTimerRef.current);
-      }
-      setUserApprovalHitToast(payload);
-      userApprovalHitTimerRef.current = setTimeout(() => {
-        setUserApprovalHitToast(null);
-      }, DEFAULT_TOAST_TTL_MS);
+      onUserApprovalHitRef.current(payload);
     });
-    return () => {
-      unsubscribe();
-      if (userApprovalHitTimerRef.current) {
-        clearTimeout(userApprovalHitTimerRef.current);
-      }
-    };
   }, []);
 
   useEffect(() => {
@@ -178,7 +160,6 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
   );
 
   return {
-    userApprovalHitToast,
     reviewerSuggestion,
   };
 }

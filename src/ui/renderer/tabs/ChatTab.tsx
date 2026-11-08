@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { PrivacyTab } from "./PrivacyTab.js";
+import { AccessibilitySignalsSettings } from "./AccessibilitySignalsSettings.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Input } from "../../../components/ui/input.js";
@@ -107,12 +108,14 @@ export function ChatTab({
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.autoCompactLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">{t("chatTab.autoCompactHint")}</p>
+            <p className="text-dense text-muted-foreground">{t("chatTab.autoCompactHint")}</p>
           </div>
         </div>
       </SettingsSection>
 
       <DocumentSettingsContent />
+
+      <AccessibilitySignalsSettings />
 
       <SettingsSection
         data-settings-section="chat-stream-smoothing"
@@ -160,7 +163,7 @@ export function ChatTab({
               onImmediateChange?.();
             }}
           />
-          <div className="grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
+          <div className="grid grid-cols-3 gap-2 text-dense text-muted-foreground">
             {PROCESSING_DISPLAY_LEVELS.map((level) => (
               <button
                 key={level}
@@ -177,7 +180,7 @@ export function ChatTab({
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-muted-foreground" data-testid="processing-display-hint">
+          <p className="text-dense text-muted-foreground" data-testid="processing-display-hint">
             {t(PROCESSING_DISPLAY_HINT_KEYS[processingDisplayLevel])}
           </p>
         </div>
@@ -188,7 +191,7 @@ export function ChatTab({
         title={t("chatTab.experimentalTitle")}
         description={t("chatTab.experimentalDescription")}
         badge={
-          <Badge variant="outline" className="text-[10px] uppercase">
+          <Badge variant="outline" className="text-tiny uppercase">
             {t("chatTab.experimentalBadge")}
           </Badge>
         }
@@ -205,7 +208,7 @@ export function ChatTab({
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.idleRefreshLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("chatTab.idleRefreshHint")}
             </p>
           </div>
@@ -222,7 +225,7 @@ export function ChatTab({
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.idleMemoryConsolidationLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("chatTab.idleMemoryConsolidationHint")}
             </p>
           </div>
@@ -239,7 +242,7 @@ export function ChatTab({
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.subAgentWakeLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("chatTab.subAgentWakeHint")}
             </p>
           </div>
@@ -266,7 +269,7 @@ export function ChatTab({
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.subAgentMaxRoundsLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("chatTab.subAgentMaxRoundsHint")}
             </p>
           </div>

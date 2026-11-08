@@ -83,13 +83,13 @@ export function ResourceMentionMenu({
             </span>
             {item.target.kind === "template" ? (
               <span
-                className="shrink-0 rounded border border-border px-1 text-[10px] text-muted-foreground"
+                className="shrink-0 rounded border border-border px-1 text-tiny text-muted-foreground"
                 data-testid={`resource-mention-template-badge-${index}`}
               >
                 {t("composer.resourceMentionTemplateBadge")}
               </span>
             ) : null}
-            <span className="ml-auto truncate pl-2 text-[11px] text-muted-foreground">
+            <span className="ml-auto truncate pl-2 text-dense text-muted-foreground">
               {item.unavailableReason ?? item.hint}
             </span>
           </div>
@@ -101,7 +101,7 @@ export function ResourceMentionMenu({
         resource" is simply false while a template row is selected.
       */}
       <div
-        className="px-2 pb-1 pt-1.5 text-[10px] text-muted-foreground"
+        className="px-2 pb-1 pt-1.5 text-tiny text-muted-foreground"
         data-testid="resource-mention-hint"
       >
         {t(items[activeIndex]?.target.kind === "template"

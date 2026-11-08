@@ -1,4 +1,5 @@
-import { Loader2, Pin, RefreshCw, GitBranch, AlertTriangle, History } from "lucide-react";
+import { Loader } from "../../../components/ui/loader.js";
+import { Pin, RefreshCw, GitBranch, AlertTriangle, History } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { memo, useMemo } from "react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -92,10 +93,10 @@ function AssistantCardImpl({
         <div
           className={
             isRestoredNotice
-              ? "mb-2 flex items-center gap-1.5 rounded border-b border-border/(--opacity-light) pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+              ? "mb-2 flex items-center gap-1.5 rounded border-b border-border/(--opacity-light) pb-2 text-dense font-semibold uppercase tracking-wider text-muted-foreground"
               : isSystemNotice
-                ? "mb-2 flex items-center gap-1.5 rounded border-b border-destructive/(--opacity-light) pb-2 text-[11px] font-semibold uppercase tracking-wider text-destructive"
-                : "mb-2 flex items-center gap-1.5 rounded pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+                ? "mb-2 flex items-center gap-1.5 rounded border-b border-destructive/(--opacity-light) pb-2 text-dense font-semibold uppercase tracking-wider text-destructive"
+                : "mb-2 flex items-center gap-1.5 rounded pb-2 text-dense font-semibold uppercase tracking-wider text-muted-foreground"
           }
         >
           {isRestoredNotice ? (
@@ -107,7 +108,7 @@ function AssistantCardImpl({
           {isRestoredNotice ? (
             <span
               data-testid="assistant-restored-notice-badge"
-              className="rounded-full border border-border/(--opacity-medium) bg-muted/(--opacity-half) px-1.5 py-px text-[10px] font-medium normal-case tracking-normal text-muted-foreground"
+              className="rounded-full border border-border/(--opacity-medium) bg-muted/(--opacity-half) px-1.5 py-px text-tiny font-medium normal-case tracking-normal text-muted-foreground"
             >
               {t("assistantCard.restoredNoticeBadge")}
             </span>
@@ -116,14 +117,14 @@ function AssistantCardImpl({
             <span
               data-testid="assistant-interrupted-badge"
               data-interrupted-by={entry.interruptedBy ?? "user"}
-              className="rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-1.5 py-px text-[10px] font-medium normal-case tracking-normal text-warning"
+              className="rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-1.5 py-px text-tiny font-medium normal-case tracking-normal text-warning"
             >
               {entry.interruptedBy === "host-exit"
                 ? t("assistantCard.interruptedByHostExitBadge")
                 : t("assistantCard.interruptedBadge")}
             </span>
           ) : null}
-          {entry.streaming ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          {entry.streaming ? <Loader size={12} /> : null}
           {isStarred ? <Pin key="starred" className="h-3 w-3 fill-emphasis text-emphasis ave-anim-star" /> : null}
           {actions && !entry.streaming ? (
             <div className={`ml-auto gap-1 ${isFinal !== false ? "flex" : "hidden group-hover:flex"}`}>

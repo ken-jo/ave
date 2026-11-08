@@ -4,6 +4,7 @@ import { useLayoutEffect } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { useApproval } from "../../src/ui/renderer/hooks/use-approval.js";
+import { AccessibilitySignalEngine, setAccessibilitySignalEngineForTest } from "../../src/ui/renderer/accessibility-signal-engine.js";
 
 type ApprovalHandler = (r: unknown) => void;
 
@@ -365,4 +366,28 @@ describe("useApproval — the host retires a request nobody here answered", () =
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("useApproval — approval-needed accessibility signal", () => {
+  afterEach(() => setAccessibilitySignalEngineForTest(null));
+
+  it("sounds once for a live request and never for requests read back through listPending", async () => {
+    const play = vi.fn(async () => {});
+    setAccessibilitySignalEngineForTest(new AccessibilitySignalEngine({ isWindowFocused: () => false, play }));
+    const { emit, listPending } = installMockNs();
+    listPending.mockResolvedValueOnce([
+      { id: "parked-1", category: "tool", toolName: "read_file", args: {}, reason: "r", createdAt: 1, requireExplicit: false },
+      { id: "parked-2", category: "tool", toolName: "list_files", args: {}, reason: "r", createdAt: 2, requireExplicit: false },
+    ]);
+    const { result } = renderHook(() => useApproval());
+    await waitFor(() => expect(result.current.queue.map((req) => req.id)).toEqual(["parked-1", "parked-2"]));
+    expect(play).not.toHaveBeenCalled();
+    act(() => {
+      const live = { id: "live-1", category: "tool", toolName: "bash_run", args: {}, reason: "r", createdAt: 3, requireExplicit: false };
+      emit(live);
+      emit(live);
+    });
+    await waitFor(() => expect(result.current.queue.map((req) => req.id)).toContain("live-1"));
+    expect(play.mock.calls).toEqual([["approvalNeeded"]]);
+  });
 });

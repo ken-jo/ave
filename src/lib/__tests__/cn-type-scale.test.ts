@@ -3,7 +3,7 @@ import { cn } from "../utils.js";
 
 /** Classify theme text-scale utilities as font sizes so merging preserves text colors. */
 describe("cn — theme type scale vs colour", () => {
-  for (const size of ["text-body", "text-body-sm", "text-caption", "text-micro"]) {
+  for (const size of ["text-body", "text-body-sm", "text-caption", "text-micro", "text-dense", "text-tiny"]) {
     it(`keeps a colour utility alongside ${size}`, () => {
       const merged = cn("bg-primary text-primary-foreground", `h-6 ${size}`);
       expect(merged).toContain("text-primary-foreground");

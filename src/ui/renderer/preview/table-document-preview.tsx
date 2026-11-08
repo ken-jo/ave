@@ -7,6 +7,7 @@
  * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
  * user — nothing is cut silently.
  */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -115,7 +116,7 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
   return (
     <div
       role="status"
-      className="text-[10px] text-warning"
+      className="text-tiny text-warning"
       data-testid="chat-side-panel-table-truncated"
     >
       {notices.join(" · ")}
@@ -305,7 +306,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
     onReload={() => { setSheetFallback(false); setRevision((previous) => previous + 1); }} refreshing={refreshing} />;
   if (state.phase === "error") return <div className="space-y-2">{header}
     <PreviewDocumentLiveStrip error={openFailed ? t(openFailed) : undefined} />
-    <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
+    <div className="text-dense text-destructive" data-testid="chat-side-panel-file-error">
       {t(tableErrorKey(state.code), { mb: PREVIEW_DOCUMENT_LIMITS.maxFileBytes / (1024 * 1024) })}
     </div></div>;
   const loading = <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-loading">
@@ -333,21 +334,19 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
             <button key={`${index}:${name}`} type="button" role="tab" aria-selected={index === sheet.index}
               disabled={refreshing} onClick={() => { setSheetFallback(false); setSheetIndex(index); }}
               className={index === sheet.index
-                ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground"
-                : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"}
+                ? "shrink-0 rounded-md border bg-accent px-2 py-0.5 text-dense font-medium text-foreground"
+                : "shrink-0 rounded-md border border-transparent px-2 py-0.5 text-dense text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground"}
               data-testid="chat-side-panel-table-sheet-tab">{name}</button>
           ))}
         </div>
       ) : null}
-      {sheet.rows.length === 0 ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
-        {t("chatPreviewRail.tableEmpty")}
-      </div> : <Suspense fallback={loading}>
+      {sheet.rows.length === 0 ? <EmptyState className="p-0" data-testid="chat-side-panel-table-empty" title={t("chatPreviewRail.tableEmpty")} /> : <Suspense fallback={loading}>
         <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })} changes={changes} onRendered={acknowledgeRendered} />
       </Suspense>}
       <PreviewDocumentFooter>
         <span>{previewFormatLabel(path)} · {sheet.name} · {t(prefixOnly ? "chatPreviewRail.tablePrefixSummary" : "chatPreviewRail.tableSummary", { rows: sheet.totalRows, columns: sheet.totalColumns })}</span>
         {table.needsRecalculation ? <Badge variant="outline" role="status" title={t("chatPreviewRail.tableRecalculationHint")}
-          className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-table-recalculation">{t("chatPreviewRail.tableNeedsRecalculation")}</Badge> : null}
+          className="px-1 py-0 text-tiny" data-testid="chat-side-panel-table-recalculation">{t("chatPreviewRail.tableNeedsRecalculation")}</Badge> : null}
         <TruncationNotices document={table} />
       </PreviewDocumentFooter>
     </div>

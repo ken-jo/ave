@@ -1,11 +1,12 @@
 /** One column of the folder view: a folder's listing as tree items, or its empty, loading, locked or gone state. */
+import { EmptyState } from "../../../../components/ui/empty-state.js";
+import { Loader } from "../../../../components/ui/loader.js";
 import { forwardRef, type KeyboardEvent } from "react";
 import {
-  ChevronRight, Database, File, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Layers, Link2, Loader2, Lock,
+  ChevronRight, Database, File, FileCode, FileImage, FileSpreadsheet, FileText, Folder, Layers, Link2, Lock,
   Presentation, RefreshCw, ScrollText, SquareTerminal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { formatBytes } from "../../../../lib/turn-summary-format.js";
@@ -52,27 +53,6 @@ export interface FolderColumnProps {
   registerRow: (path: string, node: HTMLElement | null) => void;
 }
 
-function ColumnMessage({ icon: Icon, title, body, tone, children, testId }: {
-  icon: LucideIcon;
-  title: string;
-  body?: string | undefined;
-  tone?: "warning";
-  children?: React.ReactNode;
-  testId: string;
-}) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-4 py-6 text-center" data-testid={testId}>
-      <span className={cn("flex h-9 w-9 items-center justify-center rounded-lg",
-        tone === "warning" ? "bg-warning/(--opacity-subtle) text-warning" : "text-muted-foreground")}>
-        <Icon aria-hidden="true" className="h-5 w-5" />
-      </span>
-      <div className="text-xs font-semibold text-foreground">{title}</div>
-      {body ? <div className="text-[11px] leading-4 text-muted-foreground">{body}</div> : null}
-      {children ? <div className="mt-1 flex flex-wrap justify-center gap-1.5">{children}</div> : null}
-    </div>
-  );
-}
-
 export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(function FolderColumn({
   column, index, selectedPath, isCurrent, focusedPath, locked, onSelect, onFocusRow, onKey, onRetry, onReveal, onOpenTerminal, registerRow,
 }, ref) {
@@ -80,35 +60,35 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
   const name = column.dir.split(/[\\/]/).filter(Boolean).pop() ?? column.dir;
   const body = (() => {
     if (column.status === "loading") {
-      return <ColumnMessage icon={Loader2} title={t("folderView.loading")} testId="folder-column-loading" />;
+      return <EmptyState align="center" className="flex-1 py-6" icon={<Loader size={16} />} title={t("folderView.loading")} data-testid="folder-column-loading" />;
     }
     if (column.status === "error") {
       const lockedOut = column.error === "permission-denied";
+      // Locked out, retrying changes nothing until access is granted, so revealing the folder (to grant it) is the primary
+      // action; for any other failure retry leads.
       return (
-        <ColumnMessage icon={lockedOut ? Lock : File} tone={lockedOut ? "warning" : undefined} testId="folder-column-error"
+        <EmptyState align="center" className="flex-1 py-6" data-testid="folder-column-error"
+          icon={lockedOut ? <Lock className="h-4 w-4 text-warning" /> : <File className="h-4 w-4" />}
           title={t(lockedOut ? "folderView.lockedTitle" : column.error === "not-found" ? "folderView.goneTitle" : "folderView.failedTitle")}
-          body={lockedOut ? t("folderView.lockedBody") : undefined}>
-          <Button type="button" size="sm" variant="outline" onClick={onRetry} data-testid="folder-column-retry">
-            <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.retry")}
-          </Button>
-          {column.error !== "not-found" ? (
-            <Button type="button" size="sm" variant="outline" onClick={onReveal} data-testid="folder-column-reveal">
-              {t(revealKey())}
-            </Button>
-          ) : null}
-        </ColumnMessage>
+          description={lockedOut ? t("folderView.lockedBody") : undefined}
+          {...(lockedOut ? {
+            action: { label: t(revealKey()), onClick: onReveal, testId: "folder-column-reveal" },
+            links: [{ label: t("folderView.retry"), onClick: onRetry, testId: "folder-column-retry" }],
+          } : {
+            action: { label: t("folderView.retry"), icon: <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />, onClick: onRetry, testId: "folder-column-retry" },
+            links: column.error !== "not-found" ? [{ label: t(revealKey()), onClick: onReveal, testId: "folder-column-reveal" }] : undefined,
+          })} />
       );
     }
     if (column.entries.length === 0) {
       return (
-        <ColumnMessage icon={Folder} title={t("folderView.emptyTitle")} testId="folder-column-empty"
-          body={column.hidden === 0 ? t("folderView.emptyNoHidden") : t("folderView.emptyHidden", { count: column.hidden })}>
-          {onOpenTerminal ? (
-            <Button type="button" size="sm" variant="outline" onClick={onOpenTerminal} data-testid="folder-column-terminal">
-              <SquareTerminal aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.openTerminalHere")}
-            </Button>
-          ) : null}
-        </ColumnMessage>
+        <EmptyState align="center" className="flex-1 py-6" data-testid="folder-column-empty" icon={<Folder className="h-4 w-4" />}
+          title={t("folderView.emptyTitle")}
+          description={column.hidden === 0 ? t("folderView.emptyNoHidden") : t("folderView.emptyHidden", { count: column.hidden })}
+          action={onOpenTerminal ? {
+            label: t("folderView.openTerminalHere"), icon: <SquareTerminal aria-hidden="true" className="h-3.5 w-3.5" />,
+            onClick: onOpenTerminal, testId: "folder-column-terminal",
+          } : undefined} />
       );
     }
     // Exactly one row is tabbable: the focused one, else the chosen one, else the first.
@@ -141,7 +121,7 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
               onFocus={() => onFocusRow(entry.path)}
               onKeyDown={(event) => onKey(event, entry)}
               className={cn(
-                "mx-1 flex h-7 cursor-default select-none items-center gap-2 rounded-md px-2 text-[13px] outline-none",
+                "mx-1 flex h-7 cursor-default select-none items-center gap-2 rounded-md px-2 text-body-sm outline-none",
                 "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                 selected && isCurrent ? "bg-foreground text-background"
                   : selected ? "bg-muted text-foreground" : "hover:bg-muted/(--opacity-muted)",
@@ -152,15 +132,15 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
               <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
               <span className={cn("min-w-0 flex-1 truncate", selected && isCurrent && "font-semibold")} title={entry.name}>{entry.name}</span>
               {entry.type === "link" && entry.outside ? (
-                <span className="shrink-0 text-[10px] text-muted-foreground" data-testid="folder-row-outside">{t("folderView.outsideProject")}</span>
+                <span className="shrink-0 text-tiny text-muted-foreground" data-testid="folder-row-outside">{t("folderView.outsideProject")}</span>
               ) : null}
-              {large ? <span className="shrink-0 text-[10px] tabular-nums opacity-80">{formatBytes(entry.size)}</span> : null}
+              {large ? <span className="shrink-0 text-tiny tabular-nums opacity-80">{formatBytes(entry.size)}</span> : null}
               {entry.type === "directory" ? <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 opacity-60" /> : null}
             </div>
           );
         })}
         {column.truncated ? (
-          <div className="px-3 py-2 text-[11px] text-muted-foreground" data-testid="folder-column-truncated">{t("folderView.truncated")}</div>
+          <div className="px-3 py-2 text-dense text-muted-foreground" data-testid="folder-column-truncated">{t("folderView.truncated")}</div>
         ) : null}
       </>
     );

@@ -2430,22 +2430,35 @@ describe("SettingsService system preferences", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("defaults completion sound on for older profiles and persists a strict boolean switch", async () => {
+  it("defaults the accessibility signals for older profiles and persists only known modes", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { closeBehavior: "quit" } }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system").turnCompletionSoundEnabled).toBe(true);
-    await service.patch({ system: { turnCompletionSoundEnabled: false } as SystemSettings });
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").turnCompletionSoundEnabled).toBe(false);
-    await service.patch({ system: { turnCompletionSoundEnabled: "yes" } } as never);
-    expect(service.get("system").turnCompletionSoundEnabled).toBe(false);
+    expect(service.get("system")).toMatchObject({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off" });
+    await service.patch({ system: { signalTurnFinished: "on", signalTurnFailed: "unfocused" } as SystemSettings });
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system")).toMatchObject({
+      signalTurnFinished: "on", signalApprovalNeeded: "unfocused", signalTurnFailed: "unfocused",
+    });
+    await service.patch({ system: { signalApprovalNeeded: "always" } } as never);
+    expect(service.get("system").signalApprovalNeeded).toBe("unfocused");
     expect(service.get("system").closeBehavior).toBe("quit");
-    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { turnCompletionSoundEnabled: "no" } }));
-    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").turnCompletionSoundEnabled).toBe(true);
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { signalTurnFinished: true } }));
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").signalTurnFinished).toBe("unfocused");
+  });
+
+  it("keeps a retired completion-sound opt-out silent until the user picks a turn-finished mode", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { turnCompletionSoundEnabled: false } }));
+    const optedOut = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system");
+    expect(optedOut.signalTurnFinished).toBe("off");
+    expect(optedOut).not.toHaveProperty("turnCompletionSoundEnabled");
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { turnCompletionSoundEnabled: false, signalTurnFinished: "on" } }));
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").signalTurnFinished).toBe("on");
+    writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({ system: { turnCompletionSoundEnabled: true } }));
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").signalTurnFinished).toBe("unfocused");
   });
 
   it("defaults closeBehavior to 'hide-to-tray' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
@@ -2455,16 +2468,16 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a 'quit' preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(reloaded.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic M1; schema-invalid value on disk falls back to default for THIS field only; other settings sections must remain intact.
@@ -2484,7 +2497,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
     expect(service.get("marketplace").updateCheckEnabled).toBe(false);
@@ -2497,7 +2510,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic N1; patch-merge must NOT clobber a valid prior preference when an invalid value
@@ -2664,7 +2677,7 @@ describe("SettingsService system — workspace preferences", () => {
   it("round-trips a localApiServer=true preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { localApiServer: true } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ signalTurnFinished: "unfocused", signalApprovalNeeded: "unfocused", signalTurnFailed: "off", closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").localApiServer).toBe(true);
@@ -3018,7 +3031,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
 
   it("defaults shortcuts OFF with no accelerator + launch flags false", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
     expect(s.get("system").launchAtStartup).toBe(false);
     expect(s.get("system").launchMinimized).toBe(false);
   });
@@ -3029,6 +3042,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     expect(s.get("shortcuts")).toEqual({
       toggleWindow: "CommandOrControl+Shift+Space",
       enabled: true,
+      bindings: {},
     });
     // Reload from disk to confirm round-trip persistence.
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3079,7 +3093,80 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     // Corrupt fields fall back to defaults (No-Fallback at boundary).
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  // app.search has the same default (CommandOrControl+F) on every platform, so these hold on any CI host.
+  it("persists a rebind and resets it with null", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+
+    await reloaded.patch({ shortcuts: { bindings: { "app.search": null } } });
+    expect(reloaded.get("shortcuts").bindings).toEqual({});
+    const again = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(again.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("stores a rebind back to the default as no override", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+F" } } });
+    expect(s.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("keeps the other fields when only a binding is patched", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: "Alt+F1", enabled: true, bindings: { "app.search": "CommandOrControl+Shift+Y" } });
+  });
+
+  it("refuses an unknown row, a fixed row, a bare key and a fixed row's key, applying nothing from that patch", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const refused: Record<string, string>[] = [
+      { "nope.nothing": "CommandOrControl+J" },
+      { "edit.copy": "CommandOrControl+J" },
+      { "app.search": "J" },
+      { "app.search": "CommandOrControl+C" },
+    ];
+    for (const bindings of refused) {
+      await expect(s.patch({ shortcuts: { enabled: true, bindings } })).rejects.toThrow(/shortcut/);
+    }
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  it("drops stale rebinds on load and keeps the valid ones", () => {
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      currentSettingsJson({
+        shortcuts: {
+          toggleWindow: null,
+          enabled: false,
+          bindings: {
+            "app.search": "CommandOrControl+Shift+Y",
+            "removed.row": "CommandOrControl+J",
+            "edit.copy": "CommandOrControl+J",
+            "menu.settings": "CommandOrControl+,",
+            "app.commandPalette": 7,
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+      const logged = JSON.stringify(warn.mock.calls.filter((call) => JSON.stringify(call).includes("shortcuts.bindings: dropped")));
+      expect(logged).toContain("dropped 4 stored rebind");
+      for (const reason of ["unknown-id", "read-only", "equals-default", "malformed"]) expect(logged).toContain(reason);
+      expect(logged).toContain("removed.row");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -4107,5 +4194,27 @@ describe("legacy onboarding completion evidence", () => {
     } finally {
       await cleanupTmpDir(userDataPath);
     }
+  });
+});
+
+describe("SettingsService shortcuts change notification", () => {
+  let userDataPath: string;
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-shortcut-listeners-"));
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
+  });
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("tells shortcuts listeners about a rebind, so the native menus can rebuild", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const listener = vi.fn(() => s.get("shortcuts").bindings);
+    s.onChanged("shortcuts", listener);
+    await s.patch({ shortcuts: { bindings: { "menu.settings": "CommandOrControl+Alt+P" } } });
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener.mock.results[0]?.value).toEqual({ "menu.settings": "CommandOrControl+Alt+P" });
+    await s.patch({ chat: { autoCompact: false } });
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

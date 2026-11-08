@@ -150,6 +150,9 @@ describe("Work Board — compact running card", () => {
     const chip = await screen.findByTestId("work-board-live-chip");
     await vi.waitFor(() => expect(chip.getAttribute("data-phase")).toBe("awaiting_approval"));
     expect(chip.textContent).toBe(`${t("workBoard.liveChipAwaitingApproval")} · 4:12`);
+    // A plan waiting on the user is "needs your answer": the warning token, never the working primary.
+    expect(chip.className).toContain("text-warning");
+    expect(chip.className).not.toContain("text-primary");
   });
 
   it("leaves the elapsed time out while the board still holds a previous run's history", async () => {

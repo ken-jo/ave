@@ -1,5 +1,6 @@
 /** Pane side chats bind every turn to their surface tab; rail side chats name no tab. Both use the shared transcript
  * renderer. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -35,7 +36,7 @@ import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-to
 import { useContextBudget } from "../hooks/use-context-budget.js";
 import { ComposerContextNotice } from "./ComposerContextNotice.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
-import { StatusBar } from "./StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 
 /**
@@ -308,8 +309,8 @@ function SideChatSession({
   // questions to this panel and marks the way here while a card waits off screen.
   const publishSideChatSurface = chatContext?.publishSideChatSurface;
   useEffect(() => {
-    publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown });
-  }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned]);
+    publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown, streaming: isStreaming });
+  }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned, isStreaming]);
   // Withdrawn on unmount only: a tile whose side chat is gone must not keep reporting a session that nothing draws any more.
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
   const [draft, setDraft] = useState("");
@@ -491,14 +492,14 @@ function SideChatSession({
   return (
     <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope>
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-dense font-semibold uppercase tracking-wider text-muted-foreground">
           {t("chatPreviewRail.sideChat.title")}
         </span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-6 gap-1 px-1.5 text-[11px]"
+          className="h-6 gap-1 px-1.5 text-dense"
           onClick={() => void startNew()}
           // Disabled mid-stream: starting a new session mutates the shared side loop; the main handler aborts the in-flight turn
           // first, but blocking the affordance avoids the surprising "New drops my streaming reply".
@@ -521,9 +522,7 @@ function SideChatSession({
           <div className="text-xs text-destructive" role="alert" data-testid="side-chat-pane-error">{paneError}</div>
         ) : null}
         {entries.length === 0 ? (
-          <div className="pt-6 text-center text-xs text-muted-foreground">
-            {t("chatPreviewRail.sideChat.empty")}
-          </div>
+          <EmptyState align="center" className="p-0 pt-6" title={t("chatPreviewRail.sideChat.empty")} />
         ) : (
           <TranscriptRenderer
             observeTerminal={shown && !tileHidden && sessionOwned}
@@ -544,7 +543,7 @@ function SideChatSession({
           type="button"
           size="sm"
           variant="secondary"
-          className="ave-surface-raised absolute bottom-3 right-3 z-20 h-7 rounded-full bg-card/(--opacity-solid) px-2.5 text-[11px] backdrop-blur"
+          className="ave-surface-raised absolute bottom-3 right-3 z-20 h-7 rounded-full bg-card/(--opacity-solid) px-2.5 text-dense backdrop-blur"
           onClick={() => scrollChatToBottom("smooth")}
           data-testid="side-chat-jump-to-bottom"
         >
@@ -584,6 +583,7 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
+        <NoticeLiveRegion toast={visibleToast} />
         {visibleToast !== null || persistent.length > 0 ? (
           <div className="mb-1.5 min-w-0">
             <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />

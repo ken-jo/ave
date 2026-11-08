@@ -46,7 +46,7 @@ function makeSettings(): AppSettings {
     diagnostics: { includeCrashDumps: false, logRetentionDays: 7 },
     appearance: { schemaVersion: 3, mode: "dark", darkScheme: "github-dark", lightScheme: "github-light", terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 }, language: "en" },
     webView: { preferredFlow: "in-app" },
-    system: { closeBehavior: "hide-to-tray", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"],
+    system: { closeBehavior: "hide-to-tray", signalTurnFinished: "off", signalApprovalNeeded: "on", signalTurnFailed: "unfocused", pinnedProjectRoots: ["/Users/secretuser/private"],
       projectSelection: { kind: "root", root: "/Users/example/selected-project" }, recentProjectRoots: ["/Users/example/recent-project"],
       lastViewByProject: { "/Users/example/last-view-project": { view: "home" } } } as unknown as AppSettings["system"],
     shortcuts: { toggleWindow: null, enabled: false } as unknown as AppSettings["shortcuts"],
@@ -119,9 +119,9 @@ describe("pickRedactedSettings — deny-by-default whitelist", () => {
     for (const segment of ["selected-project", "recent-project", "last-view-project"]) expect(json).not.toContain(segment);
   });
 
-  it("keeps the turn completion sound preference for support triage", () => {
-    const out = pickRedactedSettings(makeSettings()) as { system: { turnCompletionSoundEnabled: boolean } };
-    expect(out.system.turnCompletionSoundEnabled).toBe(false);
+  it("keeps the accessibility signal modes for support triage", () => {
+    const out = pickRedactedSettings(makeSettings()) as { system: Record<string, unknown> };
+    expect(out.system).toMatchObject({ signalTurnFinished: "off", signalApprovalNeeded: "on", signalTurnFailed: "unfocused" });
   });
 
   it("keeps safe provider/model shape", () => {

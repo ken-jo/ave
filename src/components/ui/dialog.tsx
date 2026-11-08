@@ -2,6 +2,7 @@ import * as React from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils.js";
+import { registerOpenModal } from "./modal-presence.js";
 
 /**
  * Modal v1 — solid card surface
@@ -56,7 +57,7 @@ const dialogContentVariants = cva(
     "fixed left-[50%] top-[50%] z-50 grid translate-x-[-50%] translate-y-[-50%] gap-4",
     "w-[calc(100vw-32px)] max-h-[90dvh] overflow-y-auto",
     "border border-action-view/30 bg-card text-card-foreground shadow-e3 rounded-lg",
-    "p-6 duration-200",
+    "p-6 duration-[var(--motion-normal)]",
   ].join(" "),
   {
     variants: {
@@ -81,16 +82,27 @@ interface DialogContentProps
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, size, ...props }, ref) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      className={cn(dialogContentVariants({ size }), className)}
-      {...props}
-    />
-  </DialogPortal>
-));
+>(({ className, size, ...props }, ref) => {
+  // The wrapper renders while the dialog is closed too; only the content NODE exists while it is open (Radix unmounts it
+  // after the exit animation), so the node's attach and detach are what count as the modal opening and closing.
+  const releaseRef = React.useRef<(() => void) | null>(null);
+  const contentRef = React.useCallback((node: HTMLDivElement | null) => {
+    releaseRef.current?.();
+    releaseRef.current = node ? registerOpenModal() : null;
+    if (typeof ref === "function") ref(node);
+    else if (ref) ref.current = node;
+  }, [ref]);
+  return (
+    <DialogPortal>
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        ref={contentRef}
+        className={cn(dialogContentVariants({ size }), className)}
+        {...props}
+      />
+    </DialogPortal>
+  );
+});
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

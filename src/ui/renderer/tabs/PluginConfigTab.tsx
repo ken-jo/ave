@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
+import { useInlineNotice } from "../hooks/use-status-bar.js";
 import ReactMarkdown from "react-markdown";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -25,7 +27,6 @@ import {
 import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
-import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
@@ -80,7 +81,7 @@ function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surf
         data-testid={`plugin-config:row-arm:${plugin.id}`}
         data-arm={plugin.arm}
         data-confinement={plugin.confinement}
-        className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground"
+        className="mt-0.5 line-clamp-1 text-tiny text-muted-foreground"
       >
         {line}
       </div>
@@ -91,7 +92,7 @@ function PluginRuntimeArm({ plugin, surface }: { plugin: PluginCardSummary; surf
       data-testid={`plugin-config:doctor-arm:${plugin.id}`}
       data-arm={plugin.arm}
       data-confinement={plugin.confinement}
-      className="mt-1 break-words text-[11px] text-destructive/(--opacity-intense)"
+      className="mt-1 break-words text-dense text-destructive/(--opacity-intense)"
     >
       <span className="font-medium">{t("pluginConfigTab.runtimeArmLabel")}</span>: {line}
     </p>
@@ -108,7 +109,7 @@ function PluginLastAttemptRefusal({ plugin }: { plugin: PluginCardSummary }) {
     <div
       data-testid={`plugin-config:row-refusal:${plugin.id}`}
       data-attempt={refusal.attempt}
-      className="mt-0.5 line-clamp-2 break-words text-[10px] text-muted-foreground"
+      className="mt-0.5 line-clamp-2 break-words text-tiny text-muted-foreground"
     >
       {refusal.attempt === "update"
         ? t("pluginConfigTab.lastUpdateRefused", { message: refusal.message })
@@ -154,23 +155,23 @@ function PluginPreparationStatusPanel({ plugin }: { plugin: PluginCardSummary })
     <div className="space-y-2 rounded-sm bg-warning/(--opacity-subtle) px-3 py-2" aria-live="polite">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
-          <div className="text-[10px] font-medium uppercase text-warning">{t("pluginConfigTab.preparationStatusLabel")}</div>
+          <div className="text-tiny font-medium uppercase text-warning">{t("pluginConfigTab.preparationStatusLabel")}</div>
           <div className="text-xs font-medium text-foreground">{phaseLabel}</div>
-          <div className="break-words text-[11px] text-muted-foreground">{message}</div>
+          <div className="break-words text-dense text-muted-foreground">{message}</div>
         </div>
         {progressPct !== null && (
-          <div className="shrink-0 font-mono text-[11px] text-warning tabular-nums">{progressPct}%</div>
+          <div className="shrink-0 font-mono text-dense text-warning tabular-nums">{progressPct}%</div>
         )}
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-warning/(--opacity-light)">
         {/* Determinate fill flows through --progress so the geometry stays
             in classes; the indeterminate state keeps the pulsing w-1/3. */}
         <div
-          className={`h-full rounded-full bg-warning transition-all ${progressPct === null ? "w-1/3 animate-pulse" : "w-[var(--progress)]"}`}
+          className={`h-full rounded-full bg-warning transition-[width] ${progressPct === null ? "w-1/3 animate-pulse motion-reduce:animate-none" : "w-[var(--progress)]"}`}
           style={progressPct === null ? undefined : ({ "--progress": `${progressPct}%` } as CSSProperties)}
         />
       </div>
-      <div className="text-[10px] text-muted-foreground">
+      <div className="text-tiny text-muted-foreground">
         {t("pluginConfigTab.preparationAutoLoad")}
       </div>
     </div>
@@ -239,13 +240,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [saving, setSaving] = useState(false);
   const [doctoringId, setDoctoringId] = useState<string | null>(null);
   const [protocolUpdatePath, setProtocolUpdatePath] = useState<PluginProtocolUpdatePath | null>(null);
-  const [banner, setBanner] = useState<{ type: BannerType; msg: string } | null>(null);
-  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBanner = useCallback((type: BannerType, msg: string) => {
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
-    bannerTimerRef.current = setTimeout(() => setBanner(null), DEFAULT_TOAST_TTL_MS);
-  }, []);
+  const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
+  const showBanner = useCallback((type: BannerType, msg: string) => showNotice(type, msg), [showNotice]);
 
   const refreshContributionTrust = useCallback(async (pluginId: string | null): Promise<void> => {
     const refreshId = ++contributionTrustRefreshRef.current;
@@ -306,12 +302,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       setTrustUpdating(null);
     }
   }, [refreshContributionTrust, showBanner]);
-
-  useEffect(() => {
-    return () => {
-      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    };
-  }, []);
 
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
@@ -697,18 +687,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }}
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
+      <NoticeLiveRegion toast={banner} />
       {banner && (
-        <div
-          data-testid="plugin-config:banner"
-          className={`rounded-md px-3 py-2 text-sm ${
-            banner.type === "error"
-              ? "bg-destructive/(--opacity-soft) text-destructive"
-              : banner.type === "warning"
-                ? "bg-warning/(--opacity-soft) text-warning"
-                : "bg-success/(--opacity-soft) text-success"
-          }`}
-        >
-          {banner.msg}
+        <div data-testid="plugin-config:banner" data-severity={banner.severity}>
+          <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
         </div>
       )}
 
@@ -770,13 +752,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                   >
                     <div className="flex items-center gap-1 min-w-0">
                       <span className="min-w-0 line-clamp-1">{p.name}</span>
-                      {!!unseen.get(p.id) && <span data-testid={`alert-unseen:${p.id}`} aria-label={t("alerts.unseenCount", { count: unseen.get(p.id)! })} className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">{unseen.get(p.id)}</span>}
+                      {!!unseen.get(p.id) && <span data-testid={`alert-unseen:${p.id}`} aria-label={t("alerts.unseenCount", { count: unseen.get(p.id)! })} className="shrink-0 rounded-full bg-primary px-1.5 text-tiny text-primary-foreground">{unseen.get(p.id)}</span>}
                     </div>
                     <div className="flex items-center gap-1 mt-0.5">
                       {p.loadStatus === "loaded" && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
-                          className="inline-block rounded-full bg-success/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-success"
+                          className="inline-block rounded-full bg-success/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-success"
                         >
                           {t("pluginConfigTab.statusLoaded")}
                         </span>
@@ -784,7 +766,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       {p.loadStatus === "preparing" && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
-                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
+                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-warning"
                         >
                           {t("pluginConfigTab.statusPreparing")}
                         </span>
@@ -792,7 +774,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       {p.loadStatus === "failed" && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
-                          className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-destructive"
+                          className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-destructive"
                         >
                           {t("pluginConfigTab.statusFailed")}
                         </span>
@@ -800,7 +782,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       {p.stopping && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
-                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
+                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-warning"
                         >
                           {t("pluginConfigTab.statusStopping")}
                         </span>
@@ -808,7 +790,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       {p.loadStatus === "disabled" && !p.stopping && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
-                          className="inline-block rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
+                          className="inline-block rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground"
                         >
                           {t("pluginConfigTab.statusDisabled")}
                         </span>
@@ -820,7 +802,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           quiet for the happy-path. Click → detail panel handles login flow. */}
                       {p.auth && isRuntimeCallablePlugin(p) && authStatuses.get(p.id)?.kind === "unauthed" && (
                         <span
-                          className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-destructive"
+                          className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-destructive"
                           title={t("pluginConfigTab.unauthTitle")}
                         >
                           🔒 {t("pluginConfigTab.statusUnauthed")}
@@ -828,7 +810,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       )}
                     </div>
                     {p.loadStatus === "preparing" && p.preparationStatus?.message && (
-                      <div className="mt-1 line-clamp-2 text-[10px] text-warning/(--opacity-intense)">
+                      <div className="mt-1 line-clamp-2 text-tiny text-warning/(--opacity-intense)">
                         {p.preparationStatus.message}
                       </div>
                     )}
@@ -855,28 +837,28 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         selectedPlugin.loadStatus === "loaded" ? (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
-                            className="inline-block rounded-full bg-success/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-success"
+                            className="inline-block rounded-full bg-success/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-success"
                           >
                             {t("pluginConfigTab.statusLoaded")}
                           </span>
                         ) : selectedPlugin.loadStatus === "preparing" || selectedPlugin.stopping ? (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
-                            className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
+                            className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-warning"
                           >
                             {t(selectedPlugin.stopping ? "pluginConfigTab.statusStopping" : "pluginConfigTab.statusPreparing")}
                           </span>
                         ) : selectedPlugin.loadStatus === "failed" ? (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
-                            className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-destructive"
+                            className="inline-block rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-destructive"
                           >
                             {t("pluginConfigTab.statusFailed")}
                           </span>
                         ) : (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
-                            className="inline-block rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
+                            className="inline-block rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground"
                           >
                             {t("pluginConfigTab.statusDisabled")}
                           </span>
@@ -884,9 +866,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       )}
                     </div>
                     <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                      <span className="font-mono text-[10px] text-muted-foreground">{selectedPlugin.id}</span>
+                      <span className="font-mono text-tiny text-muted-foreground">{selectedPlugin.id}</span>
                       {selectedPlugin.version && (
-                        <span className="text-[10px] text-muted-foreground">· v{selectedPlugin.version}</span>
+                        <span className="text-tiny text-muted-foreground">· v{selectedPlugin.version}</span>
                       )}
                     </div>
                     {selectedPlugin.description && (
@@ -904,7 +886,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       </span>
                     )}
                     {selectedPluginToggleable ? (
-                      <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <label className="flex items-center gap-1.5 text-tiny text-muted-foreground">
                         <span>{selectedPluginActive ? t("pluginConfigTab.activeLabel") : t("pluginConfigTab.inactiveLabel")}</span>
                         <Switch
                           size="sm"
@@ -917,7 +899,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         />
                       </label>
                     ) : (
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-tiny text-muted-foreground">
                         {selectedPlugin.loadStatus === "preparing" ? t("pluginConfigTab.statusPreparing") : t("pluginConfigTab.notRunnable")}
                       </span>
                     )}
@@ -970,7 +952,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     data-testid={`plugin-config:lifecycle-quarantined:${selectedPlugin.id}`}
                     data-grants-retained={String(selectedPlugin.lifecycleQuarantined.grantsRetained)}
                     role="status"
-                    className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+                    className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
                   >
                     {t("pluginConfigTab.doctorLifecycleQuarantined")}
                     {selectedPlugin.lifecycleQuarantined.grantsRetained ? ` ${t("pluginConfigTab.doctorLifecycleQuarantinedGrants")}` : ""}
@@ -1005,7 +987,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                                       ? t("pluginConfigTab.doctorLoadCrashTitle")
                                       : t("pluginConfigTab.doctorTitle")}
                         </p>
-                        <p className="text-[11px] text-destructive/(--opacity-intense)">
+                        <p className="text-dense text-destructive/(--opacity-intense)">
                           {selectedPlugin.installFailureKind === "incompatible-app-version"
                             ? t("pluginConfigTab.doctorIncompatibleAppDescription")
                             : selectedPlugin.installFailureKind === "process-entry-unconfined"
@@ -1029,10 +1011,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <PluginRuntimeArm plugin={selectedPlugin} surface="doctor" />
                         {selectedPlugin.installFailureMessage ? (
                           <div className="mt-2 rounded border border-destructive/(--opacity-muted) bg-background/(--opacity-muted) px-2 py-1.5">
-                            <p className="text-[10px] font-medium uppercase tracking-wide text-destructive">
+                            <p className="text-tiny font-medium uppercase tracking-wide text-destructive">
                               {t("pluginConfigTab.doctorFailureDetailLabel")}
                             </p>
-                            <p className="mt-1 break-words font-mono text-[10.5px] leading-snug text-destructive/(--opacity-intense)">
+                            <p className="mt-1 break-words font-mono text-dense leading-snug text-destructive/(--opacity-intense)">
                               {selectedPlugin.installFailureKind === "process-entry-unconfined"
                                 ? t("formatIpcError.processEntryUnconfined")
                                 : selectedPlugin.installFailureKind === "process-entry-requires-pinned-artifact"
@@ -1088,17 +1070,17 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     <Separator />
                     <div className="space-y-2" data-testid={`plugin-config:contribution-trust:${selectedPlugin.id}`}>
                       <div>
-                        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        <p className="text-tiny font-medium uppercase tracking-wide text-muted-foreground">
                           {t("pluginConfigTab.contributionTrustLabel")}
                         </p>
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-dense text-muted-foreground">
                           {t("pluginConfigTab.contributionTrustDescription")}
                         </p>
                       </div>
                       {contributionTrustError && (
                         <p
                           role="alert"
-                          className="text-[11px] text-destructive"
+                          className="text-dense text-destructive"
                           data-testid={`plugin-config:contribution-trust-error:${selectedPlugin.id}`}
                         >
                           {contributionTrustError}
@@ -1110,10 +1092,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         return (
                           <div key={key} className="flex items-center justify-between gap-3 rounded border border-border/(--opacity-medium) px-2 py-1.5">
                             <div className="min-w-0">
-                              <p className="truncate font-mono text-[11px] font-semibold">
+                              <p className="truncate font-mono text-dense font-semibold">
                                 {row.kind === "hook" ? "Hook" : "MCP"} · {row.localId}
                               </p>
-                              <p className="truncate font-mono text-[9px] text-muted-foreground" title={row.fingerprint}>
+                              <p className="truncate font-mono text-tiny text-muted-foreground" title={row.fingerprint}>
                                 {row.fingerprint.slice(0, 12)} · v{row.pluginVersion}
                               </p>
                             </div>
@@ -1155,24 +1137,24 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         onClick={() => setToolsExpanded((prev) => !prev)}
                       >
                         <span className="flex items-center gap-2">
-                          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{t("pluginConfigTab.providedToolsLabel")}</span>
-                          <span className="inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
+                          <span className="text-tiny font-medium text-muted-foreground uppercase tracking-wide">{t("pluginConfigTab.providedToolsLabel")}</span>
+                          <span className="inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground tabular-nums">
                             {selectedPlugin.tools.length}
                           </span>
                           {!selectedPluginActive && (
-                            <span className="rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground">
+                            <span className="rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground">
                               {t("pluginConfigTab.toolsHiddenFromModel")}
                             </span>
                           )}
                         </span>
-                        <span aria-hidden="true" className="text-[10px] text-muted-foreground">
+                        <span aria-hidden="true" className="text-tiny text-muted-foreground">
                           {toolsExpanded ? "▾" : "▸"}
                         </span>
                       </button>
                       {!selectedPluginActive && selectedPlugin.tools.length === 0 && (
                         <p
                           data-testid={`plugin-config:tools-hidden-note:${selectedPlugin.id}`}
-                          className="px-1 text-[11px] text-muted-foreground"
+                          className="px-1 text-dense text-muted-foreground"
                         >
                           {t("pluginConfigTab.toolsHiddenNote")}
                         </p>
@@ -1186,9 +1168,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             const desc = selectedPlugin.toolDescriptions?.[tool];
                             return (
                               <div key={tool} className="flex flex-col gap-0.5 rounded border border-border/(--opacity-medium) bg-muted/(--opacity-light) px-2 py-1.5">
-                                <span className="font-mono text-[11px] font-semibold">{tool}</span>
+                                <span className="font-mono text-dense font-semibold">{tool}</span>
                                 {desc && (
-                                  <div className="prose prose-sm ave-prose max-w-none break-words text-[11px] text-muted-foreground [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5 [&_code]:text-[10px]">
+                                  <div className="prose prose-sm ave-prose max-w-none break-words text-dense text-muted-foreground [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5 [&_code]:text-tiny">
                                     <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>
                                       {desc}
                                     </ReactMarkdown>
@@ -1213,7 +1195,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                   // PARENT right-detail card has `overflow-y-auto`, so all
                   // env-config items are reachable by scrolling the card.
                   <div className="space-y-1.5">
-                    <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{t("pluginConfigTab.configSectionLabel")}</span>
+                    <span className="text-tiny font-medium text-muted-foreground uppercase tracking-wide">{t("pluginConfigTab.configSectionLabel")}</span>
                     <PluginConfigSchemaForm
                         pluginId={selectedPlugin.id}
                         schema={selectedPlugin.configSchema}
@@ -1271,10 +1253,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         gaps) and scrolls beyond that so a plugin with 20
                         env vars doesn't push the Save button off-screen. */}
                     <div className="flex items-baseline justify-between">
-                      <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                      <p className="text-tiny font-medium text-muted-foreground uppercase tracking-wide">
                         {t("pluginConfigTab.envVarsLabel")}
                       </p>
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-tiny text-muted-foreground">
                         {t("pluginConfigTab.envVarsCount", { count: entries.length })}
                       </span>
                     </div>
@@ -1346,13 +1328,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         </div>
       )}
       {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
-      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} completionSound={{
-        enabled: alerts.turnCompletionSoundEnabled,
-        onChange: async (enabled) => {
-          const result = await alertsApi.updateSettings({ system: { turnCompletionSoundEnabled: enabled } });
-          if ("error" in result) throw new Error("Completion sound setting could not be saved");
-        },
-      }} />}
+      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

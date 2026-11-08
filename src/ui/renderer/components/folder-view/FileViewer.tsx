@@ -53,7 +53,7 @@ function ImageViewer({ src, alt }: { src: string; alt: string }) {
   const step = (factor: number) => setZoom((current) => Math.min(8, Math.max(0.1, (current ?? 1) * factor)));
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="folder-image-viewer">
-      <div className="flex shrink-0 items-center gap-1 border-b px-3 py-1 text-[11px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-1 border-b px-3 py-1 text-dense text-muted-foreground">
         <Button type="button" size="icon-xs" variant="ghost" aria-label={t("folderView.imageFit")} title={t("folderView.imageFit")}
           aria-pressed={zoom === null} onClick={() => setZoom(null)}><Scan aria-hidden="true" className="h-3.5 w-3.5" /></Button>
         <Button type="button" size="icon-xs" variant="ghost" aria-label={t("folderView.imageZoomOut")} title={t("folderView.imageZoomOut")}
@@ -88,8 +88,8 @@ function ViewerHeader({ entry, subtitle, actions, back }: {
       ) : null}
       <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-semibold" title={entry.name}>{entry.name}</div>
-        <div className="truncate text-[11px] text-muted-foreground" data-testid="folder-viewer-subtitle">{subtitle}</div>
+        <div className="truncate text-body-sm font-semibold" title={entry.name}>{entry.name}</div>
+        <div className="truncate text-dense text-muted-foreground" data-testid="folder-viewer-subtitle">{subtitle}</div>
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
     </div>
@@ -169,7 +169,7 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
           {([false, true] as const).map((source) => (
             <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
               onClick={() => setMarkdownSource(source)}
-              className={cn("rounded px-2 py-0.5 text-[11px]", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
+              className={cn("rounded px-2 py-0.5 text-dense", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
               {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
             </button>
           ))}
@@ -219,7 +219,7 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   return shell(<>
     <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} back={back} />
     {open.error || attachNote ? (
-      <div role="alert" className="shrink-0 border-b px-3 py-1 text-[11px] text-destructive" data-testid="folder-viewer-alert">
+      <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-viewer-alert">
         {open.error ? t(open.error) : attachNote}
       </div>
     ) : null}

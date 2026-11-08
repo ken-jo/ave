@@ -2713,6 +2713,9 @@ describe("ChatView", () => {
 });
 
 describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/3)", () => {
+  // The disclosure is a notice in the window's queue; its kind names it, its severity carries the verdict tier.
+  const APPROVAL_HIT = '[data-notice-kind^="approval-memory-hit"]';
+
   type HitCb = (payload: {
     toolName: string;
     scope: "session" | "persistent";
@@ -2736,7 +2739,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "fs_write", scope: "persistent", verdictAtApproval: "low" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2752,7 +2755,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "bash_run", scope: "session", verdictAtApproval: "medium" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2761,61 +2764,106 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     expect(toast.textContent).toContain("MEDIUM");
   });
 
-  it("verdict-tier tint uses semantic theme tokens (low=success, medium=warning, high=destructive)", async () => {
+  it("verdict tier sets the notice severity (low=success, medium=warning, high=warning) — a reuse is never an error", async () => {
     const { container, fire } = await setupWithCallback();
     const cases: Array<["low" | "medium" | "high", string]> = [
       ["low", "success"],
       ["medium", "warning"],
-      ["high", "destructive"],
+      ["high", "warning"],
     ];
-    for (const [verdict, expectedToken] of cases) {
+    for (const [verdict, severity] of cases) {
+      // Each tier has its own notice; close the one shown so the next tier reaches the head.
+      const shownDismiss = container.querySelector<HTMLButtonElement>(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`);
+      if (shownDismiss) {
+        await act(async () => {
+          fireEvent.click(shownDismiss);
+        });
+      }
       await act(async () => {
         fire({ toolName: `tool_${verdict}`, scope: "session", verdictAtApproval: verdict });
       });
-      const toast = await waitFor(() => {
-        const el = container.querySelector(
-          `[data-testid="user-approval-hit-toast"][data-verdict="${verdict}"]`,
-        );
-        expect(el).not.toBeNull();
-        return el as HTMLElement;
+      await waitFor(() => {
+        const el = container.querySelector(APPROVAL_HIT);
+        expect(el?.textContent).toContain(`tool_${verdict}`);
+        expect(el?.getAttribute("data-severity"), `verdict=${verdict}`).toBe(severity);
       });
-      // Class string uses `hsl(var(--<token>)/...)` form — assert the token name appears (theme system v2 — bundle-invariant, no
-      // palette literals).
-      expect(
-        toast.className,
-        `verdict=${verdict} expected token "--${expectedToken}"`,
-      ).toContain(`--${expectedToken}`);
     }
   });
 
-  it("HIGH verdict promotes role to 'alert' + aria-live 'assertive' (urgent disclosure)", async () => {
+  it("only a low hit, which repeats on every cached approval, offers Don't show again", async () => {
     const { container, fire } = await setupWithCallback();
+    for (const verdict of ["high", "medium"] as const) {
+      await act(async () => {
+        fire({ toolName: `fs_${verdict}`, scope: "session", verdictAtApproval: verdict });
+      });
+      await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain(`fs_${verdict}`));
+      expect(container.querySelector('[data-testid="status-toast-suppress"]'), verdict).toBeNull();
+      await act(async () => {
+        fireEvent.click(container.querySelector(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`) as HTMLButtonElement);
+      });
+    }
     await act(async () => {
-      fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
+      fire({ toolName: "fs_read", scope: "session", verdictAtApproval: "low" });
     });
-    const toast = await waitFor(() => {
-      const el = container.querySelector(
-        '[data-testid="user-approval-hit-toast"][data-verdict="high"]',
-      );
+    const suppress = await waitFor(() => {
+      const el = container.querySelector<HTMLButtonElement>('[data-testid="status-toast-suppress"]');
       expect(el).not.toBeNull();
-      return el as HTMLElement;
+      return el as HTMLButtonElement;
     });
-    expect(toast.getAttribute("role")).toBe("alert");
-    expect(toast.getAttribute("aria-live")).toBe("assertive");
+    try {
+      await act(async () => {
+        fireEvent.click(suppress);
+      });
+      // The strip draws its last content once more while it leaves; only a notice outside that exit copy is "shown".
+      const shown = () => container.querySelector(`[data-testid="status-bar-presence"]:not([data-leaving]) ${APPROVAL_HIT}`);
+      expect(shown()).toBeNull();
+      await act(async () => {
+        fire({ toolName: "fs_read_again", scope: "session", verdictAtApproval: "low" });
+      });
+      expect(container.textContent).not.toContain("fs_read_again");
+    } finally {
+      window.localStorage.removeItem("ave.notices.suppressed");
+    }
   });
 
-  it("non-HIGH stays role='status' + aria-live='polite'", async () => {
+  it("HIGH verdict is a polite warning that stays until it is dismissed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { container, fire } = await setupWithCallback();
+      await act(async () => {
+        fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
+      });
+      const toast = await waitFor(() => {
+        const el = container.querySelector('[data-notice-kind="approval-memory-hit-high"]');
+        expect(el).not.toBeNull();
+        return el as HTMLElement;
+      });
+      expect(toast.getAttribute("data-severity")).toBe("warning");
+      expect(toast.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(container.querySelector('[data-notice-kind="approval-memory-hit-high"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a reuse is announced through the strip's polite region, never the assertive one", async () => {
     const { container, fire } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_read", scope: "persistent", verdictAtApproval: "low" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(toast.getAttribute("role")).toBe("status");
-    expect(toast.getAttribute("aria-live")).toBe("polite");
+    expect(toast.getAttribute("role")).toBeNull();
+    const polite = [...container.querySelectorAll('[data-testid="notice-live-polite"]')].map((el) => el.textContent ?? "");
+    const assertive = [...container.querySelectorAll('[data-testid="notice-live-assertive"]')].map((el) => el.textContent ?? "");
+    expect(polite.some((text) => text.includes("fs_read"))).toBe(true);
+    expect(assertive.some((text) => text.includes("fs_read"))).toBe(false);
   });
 
   it("malformed payload dropped via structural guard (security Med-2)", async () => {
@@ -2829,10 +2877,28 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
         verdictAtApproval: null as unknown as "low",
       });
     });
-    const toast = container.querySelector('[data-testid="user-approval-hit-toast"]');
+    const toast = container.querySelector(APPROVAL_HIT);
     expect(toast).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it("a later low hit queues behind an unread high notice instead of replacing it", async () => {
+    const { container, fire } = await setupWithCallback();
+    await act(async () => {
+      fire({ toolName: "risky_tool", scope: "session", verdictAtApproval: "high" });
+    });
+    await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain("risky_tool"));
+    await act(async () => {
+      fire({ toolName: "safe_tool", scope: "session", verdictAtApproval: "low" });
+    });
+    // After the low hit has landed (a short settle, well inside its TTL): the high notice is still the one shown — the low
+    // hit did not replace it in place — and the low one waits behind it.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const shown = container.querySelector(APPROVAL_HIT);
+    expect(shown?.textContent).toContain("risky_tool");
+    expect(shown?.textContent).not.toContain("safe_tool");
+    expect(shown?.textContent).toContain("+1");
   });
 
   it("subsequent hit replaces previous toast (new payload wins)", async () => {
@@ -2844,10 +2910,10 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       expect(container.textContent).toContain("first_tool");
     });
     await act(async () => {
-      fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "high" });
+      fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "low" });
     });
     await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       expect(el!.textContent).toContain("second_tool");
       expect(el!.textContent).not.toContain("first_tool");

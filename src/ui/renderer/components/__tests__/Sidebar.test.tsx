@@ -34,7 +34,7 @@ it("names a covered conversation's approval exactly as its untitled sidebar row"
     sessions: [sessionRow({ id: "untitled-conversation", title, modifiedAt: "2026-01-01T00:00:00Z" })],
   });
   try {
-    const sidebarTitle = getByTestId("sidebar-session-untitled-conversation").textContent;
+    const sidebarTitle = getByTestId("sidebar-conversation-title-untitled-conversation").textContent;
     const approval = render(
       <CoveredConversationApprovalDock
         conversation={{ sessionId: "untitled-conversation", messages: [{ role: "user", content: title }] }}
@@ -1056,13 +1056,21 @@ describe("Sidebar conversation row actions", () => {
     onDelete: state.onDelete,
   });
 
-  it("shows a responding dot on a row whose conversation has a turn running, in place of the kind glyph", () => {
+  it("shows the loader on a row whose conversation has a turn running, in place of the kind glyph", () => {
     const state = rowState();
     state.responding.add("sess-2");
     const { getByTestId, queryByTestId, restore } = renderSidebar({ conversationActions: asActions(state) });
     try {
       const dot = getByTestId("sidebar-session-responding-sess-2");
-      expect(dot.getAttribute("aria-label")).toBeTruthy();
+      expect(dot.getAttribute("aria-label")).toBe("작업 중");
+      // The loader takes the glyph's square: the glyph is gone from that row, kept on the idle one.
+      expect(queryByTestId("sidebar-conversation-glyph-sess-2")).toBeNull();
+      expect(getByTestId("sidebar-conversation-glyph-sess-1")).toBeTruthy();
+      expect(dot.querySelector("svg")?.getAttribute("class")).toContain("motion-reduce:animate-none");
+      // The row's button says it, once: the slot itself stays out of the accessible name.
+      expect(getByTestId("sidebar-session-sess-2").textContent).toContain("작업 중");
+      expect(dot.closest("[aria-hidden='true']")).toBeTruthy();
+      expect(getByTestId("sidebar-session-sess-1").textContent).not.toContain("작업 중");
       expect(getByTestId("sidebar-session-sess-2").closest("[data-responding='true']")).toBeTruthy();
       expect(queryByTestId("sidebar-session-responding-sess-1")).toBeNull();
       expect(getByTestId("sidebar-session-sess-1").closest("[data-responding='true']")).toBeNull();
@@ -1657,11 +1665,17 @@ describe("Sidebar — every conversation family", () => {
       expect(glyphFamily("sub-wb-1")).toBe("work-board");
       expect(glyphFamily("side-1")).toBe("side-chat");
 
-      // The chat glyph stays unnamed; every other family names itself.
-      expect(getByTestId("sidebar-conversation-glyph-sess-1").getAttribute("aria-hidden")).toBe("true");
-      expect(getByTestId("sidebar-conversation-glyph-routine-run-1").getAttribute("aria-label")).toBe("루틴 실행");
-      expect(getByTestId("sidebar-conversation-glyph-sub-wb-1").getAttribute("aria-label")).toBe("워크보드 작업");
-      expect(getByTestId("sidebar-conversation-glyph-side-1").getAttribute("aria-label")).toBe("사이드 챗");
+      // The glyph is decorative inside a slot hidden from assistive tech; the row's button names every non-main family in
+      // its own accessible text, and leaves the chat family unnamed.
+      for (const id of ["sess-1", "routine-run-1", "sub-wb-1", "side-1"]) {
+        expect(getByTestId(`sidebar-conversation-glyph-${id}`).closest("[aria-hidden='true']")).toBeTruthy();
+      }
+      const spoken = (id: string) => getByTestId(`sidebar-session-${id}`).querySelector(".sr-only")?.textContent ?? "";
+      expect(spoken("routine-run-1")).toContain("루틴 실행");
+      expect(spoken("sub-wb-1")).toContain("워크보드 작업");
+      expect(spoken("side-1")).toContain("사이드 챗");
+      expect(spoken("sess-1")).not.toMatch(/루틴 실행|워크보드 작업|사이드 챗/);
+      expect(getByTestId("sidebar-session-sub-wb-1").textContent).toContain("워크보드 작업");
     } finally {
       restore();
     }
@@ -2054,6 +2068,31 @@ describe("Sidebar pending-answer dot", () => {
     family: "routine",
   });
 
+  it("draws a family row working and waiting at once: the loader in the square, the badge in its corner", async () => {
+    const { getByTestId, queryByTestId, restore } = renderSidebar({
+      sessions: [sessionRow({ id: "sess-1", title: "현재", modifiedAt: new Date().toISOString() }), sideChat],
+      pendingAnswerSessionIds: new Set(["side-1"]),
+      conversationActions: {
+        isArchived: () => false, isUnread: () => false, isResponding: (id: string) => id === "side-1",
+        onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+      },
+    });
+    try {
+      await waitFor(() => getByTestId("sidebar-session-responding-side-1"));
+      const row = getByTestId("sidebar-row-session-side-1");
+      expect(row.getAttribute("data-responding")).toBe("true");
+      expect(queryByTestId("sidebar-conversation-glyph-side-1")).toBeNull();
+      const badge = getByTestId("sidebar-pending-answer-side-1");
+      expect(getByTestId("sidebar-session-responding-side-1").parentElement?.contains(badge)).toBe(true);
+      expect(getByTestId("sidebar-session-side-1").textContent).toContain("작업 중, 답변 대기 중");
+      // The badge overhangs the pin's square: it must let the pin take the click.
+      expect(badge.className).toContain("pointer-events-none");
+      expect(queryByTestId("sidebar-session-responding-sess-1")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
   it("marks exactly the rows the window says are parked on an answer, whatever their family", async () => {
     const { getByTestId, queryByTestId, restore } = renderSidebar({
       sessions: [
@@ -2074,8 +2113,10 @@ describe("Sidebar pending-answer dot", () => {
       expect(getByTestId("sidebar-pending-answer-routine-run-1")).toBeTruthy();
       expect(queryByTestId("sidebar-pending-answer-sess-2")).toBeNull();
       expect(getByTestId("sidebar-pending-answer-sess-1").getAttribute("aria-label")).toBe("답변 대기 중");
-      // Inside the row's button, so the way to the card is the row itself.
-      expect(getByTestId("sidebar-session-sess-1").contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
+      // The badge sits on the row's glyph (the agent status slot), and the row's button names the state, so the way to the
+      // card is the row itself.
+      expect(getByTestId("sidebar-row-session-sess-1").contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
+      expect(getByTestId("sidebar-session-sess-1").textContent).toContain("답변 대기 중");
     } finally {
       restore();
     }

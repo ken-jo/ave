@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { Children, memo, useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { debugLog, isDebugStreamEnabled } from "../../../lib/debug-stream.js";
 import { formatDuration, KOREAN_DURATION_UNITS } from "../../../lib/turn-summary-format.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -119,7 +120,7 @@ function WorkGroupImpl({ stepCount, streaming, children, turnDurationMs, complet
         }}
       >
         {streaming
-          ? <Loader2 className="h-3 w-3 animate-spin flex-shrink-0" />
+          ? <Loader size={12} />
           : null}
         <span className="min-w-0 font-medium text-foreground/(--opacity-near)">
           {headerLabel}

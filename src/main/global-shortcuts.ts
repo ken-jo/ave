@@ -66,10 +66,10 @@ export type ReconcileOutcome =
   | { status: "invalid"; accelerator: string }
   | { status: "conflict"; accelerator: string };
 
-// Register/unregister the toggle accelerator to match the given settings. Idempotent: unbinds the previous accelerator first, then binds the new one
+// Register/unregister the toggle accelerator to match the given settings (only the toggle fields; in-app rebinds are not OS-global). Idempotent: unbinds the previous accelerator first, then binds the new one
 // when `enabled` and a valid accelerator are present.
 export function reconcileGlobalShortcuts(
-  shortcuts: ShortcutSettings,
+  shortcuts: Pick<ShortcutSettings, "toggleWindow" | "enabled">,
   deps: GlobalShortcutsDeps = defaultDeps(),
 ): ReconcileOutcome {
   // Always release the previously-bound accelerator first so a change of accelerator (or disabling) never leaves a stale binding.

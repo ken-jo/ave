@@ -9,7 +9,7 @@ import {
   subscriptionRuntimeDescriptor,
 } from "../../../shared/subscription-runtime.js";
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shared/permission-mode.js";
-import { apiModelBillingRoute, modelBillingApiAddress, type ModelBillingRoute } from "../utils/model-billing.js";
+import type { ModelBillingRoute } from "../utils/model-billing.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 /** Resolve composer model and permission status from settings and permission subscriptions; missing-model alerts belong to the sidebar.
@@ -44,24 +44,11 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   useEffect(() => {
     if (typeof api.getSettings !== "function") return;
     let cancelled = false;
-    let billingEpoch = 0;
 
     const apply = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       if (cancelled) return;
-      const epoch = ++billingEpoch;
       const active = settings.activeChatModel;
       setBillingRoute(active.kind === "subscription" ? { kind: "subscription", provider: active.provider } : undefined);
-      if (active.kind === "api") {
-        const address = modelBillingApiAddress(settings, active.vendor, active.marketplaceProviderPresetId);
-        if (address.requiresApiKey) setBillingRoute(apiModelBillingRoute(active.vendor, true, false));
-        if (typeof api.hasApiKey === "function") {
-          void api.hasApiKey(address.credentialId).then((keyConfigured) => {
-            if (!cancelled && epoch === billingEpoch) {
-              setBillingRoute(apiModelBillingRoute(active.vendor, address.requiresApiKey, keyConfigured));
-            }
-          }).catch(() => { /* An optional route without a verified key makes no billing claim. */ });
-        }
-      }
       setActiveChatModel((current) =>
         JSON.stringify(current) === JSON.stringify(settings.activeChatModel) ? current : settings.activeChatModel);
       // No connected provider: the vendor block still carries its default id, but nothing was chosen and nothing could answer, so nothing is named.

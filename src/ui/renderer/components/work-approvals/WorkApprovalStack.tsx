@@ -3,8 +3,10 @@
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
 // queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
 // conversation's ApprovalDock.
+import { EmptyState } from "../../../../components/ui/empty-state.js";
+import { Loader } from "../../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { CheckSquare, Loader2 } from "lucide-react";
+import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -74,7 +76,7 @@ function KindChip({ item }: { item: WorkApprovalView }) {
     <Badge
       variant="outline"
       className={cn(
-        "shrink-0 text-[11px]",
+        "shrink-0 text-dense",
         item.kind === "routine-attention" ? "border-destructive/(--opacity-medium) text-destructive" : "border-primary/(--opacity-medium) text-primary",
       )}
       data-testid="work-approval-kind"
@@ -86,7 +88,7 @@ function KindChip({ item }: { item: WorkApprovalView }) {
 
 function SharedChip() {
   return (
-    <Badge variant="outline" className="shrink-0 text-[11px] text-muted-foreground" data-testid="work-approval-shared">
+    <Badge variant="outline" className="shrink-0 text-dense text-muted-foreground" data-testid="work-approval-shared">
       {t("workApprovals.scopeShared")}
     </Badge>
   );
@@ -191,7 +193,7 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
               onClick={() => void acknowledge()}
               data-testid="work-approval-routine-acknowledge"
             >
-              {pending === "acknowledge" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+              {pending === "acknowledge" && <Loader size={12} className="mr-1" />}
               {t("workApprovals.routineAcknowledge")}
             </Button>
           )}
@@ -200,7 +202,7 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
           </Button>
         </div>
         {error !== null && (
-          <p role="alert" className="text-[11px] text-destructive" data-testid="work-approval-action-error">
+          <p role="alert" className="text-dense text-destructive" data-testid="work-approval-action-error">
             {t("workApprovals.actionFailed", { error })}
           </p>
         )}
@@ -234,7 +236,7 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
     <div className="flex shrink-0 flex-col items-end gap-1" data-testid="work-approval-actions">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         {projectChoices && (
-          <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          <label className="flex items-center gap-1 text-dense text-muted-foreground">
             {t("workApprovals.proposalPickProject")}
             <select
               className="h-7 rounded-md border bg-background px-1.5 text-xs text-foreground"
@@ -250,20 +252,20 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
           </label>
         )}
         <Button variant="outline" size={size} disabled={busy} onClick={() => void run("dismiss")} data-testid="work-approval-proposal-dismiss">
-          {pending === "dismiss" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "dismiss" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalDismiss")}
         </Button>
         <Button variant="outline" size={size} disabled={busy} onClick={() => void run("add")} data-testid="work-approval-proposal-add">
-          {pending === "add" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "add" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalAdd")}
         </Button>
         <Button size={size} disabled={busy} onClick={() => void run("add-plan")} data-testid="work-approval-proposal-add-plan">
-          {pending === "add-plan" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "add-plan" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalAddAndPlan")}
         </Button>
       </div>
       {error !== null && (
-        <p role="alert" className="text-[11px] text-destructive" data-testid="work-approval-action-error">
+        <p role="alert" className="text-dense text-destructive" data-testid="work-approval-action-error">
           {t("workApprovals.actionFailed", { error })}
         </p>
       )}
@@ -275,12 +277,12 @@ function ProposalDetail({ item }: { item: WorkProposalApprovalView }) {
   return (
     <div className="mt-2 space-y-2 border-t pt-2" data-testid="work-approval-proposal-detail">
       <div>
-        <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workBoard.proposalStateHeading")}</h4>
+        <h4 className="text-dense font-semibold text-muted-foreground">{t("workBoard.proposalStateHeading")}</h4>
         <p data-testid="work-approval-proposal-state">{item.state}</p>
       </div>
       {item.evidence.length > 0 && (
         <div>
-          <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workBoard.proposalEvidenceHeading")}</h4>
+          <h4 className="text-dense font-semibold text-muted-foreground">{t("workBoard.proposalEvidenceHeading")}</h4>
           <ul className="space-y-0.5" data-testid="work-approval-proposal-evidence">
             {item.evidence.map((row, index) => (
               <li key={`${row.label}:${index}`}><span className="font-medium">{row.label}</span>: {row.detail}</li>
@@ -290,7 +292,7 @@ function ProposalDetail({ item }: { item: WorkProposalApprovalView }) {
       )}
       {item.blockers.length > 0 && (
         <div>
-          <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workBoard.proposalBlockersHeading")}</h4>
+          <h4 className="text-dense font-semibold text-muted-foreground">{t("workBoard.proposalBlockersHeading")}</h4>
           <ul className="space-y-0.5" data-testid="work-approval-proposal-blockers">
             {item.blockers.map((row, index) => (
               <li key={`${row.reason}:${index}`}>{row.resolution ? `${row.reason} → ${row.resolution}` : row.reason}</li>
@@ -318,8 +320,8 @@ function PlanFacts({ item }: { item: WorkPlanApprovalView }) {
   ];
   return (
     <section className="rounded-md border bg-muted/(--opacity-light) p-2" data-testid="work-approval-plan-facts">
-      <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workApprovals.planFactsHeading")}</h4>
-      <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
+      <h4 className="text-dense font-semibold text-muted-foreground">{t("workApprovals.planFactsHeading")}</h4>
+      <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-dense">
         {rows.map((row) => (
           <div key={row.label} className="contents">
             <dt className="text-muted-foreground">{row.label}</dt>
@@ -327,7 +329,7 @@ function PlanFacts({ item }: { item: WorkPlanApprovalView }) {
           </div>
         ))}
       </dl>
-      <p className="mt-1 text-[11px] font-medium">{t("workApprovals.planFactExactPlan")}</p>
+      <p className="mt-1 text-dense font-medium">{t("workApprovals.planFactExactPlan")}</p>
     </section>
   );
 }
@@ -344,7 +346,7 @@ function PlanBody({ item, api, now, onChanged }: {
         {t("workApprovals.planMeta", { age: approvalAge(item.arrivedAt, now) ?? "" })}
       </p>
       <section className="rounded-md border p-2" data-testid="work-approval-plan-agent">
-        <h4 className="text-[11px] font-semibold text-muted-foreground">{t("workApprovals.planAgentHeading")}</h4>
+        <h4 className="text-dense font-semibold text-muted-foreground">{t("workApprovals.planAgentHeading")}</h4>
         <div className="mt-1 max-h-72 overflow-auto">
           <PlanText plan={item.plan} testIdPrefix="work-approval-plan" />
         </div>
@@ -374,7 +376,7 @@ function ItemBody({ item }: { item: WorkProposalApprovalView | RoutineAttentionA
         <p className="text-muted-foreground" data-testid="work-approval-source">{proposalMeta(item)}</p>
         <button
           type="button"
-          className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+          className="text-dense font-medium text-foreground underline-offset-2 hover:underline"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
           data-testid="work-approval-proposal-expand"
@@ -431,7 +433,7 @@ function HeadCard({
         <KindChip item={item} />
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold" data-testid="work-approval-title">{item.title}</h3>
         {isShared(item) && <SharedChip />}
-        <span className="shrink-0 text-[11px] text-muted-foreground" data-testid="work-approval-position">
+        <span className="shrink-0 text-dense text-muted-foreground" data-testid="work-approval-position">
           {t("workApprovals.position", { index: index + 1, total: count })}
         </span>
       </header>
@@ -505,7 +507,7 @@ function QueuedRow({
         {item.title}
       </button>
       {isShared(item) && <SharedChip />}
-      {age !== null && <span className="shrink-0 text-[11px] text-muted-foreground">{age}</span>}
+      {age !== null && <span className="shrink-0 text-dense text-muted-foreground">{age}</span>}
       {/* A queued plan is decided only on the card, after it is expanded there. */}
       {!selectOnly && item.kind !== "plan" && (
         <ItemActions key={actionsKey(item)} item={item} actions={actions} targetProjectRoot={targetProjectRoot} compact />
@@ -596,12 +598,12 @@ function ReplanningList({ items }: { items: readonly WorkPlanApprovalView[] }) {
             <div className="flex items-center gap-2">
               <KindChip item={item} />
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
+              <span className="shrink-0 text-dense text-muted-foreground">{t("workApprovals.replanningRevision", { count: item.planNumber })}</span>
             </div>
             {item.changeRequest !== undefined && (
               <p className="mt-1 text-muted-foreground">{t("workApprovals.replanningRequest", { note: item.changeRequest })}</p>
             )}
-            <p className="mt-1 text-[11px] text-muted-foreground">{t("workApprovals.replanningFooter")}</p>
+            <p className="mt-1 text-dense text-muted-foreground">{t("workApprovals.replanningFooter")}</p>
           </li>
         ))}
       </ul>
@@ -698,9 +700,9 @@ export function WorkApprovalStack({
   if (state.status === "loading") {
     return (
       <section aria-busy="true" aria-label={t("workApprovals.loading")} data-testid="work-approvals-loading" className="space-y-2">
-        <div className="h-28 animate-pulse rounded-lg bg-muted" />
-        <div className="h-10 animate-pulse rounded-md bg-muted" />
-        <div className="h-10 animate-pulse rounded-md bg-muted" />
+        <div className="h-28 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" />
+        <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+        <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
       </section>
     );
   }
@@ -827,9 +829,7 @@ export function WorkApprovalStack({
       )}
 
       {head === null ? (
-        <p className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="work-approvals-empty">
-          {t("workApprovals.empty")}
-        </p>
+        <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
       ) : allProjects ? (
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-64 flex-1 basis-64 space-y-2">
@@ -838,7 +838,7 @@ export function WorkApprovalStack({
                 <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                   {group.label}
                   {group.isDefault && (
-                    <Badge variant="outline" className="text-[10px]" data-testid="work-approvals-group-default">
+                    <Badge variant="outline" className="text-tiny" data-testid="work-approvals-group-default">
                       {t("workApprovals.defaultTag")}
                     </Badge>
                   )}
@@ -862,10 +862,10 @@ export function WorkApprovalStack({
         </>
       )}
       {head !== null && (
-        <p className="text-[11px] text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
+        <p className="text-dense text-muted-foreground" data-testid="work-approvals-keyboard-legend">{t("workApprovals.keyboardLegend")}</p>
       )}
       <ReplanningList items={replanning} />
-      <p className="text-[11px] text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
+      <p className="text-dense text-muted-foreground" data-testid="work-approvals-tool-note">{t("workApprovals.toolApprovalsNote")}</p>
     </section>
   );
 }

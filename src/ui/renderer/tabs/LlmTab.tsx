@@ -1,3 +1,5 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
+import { Loader } from "../../../components/ui/loader.js";
 import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
 import { PROVIDER_PICKER_GROUPS, providerPickerEntries } from "../../../shared/provider-picker.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +19,7 @@ import {
 import { Slider } from "../../../components/ui/slider.js";
 import { Switch } from "../../../components/ui/switch.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { ChevronDown, ChevronUp, Loader2, Pin, Plus, RefreshCw, Store } from "lucide-react";
+import { ChevronDown, ChevronUp, Pin, Plus, RefreshCw, Store } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -387,7 +389,7 @@ function ProviderSelect({
                   <span className="min-w-0 truncate">{option.label}</span>
                   {option.marketplaceInstalled && (
                     <span
-                      className="inline-flex h-5 shrink-0 items-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-secondary-foreground"
+                      className="inline-flex h-5 shrink-0 items-center rounded-full bg-secondary px-1.5 text-tiny font-medium text-secondary-foreground"
                       data-testid={`llm-tab:vendor-marketplace-badge:${option.id}`}
                     >
                       {t("llmTab.marketplaceInstalledBadge")}
@@ -733,7 +735,7 @@ function ModelSelectItemContent({
         {reasoningUnstatedVendor !== undefined && (
           <Badge
             variant="outline"
-            className="h-4 shrink-0 px-1 text-[9px]"
+            className="h-4 shrink-0 px-1 text-tiny"
             data-testid={`llm-tab:model-reasoning-unstated:${option}`}
             role="note"
             title={t("llmTab.modelReasoningUnstatedHelp", { vendor: reasoningUnstatedVendor })}
@@ -746,24 +748,24 @@ function ModelSelectItemContent({
       {(isFree || isRouter || isLocal || vision === true || isReasoning || noTools || facts.length > 0) && (
         <span className="flex min-w-0 flex-wrap items-center gap-1 [[data-slot=select-value]_&]:hidden">
           {isFree && (
-            <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+            <Badge variant="secondary" className="h-4 shrink-0 px-1 text-tiny uppercase">
               {t("llmTab.openRouterFreeBadge")}
             </Badge>
           )}
           {isRouter && (
-            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-tiny uppercase">
               {t("llmTab.modelRouterBadge")}
             </Badge>
           )}
           {isLocal && (
-            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px] uppercase">
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-tiny uppercase">
               {t("llmTab.modelLocalBadge")}
             </Badge>
           )}
           {vision === true && (
             <Badge
               variant="outline"
-              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              className="h-4 shrink-0 px-1 text-tiny uppercase"
               data-testid={`llm-tab:model-vision:${option}`}
             >
               {t("llmTab.modelVisionBadge")}
@@ -772,7 +774,7 @@ function ModelSelectItemContent({
           {isReasoning && (
             <Badge
               variant="outline"
-              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              className="h-4 shrink-0 px-1 text-tiny uppercase"
               data-testid={`llm-tab:model-reasoning:${option}`}
             >
               {t("llmTab.modelReasoningBadge")}
@@ -781,7 +783,7 @@ function ModelSelectItemContent({
           {noTools && (
             <Badge
               variant="outline"
-              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              className="h-4 shrink-0 px-1 text-tiny uppercase"
               data-testid={`llm-tab:model-no-tools:${option}`}
               role="note"
               title={t("llmTab.modelNoToolsHelp")}
@@ -792,7 +794,7 @@ function ModelSelectItemContent({
           )}
           {facts.length > 0 && (
             <span
-              className={`min-w-0 truncate text-[10px] ${tone === "destructive" ? "text-destructive" : "text-muted-foreground"}`}
+              className={`min-w-0 truncate text-tiny ${tone === "destructive" ? "text-destructive" : "text-muted-foreground"}`}
               data-testid={`llm-tab:model-facts:${option}`}
             >
               {facts.join(" · ")}
@@ -1052,7 +1054,7 @@ export function UnifiedModelSelect({
           {...(option.unlisted ? { tone: "destructive" as const } : {})}
         />
         {billing ? (
-          <span className="whitespace-normal break-words text-[10px] leading-tight font-normal text-muted-foreground" data-model-billing={option.providerId}>
+          <span className="whitespace-normal break-words text-tiny leading-tight font-normal text-muted-foreground" data-model-billing={option.providerId}>
             {billing}
           </span>
         ) : null}
@@ -1168,7 +1170,7 @@ export function UnifiedModelSelect({
         )}
         {visibleGroups.pins.length > 0 && (
           <SelectGroup>
-            <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
+            <SelectLabel className="text-tiny uppercase tracking-normal text-muted-foreground">
               {t("llmTab.modelPinnedGroup")}
             </SelectLabel>
             {visibleGroups.pins.map(row)}
@@ -1176,14 +1178,14 @@ export function UnifiedModelSelect({
         )}
         {visibleGroups.providers.map((provider) => (
           <SelectGroup key={provider.id} data-model-provider={provider.id}>
-            <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
+            <SelectLabel className="text-tiny uppercase tracking-normal text-muted-foreground">
               {provider.label}
             </SelectLabel>
             {provider.groups.map((group) => group.label === provider.label ? (
               group.items.map(row)
             ) : (
               <SelectGroup key={group.id}>
-                <SelectLabel className="text-[10px] text-muted-foreground">
+                <SelectLabel className="text-tiny text-muted-foreground">
                   {group.label}
                 </SelectLabel>
                 {group.items.map(row)}
@@ -2589,7 +2591,7 @@ export function LlmTab(props: LlmTabProps) {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">{t("llmTab.apiFormatModelList")}</p>
+            <p className="text-dense text-muted-foreground">{t("llmTab.apiFormatModelList")}</p>
           </div>
         )}
         {rowVendorId !== "vertex-ai" && endpointIsUserSupplied(rowVendorId, rowInfo, rowEndpointLocked) && (
@@ -2603,11 +2605,11 @@ export function LlmTab(props: LlmTabProps) {
               onChange={(e) => patchDraft({ baseUrl: e.target.value })}
               placeholder={rowInfo.baseUrlPlaceholder ?? "https://..."}
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("llmTab.baseUrlDiscardWarning")}
             </p>
             {rowVendorId === "azure-foundry" && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-dense text-muted-foreground">
                 {t("llmTab.azureEndpointFormat")}
                 {" "}<code>https://{"{resource}"}.openai.azure.com/openai/v1/</code>
                 {" "}— {t("llmTab.azureDeploymentNote")}
@@ -2618,7 +2620,7 @@ export function LlmTab(props: LlmTabProps) {
         {rowVendorId === "vertex-ai" && (
           <div className="space-y-2 rounded-md border p-3">
             <p className="text-sm font-medium">{t("llmTab.vertexTitle")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {t("llmTab.vertexAuthDesc1")}<code>gcloud auth application-default login</code>{t("llmTab.vertexAuthDesc2")}
               {t("llmTab.vertexAuthDesc3")}<code>GOOGLE_APPLICATION_CREDENTIALS</code>{t("llmTab.vertexAuthDesc4")}
             </p>
@@ -2714,7 +2716,7 @@ export function LlmTab(props: LlmTabProps) {
     if (credentialSavedRowId !== row.id || activeRouteCanChat) return null;
     return (
       <p
-        className="text-[11px] text-muted-foreground"
+        className="text-dense text-muted-foreground"
         data-testid={`llm-tab:connection-pick-model:${row.id}`}
       >
         {t("llmTab.pickModelToUse")}
@@ -2728,7 +2730,7 @@ export function LlmTab(props: LlmTabProps) {
     if (!blocker) return null;
     return (
       <p
-        className="text-[11px] text-muted-foreground"
+        className="text-dense text-muted-foreground"
         data-testid={`llm-tab:connection-blocked:${row.id}`}
       >
         {t(CHAT_BLOCKER_MESSAGE_KEYS[blocker])}
@@ -2753,7 +2755,7 @@ export function LlmTab(props: LlmTabProps) {
       <Badge
         key={mode}
         variant={active === mode ? "default" : "outline"}
-        className="h-5 shrink-0 px-2 text-[10px]"
+        className="h-5 shrink-0 px-2 text-tiny"
         data-testid={`llm-tab:connection-route:${row.id}:${mode}`}
         data-active={active === mode ? "true" : "false"}
       >
@@ -2895,7 +2897,7 @@ export function LlmTab(props: LlmTabProps) {
         }}
       >
         {loading
-          ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden={true} />
+          ? <Loader size={14} />
           : <RefreshCw className="h-3.5 w-3.5" aria-hidden={true} />}
       </Button>
     );
@@ -2909,7 +2911,7 @@ export function LlmTab(props: LlmTabProps) {
     return (
       <Badge
         variant="outline"
-        className="h-5 shrink-0 whitespace-nowrap px-2 text-[10px]"
+        className="h-5 shrink-0 whitespace-nowrap px-2 text-tiny"
         data-testid={`llm-tab:connection-unsaved:${row.id}`}
       >
         {t("llmTab.unsavedChanges")}
@@ -2932,9 +2934,7 @@ export function LlmTab(props: LlmTabProps) {
         </p>
       ) : null}
       {visibleRows.length === 0 ? (
-        <p className="rounded-md border px-3 py-4 text-center text-xs text-muted-foreground" data-testid="llm-tab:connections-empty">
-          {t("llmTab.connectionsEmpty")}
-        </p>
+        <EmptyState align="center" className="rounded-md border px-3 py-4" data-testid="llm-tab:connections-empty" title={t("llmTab.connectionsEmpty")} />
       ) : null}
       {/* ONE row renderer for every provider, however it is reached — and the
           SAME renderer the remote connections list uses, so a reader scanning
@@ -2956,7 +2956,7 @@ export function LlmTab(props: LlmTabProps) {
                   {unsavedBadge(row)}
                   {row.apiVendorId && marketplaceVendorIds.has(row.apiVendorId) ? (
                     <span
-                      className="inline-flex h-5 items-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-secondary-foreground"
+                      className="inline-flex h-5 items-center rounded-full bg-secondary px-1.5 text-tiny font-medium text-secondary-foreground"
                       data-testid={`llm-tab:selected-provider-marketplace:${row.apiVendorId}`}
                     >
                       {t("llmTab.marketplaceInstalledBadge")}
@@ -3204,7 +3204,7 @@ export function LlmTab(props: LlmTabProps) {
             {unlistedModel && subscription.activeRuntime.kind === "api" && (
               <p
                 role="alert"
-                className="text-[11px] text-destructive"
+                className="text-dense text-destructive"
                 data-testid="llm-tab:model-unlisted"
               >
                 {t("llmTab.modelUnlistedWarning", { model: unlistedModel })}
@@ -3292,7 +3292,7 @@ export function LlmTab(props: LlmTabProps) {
                 }}
                 aria-label={t("llmTab.reasoningEffortAriaLabel")}
               />}
-              <div className="flex justify-between text-[10px] text-muted-foreground">
+              <div className="flex justify-between text-tiny text-muted-foreground">
                 {reasoningDepths.map((s) => (
                   <button key={s.key} type="button" aria-pressed={s.budget === thinkingBudget} onClick={() => {
                     setThinkingBudget(s.budget);

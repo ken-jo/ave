@@ -1,4 +1,5 @@
 /** Diagnostics exports and log tails are redacted; map host error codes to localized messages. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
@@ -155,7 +156,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
     <>
       {/* ── Bundle export ── */}
       <SettingsSection data-settings-section="audit-bundle" title={t("auditTab.bundleSectionTitle")}>
-        <p className="text-[11px] text-muted-foreground">{t("auditTab.bundleSectionDesc")}</p>
+        <p className="text-dense text-muted-foreground">{t("auditTab.bundleSectionDesc")}</p>
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
@@ -165,13 +166,13 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           {t("auditTab.bundleIncludeCrashDumps")}
         </label>
         {includeCrashDumps && (
-          <p className="text-[11px] text-warning">{t("auditTab.bundleCrashDumpWarning")}</p>
+          <p className="text-dense text-warning">{t("auditTab.bundleCrashDumpWarning")}</p>
         )}
         <div className="flex items-center gap-2">
           <Button size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting}>
             {exporting ? t("auditTab.bundleExporting") : t("auditTab.bundleExportButton")}
           </Button>
-          {exportMsg && <span className="text-[11px] text-muted-foreground">{exportMsg}</span>}
+          {exportMsg && <span className="text-dense text-muted-foreground">{exportMsg}</span>}
         </div>
         {exportErr && (
           <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive">
@@ -211,11 +212,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {logLines.length === 0 && !logErr ? (
-          <p className="py-3 text-center text-xs text-muted-foreground italic">
-            {t("auditTab.logEmpty")}
-          </p>
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.logEmpty")} />
         ) : (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/(--opacity-medium) p-2 text-[10px] font-mono">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/(--opacity-medium) p-2 text-tiny font-mono">
             {logLines.join("\n")}
           </pre>
         )}
@@ -237,9 +236,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {crashes.length === 0 && !crashErr ? (
-          <p className="py-3 text-center text-xs text-muted-foreground italic">
-            {t("auditTab.crashEmpty")}
-          </p>
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.crashEmpty")} />
         ) : (
           <div className="rounded-md border text-xs">
             <table className="w-full">
@@ -253,8 +250,8 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
               <tbody>
                 {crashes.map((c) => (
                   <tr key={c.name} className="border-b last:border-0">
-                    <td className="px-3 py-1.5 font-mono text-[10px]">{c.name}</td>
-                    <td className="px-3 py-1.5 text-muted-foreground font-mono text-[10px] whitespace-nowrap">
+                    <td className="px-3 py-1.5 font-mono text-tiny">{c.name}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground font-mono text-tiny whitespace-nowrap">
                       {c.mtime.slice(0, 19).replace("T", " ")}
                     </td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{formatBytes(c.size)}</td>

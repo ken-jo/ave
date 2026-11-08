@@ -9,7 +9,8 @@ import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Separator } from "../../../components/ui/separator.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
-import { LONG_TOAST_TTL_MS } from "../constants.js";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
+import { useInlineNotice } from "../hooks/use-status-bar.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
 import { t } from "../../../i18n/runtime.js";
@@ -222,19 +223,13 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [banner, setBanner] = useState<{ type: "error" | "success"; msg: string; policyApprovalRequired: boolean } | null>(null);
-  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
+  // The policy refusal carries its how-to under the notice for as long as that notice is the one shown.
+  const [policyGuidanceFor, setPolicyGuidanceFor] = useState<string | null>(null);
   const showBanner = useCallback((type: "error" | "success", msg: string, policyApprovalRequired = false) => {
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg, policyApprovalRequired });
-    bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    };
-  }, []);
+    showNotice(type, msg);
+    setPolicyGuidanceFor(policyApprovalRequired ? msg : null);
+  }, [showNotice]);
 
   const [states, setStates] = useState<McpServerState[]>([]);
   const [configs, setConfigs] = useState<McpServerConfigDto[]>([]);
@@ -505,15 +500,12 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
           below the header, so they are one deep-link anchor rather than two. */}
       <div className="flex flex-col gap-4" data-settings-section="mcp-servers" tabIndex={-1}>
         {/* 배너 */}
+        <NoticeLiveRegion toast={banner} />
         {banner && (
-          <div
-            className={`rounded-md px-3 py-2 text-sm ${
-              banner.type === "error" ? "bg-destructive/(--opacity-soft) text-destructive" : "bg-success/(--opacity-soft) text-success"
-            }`}
-          >
-            {banner.msg}
-            {banner.policyApprovalRequired && (
-              <div className="mt-2 space-y-2">
+          <div className="space-y-2">
+            <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
+            {policyGuidanceFor === banner.message && (
+              <div className="space-y-2 text-sm text-destructive">
                 <p>{t("mcpTab.policyApprovalGuidance", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>
                 {onNavigate && (
                   <Button size="sm" variant="outline" onClick={() => onNavigate("permissions")}>
@@ -573,56 +565,56 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                           <span className="font-mono text-xs font-semibold line-clamp-1 min-w-0">{cfg?.bundled
                             ? `${t(cfg.bundled.kind === "agent-plugin" ? "gitMarketplace.server.plugin" : "gitMarketplace.server.extension")}: ${cfg.bundled.name}/${cfg.bundled.server}`
                             : id}</span>
-                          <Badge className={`text-[10px] px-1.5 py-0 ${STATUS_BADGE[status]}`}>
+                          <Badge className={`text-tiny px-1.5 py-0 ${STATUS_BADGE[status]}`}>
                             {getStatusLabel(status)}
                           </Badge>
                           {cfg && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0">
                               {cfg.transport}
                             </Badge>
                           )}
                           {authStatus && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0" role="status">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0" role="status">
                               {getAuthStatusLabel(authStatus)}
                             </Badge>
                           )}
                           {cfg?.auth && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0">
                               {t("mcpTab.authBadge", { auth: cfg.auth })}
                             </Badge>
                           )}
                         </div>
                         {st?.registeredTools.length ? (
-                          <p className="mt-1 text-[11px] text-muted-foreground">
+                          <p className="mt-1 text-dense text-muted-foreground">
                             {t("mcpTab.toolsLabel")} {st.registeredTools.join(", ")}
                           </p>
                         ) : null}
                         {st?.lastError && (
-                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{
+                          <p className="mt-1 text-dense text-destructive line-clamp-2">{
                             authStatus === "required" ? t("mcpTab.authRequiredMessage")
                               : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
                           }</p>
                         )}
                         {st?.containedQuarantined && (
-                          <p data-testid={`mcp-contained-quarantined-${id}`} role="status" className="mt-1 text-[11px] text-warning">
+                          <p data-testid={`mcp-contained-quarantined-${id}`} role="status" className="mt-1 text-dense text-warning">
                             {t("mcpTab.containedQuarantined")}
                           </p>
                         )}
                         {st?.authError && (
-                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
+                          <p className="mt-1 text-dense text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
                         )}
                         {st?.connectedAt && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          <p className="mt-0.5 text-tiny text-muted-foreground">
                             {t("mcpTab.connectedAtLabel")} {formatDateTime(st.connectedAt)}
                           </p>
                         )}
                         {cfg?.transport === "stdio" && cfg.command && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
+                          <p className="mt-0.5 text-tiny text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
                             {t("mcpTab.commandLabel")} {cfg.command}
                           </p>
                         )}
                         {cfg?.transport === "http" && cfg.url && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
+                          <p className="mt-0.5 text-tiny text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
                             {t("mcpTab.urlLabel")} {cfg.url}
                           </p>
                         )}
@@ -803,7 +795,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                     value={form.oauthClientId}
                     onChange={(e) => setForm((f) => ({ ...f, oauthClientId: e.target.value }))}
                   />
-                  <p className="text-[10px] text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
+                  <p className="text-tiny text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
                 </div>
               )}
 
@@ -820,7 +812,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                       value={form.command}
                       onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))}
                     />
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-tiny text-muted-foreground">
                       {t("mcpTab.commandHint")}
                     </p>
                   </div>
@@ -891,7 +883,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                 </>
               )}
 
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-tiny text-muted-foreground">
                 {t("mcpTab.secretsNote")}
               </p>
 

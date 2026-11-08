@@ -429,12 +429,12 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             <span className="text-muted-foreground">{kindLabel(t, unmet.key.kind)} · {unmet.sourceLabel}</span>
           </span>
           {refreshable && (
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={refreshing !== null} onClick={() => void refreshSource(unmet.key.sourceId)} data-testid="git-marketplace:updates:unmet:refresh">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-dense" disabled={refreshing !== null} onClick={() => void refreshSource(unmet.key.sourceId)} data-testid="git-marketplace:updates:unmet:refresh">
               {refreshing === unmet.key.sourceId ? t("gitMarketplace.updates.unmet.refreshing") : t("gitMarketplace.updates.unmet.refresh")}
             </Button>
           )}
           {unmet.reason === "source-hidden" && (
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onShowSources} data-testid="git-marketplace:updates:unmet:show-sources">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={onShowSources} data-testid="git-marketplace:updates:unmet:show-sources">
               {t("gitMarketplace.updates.showSources")}
             </Button>
           )}
@@ -442,7 +442,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             <Button
               size="sm"
               variant="outline"
-              className="h-6 px-2 text-[11px]"
+              className="h-6 px-2 text-dense"
               disabled={confirming !== null && !confirming.invalidated && !confirming.changedWhileSending}
               onClick={() => (other.removal === "sheet"
                 ? onOpenPackage(otherKey)
@@ -474,11 +474,11 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
             )}
             {confirming.failure && <MarketplaceProblem failure={confirming.failure} subject={OTHER_SUBJECT} testId="git-marketplace:updates:unmet:remove-error" />}
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => step({ type: "close", generation: confirming.generation })}>
+              <Button size="sm" variant="outline" className="h-6 px-2 text-dense" disabled={confirming.busy} onClick={() => step({ type: "close", generation: confirming.generation })}>
                 {confirming.invalidated ? t("common.close") : t("common.cancel")}
               </Button>
               {!confirming.invalidated && (
-                <Button size="sm" variant="destructive" className="h-6 px-2 text-[11px]" disabled={confirming.busy} onClick={() => void removeInstalled(confirming.generation)} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
+                <Button size="sm" variant="destructive" className="h-6 px-2 text-dense" disabled={confirming.busy} onClick={() => void removeInstalled(confirming.generation)} data-testid="git-marketplace:updates:unmet:confirm-uninstall">
                   {t("gitMarketplace.uninstall.button")}
                 </Button>
               )}
@@ -532,18 +532,18 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
           </span>
           <span className="text-muted-foreground" data-testid="git-marketplace:updates:state">{updateStateLabel(t, update.state)}</span>
           {review && (
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={review} data-testid="git-marketplace:updates:review">
+            <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={review} data-testid="git-marketplace:updates:review">
               {t("gitMarketplace.updates.review")}
             </Button>
           )}
           {update.state === "failed" && (
             <>
               {update.failure && (
-                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setDetails((current) => toggled(current, id))} data-testid="git-marketplace:updates:details">
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-dense" onClick={() => setDetails((current) => toggled(current, id))} data-testid="git-marketplace:updates:details">
                   {t("gitMarketplace.updates.details")}
                 </Button>
               )}
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onReview(update.key)} data-testid="git-marketplace:updates:retry">
+              <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={() => onReview(update.key)} data-testid="git-marketplace:updates:retry">
                 {t("gitMarketplace.updates.retry")}
               </Button>
             </>
@@ -640,7 +640,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
           {status.escalated && (
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:updates:escalated">
               <span className="min-w-0 flex-1">{t("gitMarketplace.updates.escalated", { count: waiting })}</span>
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={applying} onClick={() => void applyNow()}>
+              <Button size="sm" variant="outline" className="h-6 px-2 text-dense" disabled={applying} onClick={() => void applyNow()}>
                 {t("gitMarketplace.updates.applyNow")}
               </Button>
             </div>
@@ -658,7 +658,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
           {!running && discovery?.result === "partial" && (
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-xs" data-testid="git-marketplace:updates:partial">
               <span className="min-w-0 flex-1">{t("gitMarketplace.updates.partial")}</span>
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={onShowSources}>
+              <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={onShowSources}>
                 {t("gitMarketplace.updates.showSources")}
               </Button>
             </div>
@@ -700,7 +700,7 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
                           </span>
                         </span>
                         {update.commitRange && (
-                          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setWhatChanged((current) => toggled(current, id))} data-testid="git-marketplace:updates:what-changed">
+                          <Button size="sm" variant="ghost" className="h-6 px-2 text-dense" onClick={() => setWhatChanged((current) => toggled(current, id))} data-testid="git-marketplace:updates:what-changed">
                             {t("gitMarketplace.updates.whatChanged")}
                           </Button>
                         )}
@@ -739,10 +739,10 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
                       <div className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2" data-testid="git-marketplace:updates:unencrypted">
                         <p>{t("gitMarketplace.warning.unencryptedUpdates", { source: source.name })}</p>
                         <div className="flex gap-2">
-                          <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setConfirmSource(null)}>
+                          <Button size="sm" variant="outline" className="h-6 px-2 text-dense" onClick={() => setConfirmSource(null)}>
                             {t("common.cancel")}
                           </Button>
-                          <Button size="sm" className="h-6 px-2 text-[11px]" disabled={saving} onClick={() => void acceptUnencrypted(source.id)} data-testid="git-marketplace:updates:unencrypted:continue">
+                          <Button size="sm" className="h-6 px-2 text-dense" disabled={saving} onClick={() => void acceptUnencrypted(source.id)} data-testid="git-marketplace:updates:unencrypted:continue">
                             {t("gitMarketplace.updates.turnOnAnyway")}
                           </Button>
                         </div>

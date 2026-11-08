@@ -12,7 +12,7 @@ export function BrowserControlHeader({ api, tabId }: { api: AveApi; tabId: strin
   const controls = api.browserTabs;
   return <div className="flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden px-1">
     {unavailable && <span role="alert" title={t("agentBrowser.controlUnavailable")}
-      className="min-w-0 truncate text-[11px] text-destructive">
+      className="min-w-0 truncate text-dense text-destructive">
       {t("agentBrowser.controlUnavailable")}
     </span>}
     {controls && tab && (tab.mode === "agent-active" || tab.mode === "human-paused") && <AgentControlBadge

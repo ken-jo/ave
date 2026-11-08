@@ -19,7 +19,7 @@ export function LatestTurnSummary({ changes, onReveal }: { changes: WorkspaceCha
         {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
         <span className="font-semibold">{t("fileEditDiff.latestTurnCaption")}</span>
         <span className="text-muted-foreground">{t("fileEditDiff.summaryFileCount", { count: changes.latestFiles.length })}</span>
-        <span className="shrink-0 font-mono text-[11px]">
+        <span className="shrink-0 font-mono text-dense">
           <span className={FILE_CHANGE_ADDED_CLASS}>+{changes.countsKnown ? changes.added : "—"}</span>{" "}
           <span className={FILE_CHANGE_REMOVED_CLASS}>−{changes.countsKnown ? changes.removed : "—"}</span>
         </span>
@@ -34,13 +34,13 @@ export function LatestTurnSummary({ changes, onReveal }: { changes: WorkspaceCha
           return <li key={file.path}><button type="button" onClick={() => onReveal(file.path)}
             className="flex h-[30px] w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"
             data-testid="latest-turn-summary-file" aria-label={t("fileEditDiff.summaryRevealFile", { path: file.displayPath })}>
-            <span aria-hidden="true" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(file.operation))}>{fileChangeLetter(file.operation)}</span>
+            <span aria-hidden="true" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-tiny font-semibold", fileChangeBadgeClass(file.operation))}>{fileChangeLetter(file.operation)}</span>
             <span className="min-w-0 flex-1 truncate"><span className="text-muted-foreground">{file.displayPath.slice(0, slash + 1)}</span>{file.displayPath.slice(slash + 1)}</span>
-            <span className="shrink-0 font-mono text-[11px]"><span className={FILE_CHANGE_ADDED_CLASS}>+{file.countsKnown ? file.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{file.countsKnown ? file.removed : "—"}</span></span>
+            <span className="shrink-0 font-mono text-dense"><span className={FILE_CHANGE_ADDED_CLASS}>+{file.countsKnown ? file.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{file.countsKnown ? file.removed : "—"}</span></span>
           </button></li>;
         })}
       </ul>
-      {remaining > 0 && <p className="px-3.5 pb-1 pt-0.5 text-[11px] text-muted-foreground">{t("fileEditDiff.summaryRemaining", { count: remaining })}</p>}
+      {remaining > 0 && <p className="px-3.5 pb-1 pt-0.5 text-dense text-muted-foreground">{t("fileEditDiff.summaryRemaining", { count: remaining })}</p>}
     </div>}
   </section>;
 }

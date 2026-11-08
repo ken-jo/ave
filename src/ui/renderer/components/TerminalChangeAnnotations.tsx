@@ -136,7 +136,7 @@ function TerminalChangeAnnotation({ slot, names, command, actionable, sentence, 
   const form = slot.columns >= full ? "full" : slot.columns >= compact ? "compact" : "glyph";
   const glyph = <span className={actionable ? "text-warning" : undefined}>⚠</span>;
   return (
-    <div className={`flex h-full min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap font-mono text-[11px] leading-none ${actionable ? "text-muted-foreground" : "text-muted-foreground/(--opacity-strong)"}`}
+    <div className={`flex h-full min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap font-mono text-dense leading-none ${actionable ? "text-muted-foreground" : "text-muted-foreground/(--opacity-strong)"}`}
       title={`${sentence}\n$ ${command}\n${names.join("\n")}`}
       data-testid="terminal-file-warning" data-active={actionable ? "true" : "false"} data-form={form}>
       {form === "full" ? <span className="min-w-0 truncate"># {glyph} {sentence}</span> : null}

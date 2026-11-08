@@ -51,22 +51,22 @@ export function PermissionEvaluationContextPanel({
           {context.source} · {categoryLabel(context.category)} · {context.trustOrigin}
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelWorkingDir")}>
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-dense">
             {context.executionCwd}
           </pre>
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelAllowedPaths")}>
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-dense">
             {formatList(context.allowedDirectories, t("permissionEvaluationContextPanel.emptyAllowedPaths"))}
           </pre>
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelTargetPaths")}>
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-dense">
             {formatList(context.targetFilePaths, t("permissionEvaluationContextPanel.emptyTargetPaths"))}
           </pre>
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelReviewerInput")}>
-          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+          <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-dense">
             {[
               `framework=${context.reviewerFrameworkVersion}`,
               `pathFields=${context.pathFields.join(", ") || "(none)"}`,

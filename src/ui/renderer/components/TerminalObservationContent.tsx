@@ -199,7 +199,7 @@ export function TerminalObservationCommands({ observation, commands = observatio
     <section className="my-2 min-w-0 shrink-0 rounded border px-3 py-2" data-testid="terminal-observation-content"
       aria-label={t("terminalObservation.title")}>
       <div role={error ? "alert" : "status"} data-testid="terminal-observation-live-strip"
-        className={cn("flex min-w-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 py-1.5 text-[11px] text-agent",
+        className={cn("flex min-w-0 items-center gap-2 rounded-md bg-agent/(--opacity-subtle) px-2.5 py-1.5 text-dense text-agent",
           error && "bg-destructive/(--opacity-subtle) text-destructive")}>
         {!error ? <span aria-hidden="true" className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-current", running && "motion-safe:animate-pulse")} /> : null}
         <span className="shrink-0 font-medium" data-testid="terminal-observation-status">
@@ -214,24 +214,24 @@ export function TerminalObservationCommands({ observation, commands = observatio
       </div>
       {!error ? <ol className="mt-1 max-h-44 overflow-y-auto" data-testid="terminal-observation-commands">
         {commands.map((command) => <li key={command.id} className={cn("min-w-0 border-b border-l-4 pl-2 last:border-b-0", command.sandbox.mode === "unconfined" ? "border-l-primary" : "border-l-agent")}>
-          <span className={cn("mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium", command.sandbox.mode === "unconfined" ? "bg-primary/(--opacity-subtle) text-primary" : "bg-agent/(--opacity-subtle) text-agent")}
+          <span className={cn("mt-1 inline-block rounded px-1.5 py-0.5 text-dense font-medium", command.sandbox.mode === "unconfined" ? "bg-primary/(--opacity-subtle) text-primary" : "bg-agent/(--opacity-subtle) text-agent")}
             data-testid={command.sandbox.mode === "unconfined" ? "terminal-approved-host-identity" : "terminal-isolated-identity"}>
             {t(command.sandbox.mode === "unconfined" ? "terminalObservation.approvedHostLabel" : "terminalObservation.isolatedLabel")}
           </span>
           <details className="group py-1" data-testid="terminal-observation-command-row" data-command-id={command.id}>
-            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-[11px] marker:hidden">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-dense marker:hidden">
               <span aria-hidden="true" className="text-muted-foreground">›</span>
               <span className="min-w-0 flex-1 truncate font-mono" title={command.command}>{command.command}</span>
               {command.outputAvailability === "withheld-user-input"
                 ? <span className="shrink-0 text-muted-foreground" data-testid="terminal-observation-withheld-marker">{t("terminalObservation.outputWithheldShort")}</span> : null}
               <span className="shrink-0 text-muted-foreground">{t(`terminalObservation.status.${command.status}`)}</span>
               <span className="shrink-0 font-mono text-muted-foreground">{elapsedSeconds(command, now)}s</span>
-              <span className="flex w-full min-w-0 gap-2 pl-3 text-[10px] text-muted-foreground">
+              <span className="flex w-full min-w-0 gap-2 pl-3 text-tiny text-muted-foreground">
                 <span className="min-w-0 flex-1 truncate font-mono" title={command.cwd} data-testid="terminal-observation-cwd">{command.cwd}</span>
                 <span>{t("terminalObservation.exitCode", { code: command.exitCode === null ? t("terminalObservation.unknown") : command.exitCode })}</span>
               </span>
             </summary>
-            <div className="space-y-1 pb-1 pl-3 text-[10px] text-muted-foreground">
+            <div className="space-y-1 pb-1 pl-3 text-tiny text-muted-foreground">
               <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                 <span>{t(`terminalObservation.sandbox.${command.sandbox.mode}`)}</span>
                 {command.outputAvailability === "on-completion" ? <span>{t("terminalObservation.outputOnCompletion")}</span> : null}
@@ -239,7 +239,7 @@ export function TerminalObservationCommands({ observation, commands = observatio
               {command.sandbox.detail ? <div className="break-words">{command.sandbox.detail}</div> : null}
               {command.outputAvailability === "withheld-user-input"
                 ? <p className="break-words" data-testid="terminal-observation-withheld">{t("terminalObservation.outputWithheldUserInput")}</p> : null}
-              {command.outputTail ? <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/(--opacity-medium) p-1.5 font-mono text-[10px] text-foreground"
+              {command.outputTail ? <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/(--opacity-medium) p-1.5 font-mono text-tiny text-foreground"
                 data-testid="terminal-observation-output">{command.outputTail}</pre> : null}
               {command.outputTruncated ? <p>{t("terminalObservation.outputTruncated")}</p> : null}
               {command.decisions.length > 0 ? <ul className="space-y-0.5" data-testid="terminal-observation-decisions">

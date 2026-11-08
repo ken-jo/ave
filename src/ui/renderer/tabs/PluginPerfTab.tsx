@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import type { AveApi, PluginPerfStats } from "../types.js";
@@ -96,7 +97,7 @@ export function PluginPerfTab({ api }: { api: AveApi }) {
         )}
 
         {rows.length === 0 && !loading && !error && (
-          <p className="text-xs text-muted-foreground">{t("pluginPerfTab.emptyState")}</p>
+          <EmptyState className="p-0" title={t("pluginPerfTab.emptyState")} />
         )}
 
         {rows.length > 0 && (

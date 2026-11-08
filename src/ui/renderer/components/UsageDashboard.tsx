@@ -188,7 +188,7 @@ export function UsageDashboard({
           <CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.periodSelect")}</CardTitle>
           <div className="flex gap-1 flex-wrap">
             {(["7d", "30d", "90d", "all", "custom"] as Preset[]).map((p) => (
-              <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-[11px]">
+              <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
                 {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : p}
               </Button>
             ))}
@@ -199,7 +199,7 @@ export function UsageDashboard({
             <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateFrom")} />
             <span className="text-xs text-muted-foreground">~</span>
             <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateTo")} />
-            <Button size="sm" onClick={load} className="h-6 px-2 text-[11px]">{t("usageDashboard.search")}</Button>
+            <Button size="sm" onClick={load} className="h-6 px-2 text-dense">{t("usageDashboard.search")}</Button>
           </CardContent>
         )}
       </Card>
@@ -409,7 +409,7 @@ export function UsageDashboard({
       )}
 
       <div className="flex justify-end">
-        <Button size="sm" variant="outline" onClick={handleExportCsv} disabled={exporting || summary.trend.length === 0} className="h-7 px-3 text-[11px]">
+        <Button size="sm" variant="outline" onClick={handleExportCsv} disabled={exporting || summary.trend.length === 0} className="h-7 px-3 text-dense">
           {exporting ? t("usageDashboard.exporting") : t("usageDashboard.exportCsv")}
         </Button>
       </div>

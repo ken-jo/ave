@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { BookMarked, Clock3, FileText, Repeat2, Search, Pin, X } from "lucide-react";
@@ -219,7 +220,7 @@ export function UnifiedSearchPanel({
 
   return (
     <div
-      className={`absolute left-1/2 top-3 z-50 w-[min(48rem,calc(100%-1.5rem))] -translate-x-1/2 rounded-md border bg-card/(--opacity-solid) p-3 shadow-2xl backdrop-blur ${
+      className={`absolute left-1/2 top-3 z-50 w-[min(48rem,calc(100%-1.5rem))] -translate-x-1/2 rounded-md border bg-card/(--opacity-solid) p-3 ave-surface-floating backdrop-blur ${
         open ? "" : "py-1.5"
       }`}
       data-testid="unified-search-panel"
@@ -250,7 +251,7 @@ export function UnifiedSearchPanel({
             className="h-8 min-w-0 flex-1 bg-background text-sm"
             autoFocus={open}
           />
-          <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+          <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-dense text-muted-foreground">
             {conversationMatches.length > 0
               ? `${currentConversationMatch + 1}/${conversationMatches.length}`
               : "0/0"}
@@ -259,7 +260,7 @@ export function UnifiedSearchPanel({
             type="button"
             variant={caseSensitive ? "default" : "ghost"}
             size="sm"
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-dense"
             onClick={onToggleCase}
             title={t("unifiedSearchPanel.caseSensitiveTitle")}
             aria-label={t("unifiedSearchPanel.caseSensitiveTitle")}
@@ -379,9 +380,7 @@ export function UnifiedSearchPanel({
             </SearchSection>
 
             {noResults && (
-              <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                {trimmedQuery ? t("unifiedSearchPanel.noResults") : t("unifiedSearchPanel.noItems")}
-              </div>
+              <EmptyState align="center" className="px-3 py-8" title={trimmedQuery ? t("unifiedSearchPanel.noResults") : t("unifiedSearchPanel.noItems")} />
             )}
           </div>
         )}
@@ -410,7 +409,7 @@ function SearchSection({
       <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground">
         {icon}
         <span>{title}</span>
-        <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+        <Badge variant="outline" className="h-5 px-1.5 text-tiny">
           {loading ? t("unifiedSearchPanel.searching") : count}
         </Badge>
       </div>
@@ -439,8 +438,8 @@ function SearchResultButton({
       <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[11px] font-medium text-muted-foreground">{label}</span>
-          {meta ? <span className="truncate text-[10px] text-muted-foreground/(--opacity-stronger)">{meta}</span> : null}
+          <span className="truncate text-dense font-medium text-muted-foreground">{label}</span>
+          {meta ? <span className="truncate text-tiny text-muted-foreground/(--opacity-stronger)">{meta}</span> : null}
         </span>
         <span className="mt-0.5 block min-w-0 text-xs text-foreground [overflow-wrap:anywhere]">{children}</span>
       </span>

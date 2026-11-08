@@ -59,7 +59,7 @@ export function InvalidRoutineRow({ routine, onRemove }: { routine: InvalidRouti
         <Button
           size="sm"
           variant="ghost"
-          className="h-7 shrink-0 px-2 text-[11px] text-destructive"
+          className="h-7 shrink-0 px-2 text-dense text-destructive"
           onClick={() => onRemove(routine.id)}
         >
           {t("routinePanel.deleteButton")}
@@ -407,7 +407,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
               {cronError && (
                 <p className="text-sm text-destructive" data-testid="cron-error">{cronError}</p>
               )}
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-dense text-muted-foreground">
                 {t("routinePanel.cronExamplePrefix")} <code>0 9 * * 1-5</code> = {t("routinePanel.cronExample1")} &nbsp;·&nbsp;
                 <code>*/30 * * * *</code> = {t("routinePanel.cronExample2")} &nbsp;·&nbsp;
                 <code>0 18 * * 5</code> = {t("routinePanel.cronExample3")}
@@ -431,7 +431,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                 data-testid="natural-input"
               />
             </Label>
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-dense text-muted-foreground">
               {t("routinePanel.naturalLanguageHint")}
             </div>
             {naturalError && (
@@ -473,7 +473,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-7 px-2 text-[11px]"
+                        className="h-7 px-2 text-dense"
                         onClick={() => setAllowedPluginIds([])}
                         data-testid="routine-clear-allowed-plugins"
                       >
@@ -484,7 +484,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                   {pluginScopeError ? (
                     <p className="text-sm text-destructive">{pluginScopeError}</p>
                   ) : pluginCards.length === 0 ? (
-                    <p className="text-[11px] text-muted-foreground">{t("routinePanel.noPluginsAvailable")}</p>
+                    <p className="text-dense text-muted-foreground">{t("routinePanel.noPluginsAvailable")}</p>
                   ) : (
                     <div className="grid max-h-32 gap-1 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">
                       {pluginCards.map((plugin) => (
@@ -502,7 +502,7 @@ export function AddRoutineModal({ api, onClose, onAdded, template, initialAt: sl
                       ))}
                     </div>
                   )}
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-dense text-muted-foreground">
                     {t("routinePanel.pluginDenyAllHint")}
                   </p>
                 </div>

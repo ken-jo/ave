@@ -85,7 +85,7 @@ export function AboutTab({ api }: AboutTabProps) {
           <div className="flex items-start gap-3 rounded-md border bg-card/(--opacity-half) p-3">
             <Cpu className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden={true} />
             <div className="min-w-0">
-              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{t("generalTab.osLabel")}</dt>
+              <dt className="text-dense uppercase tracking-wide text-muted-foreground">{t("generalTab.osLabel")}</dt>
               <dd className="font-medium">
                 {appInfo ? `${platformLabel(appInfo.platform)} · ${appInfo.arch}` : t("generalTab.loading")}
               </dd>
@@ -94,7 +94,7 @@ export function AboutTab({ api }: AboutTabProps) {
           <div className="flex items-start gap-3 rounded-md border bg-card/(--opacity-half) p-3">
             <Brain className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden={true} />
             <div className="min-w-0">
-              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{t("generalTab.appVersionLabel")}</dt>
+              <dt className="text-dense uppercase tracking-wide text-muted-foreground">{t("generalTab.appVersionLabel")}</dt>
               <dd className="font-mono text-xs" data-testid="general-tab-app-version">
                 {appInfo ? `v${appInfo.version}` : t("generalTab.loading")}
               </dd>
@@ -106,8 +106,8 @@ export function AboutTab({ api }: AboutTabProps) {
           >
             <Cpu className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden={true} />
             <div className="min-w-0 flex-1">
-              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{t("generalTab.techStackLabel")}</dt>
-              <dd className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] sm:grid-cols-4">
+              <dt className="text-dense uppercase tracking-wide text-muted-foreground">{t("generalTab.techStackLabel")}</dt>
+              <dd className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-dense sm:grid-cols-4">
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-muted-foreground">Electron</span>
                   <span data-testid="general-tab-stack-electron">
@@ -138,7 +138,7 @@ export function AboutTab({ api }: AboutTabProps) {
           <div className="flex items-start gap-3 rounded-md border bg-card/(--opacity-half) p-3 sm:col-span-2">
             <FolderOpen className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden={true} />
             <div className="min-w-0 flex-1">
-              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{t("generalTab.dataPathLabel")}</dt>
+              <dt className="text-dense uppercase tracking-wide text-muted-foreground">{t("generalTab.dataPathLabel")}</dt>
               <dd className="flex items-center gap-2">
                 <code className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                   {appInfo?.userDataPath ?? t("generalTab.loading")}
@@ -146,7 +146,7 @@ export function AboutTab({ api }: AboutTabProps) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-6 shrink-0 px-2 text-[11px]"
+                  className="h-6 shrink-0 px-2 text-dense"
                   onClick={copyDataPath}
                   disabled={!appInfo}
                   aria-label={t("generalTab.copyDataPathAriaLabel")}

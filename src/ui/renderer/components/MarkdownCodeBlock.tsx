@@ -76,7 +76,7 @@ export function MarkdownCodeBlock({ node, children, ...rest }: ComponentPropsWit
 
   return (
     <div className="group/code relative my-3 min-w-0 max-w-full" data-testid="markdown-code-block">
-      <div className="flex items-center justify-between gap-2 rounded-t-md border border-b-0 border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-2 py-0.5 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 rounded-t-md border border-b-0 border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-2 py-0.5 text-dense text-muted-foreground">
         <span className="min-w-0 truncate font-mono" data-testid="markdown-code-language">
           {language ?? t("assistantCard.codePlainText")}
         </span>
@@ -84,7 +84,7 @@ export function MarkdownCodeBlock({ node, children, ...rest }: ComponentPropsWit
           type="button"
           variant="ghost"
           size="sm"
-          className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+          className="h-5 gap-1 px-1.5 text-dense text-muted-foreground hover:text-foreground"
           aria-label={label}
           title={label}
           data-testid="markdown-code-copy"

@@ -4,6 +4,7 @@ import { t } from "../../../i18n/runtime.js";
 import type { WorkspaceTabKind } from "../preview/workspace-tabs.js";
 import type { PluginUiExtension } from "../types.js";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
+import type { ShortcutId } from "../../../shared/shortcuts.js";
 
 export interface QuickAction {
   id: string;
@@ -12,114 +13,27 @@ export interface QuickAction {
 }
 
 /**
- * Single source of truth for the workspace-rail launcher (§6.10.3). Each
- * `WorkspaceTabKind` maps to its launcher label, keyboard shortcut hint, and
- * icon. The empty-state launcher in ChatSidePanel renders one row per entry and
- * the keyboard-shortcut handler binds off the same table, so the picker and the
- * app command surface share one list rather than duplicating it. Order here is
- * the render order in the launcher.
- *
+ * The workspace-rail launcher (§6.10.3): each `WorkspaceTabKind` with its label, icon and the registry shortcut that
+ * opens it. The empty-state launcher and the tab-bar "+" menu render one row per entry and the panel's key handler binds
+ * off the same table. Order here is the render order in the launcher.
  */
 export interface WorkspaceLauncherItem {
   kind: WorkspaceTabKind;
   labelKey: string;
-  /** Human-readable shortcut hint shown on the right of the launcher row. */
-  shortcutHint: string;
-  /** Structured shortcut binding matched against KeyboardEvent. `null` means the hint is displayed but no key is bound (no
-   * matching accelerator). */
-  shortcut: WorkspaceLauncherShortcut | null;
+  /** The registry row that opens this kind, or null when no key is bound. */
+  shortcutId: ShortcutId | null;
   icon: LucideIcon;
 }
 
-export interface WorkspaceLauncherShortcut {
-  /** Lower-case `KeyboardEvent.key` to match (after normalization). */
-  key: string;
-  /** Requires the primary meta/ctrl modifier (⌘ on macOS, Ctrl elsewhere). */
-  meta: boolean;
-  /** Requires Ctrl specifically (for ⌃⇧G — Ctrl on every platform). */
-  ctrl: boolean;
-  shift: boolean;
-  /** Requires Alt/Option (⌥ on macOS) — matched exactly (present or absent). */
-  alt: boolean;
-}
-
 export const WORKSPACE_TAB_LAUNCHER: readonly WorkspaceLauncherItem[] = [
-  {
-    kind: "preview",
-    labelKey: "chatPreviewRail.launcher.review",
-    shortcutHint: "⌃⇧G",
-    shortcut: { key: "g", meta: false, ctrl: true, shift: true, alt: false },
-    icon: Table,
-  },
-  {
-    kind: "terminal",
-    labelKey: "chatPreviewRail.launcher.terminal",
-    shortcutHint: "",
-    shortcut: null,
-    icon: Terminal,
-  },
-  {
-    kind: "browser",
-    labelKey: "chatPreviewRail.launcher.browser",
-    shortcutHint: "⌘T",
-    shortcut: { key: "t", meta: true, ctrl: false, shift: false, alt: false },
-    icon: Globe,
-  },
-  {
-    kind: "file-browser",
-    labelKey: "chatPreviewRail.launcher.file",
-    shortcutHint: "⌘P",
-    shortcut: { key: "p", meta: true, ctrl: false, shift: false, alt: false },
-    icon: Folder,
-  },
-  {
-    kind: "subagent",
-    labelKey: "chatPreviewRail.launcher.subagent",
-    shortcutHint: "⌘⇧A",
-    shortcut: { key: "a", meta: true, ctrl: false, shift: true, alt: false },
-    icon: Bot,
-  },
-  {
-    kind: "activity",
-    labelKey: "chatPreviewRail.launcher.activity",
-    shortcutHint: "",
-    shortcut: null,
-    icon: Activity,
-  },
-  {
-    kind: "side-chat",
-    labelKey: "chatPreviewRail.launcher.sideChat",
-    shortcutHint: "⌥⌘S",
-    shortcut: { key: "s", meta: true, ctrl: false, shift: false, alt: true },
-    icon: MessageSquare,
-  },
+  { kind: "preview", labelKey: "chatPreviewRail.launcher.review", shortcutId: "workspace.openReview", icon: Table },
+  { kind: "terminal", labelKey: "chatPreviewRail.launcher.terminal", shortcutId: null, icon: Terminal },
+  { kind: "browser", labelKey: "chatPreviewRail.launcher.browser", shortcutId: "workspace.openBrowser", icon: Globe },
+  { kind: "file-browser", labelKey: "chatPreviewRail.launcher.file", shortcutId: "workspace.openFile", icon: Folder },
+  { kind: "subagent", labelKey: "chatPreviewRail.launcher.subagent", shortcutId: "workspace.openSubagent", icon: Bot },
+  { kind: "activity", labelKey: "chatPreviewRail.launcher.activity", shortcutId: null, icon: Activity },
+  { kind: "side-chat", labelKey: "chatPreviewRail.launcher.sideChat", shortcutId: "workspace.openSideChat", icon: MessageSquare },
 ];
-
-/**
- * Match a KeyboardEvent against a launcher shortcut. Kept next to the table so
- * the launcher UI and the panel-scoped keydown handler agree on semantics.
- * `meta` accepts either the platform meta key (⌘) or Ctrl so the binding works
- * on macOS and other platforms; `ctrl` requires Ctrl exactly (⌃⇧G); `alt` is
- * matched exactly (present or absent) so ⌥-anchored bindings like ⌥⌘S resolve
- * while non-alt bindings still reject a stray Option press.
- */
-export function matchesLauncherShortcut(
-  shortcut: WorkspaceLauncherShortcut,
-  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
-): boolean {
-  if (event.altKey !== shortcut.alt) return false;
-  if (event.key.toLowerCase() !== shortcut.key) return false;
-  if (event.shiftKey !== shortcut.shift) return false;
-  if (shortcut.ctrl) {
-    // ⌃-anchored binding: require Ctrl specifically, never plain ⌘.
-    return event.ctrlKey && !event.metaKey;
-  }
-  if (shortcut.meta) {
-    // ⌘-anchored binding: accept ⌘ (macOS) or Ctrl (other platforms).
-    return event.metaKey || event.ctrlKey;
-  }
-  return !event.metaKey && !event.ctrlKey;
-}
 
 /** Build the default quick-action list from app state. Kept separate from SlashPicker so App can build the actions without
  * pulling the picker — and its menu bridge — into the startup path. */

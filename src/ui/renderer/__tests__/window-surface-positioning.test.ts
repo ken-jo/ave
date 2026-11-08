@@ -27,7 +27,10 @@ const FIXED_POSITIONING_ALLOWED: Record<string, string> = {
 };
 
 /** Files that may step off the z ladder with an arbitrary value, and why. */
-const Z_LADDER_ESCAPE_ALLOWED: Record<string, string> = {
+const Z_LADDER_ESCAPE_ALLOWED: Record<string, string> = {};
+
+/** The one tier above the overlay band (`--z-dev-overlay`, docs/DESIGN.md) is for developer tooling only. */
+const DEV_OVERLAY_TIER_USERS: Record<string, string> = {
   "components/DevComponentLabels.tsx":
     "developer measuring overlay that has to label every product surface, the z-50 band included",
 };
@@ -47,6 +50,7 @@ function listSourceFiles(dir: string): string[] {
 const FIXED_IN_CLASS = /className=\{?["'`](?:[^"'`]*\s)?fixed(?:\s|["'`])/;
 const FIXED_IN_STYLE = /position:\s*["']fixed["']/;
 const Z_ESCAPE = /\bz-\[\d+\]|zIndex:\s*\d/;
+const DEV_OVERLAY_TIER = /--z-dev-overlay\b/;
 
 function offenders(pattern: RegExp[]): string[] {
   const hits = new Set<string>();
@@ -75,5 +79,13 @@ describe("renderer surfaces stay inside their pane", () => {
     expect(unlisted, "arbitrary z-index outside the ladder").toEqual([]);
     const stale = Object.keys(Z_LADDER_ESCAPE_ALLOWED).filter((file) => !escapes.includes(file));
     expect(stale, "allow-list entries that no longer escape the ladder").toEqual([]);
+  });
+
+  it("keeps the dev-only overlay tier to developer tooling", () => {
+    const users = offenders([DEV_OVERLAY_TIER]);
+    const unlisted = users.filter((file) => !(file in DEV_OVERLAY_TIER_USERS));
+    expect(unlisted, "product surface on the dev-only z tier").toEqual([]);
+    const stale = Object.keys(DEV_OVERLAY_TIER_USERS).filter((file) => !users.includes(file));
+    expect(stale, "dev-tier entries that no longer use the tier").toEqual([]);
   });
 });

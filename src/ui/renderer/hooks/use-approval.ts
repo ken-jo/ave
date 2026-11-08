@@ -13,6 +13,7 @@ import type { UserApprovalVerdict } from "../../../shared/permissions-events.js"
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../types.js";
 import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { getAccessibilitySignalEngine } from "../accessibility-signal-engine.js";
 
 export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice">;
 
@@ -124,6 +125,8 @@ export function useApproval(): ApprovalQueueApi {
     const unsub = window.ave.approval.onRequest((req) => {
       if (!aliveRef.current) return;
       setQueue((q) => approvalQueueReducer(q, { type: "push", req }));
+      // A live request is a new card waiting for the user. Parked requests read below predate this renderer and stay silent.
+      getAccessibilitySignalEngine().signal("approvalNeeded", `approval:${req.id}`);
     });
     // The host settled a request. Every surface that could take the card down itself does so from the turn that asked; this covers the requests whose surface is gone; a
     // closed tile, a tile a navigation let go of; where nothing renderer-side would ever learn the ask had been retired. An id whose answer is in flight is left to `decide`.
