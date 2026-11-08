@@ -1062,6 +1062,7 @@ export function ChatGroupSession({
         approvalSentenceInterceptSubmit={env.approvalSentenceInterceptSubmit}
         pendingApprovals={pendingApprovals}
         sideChatPendingAnswer={sideChatPendingAnswer}
+        sideChatWorking={sideChat?.streaming ?? false}
         plugins={env.plugins}
         onSelectPlugin={env.onSelectPlugin}
         onOpenApprovalQueue={env.onOpenApprovalQueue}

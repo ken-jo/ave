@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AlertTriangle, CheckCircle2, CircleStop, ListTree, Loader2, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
+import { WorkingLoader } from "./AgentStatusGlyph.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { MARKDOWN_SAFE_COMPONENTS, markdownUrlTransform } from "../utils/markdown-safe.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -295,23 +296,23 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
 
   const label = inFlightLabel(phase);
 
-  // `awaiting_approval` uses the accent (primary) token with a ring so it reads
-  // as "needs you" without reaching for a raw palette color (theme-token rule).
-  // The standard host ApprovalGate dialog renders the actual approve/reject; the
-  // label here points the user at that surfaced prompt.
+  // `awaiting_approval` needs the user's answer, so it takes the warning token — the meaning the agent status slot gives
+  // warning everywhere (DESIGN.md, "Agent status slot"). The host approval card renders the actual approve/reject; the
+  // label here points the user at it.
   const awaiting = phase === "awaiting_approval";
+  const tone = awaiting
+    ? "border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) text-warning"
+    : "border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
-        awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
-      }`}
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border ${tone}`}
       data-testid="work-board-run-indicator"
       data-phase={phase ?? "starting"}
     >
       {awaiting ? (
-        <CheckCircle2 className="h-3 w-3" />
+        <ShieldAlert className="h-3 w-3" />
       ) : (
-        <Loader2 className="h-3 w-3 animate-spin" />
+        <WorkingLoader className="h-3 w-3" />
       )}
       {label}
     </span>
@@ -365,12 +366,13 @@ function LiveRunChip({
   const parts = [run.stopping ? t("workBoard.liveChipStopping") : toolApprovalPending ? t("workBoard.liveChipToolApproval") : label];
   if (!run.stopping && turn !== undefined) parts.push(t("workBoard.liveChipTurn", { turn }));
   if (!run.stopping && !toolApprovalPending && Number.isFinite(startMs)) parts.push(formatElapsed(now - startMs));
-  const awaiting = run.phase === "awaiting_approval";
+  // A plan or a tool call waiting on the user is "needs your answer": the warning token, as in the agent status slot.
+  const awaiting = toolApprovalPending || run.phase === "awaiting_approval";
   const tone = run.stopping
     ? "border-border bg-muted text-muted-foreground"
-    : toolApprovalPending
+    : awaiting
     ? "border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) text-warning"
-    : `border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""}`;
+    : "border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary";
   return (
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-tiny font-medium leading-none tabular-nums border ${tone}`}
@@ -378,12 +380,10 @@ function LiveRunChip({
       data-phase={run.phase ?? "starting"}
       data-state={state}
     >
-      {toolApprovalPending && !run.stopping ? (
+      {awaiting && !run.stopping ? (
         <ShieldAlert className="h-3 w-3 shrink-0" />
-      ) : awaiting ? (
-        <CheckCircle2 className="h-3 w-3 shrink-0" />
       ) : (
-        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        <WorkingLoader className="h-3 w-3 shrink-0" />
       )}
       <span className="min-w-0 truncate">{parts.join(" · ")}</span>
     </span>

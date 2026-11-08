@@ -318,6 +318,54 @@ card over the composer; if the user can act on it later, it is the lane or a pil
 informs, it is a banner. A surface placed in the wrong tier is a frame violation the same way
 a control in the wrong part is a token violation.
 
+### Agent status slot
+
+Every surface that names a conversation or an agent shows its state the same way
+(`AgentStatusGlyph`, beside `PendingAnswerDot`; after Dure's activity glyph and VS Code's
+chat sessions list). One square of a fixed size holds the identity mark, so a change of
+state never moves the row.
+
+| State | In the square | Corner badge |
+|---|---|---|
+| idle / done | the mark | none |
+| working | the loader in place of the mark | — |
+| waiting (for an answer or an approval) | the mark | `--warning` (the pending-answer dot) |
+| blocked (denied, cannot go on) | the mark | `--destructive` |
+| error | the mark | `--destructive` |
+| exited / stopped | the mark | `--muted-foreground` |
+
+Working and a badge are separate inputs: a conversation can be running while one of its
+side chats waits on a card, and the square then shows the loader with the warning badge.
+`--warning` means "needs your answer" and nothing else; a running agent is never warning.
+Every badge carries an aria-label. A badge never takes the pointer: it overhangs the square,
+and a row's hover control (the sidebar's pin) sits under that corner. Where the square takes
+the pointer (a tab, a sub-agent or run row, a group row, a tile header) it is the tooltip for
+what it shows. In a sidebar row the whole slot is pointer-transparent too, so the pin under it
+gets the click, and the row's hover preview carries the state instead ("running", "awaiting
+your answer"). Where the surface's own accessible name already says the state (a sidebar row's
+button, which also names a non-main family; a sub-agent's or a run's status text), the slot is
+hidden from assistive tech so it is not read twice. The loader
+stops spinning under reduced motion and the label carries the state. A conversation stays
+working while any of its chats is — the main turn or its side chat — and one selector
+(`workingSessionIds` in `chat-group-session-registry.ts`) decides it for the sidebar rows
+and the tile headers, the way `pendingAnswers` decides the dot; the side-chat tab reads the
+same flag the side chat publishes to that selector. Unread stays on the row's title (dot and weight); it
+is read state, not agent state.
+
+Where it is drawn: the sidebar conversation row (main and family rows), a chat tile's
+header, the sidebar's group rows (the Plugins row's dot), a side-chat tab, a sub-agent row
+in the work panel, and a run row in the work board's live panel. Text labels next to the
+square (a sub-agent's "Waiting", a run's phase chip) stay, in the same tone as the badge.
+
+Not drawn as the slot: action buttons that lead to a hidden card (maximize, work-panel
+toggle) carry the bare pending-answer dot; a terminal tab's unread notice is the
+primary dot (`TerminalAttentionDot`), which is read state; the app's own status is a
+toolbar pill; an agent controlling a browser tab (the tab's `Bot` mark and the control
+badge) is activity, drawn in the neutral working tone, never warning; spinners inside the transcript (tool groups, reasoning) are content, not
+session status. No conversation-level producer exists yet for blocked or a
+failed/exited conversation (a turn's error lives in the tile's transcript); those states
+are drawn only where a producer exists today (sub-agent and work-board runs).
+
 ### Rows carry inline actions on hover and the same actions in a context menu
 
 VS Code's list rows reveal inline actions on hover, and the row's context menu offers the same
@@ -363,6 +411,9 @@ not be drawn with the same value.
     sidebar row of every interrupted conversation, and on the maximize control, the
     work-panel toggle, the side-chat tab and the Plugins row while the card is behind them.
     One selector feeds every instance.
+  - Agent status slot (`AgentStatusGlyph`): the identity mark of a conversation or agent,
+    the loader in its place while working, and a corner badge only for states that need a
+    person (see Workbench model, "Agent status slot").
   - Command picker: search and 1st/2nd-depth command navigation.
   - Settings and plugin pages: dense product configuration surfaces using the same `PageShell` chrome.
   - SettingsSection: unframed settings/page bands for section grouping; do not wrap these bands in Card chrome.

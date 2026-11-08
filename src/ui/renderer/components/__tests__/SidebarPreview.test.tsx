@@ -52,6 +52,14 @@ describe("sidebar preview cards", () => {
     expect(screen.getByText(conversation.message).className).toContain("line-clamp-2");
     expect(document.querySelector("img")).toBeNull();
   });
+  it("names a waiting answer in the card — the tooltip the row's pointer-transparent badge does not take", () => {
+    const { rerender } = render(<SidebarPreviewCard id="conversation" preview={{ ...conversation, waiting: true }} />);
+    const pill = screen.getByTestId("sidebar-preview-waiting");
+    expect(pill.textContent).toMatch(/Awaiting your answer|답변 대기 중/);
+    expect(pill.className).toContain("text-warning");
+    rerender(<SidebarPreviewCard id="conversation" preview={conversation} />);
+    expect(screen.queryByTestId("sidebar-preview-waiting")).toBeNull();
+  });
   it("renders only the command and title for a terminal, and title alone without a command", () => {
     const { rerender } = render(<SidebarPreviewCard id="terminal" preview={{ kind: "terminal", title: "Terminal 1 · zsh", command: "make build" }} />);
     expect(screen.getByRole("tooltip").textContent).toBe("❯ make buildTerminal 1 · zsh");
