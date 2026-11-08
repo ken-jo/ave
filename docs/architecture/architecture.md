@@ -1550,6 +1550,10 @@ key operations plus hover, drag, native single-select, targeted scroll, and
 picker-only upload. Schemas and execution both validate operands. Page effects
 recheck the live document, target reference, recipient, and control generation.
 There is no model-facing arbitrary script or generic protocol dispatcher.
+Every browser tool result, including host validation and action errors, remains
+inside the untrusted browser-content envelope. Diagnostics can interpolate page
+titles, accessible names and navigation URLs; a host error is not a trusted-text
+exception. String bounds and fence neutralization apply inside that same boundary.
 HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
 `Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
 only bounded approved text MIME data is accepted, with no files or host-path

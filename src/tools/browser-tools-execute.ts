@@ -38,12 +38,7 @@ const PAGE_OBSERVATION_ACTIONS = Object.freeze({
 const NO_WINDOW = "the browser tools are available only to a conversation in an app window (or its sub-agents); this session has no browser";
 
 function failure(error: string): ToolExecutionResult {
-  const state = { truncated: false };
-  const message = pageString(error, state);
-  // A host diagnostic is error data, not a page read; reflected text still cannot forge markup or another result fence.
-  const output = JSON.stringify({ error: message, ...(state.truncated ? { truncated: true } : {}) })
-    .replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
-  return { output, isError: true };
+  return { output: fenceBrowserContent({ error }), isError: true };
 }
 
 const FENCE_OPEN = '<browser-content trust="untrusted-web-data">';
