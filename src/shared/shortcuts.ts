@@ -175,7 +175,8 @@ function chordSignature(accelerator: string, platform: ShortcutPlatform): string
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return null;
   const chord = resolveChord(parsed, platform);
-  return `${chord.meta ? "M" : ""}${chord.ctrl ? "C" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}+${chord.key}`;
+  const key = chord.shift && chord.key === "Plus" ? "=" : chord.key;
+  return `${chord.meta ? "M" : ""}${chord.ctrl ? "C" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}+${key}`;
 }
 
 /** Minimal shape of the fields read from a key event; DOM and React events both fit. `code` is optional so a test can
@@ -205,6 +206,7 @@ function eventKeyToken(event: ShortcutKeyEvent): string | null {
   if (event.code === "Numpad0" && key === "0") return "num0";
   if (event.code === "NumpadAdd" && key === "+") return "numadd";
   if (event.code === "NumpadSubtract" && key === "-") return "numsub";
+  if (event.code === "Equal" && event.shiftKey && key === "+") return "=";
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
   if (key === "ArrowDown") return "Down";
@@ -229,7 +231,8 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
-  return eventKeyToken(event) === chord.key
+  const key = eventKeyToken(event);
+  return (key === chord.key || (chord.shift && chord.key === "Plus" && key === "="))
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt

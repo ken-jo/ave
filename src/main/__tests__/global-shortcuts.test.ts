@@ -47,8 +47,8 @@ describe("reconcileGlobalShortcuts", () => {
     try {
       setProcessPlatform(platform);
       const deps = makeDeps();
-      for (const token of ["num0", "numadd", "numsub"]) {
-        for (const modifier of ["CommandOrControl", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+      for (const token of ["num0", "numadd", "numsub", "Shift+Plus", "Shift+="]) {
+        for (const modifier of ["CommandOrControl", "CmdOrCtrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
           const accelerator = `${modifier}+${token}`;
           expect(reconcileGlobalShortcuts({ toggleWindow: accelerator, enabled: true }, deps)).toEqual({ status: "invalid", accelerator });
           expect(deps.register).not.toHaveBeenCalled();

@@ -1,9 +1,10 @@
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 import { applyShortcutBindingsPatch, type ShortcutSettings } from "../../../../shared/shortcuts.js";
 import { __resetShortcutsForTest, matchesShortcut, useShortcutSettingsSync } from "../../hooks/use-shortcuts.js";
+import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import type { AveApi } from "../../types.js";
 import { ShortcutsTab } from "../ShortcutsTab.js";
 import { ko } from "../../../../i18n/messages/ko.js";
@@ -44,6 +45,23 @@ afterEach(() => {
 });
 
 describe("ShortcutsTab", () => {
+  it.each(["darwin", "other"] as const)("refuses shifted Equal and preserves another plus location on %s", async (platform) => {
+    const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
+    try {
+      const api = installApi();
+      render(<Harness api={api} />);
+      fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
+      press({ key: "+", code: "Equal", shiftKey: true, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+      expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko["be_main.menuZoomIn"]);
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");
+      press({ key: "+", code: "BracketRight", altKey: true });
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "Alt+Plus" } } }));
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it.each([
     ["0", "Numpad0", "num0", "be_main.menuResetZoom"],
     ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],

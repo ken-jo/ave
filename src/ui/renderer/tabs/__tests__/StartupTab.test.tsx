@@ -24,7 +24,8 @@ describe("StartupTab", () => {
       ["0", "Numpad0", "num0", "be_main.menuResetZoom"],
       ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],
       ["-", "NumpadSubtract", "numsub", "be_main.menuZoomOut"],
-    ] as const)("refuses keypad %s, keeps the prior value and continues recording", async (key, code, token, labelKey) => {
+      ["+", "Equal", "Shift+=", "be_main.menuZoomIn"],
+    ] as const)("refuses fixed %s, keeps the prior value and continues recording", async (key, code, token, labelKey) => {
       const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
       try {
         const api = installApi({ ...STARTUP_SETTINGS, shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
@@ -32,17 +33,17 @@ describe("StartupTab", () => {
         const capture = await findByTestId("startup-accelerator-capture");
         await waitFor(() => expect(capture.textContent).toBe("Alt+F1"));
         fireEvent.click(await findByTestId("startup-accelerator-record"));
-        fireEvent.keyDown(capture, { key, code, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+        fireEvent.keyDown(capture, { key, code, shiftKey: code === "Equal", metaKey: platform === "darwin", ctrlKey: platform === "other" });
         expect(getByRole("alert").textContent).toContain(ko[labelKey]);
         expect(api.updateSettings).not.toHaveBeenCalled();
         expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
         fireEvent.keyDown(capture, { key: "Escape" });
         expect(capture.textContent).toBe("Alt+F1");
         fireEvent.click(await findByTestId("startup-accelerator-record"));
-        fireEvent.keyDown(capture, { key, code, ctrlKey: platform === "other", metaKey: platform === "darwin" });
+        fireEvent.keyDown(capture, { key, code, shiftKey: code === "Equal", ctrlKey: platform === "other", metaKey: platform === "darwin" });
         fireEvent.keyDown(capture, { key: "Insert", code: "Numpad0", altKey: true });
         expect(api.updateSettings).not.toHaveBeenCalled();
-        fireEvent.keyDown(capture, { key, code, altKey: true });
+        fireEvent.keyDown(capture, { key, code, shiftKey: code === "Equal", altKey: true });
         expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: `Alt+${token}` } });
         expect(capture.textContent).toBe(`Alt+${token}`);
         expect(queryByRole("alert")).toBeNull();

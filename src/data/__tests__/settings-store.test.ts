@@ -3035,8 +3035,8 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
       setProcessPlatform(platform);
       const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
-      for (const token of ["num0", "numadd", "numsub"]) {
-        for (const modifier of ["CommandOrControl", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+      for (const token of ["num0", "numadd", "numsub", "Shift+Plus", "Shift+="]) {
+        for (const modifier of ["CommandOrControl", "CmdOrCtrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
           const accelerator = `${modifier}+${token}`;
           await s.patch({ shortcuts: { toggleWindow: accelerator } });
           expect(s.get("shortcuts").toggleWindow).toBe("Alt+F1");

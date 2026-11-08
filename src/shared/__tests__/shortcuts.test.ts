@@ -30,6 +30,39 @@ function ev(key: string, mods: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent
   return { key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods };
 }
 
+describe("shifted plus identity", () => {
+  it.each(["darwin", "other"] as const)("reserves equivalent zoom spellings and records physical Equal on %s", (platform) => {
+    const primary = platform === "darwin" ? { metaKey: true } : { ctrlKey: true };
+    const event = ev("+", { code: "Equal", shiftKey: true, ...primary });
+    expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator: "CommandOrControl+Shift+=" });
+    for (const modifier of ["CommandOrControl", "CmdOrCtrl", platform === "darwin" ? "Command" : "Control"]) {
+      for (const key of ["Plus", "="]) {
+        const binding = `${modifier}+Shift+${key}`;
+        const canonical = canonicalAccelerator(binding);
+        if (canonical === null) throw new Error("Expected accelerator");
+        expect(fixedShortcutOwner(binding, platform)?.id).toBe("menu.zoomInShifted");
+        expect(shortcutBindingRefusal("app.search", canonical, platform, NO_SHORTCUT_OVERRIDES)).toEqual({ reason: "fixed-key", ownerId: "menu.zoomInShifted" });
+        expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": binding }, platform)).toThrow();
+        expect(loadShortcutBindings({ "app.search": binding }, platform).bindings).toEqual({});
+        expect(normalizeShortcuts({ toggleWindow: binding, enabled: true }, { ...NO_SHORTCUT_OVERRIDES }, platform, () => {}).toggleWindow).toBeNull();
+        const conflicts = conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": binding } }, platform), platform);
+        expect(conflicts.has("app.search")).toBe(true);
+        expect(conflicts.has("menu.zoomInShifted")).toBe(true);
+        expect(matchesAccelerator(binding, event, platform)).toBe(true);
+      }
+    }
+    for (const shiftKey of [false, true]) {
+      const elsewhere = ev("+", { code: "BracketRight", altKey: true, shiftKey });
+      const binding = shiftKey ? "Alt+Shift+Plus" : "Alt+Plus";
+      expect(acceleratorFromEvent(elsewhere, platform)).toEqual({ kind: "accelerator", accelerator: binding });
+      expect(matchesAccelerator(binding, elsewhere, platform)).toBe(true);
+      expect(matchesAccelerator(shiftKey ? "Alt+Shift+=" : "Alt+=", elsewhere, platform)).toBe(false);
+      expect(loadShortcutBindings({ "app.search": binding }, platform).bindings).toEqual({ "app.search": binding });
+      expect(matchesAccelerator(binding, ev("+", { code: "NumpadAdd", altKey: true, shiftKey }), platform)).toBe(false);
+    }
+  });
+});
+
 describe("keypad identity", () => {
   const keys = [
     ["0", "Numpad0", "num0", "0", "menu.resetZoom", "Num 0"],
