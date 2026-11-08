@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -28,11 +28,13 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, unlinkSync: vi.fn(actual.unlinkSync) };
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync), openSync: vi.fn(actual.openSync), unlinkSync: vi.fn(actual.unlinkSync) };
 });
 afterEach(async () => {
   vi.mocked(execFileSync).mockImplementation((await vi.importActual<typeof import("node:child_process")>("node:child_process")).execFileSync);
   vi.mocked(unlinkSync).mockImplementation((await vi.importActual<typeof import("node:fs")>("node:fs")).unlinkSync);
+  vi.mocked(openSync).mockImplementation((await vi.importActual<typeof import("node:fs")>("node:fs")).openSync);
+  vi.mocked(fstatSync).mockImplementation((await vi.importActual<typeof import("node:fs")>("node:fs")).fstatSync);
   vi.unstubAllEnvs();
   _resetAveHomePrivacyForTest();
 });
@@ -42,6 +44,19 @@ function fixture(): string {
   setFixtureOwner(dirname(dir));
   expect(ensureAveHomePrivate(dir).enforcement).not.toBe("none");
   return dir;
+}
+
+async function candidateMetadata(path: string, mode = 0o600, uid = process.getuid?.() ?? 0): Promise<void> {
+  const identity = statSync(path);
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.mocked(fstatSync).mockImplementation(((descriptor: number) => {
+    const opened = actual.fstatSync(descriptor);
+    if (opened.dev === identity.dev && opened.ino === identity.ino) {
+      opened.mode = (opened.mode & ~0o7777) | mode;
+      opened.uid = uid;
+    }
+    return opened;
+  }) as typeof fstatSync);
 }
 
 /** The aside copy a commit made of a legacy root file, named in its diagnostic. */
@@ -76,7 +91,7 @@ describe("protected home configuration", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("keeps a safe copy when deletion is interrupted and retries on the next boot", () => {
+  it.skipIf(process.platform === "win32")("keeps a safe copy when deletion is interrupted and retries on the next boot", async () => {
     const dir = home();
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "settings.json");
@@ -93,12 +108,51 @@ describe("protected home configuration", () => {
     const first = readdirSync(dir).find(name => name.startsWith("settings.json.post-migration-"));
     if (!first) throw new Error("Expected preserved copy");
     expect(statSync(join(dir, first), { bigint: true }).ino).not.toBe(original);
+    await candidateMetadata(join(dir, first));
     expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Interrupted source deletion");
     expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
     vi.mocked(unlinkSync).mockImplementation(unlink);
     expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Legacy configuration preserved at");
     expect(existsSync(path)).toBe(false);
     expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
+  });
+
+  it.skipIf(process.platform === "win32").each(["source hardlink", "other hardlink", "symlink", "directory", "vanished", "wrong mode", "special mode", "foreign owner", "proper"])("validates POSIX preserved candidate: %s", async kind => {
+    const dir = home();
+    mkdirSync(dir, { recursive: true });
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    const outside = join(dir, "retained");
+    writeFileSync(source, "outside edit");
+    const original = statSync(source);
+    if (kind === "source hardlink") linkSync(source, previous);
+    else if (kind === "symlink") symlinkSync(source, previous);
+    else if (kind === "directory") mkdirSync(previous);
+    else {
+      writeFileSync(previous, "outside edit", { mode: 0o600 });
+      if (kind === "other hardlink") linkSync(previous, outside);
+    }
+    if (kind !== "symlink" && kind !== "directory") {
+      // Model owner/mode facts separately where the fixture filesystem cannot retain POSIX permissions.
+      await candidateMetadata(previous, kind === "wrong mode" ? 0o644 : kind === "special mode" ? 0o4600 : 0o600,
+        (process.getuid?.() ?? 0) + (kind === "foreign owner" ? 1 : 0));
+    }
+    if (kind === "vanished") {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      vi.mocked(openSync).mockImplementation((path, flags, mode) => {
+        if (String(path).endsWith("settings.json.post-migration-prior")) actual.unlinkSync(previous);
+        return actual.openSync(path, flags, mode);
+      });
+    }
+    const aside = asideOf(_cleanupRootConfigurationForTest(dir), dir, "settings.json");
+    expect(aside === previous).toBe(kind === "proper");
+    const preserved = statSync(aside);
+    expect(preserved.ino === original.ino && preserved.dev === original.dev).toBe(false);
+    expect(preserved.nlink).toBe(1);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(existsSync(source)).toBe(false);
+    if (kind === "symlink") expect(lstatSync(previous).isSymbolicLink()).toBe(true);
+    if (kind === "other hardlink") expect(readFileSync(outside, "utf8")).toBe("outside edit");
   });
 
   it.skipIf(process.platform === "win32")("does not reuse a POSIX aside with different bytes", () => {

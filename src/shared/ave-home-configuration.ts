@@ -195,11 +195,15 @@ function cleanupRootConfiguration(home: string): string[] {
           else {
             let asideName = readdirSync(sourceRoot).find(candidate => {
               if (!candidate.startsWith(`${name}.post-migration-`)) return false;
-              const preserved = openSync(join(sourceRoot, candidate), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
               try {
-                const opened = fstatSync(preserved);
-                return opened.isFile() && opened.size === contents.length && readFileSync(preserved).equals(contents);
-              } finally { closeSync(preserved); }
+                const preserved = openSync(join(sourceRoot, candidate), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+                try {
+                  const opened = fstatSync(preserved);
+                  return opened.isFile() && (opened.dev !== identity.dev || opened.ino !== identity.ino) && opened.nlink === 1
+                    && opened.uid === process.getuid?.() && (opened.mode & 0o7777) === 0o600
+                    && opened.size === contents.length && readFileSync(preserved).equals(contents);
+                } finally { closeSync(preserved); }
+              } catch { return false; }
             });
             if (asideName === undefined) {
               asideName = `${name}.post-migration-${new Date().toISOString().replace(/[-:.]/g, "")}`;

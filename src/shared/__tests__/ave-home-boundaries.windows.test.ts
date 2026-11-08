@@ -100,6 +100,44 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(existsSync(source)).toBe(false);
   });
 
+  it.each(["source hardlink", "other hardlink", "reparse", "directory", "vanished", "explicit ACE", "proper"])("validates Windows preserved candidate: %s", kind => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    const outside = join(dir, "retained");
+    writeFileSync(source, "outside edit");
+    const original = statSync(source, { bigint: true }).ino;
+    if (kind === "source hardlink") linkSync(source, previous);
+    else if (kind === "reparse") {
+      mkdirSync(outside);
+      symlinkSync(outside, previous, "junction");
+    } else if (kind === "directory") mkdirSync(previous);
+    else {
+      writeFileSync(previous, "outside edit");
+      setFixtureOwner(previous);
+      if (kind === "other hardlink") linkSync(previous, outside);
+      if (kind === "explicit ACE") grant(previous, "R");
+    }
+    let diagnostics: string[];
+    if (kind === "vanished") {
+      const interrupted = WINDOWS_HOME_BOUNDARY_SOURCE.replace(
+        "using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {",
+        "System.IO.File.Delete(System.IO.Path.Combine(path, candidate)); using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {",
+      );
+      expect(interrupted).not.toBe(WINDOWS_HOME_BOUNDARY_SOURCE);
+      diagnostics = native("[HomeDirectoryDacl]::CleanupConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false)", dir, interrupted).split(/\r?\n/);
+    } else diagnostics = migrateAveHomeConfiguration(dir);
+    const aside = asideOf(diagnostics, dir, "settings.json");
+    expect(aside === previous).toBe(kind === "proper");
+    expect(statSync(aside, { bigint: true }).ino).not.toBe(original);
+    expect(statSync(aside).nlink).toBe(1);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(command("$s=Get-Acl -LiteralPath $env:AVE_TEST_TARGET; $s.Owner -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; @($s.Access | Where-Object { -not $_.IsInherited }).Count", aside)).toBe("True\r\n0");
+    expect(existsSync(source)).toBe(false);
+    if (kind === "other hardlink") expect(readFileSync(outside, "utf8")).toBe("outside edit");
+  });
+
   it("moves a large root source aside and commits the defaults", () => {
     const dir = fixture();
     const bytes = JSON.stringify({ padding: "x".repeat(1024 * 1024 + 1) });
