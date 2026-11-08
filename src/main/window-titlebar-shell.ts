@@ -44,7 +44,6 @@ export function buildTitlebarCss(): string {
     :root {
       --ts-bg:              ${TITLEBAR_COLORS.light.background};
       --ts-fg:              ${TITLEBAR_COLORS.light.foreground};
-      --ts-border:          hsl(35 14% 80% / 0.7);
       --ts-btn:             hsl(24 8% 32%);
       --ts-btn-hover-bg:    hsl(35 14% 84% / 0.8);
       --ts-btn-close-hover: hsl(0 72% 51%);
@@ -54,7 +53,6 @@ export function buildTitlebarCss(): string {
       :root {
         --ts-bg:              ${TITLEBAR_COLORS.dark.background};
         --ts-fg:              ${TITLEBAR_COLORS.dark.foreground};
-        --ts-border:          hsl(20 8% 30% / 0.7);
         --ts-btn:             hsl(40 8% 68%);
         --ts-btn-hover-bg:    hsl(20 6% 24%);
         --ts-btn-close-hover: hsl(0 72% 56%);
@@ -77,7 +75,7 @@ export function buildTitlebarCss(): string {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--ts-border);
+      /* No bottom rule, as on the main window's band. */
       background: var(--ts-bg);
       color: var(--ts-fg);
       user-select: none;
@@ -86,7 +84,6 @@ export function buildTitlebarCss(): string {
     .titlebar-mac {
       height: 36px;
       flex: 0 0 36px;
-      border-bottom: 0;
       background: transparent;
     }
     .title {
