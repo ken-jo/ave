@@ -294,7 +294,7 @@ describe("queued app provenance", () => {
 describe("immediate send keys", () => {
   it.each([true, false])("sends from ordinary and keypad Enter with darwin=%s", async (darwin) => {
     const platform = (window as unknown as { avePlatform?: unknown }).avePlatform;
-    (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: darwin };
+    (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: darwin, windowControls: darwin ? "native" : "trailing" };
     try {
       for (const streaming of [false, true]) for (const code of ["Enter", "NumpadEnter"]) {
         const s = setup({ streaming });

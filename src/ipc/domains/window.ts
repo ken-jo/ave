@@ -39,22 +39,6 @@ export function registerWindowHandlers(deps: IpcDeps): void {
     getSenderWindow(e)?.close();
   });
 
-  ipcMain.handle(CHANNELS.window.syncTitleBarTheme, (e, payload: { color: string; symbolColor: string }) => {
-    if (!canUseWindowControl(e)) { auditUnauthorized(auditLogger, CHANNELS.window.syncTitleBarTheme, e); return; }
-    if (process.platform === "darwin") return;
-    const win = getSenderWindowOrMain(e);
-    if (!win || typeof win.setTitleBarOverlay !== "function") return;
-    if (typeof payload?.color !== "string" || typeof payload?.symbolColor !== "string") {
-      throw new Error(`[ave] ${CHANNELS.window.syncTitleBarTheme}: invalid payload`);
-    }
-    try {
-      win.setTitleBarOverlay({ color: payload.color, symbolColor: payload.symbolColor, height: 36 });
-    } catch (err) {
-      if ((err as Error).message.includes("Titlebar overlay is not enabled")) return;
-      throw err;
-    }
-  });
-
   ipcMain.handle(CHANNELS.window.openHtmlPreview, async (e, payload): Promise<OpenHtmlPreviewWindowResult> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.window.openHtmlPreview, e);

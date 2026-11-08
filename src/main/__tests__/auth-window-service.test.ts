@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { nativeTheme, type BrowserWindow } from "electron";
 import { TITLEBAR_COLORS } from "../window-titlebar-shell.js";
+import { TRAFFIC_LIGHT_POSITION } from "../../shared/shell-geometry.js";
 import type { Cookie, CookiesSetDetails, Session } from "electron";
 
 // auth-window-service imports `electron` at module load time. Vitest's default node environment can't resolve it, so stub the module to just the shapes
@@ -278,7 +279,7 @@ describe("buildAuthWindowShellHtml", () => {
     const options = authWindowChromeOptions(platform, false);
     expect(options).toMatchObject({ frame: true, minWidth: 520, titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden" });
     expect(options.titleBarOverlay).toEqual(platform === "darwin" ? undefined : { height: 36, color: TITLEBAR_COLORS.light.background, symbolColor: TITLEBAR_COLORS.light.foreground });
-    if (platform === "darwin") expect(options.trafficLightPosition).toEqual({ x: 12, y: 11 });
+    if (platform === "darwin") expect(options.trafficLightPosition).toEqual(TRAFFIC_LIGHT_POSITION);
   });
   it.each(["win32", "linux"] as const)("updates native overlay colors with the system theme on %s", platform => {
     const window = Object.assign(new EventEmitter(), { setTitleBarOverlay: vi.fn() });
@@ -312,6 +313,8 @@ describe("buildAuthWindowShellHtml", () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('text-overflow: ellipsis');
     expect(html).toContain('<webview');
+    // macOS: the row clears the lights (x 18 + 58px cluster) by the main band's lead; elsewhere 140px reserves the overlay buttons.
+    expect(html).toContain(platform === "darwin" ? "padding: 0 12px 0 80px;" : "padding: 0 140px 0 12px;");
   });
 
   it("devConsole=true: inlines eruda init script in the shell", () => {

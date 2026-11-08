@@ -389,7 +389,7 @@ describe("SideChatView — the main composer's input system", () => {
 
   it("on a Mac, ⌘⏎ interrupts and sends while ⌃⏎ does nothing", async () => {
     // The case above runs as a non-Mac renderer; this one pins the Mac wiring of the same registry row.
-    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin: true };
+    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin: true, windowControls: "native" };
     try {
       const { api, emit, spies, acceptTurn } = makeApi();
       renderView(api);

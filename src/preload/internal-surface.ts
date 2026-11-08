@@ -12,7 +12,7 @@ import {
   CHANNELS,
   UI,
 } from "../contract/app-contract.js";
-import type { InitialAppearance, InitialAppearanceResult } from "../shared/initial-appearance.js";
+import { INITIAL_GLASS_STATES, type InitialAppearance, type InitialAppearanceResult, type InitialGlassState } from "../shared/initial-appearance.js";
 import { isAppearanceMode, isDarkSchemeId, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, normalizeAppearance } from "../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride } from "../shared/appearance-font.js";
 import { applyAppearance } from "../ui/renderer/theme/resolve-theme.js";
@@ -26,18 +26,19 @@ import {
   normalizePluginActionResult,
 } from "./internal-api-surface.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
+import { windowControlsPlacement } from "../shared/shell-geometry.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
 export interface InitialWindowAppearance {
   appearance: InitialAppearance;
-  /** Main created this window with the macOS material behind it; the renderer paints its tint instead of an opaque ground. */
-  glass: boolean;
+  /** Whether main created this window with the system material behind it (`on`: the renderer paints its tint instead of an opaque ground). */
+  glass: InitialGlassState;
 }
 
 export function readInitialAppearance(): InitialWindowAppearance {
   const response = ipcRenderer.sendSync(CHANNELS.settings.initialAppearance) as InitialAppearanceResult;
   if (!response || !response.ok) throw new Error("Initial appearance unavailable");
-  if (typeof response.glass !== "boolean") throw new Error("Invalid initial appearance glass flag");
+  if (!INITIAL_GLASS_STATES.includes(response.glass)) throw new Error("Invalid initial appearance glass flag");
   const parsed: unknown = response.appearance;
   if (!parsed || typeof parsed !== "object" || (parsed as { schemaVersion?: unknown }).schemaVersion !== 3) {
     throw new Error("Invalid initial appearance");
@@ -61,8 +62,10 @@ export function applyInitialAppearance(initial: InitialWindowAppearance | null):
   if (!initial || typeof document === "undefined") return;
   const apply = () => {
     applyAppearance(initial.appearance);
-    // `data-glass` is set once, here, and never by applyAppearance: a scheme switch must not clear it.
-    if (initial.glass) document.documentElement.setAttribute("data-glass", "");
+    // `data-glass` (material drawn) and `data-glass-capable` (this OS has one; the tint control is offered) are set once, here, and never by
+    // applyAppearance: a scheme switch must not clear them.
+    if (initial.glass === "on") document.documentElement.setAttribute("data-glass", "");
+    if (initial.glass !== "unsupported") document.documentElement.setAttribute("data-glass-capable", "");
   };
   if (document.documentElement) apply();
   else {
@@ -92,6 +95,7 @@ export function buildAveHostWorld() {
 export function buildAvePlatformWorld() {
   return {
     isDarwin: process.platform === "darwin",
+    windowControls: windowControlsPlacement(process.platform),
   };
 }
 
@@ -100,8 +104,6 @@ export function buildAveWindowWorld() {
   minimize: () => ipcRenderer.invoke(CHANNELS.window.minimize),
   toggleMaximize: () => ipcRenderer.invoke(CHANNELS.window.toggleMaximize),
   close: () => ipcRenderer.invoke(CHANNELS.window.close),
-  syncTitleBarTheme: (color: string, symbolColor: string) =>
-    ipcRenderer.invoke(CHANNELS.window.syncTitleBarTheme, { color, symbolColor }),
   onMaximizedChanged: (handler: (maximized: boolean) => void) => {
     const listener = (_event: unknown, maximized: boolean) => handler(maximized);
     ipcRenderer.on(CHANNELS.window.maximizedChanged, listener);
