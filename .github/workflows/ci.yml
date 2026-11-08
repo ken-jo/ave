@@ -759,6 +759,8 @@ jobs:
           src/main/__tests__/claude-code-policy.test.ts
           src/main/__tests__/windows-path-kind-launcher.test.ts
           src/main/__tests__/subscription-runtime-service.test.ts
+          src/ui/renderer/components/__tests__/InputActionBar.test.tsx
+          src/ui/renderer/hooks/__tests__/use-input-status-row.test.tsx
           src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
           src/__tests__/support/native-executable.test.ts
           src/__tests__/support/fixture-owner.test.ts
