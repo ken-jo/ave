@@ -2892,7 +2892,8 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     await act(async () => {
       fire({ toolName: "safe_tool", scope: "session", verdictAtApproval: "low" });
     });
-    // Well past the low notice's TTL: the high notice is still the one shown, with the low one waiting behind it.
+    // After the low hit has landed (a short settle, well inside its TTL): the high notice is still the one shown — the low
+    // hit did not replace it in place — and the low one waits behind it.
     await new Promise((resolve) => setTimeout(resolve, 200));
     const shown = container.querySelector(APPROVAL_HIT);
     expect(shown?.textContent).toContain("risky_tool");
