@@ -659,7 +659,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const tab = this.tabs.get(tabId);
     if (!tab || tab.lease?.id !== leaseId) return;
     tab.lease = null;
-    if (tab.controlMode !== "human-paused") tab.controlMode = "human";
+    if (tab.controlMode !== "human-paused") tab.controlMode = tab.owner === null ? "human" : "agent-active";
     tab.actions.abort(new Error("browser control was released"));
     if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
     this.broadcastControl(tab.windowId);

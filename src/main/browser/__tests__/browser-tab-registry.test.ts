@@ -51,6 +51,32 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+  it.each([ACTOR, { sessionId: "child", directParentSessionId: "conversation" }])("retains agent mode after approval, wake and lease release for %j", async (actor) => {
+    const { registry, ops } = setup();
+    const answer = deferred<void>();
+    const opening = answer.promise.then(() => registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor }));
+    expect(ops).toHaveLength(0);
+    answer.resolve();
+    await Promise.resolve();
+    attachTab(registry, { tabId: "page", webContentsId: 81, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing tab");
+    const tab = registry.liveTab(opened.tabId)!;
+    const lease = registry.acquireControl(tab, actor);
+    expect(registry.setAgentTabAwake(81, true)).toBe(true);
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
+    registry.metadataChanged(81);
+    registry.releaseControl(tab.handle, lease.id);
+    expect(tab.controlMode).toBe("agent-active");
+    expect(tab.lease).toBeNull();
+    expect(registry.setAgentTabAwake(81, false)).toBe(true);
+    const next = registry.acquireControl(tab, actor);
+    registry.releaseControl(tab.handle, next.id);
+    expect(tab.controlMode).toBe("agent-active");
+    registry.userInput(81, { type: "keyDown" });
+    expect(tab.controlMode).toBe("human-paused");
+  });
+
   it("opens concurrent child tabs with isolated leases and owner-specific defaults", async () => {
     const { registry, ops } = setup();
     const actors = ["child-a", "child-b"].map((sessionId) => ({ sessionId, directParentSessionId: "parent" }));
@@ -625,7 +651,7 @@ describe("scoped browser control", () => {
     expect(tab.lease).toBe(second);
     expect(tab.controlMode).toBe("agent-active");
     registry.releaseControl(tab.handle, second.id);
-    expect(tab).toMatchObject({ owner: ACTOR, lease: null, controlMode: "human" });
+    expect(tab).toMatchObject({ owner: ACTOR, lease: null, controlMode: "agent-active" });
     expect(registry.listTabs(1)).toHaveLength(1);
   });
 
