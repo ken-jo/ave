@@ -2261,10 +2261,14 @@ abstract class PluginRuntimeState {
   protected assertPluginLifecycleAvailable(pluginId: string): void {
     // No generation is added, replaced or reloaded once shutdown has begun.
     if (this.isShuttingDown()) throw new PluginRuntimeShutdownError(pluginId, "plugin lifecycle");
+    this.assertPluginDisableShutdownConfirmed(pluginId);
+    this.assertPluginLifecycleNotQuarantined(pluginId);
+  }
+
+  protected assertPluginDisableShutdownConfirmed(pluginId: string): void {
     if (this.pendingDisabledRetirements.has(this.resolveKnownPluginId(pluginId))) {
       throw new Error(`plugin shutdown is unconfirmed for ${pluginId}; retry the enabled-state change`);
     }
-    this.assertPluginLifecycleNotQuarantined(pluginId);
   }
 
   /** A quarantined lifecycle neither starts nor commits a generation until host restart. */
@@ -2372,6 +2376,8 @@ abstract class PluginRuntimeState {
     this.loadFailureInfo.clear();
     this.lastAttemptRefusal.clear();
     this.disabledPluginIds.clear();
+    this.pendingDisabledRetirements.clear();
+    this.disabledStopSettlements.clear();
     this.capabilityBlockedPluginIds.clear();
     this.preparation.clear();
     this.pendingRestarts.clear();
@@ -3510,6 +3516,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     canonicalPluginId: string,
     options: { preserveConfigOverride?: boolean },
   ): Promise<void> {
+    this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
     this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
     this.clearCapabilityBlockedRetry(
       canonicalPluginId,
@@ -4818,6 +4825,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     const generationLifecycle = this.requireCapabilityCommitLifecycle("atomic plugin removal");
     return generationLifecycle.runInLifecycleQueue(canonicalPluginId, () => {
+      this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
       this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
       return commitAtomicPluginRemoval({
         requestedPluginId: pluginId,
@@ -6680,7 +6688,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
 
   private async changePluginEnabled(pluginId: string, enabled: boolean, retirementOnly = false): Promise<void> {
     // Cancel dependency-held restart work before admission to its canonical lifecycle lock.
-    this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
+    if (!retirementOnly) this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
     const transition = withResolvedPluginInstallLocks(
       () => {
         const canonicalPluginId = this.resolveKnownPluginId(pluginId);
@@ -6709,6 +6717,9 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         );
         await generationLifecycle.runInLifecycleQueue(canonicalPluginId, async () => {
           if (this.pendingDisabledRetirements.has(canonicalPluginId)) {
+            if (generationLifecycle.getActive(canonicalPluginId)) {
+              throw new Error(`cannot retire disabled plugin with an active generation: ${canonicalPluginId}`);
+            }
             await generationLifecycle.deactivateWithCommit(canonicalPluginId, async () => undefined);
             this.pendingDisabledRetirements.delete(canonicalPluginId);
             this.disabledStopSettlements.delete(canonicalPluginId);
