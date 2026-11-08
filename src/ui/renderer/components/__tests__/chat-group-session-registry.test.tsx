@@ -14,6 +14,7 @@ import {
   overlayCardTile,
   pendingAnswers,
   pruneGroupRequests,
+  workingSessionIds,
 } from "../chat-group-session-registry.js";
 import type { ApprovalRequest } from "../../types.js";
 
@@ -365,6 +366,31 @@ describe("tileDrawsSession", () => {
 
   it("draws its own conversation whether or not it is the focused tile", () => {
     expect(tileDrawsSession({ tiles, sessionId: "s-main", owned: true, focused: false })).toBe(true);
+  });
+});
+
+describe("workingSessionIds — progress is per conversation", () => {
+  const side = (sessionId: string, streaming: boolean) => ({ sessionId, askQuestions: [], shown: false, streaming });
+
+  it("marks a tile's conversation while its own turn runs, and nothing at rest", () => {
+    expect([...workingSessionIds([tile("g1", "s-1", { streaming: true }), tile("g2", "s-2")], [])]).toEqual(["s-1"]);
+    expect(workingSessionIds([tile("g1", "s-1")], []).size).toBe(0);
+  });
+
+  it("keeps a conversation working while only its side chat is, and marks the side chat's own row", () => {
+    const working = workingSessionIds([tile("g1", "s-main", { sideChat: side("s-side", true) })], []);
+    expect([...working].sort()).toEqual(["s-main", "s-side"]);
+  });
+
+  it("names the side chat's parent from the list when it has one, else the tile holding it", () => {
+    const tiles = [tile("g1", "s-holder", { sideChat: side("s-side", true) })];
+    const listed = workingSessionIds(tiles, [{ id: "s-side", originSessionId: "s-origin" }]);
+    expect([...listed].sort()).toEqual(["s-origin", "s-side"]);
+  });
+
+  it("ignores a side chat at rest and a tile with no conversation yet", () => {
+    expect(workingSessionIds([tile("g1", "s-main", { sideChat: side("s-side", false) })], []).size).toBe(0);
+    expect(workingSessionIds([tile("g1", "", { streaming: true })], []).size).toBe(0);
   });
 });
 

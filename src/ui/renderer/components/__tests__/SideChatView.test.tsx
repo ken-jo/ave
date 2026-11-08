@@ -609,6 +609,8 @@ describe("SideChatView — the cards its own turn parks", () => {
     expect(view.getAllByText("hello")).toHaveLength(1);
     const published = publishSideChatSurface.mock.calls.at(-1)![0] as { askQuestions: AskUserQuestionRequest[] };
     expect(published.askQuestions.map((request) => request.id)).toEqual(["ask-side-live"]);
+    // The turn is running: the side chat says so, and its parent's row reads as working from it.
+    expect(publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "side-live", streaming: true }));
     expect(settled).toBe(false);
 
     await act(async () => {
@@ -616,6 +618,7 @@ describe("SideChatView — the cards its own turn parks", () => {
       turn.resolve({ ok: true, result: {} });
       await turn.promise;
     });
+    expect(publishSideChatSurface).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "side-live", streaming: false }));
     expect(settled).toBe(true);
     expect(onSessionIdChange).toHaveBeenCalledTimes(1);
   });

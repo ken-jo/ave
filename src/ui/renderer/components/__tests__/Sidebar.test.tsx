@@ -1041,13 +1041,21 @@ describe("Sidebar conversation row actions", () => {
     onDelete: state.onDelete,
   });
 
-  it("shows a responding dot on a row whose conversation has a turn running, in place of the kind glyph", () => {
+  it("shows the loader on a row whose conversation has a turn running, in place of the kind glyph", () => {
     const state = rowState();
     state.responding.add("sess-2");
     const { getByTestId, queryByTestId, restore } = renderSidebar({ conversationActions: asActions(state) });
     try {
       const dot = getByTestId("sidebar-session-responding-sess-2");
-      expect(dot.getAttribute("aria-label")).toBeTruthy();
+      expect(dot.getAttribute("aria-label")).toBe("작업 중");
+      // The loader takes the glyph's square: the glyph is gone from that row, kept on the idle one.
+      expect(queryByTestId("sidebar-conversation-glyph-sess-2")).toBeNull();
+      expect(getByTestId("sidebar-conversation-glyph-sess-1")).toBeTruthy();
+      expect(dot.querySelector("svg")?.getAttribute("class")).toContain("motion-reduce:animate-none");
+      // The row's button says it, once: the slot itself stays out of the accessible name.
+      expect(getByTestId("sidebar-session-sess-2").textContent).toContain("작업 중");
+      expect(dot.closest("[aria-hidden='true']")).toBeTruthy();
+      expect(getByTestId("sidebar-session-sess-1").textContent).not.toContain("작업 중");
       expect(getByTestId("sidebar-session-sess-2").closest("[data-responding='true']")).toBeTruthy();
       expect(queryByTestId("sidebar-session-responding-sess-1")).toBeNull();
       expect(getByTestId("sidebar-session-sess-1").closest("[data-responding='true']")).toBeNull();
@@ -2037,6 +2045,29 @@ describe("Sidebar pending-answer dot", () => {
     title: "아침 브리핑",
     modifiedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
     family: "routine",
+  });
+
+  it("draws a family row working and waiting at once: the loader in the square, the badge in its corner", async () => {
+    const { getByTestId, queryByTestId, restore } = renderSidebar({
+      sessions: [sessionRow({ id: "sess-1", title: "현재", modifiedAt: new Date().toISOString() }), sideChat],
+      pendingAnswerSessionIds: new Set(["side-1"]),
+      conversationActions: {
+        isArchived: () => false, isUnread: () => false, isResponding: (id: string) => id === "side-1",
+        onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+      },
+    });
+    try {
+      await waitFor(() => getByTestId("sidebar-session-responding-side-1"));
+      const row = getByTestId("sidebar-row-session-side-1");
+      expect(row.getAttribute("data-responding")).toBe("true");
+      expect(queryByTestId("sidebar-conversation-glyph-side-1")).toBeNull();
+      const badge = getByTestId("sidebar-pending-answer-side-1");
+      expect(getByTestId("sidebar-session-responding-side-1").parentElement?.contains(badge)).toBe(true);
+      expect(getByTestId("sidebar-session-side-1").textContent).toContain("작업 중, 답변 대기 중");
+      expect(queryByTestId("sidebar-session-responding-sess-1")).toBeNull();
+    } finally {
+      restore();
+    }
   });
 
   it("marks exactly the rows the window says are parked on an answer, whatever their family", async () => {

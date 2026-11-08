@@ -59,7 +59,7 @@ export interface SidebarAddFlow {
 export interface ConversationRowActions {
   isArchived: (sessionId: string) => boolean;
   isUnread: (sessionId: string) => boolean;
-  /** A turn is running in some tile that holds this conversation. */
+  /** A turn is running in this conversation or one of its chats (`workingSessionIds`). */
   isResponding: (sessionId: string) => boolean;
   onRename: (sessionId: string, title: string) => void | Promise<void>;
   onSetArchived: (sessionId: string, archived: boolean) => void | Promise<void>;
