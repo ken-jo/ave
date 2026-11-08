@@ -139,14 +139,14 @@ describe("sandbox runtime release at exit", () => {
       await releaseAsrtSandboxForExit();
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"),
-        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(expected per-file write floor; protected rotation names\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
+        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(per-file floor; identity changed\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
       const logged = JSON.stringify(warn.mock.calls);
       expect(logged).not.toContain("private-target");
       expect(logged.toLowerCase()).not.toContain("alice");
       for (const args of warn.mock.calls) {
         for (const argument of args) expect(String(argument)).not.toContain(aveHome());
       }
-      expect(logged).toContain("may remain on a moved-aside copy");
+      expect(logged).toContain("may remain on earlier aside copies or targets of dropped rows");
     } finally {
       warn.mockRestore();
       vi.unstubAllEnvs();
@@ -154,15 +154,15 @@ describe("sandbox runtime release at exit", () => {
   });
 
   it.each([
-    ["settings.json", " (expected per-file write floor; protected rotation names)"],
-    ["permissions.json", " (expected per-file write floor; protected rotation names)"],
-    ["policy.json", " (expected per-file write floor; protected rotation names)"],
-    ["ave-secrets.json", " (expected per-file write floor; protected rotation names)"],
-    ["mcp/servers.json", " (expected per-file write floor; protected rotation names)"],
-    ["AGENTS.md", " (expected per-file write floor)"],
+    ["settings.json", " (per-file floor; identity changed)"],
+    ["permissions.json", " (per-file floor; identity changed)"],
+    ["policy.json", " (per-file floor; identity changed)"],
+    ["ave-secrets.json", " (per-file floor; identity changed)"],
+    ["mcp/servers.json", " (per-file floor; identity changed)"],
+    ["AGENTS.md", " (per-file floor; identity changed)"],
     ["settings.json.other", ""],
     ["config", ""],
-  ])("labels the retained write-floor row for %s without changing release outcomes", async (name, label) => {
+  ])("labels the per-file floor row for %s without changing release outcomes", async (name, label) => {
     const target = join(aveHome(), ...name.split("/"));
     const restore = vi.fn(({ onExit }: { onExit?: (ok: boolean) => void }) => {
       onExit?.(true);
@@ -177,7 +177,7 @@ describe("sandbox runtime release at exit", () => {
     try {
       await releaseAsrtSandboxForExit();
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("an explicit ACE may remain on a moved-aside copy"),
+        expect.stringContaining("an explicit ACE may remain on earlier aside copies or targets of dropped rows"),
         `deny restore mismatch x1 [<ave-home>\\${name.replace(/\//g, "\\").toLowerCase()}${label}]`,
       );
       expect(restore).toHaveBeenCalledOnce();

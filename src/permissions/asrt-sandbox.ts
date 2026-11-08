@@ -2145,21 +2145,19 @@ function windowsAclTargetKey(target: string): string {
   return `<outside-home>:${createHmac("sha256", windowsAclLogKey).update(path).digest("hex").slice(0, 24)}`;
 }
 
-function windowsAclTargetLabel(target: string): string {
+function windowsAclTargetLabel(target: string, status: string): string {
   const key = windowsAclTargetKey(target);
   const entry = SENSITIVE_PATH_ENTRIES.find(entry => entry.anchor === "ave-home" && entry.kind === "file"
     && aveHomeReadBoundaryRoots().some(root => windowsAclTargetKey(join(root, ...entry.segments)) === key));
   if (!entry) return key;
-  return key + (entry.rotations
-    ? " (expected per-file write floor; protected rotation names)"
-    : " (expected per-file write floor)");
+  return `${key} (per-file floor${status === "mismatch" ? "; identity changed" : ""})`;
 }
 
 function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
   const unreleased = report?.windowsAclUnreleased ?? [];
   if (unreleased.length === 0) return;
-  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); an explicit ACE may remain on a moved-aside copy",
-    unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(target => step === "deny restore" ? windowsAclTargetLabel(target) : windowsAclTargetKey(target)).join(",")}]`).join(", "));
+  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); an explicit ACE may remain on earlier aside copies or targets of dropped rows",
+    unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(target => step === "deny restore" ? windowsAclTargetLabel(target, status) : windowsAclTargetKey(target)).join(",")}]`).join(", "));
 }
 
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
