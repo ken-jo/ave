@@ -26,7 +26,7 @@ function ruleLine(routine: RoutineRecord): string {
 
 function ScheduleBadge() {
   return (
-    <Badge variant="outline" className="shrink-0 gap-1 px-1.5 py-0 text-[10px]">
+    <Badge variant="outline" className="shrink-0 gap-1 px-1.5 py-0 text-tiny">
       <CalendarClock className="h-3 w-3" aria-hidden="true" />
       {t("workBoard.scheduleBadge")}
     </Badge>

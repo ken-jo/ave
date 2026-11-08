@@ -173,7 +173,7 @@ export function TerminalBlocksBar({
                     {selected ? (
                       <div className="flex items-center gap-1 px-2 pb-1">
                         {block.cwd ? (
-                          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={block.cwd}>
+                          <span className="min-w-0 flex-1 truncate font-mono text-dense text-muted-foreground" title={block.cwd}>
                             {block.cwd}
                           </span>
                         ) : (
@@ -222,7 +222,7 @@ export function TerminalBlocksBar({
           <Button type="button" variant="ghost" size="icon" className={`${HEADER_BUTTON_CLASS} w-auto gap-1 px-1`}
             aria-expanded={open} aria-label={t("terminalBlocks.toggleTitle")} title={t("terminalBlocks.toggleTitle")} data-testid="terminal-blocks-toggle">
             <Blocks className="h-4 w-4" aria-hidden />
-            <span className="text-[11px] tabular-nums">{blocks.length}</span>
+            <span className="text-dense tabular-nums">{blocks.length}</span>
           </Button>
         </PopoverTrigger>
         <PopoverContent side="bottom" align="end" className="w-80 p-1" aria-label={t("terminalBlocks.listLabel")}>{list}</PopoverContent>

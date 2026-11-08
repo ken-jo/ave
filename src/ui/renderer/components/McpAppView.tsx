@@ -330,30 +330,30 @@ export function McpAppView({
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">
-      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-dense text-muted-foreground">
         <span className="truncate">{payload.title ?? t("mcpAppView.titleFallback")}</span>
-        <span className="text-[10px] opacity-60">
+        <span className="text-tiny opacity-60">
           {t("mcpAppView.sandboxBadge")}
         </span>
       </div>
       {disabled ? (
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }} data-testid="mcp-app-disconnected">
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }} data-testid="mcp-app-disconnected">
           <PlugZap className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{t("mcpAppView.serverDisconnected")}</span>
         </div>
       ) : error ? (
-        <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-destructive">
+        <div className="flex items-center gap-2 px-3 py-3 text-dense text-destructive">
           <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{error}</span>
         </div>
       ) : mountDisplayMode === "inline" && location.kind !== "inline" ? (
         // Only dormant home mounts render away placeholders; no webview or bridge exists there until guarded revival.
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }} data-testid={`mcp-app-${location.kind}`}>
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }} data-testid={`mcp-app-${location.kind}`}>
           <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
           <span>{location.kind === "pip" ? t("mcpAppView.openInPip") : t("mcpAppView.openInFullscreen")}</span>
         </div>
       ) : !bundle ? (
-        <div className="flex items-center justify-center gap-2 px-3 py-4 text-[11px] text-muted-foreground" style={{ height: seedHeight }}>
+        <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }}>
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           <span>{t("mcpAppView.loading")}</span>
         </div>

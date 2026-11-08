@@ -47,7 +47,7 @@ export function TerminalChangesView({ api, tabId, visible }: { api: AveApi; tabI
     (found, warning) => !found || warning.blockId > found.blockId ? warning : found, null) ?? null;
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden" data-testid="terminal-changes-view">
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5 text-dense text-muted-foreground">
         <p className="min-w-0 flex-1 truncate" data-testid="terminal-changes-caption">
           {latest ? t("terminalFileReview.viewCaption", { command: latest.command }) : t("terminalFileReview.viewCaptionNone")}
           {state?.refreshFailed ? ` · ${t("terminalFileReview.refreshFailed")}` : null}

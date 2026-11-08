@@ -612,7 +612,7 @@ export function ComposerApiKeyChip({
         <button
           type="button"
           data-testid={subscriptionIssue ? "composer-subscription-runtime-chip" : "composer-api-key-chip"}
-          className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-secondary px-2.5 py-1 text-[11px] text-secondary-foreground transition-colors hover:bg-muted"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-secondary px-2.5 py-1 text-dense text-secondary-foreground transition-colors hover:bg-muted"
         >
           <KeyRound className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
           {title}
@@ -625,14 +625,14 @@ export function ComposerApiKeyChip({
         className="w-[17rem] p-1"
         data-testid="composer-api-key-popover"
       >
-        <p className="px-2 pb-1 pt-1.5 text-[11px] leading-snug text-muted-foreground">
+        <p className="px-2 pb-1 pt-1.5 text-dense leading-snug text-muted-foreground">
           {subscriptionIssue ? title : t("chatView.noApiKeyDescription")}
         </p>
         <button
           type="button"
           data-testid="composer-api-key-chip:settings"
           onClick={() => onOpenSettings("llm")}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] text-secondary-foreground transition-colors hover:bg-muted"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-body-sm text-secondary-foreground transition-colors hover:bg-muted"
         >
           <KeyRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           {t("chatView.openSettingsButton")}
@@ -641,7 +641,7 @@ export function ComposerApiKeyChip({
           type="button"
           data-testid="composer-api-key-chip:marketplace"
           onClick={() => onOpenSettings("marketplace")}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] text-secondary-foreground transition-colors hover:bg-muted"
+          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-body-sm text-secondary-foreground transition-colors hover:bg-muted"
         >
           <Store className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           {t("chatView.openMarketplaceButton")}

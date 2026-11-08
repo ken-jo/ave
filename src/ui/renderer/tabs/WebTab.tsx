@@ -97,7 +97,7 @@ export function WebTab(props: WebTabProps) {
         title={t("webTab.searchEngineTitle")}
         description={t("webTab.searchEngineDescription")}
         badge={
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-tiny font-medium uppercase tracking-wide text-muted-foreground">
             {t("webTab.immediateApplyBadge")}
           </span>
         }
@@ -133,7 +133,7 @@ export function WebTab(props: WebTabProps) {
         title={t("appearanceTab.webViewSectionTitle")}
         description={t("appearanceTab.webViewSectionDescription")}
         actions={
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-dense text-muted-foreground">
             {t("appearanceTab.webViewCurrentLabel")} <span className="font-mono text-foreground">{webViewFlow}</span>
           </span>
         }

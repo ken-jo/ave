@@ -170,7 +170,7 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
       : state.phase === "error" && !selected && (state.code === "binary-file" || state.code === "too-large")
         ? <FileInfoCard name={pathParts(target.path).name} kindLabel={previewFormatLabel(target.path)}
           location={workspaceRelativePath(target.path, target.workspaceRoot)} reason={state.code} />
-      : state.phase === "error" ? <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>
+      : state.phase === "error" ? <div className="text-dense text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>
       : state.image ? <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
       : sourceVisible ? <pre className="max-h-(--preview-block-max-height) overflow-auto border-t py-2 font-mono text-xs"
         data-testid={selected ? "file-preview-selected-range" : "document-text-lines"}>
@@ -184,12 +184,12 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
               change && "bg-agent/(--opacity-subtle)", current && "ave-observed-current bg-agent/(--opacity-soft)")}>
             <span aria-hidden="true" className="mr-3 min-w-8 shrink-0 select-none text-right text-muted-foreground">{number}</span>
             <span className="whitespace-pre" data-testid={change ? "document-line-value" : undefined}>{(change?.after ?? line) || "\u200b"}</span>
-            {current ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-[9px] leading-3 text-background">Ave</span> : null}
+            {current ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-tiny leading-3 text-background">Ave</span> : null}
           </span>;
         })}
       </pre> : <PreviewContent descriptor={{ text: state.content, path: state.path }} onRendered={acknowledgeRendered} />}
     <PreviewDocumentFooter><span>{previewFormatLabel(target.path)}{lineCount !== undefined ? ` · ${t("chatPreviewRail.documentLineCount", { count: lineCount })}` : ""}</span>
-      {state.phase === "ok" && state.truncated ? <Badge variant="outline" className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-file-truncated">{t("chatPreviewRail.filePreviewTruncated")}</Badge> : null}
+      {state.phase === "ok" && state.truncated ? <Badge variant="outline" className="px-1 py-0 text-tiny" data-testid="chat-side-panel-file-truncated">{t("chatPreviewRail.filePreviewTruncated")}</Badge> : null}
     </PreviewDocumentFooter>
   </div>;
 }

@@ -345,7 +345,7 @@ function NavItem({
       data-viewkey={dataViewKey}
       data-tour-anchor={tourAnchor}
       className={[
-        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         isActive
           ? `${toneStyle.active} font-medium`
@@ -445,7 +445,7 @@ function NavGroup({ group, label, icon, containsActive, attention = false, colla
     <button
       {...triggerProps}
       className={[
-        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+        "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         containsActive ? `${toneStyle.active} font-medium` : `text-muted-foreground ${toneStyle.hover}`,
       ].join(" ")}
@@ -559,7 +559,7 @@ function FailedPluginNavItem({
   });
   const trailingSlot = (
     <span
-      className="rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-destructive"
+      className="rounded-full bg-destructive/(--opacity-soft) px-1.5 py-px text-tiny font-medium text-destructive"
       aria-label={t("sidebar.pluginDoctorRequiredAriaLabel")}
     >
       {t("sidebar.pluginDoctorBadge")}
@@ -621,7 +621,7 @@ function InactivePluginNavItem({
   });
   const trailingSlot = (
     <span
-      className="rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
+      className="rounded-full bg-muted px-1.5 py-px text-tiny font-medium text-muted-foreground"
       aria-label={t("sidebar.pluginInactiveAriaLabel")}
     >
       {t("sidebar.pluginInactiveBadge")}
@@ -1248,7 +1248,7 @@ export function Sidebar({
               <ProjectMark project={selectedProject} name={shownName} />
               <span className="min-w-0 truncate">{shownName}</span>
               {selectedProject?.isDefault ? (
-                <span className="shrink-0 rounded border border-border px-1 text-[10px] font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
+                <span className="shrink-0 rounded border border-border px-1 text-tiny font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
               ) : null}
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
             </button>
@@ -1280,14 +1280,14 @@ export function Sidebar({
             aria-keyshortcuts={darwin ? "Meta+0" : "Control+0"}
             data-testid="sidebar-project-home"
             className={[
-              "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+              "relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body-sm transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
               activeView === "project-home" ? "bg-primary/(--opacity-subtle) font-medium text-primary" : "hover:bg-accent hover:text-accent-foreground",
             ].join(" ")}
           >
             <House className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate text-left">{t("sidebar.projectHomeRow", { name: shownName })}</span>
-            <kbd className="shrink-0 text-[11px] font-normal text-muted-foreground">{homeChord}</kbd>
+            <kbd className="shrink-0 text-dense font-normal text-muted-foreground">{homeChord}</kbd>
           </button>
         </div>
         <div className="mx-2 h-px shrink-0 bg-border" aria-hidden="true" />

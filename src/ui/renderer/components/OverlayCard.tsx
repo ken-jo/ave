@@ -178,7 +178,7 @@ export function OverlayCard({
             </Button>
           </div>
         </div>
-        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-[11px]">
+        <CardDescription className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1 text-dense">
           {kind === "plugin" && pluginId && (
             <span className="contents" data-testid="plugin-provenance">
               <span
@@ -192,7 +192,7 @@ export function OverlayCard({
               </span>
               {displayNameLabel && (
                 <span
-                  className="min-w-14 max-w-full flex-1 truncate text-[10px] opacity-60"
+                  className="min-w-14 max-w-full flex-1 truncate text-tiny opacity-60"
                   role="group"
                   aria-label={displayNameLabel}
                   title={displayNameLabel}
@@ -256,7 +256,7 @@ export function OverlayCard({
               <Button
                 size="sm"
                 variant="ghost"
-                className="mt-1 h-6 gap-1 px-1 text-[11px] text-muted-foreground hover:text-foreground"
+                className="mt-1 h-6 gap-1 px-1 text-dense text-muted-foreground hover:text-foreground"
                 data-testid="overlay-card-expand-toggle"
                 aria-expanded={expanded}
                 onClick={() => onExpandedChange(!expanded)}

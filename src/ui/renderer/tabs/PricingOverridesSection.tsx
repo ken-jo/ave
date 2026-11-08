@@ -136,7 +136,7 @@ export function PricingOverridesSection() {
         </p>
       ) : (
         <div className="mt-3 space-y-2" data-testid="llm-pricing-overrides-rows">
-          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,6rem)_minmax(0,6rem)_auto] gap-2 text-[11px] text-muted-foreground">
+          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(0,6rem)_minmax(0,6rem)_auto] gap-2 text-dense text-muted-foreground">
             <span>{t("llmTab.pricingOverridesColVendor")}</span>
             <span>{t("llmTab.pricingOverridesColModel")}</span>
             <span>{t("llmTab.pricingOverridesColInput")}</span>
@@ -220,7 +220,7 @@ export function PricingOverridesSection() {
           {t("common.save")}
         </Button>
         {incomplete && (
-          <Label className="text-[11px] text-warning" data-testid="llm-pricing-override-incomplete">
+          <Label className="text-dense text-warning" data-testid="llm-pricing-override-incomplete">
             {t("llmTab.pricingOverridesIncomplete")}
           </Label>
         )}

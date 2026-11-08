@@ -215,7 +215,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
               data-observation-current={current || undefined}
               className={cn("whitespace-pre-wrap rounded px-1", changed && "bg-agent/(--opacity-subtle)",
                 current && "outline outline-1 outline-agent")}>
-              {current && <span className="mr-1 rounded bg-agent/(--opacity-subtle) px-1 text-[9px] text-agent">Ave</span>}{entry.text}
+              {current && <span className="mr-1 rounded bg-agent/(--opacity-subtle) px-1 text-tiny text-agent">Ave</span>}{entry.text}
             </p>;
           }) : state.document.page.paragraphs.length === 0 ? <p>{t("pagePreview.noText")}</p>
             : state.document.page.paragraphs.map((paragraph, position) => <p className="whitespace-pre-wrap" key={position}>{paragraph}</p>)}

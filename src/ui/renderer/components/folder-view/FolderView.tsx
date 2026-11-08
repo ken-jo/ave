@@ -379,13 +379,13 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
         ) : !viewing && state.columns.length === 1 && rootColumn?.status === "ok" && rootColumn.entries.length > 0 ? (
           <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2 text-xs text-muted-foreground" data-testid="folder-hint">
             <FileText aria-hidden="true" className="h-6 w-6" />
-            <div className="text-[13px] text-foreground">{t("folderView.hintTitle")}</div>
+            <div className="text-body-sm text-foreground">{t("folderView.hintTitle")}</div>
             <div>{t("folderView.hintKeys")}</div>
           </div>
         ) : showViewerOnly ? null : <div aria-hidden="true" className="min-w-0 flex-1" />}
       </div>
 
-      <div className="flex min-w-0 shrink-0 items-center gap-3 border-t px-3 py-1 text-[11px] text-muted-foreground" data-testid="folder-status">
+      <div className="flex min-w-0 shrink-0 items-center gap-3 border-t px-3 py-1 text-dense text-muted-foreground" data-testid="folder-status">
         <span className="min-w-0 flex-1 truncate" title={viewing?.path ?? folder}>{statusLeft}</span>
         <span className="shrink-0" data-testid="folder-status-right">
           {showViewerOnly ? t("folderView.statusBackToColumns")

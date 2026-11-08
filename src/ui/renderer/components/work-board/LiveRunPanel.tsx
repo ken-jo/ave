@@ -180,7 +180,7 @@ function SummaryLine({ entry }: { entry: LiveRunEntry }) {
   }
   if (run.steers.length > 0) parts.push(t("workBoard.liveSummarySteers", { count: run.steers.length }));
   return (
-    <p className="truncate text-[11px] tabular-nums text-muted-foreground" data-testid="live-step-summary" title={parts.join(" · ")}>
+    <p className="truncate text-dense tabular-nums text-muted-foreground" data-testid="live-step-summary" title={parts.join(" · ")}>
       {parts.join(" · ")}
     </p>
   );
@@ -239,7 +239,7 @@ function StepBar({ entry }: { entry: LiveRunEntry }) {
         <li key={index} className="min-w-0" data-state={segment.state}>
           <span aria-hidden="true" className={`block h-0.5 rounded-full ${SEGMENT_BAR[segment.state]}`} />
           <span
-            className={`mt-1 block truncate text-[10px] ${
+            className={`mt-1 block truncate text-tiny ${
               segment.state === "attention" ? "text-warning" : segment.state === "danger" ? "text-destructive" : segment.state === "idle" ? "text-muted-foreground" : "font-medium text-foreground"
             }`}
           >
@@ -287,7 +287,7 @@ function ToolStepRow({ step }: { step: RunToolStep }) {
     : <CircleStop aria-hidden="true" className="h-3 w-3 shrink-0 text-muted-foreground" />;
   const label = step.label ?? step.name;
   return (
-    <li className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="live-step-tool" data-status={step.status}>
+    <li className="flex min-w-0 items-center gap-1.5 text-dense text-muted-foreground" data-testid="live-step-tool" data-status={step.status}>
       {icon}
       <span className="sr-only">{toolStatusText(step.status)}</span>
       <span className="min-w-0 flex-1 truncate font-mono" title={label}>{label}</span>
@@ -304,11 +304,11 @@ function SteerBubble({ steer }: { steer: RunSteer }) {
     : t("workBoard.liveSteerSent");
   return (
     <li className="ml-6 min-w-0 rounded-md border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) px-2.5 py-1.5" data-testid="live-step-steer" data-status={steer.status}>
-      <p className="text-[10px] font-medium text-primary">
+      <p className="text-tiny font-medium text-primary">
         <span className="tabular-nums">{localClock(steer.sentAt)}</span> · {t("workBoard.liveSteerYou")}
       </p>
       <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-foreground [overflow-wrap:anywhere]">{steer.text}</p>
-      <p className={`mt-1 text-[10px] ${steer.status === "dropped" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
+      <p className={`mt-1 text-tiny ${steer.status === "dropped" ? "text-destructive" : "text-muted-foreground"}`}>{status}</p>
     </li>
   );
 }
@@ -329,7 +329,7 @@ function TurnRow({ turn, current, tools }: { turn: RunTurn; current: boolean; to
         aria-hidden="true"
         className={`absolute left-0 top-1 h-2 w-2 rounded-full border ${current ? "border-foreground bg-foreground" : "border-muted-foreground bg-background"}`}
       />
-      <p className={`text-[11px] tabular-nums ${current ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
+      <p className={`text-dense tabular-nums ${current ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
         {localClock(turn.at)} · {t("workBoard.liveTurnLabel", { turn: turn.turn })}
         {current && ` · ${t("workBoard.liveTurnNow")}`}
       </p>
@@ -346,7 +346,7 @@ function TurnRow({ turn, current, tools }: { turn: RunTurn; current: boolean; to
       {current && (overflows || expanded) && (
         <button
           type="button"
-          className="mt-0.5 text-[11px] text-primary underline-offset-2 hover:underline"
+          className="mt-0.5 text-dense text-primary underline-offset-2 hover:underline"
           aria-expanded={expanded}
           aria-controls={textId}
           onClick={() => setExpanded((v) => !v)}
@@ -379,7 +379,7 @@ function PlanRow({ entry }: { entry: LiveRunEntry }) {
     <div className="rounded-md border bg-muted/(--opacity-light)" data-testid="live-step-plan">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center gap-1.5 px-2 py-1.5 text-left text-[11px]"
+        className="flex w-full min-w-0 items-center gap-1.5 px-2 py-1.5 text-left text-dense"
         aria-expanded={open}
         aria-controls={bodyId}
         onClick={() => setOpen((v) => !v)}
@@ -429,30 +429,30 @@ function StepLog({ entry, approvalSurface, renderApproval }: Pick<LiveRunPanelPr
         <PlanningLog run={run} />
       )}
       {phase === "awaiting_approval" && (
-        <p className="flex items-center gap-1.5 text-[11px] text-warning" data-testid="live-step-plan-awaiting">
+        <p className="flex items-center gap-1.5 text-dense text-warning" data-testid="live-step-plan-awaiting">
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" />
           {t("workBoard.livePlanAwaiting")}
         </p>
       )}
       {approvedPlan && (
-        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-testid="live-step-plan-approved">
+        <p className="flex items-center gap-1.5 text-dense text-muted-foreground" data-testid="live-step-plan-approved">
           <Check aria-hidden="true" className="h-3 w-3" />
           {run.phaseAt.executing && <span className="tabular-nums">{localClock(run.phaseAt.executing)} ·</span>}
           {t("workBoard.livePlanApproved")}
         </p>
       )}
       {phase === "denied" && (
-        <p className="text-[11px] text-destructive" data-testid="live-step-plan-denied">{t("workBoard.liveDeniedNarration")}</p>
+        <p className="text-dense text-destructive" data-testid="live-step-plan-denied">{t("workBoard.liveDeniedNarration")}</p>
       )}
       {approvedPlan && (
         <section aria-label={t("workBoard.liveExecHeading")}>
-          <h4 className="mb-1 text-[11px] font-semibold text-muted-foreground">{t("workBoard.liveExecHeading")}</h4>
+          <h4 className="mb-1 text-dense font-semibold text-muted-foreground">{t("workBoard.liveExecHeading")}</h4>
           <ol className="space-y-2">
             {turns.map((turn) => (
               <TurnBlock key={turn.turn} turn={turn} steers={steersBefore(turn.turn)} current={live && turn.turn === lastTurn} tools={run.tools.filter((step) => step.phase === "executing" && step.turn === turn.turn)} />
             ))}
             {turns.length === 0 && live && (
-              <li className="rounded-md border border-dashed px-2 py-2 text-[11px] text-muted-foreground">{t("workBoard.liveNarrationWaiting")}</li>
+              <li className="rounded-md border border-dashed px-2 py-2 text-dense text-muted-foreground">{t("workBoard.liveNarrationWaiting")}</li>
             )}
             {trailingSteers.map((steer) => <SteerBubble key={steer.messageId} steer={steer} />)}
           </ol>
@@ -460,12 +460,12 @@ function StepLog({ entry, approvalSurface, renderApproval }: Pick<LiveRunPanelPr
       )}
       {showApproval && (
         <div className="space-y-1.5" data-testid="live-step-approval">
-          <p className="text-[11px] text-warning">{t("workBoard.liveApprovalWaiting")}</p>
+          <p className="text-dense text-warning">{t("workBoard.liveApprovalWaiting")}</p>
           {renderApproval(entry)}
         </div>
       )}
       {run.stopping && (
-        <p className="text-[11px] text-muted-foreground" data-testid="live-step-stop-requested">{t("workBoard.liveStopRequested")}</p>
+        <p className="text-dense text-muted-foreground" data-testid="live-step-stop-requested">{t("workBoard.liveStopRequested")}</p>
       )}
       <SettledFooter entry={entry} />
     </div>
@@ -486,7 +486,7 @@ function PlanningLog({ run }: { run: WorkItemRunState }) {
   const turns = run.turns.filter((turn) => turn.phase === "planning");
   const tools = run.tools.filter((step) => step.phase === "planning");
   if (turns.length === 0) {
-    return <p className="rounded-md border border-dashed px-2 py-2 text-[11px] text-muted-foreground" data-testid="live-step-waiting">{t("workBoard.liveNarrationWaiting")}</p>;
+    return <p className="rounded-md border border-dashed px-2 py-2 text-dense text-muted-foreground" data-testid="live-step-waiting">{t("workBoard.liveNarrationWaiting")}</p>;
   }
   const last = turns.at(-1)?.turn;
   return (
@@ -504,13 +504,13 @@ function SettledFooter({ entry }: { entry: LiveRunEntry }) {
   switch (run.phase) {
     case "cancelled":
       return (
-        <p className="rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground" data-testid="live-step-cancelled">
+        <p className="rounded-md bg-muted px-2 py-1.5 text-dense text-muted-foreground" data-testid="live-step-cancelled">
           {t("workBoard.liveCancelledNarration", { turns })}
         </p>
       );
     case "error":
       return (
-        <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-2 py-1.5 text-[11px]" data-testid="live-step-failed">
+        <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-2 py-1.5 text-dense" data-testid="live-step-failed">
           {run.reason && <p className="break-words text-destructive [overflow-wrap:anywhere]">{run.reason}</p>}
           <p className="mt-0.5 text-muted-foreground">{t("workBoard.liveFailedNote", { turns })}</p>
         </div>
@@ -518,7 +518,7 @@ function SettledFooter({ entry }: { entry: LiveRunEntry }) {
     case "done":
       return item.output ? (
         <div className="rounded-md border px-2 py-1.5" data-testid="live-step-result">
-          <p className="text-[11px] font-semibold text-foreground">{t("workBoard.liveResultHeading")}</p>
+          <p className="text-dense font-semibold text-foreground">{t("workBoard.liveResultHeading")}</p>
           <p className="mt-0.5 line-clamp-4 whitespace-pre-wrap break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">{item.output}</p>
         </div>
       ) : null;
@@ -651,12 +651,12 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
   return (
     <div className="space-y-1.5" data-testid="live-step-composer">
       <div className="flex items-center justify-between gap-2">
-        <label htmlFor={inputId} className="text-[11px] font-semibold text-foreground">{t("workBoard.liveSteerLabel")}</label>
+        <label htmlFor={inputId} className="text-dense font-semibold text-foreground">{t("workBoard.liveSteerLabel")}</label>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="h-6 shrink-0 px-2 text-[11px]"
+          className="h-6 shrink-0 px-2 text-dense"
           disabled={!executing || stopping}
           aria-busy={stopping || undefined}
           onClick={stop}
@@ -689,20 +689,20 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
         />
         {expanded && (
           <div className="flex items-center justify-between gap-2 border-t px-2 py-1">
-            <span className={`text-[10px] tabular-nums ${tooLong ? "text-destructive" : "text-muted-foreground"}`} data-testid="live-step-steer-count">
+            <span className={`text-tiny tabular-nums ${tooLong ? "text-destructive" : "text-muted-foreground"}`} data-testid="live-step-steer-count">
               {t("workBoard.liveSteerCounter", { count: text.length, max: PARENT_DIRECTIVE_MAX_CHARS })}
             </span>
             {rejected ? (
-              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={text.trim() === ""} onClick={append} data-testid="live-step-append">
+              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-dense" disabled={text.trim() === ""} onClick={append} data-testid="live-step-append">
                 {t("workBoard.liveAppendToDetail")}
               </Button>
             ) : (
               <span className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground">{t("workBoard.liveSteerEnterHint")}</span>
+                <span className="text-tiny text-muted-foreground">{t("workBoard.liveSteerEnterHint")}</span>
                 <Button
                   type="button"
                   size="sm"
-                  className="h-6 px-2 text-[11px]"
+                  className="h-6 px-2 text-dense"
                   disabled={!canSteer || text.trim() === "" || tooLong || status.kind === "sending"}
                   onClick={() => send(captureIntent())}
                   data-testid="live-step-steer-send"
@@ -714,22 +714,22 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
           </div>
         )}
       </div>
-      <p id={noteId} className="text-[10px] text-muted-foreground" data-testid="live-step-composer-note">{note}</p>
+      <p id={noteId} className="text-tiny text-muted-foreground" data-testid="live-step-composer-note">{note}</p>
       {status.kind === "sent" && (
-        <p className="text-[11px] text-muted-foreground" role="status" data-testid="live-step-steer-sent">
+        <p className="text-dense text-muted-foreground" role="status" data-testid="live-step-steer-sent">
           {status.redactedCount > 0 ? t("workBoard.liveSteerSentRedacted", { count: status.redactedCount }) : t("workBoard.liveSteerSentNotice")}
         </p>
       )}
       {status.kind === "rejected" && (
-        <p className="text-[11px] text-destructive" role="alert" data-testid="live-step-steer-error">{status.message}</p>
+        <p className="text-dense text-destructive" role="alert" data-testid="live-step-steer-error">{status.message}</p>
       )}
       {status.kind === "appended" && (
-        <p className="text-[11px] text-muted-foreground" role="status" data-testid="live-step-appended">{t("workBoard.liveAppendDone")}</p>
+        <p className="text-dense text-muted-foreground" role="status" data-testid="live-step-appended">{t("workBoard.liveAppendDone")}</p>
       )}
       {status.kind === "append-failed" && (
-        <p className="text-[11px] text-destructive" role="alert" data-testid="live-step-append-error">{t("workBoard.liveAppendFailed")}</p>
+        <p className="text-dense text-destructive" role="alert" data-testid="live-step-append-error">{t("workBoard.liveAppendFailed")}</p>
       )}
-      {stopNotice && <p className="text-[11px] text-muted-foreground" role="status" data-testid="live-step-stop-notice">{stopNotice}</p>}
+      {stopNotice && <p className="text-dense text-muted-foreground" role="status" data-testid="live-step-stop-notice">{stopNotice}</p>}
     </div>
   );
 }
@@ -739,7 +739,7 @@ function SettledActions({ entry, onRerun }: { entry: LiveRunEntry; onRerun: (id:
   const { item, run } = entry;
   return (
     <div className="space-y-1.5" data-testid="live-step-settled-actions">
-      {run.phase === "cancelled" && <p className="text-[11px] text-muted-foreground">{t("workBoard.liveCancelledFooter")}</p>}
+      {run.phase === "cancelled" && <p className="text-dense text-muted-foreground">{t("workBoard.liveCancelledFooter")}</p>}
       {item.status !== "completed" && (
         <Button type="button" size="sm" variant="outline" className="h-7 w-full text-xs" onClick={() => onRerun(item.id)} data-testid="live-step-rerun">
           {t("workBoard.liveRerun")}
@@ -795,7 +795,7 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
       </header>
       <div className="shrink-0 border-b px-2 py-1.5">
         {entries.length === 0 ? (
-          <p className="px-1 py-1 text-[11px] text-muted-foreground" data-testid="live-step-empty">{t("workBoard.liveStepsEmpty")}</p>
+          <p className="px-1 py-1 text-dense text-muted-foreground" data-testid="live-step-empty">{t("workBoard.liveStepsEmpty")}</p>
         ) : (
           <ul className="max-h-40 space-y-0.5 overflow-y-auto" aria-label={t("workBoard.liveStepsRunList")} data-testid="live-step-runs">
             {entries.map((entry) => {
@@ -813,14 +813,14 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
                   >
                     <RowIcon entry={entry} />
                     <span className="min-w-0 flex-1 truncate">{entry.item.title}</span>
-                    <span className={`shrink-0 text-[10px] ${TONE_TEXT[status.tone]}`}>{status.text}</span>
+                    <span className={`shrink-0 text-tiny ${TONE_TEXT[status.tone]}`}>{status.text}</span>
                   </button>
                 </li>
               );
             })}
           </ul>
         )}
-        <label htmlFor={autoFollowId} className="mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+        <label htmlFor={autoFollowId} className="mt-1 flex items-center gap-1.5 px-1 text-dense text-muted-foreground">
           <input
             id={autoFollowId}
             type="checkbox"
@@ -846,7 +846,7 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
             <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
-                className="text-[11px] text-foreground underline underline-offset-2"
+                className="text-dense text-foreground underline underline-offset-2"
                 onClick={() => onOpenRecord(selected.item.id)}
                 data-testid="live-step-open-record"
               >
@@ -855,7 +855,7 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
               {selected.run.phase === "done" && selected.item.output && (
                 <button
                   type="button"
-                  className="text-[11px] text-primary underline-offset-2 hover:underline"
+                  className="text-dense text-primary underline-offset-2 hover:underline"
                   onClick={() => onOpenRecord(selected.item.id)}
                   data-testid="live-step-open-result"
                 >

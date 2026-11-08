@@ -167,7 +167,7 @@ function PriorityChip({ priority }: { priority: WorkItemPriority }) {
         : "text-muted-foreground";
   return (
     <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none border ${cls}`}
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-tiny font-semibold leading-none border ${cls}`}
       title={t(`workBoard.${PRIORITY_FULL_LABEL[priority]}`)}
     >
       {t(`workBoard.${PRIORITY_CHIP_LABEL[priority]}`)}
@@ -242,7 +242,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "done":
         return (
           <span
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border border-success/(--opacity-medium) bg-success/(--opacity-subtle) text-success"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-tiny font-medium leading-none tabular-nums border border-success/(--opacity-medium) bg-success/(--opacity-subtle) text-success"
             data-testid="work-board-run-done"
           >
             <CheckCircle2 className="h-3 w-3" />
@@ -252,7 +252,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "denied":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             data-testid="work-board-run-denied"
           >
             <XCircle className="h-3 w-3" />
@@ -262,7 +262,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "error":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive"
             title={run.reason}
             data-testid="work-board-run-error"
           >
@@ -274,7 +274,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       case "cancelled":
         return (
           <span
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-border bg-muted text-muted-foreground"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border border-border bg-muted text-muted-foreground"
             data-testid="work-board-run-cancelled"
           >
             <CircleStop className="h-3 w-3" />
@@ -302,7 +302,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
   const awaiting = phase === "awaiting_approval";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tiny font-medium leading-none border border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${
         awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""
       }`}
       data-testid="work-board-run-indicator"
@@ -373,7 +373,7 @@ function LiveRunChip({
     : `border-primary/(--opacity-medium) bg-primary/(--opacity-subtle) text-primary ${awaiting ? "ring-1 ring-primary/(--opacity-medium)" : ""}`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium leading-none tabular-nums border ${tone}`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-tiny font-medium leading-none tabular-nums border ${tone}`}
       data-testid="work-board-live-chip"
       data-phase={run.phase ?? "starting"}
       data-state={state}
@@ -498,25 +498,25 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                 )}
                 <LiveRunChip run={live} startedAt={runStartedAt(item)} toolApprovalPending={toolApproval !== undefined} />
                 {/* A strut in the due line's type, so this row is exactly as tall as the due line it replaces. */}
-                <span aria-hidden="true" className="invisible w-0 text-[11px]">{"\u200b"}</span>
-                {!item.detail && narrationLine("min-w-0 flex-1 truncate text-[11px] text-muted-foreground")}
+                <span aria-hidden="true" className="invisible w-0 text-dense">{"\u200b"}</span>
+                {!item.detail && narrationLine("min-w-0 flex-1 truncate text-dense text-muted-foreground")}
               </div>
               {item.detail && (
                 <div className="mt-1.5 grid [contain:inline-size]">
                   <p
                     aria-hidden="true"
-                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-[11px] leading-relaxed [overflow-wrap:anywhere]"
+                    className="invisible col-start-1 row-start-1 line-clamp-2 break-words text-dense leading-relaxed [overflow-wrap:anywhere]"
                   >
                     {item.detail}
                   </p>
-                  {narrationLine("col-start-1 row-start-1 truncate text-[11px] leading-relaxed text-muted-foreground")}
+                  {narrationLine("col-start-1 row-start-1 truncate text-dense leading-relaxed text-muted-foreground")}
                 </div>
               )}
             </>
           ) : (
             <>
               {item.detail && (
-                <p className="mt-1.5 line-clamp-2 break-words text-[11px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
+                <p className="mt-1.5 line-clamp-2 break-words text-dense leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</p>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 {overdue && (
@@ -524,7 +524,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                     {t("workBoard.overdueBadge")}
                   </Badge>
                 )}
-                <span className="text-[11px] text-muted-foreground">{formatDue(item.due_at)}</span>
+                <span className="text-dense text-muted-foreground">{formatDue(item.due_at)}</span>
                 <RunIndicator run={run} item={item} />
               </div>
             </>
@@ -538,7 +538,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           <Button
             size="sm"
             variant={stepsShowing ? "secondary" : "ghost"}
-            className="mr-auto h-6 px-2 text-[11px]"
+            className="mr-auto h-6 px-2 text-dense"
             aria-pressed={stepsShowing}
             aria-controls={LIVE_STEP_PANEL_ID}
             onClick={(e) => {
@@ -555,7 +555,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           <Button
             size="sm"
             variant="ghost"
-            className="h-6 px-2 text-[11px]"
+            className="h-6 px-2 text-dense"
             onClick={(e) => {
               e.stopPropagation();
               onRun(item.id);
@@ -570,7 +570,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           <Button
             size="sm"
             variant="ghost"
-            className="h-6 px-2 text-[11px]"
+            className="h-6 px-2 text-dense"
             onClick={(e) => {
               e.stopPropagation();
               onStart(item.id);
@@ -584,7 +584,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           <Button
             size="sm"
             variant="ghost"
-            className="h-6 px-2 text-[11px]"
+            className="h-6 px-2 text-dense"
             onClick={(e) => {
               e.stopPropagation();
               onComplete(item.id);
@@ -598,7 +598,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           <Button
             size="sm"
             variant="ghost"
-            className="h-6 px-2 text-[11px]"
+            className="h-6 px-2 text-dense"
             onClick={(e) => {
               e.stopPropagation();
               onReopen(item.id);
@@ -663,7 +663,7 @@ function BoardColumn({
       <div className={`items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2 ${narrow ? "hidden" : "flex"}`}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h3>
         <span
-          className="flex h-5 min-w-[20px] items-center justify-center whitespace-nowrap rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground"
+          className="flex h-5 min-w-[20px] items-center justify-center whitespace-nowrap rounded-full bg-muted px-1.5 text-tiny font-semibold text-muted-foreground"
           data-testid={`${testId}-count`}
         >
           {hasSchedule && schedule.count > 0 ? t(schedule.countKey, { items: String(items.length), schedules: String(schedule.count) }) : items.length}
@@ -836,7 +836,7 @@ function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialog
             <div className="text-xs font-medium text-muted-foreground">{t("workBoard.priorityLabel")}</div>
             <PriorityPicker value={priority} onChange={setPriority} disabled={submitting} />
           </Label>
-          <p className="text-[11px] text-muted-foreground">{t("workBoard.createHint")}</p>
+          <p className="text-dense text-muted-foreground">{t("workBoard.createHint")}</p>
           {error && <p className="text-sm text-destructive" data-testid="work-board-create-error">{error}</p>}
         </div>
 
@@ -894,14 +894,14 @@ function RunOutputPanel({
       <div className="flex items-center justify-between">
         <RunIndicator run={run} />
         {sessionId && (
-          <span className="text-[10px] text-muted-foreground" title={sessionId}>
+          <span className="text-tiny text-muted-foreground" title={sessionId}>
             {t("workBoard.runSessionLabel", { id: shortSessionId(sessionId) })}
           </span>
         )}
       </div>
       {liveText && (
         <div data-testid="work-board-run-live">
-          <div className="text-[11px] font-medium text-muted-foreground">{t("workBoard.runLiveHeading")}</div>
+          <div className="text-dense font-medium text-muted-foreground">{t("workBoard.runLiveHeading")}</div>
           <div className="mt-1 max-h-32 overflow-auto rounded bg-background/(--opacity-strong) p-3">
             <div className="prose prose-sm ave-prose max-w-none break-words [overflow-wrap:anywhere]">
               <ReactMarkdown
@@ -915,7 +915,7 @@ function RunOutputPanel({
       )}
       {plan && (
         <div data-testid="work-board-run-plan">
-          <div className="text-[11px] font-medium text-muted-foreground">{t("workBoard.runPlanHeading")}</div>
+          <div className="text-dense font-medium text-muted-foreground">{t("workBoard.runPlanHeading")}</div>
           <div className="mt-1 max-h-48 overflow-auto rounded bg-background/(--opacity-strong) p-3">
             <div className="prose prose-sm ave-prose max-w-none break-words [overflow-wrap:anywhere]">
               <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>{plan}</ReactMarkdown>
@@ -925,7 +925,7 @@ function RunOutputPanel({
       )}
       {output && (
         <div data-testid="work-board-run-result">
-          <div className="text-[11px] font-medium text-muted-foreground">{t("workBoard.runOutputHeading")}</div>
+          <div className="text-dense font-medium text-muted-foreground">{t("workBoard.runOutputHeading")}</div>
           <div className="mt-1 max-h-48 overflow-auto rounded bg-background/(--opacity-strong) p-3">
             <div className="prose prose-sm ave-prose max-w-none break-words [overflow-wrap:anywhere]">
               <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>{output}</ReactMarkdown>
@@ -946,10 +946,10 @@ function PlanDecisionPanel({ api, item, onDecided }: { api: AveApi; item: WorkIt
       <div className="flex items-baseline justify-between gap-2">
         <h4 className="text-xs font-semibold">{t("workBoard.planDecisionHeading")}</h4>
         {approval.revision > 0 && (
-          <span className="text-[11px] text-muted-foreground">{t("workBoard.planDecisionRevision", { count: approval.revision })}</span>
+          <span className="text-dense text-muted-foreground">{t("workBoard.planDecisionRevision", { count: approval.revision })}</span>
         )}
       </div>
-      <p className="text-[11px] text-muted-foreground">{t("workBoard.planDecisionToolNote")}</p>
+      <p className="text-dense text-muted-foreground">{t("workBoard.planDecisionToolNote")}</p>
       <PlanDecisionControls
         key={`${item.runId}:${approval.planHash}`}
         api={api}
@@ -1026,13 +1026,13 @@ function RunHistorySection({
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {t("workBoard.runHistoryHeading")}
         </h4>
-        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-muted px-1.5 text-tiny font-semibold text-muted-foreground">
           {history.length}
         </span>
       </div>
       <ul className="space-y-1 p-2.5">
         {[...history].reverse().map((h) => (
-          <li key={h.runId} className="text-[11px]">
+          <li key={h.runId} className="text-dense">
             <button
               type="button"
               onClick={() => void toggle(h.runId)}
@@ -1261,7 +1261,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
               <div className="text-xs font-medium text-muted-foreground">{t("workBoard.priorityLabel")}</div>
               <PriorityPicker value={priority} onChange={setPriority} disabled={busy} />
             </Label>
-            <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-1 text-dense text-muted-foreground">
               <span>
                 {t("workBoard.statusLabel")}: <strong>{t(`workBoard.${STATUS_LABEL[item.status_resolved]}`)}</strong>
               </span>
@@ -1390,7 +1390,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("workBoard.reportsHeading")}</h3>
       </div>
       <div className="p-4">
-      <p className="text-[11px] text-muted-foreground">{t("workBoard.reportPlaceholder")}</p>
+      <p className="text-dense text-muted-foreground">{t("workBoard.reportPlaceholder")}</p>
       <div className="mt-3 flex gap-2">
         <Button
           size="sm"
@@ -1416,7 +1416,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
       {result && <ReportResultBlock result={result} onClose={() => setResult(null)} />}
 
       <div className="mt-4 border-t pt-4">
-        <p className="text-[11px] text-muted-foreground">{t("workBoard.briefingHint")}</p>
+        <p className="text-dense text-muted-foreground">{t("workBoard.briefingHint")}</p>
         <div className="mt-3 flex gap-2">
           <Button
             size="sm"
@@ -1440,7 +1440,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
           </Button>
         </div>
         {briefing !== null && (
-          <p className="mt-2 text-[11px] text-muted-foreground" data-testid="work-board-briefing-running">
+          <p className="mt-2 text-dense text-muted-foreground" data-testid="work-board-briefing-running">
             {t("workBoard.briefingRunning")}
           </p>
         )}
@@ -1460,14 +1460,14 @@ function BriefingResultLine({
 }) {
   if ("ok" in result) {
     return (
-      <p className="mt-2 text-[11px] text-destructive" data-testid="work-board-briefing-error">
+      <p className="mt-2 text-dense text-destructive" data-testid="work-board-briefing-error">
         {t("workBoard.briefingFailed")}: {result.error}
       </p>
     );
   }
   if (result.status === "error") {
     return (
-      <p className="mt-2 text-[11px] text-destructive" data-testid="work-board-briefing-error">
+      <p className="mt-2 text-dense text-destructive" data-testid="work-board-briefing-error">
         {t("workBoard.briefingFailed")}: {result.reason}
       </p>
     );
@@ -1476,13 +1476,13 @@ function BriefingResultLine({
   // nothing: no new work arrived.
   if (result.status === "empty" || result.filed.length === 0) {
     return (
-      <p className="mt-2 text-[11px] text-muted-foreground" data-testid="work-board-briefing-empty">
+      <p className="mt-2 text-dense text-muted-foreground" data-testid="work-board-briefing-empty">
         {t("workBoard.briefingNothing")}
       </p>
     );
   }
   return (
-    <p className="mt-2 text-[11px] text-muted-foreground" data-testid="work-board-briefing-filed">
+    <p className="mt-2 text-dense text-muted-foreground" data-testid="work-board-briefing-filed">
       {t("workBoard.briefingFiled", { count: result.filed.length })}
     </p>
   );
@@ -1499,21 +1499,21 @@ function ReportResultBlock({
 }) {
   if ("ok" in result) {
     return (
-      <p className="mt-2 text-[11px] text-destructive" data-testid="work-board-report-error">
+      <p className="mt-2 text-dense text-destructive" data-testid="work-board-report-error">
         {t("workBoard.reportFailed")}: {result.error}
       </p>
     );
   }
   if (result.status === "error") {
     return (
-      <p className="mt-2 text-[11px] text-destructive" data-testid="work-board-report-error">
+      <p className="mt-2 text-dense text-destructive" data-testid="work-board-report-error">
         {t("workBoard.reportFailed")}: {result.reason}
       </p>
     );
   }
   if (result.status === "empty") {
     return (
-      <p className="mt-2 text-[11px] text-muted-foreground" data-testid="work-board-report-empty">
+      <p className="mt-2 text-dense text-muted-foreground" data-testid="work-board-report-empty">
         {result.reason}
       </p>
     );
@@ -1521,10 +1521,10 @@ function ReportResultBlock({
   return (
     <div className="mt-2 space-y-1" data-testid="work-board-report-result">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-muted-foreground">
+        <span className="text-dense font-medium text-muted-foreground">
           {t("workBoard.reportResultHeading")} · {result.period}
         </span>
-        <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={onClose}>
+        <Button size="sm" variant="ghost" className="h-5 px-1 text-dense" onClick={onClose}>
           {t("workBoard.reportClose")}
         </Button>
       </div>

@@ -53,7 +53,7 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
           <span className="font-mono">{data.path}</span>
           <span className="opacity-60">)</span>
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-tiny text-muted-foreground">
           {totals.added > 0 && (
             <span
               className="rounded bg-success/(--opacity-subtle) px-1 font-semibold text-foreground"
@@ -94,7 +94,7 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
+        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-dense text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
         aria-expanded={open}
         aria-controls={contentId}
       >
@@ -118,7 +118,7 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
             />
           ))}
           {totals.added === 0 && totals.removed === 0 && (
-            <div className="px-3 py-2 text-[10px] text-muted-foreground">
+            <div className="px-3 py-2 text-tiny text-muted-foreground">
               {t("fileEditDiff.noChanges")}
             </div>
           )}
@@ -165,7 +165,7 @@ function DiffHunk({
         onClick={() => review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine,
           turnId: review.turnId, hunkId: reviewHunk.id })}
         className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
-        <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-dense text-muted-foreground">
           <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview?.oldCount} +{reviewHunk.newStartLine},{preview?.newCount} @@</span>
           {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
             {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
@@ -176,7 +176,7 @@ function DiffHunk({
           {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
         </span>
         {(oldPreview?.truncated || newPreview?.truncated) && (
-          <span className="block px-2.5 py-1 font-sans text-[11px] text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
+          <span className="block px-2.5 py-1 font-sans text-dense text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
         )}
       </button>
     );
@@ -184,7 +184,7 @@ function DiffHunk({
   return (
     <div>
       {separator && (
-        <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-[10px] text-muted-foreground">
+        <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-tiny text-muted-foreground">
           @@ {t("fileEditDiff.nextHunk")}
         </div>
       )}
@@ -197,7 +197,7 @@ function DiffHunk({
         return <DiffLine key={`a-${i}`} kind="added" lineNo={n} text={text} />;
       })}
       {(oldPreview?.truncated || newPreview?.truncated) && (
-        <p className="px-3 py-1 font-sans text-[11px] text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
+        <p className="px-3 py-1 font-sans text-dense text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
       )}
     </div>
   );
@@ -240,8 +240,8 @@ function DiffLine({
   if (columns) {
     return (
       <span className="flex min-w-0 text-foreground" style={{ backgroundColor: colors.background }} data-diff-kind={kind}>
-        <span data-line-column="old" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "removed" ? lineNo : ""}</span>
-        <span data-line-column="new" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "added" ? lineNo : ""}</span>
+        <span data-line-column="old" className="w-8 shrink-0 select-none pr-1.5 text-right text-dense text-foreground">{kind === "removed" ? lineNo : ""}</span>
+        <span data-line-column="new" className="w-8 shrink-0 select-none pr-1.5 text-right text-dense text-foreground">{kind === "added" ? lineNo : ""}</span>
         <span aria-hidden="true" className="w-4 shrink-0 select-none font-semibold">{sigil}</span>
         <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-2.5 [overflow-wrap:anywhere]">{text || " "}</span>
       </span>
@@ -253,7 +253,7 @@ function DiffLine({
       style={{ backgroundColor: colors.background, borderLeftColor: colors.accent }}
       data-diff-kind={kind}
     >
-      <span className="w-10 shrink-0 select-none text-right text-[10px] text-foreground">
+      <span className="w-10 shrink-0 select-none text-right text-tiny text-foreground">
         {lineNo}
       </span>
       <span className="shrink-0 select-none font-semibold text-foreground">
@@ -417,7 +417,7 @@ export function WriteFileSidecarDiff({
     const path = filePath ?? parsed.path ?? "";
     const bytes = parsed.bytes !== undefined ? `${parsed.bytes.toLocaleString()} bytes` : "";
     return (
-      <div className="rounded px-2 py-1 font-mono text-[10px] text-muted-foreground bg-muted/(--opacity-muted)">
+      <div className="rounded px-2 py-1 font-mono text-tiny text-muted-foreground bg-muted/(--opacity-muted)">
         {path ? <span className="text-primary/(--opacity-intense)">{path}</span> : null}
         {bytes ? <span className="ml-2 text-muted-foreground/(--opacity-strong)">{bytes}</span> : null}
       </div>
@@ -459,23 +459,23 @@ export function WriteFileSidecarDiff({
   if (diffState === "expanded" && diffData) {
     const hunks = buildDiffHunks(diffData.before, diffData.after);
     return (
-      <div className="min-w-0 w-full max-w-full rounded-md text-[11px]">
+      <div className="min-w-0 w-full max-w-full rounded-md text-dense">
         <div
           className="flex items-center gap-2 px-3 py-1.5 rounded-t-md border-b"
           style={{ backgroundColor: "hsl(var(--muted) / 0.5)" }}
         >
           <span className="font-medium text-primary/(--opacity-intense) truncate min-w-0">{path}</span>
-          {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-[10px]">{bytes}</span>}
+          {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-tiny">{bytes}</span>}
           <button
             type="button"
-            className="ml-auto shrink-0 text-[10px] text-primary hover:underline"
+            className="ml-auto shrink-0 text-tiny text-primary hover:underline"
             onClick={() => setDiffState("idle")}
           >
             {t("fileEditDiff.collapse")}
           </button>
         </div>
         <div
-          className="max-h-(--preview-block-max-height-compact) overflow-y-auto font-mono text-[10px] leading-[1.5] rounded-b-md px-0 py-1"
+          className="max-h-(--preview-block-max-height-compact) overflow-y-auto font-mono text-tiny leading-[1.5] rounded-b-md px-0 py-1"
           style={{ backgroundColor: "hsl(var(--code-bg))", color: "hsl(var(--code-fg))" }}
         >
           {hunks.length === 0 ? (
@@ -520,11 +520,11 @@ export function WriteFileSidecarDiff({
 
   if (diffState === "error") {
     return (
-      <div className="rounded-md px-3 py-1.5 text-[11px] text-destructive/(--opacity-intense) bg-destructive/(--opacity-subtle) flex items-center gap-2">
+      <div className="rounded-md px-3 py-1.5 text-dense text-destructive/(--opacity-intense) bg-destructive/(--opacity-subtle) flex items-center gap-2">
         <span className="truncate min-w-0">{errorMsg}</span>
         <button
           type="button"
-          className="shrink-0 text-[10px] text-primary hover:underline"
+          className="shrink-0 text-tiny text-primary hover:underline"
           onClick={handleRetry}
         >
           {t("fileEditDiff.retry")}
@@ -536,17 +536,17 @@ export function WriteFileSidecarDiff({
   const isLoading = diffState === "loading";
   return (
     <div
-      className="min-w-0 w-full max-w-full rounded-md text-[11px]"
+      className="min-w-0 w-full max-w-full rounded-md text-dense"
       style={{ backgroundColor: "hsl(var(--muted) / 0.4)" }}
     >
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="font-medium text-primary/(--opacity-intense) truncate min-w-0">{path}</span>
-        {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-[10px]">{bytes}</span>}
-        <span className="shrink-0 text-[10px] text-warning/(--opacity-intense) ml-1">· {t("fileEditDiff.previewLimit")}</span>
+        {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-tiny">{bytes}</span>}
+        <span className="shrink-0 text-tiny text-warning/(--opacity-intense) ml-1">· {t("fileEditDiff.previewLimit")}</span>
         <button
           type="button"
           disabled={isLoading}
-          className="ml-auto shrink-0 text-[10px] text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+          className="ml-auto shrink-0 text-tiny text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={() => {
             void handleExpand();
           }}

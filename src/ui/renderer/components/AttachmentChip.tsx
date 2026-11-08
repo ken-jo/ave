@@ -196,7 +196,7 @@ export function AttachmentChip({
             <PasteThumb />
           )}
           <span
-            className={`max-w-full truncate text-[10px] font-mono ${badgeClass(total)}`}
+            className={`max-w-full truncate text-tiny font-mono ${badgeClass(total)}`}
             data-testid="chip-count-badge"
             title={`${chipLabel(attachment)} · ${total}/${ATTACH_MAX_COUNT}`}
           >
@@ -249,7 +249,7 @@ export function AttachmentChipCollapsed({
         >
           <StackVisual layers={total} />
           <span
-            className={`max-w-full truncate text-[10px] font-mono ${badgeClass(total)}`}
+            className={`max-w-full truncate text-tiny font-mono ${badgeClass(total)}`}
             data-testid="chip-count-badge"
           >
             {total}/{ATTACH_MAX_COUNT}
@@ -299,7 +299,7 @@ export function AttachmentOverlay({
         <span className="text-xs font-semibold text-muted-foreground">
           {t("attachmentChip.overlayCount", { count: attachments.length })}
         </span>
-        <span className="text-[10px] text-muted-foreground/(--opacity-stronger)">
+        <span className="text-tiny text-muted-foreground/(--opacity-stronger)">
           {t("attachmentChip.overlayRemoveHint")}
         </span>
       </div>
@@ -338,7 +338,7 @@ export function AttachmentOverlay({
                       : `Pasted text #${att.n}`}
               </div>
               <div
-                className="truncate font-mono text-[10px] text-muted-foreground"
+                className="truncate font-mono text-tiny text-muted-foreground"
                 title={att.kind === "file" && att.location
                   ? t("attachmentChip.locationSourceTurn", { turn: att.location.turnId })
                   : att.kind === "image" || att.kind === "file" ? att.path : undefined}
@@ -351,7 +351,7 @@ export function AttachmentOverlay({
                       ? displaySafeLabel(att.uri, MCP_RESOURCE_URI_MAX_CHARS)
                       : `+${att.lines} lines · ${att.chars} chars`}
               </div>
-              <div className="text-[10px] text-muted-foreground/(--opacity-stronger)">
+              <div className="text-tiny text-muted-foreground/(--opacity-stronger)">
                 {att.kind === "image"
                   ? `${att.mimeType} · ${att.width}×${att.height} · ${formatBytes(att.bytes)}`
                   : att.kind === "file"
@@ -378,14 +378,14 @@ export function AttachmentOverlay({
                     () => setOpenErrors((current) => ({ ...current, [att.path]: defaultAppOpenErrorKey(undefined) })),
                   );
                 }}
-                className="flex-shrink-0 rounded border border-border px-2 py-1 text-[10px] hover:bg-muted"
+                className="flex-shrink-0 rounded border border-border px-2 py-1 text-tiny hover:bg-muted"
                 title={t("attachmentChip.openExternalTitle")}
               >
                 ↗ {t("attachmentChip.openExternalButton")}
               </button>
             ) : null}
             {(att.kind === "image" || att.kind === "file") && openErrors[att.path] ? (
-              <div role="alert" data-testid="overlay-open-error" className="w-full basis-full text-[10px] text-destructive">
+              <div role="alert" data-testid="overlay-open-error" className="w-full basis-full text-tiny text-destructive">
                 {t(openErrors[att.path]!)}
               </div>
             ) : null}
@@ -397,7 +397,7 @@ export function AttachmentOverlay({
                 aria-label={t("attachmentChip.pastedTextOriginal", { n: att.n })}
                 tabIndex={0}
                 // One scroller: the list around it already scrolls, and a second one inside would swallow the wheel.
-                className="w-full basis-full select-text whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-[11px] leading-relaxed text-foreground"
+                className="w-full basis-full select-text whitespace-pre-wrap break-words rounded border border-border bg-muted/(--opacity-medium) p-2 font-mono text-dense leading-relaxed text-foreground"
               >
                 {/* A clipboard paste is stored whole, however long; laying out
                     megabytes of wrapped text would freeze the window, so the
@@ -406,7 +406,7 @@ export function AttachmentOverlay({
               </pre>
             ) : null}
             {att.kind === "paste" && att.text.length > PASTE_PREVIEW_MAX_CHARS ? (
-              <div data-testid="overlay-paste-more" className="w-full basis-full text-[10px] text-muted-foreground">
+              <div data-testid="overlay-paste-more" className="w-full basis-full text-tiny text-muted-foreground">
                 {t("attachmentChip.pastedTextMore", { count: att.text.length - PASTE_PREVIEW_MAX_CHARS })}
               </div>
             ) : null}

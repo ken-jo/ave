@@ -301,11 +301,11 @@ export function AskUserQuestionCard({
     >
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 pt-3 pb-1.5 space-y-0">
         <div className="flex min-w-0 items-center gap-2">
-          <CardTitle className="text-[12px] font-medium text-muted-foreground">
+          <CardTitle className="text-body-sm font-medium text-muted-foreground">
             ❓ {t("askUserQuestionCard.cardTitle")}
           </CardTitle>
           {stepLabel && (
-            <span className="text-[10px] text-muted-foreground/(--opacity-stronger)" data-testid="ask-step-label">
+            <span className="text-tiny text-muted-foreground/(--opacity-stronger)" data-testid="ask-step-label">
               · {stepLabel}
             </span>
           )}
@@ -383,7 +383,7 @@ export function AskUserQuestionCard({
             data-testid="ask-skip-button"
             disabled={submitting}
             onClick={dismiss}
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-dense"
           >
             {t("askUserQuestionCard.skipButton")}
           </Button>
@@ -394,7 +394,7 @@ export function AskUserQuestionCard({
                 size="sm"
                 disabled={submitting}
                 onClick={goPrev}
-                className="h-7 px-3 text-[11px]"
+                className="h-7 px-3 text-dense"
               >
                 {t("askUserQuestionCard.prevButton")}
               </Button>
@@ -408,7 +408,7 @@ export function AskUserQuestionCard({
                   !isAnswerComplete(currentItem, currentDraft)
                 }
                 onClick={goNext}
-                className="h-7 px-3 text-[11px]"
+                className="h-7 px-3 text-dense"
               >
                 {step === total - 1 ? t("askUserQuestionCard.reviewStep") : t("askUserQuestionCard.nextButton")}
               </Button>
@@ -419,7 +419,7 @@ export function AskUserQuestionCard({
                 size="sm"
                 disabled={submitting || !allAnswered}
                 onClick={submitAll}
-                className="h-7 px-3 text-[11px]"
+                className="h-7 px-3 text-dense"
               >
                 {t("askUserQuestionCard.sendButton")}
               </Button>
@@ -433,7 +433,7 @@ export function AskUserQuestionCard({
                   size="sm"
                   disabled={submitting || !isAnswerComplete(currentItem, currentDraft)}
                   onClick={submitAll}
-                  className="h-7 px-3 text-[11px]"
+                  className="h-7 px-3 text-dense"
                 >
                   {t("askUserQuestionCard.sendButton")}
                 </Button>
@@ -462,17 +462,17 @@ function KeyboardHint({
       : t("askUserQuestionCard.sendButton");
   return (
     <div
-      className="flex items-center gap-1.5 text-[10px] text-muted-foreground/(--opacity-stronger)"
+      className="flex items-center gap-1.5 text-tiny text-muted-foreground/(--opacity-stronger)"
       data-testid="ask-keyboard-hint"
     >
-      <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-[9px]">
+      <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-tiny">
         Enter
       </kbd>
       <span>{enterLabel}</span>
       {hasAnswerNavigation && (
         <>
           <span aria-hidden="true">·</span>
-          <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-[9px]">
+          <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-tiny">
             ↑↓
           </kbd>
           <span>{t("askUserQuestionCard.answerNavHint")}</span>
@@ -481,7 +481,7 @@ function KeyboardHint({
       {isMulti && (
         <>
           <span aria-hidden="true">·</span>
-          <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-[9px]">
+          <kbd className="rounded border bg-muted/(--opacity-half) px-1 py-[1px] font-mono text-tiny">
             ←→
           </kbd>
           <span>{t("askUserQuestionCard.questionNavHint")}</span>
@@ -514,7 +514,7 @@ function ChoiceBadge({ kind }: { kind: "recommend" | "alt" }) {
       : "border border-current/(--opacity-medium) text-inherit opacity-60";
   return (
     <span
-      className={`flex-shrink-0 rounded px-1.5 py-[1px] text-[9.5px] font-semibold tracking-wider ${cls}`}
+      className={`flex-shrink-0 rounded px-1.5 py-[1px] text-tiny font-semibold tracking-wider ${cls}`}
       data-testid={`ask-badge-${kind}`}
     >
       {kind === "recommend" ? t("askUserQuestionCard.badgeRecommend") : t("askUserQuestionCard.badgeAlt")}
@@ -683,7 +683,7 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
   return (
     <>
       <div
-        className="whitespace-pre-wrap text-[13px]"
+        className="whitespace-pre-wrap text-body-sm"
         data-testid="ask-question-text"
       >
         {item.question}
@@ -719,7 +719,7 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
                 onClick={() => onChoose(c, i)}
                 onKeyDown={(e) => handleChoiceKeyDown(e, i)}
                 onFocus={() => setFocusedIdx(i)}
-                className={`h-auto justify-start gap-2 px-2.5 py-1.5 text-[12px] ${focused ? "ring-2 ring-primary/(--opacity-medium) ring-offset-1 ring-offset-background" : ""}`}
+                className={`h-auto justify-start gap-2 px-2.5 py-1.5 text-body-sm ${focused ? "ring-2 ring-primary/(--opacity-medium) ring-offset-1 ring-offset-background" : ""}`}
               >
                 {item.allowMultiple && (
                   <span
@@ -772,7 +772,7 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
           }}
           onFocus={() => setFocusedIdx(freeTextIndex)}
           placeholder={item.placeholder ?? t("askUserQuestionCard.freeTextPlaceholder")}
-          className="min-h-[3.5rem] text-[12px]"
+          className="min-h-[3.5rem] text-body-sm"
           disabled={disabled}
           data-testid="ask-freetext-input"
         />
@@ -793,7 +793,7 @@ function ConfirmReview({
   const { t } = useTranslation();
   return (
     <div className="space-y-1.5" data-testid="ask-confirm-review">
-      <div className="text-[10.5px] text-muted-foreground">
+      <div className="text-dense text-muted-foreground">
         {t("askUserQuestionCard.confirmReviewInstruction")}
       </div>
       <ul className="space-y-1">
@@ -806,9 +806,9 @@ function ConfirmReview({
                 className="w-full rounded-md border px-2.5 py-1.5 text-left hover:bg-muted/(--opacity-strong)"
                 onClick={() => onJumpTo(i)}
               >
-                <div className="text-[10.5px] text-muted-foreground">{label}</div>
+                <div className="text-dense text-muted-foreground">{label}</div>
                 <div
-                  className={`text-[12px] ${isAnswerComplete(item, drafts[i]) ? "" : "text-warning"}`}
+                  className={`text-body-sm ${isAnswerComplete(item, drafts[i]) ? "" : "text-warning"}`}
                 >
                   {describeAnswer(item, drafts[i])}
                 </div>

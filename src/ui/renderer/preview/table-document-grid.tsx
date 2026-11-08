@@ -106,7 +106,7 @@ export function TableDocumentGrid({ sheet, label, changes = [], onRendered }: {
             data-testid="document-cell-change" data-row={rowNumber} data-column={columnNumber}
             data-advisory={change.advisory ? "true" : "false"} data-current={change.seq === currentSeq ? "true" : "false"}>
             <span data-testid="document-cell-value">{change.value}</span>
-            {change.seq === currentSeq ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-[9px] leading-3 text-background">Ave</span> : null}
+            {change.seq === currentSeq ? <span aria-hidden="true" className="absolute right-0 top-0 rounded-bl bg-agent px-1 font-sans text-tiny leading-3 text-background">Ave</span> : null}
           </span> : row[c];
         },
       })),

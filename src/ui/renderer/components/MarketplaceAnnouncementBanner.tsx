@@ -44,7 +44,7 @@ export function MarketplaceAnnouncementBanner({
         />
         <MarqueeText
           text={current.body}
-          className={`text-[11px] leading-3 ${palette.body}`}
+          className={`text-dense leading-3 ${palette.body}`}
           data-testid="marketplace-announcement-body"
         />
       </span>

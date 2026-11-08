@@ -573,56 +573,56 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                           <span className="font-mono text-xs font-semibold line-clamp-1 min-w-0">{cfg?.bundled
                             ? `${t(cfg.bundled.kind === "agent-plugin" ? "gitMarketplace.server.plugin" : "gitMarketplace.server.extension")}: ${cfg.bundled.name}/${cfg.bundled.server}`
                             : id}</span>
-                          <Badge className={`text-[10px] px-1.5 py-0 ${STATUS_BADGE[status]}`}>
+                          <Badge className={`text-tiny px-1.5 py-0 ${STATUS_BADGE[status]}`}>
                             {getStatusLabel(status)}
                           </Badge>
                           {cfg && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0">
                               {cfg.transport}
                             </Badge>
                           )}
                           {authStatus && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0" role="status">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0" role="status">
                               {getAuthStatusLabel(authStatus)}
                             </Badge>
                           )}
                           {cfg?.auth && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            <Badge variant="outline" className="text-tiny px-1.5 py-0">
                               {t("mcpTab.authBadge", { auth: cfg.auth })}
                             </Badge>
                           )}
                         </div>
                         {st?.registeredTools.length ? (
-                          <p className="mt-1 text-[11px] text-muted-foreground">
+                          <p className="mt-1 text-dense text-muted-foreground">
                             {t("mcpTab.toolsLabel")} {st.registeredTools.join(", ")}
                           </p>
                         ) : null}
                         {st?.lastError && (
-                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{
+                          <p className="mt-1 text-dense text-destructive line-clamp-2">{
                             authStatus === "required" ? t("mcpTab.authRequiredMessage")
                               : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
                           }</p>
                         )}
                         {st?.containedQuarantined && (
-                          <p data-testid={`mcp-contained-quarantined-${id}`} role="status" className="mt-1 text-[11px] text-warning">
+                          <p data-testid={`mcp-contained-quarantined-${id}`} role="status" className="mt-1 text-dense text-warning">
                             {t("mcpTab.containedQuarantined")}
                           </p>
                         )}
                         {st?.authError && (
-                          <p className="mt-1 text-[11px] text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
+                          <p className="mt-1 text-dense text-destructive line-clamp-2">{getAuthErrorMessage(st.authError)}</p>
                         )}
                         {st?.connectedAt && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          <p className="mt-0.5 text-tiny text-muted-foreground">
                             {t("mcpTab.connectedAtLabel")} {formatDateTime(st.connectedAt)}
                           </p>
                         )}
                         {cfg?.transport === "stdio" && cfg.command && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
+                          <p className="mt-0.5 text-tiny text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
                             {t("mcpTab.commandLabel")} {cfg.command}
                           </p>
                         )}
                         {cfg?.transport === "http" && cfg.url && (
-                          <p className="mt-0.5 text-[10px] text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
+                          <p className="mt-0.5 text-tiny text-muted-foreground font-mono line-clamp-1 [overflow-wrap:anywhere]">
                             {t("mcpTab.urlLabel")} {cfg.url}
                           </p>
                         )}
@@ -803,7 +803,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                     value={form.oauthClientId}
                     onChange={(e) => setForm((f) => ({ ...f, oauthClientId: e.target.value }))}
                   />
-                  <p className="text-[10px] text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
+                  <p className="text-tiny text-muted-foreground">{t("mcpTab.oauthClientIdHint")}</p>
                 </div>
               )}
 
@@ -820,7 +820,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                       value={form.command}
                       onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))}
                     />
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-tiny text-muted-foreground">
                       {t("mcpTab.commandHint")}
                     </p>
                   </div>
@@ -891,7 +891,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                 </>
               )}
 
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-tiny text-muted-foreground">
                 {t("mcpTab.secretsNote")}
               </p>
 

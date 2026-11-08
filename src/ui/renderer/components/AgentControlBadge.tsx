@@ -29,7 +29,7 @@ export function AgentControlBadge({ mode, onPause, onResume }: {
   };
   return (
     <div
-      className="flex min-w-0 flex-1 items-center gap-1 text-[11px]"
+      className="flex min-w-0 flex-1 items-center gap-1 text-dense"
       role="status"
       data-testid="agent-browser-control-badge"
       title={t(paused ? "agentBrowser.pausedHint" : "agentBrowser.controllingHint")}
@@ -42,7 +42,7 @@ export function AgentControlBadge({ mode, onPause, onResume }: {
         type="button"
         size="sm"
         variant="outline"
-        className="h-6 gap-1 px-2 text-[11px]"
+        className="h-6 gap-1 px-2 text-dense"
         onClick={() => { void change(); }}
         disabled={pending}
         aria-label={t(paused ? "agentBrowser.resumeLabel" : "agentBrowser.stopLabel")}

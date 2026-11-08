@@ -491,14 +491,14 @@ function SideChatSession({
   return (
     <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope>
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-dense font-semibold uppercase tracking-wider text-muted-foreground">
           {t("chatPreviewRail.sideChat.title")}
         </span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-6 gap-1 px-1.5 text-[11px]"
+          className="h-6 gap-1 px-1.5 text-dense"
           onClick={() => void startNew()}
           // Disabled mid-stream: starting a new session mutates the shared side loop; the main handler aborts the in-flight turn
           // first, but blocking the affordance avoids the surprising "New drops my streaming reply".
@@ -544,7 +544,7 @@ function SideChatSession({
           type="button"
           size="sm"
           variant="secondary"
-          className="ave-surface-raised absolute bottom-3 right-3 z-20 h-7 rounded-full bg-card/(--opacity-solid) px-2.5 text-[11px] backdrop-blur"
+          className="ave-surface-raised absolute bottom-3 right-3 z-20 h-7 rounded-full bg-card/(--opacity-solid) px-2.5 text-dense backdrop-blur"
           onClick={() => scrollChatToBottom("smooth")}
           data-testid="side-chat-jump-to-bottom"
         >

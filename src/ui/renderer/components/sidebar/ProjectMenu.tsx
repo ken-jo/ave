@@ -38,7 +38,7 @@ export interface ProjectMenuModel {
 
 /** The mark a project shows: a house for the 기본 프로젝트, else its initials. */
 export function ProjectMark({ project, name, size = "sm" }: { project: ProjectIdentity | undefined; name: string; size?: "sm" | "md" }) {
-  const box = size === "md" ? "h-7 w-7 text-[11px]" : "h-5 w-5 text-[10px]";
+  const box = size === "md" ? "h-7 w-7 text-dense" : "h-5 w-5 text-tiny";
   if (!project) {
     return <span className={`flex ${box} items-center justify-center rounded-md bg-muted`}><LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /></span>;
   }

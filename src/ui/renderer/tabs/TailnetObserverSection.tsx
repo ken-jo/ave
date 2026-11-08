@@ -284,7 +284,7 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
 
       {environment.detail !== null ? (
         <pre
-          className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card/(--opacity-half) px-3 py-2 text-[11px] text-muted-foreground"
+          className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card/(--opacity-half) px-3 py-2 text-dense text-muted-foreground"
           data-testid="tailnet-observer-environment-detail"
         >
           {environment.detail}
@@ -306,7 +306,7 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
           data-testid="tailnet-observer-config-file-error"
         >
           <p className="text-xs text-destructive">{tailnetObserverErrorText(snapshot.configFileError, t)}</p>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-dense text-muted-foreground">
             {t("tailnetObserver.configFileRecovery")}
           </p>
           <Button
@@ -508,7 +508,7 @@ export function TailnetObserverSection({ api, onHostStateChanged }: TailnetObser
           ) : null}
           {serveOutput !== null ? (
             <pre
-              className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-[11px] text-destructive"
+              className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-dense text-destructive"
               data-testid="tailnet-observer-serve-output"
             >
               {serveOutput}

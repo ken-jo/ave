@@ -175,7 +175,7 @@ export function AuditPanel({
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto h-6 px-2 text-[11px]"
+          className="ml-auto h-6 px-2 text-dense"
           onClick={runVerify}
           disabled={loading}
           data-testid="audit-verify-button"
@@ -219,12 +219,12 @@ export function AuditPanel({
             data-testid="audit-tool-filter"
           />
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-dense text-muted-foreground">
           <span>{t("auditPanel.summaryStats", { last, total, files: summary.files, kb: Math.round(summary.bytes / 1024) })}</span>
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto h-5 px-2 text-[10px]"
+            className="ml-auto h-5 px-2 text-tiny"
             onClick={() => {
               setLast((prev) => Math.min(1000, prev + 50));
             }}
@@ -267,16 +267,16 @@ export function AuditPanel({
                 <Badge variant="outline" className={decisionBadgeClass(entry.decision)}>
                   {entry.decision}
                 </Badge>
-                <code className="flex-1 truncate rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                <code className="flex-1 truncate rounded bg-muted px-1 py-0.5 font-mono text-dense">
                   {decisionSummary(entry)}
                 </code>
-                <time className="text-[10px] text-muted-foreground">
+                <time className="text-tiny text-muted-foreground">
                   {entry.ts.slice(11, 19)}
                 </time>
               </button>
               {isOpen && (
                 <pre
-                  className="mt-1 overflow-x-auto rounded bg-muted/(--opacity-medium) px-2 py-1 text-[11px]"
+                  className="mt-1 overflow-x-auto rounded bg-muted/(--opacity-medium) px-2 py-1 text-dense"
                   data-testid={`audit-entry-detail-${entry.auditId}`}
                 >
                   {JSON.stringify(entry, null, 2)}

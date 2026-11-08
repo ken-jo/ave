@@ -409,7 +409,7 @@ export function SettingsContent({
                 empty header string (the trailing About item) renders a thin
                 divider instead, separating it as a standalone footer entry. */}
             {group.group ? (
-              <div className="select-none px-3 pb-1 pt-3 font-mono text-[11px] font-medium uppercase tracking-wider text-muted-foreground first:pt-0">
+              <div className="select-none px-3 pb-1 pt-3 font-mono text-dense font-medium uppercase tracking-wider text-muted-foreground first:pt-0">
                 {t(group.group)}
               </div>
             ) : (
@@ -435,7 +435,7 @@ export function SettingsContent({
                   {isPermissions && pendingPermissions > 0 && (
                     <span
                       className={cn(
-                        "rounded-full bg-destructive px-1.5 py-0.5 text-[10px] leading-none text-destructive-foreground",
+                        "rounded-full bg-destructive px-1.5 py-0.5 text-tiny leading-none text-destructive-foreground",
                         !isNarrow && "ml-auto",
                       )}
                     >
@@ -458,7 +458,7 @@ export function SettingsContent({
           every release after the one it was typed in. */}
       <div className="shrink-0 border-t px-3 py-2.5">
         <span
-          className="text-[11px] tabular-nums text-muted-foreground/(--opacity-strong) select-none"
+          className="text-dense tabular-nums text-muted-foreground/(--opacity-strong) select-none"
           data-testid="settings-nav-app-version"
         >
           {appInfo ? `v${appInfo.version}` : null}
@@ -524,11 +524,11 @@ export function SettingsContent({
           >
             <div className="min-w-0">
               <p className="font-medium">{t("settingsContent.saveErrorMessage", { tab: s.lastSaveError.tab })}</p>
-              <p className="text-[11px] opacity-80">{s.lastSaveError.message}</p>
+              <p className="text-dense opacity-80">{s.lastSaveError.message}</p>
             </div>
             <button
               type="button"
-              className="text-[11px] underline opacity-80 hover:opacity-100"
+              className="text-dense underline opacity-80 hover:opacity-100"
               onClick={s.clearLastSaveError}
             >
               {t("settingsContent.closeButton")}

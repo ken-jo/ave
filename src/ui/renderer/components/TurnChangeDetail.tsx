@@ -34,9 +34,9 @@ export function TurnChangeDetail({ file, turnId, onReference, onFileReference }:
           aria-label={t("fileEditDiff.fileReferenceAria", { path: file.path })}
           className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <span className="block truncate text-xs font-semibold">{name}</span>
-          {directory && <span className="block truncate text-[11px] text-muted-foreground">{directory}</span>}
+          {directory && <span className="block truncate text-dense text-muted-foreground">{directory}</span>}
         </button>
-        <span className={`shrink-0 rounded-md px-1.5 py-1 text-[11px] font-medium ${fileChangeBadgeClass(operation)}`}>
+        <span className={`shrink-0 rounded-md px-1.5 py-1 text-dense font-medium ${fileChangeBadgeClass(operation)}`}>
           {t(`fileEditDiff.operation.${operation}`)}
         </span>
         <span className="shrink-0 font-mono text-xs" data-testid="turn-change-detail-counts">
@@ -44,7 +44,7 @@ export function TurnChangeDetail({ file, turnId, onReference, onFileReference }:
           <span className={FILE_CHANGE_REMOVED_CLASS}>−{file.countsKnown ? file.removed : "—"}</span>
         </span>
         <button type="button" disabled={!onFileReference} onClick={() => onFileReference?.(file.path)}
-          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2 text-[11px] hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2 text-dense hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
           <Link2 aria-hidden="true" className="h-3 w-3" />{t("fileEditDiff.fileReference")}
         </button>
       </header>
@@ -54,7 +54,7 @@ export function TurnChangeDetail({ file, turnId, onReference, onFileReference }:
           hunks: hunks.map((hunk) => ({ oldText: hunk.oldText, newText: hunk.newText })) }}
           review={{ hunks, hunkOffset, turnId, referenceable: file.referenceable, onReference }} />
         {lastPage > 0 && (
-          <nav aria-label={t("fileEditDiff.hunkPages")} className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+          <nav aria-label={t("fileEditDiff.hunkPages")} className="flex flex-wrap items-center justify-between gap-2 text-dense">
             <button type="button" disabled={page === 0} onClick={() => setPagination({ path: file.path, turnId, page: page - 1 })}
               className="rounded-md border border-border px-2 py-1 hover:bg-muted disabled:opacity-50">{t("fileEditDiff.reviewPrevious")}</button>
             <span aria-live="polite" className="text-muted-foreground">{t("fileEditDiff.reviewPageRange", { start: hunkOffset + 1,

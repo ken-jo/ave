@@ -129,7 +129,7 @@ const SubAgentRow = memo(function SubAgentRow({
       <span className="min-w-0 flex-1 truncate font-medium" title={spawn.title}>
         {spawn.title}
       </span>
-      <span className={cn("shrink-0 text-[10px]", subAgentStatusTone(spawn.status))}>
+      <span className={cn("shrink-0 text-tiny", subAgentStatusTone(spawn.status))}>
         {subAgentStatusLabel(spawn.status, t)}
       </span>
     </button>
@@ -284,7 +284,7 @@ function SubAgentTranscriptDetail({
         </div>
       ) : null}
       {spawn.errorMessage ? (
-        <div className="rounded border border-destructive/(--opacity-medium) bg-destructive/(--opacity-faint) px-2 py-1 text-[11px] text-destructive">
+        <div className="rounded border border-destructive/(--opacity-medium) bg-destructive/(--opacity-faint) px-2 py-1 text-dense text-destructive">
           {spawn.errorMessage}
         </div>
       ) : null}
@@ -583,7 +583,7 @@ function LauncherItems({
             <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{label}</span>
             {item.shortcutHint ? (
-              <kbd className="shrink-0 rounded bg-muted/(--opacity-muted) px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <kbd className="shrink-0 rounded bg-muted/(--opacity-muted) px-1.5 py-0.5 font-mono text-tiny text-muted-foreground">
                 {item.shortcutHint}
               </kbd>
             ) : null}
@@ -652,7 +652,7 @@ function WorkspaceLauncher({
         <div className="flex flex-col items-center gap-1 text-center">
           <LayoutGrid className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
           <div className="text-sm font-semibold">{t("chatPreviewRail.launcher.title")}</div>
-          <div className="text-[11px] text-muted-foreground">{t("chatPreviewRail.launcher.subtitle")}</div>
+          <div className="text-dense text-muted-foreground">{t("chatPreviewRail.launcher.subtitle")}</div>
         </div>
         <div className="space-y-1" role="menu" aria-label={t("chatPreviewRail.launcher.title")}>
           <LauncherItems

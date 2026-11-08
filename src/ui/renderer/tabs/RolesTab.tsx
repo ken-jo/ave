@@ -671,7 +671,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                 placeholder={t("rolesTab.quickMemoryPlaceholder")}
                 className="min-w-0 min-h-[120px] text-xs"
               />
-              <div className="text-right text-[11px] text-muted-foreground">
+              <div className="text-right text-dense text-muted-foreground">
                 {quickMemory.length}/520
               </div>
               <Textarea
@@ -765,7 +765,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                     <div className="truncate text-sm font-medium">
                       {preset.name}
                       {preset.isDefault ? (
-                        <Badge variant="secondary" className="ml-2 text-[10px]">
+                        <Badge variant="secondary" className="ml-2 text-tiny">
                           {t("rolesTab.defaultBadge")}
                         </Badge>
                       ) : null}
@@ -778,7 +778,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-7 text-[11px]"
+                      className="h-7 text-dense"
                       onClick={() => startEdit(preset)}
                       disabled={!rolesLoaded || Boolean(preset.isDefault) || Boolean(preset.origin)}
                     >
@@ -788,7 +788,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-7 text-[11px] text-destructive"
+                        className="h-7 text-dense text-destructive"
                         onClick={() => void removePreset(preset.id)}
                         disabled={!rolesLoaded}
                       >

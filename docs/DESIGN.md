@@ -63,11 +63,22 @@
   - The new `executive-graphite` bundle is the reference restrained dark theme: warm graphite chrome, teal work accent, amber branch/caution accent, and limited secondary emphasis.
 - Typography:
   - Use system UI text for renderer surfaces and monospace only for code, paths, commands, counters, and technical metadata.
-  - Type scale (matches shipped de-facto usage — `text-xs` dominates dense surfaces):
-    - `text-xs` (12px): default body inside dense panels, lists, metadata, and chrome.
-    - `text-sm` (14px): comfortable body, control labels, dialog copy.
-    - `text-base` (16px): lead paragraphs only; rare by design.
+  - Type scale (matches shipped de-facto usage — `text-xs` dominates dense surfaces). Every step is
+    rem-based, so it follows the user's appearance font-size setting. Sizes below are what renders at
+    the default setting (root 14px, 1rem = 14px); the named-by-px primitives (`--type-size-12`,
+    `text-xs`) are nominal at a 16px root and render at 0.875 of their name by default:
+    - `text-tiny` (10px, 15px line): badges, counters, keycaps, and status pills.
+    - `text-dense` (11px, 16.5px line): dense chrome, tool-card metadata, row secondary text.
+    - `text-micro` (10.5px, 14px line) and `text-caption` (10.5px, 15.75px line): captions and compact
+      labels; `micro` for single-line chrome, `caption` for wrapping copy.
+    - `text-xs` (10.5px): default body inside dense panels, lists, metadata, and chrome.
+    - `text-sm` and `text-body-sm` (12.25px, 17.5px line): comfortable body, control labels, dialog copy.
+    - `text-base` (14px): lead paragraphs only; rare by design.
     - `text-lg` and above: page titles and section headers only — never inside repeated items.
+  - Arbitrary px sizes (`text-[11px]`) are not allowed in `src/ui` or `src/components`: a px
+    size ignores the user's font-size scale and splits the ladder. Add a step to the scale
+    instead; a new step also needs a `TYPE_SCALE` entry in `src/lib/utils.ts`, or `cn()` reads
+    it as a text colour and drops the real one.
   - No viewport-scaled type and no negative letter spacing in app UI.
   - Compact panels use compact headings; hero-scale type belongs only to real hero surfaces, which the app generally should not need.
 - Spacing/layout rhythm:

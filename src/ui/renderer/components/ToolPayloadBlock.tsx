@@ -8,7 +8,7 @@ export function ToolPayloadBlock({ value, isError = false }: { value: unknown; i
   const scrollable = shouldConstrainPayload(formatted);
   const pre = (
     <pre
-      className={`max-w-full whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[10px] leading-[1.35rem] [overflow-wrap:anywhere] ${
+      className={`max-w-full whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-tiny leading-[1.35rem] [overflow-wrap:anywhere] ${
         isError ? "text-destructive" : "text-muted-foreground"
       }`}
       data-testid="tool-payload"

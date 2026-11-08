@@ -125,7 +125,7 @@ describe("StatusBar", () => {
     render(<StatusBar persistent={[]} visibleToast={toast()} pendingCount={2} />);
     const badge = screen.getByText("+2");
     expect(badge.className).toContain("rounded-full");
-    expect(badge.className).toContain("text-[11px]");
+    expect(badge.className).toContain("text-dense");
     expect(badge.className).toContain("text-muted-foreground");
     expect(badge.className).toContain("font-normal");
     expect(badge.className).toContain("tabular-nums");

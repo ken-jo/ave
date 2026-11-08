@@ -185,7 +185,7 @@ function FontFamilyCustomInput({
   };
 
   return (
-    <details className="text-[11px] text-muted-foreground">
+    <details className="text-dense text-muted-foreground">
       <summary className="cursor-pointer select-none">{t("appearanceTab.fontFamilyCustomSummary")}</summary>
       <input
         ref={inputRef}
@@ -214,7 +214,7 @@ function FontFamilyCustomInput({
         className="mt-2 w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
         aria-label={t("appearanceTab.fontFamilyCustomAriaLabel")}
       />
-      <p className="mt-1 text-[10px]">
+      <p className="mt-1 text-tiny">
         {t("appearanceTab.fontFamilyCustomHint")}
       </p>
     </details>
@@ -339,7 +339,7 @@ export function AppearanceTab() {
         title={t("appearanceTab.fontSectionTitle")}
         description={t("appearanceTab.fontSectionDescription")}
         actions={
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-dense text-muted-foreground">
             {t("appearanceTab.fontSizePreview")}{" "}
             <span className="font-mono text-foreground">{Math.round(sizeScale * 16)}px</span>
           </span>
@@ -347,7 +347,7 @@ export function AppearanceTab() {
       >
         {/* 폰트 패밀리 */}
         <div className="space-y-2">
-          <label className="text-[11px] text-muted-foreground">{t("appearanceTab.fontFamilyLabel")}</label>
+          <label className="text-dense text-muted-foreground">{t("appearanceTab.fontFamilyLabel")}</label>
           <div
             role="radiogroup"
             onKeyDown={handleRadioGroupKeyDown}
@@ -387,7 +387,7 @@ export function AppearanceTab() {
 
         {/* 폰트 크기 */}
         <div className="space-y-2">
-          <label className="text-[11px] text-muted-foreground">{t("appearanceTab.fontSizeLabel")}</label>
+          <label className="text-dense text-muted-foreground">{t("appearanceTab.fontSizeLabel")}</label>
           <div
             role="radiogroup"
             onKeyDown={handleRadioGroupKeyDown}
@@ -468,7 +468,7 @@ function GlassTintControl() {
     <div className="space-y-2" data-testid="appearance-glass-tint">
       <div className="flex items-center justify-between gap-2">
         <label htmlFor="appearance-glass-tint-input" className="text-sm font-medium">{t("appearanceTab.glassTintLabel")}</label>
-        <span className="font-mono text-[11px] text-muted-foreground">{tint}%</span>
+        <span className="font-mono text-dense text-muted-foreground">{tint}%</span>
       </div>
       <input
         id="appearance-glass-tint-input"
@@ -488,7 +488,7 @@ function GlassTintControl() {
         onKeyUp={commit}
         onBlur={commit}
       />
-      <div className="flex justify-between text-[11px] text-muted-foreground" aria-hidden="true">
+      <div className="flex justify-between text-dense text-muted-foreground" aria-hidden="true">
         <span>{t("appearanceTab.glassTintMin")}</span>
         <span>{t("appearanceTab.glassTintMax")}</span>
       </div>

@@ -79,7 +79,7 @@ export function PermissionReviewStatusCard({
         data-variant="attached"
         {...liveRegion}
         tabIndex={reason ? 0 : undefined}
-        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] [&_svg]:h-3 [&_svg]:w-3 ${toneClass(entry)}`}
+        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-tiny [&_svg]:h-3 [&_svg]:w-3 ${toneClass(entry)}`}
       >
         <StatusIcon entry={entry} />
         <span className="min-w-0 truncate font-medium">{statusLabel(entry)}</span>
@@ -109,7 +109,7 @@ export function PermissionReviewStatusCard({
         </span>
       </div>
       {entry.approvalPurpose?.confidence === "sufficient" && (
-        <div className="mt-1 min-w-0 truncate pl-5 text-[11px] text-muted-foreground">
+        <div className="mt-1 min-w-0 truncate pl-5 text-dense text-muted-foreground">
           {tComp("permissionReviewStatusCard.purposeLabel")} {entry.approvalPurpose.text}
         </div>
       )}

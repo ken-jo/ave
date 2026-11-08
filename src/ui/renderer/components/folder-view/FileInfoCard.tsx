@@ -39,18 +39,18 @@ export function FileInfoCard({ projectRoot, entry, reason }: { projectRoot: stri
               disabled={open.pending} onClick={() => void open.run(entry.path)}>
               <ExternalLink aria-hidden="true" className="h-4 w-4" />{t("folderView.openExternal")}
             </Button>
-            <div className="mt-1 text-center text-[11px] text-muted-foreground">
+            <div className="mt-1 text-center text-dense text-muted-foreground">
               {t(mac ? "folderView.openExternalHintMac" : "folderView.openExternalHint")}
             </div>
           </>
         ) : (
           // A type the default app is not given: the file manager and the path are the way out.
-          <div className="mt-4 text-center text-[11px] text-muted-foreground" data-testid="folder-open-external-unavailable">
+          <div className="mt-4 text-center text-dense text-muted-foreground" data-testid="folder-open-external-unavailable">
             {t("folderView.openRefusedType")}
           </div>
         )}
         {open.error ? (
-          <div role="alert" className="mt-1 text-center text-[11px] text-destructive" data-testid="folder-open-external-error">
+          <div role="alert" className="mt-1 text-center text-dense text-destructive" data-testid="folder-open-external-error">
             {t(open.error)}
           </div>
         ) : null}
@@ -67,7 +67,7 @@ export function FileInfoCard({ projectRoot, entry, reason }: { projectRoot: stri
             {t(copied ? "folderView.copied" : "folderView.copyPath")}
           </Button>
         </div>
-        {revealFailed ? <div role="alert" className="mt-1 text-center text-[11px] text-destructive">{t("folderView.revealFailed")}</div> : null}
+        {revealFailed ? <div role="alert" className="mt-1 text-center text-dense text-destructive">{t("folderView.revealFailed")}</div> : null}
     </PassiveFileInfoCard>
   );
 }
