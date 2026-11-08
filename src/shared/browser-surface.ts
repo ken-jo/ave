@@ -14,6 +14,8 @@ export interface BrowserTabBindRequest {
   readonly tabId: string;
   readonly webContentsId: number;
   readonly requestId?: string;
+  /** A hidden guest cannot take native focus; this display hint grants no control authority. */
+  readonly parked?: boolean;
 }
 
 export type BrowserTabBindResult =

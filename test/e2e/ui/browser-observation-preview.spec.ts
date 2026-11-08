@@ -10,15 +10,17 @@ test.use({ trace: "on" });
 type PreviewCapture = { previewMessages: (BrowserObservationPreviewMessage & { receivedAt: number })[]; observed: AgentObservationEvent[] };
 
 test("keeps a parked agent guest visible to its animation clock", () => exercisePreview("parked"));
+test("selects in a parked guest without taking native keyboard focus", () => exercisePreview("focus"));
 test("measures renderer evaluation after an agent closes its parked guest", () => exercisePreview("closure"));
 test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", () => exercisePreview("navigation"));
 
-async function exercisePreview(scope: "parked" | "closure" | "navigation"): Promise<void> {
+async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigation"): Promise<void> {
   test.setTimeout(scope === "closure" ? 30_000 : 150_000);
   const model = "browser-preview-fixture";
   let stage = 0;
   let tabId = "";
   let clickRef = "";
+  let selectRef = "";
   let releaseNavigation: (() => void) | undefined;
   let releaseFinish: (() => void) | undefined;
   let firstUrl = "";
@@ -43,7 +45,7 @@ async function exercisePreview(scope: "parked" | "closure" | "navigation"): Prom
     if (request.method === "GET" && request.url?.startsWith("/page")) {
       const second = request.url.includes("second");
       response.writeHead(200, { "content-type": "text/html" });
-      response.end(`<!doctype html><html><head><title>Preview fixture</title></head><body style="font:16px system-ui;padding:32px;background:${second ? "#e8f0ff" : "#fff8e0"}"><h1>${second ? "Second site" : "First site"}</h1><button onclick="document.querySelector('output').textContent='Clicked'">Continue</button><output>Ready</output><p id="tick">0</p><script>let n=0;setInterval(()=>{document.getElementById('tick').textContent=String(++n)},100)</script></body></html>`);
+      response.end(`<!doctype html><html><head><title>Preview fixture</title></head><body style="font:16px system-ui;padding:32px;background:${second ? "#e8f0ff" : "#fff8e0"}"><h1>${second ? "Second site" : "First site"}</h1><button onclick="document.querySelector('output').textContent='Clicked'">Continue</button><output>Ready</output><select aria-label="Choice"><option value="a">A</option><option value="b">B</option></select><p id="tick">0</p><script>let n=0;setInterval(()=>{document.getElementById('tick').textContent=String(++n)},100)</script></body></html>`);
       return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
@@ -63,11 +65,13 @@ async function exercisePreview(scope: "parked" | "closure" | "navigation"): Prom
     if (stage === 3) { tool(response, "browser_snapshot", { tabId, interactive: true }); return; }
     if (stage === 4) {
       clickRef = /button "Continue"[^\n]*\[ref=(e\d+)\]/.exec(text)?.[1] ?? "";
+      selectRef = /combobox "Choice"[^\n]*\[ref=(e\d+)\]/.exec(text)?.[1] ?? "";
       tool(response, "browser_click", { tabId, ref: clickRef }); return;
     }
     if (stage === 5) {
       releaseNavigation = () => scope === "closure"
         ? tool(response, "browser_tab_close", { tabId })
+        : scope === "focus" ? tool(response, "browser_select", { tabId, ref: selectRef, value: "b" })
         : tool(response, "browser_navigate", { tabId, url: secondUrl });
       response.flushHeaders(); return;
     }
@@ -131,7 +135,7 @@ async function exercisePreview(scope: "parked" | "closure" | "navigation"): Prom
       });
     });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
-    const composer = page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
+    const composer = page.getByTestId("pane-cell:main").getByTestId("composer-textarea");
     await composer.fill("Browse the local preview fixture.");
     await composer.press("Enter");
     approvals = (async () => {
@@ -210,6 +214,47 @@ async function exercisePreview(scope: "parked" | "closure" | "navigation"): Prom
     expect(liveness.frames).toBeGreaterThanOrEqual(10);
     expect(liveness.frames / liveness.elapsedMs).toBeGreaterThanOrEqual(activeLiveness.frames / activeLiveness.elapsedMs / 2);
     if (scope === "parked") return;
+    if (scope === "focus") {
+      await ctx.app.evaluate(({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        const state = globalThis as unknown as { parkedFocusEvents: number };
+        state.parkedFocusEvents = 0;
+        guest.on("focus", () => { state.parkedFocusEvents += 1; });
+      }, firstUrl);
+      releaseNavigation?.();
+      await expect.poll(() => releaseFinish !== undefined, { timeout: 10_000 }).toBe(true);
+      expect(failures).toEqual([]);
+      const selected = await ctx.app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        return { focused: guest.isFocused(), focusEvents: (globalThis as unknown as { parkedFocusEvents: number }).parkedFocusEvents,
+          value: await guest.executeJavaScript("document.querySelector('select').value") };
+      }, firstUrl);
+      expect(selected).toEqual({ focused: false, focusEvents: 0, value: "b" });
+      await ctx.app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        await guest.executeJavaScript("window.parkedKeys = []; window.addEventListener('keydown', event => window.parkedKeys.push(event.key))");
+        guest.focus();
+        guest.sendInputEvent({ type: "keyDown", keyCode: "X" });
+        guest.sendInputEvent({ type: "keyUp", keyCode: "X" });
+      }, firstUrl);
+      await expect.poll(() => app.evaluate(({ webContents }, url) => webContents.getAllWebContents()
+        .find(contents => contents.getURL() === url)?.isFocused(), firstUrl)).toBe(false);
+      const keys = await app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        return await guest.executeJavaScript("window.parkedKeys");
+      }, firstUrl);
+      expect(keys).toEqual([]);
+      await composer.click();
+      await page.keyboard.type("VISIBLE");
+      await expect(composer).toHaveValue("VISIBLE");
+      releaseFinish?.();
+      await test.info().attach("parked-focus.json", { body: JSON.stringify(selected), contentType: "application/json" });
+      return;
+    }
     if (scope === "closure") {
       const closedAt = Date.now();
       releaseNavigation?.();

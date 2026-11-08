@@ -90,6 +90,52 @@ describe("WebSurfaceLayer", () => {
       expect(guest.style).toMatchObject({ width: "640px", height: "480px" });
     } finally { setWebSurfaceAwake("browser:1", false); }
   });
+  it("keeps a focused guest visible until main acknowledges parking", async () => {
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(<Harness where="side" />);
+    const slot = screen.getByTestId("web-surface-slot");
+    stubBox(slot, { left: 10, top: 20, width: 640, height: 480 });
+    const guest = guests()[0] as HTMLElement;
+    Object.assign(guest, { getWebContentsId: () => 931 });
+    await act(async () => { guest.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { placeWebSurfaces(); });
+    let acknowledge!: (value: { ok: true }) => void;
+    bindTab.mockImplementationOnce(() => new Promise((resolve) => { acknowledge = resolve; }));
+    slot.style.visibility = "hidden";
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("visible");
+    expect(frame("browser:1").style.opacity).toBe("");
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:1", webContentsId: 931, parked: true });
+    await act(async () => { acknowledge({ ok: true }); });
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("hidden");
+  });
+  it("waits for a fresh park acknowledgement when hidden during a pending unpark", async () => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(<Harness where="side" />);
+    const slot = screen.getByTestId("web-surface-slot");
+    const guest = guests()[0] as HTMLElement;
+    Object.assign(guest, { getWebContentsId: () => 932 });
+    await act(async () => { guest.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { placeWebSurfaces(); });
+    let unpark!: (value: { ok: true }) => void;
+    bindTab.mockImplementationOnce(() => new Promise((resolve) => { unpark = resolve; }));
+    stubBox(slot, { left: 10, top: 20, width: 640, height: 480 });
+    act(() => { placeWebSurfaces(); });
+    slot.style.visibility = "hidden";
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("visible");
+    await act(async () => { unpark({ ok: true }); });
+    let park!: (value: { ok: true }) => void;
+    bindTab.mockImplementationOnce(() => new Promise((resolve) => { park = resolve; }));
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("visible");
+    await act(async () => { park({ ok: true }); });
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("hidden");
+  });
   it("keeps host favicon helper schemes aligned with the renderer img-src CSP", () => {
     const html = readFileSync("src/index.html", "utf8");
     const policy = html.match(/content="([^"]*default-src[^"]*)"/)![1]!;
@@ -165,7 +211,7 @@ describe("WebSurfaceLayer", () => {
     act(() => { guest.dispatchEvent(new Event("dom-ready")); });
     act(() => { guest.dispatchEvent(new Event("dom-ready")); });
     await act(async () => { await Promise.resolve(); });
-    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:8", webContentsId: 31 }]]);
+    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:8", webContentsId: 31, parked: true }]]);
   });
 
   it("binds a tab's guest for the agent tools once, with the request it was opened for, and keeps that binding across a move", async () => {
@@ -184,7 +230,7 @@ describe("WebSurfaceLayer", () => {
     guest.getWebContentsId = () => 77;
     act(() => { guest.dispatchEvent(new Event("did-attach")); });
     await act(async () => { await Promise.resolve(); });
-    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9" }]]);
+    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9", parked: true }]]);
 
     // The main frame's committed address is recorded; a subframe's is not.
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/" })); });
@@ -210,7 +256,7 @@ describe("WebSurfaceLayer", () => {
     expect(webSurfaceFavicon("browser:9")).toBeNull();
     await act(async () => { await Promise.resolve(); });
     expect(committedWebSurfaceLocation("browser:9")).toBeNull();
-    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9" });
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9", parked: true });
   });
 
   it("keeps one guest for a tab while its slot moves, hides it with no slot, and lets it go when the tab closes", async () => {

@@ -698,6 +698,8 @@ jobs:
           src/main/browser/__tests__/browser-popup-navigation.test.ts
           src/main/browser/__tests__/browser-tab-registry.test.ts
           src/main/browser/__tests__/browser-actions.test.ts
+          src/main/browser/__tests__/browser-select-script.test.ts
+          src/ui/renderer/preview/__tests__/host-focus-memory.test.ts
           src/main/browser/__tests__/browser-tab-activity.test.ts
           src/tools/__tests__/agent-browser-observation.test.ts
           src/ui/renderer/__tests__/ChatView.test.tsx

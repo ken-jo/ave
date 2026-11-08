@@ -44,7 +44,14 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.on("did-finish-load", restoreZoom);
   const guestId = contents.id;
   browserTabRegistry.guestAttached(contents, windowId);
-  contents.on("before-input-event", (_event, input) => {
+  contents.on("focus", () => browserTabRegistry.restoreParkedGuestFocus(guestId));
+  contents.on("before-input-event", (event, input) => {
+    if (browserTabRegistry.isParkedKeyboardInput(guestId, input)) {
+      event.preventDefault();
+      if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
+      browserTabRegistry.restoreParkedGuestFocus(guestId);
+      return;
+    }
     if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
   });
   contents.on("input-event", (_event, input) => {

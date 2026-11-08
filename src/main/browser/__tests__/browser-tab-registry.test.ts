@@ -20,6 +20,7 @@ class FakeGuest implements BrowserGuest {
   }
   isFocused(): boolean { return this.focused; }
   focus(): void { this.focused = true; }
+  blur(): void { this.focused = false; }
   close(options: { waitForBeforeUnload: boolean }): void {
     expect(options.waitForBeforeUnload).toBe(false);
     this.destroyed = true;
@@ -896,7 +897,7 @@ describe("scoped browser control", () => {
     expect(registry.listTabs(2)).toHaveLength(1);
   });
 
-  it.each([false, true])("focuses only an awake leased owned background guest with another surface shown: %s", async (shown) => {
+  it.each([false, true])("prepares an awake leased background guest without native focus with another surface shown: %s", async (shown) => {
     const { registry, tab, guest, ops } = await owned();
     if (shown) {
       attachTab(registry, { tabId: "other", webContentsId: 72 });
@@ -906,7 +907,7 @@ describe("scoped browser control", () => {
     expect(registry.setAgentTabAwake(71, true)).toBe(true);
     const count = ops.length;
     await expect(registry.focusGuest(71)).resolves.toBeUndefined();
-    expect(guest.isFocused()).toBe(true);
+    expect(guest.isFocused()).toBe(false);
     expect(ops).toHaveLength(count + 1);
     expect(ops.at(-1)?.request.op).toBe("capture-focus");
     expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
@@ -914,6 +915,32 @@ describe("scoped browser control", () => {
     expect(ops.at(-1)?.request.op).toBe("restore-focus");
     registry.userInput(71, { type: "keyDown" });
     await expect(registry.focusGuest(71)).rejects.toThrow("active control");
+  });
+
+  it("blocks only real parked keyboard input and restores even after takeover", async () => {
+    const { registry, guest, tab, ops } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(guest.id, true);
+    await registry.focusGuest(guest.id);
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown" })).toBe(true);
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyUp" })).toBe(true);
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown", _modifiers: 1 << 23 })).toBe(false);
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "mouseMove" })).toBe(false);
+    guest.focus();
+    registry.userInput(guest.id, { type: "keyDown" });
+    registry.restoreParkedGuestFocus(guest.id);
+    await registry.releaseFocus(guest.id, lease.id);
+    expect(guest.isFocused()).toBe(false);
+    expect(ops.findLast(op => op.request.op === "restore-focus")?.request).toMatchObject({ preserveFocus: false });
+    expect(tab.controlMode).toBe("human-paused");
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown" })).toBe(false);
+    guest.focus();
+    expect(registry.bindTab(1, { tabId: "page", webContentsId: guest.id, parked: true })).toEqual({ ok: true });
+    expect(guest.isFocused()).toBe(false);
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown" })).toBe(true);
+    expect(registry.bindTab(1, { tabId: "page", webContentsId: guest.id, parked: false })).toEqual({ ok: true });
+    expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown" })).toBe(false);
   });
 
   it("binds focus acknowledgements to their window and borrowing lease", async () => {

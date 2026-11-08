@@ -10,6 +10,24 @@ The scope-probe and frozen-resume registries now include the same recovery-tool 
 
 `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/engine/__tests__/subagent-runner.test.ts src/engine/__tests__/subagent-resume.test.ts -t 'whole parent registry|does NOT expose a tool'`: RED, 2 failed / 139 filtered (`finding1-red.log`). The same command without `-t` passed 2 files / 141 tests (`finding1-green.log`). Evidence is local under `/private/tmp/webfix-review/`.
 
+### Parked guest focus and input
+
+Background preparation captures a focus receipt without native guest focus. Parked page keyboard actions use bounded page-local focus emulation; native selection uses a fixed isolated-world function against the exact main-document select, with unchanged option/value and accessibility verification. Disabled fieldsets remain disabled. Neither path changes approval requirements.
+
+Before hiding a previously visible guest, placement waits for main's accepted binding update. Main blocks real keyboard delivery and removes native guest focus before acknowledging. An in-flight unpark invalidates the previous park acknowledgement; rapid show/hide waits for a fresh one. Failed or stale updates leave the frame visible. Showing precedes clearing parking. Accidental native focus returns to visible chrome, and takeover cannot preserve focus in an invisible guest. This supersedes historical native-focus borrowing statements below.
+
+RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-tab-registry.test.ts src/main/browser/__tests__/browser-actions.test.ts src/main/browser/__tests__/browser-guest-tracking.test.ts -t 'prepares an awake leased background|selects in an awake owned background|blocks real keyboard delivery'`: 5 failed / 268 filtered. `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/ui/renderer/preview/__tests__/host-focus-memory.test.ts -t 'restores the exact prior target'`: 3 failed / 9 filtered. Logs: finding2-red.log, finding2-focus-red.log.
+
+Independent review exposed the pending-unpark race (covered by a delayed-ack placement test) and inherited fieldset disabledness. `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-select-script.test.ts` initially failed 1 / passed 2; the script now checks effective disabledness. No target substitution bypass was found in the exact world/object/function guards.
+
+GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-review/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-tab-registry.test.ts src/main/browser/__tests__/browser-actions.test.ts src/main/browser/__tests__/browser-guest-tracking.test.ts src/main/browser/__tests__/browser-select-script.test.ts src/ui/renderer/preview/__tests__/host-focus-memory.test.ts src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx src/ipc/domains/__tests__/browser.test.ts`: 8 files / 353 tests passed (finding2-green-final.log).
+
+Native Mac evidence: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/browser-observation-preview.spec.ts -g 'selects in a parked guest|streams a bounded live preview' --output=/private/tmp/webfix-review/native-fixed`: 2 passed (native-fixed.log). The parked test verifies final select value b, zero native focus events during selection, forced focus returned, zero real key deliveries to the guest, and composer typing. Traces/screenshots and parked-focus.json are under native-fixed. Builds: `bun run build:main`, `bun run build:renderer` passed. The second scenario includes the separate navigation-gate correction documented when committed.
+
+## Historical implementation and validation
+
+The following sections retain their original commit, base and validation context. Current corrections and validation are above and in the final validation section; old limitations are not current pass claims.
+
 Branch: fix/web-panel-site-permission. Base: origin/main 44988dfe6.
 Four commits, in requested order. No push. Tracked tree clean after commits.
 Dependencies were not installed; the existing node_modules junction was retained. No web/ files changed. No baselines extended. Every touched test file is present in the ci.yml Windows list.

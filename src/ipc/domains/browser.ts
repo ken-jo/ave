@@ -56,6 +56,10 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   });
 
   browserTabRegistry.setRendererLink({
+    focusHost: (windowId) => {
+      const window = getMainWindows().find(candidate => candidate.id === windowId);
+      if (window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()) window.webContents.focus();
+    },
     isWindowVisible: (windowId) => {
       const window = getMainWindows().find((candidate) => candidate.id === windowId);
       return window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
@@ -81,7 +85,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
-    const record = (payload ?? {}) as { tabId?: unknown; webContentsId?: unknown; requestId?: unknown };
+    const record = (payload ?? {}) as { tabId?: unknown; webContentsId?: unknown; requestId?: unknown; parked?: unknown };
     const tabId = asTabId(record.tabId);
     const webContentsId = record.webContentsId;
     if (
@@ -90,6 +94,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       || typeof webContentsId !== "number"
       || !Number.isInteger(webContentsId)
       || (record.requestId !== undefined && typeof record.requestId !== "string")
+      || (record.parked !== undefined && typeof record.parked !== "boolean")
     ) {
       return { ok: false, error: "bad-request" };
     }
@@ -97,6 +102,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       tabId,
       webContentsId,
       ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}),
+      ...(typeof record.parked === "boolean" ? { parked: record.parked } : {}),
     });
   });
 

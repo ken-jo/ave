@@ -28,6 +28,7 @@ import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-sna
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
 import { BrowserTabRegistry } from "../browser-tab-registry.js";
+import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "../browser-select-script.js";
 
 function ax(nodeId: string, role: string, name: string, extra: Partial<AXNode> = {}): AXNode {
   return { nodeId, role: { type: "role", value: role }, name: { type: "computedString", value: name }, ...extra };
@@ -70,6 +71,9 @@ class FakeCdp implements CdpSession {
   async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ method, ...(params ? { params } : {}) });
     switch (method) {
+      case "Emulation.setFocusEmulationEnabled":
+        if (params?.enabled) this.focusPage(); else this.loseFocus();
+        return {};
       case "Input.dispatchTouchEvent":
         if (params?.type === "touchEnd") this.pressed = true;
         return {};
@@ -85,6 +89,12 @@ class FakeCdp implements CdpSession {
       case "DOM.focus":
         this.focusedNode = params?.backendNodeId as number;
         return {};
+      case "DOM.getDocument":
+        return { root: { nodeName: "#document", children: this.nodes.filter(node => node.backendDOMNodeId !== undefined)
+          .map(node => ({ nodeName: node.role?.value === "Iframe" ? "IFRAME" : "INPUT", backendNodeId: node.backendDOMNodeId })) } };
+      case "Page.createIsolatedWorld": return { executionContextId: 23 };
+      case "DOM.resolveNode": return { object: { objectId: `select-${params?.backendNodeId}` } };
+      case "Runtime.callFunctionOn": return { result: { value: true } };
       case "Input.insertText": {
         if (this.dropTexts > 0) {
           this.dropTexts--;
@@ -154,7 +164,8 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
     },
     // One page alone: its window's press lock and delivery check are the adapter's, covered with the window router below.
     press: (run) => run(),
-    releaseFocus: () => {
+    releaseFocus: (restoreNativeFocus = true) => {
+      if (!restoreNativeFocus) return;
       released.push(cdp.calls.length);
       cdp.loseFocus();
     },
@@ -1682,7 +1693,7 @@ describe("typed page actions", () => {
     vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
       if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11, children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
       const result = await send(method, params);
-      if (method === "Input.dispatchKeyEvent" && params?.key === "Home") cdp.events.emit("message", "Page.frameNavigated", {});
+      if (method === "Runtime.callFunctionOn") cdp.events.emit("message", "Page.frameNavigated", {});
       return result;
     });
     await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "document-changed" });
@@ -1891,10 +1902,25 @@ it("releases the native pointer observer when dispatch fails", async () => {
   expect(guest.listenerCount("input-event")).toBe(before);
 });
 
+it.each(["function", "object", "world", "node"])("rejects a substituted native-selection %s", async (changed) => {
+  const cdp = new FakeCdp();
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+  await expect(withGuardedAction(target(cdp), async guarded => {
+    guarded.expectNode(11);
+    await guarded.cdp.send("Page.createIsolatedWorld", { frameId: "main", worldName: changed === "world" ? "foreign" : BROWSER_ACTION_WORLD });
+    await guarded.cdp.send("DOM.resolveNode", { backendNodeId: changed === "node" ? 12 : 11, executionContextId: 23 });
+    await guarded.cdp.send("Runtime.callFunctionOn", { objectId: changed === "object" ? "foreign" : "select-11",
+      functionDeclaration: changed === "function" ? "function() { return true; }" : SELECT_NATIVE_OPTION,
+      arguments: [{ value: "b" }], returnByValue: true });
+  })).rejects.toMatchObject({ code: "wrong-input-target" });
+  expect(cdp.calls.some(call => call.method === "Runtime.callFunctionOn")).toBe(false);
+});
+
 it.each([false, true])("selects in an awake owned background guest without revealing the panel: %s", async (otherShown) => {
   const { cdp, actions, approve, guest, registry, tab, layoutOps } = adapterFixture({ agent: true });
   let nativeFocused = false;
   Object.assign(guest, { isFocused: () => nativeFocused, focus: () => { nativeFocused = true; cdp.focusPage(); } });
+  Object.defineProperty(guest, "focusedFrame", { value: null });
   if (otherShown) registry.setActiveSurface(1, { kind: "browser", tabId: "other" });
   cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11, value: { value: "B" } }),
     ax("option", "option", "B", { backendDOMNodeId: 21, properties: [{ name: "selected", value: { value: true } }] })]);
@@ -1908,17 +1934,20 @@ it.each([false, true])("selects in an awake owned background guest without revea
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
   await expect(actions.select(live, ref, "b")).resolves.toBeUndefined();
-  expect(cdp.inputs()).toEqual(Array(4).fill("Input.dispatchKeyEvent"));
+  expect(nativeFocused).toBe(false);
+  expect(cdp.calls.filter(call => call.method === "Runtime.callFunctionOn")).toHaveLength(1);
+  expect(cdp.inputs()).toEqual([]);
   expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
   expect(layoutOps).not.toContain("select");
-  expect(layoutOps).toContain("restore-focus");
+  expect(layoutOps).not.toContain("restore-focus");
 });
 
-it("sends no selection keys when native focus proof is unavailable", async () => {
+it("refuses selection outside the main document without running the selection script", async () => {
   const { cdp, actions, approve } = adapterFixture();
   cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
   const send = cdp.send.bind(cdp);
   vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeName: "#document", children: [{ nodeName: "IFRAME", children: [{ nodeName: "SELECT", backendNodeId: 11 }] }] } };
     if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11,
       children: [{ nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "B" }] }] } };
     return send(method, params);
@@ -1926,7 +1955,8 @@ it("sends no selection keys when native focus proof is unavailable", async () =>
   const live = await approve("browser_select");
   const shot = await actions.snapshot(live, {});
   const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
-  await expect(actions.select(live, ref, "b")).rejects.toMatchObject({ code: "no-focus" });
+  await expect(actions.select(live, ref, "b")).rejects.toMatchObject({ code: "wrong-input-target" });
+  expect(cdp.calls.some(call => call.method === "Runtime.callFunctionOn")).toBe(false);
   expect(cdp.inputs()).toEqual([]);
 });
 

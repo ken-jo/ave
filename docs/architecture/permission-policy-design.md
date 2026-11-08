@@ -1669,12 +1669,19 @@ Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
 the error must warn against automatic repetition. Cleanup cannot make that
 uncertainty a retry-safe failure or a proven success.
 
-Before keyboard effects, host-owned focus must resolve the same visible active
-embedded tab through its stored renderer ID and preserve the exact guest,
-document, generation, and lease across awaits. Trusted renderer focus is only a
-request; native guest focus and `focusedFrame === mainFrame` must be observed.
-Popups require native selection plus native focus. Missing, stale, hidden, or
-wrong-frame focus fails rather than sending input elsewhere.
+For visible keyboard effects, host-owned focus resolves the same active embedded
+tab through its stored renderer ID and preserves the exact guest, document,
+generation, and lease across awaits. Trusted renderer focus is only a request;
+native guest focus and `focusedFrame === mainFrame` must be observed. Parked
+agent guests never take native focus or receive real keyboard events. Their
+page-local focus emulation requires an exact main-document node; a null native
+focused frame is accepted only under that proof, and a different frame fails.
+Before hiding a visible guest, the renderer waits for main to block keyboard
+delivery and return native focus. Showing precedes clearing parking. Native
+select changes use a fixed isolated function on the exact enabled main-document
+control, with final option/value and accessibility checks. Popups retain native
+selection and focus checks. All guest, document, generation and lease guards
+remain authoritative.
 
 Acquiring a lease keeps the already-approved control generation stable. A
 page-input action can finish through navigation only after a confirmed final

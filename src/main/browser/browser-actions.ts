@@ -12,8 +12,9 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
-import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+import { BrowserActionError, frameTree, mainDocumentContainsNode, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
   browserRefs,
@@ -333,10 +334,11 @@ const RELEASE_MAX_MS = 1_000;
 async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Promise<T> {
   const hadFocus = await pageHasFocus(target.cdp);
   try {
+    await target.preparePageFocus?.();
     return await act();
   } finally {
+    await target.releaseFocus(!hadFocus);
     if (!hadFocus) {
-      await target.releaseFocus();
       // Not the action's signal: a cancelled action still hands focus back.
       await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () =>
         (await pageHasFocus(target.cdp)) ? undefined : true).catch(() => undefined);
@@ -643,7 +645,7 @@ function nativeOptions(node: SelectNode | undefined): { id: number; value: strin
   return options;
 }
 
-// Keyboard-only selection with a final live option/value and AX check.
+// Select the exact native option without borrowing the window's keyboard focus.
 export async function select(target: ActionTarget, ref: string, value: string, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     const id = await resolveRef(target, ref, refs);
@@ -655,16 +657,17 @@ export async function select(target: ActionTarget, ref: string, value: string, r
     if (index < 0) throw new BrowserActionError("bad-select", "the requested enabled option is not present");
     const desired = enabled[index]!;
     await centerOf(target.cdp, id);
-    await target.injectInput(() => withPageFocus(target, async () => {
-      await target.focusPage();
-      await target.cdp.send("DOM.focus", { backendNodeId: id });
-      if (!(await pollUntil(target.signal, FOCUS_MAX_MS, async () => (await pageHasFocus(target.cdp)) || undefined))) {
-        throw new BrowserActionError("no-focus", "the page did not take keyboard focus; nothing was selected");
+    await target.injectInput(async () => {
+      const main = await frameTree(target.cdp);
+      const context = await target.cdp.send("Page.createIsolatedWorld", { frameId: main.frame.id, worldName: BROWSER_ACTION_WORLD }) as { executionContextId: number };
+      const resolved = await target.cdp.send("DOM.resolveNode", { backendNodeId: id, executionContextId: context.executionContextId }) as { object: { objectId: string } };
+      try {
+        const result = await target.cdp.send("Runtime.callFunctionOn", { objectId: resolved.object.objectId,
+          functionDeclaration: SELECT_NATIVE_OPTION, arguments: [{ value }], returnByValue: true }) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+        if (result.exceptionDetails || result.result?.value !== true) throw new BrowserActionError("select-changed", "the native select no longer has that enabled option");
+      } finally {
+        await target.cdp.send("Runtime.releaseObject", { objectId: resolved.object.objectId }).catch(() => {});
       }
-      // No activating input is marked complete: a navigation during any key must remain a failure rather than being accepted as final selection.
-      await dispatchKey(target.cdp, "Home");
-      for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
-      await dispatchKey(target.cdp, "Enter");
       const current = await readOptions();
       if (JSON.stringify(current) !== JSON.stringify(options)) throw new BrowserActionError("select-changed", "the options changed while selecting; take a new snapshot");
       const tree = await fullTree(target.cdp);
@@ -672,7 +675,7 @@ export async function select(target: ActionTarget, ref: string, value: string, r
       const selected = option?.properties?.some((property) => property.name === "selected" && property.value.value === true);
       const currentValue = await fieldValue(target.cdp, id);
       if (!selected || currentValue !== desired.label) throw new BrowserActionError("select-unverified", "the requested option did not become the final selected value");
-    }));
+    });
   });
 }
 
@@ -893,6 +896,7 @@ const actionNavigations = new WeakMap<object, ActionNavigation>();
 
 // What the adapter needs of the tab registry.
 interface InputAttribution {
+  isParkedAgentGuest(guestId: number): boolean;
   setAgentTabAwake(guestId: number, awake: boolean): boolean;
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number, leaseId?: string): void | Promise<void>;
@@ -1081,6 +1085,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
+  let emulatedFocus = false;
+  let emulatedFocusNode: number | undefined;
   const assertGuest = () => {
     throwIfAborted(live.signal);
     if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
@@ -1093,7 +1099,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       || approval.documentId !== live.tab.documentId || approval.controlGeneration !== live.tab.controlGeneration)) {
       throw new BrowserActionError("document-changed", "this tab or document is no longer the approved target; nothing more was done");
     }
-    if (keyboard && guest.focusedFrame !== guest.mainFrame) {
+    if (keyboard && guest.focusedFrame !== guest.mainFrame
+      && !(emulatedFocus && guest.focusedFrame === null && emulatedFocusNode !== undefined)) {
       throw new BrowserActionError("wrong-input-target", "keyboard focus belongs to another frame; nothing more was done");
     }
   };
@@ -1115,10 +1122,28 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   } | undefined;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
+  const preparePageFocus = async () => {
+    if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id)) return;
+    assertCurrent(false);
+    await attribution.focusGuest(guest.id);
+    assertCurrent(false);
+    emulatedFocus = true;
+    await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    assertCurrent(false);
+  };
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
+      if (method === "DOM.focus" && emulatedFocus) {
+        const document = await session.send("DOM.getDocument", { depth: -1, pierce: true }) as { root?: Parameters<typeof mainDocumentContainsNode>[0] };
+        const nodeId = params?.backendNodeId;
+        if (typeof nodeId !== "number" || !mainDocumentContainsNode(document.root, nodeId)) {
+          throw new BrowserActionError("wrong-input-target", "the focus target is outside the main document; nothing more was done");
+        }
+        assertCurrent(false);
+        emulatedFocusNode = nodeId;
+      }
       if (method === "Input.setInterceptDrags") {
         if (!nativeDrag || typeof params?.enabled !== "boolean") throw new BrowserActionError("drag-unavailable", "no native drag sequence owns interception");
         if (params.enabled) { nativeDrag.enabled = true; nativeDrag.disabled = false; }
@@ -1322,9 +1347,20 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
       });
     },
-    releaseFocus: () => attribution.releaseFocus(guest.id, live.leaseId),
+    releaseFocus: async (restoreNativeFocus = true) => {
+      const releaseReceipt = restoreNativeFocus || emulatedFocus;
+      try {
+        if (emulatedFocus) {
+          emulatedFocus = false;
+          await session.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+        }
+      } finally {
+        if (releaseReceipt) await attribution.releaseFocus(guest.id, live.leaseId);
+      }
+    },
     focusPage: async () => {
       assertCurrent(false);
+      if (attribution.isParkedAgentGuest(guest.id)) { await preparePageFocus(); return; }
       try { await attribution.focusGuest(guest.id); }
       catch { assertCurrent(false); throw new BrowserActionError("no-focus", "the approved page did not take native keyboard focus"); }
       assertCurrent(false);
@@ -1333,6 +1369,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       });
       if (!focused) throw new BrowserActionError("no-focus", "the approved main frame did not take native keyboard focus");
     },
+    preparePageFocus,
     onDestroyed: (listener) => { guest.once("destroyed", listener); return () => { guest.removeListener("destroyed", listener); }; },
     signal: live.signal,
     documentId: () => live.tab.documentId,

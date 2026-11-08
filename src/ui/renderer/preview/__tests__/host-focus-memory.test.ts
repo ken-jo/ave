@@ -12,7 +12,11 @@ function setup() {
     <webview data-testid="page" tabindex="0"></webview>`;
   const memory = new HostFocusMemory(document);
   const detach = memory.attach();
-  const get = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+  const get = (id: string) => {
+    const element = document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+    vi.spyOn(element, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+    return element;
+  };
   return { memory, detach, composer: get("composer"), other: get("other"), page: get("page") };
 }
 
@@ -110,24 +114,19 @@ it.each(["composer", "user-page", "child-page"])("restores the exact prior targe
   const tab = registry.liveTabInWindow(opened.tabId, 1);
   if (!tab) throw new Error("Missing tab");
   registry.setAgentTabAwake(71, true);
-  for (const outcome of ["success", "cancel", "user-focus", "takeover", "denied-focus"] as const) {
+  for (const outcome of ["success", "cancel", "user-focus", "takeover"] as const) {
     const lease = registry.acquireControl(tab, { sessionId: "child" });
     composer.focus();
     previous.focus();
-    const focus = guest.focus;
-    if (outcome === "denied-focus") guest.focus = () => { throw new Error("Native focus denied"); };
     try {
-      if (outcome === "denied-focus") await expect(registry.focusGuest(71)).rejects.toThrow("Native focus denied");
-      else {
         await registry.focusGuest(71);
-        expect(document.activeElement).toBe(page);
+        expect(document.activeElement).toBe(previous);
         if (outcome === "user-focus") other.focus();
-        if (outcome === "takeover") registry.userInput(71, { type: "keyDown" });
+        if (outcome === "takeover") { guest.focus(); registry.userInput(71, { type: "keyDown" }); }
         if (outcome === "cancel") registry.releaseControl(tab.handle, lease.id);
         await registry.releaseFocus(71, lease.id);
-      }
-      expect(document.activeElement).toBe(outcome === "user-focus" ? other : outcome === "takeover" ? page : previous);
-    } finally { guest.focus = focus; registry.releaseControl(tab.handle, lease.id); if (outcome === "takeover") registry.resume(1, "background"); }
+      expect(document.activeElement).toBe(outcome === "user-focus" ? other : previous);
+    } finally { registry.releaseControl(tab.handle, lease.id); if (outcome === "takeover") registry.resume(1, "background"); }
   }
   detach();
 });

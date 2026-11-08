@@ -110,6 +110,7 @@ export interface BrowserGuest {
   // Native focus capability; operations that require it reject when unavailable.
   isFocused?(): boolean;
   focus?(): void;
+  blur?(): void;
   close?(options: { waitForBeforeUnload: boolean }): void;
 }
 
@@ -172,6 +173,7 @@ export interface BrowserTabRendererLink {
   sendSessionBindings?(windowId: number, state: SessionTabBindingsState): void;
   // Native window visibility proof, required before any explicit focus request.
   isWindowVisible?(windowId: number): boolean;
+  focusHost?(windowId: number): void;
 }
 
 // The tab a conversation's browser tools act on when none is named — or why there is none.
@@ -226,7 +228,7 @@ export function isUserActionInputType(type: string): boolean {
 }
 
 export class BrowserTabRegistry<G extends BrowserGuest> {
-  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
+  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; parked?: boolean }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly selectedOwnedTabs = new Map<string, string>();
   private readonly scopedFocusLeases = new Map<number, string>();
@@ -565,6 +567,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       tab.lease = null;
     }
     tab.guest = entry.guest;
+    if (request.parked !== undefined) entry.parked = request.parked;
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
       const actor = pendingNew.actor;
       tab.owner = actor ?? null;
@@ -581,6 +584,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     this.settleSelectIfShown(senderWindowId);
     this.broadcastControl(senderWindowId);
+    if (request.parked === true && entry.guest.isFocused?.()) this.restoreParkedGuestFocus(entry.guest.id);
     return { ok: true };
   }
 
@@ -888,7 +892,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (receipt) {
       if (leaseId !== receipt.leaseId) return;
       this.focusReceipts.delete(guestId);
-      return this.focusOperation(receipt.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: receipt.tabId, receiptId: receipt.receiptId, preserveFocus: [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.controlMode === "human-paused") })
+      return this.focusOperation(receipt.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: receipt.tabId, receiptId: receipt.receiptId, preserveFocus: !this.isParkedAgentGuest(guestId) && [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.controlMode === "human-paused") })
         .then(restored => { if (!restored) throw new Error("browser focus restoration was not observed"); });
     }
     if (this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined) return;
@@ -904,20 +908,45 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
+  isParkedAgentGuest(guestId: number): boolean {
+    return [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.targetKind === "embedded"
+      && tab.opener === "agent" && tab.owner !== null
+      && (this.attached.get(guestId)?.parked ?? (this.activeBrowserTab(tab.windowId) !== tab.handle)));
+  }
+
+  isParkedKeyboardInput(guestId: number, input: NativeBrowserInput): boolean {
+    return this.isParkedAgentGuest(guestId) && /^(?:keyDown|rawKeyDown|char|keyUp)$/.test(input.type)
+      && ((input._modifiers ?? 0) & DEBUGGER_INPUT_MODIFIER) === 0;
+  }
+
+  restoreParkedGuestFocus(guestId: number): void {
+    if (!this.isParkedAgentGuest(guestId)) return;
+    const tab = [...this.tabs.values()].find(candidate => candidate.guest?.id === guestId);
+    if (!tab?.guest || tab.guest.isDestroyed()) return;
+    tab.guest.blur?.();
+    this.link?.focusHost?.(tab.windowId);
+    const receipt = this.focusReceipts.get(guestId);
+    if (receipt) {
+      void Promise.resolve(this.releaseFocus(guestId, receipt.leaseId)).catch(error => log.warn({ err: error }, "Could not restore parked guest focus"));
+    } else if (tab.rendererTabId !== null) {
+      this.link?.sendTabOp(tab.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: tab.rendererTabId });
+    }
+  }
+
   // Focus only the actual leased guest, through trusted chrome or its native popup.
   async focusGuest(guestId: number): Promise<void> {
     const tab = [...this.tabs.values()].find((candidate) => candidate.guest?.id === guestId && this.isLive(candidate));
     if (!tab || !tab.guest) throw new Error("no live browser focus target");
     const guest = tab.guest;
-    if (typeof guest.isFocused !== "function") throw new Error("native browser focus proof is unavailable");
-    const isFocused = guest.isFocused.bind(guest);
+    if (typeof guest.isFocused !== "function" && !this.isParkedAgentGuest(guestId)) throw new Error("native browser focus proof is unavailable");
+    const isFocused = () => guest.isFocused?.() === true;
     const leaseId = tab.lease?.id;
     if (leaseId === undefined || tab.controlMode === "human-paused") throw new Error("browser focus requires active control");
     const signal = tab.actions.signal;
     const documentId = tab.documentId;
     const generation = tab.controlGeneration;
     const backgroundFocus = () => tab.targetKind === "embedded" && tab.opener === "agent" && tab.owner !== null
-      && tab.owner.sessionId === tab.lease?.actor.sessionId && this.awakeGuests.has(guestId) && typeof guest.focus === "function";
+      && tab.owner.sessionId === tab.lease?.actor.sessionId && this.awakeGuests.has(guestId);
     const assertCurrent = () => {
       if (signal.aborted) throw signal.reason;
       if (this.tabs.get(tab.handle) !== tab || tab.guest !== guest || guest.isDestroyed()
@@ -930,7 +959,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
     };
     assertCurrent();
-    if (isFocused()) return;
+    if (isFocused() && !this.isParkedAgentGuest(guestId)) return;
+    if (isFocused()) this.restoreParkedGuestFocus(guestId);
     if (tab.targetKind === "popup") {
       const native = this.nativeTabs.get(tab.handle);
       if (!native) throw new Error("native browser focus is unavailable");
@@ -945,7 +975,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       this.activePopup.set(tab.windowId, tab.handle);
       return;
     }
-    if (backgroundFocus() && this.activeBrowserTab(tab.windowId) !== tab.handle) {
+    if (backgroundFocus() && this.isParkedAgentGuest(guestId)) {
       if (tab.rendererTabId === null) throw new Error("no browser renderer can capture focus");
       if (this.focusReceipts.has(guestId)) throw new Error("browser focus is already borrowed");
       const receiptId = `browser-op-${this.nextRequest++}`;
@@ -954,7 +984,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       try {
         if (!await this.focusOperation(tab.windowId, { requestId: receiptId, op: "capture-focus", tabId: tab.rendererTabId })) throw new Error("browser focus capture was denied");
         assertCurrent();
-        guest.focus?.();
+        return;
       } catch (error) { await this.releaseFocus(guestId, leaseId); throw error; }
     } else if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,

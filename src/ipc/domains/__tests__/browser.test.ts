@@ -83,6 +83,8 @@ describe("browser IPC", () => {
       .toEqual({ ok: false, error: "guest-not-hosted" });
     expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
+    expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:1", webContentsId: 41, parked: "false" }))
+      .toEqual({ ok: false, error: "bad-request" });
     expect(invoke(CHANNELS.browser.bindTab, hostFrameEvent(), { tabId: "browser:1", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
     expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);

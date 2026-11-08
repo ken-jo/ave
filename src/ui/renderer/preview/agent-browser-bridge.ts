@@ -3,8 +3,9 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement, noteWebSurfaceFavicon, setWebSurfaceAwake } from "./web-surfaces.js";
+import { getWebSurfaceElement, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
 import { guestFaviconSource } from "./favicon-source.js";
+import { isElementShown } from "./browser-observation-preview.js";
 
 export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
@@ -123,7 +124,7 @@ export class HostFocusMemory {
   restore(): void {
     const active = this.doc.activeElement;
     if (!(active instanceof HTMLElement) || !isWebview(active)) return;
-    const back = [...this.recent].reverse().find((element) => element.isConnected && element.closest("[inert]") === null);
+    const back = [...this.recent].reverse().find((element) => this.visible(element));
     if (back) back.focus();
     else active.blur();
   }
@@ -251,6 +252,19 @@ function subscribeControl(listener: () => void): () => void {
 /** Bind retries while main has not yet seen the guest attach. */
 const BIND_RETRY_LIMIT = 20;
 const BIND_RETRY_MS = 100;
+const acceptedBindings = new WeakMap<HTMLElement, number>();
+
+/** A live guest stays visible until main has blocked parked input and returned native focus. */
+export async function reportGuestParking(api: AveApi, webview: HTMLElement, tabId: string, parked: boolean): Promise<boolean> {
+  try {
+    const guest = webview as HTMLElement & { getWebContentsId?: () => number };
+    const id = guest.getWebContentsId?.();
+    if (id === undefined) return true;
+    if (acceptedBindings.get(webview) !== id || !api.browserTabs) return false;
+    const result = await api.browserTabs.bindTab({ tabId, webContentsId: id, parked });
+    return result.ok && acceptedBindings.get(webview) === id && guest.getWebContentsId?.() === id;
+  } catch { return false; }
+}
 
 /** Bind on attach and first dom-ready; retry guest-not-live because renderer attach can precede main's guest registration. */
 export function bindGuestToTab(
@@ -288,9 +302,15 @@ export function bindGuestToTab(
     void browserTabs.bindTab({
       tabId,
       webContentsId,
+      parked: !isElementShown(webview),
       ...(requestId === undefined ? {} : { requestId }),
     }).then((result) => {
-      if (cancelled || sequence !== bindSequence || result.ok) return;
+      if (cancelled || sequence !== bindSequence) return;
+      if (result.ok) {
+        acceptedBindings.set(webview, webContentsId);
+        requestWebSurfaceLayout();
+        return;
+      }
       sentFor = undefined;
       if (result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT) {
         retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
@@ -320,6 +340,7 @@ export function bindGuestToTab(
   // Already attached (the tab id or request changed on a live guest).
   onAttach();
   return () => {
+    acceptedBindings.delete(webview);
     cancelled = true;
     if (retry !== undefined) clearTimeout(retry);
     webview.removeEventListener("did-attach", onAttachEvent);

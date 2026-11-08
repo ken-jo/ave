@@ -70,7 +70,11 @@ describe("browser tool CDP surface", () => {
     const named = [...source.matchAll(CDP_LITERAL)].map((match) => match[1]!);
     const siteNavigation = path === "src/main/browser/browser-site-navigation.ts";
     const siteMethods = new Set(["Fetch.requestPaused", "Fetch.continueRequest", "Fetch.failRequest", "Fetch.enable"]);
-    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method)) && !(layoutProbe && method === "Runtime.evaluate"))).toEqual([]);
+    const selection = path === "src/main/browser/browser-actions.ts" || path === "src/main/browser/browser-action-guard.ts";
+    const selectionMethods = new Set(["Page.createIsolatedWorld", "DOM.resolveNode", "Runtime.callFunctionOn", "Runtime.releaseObject"]);
+    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method))
+      && !(selection && selectionMethods.has(method)) && !(path === "src/main/browser/browser-actions.ts" && method === "Emulation.setFocusEmulationEnabled")
+      && !(layoutProbe && method === "Runtime.evaluate"))).toEqual([]);
     for (const forbidden of [
       /\bRuntime\./,
       /\bNetwork\./,
@@ -83,7 +87,8 @@ describe("browser tool CDP surface", () => {
     ]) {
       if (layoutProbe && forbidden.source === "\\bRuntime\\.") continue;
       if (siteNavigation && forbidden.source === "\\bFetch\\.") continue;
-      expect(source, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
+      const checked = selection ? source.replace(/(["'])Runtime\.(?:callFunctionOn|releaseObject)\1/g, '""') : source;
+      expect(checked, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
     }
   });
 
@@ -94,7 +99,7 @@ describe("browser tool CDP surface", () => {
     expect(actions.match(/send\("DOM\.setFileInputFiles"/g)).toHaveLength(1);
     expect(actions).toContain("selection.dispatch(options");
     expect(guard).toContain('const upload = method === "DOM.setFileInputFiles"');
-    expect(guard).toContain('containsNode(document.root, inputNode)');
+    expect(guard).toContain('mainDocumentContainsNode(document.root, inputNode)');
     expect(guard).toContain('described.node?.nodeName?.toUpperCase() !== "INPUT"');
     expect(execute).toContain('[BROWSER_TOOL.upload]: ["tabId", "ref"]');
   });
@@ -108,16 +113,19 @@ describe("browser tool CDP surface", () => {
     expect(source).toContain("const sent = session.send(method, params);");
   });
 
-  it("limits unguarded input to noninteractive sequence teardown", () => {
+  it("limits direct session calls to focus preparation, main-document proof and sequence teardown", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
     const start = source.indexOf("async function targetFor(");
     const body = source.slice(start, source.indexOf("\n}\n", start));
-    // In the adapter every page call goes through the checked wrapper except this one, which presses nothing: it only ends the window's open sequence.
+    // Direct focus setup and cleanup route no OS input; all interactive effects still use the checked wrapper.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
+      'session.send("Emulation.setFocusEmulationEnabled", { enabled: true })',
+      'session.send("DOM.getDocument", { depth: -1, pierce: true })',
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
       'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',
       'session.send("Input.cancelDragging")',
       'session.send("Input.setInterceptDrags", { enabled: false })',
+      'session.send("Emulation.setFocusEmulationEnabled", { enabled: false })',
     ]);
   });
 });

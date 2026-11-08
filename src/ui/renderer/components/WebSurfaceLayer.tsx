@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { bindGuestToTab, reportGuestParking } from "../preview/agent-browser-bridge.js";
 import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
@@ -134,13 +134,29 @@ interface Placed {
   frame: HTMLElement;
   guest: HTMLElement;
   key: string;
+  parked?: boolean;
+  reporting?: boolean;
+  reportParking: (parked: boolean) => Promise<boolean>;
 }
 
 const placed = new Map<string, Placed>();
 
-/** Measure every guest's slot and write the frames that moved. Exported for the budget probe. */
 let dragApplied = false;
 
+function reportPlacementParking(tabId: string, entry: Placed, parked: boolean): void {
+  if (entry.parked !== parked && !entry.reporting && typeof (entry.guest as HTMLElement & { getWebContentsId?: unknown }).getWebContentsId === "function") {
+    entry.reporting = true;
+    entry.parked = undefined;
+    void entry.reportParking(parked).then((accepted) => {
+      entry.reporting = false;
+      if (placed.get(tabId) !== entry || !accepted) return;
+      entry.parked = parked;
+      requestWebSurfaceLayout();
+    });
+  }
+}
+
+/** Measure every guest's slot and write the frames that moved. Exported for the budget probe. */
 export function placeWebSurfaces(): { visible: number; moved: number } {
   const drag = isSurfaceDragActive();
   dragApplied = drag;
@@ -151,6 +167,10 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   for (const [tabId, entry] of placed) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
+    const parked = boxes === null;
+    if (parked) reportPlacementParking(tabId, entry, true);
+    if (parked && entry.parked !== true && entry.key !== "" && entry.key !== "hidden" && entry.key !== "observed-hidden"
+      && typeof (entry.guest as HTMLElement & { getWebContentsId?: unknown }).getWebContentsId === "function") continue;
     let key: string;
     if (!boxes) {
       key = isHiddenWebSurfaceObserved(tabId) ? "observed-hidden" : "hidden";
@@ -207,6 +227,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
         entry.guest.style.height = height;
       }
     }
+    if (!parked) reportPlacementParking(tabId, entry, false);
     entry.key = key;
   }
   return { visible: visibleCount, moved };
@@ -284,12 +305,12 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
     const frame = frameRef.current;
     const guest = guestRef.current;
     if (!frame || !guest) return undefined;
-    placed.set(surface.tabId, { frame, guest, key: "" });
+    placed.set(surface.tabId, { frame, guest, key: "", reportParking: (parked) => reportGuestParking(api, guest, surface.tabId, parked) });
     requestWebSurfaceLayout();
     return () => {
       placed.delete(surface.tabId);
     };
-  }, [surface.tabId]);
+  }, [api, surface.tabId]);
 
   return (
     <div

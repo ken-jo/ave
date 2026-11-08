@@ -1495,8 +1495,14 @@ Focusing an embedded page uses a main-owned `focus` operation addressed only by 
 renderer ID. It requires a visible owning window, that window's active embedded
 tab, and unchanged guest, document, control generation, and lease across awaits.
 Trusted renderer chrome focuses only the connected visible webview. Completion
-requires actual native guest focus; keyboard actions independently require
-`focusedFrame === mainFrame`. A renderer acknowledgement alone is insufficient.
+requires actual native guest focus for visible pages; keyboard actions independently require
+`focusedFrame === mainFrame`. Parked agent guests never borrow native focus. Their
+renderer-reported display state is distinct from the last-selected surface hint. Before hiding a visible guest, the renderer waits for main to acknowledge parking; main installs keyboard blocking and removes native guest focus before replying. A failed acknowledgement leaves the guest visible. Showing paints the surface before clearing parking. The host
+blocks unmarked native keyboard events to parked guests and returns accidental focus to
+visible chrome. Page-local focus emulation during an action does not route OS input
+to that page, and is released with its action receipt. A null native focused frame
+is accepted only after the exact focused node was proved part of the main document;
+an actual different focused frame remains refused. A renderer acknowledgement alone is insufficient.
 Popups require their registered native focus callback and observed native focus.
 
 ### Typed page actions and browser chrome
@@ -1521,6 +1527,12 @@ the embedded renderer can return a correctly sized image with repeated viewport
 content, and popup full-page output has not been independently proved. Requests
 fail explicitly before capture rather than reporting such an image as complete.
 Selection verifies the final native value and rejects unsupported controls.
+Native single-select uses a fixed function in an isolated action world on one
+host-resolved main-document object, with only the requested option value as data.
+It dispatches input/change events without native focus or keyboard input. The action
+guard seals the world, resolved object and function, rechecks the document lease,
+and verifies the unchanged option set and final accessibility selection. It exposes
+no script or object identifier to model callers.
 
 The host distinguishes a document transition from cancellation. A page-input
 action can finish through navigation only after a confirmed final input effect

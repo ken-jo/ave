@@ -1,6 +1,6 @@
 /** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
-import { agentDrivesBrowserTab, bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { agentDrivesBrowserTab, bindGuestToTab, reportGuestParking, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
@@ -59,6 +59,31 @@ describe("child browser routing", () => {
 });
 
 describe("guest binding", () => {
+  it("reports parking only for an accepted live binding", async () => {
+    const frame = document.createElement("div");
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 } as DOMRect);
+    frame.appendChild(guest);
+    document.body.appendChild(frame);
+    frame.style.visibility = "hidden";
+    const bindTab = vi.fn(async () => ({ ok: true }));
+    const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", undefined);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: true });
+    await Promise.resolve();
+    frame.style.visibility = "visible";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", false)).toBe(true);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: false });
+    frame.style.opacity = "0";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", true)).toBe(true);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: true });
+    const count = bindTab.mock.calls.length;
+    unbind();
+    frame.style.opacity = "1";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", false)).toBe(false);
+    expect(bindTab).toHaveBeenCalledTimes(count);
+    frame.remove();
+  });
+
   it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
     const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
     const unbind = bindGuestToTab({ browserTabs: { bindTab: vi.fn().mockResolvedValue({ ok: true }) } } as unknown as AveApi, guest, "browser:icon", undefined);
@@ -86,7 +111,7 @@ describe("guest binding", () => {
       guest.dispatchEvent(new Event("dom-ready"));
       await Promise.resolve();
       expect(bindTab).toHaveBeenCalledTimes(2);
-      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 31, requestId: "browser-op-early" });
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 31, parked: true, requestId: "browser-op-early" });
       guest.dispatchEvent(new Event("dom-ready"));
       await Promise.resolve();
       expect(bindTab).toHaveBeenCalledTimes(2);
@@ -111,7 +136,7 @@ describe("guest binding", () => {
       await Promise.resolve();
       guest.dispatchEvent(new Event("dom-ready"));
       expect(bindTab).toHaveBeenCalledTimes(2);
-      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 32, requestId: "browser-op-early" });
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 32, parked: true, requestId: "browser-op-early" });
     } finally {
       unbind();
     }
