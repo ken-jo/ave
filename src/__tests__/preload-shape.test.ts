@@ -685,7 +685,6 @@ describe("preload contextBridge world shape lock", () => {
           "minimize": "function",
           "onFullscreenChanged": "function",
           "onMaximizedChanged": "function",
-          "syncTitleBarTheme": "function",
           "toggleMaximize": "function",
         },
       }

@@ -2,35 +2,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Minus, Maximize2, Minimize2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { BAND_EDGE_PAD, BAND_LEAD_PAD_DARWIN } from "../../../shared/shell-geometry.js";
 import { getPlatformBridge } from "../api-client.js";
-
-// We read the CSS variable as an HSL triple (e.g. "222.2 84% 4.9%") and
-// convert it to a hex string that Electron's setTitleBarOverlay() accepts.
-function hslTripleToHex(triple: string): string {
-  const parts = triple.trim().split(/\s+/);
-  if (parts.length < 3) {
-    throw new Error(`[CustomTitleBar] invalid HSL triple from CSS variable: "${triple}"`);
-  }
-  const h = parseFloat(parts[0]);
-  const s = parseFloat(parts[1]) / 100;
-  const l = parseFloat(parts[2]) / 100;
-
-  // HSL → RGB (standard formula)
-  const k = (n: number) => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  const r = Math.round(f(0) * 255);
-  const g = Math.round(f(8) * 255);
-  const b = Math.round(f(4) * 255);
-  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
-}
-
-function readCssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name);
-}
 
 // Without a native platform bridge, render no title bar; invalid data on a present bridge must throw.
 
@@ -38,7 +12,6 @@ function getWindowBridge(): {
   minimize: () => Promise<void>;
   toggleMaximize: () => Promise<void>;
   close: () => Promise<void>;
-  syncTitleBarTheme: (color: string, symbolColor: string) => Promise<void>;
   onMaximizedChanged: (handler: (maximized: boolean) => void) => () => void;
   onFullscreenChanged: (handler: (fullscreen: boolean) => void) => () => void;
 } {
@@ -81,7 +54,6 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const isDarwin = platformBridge?.isDarwin ?? false;
   const [isMaximized, setIsMaximized] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const optionalTheme = useOptionalTheme();
 
   // Listen for maximize / fullscreen state from main process.
   useEffect(() => {
@@ -91,27 +63,6 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     const unsubFull = bridge.onFullscreenChanged((fullscreen) => setIsFullscreen(fullscreen));
     return () => { unsubMax(); unsubFull(); };
   }, [platformBridge]);
-
-  // Sync titlebar overlay colors whenever the applied theme values change (Win/Linux only).
-  useEffect(() => {
-    if (!platformBridge) return;
-    if (isDarwin) return;
-    if (typeof document === "undefined") return;
-    try {
-      const bg = readCssVar("--background");
-      const fg = readCssVar("--foreground");
-      if (!bg.trim() || !fg.trim()) return;
-      const color = hslTripleToHex(bg);
-      const symbolColor = hslTripleToHex(fg);
-      void getWindowBridge().syncTitleBarTheme(color, symbolColor);
-    } catch (err) {
-      console.warn("[CustomTitleBar] theme sync failed:", err);
-    }
-    // appliedRevision is the dependency: it changes after ThemeProvider has
-    // written the new values to :root — another theme, or the same theme
-    // updated in place — so the colors read here are the new ones.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platformBridge, isDarwin, optionalTheme?.appliedRevision]);
 
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);

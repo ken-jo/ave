@@ -1,17 +1,12 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.ts";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, fireEvent } from "@testing-library/react";
 import { CustomTitleBar } from "../CustomTitleBar.js";
-import { ThemeProvider, useTheme } from "../../theme/ThemeProvider.js";
-import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
-import { requireScheme } from "../../theme/schemes/index.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
 const mockToggleMaximize = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
-const mockSyncTheme = vi.fn().mockResolvedValue(undefined);
 
 let maxListener: ((maximized: boolean) => void) | null = null;
 let fullscreenListener: ((fs: boolean) => void) | null = null;
@@ -31,7 +26,6 @@ function setupBridges(isDarwin: boolean) {
     minimize: mockMinimize,
     toggleMaximize: mockToggleMaximize,
     close: mockClose,
-    syncTitleBarTheme: mockSyncTheme,
     onMaximizedChanged: mockOnMaximizedChanged,
     onFullscreenChanged: mockOnFullscreenChanged,
   };
@@ -150,20 +144,6 @@ describe("CustomTitleBar", () => {
         maxListener?.(true);
       });
       expect(getByTestId("titlebar-maximize").title).toBe("이전 크기로");
-    });
-  });
-
-  describe("native overlay colors follow the applied theme (Win/Linux)", () => {
-    beforeEach(() => setupBridges(false));
-    it("sends the applied scheme colors after a mode change", async () => {
-      const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
-      let pick: (() => void) | null = null;
-      function Picker() { const theme = useTheme(); pick = () => theme.setMode("dark"); return null; }
-      render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}><Picker /><CustomTitleBar /></ThemeProvider>);
-      await waitFor(() => expect(pick).not.toBeNull());
-      act(() => { pick!(); });
-      const scheme = requireScheme("github-dark");
-      await waitFor(() => expect(mockSyncTheme).toHaveBeenLastCalledWith(scheme.terminal.background, expect.any(String)));
     });
   });
 

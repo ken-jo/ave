@@ -102,8 +102,6 @@ export function buildAveWindowWorld() {
   minimize: () => ipcRenderer.invoke(CHANNELS.window.minimize),
   toggleMaximize: () => ipcRenderer.invoke(CHANNELS.window.toggleMaximize),
   close: () => ipcRenderer.invoke(CHANNELS.window.close),
-  syncTitleBarTheme: (color: string, symbolColor: string) =>
-    ipcRenderer.invoke(CHANNELS.window.syncTitleBarTheme, { color, symbolColor }),
   onMaximizedChanged: (handler: (maximized: boolean) => void) => {
     const listener = (_event: unknown, maximized: boolean) => handler(maximized);
     ipcRenderer.on(CHANNELS.window.maximizedChanged, listener);

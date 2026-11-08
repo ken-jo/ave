@@ -171,7 +171,7 @@ describe("preload — plugin webview asset URLs", () => {
     const windowApi = api.window as Record<string, unknown>;
     expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
     expect(Object.keys(CHANNELS.window)).toEqual([
-      "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
+      "minimize", "toggleMaximize", "close", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
     ]);
     expect([...exposed.keys()].sort()).toEqual([
       "__aveDevMode", "__aveInitialAppearance", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
