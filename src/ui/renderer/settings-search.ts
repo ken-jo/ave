@@ -22,6 +22,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"chat","section":"chat-processing-display","title":"chatTab.processingDisplayTitle","labels":["chatTab.processingDisplayAriaLabel"]},
   {"tab":"chat","section":"chat-experimental","title":"chatTab.experimentalTitle","labels":["chatTab.idleRefreshLabel","chatTab.idleMemoryConsolidationLabel","chatTab.subAgentWakeLabel","chatTab.subAgentMaxRoundsLabel"]},
   {"tab":"chat","section":"chat-privacy","title":"chatTab.privacyTitle","labels":["privacyTab.piiRedactTitle","privacyTab.piiRedactToggleLabel"]},
+  {"tab":"chat","section":"chat-signals","title":"accessibilitySignals.title","labels":["accessibilitySignals.keywords","accessibilitySignals.turnFinished","accessibilitySignals.approvalNeeded","accessibilitySignals.turnFailed","accessibilitySignals.modeUnfocused"]},
   {"tab":"chat","section":"chat-documents","title":"documentSettings.title","labels":["documentSettings.direct","documentSettings.link","documentEngine.title"]},
   {"tab":"web","section":"web-search-engine","title":"webTab.searchEngineTitle","labels":[]},
   {"tab":"web","section":"web-api-key","title":"webTab.apiKeyTitle","labels":["webTab.apiKeyLabel"]},
