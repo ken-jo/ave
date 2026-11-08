@@ -10,6 +10,7 @@ vi.mock("../../shared/windows-path-facts.js", async original => {
   };
   return { ...facts, pinWindowsPaths };
 });
+vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 const readdirFault = vi.hoisted(() => ({ path: undefined as string | undefined, code: "EACCES" }));
 vi.mock("node:fs", async original => {
@@ -25,7 +26,7 @@ vi.mock("node:fs", async original => {
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -301,6 +302,8 @@ describe("a profile-child Ave home on Windows", () => {
     }
   });
 
+  // A junction is a directory on a Windows host and a symlink elsewhere.
+  const removeLink = (path: string): void => (HOST_PLATFORM === "win32" ? rmdirSync : unlinkSync)(path);
   const linkHome = (dangling: boolean): string => {
     const target = mkdtempSync(join(tmpdir(), "ave-boundary-home-target-"));
     mkdirSync(join(target, "logs"));
@@ -316,7 +319,7 @@ describe("a profile-child Ave home on Windows", () => {
     try {
       for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
     } finally {
-      rmdirSync(original);
+      removeLink(original);
       rmSync(target, { recursive: true, force: true });
     }
   });
@@ -331,7 +334,7 @@ describe("a profile-child Ave home on Windows", () => {
       expect(caught?.reason).toBe("link");
       expect(trim(caught?.home ?? "").toLowerCase()).toBe(trim(original).toLowerCase());
     } finally {
-      rmdirSync(original);
+      removeLink(original);
     }
   });
 

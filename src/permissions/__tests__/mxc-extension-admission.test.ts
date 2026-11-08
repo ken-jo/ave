@@ -13,6 +13,8 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { rankMxcFilesystem } from "../mxc-windows.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
+// Admission projects the Ave home boundary, which pins a profile-child home natively.
+vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 const identity = vi.hoisted(() => ({ valid: true }));
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();

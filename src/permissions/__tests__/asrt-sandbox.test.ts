@@ -114,6 +114,7 @@ import {
   getDefaultSensitiveWriteDenyPaths,
   getBuiltinShellReadPolicy,
   appOwnedSandboxPrivateRoots,
+  aveHomeReadBoundaryCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
   buildPerCommandSandboxCustomConfig,
@@ -223,6 +224,13 @@ afterEach(async () => {
 // Strip the directory marker only for comparisons with the literal floor.
 function bare(paths: readonly FilesystemPathEntry[]): string[] {
   return paths.map(path => (typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
+}
+
+// On macOS an exactly spelled root (a sandbox private root or an Ave home boundary root) reaches ASRT canonical, its last character a glob class.
+function exactDenySpelling(path: string): string {
+  if (process.platform !== "darwin") return path;
+  const real = existsSync(path) ? realpathSync(path) : path;
+  return `${real.slice(0, -1)}[${real.slice(-1)}]`;
 }
 
 // Windows also omits absent targets at the handoff.
@@ -1458,8 +1466,11 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
       expect(bare(config.filesystem.denyRead)).toContain(bare([runtime])[0]);
       expect(bare(config.filesystem.denyWrite)).toContain(bare([runtime])[0]);
-      expect(config.filesystem.denyRead).not.toContain(profile);
-      expect(config.filesystem.denyWrite).not.toContain(profile);
+      // The read deny covers the whole custom profile as one directory, and subscription state is not a re-allowed child, so no
+      // grant reopens it. The write floor keeps its per-path rows and never denies the profile root.
+      if (reachesAsrt(profile)) expect(bare(config.filesystem.denyRead)).toContain(exactDenySpelling(profile));
+      expect(aveHomeReadBoundaryCovering(join(profile, "subscription-runtimes", "state.json"))).toBe(profile);
+      expect(bare(config.filesystem.denyWrite)).not.toContain(profile);
     } finally {
       vi.unstubAllEnvs();
       rmSync(profile, { recursive: true, force: true });
@@ -1526,10 +1537,14 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const sensitive = getDefaultSensitiveReadDenyPaths();
     const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      // On macOS the sandbox private roots reach ASRT as exact globs, which it re-emits after the allows minus a wrap's own directory under them.
-      const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
+      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them.
+      const spelled = privateRoots.includes(p) || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
       if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
+    // The Ave home is one boundary row, so a file inside it and a child created later are both covered.
+    if (reachesAsrt(FAKE_AVE_HOME)) expect(bare(config.filesystem.denyRead)).toContain(exactDenySpelling(FAKE_AVE_HOME));
+    expect(aveHomeReadBoundaryCovering(join(FAKE_AVE_HOME, "settings.json"))).toBe(FAKE_AVE_HOME);
+    expect(aveHomeReadBoundaryCovering(join(FAKE_AVE_HOME, "future-child", "state.json"))).toBe(FAKE_AVE_HOME);
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
   });
