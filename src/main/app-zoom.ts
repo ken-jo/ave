@@ -8,20 +8,18 @@ import { preserveBrowserGuestZoom } from "./browser/browser-guest-tracking.js";
 
 const log = createLogger("app-zoom");
 let pending: Promise<void> = Promise.resolve();
-let wheelBatch: { window: BrowserWindow; command: ZoomCommand; steps: number } | undefined;
+let wheelBatch: { window: BrowserWindow; levels: number[] } | undefined;
 
 export function runAppZoomCommand(command: ZoomCommand): Promise<void> {
   return enqueueZoomCommand(command);
 }
 
-function enqueueZoomCommand(command: ZoomCommand, steps: () => number = () => 1): Promise<void> {
+function enqueueZoomCommand(command: ZoomCommand, resolveLevel = (level: number) => nextZoomLevel(level, command)): Promise<void> {
   wheelBatch = undefined;
   const run = pending.then(async () => {
     const settingsService = getServices()?.settingsService;
     if (!settingsService) return;
-    let level = normalizeZoomLevel(settingsService.get("appearance").zoomLevel);
-    const count = steps();
-    for (let step = 0; step < count; step++) level = nextZoomLevel(level, command);
+    const level = resolveLevel(normalizeZoomLevel(settingsService.get("appearance").zoomLevel));
     await settingsService.patch({ appearance: { zoomLevel: level } });
     await broadcastSettingsSnapshot({ settingsService, getAppWindows: getMainWindows, getMainWindow });
   });
@@ -46,14 +44,15 @@ export function bindAppWindowZoom(win: BrowserWindow): void {
   win.webContents.on("zoom-changed", (event, direction) => {
     event.preventDefault();
     const command = direction === "in" ? "in" : "out";
-    if (wheelBatch?.window === win && wheelBatch.command === command) {
-      wheelBatch.steps = Math.min(MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL, wheelBatch.steps + 1);
+    if (wheelBatch?.window === win) {
+      wheelBatch.levels = wheelBatch.levels.map((level) => nextZoomLevel(level, command));
       return;
     }
-    const batch: NonNullable<typeof wheelBatch> = { window: win, command, steps: 1 };
-    void enqueueZoomCommand(command, () => {
+    // Store the result for each possible starting level to preserve ordered clamping in bounded space.
+    const batch = { window: win, levels: Array.from({ length: MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL + 1 }, (_, index) => nextZoomLevel(MIN_ZOOM_LEVEL + index, command)) };
+    void enqueueZoomCommand(command, (level) => {
       if (wheelBatch === batch) wheelBatch = undefined;
-      return batch.steps;
+      return batch.levels[level - MIN_ZOOM_LEVEL] ?? level;
     }).catch(() => log.warn("Could not save app zoom"));
     wheelBatch = batch;
   });

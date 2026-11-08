@@ -135,3 +135,36 @@ it.each(["reset", "other-window"])("seals pending wheel input across an interven
   .toEqual(barrier === "reset" ? [-1, 0, 0, 1] : [-1, 0, -1, 0]);
  expect(state.appearance.zoomLevel).toBe(barrier === "reset" ? 1 : 0);
 });
+
+it.each([
+ { level: 0, directions: Array.from({ length: 80 }, (_, index) => index % 2 === 0 ? "in" : "out") },
+ { level: 8, directions: ["in", "out"] },
+ { level: -8, directions: ["out", "in"] },
+ { level: 7, directions: [...Array<string>(30).fill("in"), ...Array<string>(4).fill("out")] },
+ { level: -7, directions: [...Array<string>(30).fill("out"), ...Array<string>(4).fill("in")] },
+])("coalesces ordered wheel reversals from $level into one pending write", async ({ level, directions }) => {
+ const contents = Object.assign(new EventEmitter(), { setVisualZoomLevelLimits: vi.fn(async () => {}) });
+ bindAppWindowZoom({ webContents: contents } as never);
+ state.appearance.zoomLevel = level;
+ let release: (() => void) | undefined;
+ const originalPatch = state.patch.getMockImplementation();
+ if (!originalPatch) throw new Error("Missing patch implementation");
+ state.patch.mockImplementationOnce(async (patch) => {
+  await new Promise<void>((resolve) => { release = resolve; });
+  await originalPatch(patch);
+ });
+ const blockedLevel = Math.max(-8, Math.min(8, level + (level >= 0 ? 1 : -1)));
+ const active = runAppZoomCommand(level >= 0 ? "in" : "out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ let expected = blockedLevel;
+ for (const direction of directions) {
+  contents.emit("zoom-changed", { preventDefault: vi.fn() }, direction);
+  expected = Math.max(-8, Math.min(8, expected + (direction === "in" ? 1 : -1)));
+ }
+ if (!release) throw new Error("Missing blocked write");
+ release();
+ await active;
+ await vi.waitFor(() => expect(state.broadcast).toHaveBeenCalledTimes(2));
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([blockedLevel, expected]);
+ expect(state.appearance.zoomLevel).toBe(expected);
+});
