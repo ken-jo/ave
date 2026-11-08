@@ -1,9 +1,31 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionRepository } from "../session-repository.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { syncExistingFileSync, writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
+import { turnInflightPath, writeTurnInflightRecord } from "../session-turn-journal.js";
+
+const appendFault = vi.hoisted(() => ({ datasync: false }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (appendFault.datasync && args[1] === "a+") {
+        appendFault.datasync = false;
+        vi.spyOn(handle, "datasync").mockRejectedValueOnce(new Error("append sync failed"));
+      }
+      return handle;
+    },
+  };
+});
+vi.mock("../../lib/atomic-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/atomic-file.js")>();
+  return { ...actual, syncExistingFileSync: vi.fn(actual.syncExistingFileSync) };
+});
 
 describe("SessionRepository", () => {
   let dir: string;
@@ -15,8 +37,83 @@ describe("SessionRepository", () => {
   });
 
   afterEach(async () => {
+    appendFault.datasync = false;
+    vi.mocked(syncExistingFileSync).mockReset();
+    const actual = await vi.importActual<typeof import("../../lib/atomic-file.js")>("../../lib/atomic-file.js");
+    vi.mocked(syncExistingFileSync).mockImplementation(actual.syncExistingFileSync);
     repository.closeSearchIndex();
     await cleanupTmpDir(dir);
+  });
+
+  it.each(["success", "file", "directory"] as const)("confirms durability after a failed append with %s sync outcome", async (outcome) => {
+    const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const first = { role: "user", content: "Save", meta: { messageId: "row-first" } };
+    const second = { role: "assistant", content: "Saved", meta: { messageId: "row-second" } };
+    const path = join(dir, "sessions", `${sessionId}.jsonl`);
+    const sidecar = turnInflightPath(join(dir, "sessions"), sessionId);
+    await repository.saveSession(sessionId, [first]);
+    await writeTurnInflightRecord(sidecar, { v: 1, startedAt: 1_000 });
+    appendFault.datasync = true;
+
+    await expect(repository.appendSessionProgress(sessionId, [first, second])).rejects.toThrow("append sync failed");
+    expect(readFileSync(path, "utf8")).toBe(`${[first, second].map((row) => JSON.stringify(row)).join("\n")}\n`);
+    expect(existsSync(sidecar)).toBe(true);
+    vi.mocked(syncExistingFileSync).mockClear();
+    if (outcome !== "success") {
+      const actual = await vi.importActual<typeof import("../../lib/atomic-file.js")>("../../lib/atomic-file.js");
+      vi.mocked(syncExistingFileSync).mockImplementationOnce((filePath) => actual.syncExistingFileSync(filePath, {
+        platform: "linux",
+        openFile: (filePath) => openSync(filePath, "r+"),
+        open: () => -1,
+        fsync: (fd) => {
+          if (outcome === "file" || fd === -1) throw new Error("durability sync failed");
+          fsyncSync(fd);
+        },
+        close: (fd) => { if (fd !== -1) closeSync(fd); },
+      }));
+    }
+
+    const save = repository.saveSession(sessionId, [first, second]);
+    if (outcome === "success") {
+      await save;
+      expect(existsSync(sidecar)).toBe(false);
+    } else {
+      await expect(save).rejects.toThrow(outcome === "file" ? "durability sync failed" : "parent directory sync failed");
+      expect(existsSync(sidecar)).toBe(true);
+    }
+    expect(syncExistingFileSync).toHaveBeenCalledExactlyOnceWith(path);
+  });
+
+  it("retries directory durability after a rename committed but its directory sync failed", async () => {
+    const sessionId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const messages = [{ role: "user", content: "Save" }];
+    const path = join(dir, "sessions", `${sessionId}.jsonl`);
+    const sidecar = turnInflightPath(join(dir, "sessions"), sessionId);
+    await writeTurnInflightRecord(sidecar, { v: 1, startedAt: 1_000 });
+    const writeWithDirectorySyncRuntime = writeUtf8FileAtomicSync as unknown as (
+      filePath: string, content: string, mode: number | undefined,
+      runtime: NonNullable<Parameters<typeof syncExistingFileSync>[1]>,
+    ) => void;
+    expect(() => writeWithDirectorySyncRuntime(path, `${JSON.stringify(messages[0])}\n`, undefined, {
+      platform: "linux", open: () => -1,
+      fsync: () => { throw new Error("directory sync failed"); },
+      close: () => undefined,
+    })).toThrow("parent directory sync failed");
+    const before = statSync(path, { bigint: true });
+    const directorySync = vi.fn();
+    const actual = await vi.importActual<typeof import("../../lib/atomic-file.js")>("../../lib/atomic-file.js");
+    vi.mocked(syncExistingFileSync).mockImplementationOnce((filePath) => actual.syncExistingFileSync(filePath, {
+      platform: "linux", openFile: (filePath) => openSync(filePath, "r+"),
+      open: () => -1,
+      fsync: (fd) => { if (fd === -1) directorySync(); else fsyncSync(fd); },
+      close: (fd) => { if (fd !== -1) closeSync(fd); },
+    }));
+
+    await repository.saveSession(sessionId, messages);
+
+    expect(directorySync).toHaveBeenCalledTimes(1);
+    expect(existsSync(sidecar)).toBe(false);
+    expect(statSync(path, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
   });
 
   it("preserves transcript mtime for identical saves and refreshes the append prefix", async () => {

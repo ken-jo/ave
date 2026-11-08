@@ -9,7 +9,7 @@ import { deleteCodeCheckpoints } from "./code-checkpoints.js";
 import { MAX_TOOL_RESULT_ARTIFACT_BYTES, MAX_TOOL_OUTPUT_PREVIEW_CHARS, normalizeToolOutputArtifactInfo, type ToolOutputCapture, type ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 import { isValidSessionId } from "../shared/session-id.js";
 import { withFileLock } from "../lib/with-file-lock.js";
-import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
+import { writeUtf8FileAtomicSync, isMissingPathError, syncExistingFileSync } from "../lib/atomic-file.js";
 import { isSessionTaskItem, type SessionTaskItem } from "../shared/session-tasks.js";
 import { isSessionGoal, type SessionGoal } from "../shared/session-goal.js";
 import { createLogger } from "../lib/logger.js";
@@ -902,7 +902,8 @@ export class SessionRepository {
     try {
       unchanged = readFileSync(targetPath).equals(Buffer.from(lines, "utf8"));
     } catch { /* Write when the existing transcript cannot be compared. */ }
-    if (!unchanged) writeUtf8FileAtomicSync(targetPath, lines);
+    if (unchanged) syncExistingFileSync(targetPath);
+    else writeUtf8FileAtomicSync(targetPath, lines);
     this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
     this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
     const ids = rowIdsOf(messages);
