@@ -18,7 +18,7 @@ export interface PermissionDecisionRequest {
   // The floor is sandbox-unavailable with no other floor behind it, so its card may offer "This session".
   floorSessionEligible?: true;
   exfiltration?: { reason: string };
-  // `floorSession`: an exact "This session" allow approved on this floor's own card for the same plan; ordinary rules never pass a floor.
+  // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
   rules?: { deny?: string; ask?: string; allow?: string; remembered?: string; floorSession?: string };
   secretRead?: boolean;
   fileWrite?: { insideProject: boolean; checkpointAvailable: boolean; directoryApproved?: boolean };
@@ -84,7 +84,11 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
     if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
     if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.floorSession !== undefined &&
       request.rules.ask === undefined && !request.manualRerun && !request.exfiltration) {
-      return { outcome: "allow", reasonCode: "floor-session-allow", reason: request.rules.floorSession };
+      // The grant answers only this floor: the ordinary stages still decide without a reviewer, and anything short of their allow keeps the floor's card.
+      const { floor: _floor, floorSessionEligible: _eligible, reviewer: _reviewer, ...ordinary } = request;
+      const decided = decidePermission(ordinary);
+      if (decided.outcome === "allow") return { outcome: "allow", reasonCode: "floor-session-allow", reason: request.rules.floorSession };
+      if (decided.outcome === "deny") return decided;
     }
     return { outcome: "ask-forced", reasonCode: request.floor.code, reason: request.floor.reason };
   }

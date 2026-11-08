@@ -329,7 +329,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     })).toBeUndefined();
   });
 
-  it("mints one permit per issued floor session decision for its own command, cwd and marked plan", () => {
+  it("mints one permit per issued floor session decision for its own command, cwd and marked plan; the grant covers the session", () => {
     const marked = buildHostShellExecutionPlan({
       platform: "linux",
       requestedSandbox: true,
@@ -338,15 +338,18 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       unavailableSandboxRequiresAsk: true,
     });
     const cwd = join(directory, "subdir");
-    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable", planIdentity: marked.identity, dialect: "bash", command: "echo one-shot" });
-    const floorDecision = (command = "echo one-shot", sessionId = "floor-session"): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
-      ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
+    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable" });
+    const floorDecision = (command = "echo one-shot", sessionId = "floor-session", dialect: "bash" | "powershell" = "bash"): PermissionCheckResult => pm.checkDetailed(dialect, "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect, command, cwd },
       hostShellExecutionPlan: marked, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId,
     });
     const binding = hostBinding(marked);
     const mint = (decision: PermissionCheckResult, plan = marked, bound = binding, manager = pm) => mintHostShellExecutionPermit({
       plan, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: manager, binding: bound,
     });
+    // The grant answers only the floor: a command no rule allows keeps the floor's card in the default mode; the allow mode then decides.
+    expect(floorDecision("echo unruled")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    pm.setMode("allow");
 
     const decision = floorDecision();
     expect(decision).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
@@ -360,10 +363,16 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
 
     // Without the grant (another conversation) the floor still asks.
     expect(floorDecision("echo one-shot", "other-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
-    // Equality only: a repeat, a sequence or a pipeline built from the approved command is a new invocation and asks.
-    for (const changed of ["echo one-shot && echo one-shot", "echo one-shot; echo one-shot", "echo one-shot | echo one-shot", "echo one-shot ", "echo  one-shot"]) {
-      expect(floorDecision(changed), changed).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    // Session-wide: any later command of this conversation, in either dialect, passes this floor with its own permit.
+    for (const [command, dialect, sessionId] of [["echo other", "bash", "floor-session"], ["echo one-shot && echo one-shot", "bash", "floor-session"],
+      ["echo one-shot | cat", "bash", "floor-session"], ["Write-Output later", "powershell", "floor-session"]] as const) {
+      const later = floorDecision(command, sessionId, dialect);
+      expect(later, command).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+      expect(mint(later, marked, hostBinding(marked, { command, toolName: dialect })), command).toBeDefined();
     }
+    // Another floor in the same command still asks on its own card.
+    expect(floorDecision("echo x > .git/config")).toMatchObject({ decision: "ask" });
+    expect(floorDecision("echo x > .git/config").reasonCode).not.toBe("floor-session-allow");
     // An ordinary exact session rule for the same command never answers the floor.
     pm.addSessionRule("rule-session", "Bash(echo one-shot)");
     expect(floorDecision("echo one-shot", "rule-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
@@ -382,13 +391,9 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(floorDecision()).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
   });
 
-  it("refuses a floor session grant without its floor, plan identity, dialect or command", () => {
-    const grant = { code: "sandbox-unavailable", planIdentity: "plan:ask", dialect: "bash", command: "echo one-shot" } as const;
-    expect(() => pm.addFloorSessionGrant("", grant)).toThrow();
-    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, planIdentity: "" })).toThrow();
-    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, command: "" })).toThrow();
-    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, dialect: "zsh" as never })).toThrow();
-    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, code: "protected-path" as never })).toThrow();
+  it("refuses a floor session grant without its conversation or for another floor", () => {
+    expect(() => pm.addFloorSessionGrant("", { code: "sandbox-unavailable" })).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { code: "protected-path" as never })).toThrow();
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {

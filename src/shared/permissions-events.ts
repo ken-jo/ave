@@ -78,7 +78,7 @@ export interface ShellRuleApproval {
   decodedCommands?: readonly string[];
   /** "Allow for session" is offered: a saveable rule and a conversation to hold it. */
   sessionAllowed: boolean;
-  /** The sandbox-unavailable floor card: "Allow for session" allows this exact command for this conversation (the host keeps the invocation; no rule text), and nothing else is remembered. */
+  /** The sandbox-unavailable floor card: "Allow for session" lets this conversation's later shell commands and hooks run without the sandbox while it is unavailable (no rule text), and nothing else is remembered. */
   floorSessionOnly?: true;
   /** "Always allow in this project" and "Always allow everywhere" are offered. */
   persistentAllowed: boolean;

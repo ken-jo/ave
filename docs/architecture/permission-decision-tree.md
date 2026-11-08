@@ -19,7 +19,7 @@ flowchart TD
   T -->|통과| H{"입장 검사 · 본인 계정 일치·인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
   H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 샌드박스 없는 셸(경계 미확인)"}
-  F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면 이 정확한 명령을 이 세션 동안도 허용 가능, 사람 없으면 거부)"]
+  F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부)"]
   F -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
   U -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
   U -->|예| UH{"사람 있음?"}
@@ -165,11 +165,13 @@ Notes that are part of the contract:
   on its card (the shell card for that route, or the out-of-directory card when the command leaves the allowed folders). The
   `sandbox-unavailable` floor makes it ask-forced (질문†): allow once, allow for this session, or deny once; no saved-rule,
   remembered, allow-mode, auto-review or sandbox auto-allow pass, no durable approval, deny when headless (owner decision
-  2026-11-08). The session choice records the exact approved invocation (dialect and command string as the execution permit
-  binds them) with the host plan identity, kept in memory for the current conversation only and never as a rule. Only an equal
-  invocation on that same plan skips the card again, still under a one-shot execution permit per run: a repeat, a sequence, a
-  pipeline or any other changed command string asks. It does not need the rule grammar, so compound and interpreter commands
-  get it too. It never satisfies an ordinary ask, and an ordinary session allow never passes this floor.
+  2026-11-08). The session choice records a grant of this floor for the root conversation (its sub-agents share it), kept in
+  memory only, never as a rule, and dropped when the conversation ends or Ave restarts. While the boundary stays unverified,
+  later shell commands and host hooks of that conversation pass this floor, whatever the command, dialect, default or
+  explicit-host plan, or background run (owner decision 2026-11-08: session-wide). The ordinary stages then decide without a
+  reviewer: an allow rule or the allow mode runs it without a card, under its own one-shot execution permit per run; anything
+  else (an ordinary ask in the default or auto mode) keeps the floor's card. Another conversation asks again. It does not need the rule grammar, so compound and interpreter
+  commands get it too. It answers only this floor: it never satisfies an ordinary ask, and an ordinary session allow never passes it.
   When another 질문† floor also applies (protected path, project escape, critical delete, other principal), the card stays
   once-only. Other 질문† floors remain once-only. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
   denied and can refuse its turn, which is the intended fail-closed result. The Permissions banner says shell commands will ask
@@ -198,7 +200,7 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |
 | MCP readOnlyHint (server or plugin) | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰"; plugin read declaration: owner decision 2026-11-06 |
 | MCP other | ask (remember per tool) | ask (remember per tool) | reviewer | allow | Claude per-tool rules; owner "클로드에 맞춰" |
-| 질문† targets (incl. host shells while the Ave home boundary is unverifiable) | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | protected paths and instruction files need fresh human consent each time; boundary shells: lead decision 2026-11-08, with this exact command for this session when sandbox-unavailable is the only 질문† (owner decision 2026-11-08) |
+| 질문† targets (incl. host shells while the Ave home boundary is unverifiable) | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | protected paths and instruction files need fresh human consent each time; boundary shells: lead decision 2026-11-08, with later shells and hooks of this session when sandbox-unavailable is the only 질문† (owner decision 2026-11-08) |
 | headless (no human), anything that would ask | deny + "do not retry" | same | same (the reviewer still decides first; a fallback to ask → deny) | n/a | Claude -p --permission-prompts none, Codex exec never, OpenCode run, Hermes cron |
 
 auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer first. The reviewer never sees 질문†.

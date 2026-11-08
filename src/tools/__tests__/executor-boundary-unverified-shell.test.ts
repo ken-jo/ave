@@ -1,4 +1,4 @@
-// An unverifiable Ave home read boundary leaves host shells unconfined only through a human ask: once, or the same command for this session.
+// An unverifiable Ave home read boundary leaves host shells unconfined only through a human ask: once, or for this session's later shells.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -375,10 +375,9 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(result[0]?.is_error).toBeUndefined();
   });
 
-  // Owner decision 2026-11-08: the sandbox-unavailable floor also offers "this session", for that exact command only.
+  // Owner decision 2026-11-08: the sandbox-unavailable floor also offers "this session", for the conversation's later shells and hooks.
   const sessionCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
     { category, dialect, route: "default", mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName], command: dialect.command as string },
-    { category, dialect, route: "default", mode: "auto" as const, label: "auto review", rules: [], command: dialect.command as string },
     { category, dialect, route: "default", mode: "allow" as const, label: "allow mode", rules: [], command: dialect.command as string },
     { category, dialect, route: "host", mode: "allow" as const, label: "allow mode", rules: [], command: dialect.command as string },
     { category, dialect, route: "worker-only", mode: "allow" as const, label: "allow mode and a saved prefix", rules: [dialect.prefixRule], command: dialect.command as string },
@@ -428,10 +427,12 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(secondCtx.hostShellExecutionPermit).not.toBe(firstPermit);
     expect(secondCtx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false });
 
-    // A different command asks again.
+    // A different command in the same session: no card either, its own permit.
     const other = cardGate("deny-once");
     await sessionRun(dialect, route, "boundary-session", `${command}2`)(pm, other.gate, registry);
-    expect(other.cards()).toHaveLength(1);
+    expect(other.cards()).toHaveLength(0);
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect((defined(execute.mock.calls[2], "third call")[0] as ToolExecutionContext).hostShellExecutionPermit).toBeDefined();
     // Another conversation asks again.
     const otherSession = cardGate("deny-once");
     await sessionRun(dialect, route, "boundary-other-session", command)(pm, otherSession.gate, registry);
@@ -443,7 +444,12 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     // Headless is still denied, grant or not.
     const headless = await run(pm, cardGate("allow-once").gate, registry, true);
     expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
-    expect(execute).toHaveBeenCalledTimes(2);
+    // Ending the conversation drops the grant.
+    pm.endSession("boundary-session");
+    const ended = cardGate("deny-once");
+    await run(pm, ended.gate, registry);
+    expect(ended.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(3);
   });
 
   it.each(DIALECTS)("an ordinary session allow made before the boundary state does not pass the floor for $toolName", async (dialect) => {
@@ -478,33 +484,79 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it.each(DIALECTS)("a floor session grant covers only its exact invocation for $toolName: repeats, compositions and pipelines ask", async (dialect) => {
+  it.each(DIALECTS)("a floor session grant from $toolName covers later shells of the conversation: other commands, dialects, plans and background runs", async (dialect) => {
     publishBoundary("boundary-link");
     const execute = vi.fn();
-    const registry = probe(dialect.create, execute);
+    const registry = new ToolRegistry();
+    for (const create of [DIALECTS[0].create, DIALECTS[1].create]) {
+      const tool = create();
+      vi.spyOn(tool, "execute").mockImplementation(async (_input, ctx) => {
+        execute(ctx);
+        return { output: "executed", isError: false };
+      });
+      registry.register(tool);
+    }
     const pm = manager("allow", []);
-    for (const granted of [dialect.command, dialect.other]) {
-      const gate = sessionGate(pm);
-      await sessionRun(dialect, "default", "boundary-exact", granted)(pm, gate.gate, registry);
-      expect(gate.saves).toEqual([expect.objectContaining({ ok: true })]);
+    const granted = sessionGate(pm);
+    await sessionRun(dialect, "default", "boundary-wide")(pm, granted.gate, registry);
+    expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const later = DIALECTS.flatMap((other) => [
+      ...[other.other, ...other.sequences, ...other.compose(other.command, other.other)].map((command) => ({ dialect: other, route: "default", command })),
+      { dialect: other, route: "host", command: other.other as string },
+    ]);
+    for (const { dialect: other, route, command } of later) {
+      const quiet = cardGate("deny-once");
+      const ran = await sessionRun(other, route, "boundary-wide", command)(pm, quiet.gate, registry);
+      expect(quiet.cards(), `${other.toolName} ${route}: ${command}`).toHaveLength(0);
+      expect(ran[0]?.is_error, command).toBeUndefined();
     }
-    expect(execute).toHaveBeenCalledTimes(2);
-    for (const changed of [...dialect.sequences, ...dialect.compose(dialect.command, dialect.other), ...dialect.compose(dialect.other, dialect.command)]) {
-      const asked = cardGate("deny-once");
-      await sessionRun(dialect, "default", "boundary-exact", changed)(pm, asked.gate, registry);
-      expect(asked.cards(), changed).toHaveLength(1);
-    }
-    expect(execute).toHaveBeenCalledTimes(2);
-    // Each approved invocation still reruns without a card, one permit per run.
-    for (const granted of [dialect.command, dialect.other]) {
-      const again = cardGate("deny-once");
-      await sessionRun(dialect, "default", "boundary-exact", granted)(pm, again.gate, registry);
-      expect(again.cards()).toHaveLength(0);
-    }
-    expect(execute).toHaveBeenCalledTimes(4);
+    const background = cardGate("deny-once");
+    await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, background.gate).executeAll(
+      [{ id: "boundary-wide-background", name: "bash", input: { command: "echo later", run_in_background: true } }],
+      { sessionId: "boundary-wide", permissionContext: permissionContext() },
+    ));
+    expect(background.cards()).toHaveLength(0);
+    expect(execute).toHaveBeenCalledTimes(later.length + 2);
     const permits = execute.mock.calls.map((call) => (call[0] as ToolExecutionContext).hostShellExecutionPermit);
     expect(permits.every((permit) => permit !== undefined)).toBe(true);
-    expect(new Set(permits).size).toBe(4);
+    expect(new Set(permits).size).toBe(later.length + 2);
+
+    // Another forced floor in a later command still brings its own card, with no session choice.
+    const protectedCard = cardGate("deny-once");
+    await sessionRun(dialect, "default", "boundary-wide", dialect.protectedWrite)(pm, protectedCard.gate, registry);
+    expect(protectedCard.cards()).toHaveLength(1);
+    const card = defined(protectedCard.cards()[0], "protected card");
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.shellRule?.sessionAllowed ?? false).toBe(false);
+    expect(card.shellRule?.floorSessionOnly).toBeUndefined();
+    expect(execute).toHaveBeenCalledTimes(later.length + 2);
+  });
+
+  it.each(["default", "auto"] as const)("after the grant the ordinary %s-mode ask still brings the floor's card, and leaving the folders the out-of-directory card", async (mode) => {
+    publishBoundary("boundary-link");
+    const dialect = DIALECTS[0];
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager(mode, []);
+    const granted = sessionGate(pm);
+    await sessionRun(dialect, "default", "boundary-ordinary")(pm, granted.gate, registry);
+    expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
+    expect(execute).toHaveBeenCalledOnce();
+    for (const command of [dialect.command, dialect.other]) {
+      const asked = cardGate("deny-once");
+      await sessionRun(dialect, "default", "boundary-ordinary", command)(pm, asked.gate, registry);
+      expect(asked.cards(), command).toHaveLength(1);
+      expect(defined(asked.cards()[0], "card").allowedChoices).toEqual(["allow-once", "deny-once"]);
+    }
+    const outside = cardGate("deny-once");
+    await new ToolExecutor(registry, undefined, pm, undefined, outside.gate).executeAll(
+      [{ id: "boundary-ordinary-outside", name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+      { sessionId: "boundary-ordinary", permissionContext: permissionContext() },
+    );
+    expect(outside.cards()[0]).toMatchObject({ kind: "out-of-allowed-dir", allowedChoices: ["allow-once", "deny-once"] });
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it.each(DIALECTS)("keeps the card once-only when another forced floor also applies for $toolName", async (dialect) => {

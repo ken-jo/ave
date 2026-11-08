@@ -916,7 +916,7 @@ export async function authorizeToolInvocation(
           id: context.cardRequestId ?? randomUUID(),
           ...(permissionResult.forceModal === true
             ? {
-                // Forced floors consume consent for this invocation only; the sandbox-unavailable floor may also allow this exact command for the session.
+                // Forced floors consume consent for this invocation only; the sandbox-unavailable floor may also allow later shells and hooks for the session.
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,

@@ -232,7 +232,7 @@ export type ApprovalRequestInput = Omit<
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
-  // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so its exact command may also be allowed for this session.
+  // Host-only: the forced card answers the sandbox-unavailable floor alone (`offersFloorSessionAllow`), so later shells and hooks of this conversation may also pass that floor.
   readonly floorSessionAllowed?: true;
   // Host-only: this request types one command into the user's own host terminal. Only the desktop window answers it (no remote, plugin,
   // parked observer or away answer), it is never remembered and offers no rule saves. Set by the
@@ -1037,14 +1037,13 @@ export class ApprovalGate {
       req.source === "builtin" && (req.toolName === "bash" || req.toolName === "powershell" || hostTerminal !== undefined) && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool");
     const hasHostShellApprovalContract = hasOneShotHostShellApprovalContract || hasShellRuleApprovalContract;
-    // The sandbox-unavailable floor card keeps its one-shot answer and permit binding; its only lasting choice is this command for this session.
+    // The sandbox-unavailable floor card keeps its one-shot answer and permit binding; its only lasting choice is this conversation's later shells and hooks.
     const floorSessionGrant: FloorSessionGrant | undefined = requestedFloorSessionAllowed === true && hasOneShotHostShellApprovalContract &&
       hostShellExecutionPermitBinding !== undefined && requiresUnsandboxedShellAsk(hostShellExecutionPermitBinding.plan) &&
       hostTerminal === undefined && typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" &&
       (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
-      ? Object.freeze({ code: "sandbox-unavailable" as const, planIdentity: hostShellExecutionPermitBinding.plan.identity,
-        dialect: hostShellExecutionPermitBinding.toolName, command: hostShellExecutionPermitBinding.command })
+      ? Object.freeze({ code: "sandbox-unavailable" as const })
       : undefined;
     if (
       hostShellExecutionPermitBinding !== undefined &&
@@ -1155,7 +1154,7 @@ export class ApprovalGate {
         deny: !forceExplicit,
       }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
-    // The floor's session allow is this exact invocation for this conversation, saved by the host from the pending card: no rule text, no project or global rule.
+    // The floor's session allow covers this conversation's later shells and hooks on this floor, saved by the host from the pending card: no rule text, no project or global rule.
     const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
       ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
       : builtShellRule;

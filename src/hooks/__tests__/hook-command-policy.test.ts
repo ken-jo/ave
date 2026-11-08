@@ -301,11 +301,11 @@ describe("hook command permission admission", () => {
     const exactHook = { ...hook, command: ["printf", "ready"] };
     const exactHookRule = "Bash('printf' 'ready')";
 
-    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook) {
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload) {
       const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
       const gate = new ApprovalGate(wc as never);
       const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
-      const pending = authorizeCommand(admitted, payload, process.cwd());
+      const pending = authorizeCommand(admitted, input, process.cwd());
       const deadline = Date.now() + 3000;
       while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
@@ -329,24 +329,32 @@ describe("hook command permission admission", () => {
       return { result: await pending, gate, wc, authorizeCommand };
     }
 
-    it("admits the same hook command again in the same session without a card after allow for this session", async () => {
+    it("admits later hook commands in the same session without a card after allow for this session", async () => {
       publish();
       const p = allowAll();
       const first = await admitOnGate(p, "allow-session");
       expect(first.result.decision, first.result.reason).toBe("allow");
       expect(permits).toMatchObject({ minted: 1, consumed: [true] });
 
-      // The interpreter fixture itself: no ordinary rule can name it, and the floor grant still covers it, by equality.
+      // The interpreter fixture itself: no ordinary rule can name it, and the floor grant still covers it.
       const again = await runOneHookScript(hook, payload, { authorizeCommand: first.authorizeCommand });
       expect(again.decision, again.reason).toBe("allow");
       expect(JSON.parse(again.rawStdout).reason).toBe("received");
       expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
       expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+      // A different hook command in the same session: no card, its own permit.
+      const other = await first.authorizeCommand(exactHook, payload, process.cwd());
+      expect(other.decision, other.reason).toBe("allow");
+      expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
+      expect(permits.minted).toBe(3);
 
-      // Headless still denies, and a fresh permission state (a restart) asks again.
+      // Headless still denies; another conversation, the ended conversation and a fresh permission state (a restart) ask again.
       const headless = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
         () => first.authorizeCommand(hook, payload, process.cwd()));
       expect(headless.decision).toBe("deny");
+      expect((await admitOnGate(p, "deny-once", exactHook, { ...payload, sessionId: "hook-policy-other-session" })).result.decision).toBe("deny");
+      p.permissionManager.endSession("hook-policy-session");
+      expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
       expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
     });
 
