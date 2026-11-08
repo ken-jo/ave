@@ -14,7 +14,7 @@ export interface EmptyStateAction {
 /**
  * The one empty (and idle-state) message. It states what is empty, not how the feature works (DESIGN.md, Interaction
  * states), and its hierarchy is fixed here so surfaces stop inventing their own:
- * - one line (`title` only) reads as quiet muted text;
+ * - one line (`title` only) reads as quiet muted `text-dense`, the same step as the secondary line;
  * - two lines read as a title (body-sm, medium) over a muted secondary line (dense), a small gap apart;
  * - at most one primary button (`action`); every other action is a link (`links`).
  * `icon` is a muted mark above the text, for surfaces that draw one (a folder column, a panel landing).
@@ -55,7 +55,7 @@ export function EmptyState({
           <div className="text-dense text-muted-foreground" data-empty-state-description="">{description}</div>
         </div>
       ) : (
-        <div className="text-xs text-muted-foreground" data-empty-state-title="">{title}</div>
+        <div className="text-dense text-muted-foreground" data-empty-state-title="">{title}</div>
       )}
       {hasActions ? (
         <div className={cn("mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5", align === "center" && "justify-center")}>

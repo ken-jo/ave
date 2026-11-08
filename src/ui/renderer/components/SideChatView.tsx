@@ -522,7 +522,7 @@ function SideChatSession({
           <div className="text-xs text-destructive" role="alert" data-testid="side-chat-pane-error">{paneError}</div>
         ) : null}
         {entries.length === 0 ? (
-          <EmptyState align="center" className="pt-6" title={t("chatPreviewRail.sideChat.empty")} />
+          <EmptyState align="center" className="p-0 pt-6" title={t("chatPreviewRail.sideChat.empty")} />
         ) : (
           <TranscriptRenderer
             observeTerminal={shown && !tileHidden && sessionOwned}

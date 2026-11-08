@@ -14,6 +14,7 @@ describe("EmptyState", () => {
     const title = container.querySelector("[data-empty-state-title]");
     expect(title?.textContent).toBe("Nothing here");
     expect(title?.className).toContain("text-muted-foreground");
+    expect(title?.className).toContain("text-dense");
     expect(title?.className).not.toContain("font-medium");
     expect(container.querySelector("[data-empty-state-description]")).toBeNull();
   });
@@ -50,6 +51,13 @@ describe("EmptyState", () => {
     fireEvent.click(link);
     expect(add).toHaveBeenCalledOnce();
     expect(reveal).toHaveBeenCalledOnce();
+  });
+
+  it("lets a site that had no padding drop the default p-4 entirely", () => {
+    const { container } = render(<EmptyState title="Empty" className="p-0 pt-6" />);
+    const host = container.querySelector("[data-empty-state]");
+    expect(host?.className).not.toContain("p-4");
+    expect(host?.className).toContain("pt-6");
   });
 
   it("passes host attributes through and centres on request", () => {

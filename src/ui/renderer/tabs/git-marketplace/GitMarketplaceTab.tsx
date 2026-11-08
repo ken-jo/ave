@@ -600,7 +600,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             {catalog === null ? (
               <p className="text-xs text-muted-foreground">{t("gitMarketplace.loading")}</p>
             ) : entries.length === 0 ? (
-              <EmptyState align="center" className="py-6" data-testid="git-marketplace:empty"
+              <EmptyState align="center" className="px-0 py-6" data-testid="git-marketplace:empty"
                 title={sources.some((source) => source.status.state === "never-synced" || source.status.state === "syncing") ? t("gitMarketplace.emptySyncing") : t("gitMarketplace.empty")} />
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-2" data-testid="git-marketplace:cards">

@@ -632,7 +632,7 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {conversationsForDay.length === 0 ? (
-              <EmptyState align="center" className="py-8" title={t("starredView.projectChatsEmpty")} />
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.projectChatsEmpty")} />
             ) : (
               <div className="space-y-1.5 p-2">
                 {conversationsForDay.map((conversation) => (
@@ -683,7 +683,7 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {starredForDay.length === 0 ? (
-              <EmptyState align="center" className="py-8" title={t("starredView.emptyState")} />
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.emptyState")} />
             ) : (
               <div className="space-y-2 p-2">
                 {starredForDay.map((s) => (

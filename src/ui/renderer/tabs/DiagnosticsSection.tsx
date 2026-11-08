@@ -212,7 +212,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {logLines.length === 0 && !logErr ? (
-          <EmptyState align="center" className="py-3" title={t("auditTab.logEmpty")} />
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.logEmpty")} />
         ) : (
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/(--opacity-medium) p-2 text-tiny font-mono">
             {logLines.join("\n")}
@@ -236,7 +236,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {crashes.length === 0 && !crashErr ? (
-          <EmptyState align="center" className="py-3" title={t("auditTab.crashEmpty")} />
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.crashEmpty")} />
         ) : (
           <div className="rounded-md border text-xs">
             <table className="w-full">

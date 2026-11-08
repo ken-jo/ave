@@ -675,7 +675,7 @@ function BoardColumn({
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
         ) : items.length === 0 && !hasSchedule ? (
-          <EmptyState align="center" className="py-8" title={emptyLabel} />
+          <EmptyState align="center" className="px-0 py-8" title={emptyLabel} />
         ) : (
           <div className={narrow ? "grid grid-cols-2 gap-2 pt-2" : "space-y-2"}>
             {columnOrder(items, hasSchedule ? schedule.cards : []).map((entry) => (entry.kind === "schedule" ? entry.node : (

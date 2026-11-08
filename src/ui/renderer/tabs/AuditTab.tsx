@@ -263,7 +263,7 @@ export function AuditTab() {
           )}
 
           {!loading && result.entries.length === 0 && !error && (
-            <EmptyState align="center" className="py-4" title={t("auditTab.emptyState")} />
+            <EmptyState align="center" className="px-0 py-4" title={t("auditTab.emptyState")} />
           )}
 
           {result.entries.length > 0 && (
