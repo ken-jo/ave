@@ -30,7 +30,7 @@ export function RetiredProviderNotice({
     >
       <span className="min-w-0 flex-1">
         <span className="block font-medium leading-5 [overflow-wrap:anywhere]">{title}</span>
-        <span className="block text-[11px] leading-4 text-warning/(--opacity-emphatic)">
+        <span className="block text-dense leading-4 text-warning/(--opacity-emphatic)">
           {body}
         </span>
       </span>
@@ -69,7 +69,7 @@ export function DeprecatedModelNotice({
         <span className="block font-medium leading-5 [overflow-wrap:anywhere]">
           {t("app.deprecatedModelNoticeTitle", { model })}
         </span>
-        <span className="block text-[11px] leading-4 text-info/(--opacity-emphatic)">
+        <span className="block text-dense leading-4 text-info/(--opacity-emphatic)">
           {t("app.deprecatedModelNoticeBody")}
         </span>
       </span>

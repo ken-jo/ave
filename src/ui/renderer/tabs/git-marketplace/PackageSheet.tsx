@@ -75,7 +75,7 @@ function Sha({ commit }: { commit: string }) {
       <code className="font-mono text-xs" title={commit}>{shortSha(commit)}</code>
       <button
         type="button"
-        className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+        className="text-dense text-muted-foreground underline-offset-2 hover:underline"
         onClick={() => void navigator.clipboard?.writeText(commit)}
         aria-label={t("gitMarketplace.copyCommitLabel", { commit })}
       >
@@ -361,11 +361,11 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
           <DialogTitle className="flex flex-wrap items-center gap-2 pr-8">
             {entry?.displayName ?? target?.key.name}
             {entry?.sourceOrigin && (
-              <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+              <Badge variant="outline" className="h-5 px-1.5 text-tiny">
                 {entry.sourceOrigin === "official" ? originLabel(t, "official") : entry.sourceLabel}
               </Badge>
             )}
-            {target && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{kindLabel(t, target.key.kind)}</Badge>}
+            {target && <Badge variant="secondary" className="h-5 px-1.5 text-tiny">{kindLabel(t, target.key.kind)}</Badge>}
           </DialogTitle>
           <DialogDescription>{entry?.description ?? ""}</DialogDescription>
           <DialogClose asChild>
@@ -460,15 +460,15 @@ export function PackageSheet({ api, alertsApi, onOpenPluginSettings, target, sou
                     return (
                       <li key={version.version} className="flex flex-wrap items-center gap-1.5" data-testid={`git-marketplace:version:${version.version}`}>
                         <span className="font-mono text-xs">{version.version}</span>
-                        {version.candidate && <Badge className="h-5 px-1.5 text-[10px]">{t("gitMarketplace.version.latest")}</Badge>}
-                        {version.installed && <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{t("gitMarketplace.version.installed")}</Badge>}
+                        {version.candidate && <Badge className="h-5 px-1.5 text-tiny">{t("gitMarketplace.version.latest")}</Badge>}
+                        {version.installed && <Badge variant="secondary" className="h-5 px-1.5 text-tiny">{t("gitMarketplace.version.installed")}</Badge>}
                         {version.legacyPin && (
-                          <Badge variant="outline" className="h-5 px-1.5 text-[10px]" title={t("gitMarketplace.version.legacyPinHelp")} data-testid={`git-marketplace:version:${version.version}:legacy-pin`}>
+                          <Badge variant="outline" className="h-5 px-1.5 text-tiny" title={t("gitMarketplace.version.legacyPinHelp")} data-testid={`git-marketplace:version:${version.version}:legacy-pin`}>
                             {t("gitMarketplace.version.legacyPin")}
                           </Badge>
                         )}
                         {version.excluded.map((reason) => (
-                          <Badge key={reason} variant="outline" className="h-5 px-1.5 text-[10px]" title={reason === "yanked" ? version.yankedReason ?? undefined : undefined}>
+                          <Badge key={reason} variant="outline" className="h-5 px-1.5 text-tiny" title={reason === "yanked" ? version.yankedReason ?? undefined : undefined}>
                             {exclusionLabel(t, reason)}
                           </Badge>
                         ))}

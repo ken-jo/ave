@@ -84,13 +84,13 @@ export function TargetRows({
           <span className="shrink-0 text-muted-foreground">{targetIcon(target.kind)}</span>
           <span className="min-w-0 flex-1">
             <span className="block truncate font-medium">{target.title}</span>
-            <span className="block truncate text-[10.5px] text-muted-foreground">
+            <span className="block truncate text-dense text-muted-foreground">
               {[target.subtitle ?? target.sourceLabel, originLabel(target)]
                 .filter((part): part is string => Boolean(part))
                 .join(" · ")}
             </span>
           </span>
-          {target.status ? <span className={`shrink-0 text-[10px] ${statusTone(target.status)}`}>{target.status}</span> : null}
+          {target.status ? <span className={`shrink-0 text-tiny ${statusTone(target.status)}`}>{target.status}</span> : null}
         </button>
       ))}
     </div>

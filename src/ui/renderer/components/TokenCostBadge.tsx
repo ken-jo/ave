@@ -89,7 +89,7 @@ function TokenCostBadgeImpl({
           <span
             data-testid={TEST_IDS.tokenCostBadge}
             data-usage-kind="subscription"
-            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-tiny tabular-nums"
             aria-label={t("tokenCostBadge.ariaLabelSubscriptionUsage")}
           >
             <span>🪙 {formatTokens(totalTokens)}</span>
@@ -97,7 +97,7 @@ function TokenCostBadgeImpl({
           </span>
         </TooltipTrigger>
         <TooltipContent side="top" className="text-xs tabular-nums">
-          <div className="text-[10px] uppercase tracking-wider opacity-60 mb-1">
+          <div className="text-tiny uppercase tracking-wider opacity-60 mb-1">
             {t("tokenCostBadge.breakdownTitle")}
           </div>
           <div className="flex justify-between gap-3">
@@ -163,7 +163,7 @@ function TokenCostBadgeImpl({
             e.stopPropagation();
             if (cost !== null) setMode((m) => (m === "tokens" ? "cost" : "tokens"));
           }}
-          className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-[10px] tabular-nums ${cost !== null ? "cursor-pointer hover:bg-muted/(--opacity-strong)" : "cursor-default"}`}
+          className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-border/(--opacity-medium) bg-muted/(--opacity-muted) px-1.5 py-0.5 text-tiny tabular-nums ${cost !== null ? "cursor-pointer hover:bg-muted/(--opacity-strong)" : "cursor-default"}`}
           aria-disabled={cost === null}
           aria-label={
             cost === null
@@ -181,11 +181,11 @@ function TokenCostBadgeImpl({
               {cost === null && <span className="text-muted-foreground">{t("tokenCostBadge.pricingUnknownLabel")}</span>}
             </>
           )}
-          {cost !== null && <span className="text-[8px] opacity-50">⇅</span>}
+          {cost !== null && <span className="text-tiny opacity-50">⇅</span>}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="text-xs tabular-nums">
-        <div className="text-[10px] uppercase tracking-wider opacity-60 mb-1">{t("tokenCostBadge.breakdownTitle")}</div>
+        <div className="text-tiny uppercase tracking-wider opacity-60 mb-1">{t("tokenCostBadge.breakdownTitle")}</div>
         <div className="space-y-0.5">
           <div className="flex justify-between gap-3">
             <span>{t("tokenCostBadge.freshInputLabel")}</span>

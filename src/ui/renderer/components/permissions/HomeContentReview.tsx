@@ -91,7 +91,7 @@ export function HomeContentReview() {
                 <p className="break-all font-mono text-xs">{row.key}</p>
                 <p className="text-xs text-muted-foreground">{t(REASON_KEYS[row.reason])}</p>
                 {row.summary !== undefined && <p data-testid="home-trust-summary" className="break-all text-xs">{row.summary}</p>}
-                {row.hash !== undefined && <p className="font-mono text-[11px] text-muted-foreground">sha256 {row.hash.slice(0, 16)}</p>}
+                {row.hash !== undefined && <p className="font-mono text-dense text-muted-foreground">sha256 {row.hash.slice(0, 16)}</p>}
                 <div className="flex gap-2">
                   {row.approvable && (
                     <Button size="sm" variant="outline" data-testid="home-trust-approve" disabled={busy}

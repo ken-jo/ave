@@ -88,7 +88,7 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
       onLoad={() => store.rendered(binding, frame.frame)} onError={() => store.rendered(binding, frame.frame)} /> : children}
     {observeHidden && frame && !state?.updating ? <span className="pointer-events-none absolute right-1 top-1 rounded bg-background px-1 text-xs">{t("agentBrowser.live")}</span> : null}
     {frame && state?.updating ? <span data-testid="browser-observation-preview-updating"
-      className="absolute right-2 top-2 rounded bg-background/(--opacity-emphatic) px-1.5 py-0.5 text-[11px] text-muted-foreground">
+      className="absolute right-2 top-2 rounded bg-background/(--opacity-emphatic) px-1.5 py-0.5 text-dense text-muted-foreground">
       {t("agentBrowser.observationPreviewUpdating")}
     </span> : null}
   </div>;

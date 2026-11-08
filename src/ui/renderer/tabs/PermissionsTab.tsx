@@ -288,7 +288,7 @@ function HomePrivacyFixCommand({ error }: { error: NonNullable<SandboxWindowsSta
   return (
     <div data-testid="os-sandbox-windows-home-privacy-command" className="mt-2 space-y-1">
       <p>{t("permissionsTab.homePrivacyCommandIntro")}</p>
-      <pre className="whitespace-pre-wrap break-all rounded bg-background/(--opacity-stronger) px-2 py-1 font-mono text-[11px] text-foreground">{command}</pre>
+      <pre className="whitespace-pre-wrap break-all rounded bg-background/(--opacity-stronger) px-2 py-1 font-mono text-dense text-foreground">{command}</pre>
       <Button type="button" size="sm" variant="outline" data-testid="os-sandbox-windows-home-privacy-command-copy" onClick={() => copy(command)}>
         {copied ? t("permissionsTab.homePrivacyCommandCopied") : t("permissionsTab.homePrivacyCommandCopy")}
       </Button>
@@ -437,7 +437,7 @@ function preserveSettingsScrollPosition(): () => void {
 
 /** This tab's fields are 11px, and a popup that opens from an 11px control must be 11px too; `SelectContent` carries the size so
  * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
-const DENSE_SELECT_POPUP = "text-[11px]";
+const DENSE_SELECT_POPUP = "text-dense";
 
 /** Selecting auto enables the reviewer; every other mode disables automatic review. */
 export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
@@ -665,7 +665,7 @@ export function PermissionsTab({
   /** Beside a section whose last refresh failed after an earlier success: the values shown are the last ones loaded. */
   const panelStaleNotice = (scope: string, loads: readonly PanelLoad[]): ReactNode =>
     loads.some((load) => staleReads.has(load)) ? (
-      <p role="status" data-testid={`permissions-stale-${scope}`} className="text-[11px] text-warning">
+      <p role="status" data-testid={`permissions-stale-${scope}`} className="text-dense text-warning">
         {t("permissionsTab.sectionStale")}
       </p>
     ) : null;
@@ -1168,9 +1168,9 @@ export function PermissionsTab({
             />
             <div className="min-w-0 space-y-0.5">
               <p className="text-sm">{t("permissionsTab.osSandboxShellLabel")}</p>
-              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+              <p className="text-dense text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
               {shellStatusError ? (
-                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
+                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-dense text-destructive">
                   {t("permissionsTab.osSandboxShellStatusError")}
                 </p>
               ) : null}
@@ -1194,7 +1194,7 @@ export function PermissionsTab({
             />
             <div className="min-w-0 space-y-0.5">
               <p className="text-sm">{t("permissionsTab.workerConfinementLabel")}</p>
-              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
+              <p className="text-dense text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
             </div>
           </div>
           <EnvForcedNotice
@@ -1209,13 +1209,13 @@ export function PermissionsTab({
           {sandboxCapability && !sandboxCapability.available ? (
             <p
               data-testid="os-sandbox-unavailable"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
             >
               {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
             </p>
           ) : null}
           {sandboxCapability && sandboxCapability.available ? (
-            <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground">
+            <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
               <p className="font-medium text-foreground">{t("permissionsTab.osSandboxCapabilityHeading")}</p>
               {/* On Windows the session box below states the same per substrate. */}
               {sandboxCapability.platform === "win32" && windowsSubstrate ? null : <p>
@@ -1247,7 +1247,7 @@ export function PermissionsTab({
           {sandboxDegraded && sandboxBoot ? (
             <div
               data-testid="os-sandbox-boot-degraded"
-              className="space-y-1 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              className="space-y-1 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
             >
               <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
               <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
@@ -1283,7 +1283,7 @@ export function PermissionsTab({
               data-shells={windowsSubstrate.shells}
               data-extensions={windowsSubstrate.extensions}
               data-mxc={windowsSubstrate.mxc.state}
-              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
+              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground"
             >
               <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
               <p data-testid="os-sandbox-windows-substrate-shells">
@@ -1322,7 +1322,7 @@ export function PermissionsTab({
           {/* ── Windows srt-win consent flow ── */}
           {(sandboxCapability?.profileReadDenyWarnings ?? windowsStatus?.profileReadDenyWarnings ?? []).map(({ path, principals }) => (
             <p key={path} data-testid="os-sandbox-windows-profile-read-deny-warning" role="alert"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">
               {principals?.length
                 ? t("permissionsTab.osSandboxWindowsProfileReadDenyReadable", { path, principals: principals.join(", ") })
                 : t("permissionsTab.osSandboxWindowsProfileReadDenyUnverified", { path })}
@@ -1334,7 +1334,7 @@ export function PermissionsTab({
               data-outcome={windowsInstallOutcome.outcome}
               data-error-code={windowsInstallOutcome.errorCode}
               role={windowsInstallOutcome.tone === "error" ? "alert" : "status"}
-              className={`whitespace-pre-line rounded-md border px-3 py-2 text-[11px] ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
+              className={`whitespace-pre-line rounded-md border px-3 py-2 text-dense ${WINDOWS_INSTALL_OUTCOME_TONE[windowsInstallOutcome.tone]}`}
             >
               {windowsInstallOutcome.text}
             </p>
@@ -1344,7 +1344,7 @@ export function PermissionsTab({
               data-testid="os-sandbox-windows-install-pending"
               data-phase={windowsInstallPhase}
               role="status"
-              className="text-[11px] italic text-muted-foreground"
+              className="text-dense italic text-muted-foreground"
             >
               {windowsInstallPhase === "installing"
                 ? t("permissionsTab.osSandboxWindowsInstallPending")
@@ -1357,7 +1357,7 @@ export function PermissionsTab({
               <div
                 data-testid="os-sandbox-windows-home-privacy-error"
                 role="alert"
-                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
               >
                 {/* After the session approval extensions run unisolated, so "blocked" and the approval offer would both be false. */}
                 {withHomePrivacyFix(t(windowsStatus.homePrivacyError.approvedForSession
@@ -1382,7 +1382,7 @@ export function PermissionsTab({
                 data-testid="os-sandbox-windows-helper-unavailable"
                 data-error-code={windowsStatus.helperError}
                 role="status"
-                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
               >
                 {windowsStatus.helperError === "srt-win-integrity-mismatch"
                   ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
@@ -1393,7 +1393,7 @@ export function PermissionsTab({
               // Install partially ran or status cannot be fully read. Show the localized setup guidance and keep the explicit retry action available. Setup does not require signing out.
               <div
                 data-testid="os-sandbox-windows-setup-status"
-                className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
+                className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-dense text-info"
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsReloginHeading")}</p>
                 <p className="italic">{t("permissionsTab.osSandboxWindowsReloginPending")}</p>
@@ -1415,7 +1415,7 @@ export function PermissionsTab({
               // NSIS installer). REPAIR fallback: warning card + a "Re-provision" button. No auto-UAC; the user must click.
               <div
                 data-testid="os-sandbox-windows-consent"
-                className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+                className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
               >
                 <p className="font-medium">{t("permissionsTab.osSandboxWindowsConsentHeading")}</p>
                 <p>{t("permissionsTab.osSandboxWindowsConsentBody")}</p>
@@ -1455,7 +1455,7 @@ export function PermissionsTab({
             role={banner.type === "error" ? "alert" : "status"}
             aria-live={banner.type === "error" ? "assertive" : "polite"}
             aria-atomic="true"
-            className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[12px] ${banner.type === "error" ? "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive" : "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning"}`}
+            className={`flex items-start gap-2 rounded-md border px-3 py-2 text-body-sm ${banner.type === "error" ? "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive" : "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning"}`}
           >
             <span className="mt-0.5 flex-shrink-0">{banner.type === "error" ? "⚠" : "🔒"}</span>
             <span>{banner.msg}</span>
@@ -1486,11 +1486,11 @@ export function PermissionsTab({
               <div className="rounded-md border border-destructive/(--opacity-muted) bg-destructive/(--opacity-faint) p-3" data-testid="exact-deny-draft">
               <div className="grid gap-2 text-xs sm:grid-cols-2">
                 <div>
-                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.approvalsColTool")}</p>
+                  <p className="text-tiny text-muted-foreground">{t("permissionsTab.approvalsColTool")}</p>
                   <code className="break-all font-mono">{exactDenyDraft.toolName}</code>
                 </div>
                 <div>
-                  <p className="text-[10px] text-muted-foreground">{t("permissionsTab.rulesColSource")}</p>
+                  <p className="text-tiny text-muted-foreground">{t("permissionsTab.rulesColSource")}</p>
                   <code className="break-all font-mono">{exactDenyDraft.source}</code>
                 </div>
               </div>
@@ -1498,11 +1498,11 @@ export function PermissionsTab({
                 <summary className="cursor-pointer px-3 py-2 text-xs font-semibold">
                   {t("permissionsTab.exactDenyReviewInput")}
                 </summary>
-                <pre className="max-h-48 overflow-auto border-t px-3 py-2 whitespace-pre-wrap break-all font-mono text-[11px]">
+                <pre className="max-h-48 overflow-auto border-t px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense">
                   {JSON.stringify(exactDenyDraft.args, null, 2)}
                 </pre>
               </details>
-              <p className="mt-2 text-[11px] text-muted-foreground">
+              <p className="mt-2 text-dense text-muted-foreground">
                 {t("permissionsTab.exactDenyScopeNotice")}
               </p>
               <div className="mt-3 flex flex-wrap justify-end gap-2">
@@ -1537,25 +1537,25 @@ export function PermissionsTab({
         {panelLoad.hooks === "ready" && quarantinedHooks.length > 0 && (
           <div
             data-testid="hook-quarantine-notice"
-            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
+            className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-body-sm text-warning"
           >
             <div className="flex items-start gap-2">
-              <Badge variant="secondary" className="mt-0.5 text-[10px] text-warning">
+              <Badge variant="secondary" className="mt-0.5 text-tiny text-warning">
                 {t("permissionsTab.hookQuarantineBadge", { count: quarantinedHooks.length })}
               </Badge>
               <div className="min-w-0 flex-1">
                 <p className="font-medium">{t("permissionsTab.hookQuarantineTitle")}</p>
-                <p className="mt-1 text-[11px]">
+                <p className="mt-1 text-dense">
                   {t("permissionsTab.hookQuarantineInstructionBefore")}<code className="rounded bg-background/(--opacity-stronger) px-1 font-mono">/permission hooks list</code>{t("permissionsTab.hookQuarantineInstructionAfter")}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1">
                   {quarantinedHooks.slice(0, 3).map((hook) => (
-                    <code key={hook.fileName} className="rounded border border-warning/(--opacity-medium) bg-background/(--opacity-stronger) px-1.5 py-0.5 font-mono text-[10px]">
+                    <code key={hook.fileName} className="rounded border border-warning/(--opacity-medium) bg-background/(--opacity-stronger) px-1.5 py-0.5 font-mono text-tiny">
                       {hook.fileName}
                     </code>
                   ))}
                   {quarantinedHooks.length > 3 && (
-                    <span className="text-[10px] text-warning/(--opacity-intense)">
+                    <span className="text-tiny text-warning/(--opacity-intense)">
                       +{quarantinedHooks.length - 3}
                     </span>
                   )}
@@ -1564,7 +1564,7 @@ export function PermissionsTab({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 px-2 text-[11px]"
+                className="h-7 px-2 text-dense"
                 onClick={() => void fetchAll()}
               >
                 {t("permissionsTab.refreshButton")}
@@ -1584,11 +1584,11 @@ export function PermissionsTab({
           <>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="rounded-md border px-3 py-2">
-              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
+              <p className="text-dense font-medium text-muted-foreground">{t("permissionsTab.summaryPolicyPreset")}</p>
               <p className="mt-1 text-sm font-medium">{EXEC_MODE_OPTIONS.find((opt) => opt.value === mode)?.label ?? t("permissionModeBadge.labelUnknown")}</p>
             </div>
             <div className="rounded-md border px-3 py-2">
-              <p className="text-[11px] font-medium text-muted-foreground">{t("permissionsTab.summaryApprovalDialog")}</p>
+              <p className="text-dense font-medium text-muted-foreground">{t("permissionsTab.summaryApprovalDialog")}</p>
               <p className="mt-1 text-sm font-medium">{requireExplicit ? t("permissionsTab.summaryExplicitRequired") : t("permissionsTab.summaryCloseDenies")}</p>
             </div>
           </div>
@@ -1656,11 +1656,11 @@ export function PermissionsTab({
                 />
                 <span className="min-w-0 flex-1">
                   <span className="font-medium">{opt.label}</span>
-                  <span className="mt-0.5 block text-[11px] text-muted-foreground">{opt.description}</span>
+                  <span className="mt-0.5 block text-dense text-muted-foreground">{opt.description}</span>
                   {opt.value === "auto" && mode === "auto" && (
                     <>
                       <span
-                        className="mt-2 block rounded-md border bg-background/(--opacity-stronger) px-3 py-2 text-[11px] text-muted-foreground"
+                        className="mt-2 block rounded-md border bg-background/(--opacity-stronger) px-3 py-2 text-dense text-muted-foreground"
                         data-testid="auto-review-behavior"
                       >
                         {t("permissionsTab.autoReviewBehavior")}
@@ -1670,11 +1670,11 @@ export function PermissionsTab({
                         data-testid={TEST_IDS.reviewerPromptPanel}
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-muted-foreground">
+                        <summary className="cursor-pointer px-3 py-2 text-dense font-semibold text-muted-foreground">
                           {t("permissionsTab.frameworkSystemPromptTitle")}
                         </summary>
                         <pre
-                          className="max-h-44 overflow-auto border-t px-3 py-3 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed"
+                          className="max-h-44 overflow-auto border-t px-3 py-3 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed"
                           data-testid="reviewer-system-prompt"
                         >
                           {PERMISSION_REVIEWER_FRAMEWORK.systemPrompt}
@@ -1728,7 +1728,7 @@ export function PermissionsTab({
             />
           </div>
           {policyManaged && (
-            <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+            <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">
               {policyAdminReason
                 ? t("permissionsTab.invalidAdminPolicy", { reason: policyAdminReason })
                 : (policySource === "admin" || policySource === "merged") && policyAdminPath
@@ -1776,7 +1776,7 @@ export function PermissionsTab({
             </div>
           ) : null}
           {rules.length === 0 && userApprovals.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
+            <p className="text-dense text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
           ) : (
             <div className="min-w-0 overflow-x-auto rounded-md border">
               <table data-testid="permissions-rules-table" className="min-w-[560px] w-full text-xs">
@@ -1793,11 +1793,11 @@ export function PermissionsTab({
                       <td className="max-w-[220px] break-all px-3 py-2 font-mono">
                         {rule.pattern}
                         {rule.invalidReason !== undefined ? (
-                          <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-[10px] text-destructive">
+                          <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-tiny text-destructive">
                             {rule.invalidReason === "retired-host-terminal" ? t("permissionsTab.ruleRetiredHostTerminal") : t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
                           </p>
                         ) : rule.action === "allow" && rule.pattern.startsWith("Bash(") ? (
-                          <p data-testid="permissions-shell-outside-sandbox" className="break-normal whitespace-normal font-sans text-[10px] text-muted-foreground">{t("permissionsTab.shellOutsideSandbox")}</p>
+                          <p data-testid="permissions-shell-outside-sandbox" className="break-normal whitespace-normal font-sans text-tiny text-muted-foreground">{t("permissionsTab.shellOutsideSandbox")}</p>
                         ) : null}
                       </td>
                       <td className="px-3 py-2"><Badge variant={rule.action === "allow" ? "default" : "secondary"}>
@@ -1805,7 +1805,7 @@ export function PermissionsTab({
                       </Badge></td>
                       <td className="max-w-[180px] break-all px-3 py-2">
                         {rule.scope === "project" ? t("permissionsTab.scopeProject") : t("permissionsTab.scopeUser")}
-                        {rule.projectCwd ? <p className="text-[10px] text-muted-foreground">{rule.projectCwd}</p> : null}
+                        {rule.projectCwd ? <p className="text-tiny text-muted-foreground">{rule.projectCwd}</p> : null}
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{rule.source ?? t("permissionsTab.sourceAll")}</td>
                       <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={rulesBusy}
@@ -1818,14 +1818,14 @@ export function PermissionsTab({
                     <tr key={`exact:${approval.key}`} className="border-b last:border-0" data-rule-store="exact">
                       <td className="max-w-[220px] break-all px-3 py-2 font-mono">
                         {approval.toolName ?? approval.key.slice(0, 12)}
-                        <p className="text-[10px] text-muted-foreground">{t("permissionsTab.exactApprovalLabel")}</p>
+                        <p className="text-tiny text-muted-foreground">{t("permissionsTab.exactApprovalLabel")}</p>
                       </td>
                       <td className="px-3 py-2"><Badge variant={approval.decision === "deny" ? "secondary" : "default"}>
                         {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
                       </Badge></td>
                       <td className="max-w-[180px] break-all px-3 py-2">
                         {approval.scope === "session" ? t("permissionsTab.scopeSession") : approval.scope === "global" ? t("permissionsTab.scopeGlobal") : t("permissionsTab.scopePersistent")}
-                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.scope === "global" ? t("permissionsTab.scopeGlobalTarget") : approval.projectCwd}</p>
+                        <p className="text-tiny text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.scope === "global" ? t("permissionsTab.scopeGlobalTarget") : approval.projectCwd}</p>
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
                       <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}
@@ -1876,7 +1876,7 @@ export function PermissionsTab({
             <Button
               variant="outline"
               size="sm"
-              className="h-7 px-2 text-[11px]"
+              className="h-7 px-2 text-dense"
               onClick={() => void refreshDirectories()}
               disabled={dirsBusy}
             >
@@ -1888,7 +1888,7 @@ export function PermissionsTab({
           {panelLoadNotice("directories", ["directories"]) ?? (
           <>
           {directories.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.directoriesEmpty")}</p>
+            <p className="text-dense text-muted-foreground italic">{t("permissionsTab.directoriesEmpty")}</p>
           ) : (
             <div className="rounded-md border">
               <table className="w-full text-xs">
@@ -1901,7 +1901,7 @@ export function PermissionsTab({
                 <tbody>
                   {directories.map((dir) => (
                     <tr key={dir} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
-                      <td className="min-w-0 px-3 py-1.5 font-mono text-[11px]">
+                      <td className="min-w-0 px-3 py-1.5 font-mono text-dense">
                         <span className="block whitespace-normal break-all" title={dir}>{dir}</span>
                       </td>
                       <td className="px-3 py-1.5 text-right">
@@ -1909,7 +1909,7 @@ export function PermissionsTab({
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive"
+                          className="h-6 px-2 text-tiny text-muted-foreground hover:text-destructive"
                           disabled={dirsBusy}
                           onClick={() => void handleRemoveDirectory(dir)}
                         >
@@ -1940,14 +1940,14 @@ export function PermissionsTab({
           {pendingDirectoryWarning && pendingDirectoryWarning.path === newDirectory.trim() && (
             <div
               data-testid="directory-warning-confirmation"
-              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[12px] text-warning"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-body-sm text-warning"
             >
               <p className="font-medium">{t("permissionsTab.directoryWarningTitle")}</p>
               <p className="mt-1">{t("permissionsTab.directoryWarningBody")}</p>
               <div className="mt-2 flex gap-2">
                 <Button
                   size="sm"
-                  className="h-7 px-2 text-[11px]"
+                  className="h-7 px-2 text-dense"
                   onClick={() => void handleAddDirectory(true)}
                   disabled={dirsBusy}
                 >
@@ -1956,7 +1956,7 @@ export function PermissionsTab({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2 text-[11px]"
+                  className="h-7 px-2 text-dense"
                   onClick={() => setPendingDirectoryWarning(null)}
                   disabled={dirsBusy}
                 >
@@ -1975,12 +1975,12 @@ export function PermissionsTab({
           title={t("permissionsTab.auditLogTitle")}
           description={t("permissionsTab.auditLogDescription")}
           actions={auditOpen ? undefined : (
-            <Button size="sm" variant="outline" className="h-8 px-3 text-[12px]" onClick={() => setAuditOpen(true)}>
+            <Button size="sm" variant="outline" className="h-8 px-3 text-body-sm" onClick={() => setAuditOpen(true)}>
               {t("permissionsTab.auditLogOpenButton")}
             </Button>
           )}
         >
-          <p className="text-[11px] text-muted-foreground">{t("permissionsTab.auditLogHelp")}</p>
+          <p className="text-dense text-muted-foreground">{t("permissionsTab.auditLogHelp")}</p>
           {/* The log opens INSIDE this section, so it takes the pane's own
               width and pushes the sections below it down. A panel fixed to the
               window edge would cover the tiles beside this one and the title

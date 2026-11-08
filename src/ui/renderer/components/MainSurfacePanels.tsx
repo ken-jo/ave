@@ -128,7 +128,7 @@ function WebPanelBody({
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
       <BrowserObservationLiveStrip tabId={surface.tabId} />
       {error ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="web-panel-address-error">{error}</div>
+        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="web-panel-address-error">{error}</div>
       ) : null}
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}

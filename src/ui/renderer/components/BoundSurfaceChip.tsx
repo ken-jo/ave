@@ -21,7 +21,7 @@ export function BoundSurfaceChip({ surface, onRemove }: { surface: BoundSurface;
   return (
     <div className="mb-1.5 flex min-w-0" data-testid="side-chat-target">
       <span
-        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-muted/(--opacity-muted) py-0.5 pl-2 text-[11px] text-foreground ${onRemove ? "pr-0.5" : "pr-2"}`}
+        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-muted/(--opacity-muted) py-0.5 pl-2 text-dense text-foreground ${onRemove ? "pr-0.5" : "pr-2"}`}
         data-surface-kind={surface.kind}
         data-tab-id={surface.tabId}
         title={t("sideChatTarget.label")}

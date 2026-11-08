@@ -93,7 +93,7 @@ export function CompactedToolResult({
     const formattedContent = formatToolPayloadString(verbatim.content);
     const formattedLineCount = formattedContent.split("\n").length;
     return (
-      <div className="tool-result-expanded min-w-0 w-full max-w-full rounded-md text-[11px]">
+      <div className="tool-result-expanded min-w-0 w-full max-w-full rounded-md text-dense">
         <button
           type="button"
           className="tre-header flex w-full min-w-0 items-center gap-1.5 px-3 py-1.5 text-left hover:bg-muted/(--opacity-muted)"
@@ -104,9 +104,9 @@ export function CompactedToolResult({
           <span>📦</span>
           <span className="min-w-0 truncate font-medium text-muted-foreground">{headerLabel}</span>
           <span className="shrink-0 text-muted-foreground/(--opacity-stronger)">· {t("compactedToolResult.lineCount", { count: formattedLineCount })}</span>
-          <span className="ml-auto shrink-0 text-[10px] text-primary">{t("compactedToolResult.collapseButton")}</span>
+          <span className="ml-auto shrink-0 text-tiny text-primary">{t("compactedToolResult.collapseButton")}</span>
         </button>
-        <div className="tre-body min-w-0 rounded-b-md border-t max-h-[16rem] overflow-y-auto px-3 py-1 font-mono text-[10px] leading-[1.4]"
+        <div className="tre-body min-w-0 rounded-b-md border-t max-h-[16rem] overflow-y-auto px-3 py-1 font-mono text-tiny leading-[1.4]"
           style={{ backgroundColor: "hsl(var(--code-bg))", color: "hsl(var(--code-fg))" }}
         >
           {(() => {
@@ -136,7 +136,7 @@ export function CompactedToolResult({
   if (state === "missing") {
     return (
       <div
-        className="flex min-w-0 w-full max-w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] text-muted-foreground/(--opacity-half) cursor-default select-none"
+        className="flex min-w-0 w-full max-w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-dense text-muted-foreground/(--opacity-half) cursor-default select-none"
         style={{ backgroundColor: "hsl(var(--muted) / 0.4)" }}
         title={t("compactedToolResult.missingTooltip")}
       >
@@ -147,7 +147,7 @@ export function CompactedToolResult({
           <span className="shrink-0 opacity-70">· {formatChars(origChars)}</span>
         )}
         <span className="shrink-0 ml-1">· {t("compactedToolResult.originalLost")}</span>
-        <span className="shrink-0 text-[10px]" title={t("compactedToolResult.originalLostIconTooltip")}>ⓘ</span>
+        <span className="shrink-0 text-tiny" title={t("compactedToolResult.originalLostIconTooltip")}>ⓘ</span>
       </div>
     );
   }
@@ -155,7 +155,7 @@ export function CompactedToolResult({
   return (
     <button
       type="button"
-      className="flex min-w-0 w-full max-w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-muted/(--opacity-muted) disabled:cursor-not-allowed disabled:opacity-60"
+      className="flex min-w-0 w-full max-w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-dense text-muted-foreground hover:bg-muted/(--opacity-muted) disabled:cursor-not-allowed disabled:opacity-60"
       style={{ backgroundColor: "hsl(var(--muted) / 0.4)" }}
       disabled={state === "loading"}
       onClick={() => { void handleExpand(); }}
@@ -169,7 +169,7 @@ export function CompactedToolResult({
         <span className="shrink-0 text-muted-foreground/(--opacity-stronger)">· {formatChars(origChars)}</span>
       )}
       <span
-        className="ml-auto shrink-0 text-[10px]"
+        className="ml-auto shrink-0 text-tiny"
         style={{ color: "hsl(var(--primary))" }}
       >
         {state === "loading" ? t("compactedToolResult.loading") : t("compactedToolResult.expandButton")}

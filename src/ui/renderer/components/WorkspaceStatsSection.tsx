@@ -79,7 +79,7 @@ export function WorkspaceStatsSection({ api, onNavigate }: WorkspaceStatsSection
       description={t("generalTab.workspaceDescription")}
       actions={
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-muted-foreground">{lastSyncedLabel}</span>
+          <span className="text-dense text-muted-foreground">{lastSyncedLabel}</span>
           <Button
             size="sm"
             variant="outline"
@@ -150,7 +150,7 @@ export function WorkspaceStatsSection({ api, onNavigate }: WorkspaceStatsSection
           <Store className="size-4 text-muted-foreground" aria-hidden={true} />
           <div>
             <p className="text-sm font-medium">{t("generalTab.marketplaceLabel")}</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-dense text-muted-foreground">
               {stats.marketplace.configured
                 ? t("generalTab.marketplaceConnectedHint")
                 : t("generalTab.marketplaceNotConfigured")}

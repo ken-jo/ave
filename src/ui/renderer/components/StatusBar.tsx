@@ -75,7 +75,7 @@ export function StatusBar(props: StatusBarProps) {
     >
     <div className="min-h-0 overflow-hidden">
     <footer
-      className="flex w-full min-w-0 items-center gap-3 text-[11px] text-muted-foreground"
+      className="flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
       data-testid="status-bar"
       role="status"
       aria-live="polite"
@@ -164,7 +164,7 @@ export function StatusBar(props: StatusBarProps) {
           const clickable = toast.notification !== undefined && typeof onToastClick === "function";
           const dismissible = typeof onToastDismiss === "function";
           const baseClass =
-            `${chatSurface()} flex min-w-0 w-full items-start gap-2 px-3 py-2 text-[13px] text-input-bar-foreground`;
+            `${chatSurface()} flex min-w-0 w-full items-start gap-2 px-3 py-2 text-body-sm text-input-bar-foreground`;
           const dot = (
             <span
               className={`mt-1 h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`}
@@ -174,7 +174,7 @@ export function StatusBar(props: StatusBarProps) {
           const pendingBadge = pendingCount > 0 ? (
             <Badge
               variant="outline"
-              className="shrink-0 border-border bg-background/(--opacity-stronger) px-1.5 text-[11px] font-normal text-muted-foreground tabular-nums"
+              className="shrink-0 border-border bg-background/(--opacity-stronger) px-1.5 text-dense font-normal text-muted-foreground tabular-nums"
             >
               +{pendingCount}
             </Badge>
@@ -201,7 +201,7 @@ export function StatusBar(props: StatusBarProps) {
                 <button
                   type="button"
                   onClick={() => onToastClick?.(toast)}
-                  className="shrink-0 text-[12px] font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {t("statusBar.toastDetailsAction")}
                 </button>
@@ -225,7 +225,7 @@ export function StatusBar(props: StatusBarProps) {
                     toast.action?.run();
                     onToastDismiss?.(toast);
                   }}
-                  className="shrink-0 text-[12px] font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   data-testid="status-toast-action"
                 >
                   {toast.action.label}

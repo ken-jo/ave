@@ -62,7 +62,7 @@ export function SourceBadges({ badges, testId }: { badges: readonly SourceBadge[
         <Badge
           key={badge}
           variant="outline"
-          className={cn("h-5 whitespace-nowrap px-1.5 text-[10px]", WARNING_BADGES.has(badge) && "border-warning/(--opacity-medium) text-warning")}
+          className={cn("h-5 whitespace-nowrap px-1.5 text-tiny", WARNING_BADGES.has(badge) && "border-warning/(--opacity-medium) text-warning")}
           title={badgeTooltip(t, badge)}
           data-testid={testId ? `${testId}:${badge}` : undefined}
         >
@@ -213,20 +213,20 @@ export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null
                       ) : (
                         <>
                           <span className="font-medium">{source.label}</span>
-                          <Badge variant="outline" className="h-5 whitespace-nowrap px-1.5 text-[10px]">{originLabel(t, source.origin)}</Badge>
+                          <Badge variant="outline" className="h-5 whitespace-nowrap px-1.5 text-tiny">{originLabel(t, source.origin)}</Badge>
                         </>
                       )}
                       <SourceBadges badges={source.badges} testId={`git-marketplace:source:${source.id}:badge`} />
                     </div>
                     {source.transport === "git" ? (
-                      <div className="break-all font-mono text-[11px] text-muted-foreground">
+                      <div className="break-all font-mono text-dense text-muted-foreground">
                         {source.url}
                         {source.subdir ? ` · ${source.subdir}` : ""}
                         {source.mirrors > 0 ? ` · ${t("gitMarketplace.sources.mirrors", { count: source.mirrors })}` : ""}
                       </div>
                     ) : (
                       // Cut in the middle, and still free to wrap: a path must never widen the table past its pane.
-                      <div className="break-all text-[11px] text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:folder`}>
+                      <div className="break-all text-dense text-muted-foreground" data-testid={`git-marketplace:source:${source.id}:folder`}>
                         <Folder className="mr-1 inline h-3 w-3 align-[-2px]" aria-hidden="true" />
                         <span className="mr-1">{t("gitMarketplace.sources.folderKind")}</span>
                         <span className="font-mono" title={source.path} data-testid={`git-marketplace:source:${source.id}:path`}>
@@ -343,7 +343,7 @@ export function SourcesView({ api, sources, onChanged, onAdd, highlightId = null
           </tbody>
         </table>
       </div>
-      <p className="text-[11px] text-muted-foreground">{t("gitMarketplace.sources.footnote")}</p>
+      <p className="text-dense text-muted-foreground">{t("gitMarketplace.sources.footnote")}</p>
 
       <Dialog open={confirm !== null} onOpenChange={(open) => !open && setConfirm(null)}>
         <DialogContent className="max-w-md">

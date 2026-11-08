@@ -315,7 +315,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
                     {copied ? t("tailnetAccessTab.copied") : t("tailnetAccessTab.copy")}
                   </Button>
                 </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">
+                <p className="mt-2 text-dense text-muted-foreground">
                   {t("tailnetAccessTab.expiresAt", { time: formatMediumDateTime(issuedInvitation.expiresAt) })}
                 </p>
               </div>
@@ -335,7 +335,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
                   <li key={pairing.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-card/(--opacity-half) px-3 py-2">
                     <div className="min-w-0">
                       <p className="font-mono text-xs">Tailnet · {pairing.actorFingerprint}</p>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 text-dense text-muted-foreground">
                         {pairing.state === "pending" ? t("tailnetAccessTab.pending") : t("tailnetAccessTab.active")}
                         {pairing.expiresAt === null ? "" : ` · ${t("tailnetAccessTab.expiresAt", { time: formatMediumDateTime(pairing.expiresAt) })}`}
                       </p>
@@ -405,7 +405,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
                         className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2"
                         data-testid="tailnet-access-control-confirm"
                       >
-                        <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+                        <p className="min-w-0 flex-1 text-dense text-muted-foreground">
                           {t("tailnetAccessTab.controlConfirm")}
                         </p>
                         <Button
@@ -450,7 +450,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
                     <li key={share.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-card/(--opacity-half) px-3 py-2">
                       <div className="min-w-0">
                         <p className="font-mono text-xs">Tailnet · {share.actorFingerprint}</p>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        <p className="mt-0.5 text-dense text-muted-foreground">
                           {share.permission === "observe" ? t("tailnetAccessTab.observe") : t("tailnetAccessTab.control")}
                           {` · ${t("tailnetAccessTab.expiresAt", { time: formatMediumDateTime(share.expiresAt) })}`}
                         </p>

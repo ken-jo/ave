@@ -160,7 +160,7 @@ export function MainToolbar({
             title={t("mainToolbar.devToolsTooltip")}
             ariaLabel={t("mainToolbar.devToolsTitle")}
             trailing={
-              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-[9.5px]">⇧⌘D</kbd>
+              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-tiny">⇧⌘D</kbd>
             }
             onClick={onOpenDevTools}
             testId="dev-tools-toggle"

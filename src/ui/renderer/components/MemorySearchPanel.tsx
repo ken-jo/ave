@@ -47,12 +47,12 @@ function NoteRow({ note, selected, summary, onSelect }: {
   return <button type="button" aria-pressed={selected} onClick={onSelect}
     className={`w-full min-w-0 rounded-lg border p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${selected ? "border-primary bg-accent" : "bg-background hover:bg-muted"} ${idle ? "border-dashed text-muted-foreground" : ""}`}>
     <div className="flex min-w-0 items-start gap-2">
-      {(summary?.kind ?? note.kind) && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">{t(`memorySearchPanel.kind.${summary?.kind ?? note.kind!}`)}</span>}
+      {(summary?.kind ?? note.kind) && <span className="shrink-0 rounded border px-1 text-tiny text-muted-foreground">{t(`memorySearchPanel.kind.${summary?.kind ?? note.kind!}`)}</span>}
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2"><span className="min-w-0 truncate text-sm font-semibold">{note.title}</span>{isGlobalMemory(note) && <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">{t("memorySearchPanel.global")}</span>}</div>
+        <div className="flex items-baseline gap-2"><span className="min-w-0 truncate text-sm font-semibold">{note.title}</span>{isGlobalMemory(note) && <span className="shrink-0 rounded bg-muted px-1 text-tiny text-muted-foreground">{t("memorySearchPanel.global")}</span>}</div>
         <p className="mt-1 truncate text-xs text-muted-foreground">{idle ? `${t("memorySearchPanel.idleDays", { days: idleDays })} · ` : ""}{source}</p>
       </div>
-      {summary && !idle && <span className="shrink-0 text-[10px] text-muted-foreground">{t("memorySearchPanel.useCount", { count: summary.useCount })}{summary.lastUsedAt ? ` · ${formatRelativeTime(summary.lastUsedAt, RELATIVE_TIME_LABELS)}` : ""}</span>}
+      {summary && !idle && <span className="shrink-0 text-tiny text-muted-foreground">{t("memorySearchPanel.useCount", { count: summary.useCount })}{summary.lastUsedAt ? ` · ${formatRelativeTime(summary.lastUsedAt, RELATIVE_TIME_LABELS)}` : ""}</span>}
     </div>
   </button>;
 }
@@ -101,13 +101,13 @@ function SessionRow({
         <span className="min-w-0 flex-1 line-clamp-1 text-sm font-semibold leading-snug text-foreground">
           {sessionDisplayTitle(session.sessionId, session.title, t) || t("memorySearchPanel.sessionFallbackTitle", { id: shortSessionId(session.sessionId) })}
         </span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(session.timestamp, RELATIVE_TIME_LABELS)}</span>
+        <span className="shrink-0 text-tiny text-muted-foreground">{formatRelativeTime(session.timestamp, RELATIVE_TIME_LABELS)}</span>
       </div>
       <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
-        <span className="min-w-0 line-clamp-1 font-mono text-[10px] text-muted-foreground">
+        <span className="min-w-0 line-clamp-1 font-mono text-tiny text-muted-foreground">
           {shortSessionId(session.sessionId)}
         </span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">
+        <span className="shrink-0 text-tiny text-muted-foreground">
           {loading ? t("memorySearchPanel.loading") : failed ? t("memorySearchPanel.loadFailed") : onOpenSession ? t("memorySearchPanel.clickToOpen") : t("memorySearchPanel.clickToExpand")}
         </span>
       </div>
@@ -329,16 +329,16 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
         {summaries?.ok && <section className="grid grid-cols-2 gap-2 @[700px]:grid-cols-3" aria-label={t("memorySearchPanel.scopes")}>
           <button type="button" aria-pressed={scope !== "global"} className={`min-w-0 rounded-lg border p-3 text-left ${scope !== "global" ? "border-primary" : ""}`} onClick={() => { setScope(scope === "project" ? "all" : "project"); setSelectedKey(null); }}>
             <span className="flex justify-between gap-2 text-xs font-semibold"><span className="truncate">{project?.projectName ?? t("memorySearchPanel.currentProject")}</span><span>{summaries.scopeCounts.project}</span></span>
-            <span className="mt-1 block text-[10px] text-muted-foreground">{t("memorySearchPanel.projectScopeDescription")}</span>
+            <span className="mt-1 block text-tiny text-muted-foreground">{t("memorySearchPanel.projectScopeDescription")}</span>
           </button>
           <button type="button" aria-pressed={scope !== "project"} className={`min-w-0 rounded-lg border p-3 text-left ${scope !== "project" ? "border-primary" : ""}`} onClick={() => { setScope(scope === "global" ? "all" : "global"); setSelectedKey(null); }}>
             <span className="flex justify-between gap-2 text-xs font-semibold"><span>{t("memorySearchPanel.global")}</span><span>{summaries.scopeCounts.global}</span></span>
-            <span className="mt-1 block text-[10px] text-muted-foreground">{t("memorySearchPanel.globalScopeDescription")}</span>
+            <span className="mt-1 block text-tiny text-muted-foreground">{t("memorySearchPanel.globalScopeDescription")}</span>
           </button>
           {defaultProject && !projectRootEquals(defaultProject.projectRoot, project?.projectRoot) && <div className="min-w-0 rounded-lg border p-3 text-left text-muted-foreground">
             <span className="flex justify-between gap-2 text-xs font-semibold"><span>{t("memorySearchPanel.defaultProject")}</span><span>{summaries.scopeCounts.defaultProject}</span></span>
-            <span className="mt-1 block text-[10px]">{t("memorySearchPanel.defaultScopeDescription")}</span>
-            {!summaries.scopeCounts.defaultProjectApplicable && <span className="block text-[10px]">{t("memorySearchPanel.notAppliedHere")}</span>}
+            <span className="mt-1 block text-tiny">{t("memorySearchPanel.defaultScopeDescription")}</span>
+            {!summaries.scopeCounts.defaultProjectApplicable && <span className="block text-tiny">{t("memorySearchPanel.notAppliedHere")}</span>}
           </div>}
         </section>}
         {recent.length > 0 && !query.trim() ? (
@@ -350,9 +350,9 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
                 return <li key={note.filename}>
                   <button type="button" className="flex w-full min-w-0 items-center gap-3 rounded-md px-1 py-1 text-left hover:bg-muted" onClick={() => selectNote(note)}>
                     <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{note.title}</span>
-                      {summary?.origin.status === "recorded" && <span className="block truncate text-[10px] text-muted-foreground">{summary.origin.title || shortSessionId(summary.origin.sessionId)}</span>}
+                      {summary?.origin.status === "recorded" && <span className="block truncate text-tiny text-muted-foreground">{summary.origin.title || shortSessionId(summary.origin.sessionId)}</span>}
                     </span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(note.updatedAt!, RELATIVE_TIME_LABELS)}</span>
+                    <span className="shrink-0 text-tiny text-muted-foreground">{formatRelativeTime(note.updatedAt!, RELATIVE_TIME_LABELS)}</span>
                   </button>
                 </li>;
               })}
@@ -364,7 +364,7 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             <TabsTrigger value="notes" className="flex-1 gap-1.5">
               {t("memorySearchPanel.notesTab")}
               {noteResults.length > 0 && (
-                <span className="inline-flex items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground">
+                <span className="inline-flex items-center rounded-full bg-primary px-1.5 py-0.5 text-tiny font-semibold leading-none text-primary-foreground">
                   {noteResults.length}
                 </span>
               )}
@@ -372,7 +372,7 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             <TabsTrigger value="sessions" className="flex-1 gap-1.5">
               {t("memorySearchPanel.sessionsTab")}
               {sessionResults.length > 0 && (
-                <span className="inline-flex items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground">
+                <span className="inline-flex items-center rounded-full bg-primary px-1.5 py-0.5 text-tiny font-semibold leading-none text-primary-foreground">
                   {sessionResults.length}
                 </span>
               )}

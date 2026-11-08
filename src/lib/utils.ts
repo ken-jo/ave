@@ -2,7 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import { extendTailwindMerge } from "tailwind-merge";
 
 /** Register theme size utilities in the font-size conflict group so they cannot remove text colors. */
-const TYPE_SCALE = ["body", "body-sm", "caption", "micro"];
+const TYPE_SCALE = ["body", "body-sm", "caption", "micro", "dense", "tiny"];
 
 const twMerge = extendTailwindMerge({
   extend: {

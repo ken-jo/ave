@@ -100,7 +100,7 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
   return (
     <div
       data-testid="dev-tools-panel"
-      className="fixed right-4 top-14 z-50 w-[360px] rounded-lg border bg-card p-4 shadow-xl"
+      className="fixed right-4 top-14 z-50 w-[360px] rounded-lg border bg-card p-4 ave-surface-floating"
     >
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">{t("devToolsPanel.title")}</h3>
@@ -114,7 +114,7 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
           <X className="h-3 w-3" />
         </Button>
       </div>
-      <p className="mt-1 text-[10px] text-muted-foreground">
+      <p className="mt-1 text-tiny text-muted-foreground">
         {t("devToolsPanel.shortcutHint")}
       </p>
 
@@ -130,7 +130,7 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
             <Tags className="h-3 w-3 shrink-0" />
             <span className="truncate">{t("devToolsPanel.componentLabelsLabel")}</span>
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
+          <p className="mt-0.5 text-tiny text-muted-foreground">
             {t("devToolsPanel.componentLabelsHint")}
           </p>
         </div>
@@ -163,13 +163,13 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
           onValueCommit={handleSliderCommit}
           aria-label={t("devToolsPanel.preflightThresholdLabel")}
         />
-        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <div className="flex items-center justify-between text-tiny text-muted-foreground">
           <span>500</span>
           <span>100,000</span>
         </div>
       </div>
 
-      <div className="mt-3 space-y-1 rounded-md border bg-muted/(--opacity-muted) p-2 text-[10.5px]">
+      <div className="mt-3 space-y-1 rounded-md border bg-muted/(--opacity-muted) p-2 text-dense">
         <Row label={t("devToolsPanel.providerModelLabel")} value={status ? `${status.provider}/${status.model}` : "—"} />
         <Row
           label={t("devToolsPanel.effectiveTriggerLabel")}
@@ -209,12 +209,12 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
       </div>
 
       {error !== null && (
-        <p className="mt-2 text-[10.5px] text-destructive" role="alert">
+        <p className="mt-2 text-dense text-destructive" role="alert">
           {error}
         </p>
       )}
 
-      <p className="mt-3 border-t pt-2 text-[10px] text-muted-foreground">
+      <p className="mt-3 border-t pt-2 text-tiny text-muted-foreground">
         {t("devToolsPanel.sliderDescription")}
       </p>
     </div>

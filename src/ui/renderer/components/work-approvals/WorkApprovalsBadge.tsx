@@ -96,7 +96,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
           type="button"
           aria-label={t("workApprovals.badgeLabel", { count: state.total })}
           data-testid="work-approvals-badge"
-          className="inline-flex h-6 items-center gap-1 rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-2 text-[11.5px] font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-6 items-center gap-1 rounded-full border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-2 text-dense font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
           {t("workApprovals.badge", { count: state.total })}
@@ -116,7 +116,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
       >
         <header className="flex items-baseline justify-between border-b px-3 py-2">
           <h2 className="text-sm font-semibold">{t("workApprovals.popoverTitle", { count: state.total })}</h2>
-          <span className="text-[11px] text-muted-foreground">{t("workApprovals.popoverScope")}</span>
+          <span className="text-dense text-muted-foreground">{t("workApprovals.popoverScope")}</span>
         </header>
         <div className="max-h-80 space-y-2 overflow-y-auto px-2 py-2">
           {groups.map((group) => (
@@ -135,14 +135,14 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
                       data-approval-key={item.key}
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <Badge variant="outline" className="shrink-0 text-[11px]">
+                      <Badge variant="outline" className="shrink-0 text-dense">
                         {kindLabel(item)}
                       </Badge>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{item.title}</span>
-                        <span className="block truncate text-[11px] text-muted-foreground">{rowSubtitle(item)}</span>
+                        <span className="block truncate text-dense text-muted-foreground">{rowSubtitle(item)}</span>
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">{approvalAge(item.arrivedAt, clock)}</span>
+                      <span className="shrink-0 text-dense text-muted-foreground">{approvalAge(item.arrivedAt, clock)}</span>
                       <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                     </button>
                   </li>
@@ -151,7 +151,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
             </section>
           ))}
         </div>
-        <footer className="flex items-center justify-between gap-2 border-t px-3 py-2 text-[11px] text-muted-foreground">
+        <footer className="flex items-center justify-between gap-2 border-t px-3 py-2 text-dense text-muted-foreground">
           <span>{t("workApprovals.popoverFooter")}</span>
           <button
             type="button"

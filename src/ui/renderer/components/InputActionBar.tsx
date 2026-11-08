@@ -236,7 +236,7 @@ export function TurnControlButton({
         className="ave-turn-control-glyph inline-flex items-center justify-center"
       >
         {showStop
-          ? <Square className="h-2.5 w-2.5 fill-current" strokeWidth={0} />
+          ? <Square className="h-3 w-3 fill-current" strokeWidth={0} />
           : <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />}
       </span>
     </Button>
@@ -840,7 +840,7 @@ function ModelQuickPicker({
           <Brain className="h-3 w-3 shrink-0 text-input-bar-placeholder" aria-hidden="true" />
           <span className="flex min-w-0 flex-col">
             <span className="truncate">{displayModel}</span>
-            {billingDisclosure ? <span id={billingId} className="truncate text-[10px]" data-testid="iab-model-billing">{billingDisclosure}</span> : null}
+            {billingDisclosure ? <span id={billingId} className="truncate text-tiny" data-testid="iab-model-billing">{billingDisclosure}</span> : null}
           </span>
         </button>
       </PopoverTrigger>
@@ -915,7 +915,7 @@ function ModelQuickPicker({
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate">{primaryText}</span>
                   {billingText ? (
-                    <span className="truncate text-[10px] text-muted-foreground">
+                    <span className="truncate text-tiny text-muted-foreground">
                       {billingText}
                     </span>
                   ) : null}

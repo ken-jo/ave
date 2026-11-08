@@ -414,7 +414,7 @@ export function SpotlightTour({
   const cardBody = (
     <>
       <div
-        className="text-[11px]"
+        className="text-dense"
         style={{
           display: "flex",
           alignItems: "center",
@@ -424,7 +424,7 @@ export function SpotlightTour({
       >
         <span
           data-testid="spotlight-tour:step-badge"
-          className="text-[10px] font-bold"
+          className="text-tiny font-bold"
           style={{
             display: "inline-flex",
             width: 18,
@@ -444,7 +444,7 @@ export function SpotlightTour({
       </div>
       <h3
         id={titleId}
-        className="mt-2 text-[14px] font-semibold"
+        className="mt-2 text-body-sm font-semibold"
         style={{
           letterSpacing: "-0.01em",
         }}
@@ -453,7 +453,7 @@ export function SpotlightTour({
       </h3>
       <p
         id={bodyId}
-        className="mt-1.5 min-h-0 overflow-y-auto text-[12px] leading-relaxed"
+        className="mt-1.5 min-h-0 overflow-y-auto text-body-sm leading-relaxed"
         style={{
           color: "hsl(var(--muted-foreground))",
         }}
@@ -470,7 +470,7 @@ export function SpotlightTour({
             <kbd
               key={label}
               aria-label={t("spotlightTour.shortcutAriaLabel", { label })}
-              className="font-mono text-[11px]"
+              className="font-mono text-dense"
               style={{
                 background: "hsl(var(--kbd-bg))",
                 border: "1px solid hsl(var(--kbd-border))",
@@ -517,7 +517,7 @@ export function SpotlightTour({
           type="button"
           data-testid="spotlight-tour:skip"
           onClick={() => closeAfterDismissal(scenario.id)}
-          className="ml-auto text-[11px]"
+          className="ml-auto text-dense"
           style={{
             background: "transparent",
             border: "none",
@@ -531,7 +531,7 @@ export function SpotlightTour({
           type="button"
           data-testid="spotlight-tour:next"
           onClick={handleNext}
-          className="text-[12px]"
+          className="text-body-sm"
           style={{
             borderRadius: "var(--radius-md)",
             padding: "6px 12px",

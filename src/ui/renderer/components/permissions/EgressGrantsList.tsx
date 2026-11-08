@@ -111,20 +111,20 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
   return (
     <div className="space-y-2" data-testid="egress-grants">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-medium">{translate("permissionsTab.networkGrantsHeading")}</p>
+        <p className="text-body-sm font-medium">{translate("permissionsTab.networkGrantsHeading")}</p>
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()} data-testid="egress-grants-refresh">
           {translate("permissionsTab.networkGrantsRefresh")}
         </Button>
       </div>
       {error !== null ? (
-        <p role="alert" className="text-[11px] text-destructive" data-testid="egress-grants-error">
+        <p role="alert" className="text-dense text-destructive" data-testid="egress-grants-error">
           {translate("permissionsTab.networkGrantsError", { message: error })}
         </p>
       ) : null}
       {grants === null ? (
-        error === null ? <p className="text-[11px] text-muted-foreground">{translate("permissionsTab.networkGrantsLoading")}</p> : null
+        error === null ? <p className="text-dense text-muted-foreground">{translate("permissionsTab.networkGrantsLoading")}</p> : null
       ) : grants.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground" data-testid="egress-grants-empty">
+        <p className="text-dense text-muted-foreground" data-testid="egress-grants-empty">
           {translate("permissionsTab.networkGrantsEmpty")}
         </p>
       ) : (
@@ -132,11 +132,11 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
           {grants.map((grant) => (
             <li key={grantKey(grant)} className="flex min-w-0 items-center justify-between gap-3 px-3 py-2" data-testid="egress-grant-row">
               <div className="min-w-0 space-y-0.5">
-                <span className="block min-w-0 break-all font-mono text-[12px]">{`${grant.host}:${grant.port}`}</span>
-                <p className="text-[11px] text-muted-foreground" data-testid="egress-grant-class">
+                <span className="block min-w-0 break-all font-mono text-body-sm">{`${grant.host}:${grant.port}`}</span>
+                <p className="text-dense text-muted-foreground" data-testid="egress-grant-class">
                   {translate(NETWORK_LABEL_KEYS[grant.network ?? "public"])}
                 </p>
-                <p className="min-w-0 break-words text-[11px] text-muted-foreground">
+                <p className="min-w-0 break-words text-dense text-muted-foreground">
                   {grant.scope === "always"
                     ? translate("permissionsTab.networkGrantScopeAlways", {
                         origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
@@ -159,7 +159,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 shrink-0 px-2 text-[12px]"
+                className="h-7 shrink-0 px-2 text-body-sm"
                 disabled={busy}
                 data-testid="egress-grant-revoke"
                 onClick={() => void revoke(grant)}

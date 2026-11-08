@@ -74,6 +74,12 @@
   --color-input-bar-focus: hsl(var(--input-bar-focus));
   --color-input-bar-subtle: hsl(var(--input-bar-subtle));
   --color-input-bar-action: hsl(var(--input-bar-action));
+  --text-tiny: var(--type-size-tiny);
+  --text-tiny--line-height: var(--type-leading-tiny);
+  --text-tiny--letter-spacing: var(--type-tracking-normal);
+  --text-dense: var(--type-size-dense);
+  --text-dense--line-height: var(--type-leading-dense);
+  --text-dense--letter-spacing: var(--type-tracking-normal);
   --text-micro: var(--type-size-12);
   --text-micro--line-height: var(--type-leading-16);
   --text-micro--letter-spacing: var(--type-tracking-wide);
@@ -517,6 +523,9 @@
     --input-bar-subtle: var(--muted);
     --input-bar-action: var(--foreground);
     --motion-base: var(--motion-normal);
+    /* Dev-only stacking tier above the z-50 overlay band. Only development tooling
+     * (component labels) may use it, so a dev overlay still covers dialogs opened after it. */
+    --z-dev-overlay: 60;
   }
 
   /* ── Tier B-derived: composite tokens ─────────────────────────────────

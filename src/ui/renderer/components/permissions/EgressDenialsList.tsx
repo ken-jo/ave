@@ -84,19 +84,19 @@ export function EgressDenialsList({ fetcher }: EgressDenialsListProps): ReactEle
   return (
     <div className="space-y-2" data-testid="egress-denials">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-medium">{translate("permissionsTab.networkDenialsHeading")}</p>
-        <Button size="sm" variant="outline" className="h-7 px-2 text-[12px]" disabled={loading} onClick={() => void refresh()}>
+        <p className="text-body-sm font-medium">{translate("permissionsTab.networkDenialsHeading")}</p>
+        <Button size="sm" variant="outline" className="h-7 px-2 text-body-sm" disabled={loading} onClick={() => void refresh()}>
           {translate("permissionsTab.networkDenialsRefresh")}
         </Button>
       </div>
       {error !== null ? (
-        <p role="alert" className="text-[11px] text-destructive" data-testid="egress-denials-error">
+        <p role="alert" className="text-dense text-destructive" data-testid="egress-denials-error">
           {translate("permissionsTab.networkDenialsError", { message: error })}
         </p>
       ) : rows === null ? (
-        <p className="text-[11px] text-muted-foreground">{translate("permissionsTab.networkDenialsLoading")}</p>
+        <p className="text-dense text-muted-foreground">{translate("permissionsTab.networkDenialsLoading")}</p>
       ) : rows.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground" data-testid="egress-denials-empty">
+        <p className="text-dense text-muted-foreground" data-testid="egress-denials-empty">
           {translate("permissionsTab.networkDenialsEmpty")}
         </p>
       ) : (
@@ -104,12 +104,12 @@ export function EgressDenialsList({ fetcher }: EgressDenialsListProps): ReactEle
           {rows.map((row, index) => (
             <li key={`${row.timestamp}-${index}`} className="min-w-0 space-y-0.5 px-3 py-2" data-testid="egress-denial-row">
               <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <span className="min-w-0 break-all font-mono text-[12px]">{targetText(row)}</span>
-                <time className="shrink-0 text-[11px] text-muted-foreground" dateTime={row.timestamp}>
+                <span className="min-w-0 break-all font-mono text-body-sm">{targetText(row)}</span>
+                <time className="shrink-0 text-dense text-muted-foreground" dateTime={row.timestamp}>
                   {formatDateTime(row.timestamp)}
                 </time>
               </div>
-              <p className="min-w-0 break-words text-[11px] text-muted-foreground">
+              <p className="min-w-0 break-words text-dense text-muted-foreground">
                 {translate("permissionsTab.networkDenialRowDetail", {
                   source: egressDenialSourceText(row.source),
                   reason: row.deny.reason,

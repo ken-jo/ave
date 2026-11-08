@@ -238,7 +238,7 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 />
                 {chooseFolderButton}
               </div>
-              {folder && <p className="text-[11px] text-muted-foreground" data-testid="git-marketplace:add:folder-input">{t("gitMarketplace.add.folderInput")}</p>}
+              {folder && <p className="text-dense text-muted-foreground" data-testid="git-marketplace:add:folder-input">{t("gitMarketplace.add.folderInput")}</p>}
             </div>
             {direct && !folder && (
               <div className="space-y-1">
@@ -360,11 +360,11 @@ export function AddSourceDialog({ api, open, direct = false, initialInput = "", 
                 data-testid="git-marketplace:add:id"
               />
               {reservedId ? (
-                <p id="git-marketplace-add-id-reserved" className="text-[11px] text-destructive" role="alert" data-testid="git-marketplace:add:id-reserved">
+                <p id="git-marketplace-add-id-reserved" className="text-dense text-destructive" role="alert" data-testid="git-marketplace:add:id-reserved">
                   {reservedIdText(t, reservedId)}
                 </p>
               ) : (
-                <p className="text-[11px] text-muted-foreground">{t("gitMarketplace.add.sourceNameHelp")}</p>
+                <p className="text-dense text-muted-foreground">{t("gitMarketplace.add.sourceNameHelp")}</p>
               )}
             </div>
           </div>

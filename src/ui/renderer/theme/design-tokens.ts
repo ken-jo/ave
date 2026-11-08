@@ -8,6 +8,10 @@ export const STATIC_DESIGN_TOKENS = {
   "--type-leading-16": "1rem", "--type-leading-18": "1.125rem", "--type-leading-20": "1.25rem",
   "--type-leading-24": "1.5rem", "--type-leading-28": "1.75rem", "--type-leading-32": "2rem",
   "--type-leading-36": "2.25rem", "--type-leading-40": "2.5rem",
+  // Dense steps are sized for the default 14px root (1rem = 14px), so they render 10px and 11px there
+  // with the 1.5 line height those labels always had, and still follow the user's font-size scale.
+  "--type-size-tiny": "0.7142857rem", "--type-leading-tiny": "1.0714286rem",
+  "--type-size-dense": "0.7857143rem", "--type-leading-dense": "1.1785714rem",
   "--type-tracking-normal": "0em", "--type-tracking-wide": "0.015em",
   "--type-weight-normal": "400", "--type-weight-medium": "500", "--type-weight-semibold": "600", "--type-weight-bold": "700",
   "--space-1": "0.25rem", "--space-2": "0.5rem", "--space-3": "0.75rem", "--space-4": "1rem",

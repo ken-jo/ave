@@ -252,7 +252,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                   <Input value={ownerUserId} inputMode="numeric" autoComplete="off" spellCheck={false}
                     disabled={busy} onChange={(event) => setOwnerUserId(event.target.value)} data-testid="telegram-connection-owner-user-id" />
                 </label>
-                <p className="text-[11px] text-muted-foreground">{t("telegramConnection.ownerUserIdHelp")}</p>
+                <p className="text-dense text-muted-foreground">{t("telegramConnection.ownerUserIdHelp")}</p>
                 <Button size="sm" disabled={busy || !isTelegramOwnerUserId(ownerUserId) || ownerUserId === snapshot.ownerUserId}
                   onClick={() => void run(() => api.telegramConnection.setOwnerUserId(ownerUserId), false)} data-testid="telegram-connection-save-owner">
                   {t("telegramConnection.saveOwnerUserId")}
@@ -316,10 +316,10 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                     data-testid="telegram-connection-bot-token"
                   />
                 </label>
-                <p className="mt-2 text-[11px] text-muted-foreground">
+                <p className="mt-2 text-dense text-muted-foreground">
                   {t("telegramConnection.continuousConnectionNotice")}
                 </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-dense text-muted-foreground">
                   {t("telegramConnection.backlogNotice")}
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -335,7 +335,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
 
             {canPair && !readOnly && snapshot.ownerUserId !== null ? (
               <div className="space-y-2">
-                <p className="text-[11px] text-muted-foreground">{t("telegramConnection.pairingIsNotAccess")}</p>
+                <p className="text-dense text-muted-foreground">{t("telegramConnection.pairingIsNotAccess")}</p>
                 <Button size="sm" disabled={busy} onClick={() => void createPairingCode()} data-testid="telegram-connection-create-pairing-code">
                   {snapshot.pendingCode === null
                     ? t("telegramConnection.createPairingCode")
@@ -364,14 +364,14 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                     {t("telegramConnection.openInTelegram")}
                   </a>
                 </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">
+                <p className="mt-2 text-dense text-muted-foreground">
                   {t("telegramConnection.expiresAt", { time: formatMediumDateTime(issuedCode.expiresAt) })}
                 </p>
               </div>
             ) : null}
 
             {snapshot.pendingCode !== null ? (
-              <p className="text-[11px] text-muted-foreground" data-testid="telegram-connection-pending-code">
+              <p className="text-dense text-muted-foreground" data-testid="telegram-connection-pending-code">
                 {t("telegramConnection.attemptsRemaining", { count: snapshot.pendingCode.attemptsRemaining })}
               </p>
             ) : null}
@@ -410,18 +410,18 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
             ) : null}
 
             {snapshot.approval !== null ? (
-              <p className="text-[11px] text-muted-foreground" data-testid="telegram-connection-approval">
+              <p className="text-dense text-muted-foreground" data-testid="telegram-connection-approval">
                 {t("telegramConnection.expiresAt", { time: formatMediumDateTime(snapshot.approval.expiresAt) })}
               </p>
             ) : null}
 
             {snapshot.state === "active" && sharedConversationIsOpen(snapshot) ? (
-              <p className="text-[11px] text-muted-foreground">{t("telegramConnection.sendFirstMessage")}</p>
+              <p className="text-dense text-muted-foreground">{t("telegramConnection.sendFirstMessage")}</p>
             ) : null}
 
             {connected ? (
               <>
-                <p className="text-[11px] text-muted-foreground">{t("telegramConnection.pauseNotice")}</p>
+                <p className="text-dense text-muted-foreground">{t("telegramConnection.pauseNotice")}</p>
                 <div className="flex flex-wrap gap-2">
                   {snapshot.state === "paused-by-owner" ? (
                     <Button size="sm" disabled={busy} onClick={() => void run(() => api.telegramConnection.resume())} data-testid="telegram-connection-resume">
@@ -475,11 +475,11 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                     {t("telegramConnection.disconnect")}
                   </Button>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{t("telegramConnection.disconnectNotice")}</p>
+                <p className="text-dense text-muted-foreground">{t("telegramConnection.disconnectNotice")}</p>
               </>
             ) : null}
 
-            <p className="rounded-md border border-border bg-card/(--opacity-half) px-3 py-2 text-[11px] text-muted-foreground">
+            <p className="rounded-md border border-border bg-card/(--opacity-half) px-3 py-2 text-dense text-muted-foreground">
               {t("telegramConnection.externalRecipientNotice")}
               {" "}
               {t("telegramConnection.approvalStaysLocal")}

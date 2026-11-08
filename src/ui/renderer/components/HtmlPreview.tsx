@@ -76,14 +76,14 @@ export function HtmlPreview({
 
   return (
     <div className="mt-2 overflow-hidden rounded border bg-background">
-      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 border-b bg-muted/(--opacity-muted) px-2 py-1 text-dense text-muted-foreground">
         <span className="min-w-0 truncate">{payload.title ?? t("htmlPreview.previewTitle")}</span>
-        <span className="shrink-0 text-[10px] opacity-60">
+        <span className="shrink-0 text-tiny opacity-60">
           {t("htmlPreview.separateWindow")} · {requiresScripts ? t("htmlPreview.jsWindowSetting") : t("htmlPreview.noJs")}
         </span>
       </div>
       <div className="flex items-center justify-between gap-3 px-3 py-2">
-        <div className="min-w-0 text-[11px] text-muted-foreground">
+        <div className="min-w-0 text-dense text-muted-foreground">
           {openState === "opened"
             ? t("htmlPreview.windowOpened")
             : requiresScripts
@@ -109,7 +109,7 @@ export function HtmlPreview({
         </Button>
       </div>
       {payload.warnings && payload.warnings.length > 0 && (
-        <div className="border-t px-2 py-1 text-[10px] text-warning">
+        <div className="border-t px-2 py-1 text-tiny text-warning">
           {t("htmlPreview.sanitizedPrefix")}{payload.warnings.join(", ")}
         </div>
       )}

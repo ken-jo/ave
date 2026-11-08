@@ -32,7 +32,7 @@ export function TerminalPaneHeader({ blocks, cwdNote, inline, access }: {
     <Tooltip>
       <TooltipTrigger asChild>
         <span tabIndex={0} aria-label={about} title={about} data-testid="terminal-pane-host-chip"
-          className="shrink-0 whitespace-nowrap rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 text-[11px] font-medium text-primary outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          className="shrink-0 whitespace-nowrap rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 text-dense font-medium text-primary outline-none focus-visible:ring-1 focus-visible:ring-ring">
           {access.chip}
         </span>
       </TooltipTrigger>
@@ -50,7 +50,7 @@ export function TerminalPaneHeader({ blocks, cwdNote, inline, access }: {
   return (
     <div className="flex h-9 min-w-0 shrink-0 items-center gap-(--chrome-gap-tight) border-b border-border px-2 text-xs" data-testid="terminal-pane-header">
       {chip}
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={inline.cwd ?? undefined} data-testid="terminal-pane-cwd">
+      <span className="min-w-0 flex-1 truncate font-mono text-dense text-muted-foreground" title={inline.cwd ?? undefined} data-testid="terminal-pane-cwd">
         {inline.cwd ? directoryName(inline.cwd) : ""}
       </span>
       {blocks}

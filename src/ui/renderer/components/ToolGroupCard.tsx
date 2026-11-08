@@ -98,7 +98,7 @@ function LiveToolOutput({ tool }: { tool: Extract<ChatEntry, { kind: "tool_group
   if (tool.status !== "running" || tail.length === 0) return null;
   return (
     <pre
-      className="mx-3 mb-1.5 max-w-full overflow-hidden whitespace-pre-wrap break-words rounded bg-muted/(--opacity-stronger) px-2 py-1 font-mono text-[10px] leading-[1.35] text-muted-foreground [overflow-wrap:anywhere]"
+      className="mx-3 mb-1.5 max-w-full overflow-hidden whitespace-pre-wrap break-words rounded bg-muted/(--opacity-stronger) px-2 py-1 font-mono text-tiny leading-[1.35] text-muted-foreground [overflow-wrap:anywhere]"
       data-testid="tool-live-output"
       aria-live="off"
     >
@@ -121,7 +121,7 @@ function ToolDurationBadge({ durationMs }: { durationMs?: number }) {
   const label = formatDuration(durationMs);
   return (
     <span
-      className="shrink-0 font-mono text-[10px] tabular-nums opacity-70"
+      className="shrink-0 font-mono text-tiny tabular-nums opacity-70"
       title={`${durationMs} ms`}
       data-testid="tool-duration"
     >
@@ -151,7 +151,7 @@ function RunningDurationBadge({ startedAt }: { startedAt?: number }) {
   const label = formatDuration(elapsed);
   return (
     <span
-      className="shrink-0 font-mono text-[10px] tabular-nums opacity-70"
+      className="shrink-0 font-mono text-tiny tabular-nums opacity-70"
       title={`${elapsed} ms (${t("toolGroupCard.running")})`}
       data-testid="tool-duration-running"
       // A 200 ms tick is not something to read aloud, and inside the transcript log every text change would be. The finished
@@ -185,7 +185,7 @@ function ToolSourceBadge({ tool }: { tool: ToolItem }) {
   return (
     <Badge
       variant="outline"
-      className="max-w-[160px] shrink-0 truncate px-1 py-0 font-mono text-[9px]"
+      className="max-w-[160px] shrink-0 truncate px-1 py-0 font-mono text-tiny"
       title={title}
       data-testid="tool-source"
     >
@@ -201,7 +201,7 @@ function ToolSandboxBadge({ mode }: { mode?: ToolSandboxMode }) {
   return (
     <Badge
       variant="outline"
-      className={cn("shrink-0 px-1 py-0 text-[9px]",
+      className={cn("shrink-0 px-1 py-0 text-tiny",
         mode === "unconfined" ? "border-primary/(--opacity-medium) text-primary" : "border-agent/(--opacity-medium) text-agent")}
       title={t(`terminalObservation.sandbox.${mode}`)}
       data-testid="tool-sandbox"
@@ -228,7 +228,7 @@ function ToolStatusBadge({
   return (
     <Badge
       variant={isError ? "secondary" : "default"}
-      className={`shrink-0 px-1 py-0 text-[10px] ${isError ? "text-destructive" : ""} ${isCancelled ? "text-muted-foreground" : ""}`}
+      className={`shrink-0 px-1 py-0 text-tiny ${isError ? "text-destructive" : ""} ${isCancelled ? "text-muted-foreground" : ""}`}
       data-testid="tool-status"
     >
       {isError
@@ -332,7 +332,7 @@ function SingleToolInline({
     htmlPayload != null && /<script\b|on[a-z]+\s*=|javascript:/i.test(htmlPayload.html);
   const fileDiff: FileEditDiffData | null = extractFileEditDiff(tool);
   return (
-    <div className="min-w-0 w-full max-w-full rounded-md text-[11px] text-muted-foreground">
+    <div className="min-w-0 w-full max-w-full rounded-md text-dense text-muted-foreground">
       {/* The header is a wrapping flex surface rather than one <button>: the
           review chip is a focusable tooltip trigger, and interactive content
           cannot nest inside a button. The name group stays the real button
@@ -370,16 +370,16 @@ function SingleToolInline({
       <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
       <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={isError} onOpenRoutine={onOpenRoutine} />
       {open && (
-        <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-[10px] ave-anim-fade-in">
+        <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-tiny ave-anim-fade-in">
           {tool.input && (
             <div>
-              <div className="mb-0.5 text-[9px] uppercase opacity-60">{t("toolGroupCard.input")}</div>
+              <div className="mb-0.5 text-tiny uppercase opacity-60">{t("toolGroupCard.input")}</div>
               <ToolPayloadBlock value={tool.input} />
             </div>
           )}
           {tool.result !== undefined && (
             <div>
-              <div className={`mb-0.5 text-[9px] uppercase opacity-60 ${isError ? "text-destructive" : ""}`}>{isError ? t("toolGroupCard.error") : t("toolGroupCard.result")}</div>
+              <div className={`mb-0.5 text-tiny uppercase opacity-60 ${isError ? "text-destructive" : ""}`}>{isError ? t("toolGroupCard.error") : t("toolGroupCard.result")}</div>
               <ToolPayloadBlock value={tool.result} isError={isError} />
             </div>
           )}
@@ -497,23 +497,23 @@ export function ToolGroupCard({
   }
 
   return (
-    <div className="min-w-0 w-full max-w-full rounded-md text-[11px] text-muted-foreground ave-anim-message-in">
+    <div className="min-w-0 w-full max-w-full rounded-md text-dense text-muted-foreground ave-anim-message-in">
       <button
         className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 hover:bg-muted/(--opacity-muted)"
         onClick={() => setOpen((o) => !o)}
       >
         <Wrench className="h-3 w-3 flex-shrink-0" />
         <span className="shrink-0 font-medium">{groupTitle}</span>
-        <span className="min-w-0 truncate text-[10px] opacity-60">{uniqueToolNames}</span>
+        <span className="min-w-0 truncate text-tiny opacity-60">{uniqueToolNames}</span>
         {uniqueSourceLabels && (
           <span
-            className="max-w-[180px] shrink-0 truncate font-mono text-[9px] opacity-70"
+            className="max-w-[180px] shrink-0 truncate font-mono text-tiny opacity-70"
             title={`tool sources: ${uniqueSourceLabels}`}
           >
             {uniqueSourceLabels}
           </span>
         )}
-        <Badge variant="outline" className="px-1 py-0 text-[10px] flex-shrink-0">
+        <Badge variant="outline" className="px-1 py-0 text-tiny flex-shrink-0">
           {groupStatus === "running" ? `${doneCount}/${group.tools.length}` : t("toolGroupCard.toolCount", { count: group.tools.length })}
         </Badge>
         {groupStatus === "running" ? (
@@ -521,7 +521,7 @@ export function ToolGroupCard({
         ) : (
           <Badge
             variant={groupStatus === "error" ? "secondary" : "default"}
-            className={`px-1 py-0 text-[10px] flex-shrink-0 ${groupStatus === "error" ? "text-destructive" : ""}`}
+            className={`px-1 py-0 text-tiny flex-shrink-0 ${groupStatus === "error" ? "text-destructive" : ""}`}
           >
             {groupStatus === "error" ? t("toolGroupCard.hasErrors") : t("toolGroupCard.done")}
           </Badge>
@@ -550,14 +550,14 @@ export function ToolGroupCard({
                     className="flex min-w-0 max-w-full items-center gap-2 text-left"
                     aria-expanded={isExpanded}
                   >
-                    {isExpanded ? <ChevronDown className="h-2.5 w-2.5 flex-shrink-0" /> : <ChevronRight className="h-2.5 w-2.5 flex-shrink-0" />}
+                    {isExpanded ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
                     <span className="min-w-0 truncate">{getToolCallLabel(tool.name, tool.input)}</span>
                     <ToolSourceBadge tool={tool} />
                     <ToolSandboxBadge mode={sandboxModes?.get(tool.toolUseId)} />
                   </button>
                   {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
                   {tool.status === "running" ? (
-                    <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin" />
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
                   ) : (
                     <ToolStatusBadge status={tool.status} />
                   )}
@@ -570,16 +570,16 @@ export function ToolGroupCard({
                 <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={tool.status === "error"} />
                 <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={tool.status === "error"} onOpenRoutine={onOpenRoutine} />
                 {isExpanded && (
-                  <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-[10px] ave-anim-fade-in">
+                  <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-tiny ave-anim-fade-in">
                     {tool.input && (
                       <div>
-                        <div className="mb-0.5 text-[9px] uppercase opacity-60">{t("toolGroupCard.input")}</div>
+                        <div className="mb-0.5 text-tiny uppercase opacity-60">{t("toolGroupCard.input")}</div>
                         <ToolPayloadBlock value={tool.input} />
                       </div>
                     )}
                     {tool.result !== undefined && (
                       <div>
-                        <div className={`mb-0.5 text-[9px] uppercase opacity-60 ${tool.status === "error" ? "text-destructive" : ""}`}>
+                        <div className={`mb-0.5 text-tiny uppercase opacity-60 ${tool.status === "error" ? "text-destructive" : ""}`}>
                           {tool.status === "error" ? t("toolGroupCard.error") : t("toolGroupCard.result")}
                         </div>
                         {/* Stub results render as collapsible CompactedToolResult. */}

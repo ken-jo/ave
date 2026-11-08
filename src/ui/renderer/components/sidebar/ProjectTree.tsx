@@ -109,7 +109,7 @@ function InlineRename({
       placeholder={t("sidebar.renamePlaceholder")}
       aria-label={t("sidebar.renamePlaceholder")}
       data-testid={testId}
-      className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-[12px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-body-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       onChange={(event) => setValue(event.target.value)}
       onClick={(event) => event.stopPropagation()}
       // Blur abandons rather than commits. A rename that lands because focus moved is a rename the user never confirmed.
@@ -299,7 +299,7 @@ function SessionRow({
           type="button"
           tabIndex={-1}
           aria-current={active ? "page" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-body-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={`sidebar-session-${session.id}`}
           data-session-family={family}
           title={family === "main" ? session.title : familyLabel}
@@ -336,7 +336,7 @@ function SessionRow({
           </span>
           {pendingCount > 0 ? (
             <span
-              className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground tabular-nums"
+              className="shrink-0 rounded-full bg-primary px-1.5 text-tiny font-semibold leading-4 text-primary-foreground tabular-nums"
               aria-label={t("sidebar.suggestionsPendingCount", { count: pendingCount })}
               data-testid={`sidebar-pending-count-${session.id}`}
             >
@@ -349,7 +349,7 @@ function SessionRow({
         </SidebarPreviewTarget>
       )}
       {time ? (
-        <span className="shrink-0 pr-1 text-[10px] text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
+        <span className="shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
           {time}
         </span>
       ) : null}
@@ -724,7 +724,7 @@ export function ProjectTree({
         {bindingsLoaded && session.paneTabId && session.archivedAt && !paneSurfaceOf(session) && (
           // Under its row's text, so it takes the row's indent and carries on the lines that run past the row.
           <div
-            className="relative truncate pl-7 text-[10px] text-muted-foreground"
+            className="relative truncate pl-7 text-tiny text-muted-foreground"
             style={treeIndentStyle(level, 1.75)}
             data-testid={`sidebar-former-pane-${session.id}`}
           >
@@ -927,7 +927,7 @@ export function ProjectTree({
             title={root}
             data-testid={`sidebar-project-toggle-${testId}`}
             // px-2 puts the chevron where every other row puts its leading icon, so the guide under the group lines up.
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-foreground focus-visible:outline-none"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-body-sm font-medium text-foreground focus-visible:outline-none"
           >
             {expanded
               ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -936,10 +936,10 @@ export function ProjectTree({
             {pinned ? <Pin className="h-3 w-3 shrink-0 fill-current text-primary" aria-hidden="true" /> : null}
             <span className="min-w-0 flex-1 truncate">{name}</span>
             {project.isDefault ? (
-              <span className="shrink-0 rounded border border-border px-1 text-[10px] font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
+              <span className="shrink-0 rounded border border-border px-1 text-tiny font-normal text-muted-foreground">{t("sidebar.defaultBadge")}</span>
             ) : null}
             {expanded ? null : (
-              <span className="shrink-0 pr-1 text-[11px] font-normal tabular-nums text-muted-foreground group-hover:hidden" data-testid={`sidebar-project-count-${testId}`}>
+              <span className="shrink-0 pr-1 text-dense font-normal tabular-nums text-muted-foreground group-hover:hidden" data-testid={`sidebar-project-count-${testId}`}>
                 {count}
               </span>
             )}
@@ -986,7 +986,7 @@ export function ProjectTree({
             key={line.key}
             role="presentation"
             data-testid={`sidebar-tree-header-${line.bucket}`}
-            className="sticky top-0 z-10 bg-card px-2 pb-1 pt-2 text-[11px] font-medium text-muted-foreground"
+            className="sticky top-0 z-10 bg-card px-2 pb-1 pt-2 text-dense font-medium text-muted-foreground"
           >
             {t(BUCKET_LABEL_KEYS[line.bucket])}
           </div>
@@ -1014,7 +1014,7 @@ export function ProjectTree({
             data-testid={`sidebar-tree-more-${line.scope === "project" ? "project" : projectTestId(line.scope.slice("group:".length), "group")}`}
             onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(line.key); }}
             onClick={() => showMore(line.scope, page)}
-            className={`relative w-full cursor-pointer rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
+            className={`relative w-full cursor-pointer rounded-md px-2 py-1 text-left text-dense text-muted-foreground hover:bg-muted hover:text-foreground ${TREE_ROW_FOCUS_CLASS}`}
             style={treeIndentStyle(line.level, 0.5)}
           >
             <TreeIndentGuides guides={row.guides} />
@@ -1024,7 +1024,7 @@ export function ProjectTree({
       }
       case "empty":
         return (
-          <div key={line.key} role="presentation" className="relative px-2 py-1.5 text-[11px] text-muted-foreground" style={treeIndentStyle(line.level, 0.5)}>
+          <div key={line.key} role="presentation" className="relative px-2 py-1.5 text-dense text-muted-foreground" style={treeIndentStyle(line.level, 0.5)}>
             <TreeIndentGuides guides={lineGuides(line.key)} />
             {t("sidebar.noProjectSessions")}
           </div>
@@ -1152,7 +1152,7 @@ export function ProjectTree({
         /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
         <div
           data-testid="sidebar-project-root-warning"
-          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-[11px]"
+          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
         >
           <div className="font-medium text-destructive">{t("composerProjectSelector.rootWarningTitle")}</div>
           <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">
@@ -1186,7 +1186,7 @@ export function ProjectTree({
         <button
           type="button"
           onClick={() => setShowArchived((value) => !value)}
-          className="mt-1 w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="mt-1 w-full rounded-md px-2 py-1 text-left text-dense text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           aria-pressed={showArchived}
           data-testid="sidebar-toggle-archived"
         >

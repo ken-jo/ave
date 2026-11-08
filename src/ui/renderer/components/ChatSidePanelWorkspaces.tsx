@@ -514,9 +514,9 @@ function ProjectRootsBrowser({
 
   const renderEntries = (path: string, depth: number, entries: WorkspaceTreeNode[]): ReactElement => {
     const childPad = 8 + depth * 12;
-    if (depth > 0 && loadingPaths.has(path) && entries.length === 0) return <div role="presentation" className="flex h-7 items-center text-[11px] text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-loading">{t("chatPreviewRail.filePreviewLoading")}</div>;
-    if (depth > 0 && errorByPath[path]) return <button type="button" className="flex h-7 w-full items-center text-left text-[11px] text-destructive" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-error" onClick={() => retryDir(path)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button>;
-    if (entries.length === 0 && attemptedPaths.has(path) && !loadingPaths.has(path) && !errorByPath[path]) return <div role="presentation" className="flex h-7 items-center text-[11px] italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-empty">{t("chatPreviewRail.dirEmpty")}</div>;
+    if (depth > 0 && loadingPaths.has(path) && entries.length === 0) return <div role="presentation" className="flex h-7 items-center text-dense text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-loading">{t("chatPreviewRail.filePreviewLoading")}</div>;
+    if (depth > 0 && errorByPath[path]) return <button type="button" className="flex h-7 w-full items-center text-left text-dense text-destructive" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-error" onClick={() => retryDir(path)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button>;
+    if (entries.length === 0 && attemptedPaths.has(path) && !loadingPaths.has(path) && !errorByPath[path]) return <div role="presentation" className="flex h-7 items-center text-dense italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-empty">{t("chatPreviewRail.dirEmpty")}</div>;
     return <>
       {entries.map((entry, index) => {
         const isDir = entry.type === "directory";
@@ -540,15 +540,15 @@ function ProjectRootsBrowser({
             })}>
             {isDir ? isOpen ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" /> : createElement(fileIcon(entry.name), { className: "h-3 w-3 shrink-0 text-muted-foreground" })}
             <span className={cn("min-w-0 flex-1 truncate", entry.change?.operation === "delete" && "text-muted-foreground line-through")}>{entry.name}</span>
-            {entry.session && !isDir ? <span data-testid="chat-side-panel-file-session-badge" className={cn("shrink-0 rounded px-1 text-[10.5px] font-medium", SESSION_FILE_BADGE_CLASS)}>{t("chatPreviewRail.sessionFileBadge")}</span> : null}
-            {incompleteStatusKey && !isDir ? <span data-testid="chat-side-panel-file-state" className="shrink-0 text-[10.5px] text-muted-foreground">{t(incompleteStatusKey)}</span> : null}
+            {entry.session && !isDir ? <span data-testid="chat-side-panel-file-session-badge" className={cn("shrink-0 rounded px-1 text-dense font-medium", SESSION_FILE_BADGE_CLASS)}>{t("chatPreviewRail.sessionFileBadge")}</span> : null}
+            {incompleteStatusKey && !isDir ? <span data-testid="chat-side-panel-file-state" className="shrink-0 text-dense text-muted-foreground">{t(incompleteStatusKey)}</span> : null}
             {entry.change && !isDir ? <FileChangeBadge change={entry.change} operationTitle={t("chatPreviewRail.fileOperation." + entry.change.operation)} /> : null}
-            {isDir && entry.changedDescendants > 0 && (filter === "all" || !isOpen) ? <span data-testid="chat-side-panel-folder-changes" aria-label={t("chatPreviewRail.changedDescendants", { count: entry.changedDescendants })} className={cn("min-w-4 shrink-0 rounded-full px-1 text-center text-[10.5px] font-semibold", FILE_CHANGE_FOLDER_BADGE_CLASS)}>{entry.changedDescendants}</span> : null}
+            {isDir && entry.changedDescendants > 0 && (filter === "all" || !isOpen) ? <span data-testid="chat-side-panel-folder-changes" aria-label={t("chatPreviewRail.changedDescendants", { count: entry.changedDescendants })} className={cn("min-w-4 shrink-0 rounded-full px-1 text-center text-dense font-semibold", FILE_CHANGE_FOLDER_BADGE_CLASS)}>{entry.changedDescendants}</span> : null}
           </div>
           {isDir && isOpen ? <div role="group">{renderEntries(entry.path, depth + 1, entry.children)}</div> : null}
         </div>;
       })}
-      {truncatedPaths.has(path) ? <div role="presentation" className="flex h-6 items-center text-[11px] italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-truncated">{t("chatPreviewRail.dirTruncated")}</div> : null}
+      {truncatedPaths.has(path) ? <div role="presentation" className="flex h-6 items-center text-dense italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-truncated">{t("chatPreviewRail.dirTruncated")}</div> : null}
     </>;
   };
   return (
@@ -598,7 +598,7 @@ function ProjectRootsBrowser({
             ))}
           </select>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate text-dense font-medium text-muted-foreground">
             {activeRoot ? fileBasename(activeRoot) : t("chatPreviewRail.projectRoots")}
           </span>
         )}
@@ -638,7 +638,7 @@ function ProjectRootsBrowser({
         <div
           role="alert"
           data-testid="chat-side-panel-op-error"
-          className="flex items-start gap-1 rounded-md border border-destructive bg-destructive/(--opacity-muted) px-2 py-1 text-[11px] text-destructive"
+          className="flex items-start gap-1 rounded-md border border-destructive bg-destructive/(--opacity-muted) px-2 py-1 text-dense text-destructive"
         >
           <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{opError}</span>
           <button
@@ -655,7 +655,7 @@ function ProjectRootsBrowser({
       {pendingWarning ? (
         <div
           data-testid="chat-side-panel-root-warning"
-          className="space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-[11px]"
+          className="space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
         >
           <div className="font-medium text-destructive">{t("chatPreviewRail.rootWarningTitle")}</div>
           <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">
@@ -687,14 +687,14 @@ function ProjectRootsBrowser({
       ) : null}
       <div role="tree" aria-label={t("chatPreviewRail.projectRoots")} onKeyDown={onTreeKeyDown}>
         {activeRoot ? <>
-          {loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? <div className="px-2 py-1 text-[11px] text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div> : errorByPath[activeRoot] ? <button type="button" className="flex w-full items-center gap-1 px-2 py-1 text-left text-[11px] text-destructive hover:underline" data-testid="chat-side-panel-fs-error" onClick={() => retryDir(activeRoot)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button> : null}
+          {loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? <div className="px-2 py-1 text-dense text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div> : errorByPath[activeRoot] ? <button type="button" className="flex w-full items-center gap-1 px-2 py-1 text-left text-dense text-destructive hover:underline" data-testid="chat-side-panel-fs-error" onClick={() => retryDir(activeRoot)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button> : null}
           {renderEntries(activeRoot, 0, tree.nodes)}
-        </> : <div className="flex flex-col items-start gap-2 px-2 py-3 text-[11px] text-muted-foreground" data-testid="chat-side-panel-roots-empty">
+        </> : <div className="flex flex-col items-start gap-2 px-2 py-3 text-dense text-muted-foreground" data-testid="chat-side-panel-roots-empty">
           <p>{t("chatPreviewRail.projectRootsEmpty")}</p>
           <Button type="button" size="sm" variant="outline" onClick={() => void addFolder()}><FolderPlus className="h-3.5 w-3.5" />{t("chatPreviewRail.addProjectRoot")}</Button>
         </div>}
         {tree.outsideNodes.length > 0 ? <div className="mt-2 border-t border-border pt-2" data-testid="chat-side-panel-outside-project">
-          <div role="presentation" className="px-2 pb-1 text-[11px] font-medium text-muted-foreground">{t("chatPreviewRail.outsideProject")}</div>
+          <div role="presentation" className="px-2 pb-1 text-dense font-medium text-muted-foreground">{t("chatPreviewRail.outsideProject")}</div>
           {renderEntries("", 0, tree.outsideNodes)}
         </div> : null}
       </div>
@@ -844,7 +844,7 @@ export function FileBrowserWorkspace({
         {matchedOnly ? null : <div role="group" aria-label={t("chatPreviewRail.fileFilterLabel")} className="flex gap-0.5 rounded-lg bg-muted p-0.5">
           {(["all", "changed", "session"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value}
             data-testid={`chat-side-panel-file-filter-${value}`} onClick={() => setFilter(value)}
-            className={cn("h-7 min-w-0 flex-1 rounded-md px-1 text-[11px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+            className={cn("h-7 min-w-0 flex-1 rounded-md px-1 text-dense font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
             {t(value === "all" ? "chatPreviewRail.fileFilterAll" : value === "changed" ? "chatPreviewRail.fileFilterChanged" : "chatPreviewRail.fileFilterSession")}
             {value !== "all" ? <span className="ml-1 tabular-nums">{value === "changed" ? changes.changedFiles.length : changes.sessionFiles.length}</span> : null}
           </button>)}
@@ -956,7 +956,7 @@ export function VisitedSites({
     <div className="flex min-h-0 flex-col" data-testid="chat-side-panel-browser-visited">
       <SearchInput query={query} setQuery={setQuery} placeholder={t("chatPreviewRail.searchPlaceholder")} />
       <div className="min-h-0 flex-1 overflow-auto p-2">
-        <h3 className="mb-1 px-2 text-[11px] font-semibold uppercase text-muted-foreground">
+        <h3 className="mb-1 px-2 text-dense font-semibold uppercase text-muted-foreground">
           {t("chatPreviewRail.browserVisited")}
         </h3>
         {visitedTargets.length > 0 ? (
@@ -1165,7 +1165,7 @@ export function BrowserWorkspace({
       <BrowserSurfaceTools api={api} tabId={tabId}
         onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
       {addressError ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-[11px] text-destructive" data-testid="chat-side-panel-browser-address-error">
+        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="chat-side-panel-browser-address-error">
           {addressError}
         </div>
       ) : null}

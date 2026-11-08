@@ -63,11 +63,23 @@
   - The new `executive-graphite` bundle is the reference restrained dark theme: warm graphite chrome, teal work accent, amber branch/caution accent, and limited secondary emphasis.
 - Typography:
   - Use system UI text for renderer surfaces and monospace only for code, paths, commands, counters, and technical metadata.
-  - Type scale (matches shipped de-facto usage — `text-xs` dominates dense surfaces):
-    - `text-xs` (12px): default body inside dense panels, lists, metadata, and chrome.
-    - `text-sm` (14px): comfortable body, control labels, dialog copy.
-    - `text-base` (16px): lead paragraphs only; rare by design.
+  - Type scale (matches shipped de-facto usage — `text-xs` dominates dense surfaces). Every step is
+    rem-based, so it follows the user's appearance font-size setting. Sizes below are what renders at
+    the default setting (root 14px, 1rem = 14px); the named-by-px primitives (`--type-size-12`,
+    `text-xs`) are nominal at a 16px root and render at 0.875 of their name by default:
+    - `text-tiny` (10px, 15px line): badges, counters, keycaps, and status pills.
+    - `text-dense` (11px, 16.5px line): dense chrome, tool-card metadata, row secondary text.
+    - `text-micro` (10.5px, 14px line) and `text-caption` (10.5px, 15.75px line): captions and compact
+      labels; `micro` for single-line chrome, `caption` for wrapping copy.
+    - `text-xs` (10.5px): default body inside dense panels, lists, metadata, and chrome.
+    - `text-sm` and `text-body-sm` (12.25px, 17.5px line): comfortable body, control labels, dialog copy.
+    - `text-base` (14px): lead paragraphs only; rare by design.
     - `text-lg` and above: page titles and section headers only — never inside repeated items.
+  - Arbitrary sizes (`text-[11px]`, `text-[0.7rem]`) are not allowed anywhere Tailwind scans
+    (`src/**`): a fixed length ignores the user's font-size setting and splits the ladder. Add a
+    step to the scale instead; a new step also needs a `TYPE_SCALE` entry in `src/lib/utils.ts`,
+    or `cn()` reads it as a text colour and drops the real one. `scripts/check-type-tokens.mjs`
+    fails `bun run build` on any of them.
   - No viewport-scaled type and no negative letter spacing in app UI.
   - Compact panels use compact headings; hero-scale type belongs only to real hero surfaces, which the app generally should not need.
 - Spacing/layout rhythm:
@@ -81,9 +93,12 @@
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
   - Docked auxiliary panels use `z-40`; all floating overlays (dialog, popover, command picker, tooltip, toast) share the `z-50` band and rely on portal/mount order within it.
-  - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier — fold the remaining outliers back into the ladder when touched.
+  - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
+  - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:
-  - Use `--motion-fast`, `--motion-base`, `--motion-slow`, `--motion-ease-out`, and `--motion-ease-standard`.
+  - Use `--motion-fast`, `--motion-base`, `--motion-slow`, `--motion-layout`, `--motion-ease-out`, and `--motion-ease-standard`
+    (`duration-[var(--motion-fast)]`), never raw `duration-200` or `300ms ease`: the reduced-motion rule collapses the tokens, not literals.
+  - Transition the properties that change (`transition-colors`, `transition-[width]`), not `transition-all`.
   - `prefers-reduced-motion` is authoritative.
   - An in-flow surface that appears and disappears (the status bar, the window's notice
     strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
@@ -417,7 +432,6 @@ Plugin UIs own their components and styles. The host provides standard MCP Apps 
   - Adding a new design-token package.
   - Moving every spacing utility to CSS variables before a repeated semantic need exists.
 - Future migration target:
-  - Replace remaining raw `shadow-xl`/`shadow-2xl` in floating panels with `ave-surface-*` utilities.
   - Continue replacing route-local page chrome with `PageShell`/`SettingsSection` when new top-level surfaces are added.
 
 ## Accessibility

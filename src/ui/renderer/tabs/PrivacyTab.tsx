@@ -34,7 +34,7 @@ function Sparkline({ byDay }: { byDay: Record<string, number> }) {
   const { t } = useTranslation();
   const days = Object.keys(byDay).sort();
   if (days.length < 2) {
-    return <p className="text-[11px] text-muted-foreground italic">{t("privacyTab.sparklineInsufficientData")}</p>;
+    return <p className="text-dense text-muted-foreground italic">{t("privacyTab.sparklineInsufficientData")}</p>;
   }
   const values = days.map((d) => byDay[d] ?? 0);
   const maxVal = Math.max(...values, 1);
@@ -107,7 +107,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
           </p>
         </div>
         <div className="p-3 space-y-3">
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-dense text-muted-foreground">
             {t("privacyTab.piiRedactDescription")}
           </p>
           <div className="flex items-center gap-3 rounded-lg border bg-background px-3 py-3 shadow-sm focus-within:ring-2 focus-within:ring-ring">
@@ -121,7 +121,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
               <p id="pii-redact-toggle-label" className="text-sm font-semibold leading-snug text-foreground">
                 {t("privacyTab.piiRedactToggleLabel")}
               </p>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-dense text-muted-foreground">
                 {t("privacyTab.piiRedactToggleDescription")}
               </p>
             </div>
@@ -161,7 +161,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                 <div className="space-y-4">
                   {/* Total card */}
                   <div className="rounded-lg border bg-background shadow-sm px-4 py-3 text-center">
-                    <p className="text-[11px] text-muted-foreground">{t("privacyTab.totalRedactions", { days })}</p>
+                    <p className="text-dense text-muted-foreground">{t("privacyTab.totalRedactions", { days })}</p>
                     <p className="text-2xl font-semibold tabular-nums text-foreground leading-snug">
                       {stats.totalHits.toLocaleString()}
                     </p>
@@ -174,7 +174,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                           {t("privacyTab.byKindTitle")}
                         </p>
-                        <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums">
+                        <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-tiny font-medium text-muted-foreground tabular-nums">
                           {Object.keys(stats.byKind).length}
                         </span>
                       </div>
@@ -183,15 +183,15 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                           .sort((a, b) => b[1] - a[1])
                           .map(([kind, count]) => (
                             <div key={kind} className="flex items-center gap-2">
-                              <span className="w-24 truncate text-[11px] font-mono">{kind}</span>
+                              <span className="w-24 truncate text-dense font-mono">{kind}</span>
                               <Bar value={count} max={maxKind} />
-                              <span className="w-8 text-right text-[11px] tabular-nums">{count}</span>
+                              <span className="w-8 text-right text-dense tabular-nums">{count}</span>
                             </div>
                           ))}
                       </div>
                     </div>
                   ) : (
-                    <p className="text-[11px] text-muted-foreground italic">{t("privacyTab.noDetectionRecords")}</p>
+                    <p className="text-dense text-muted-foreground italic">{t("privacyTab.noDetectionRecords")}</p>
                   )}
 
                   {/* Daily trend sparkline */}
@@ -203,7 +203,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                       <Sparkline byDay={stats.byDay} />
                     </div>
                     {Object.keys(stats.byDay).length > 0 && (
-                      <div className="flex justify-between text-[10px] text-muted-foreground" style={{ width: 240 }}>
+                      <div className="flex justify-between text-tiny text-muted-foreground" style={{ width: 240 }}>
                         <span>{Object.keys(stats.byDay).sort()[0]}</span>
                         <span>{Object.keys(stats.byDay).sort().at(-1)}</span>
                       </div>
@@ -217,7 +217,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                           {t("privacyTab.topPatternsTitle")}
                         </p>
-                        <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground tabular-nums">
+                        <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-tiny font-medium text-muted-foreground tabular-nums">
                           {stats.topPatterns.length}
                         </span>
                       </div>
@@ -252,7 +252,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
               )}
 
               {!stats && !statsError && (
-                <p className="text-[11px] text-muted-foreground italic">{t("privacyTab.statsLoading")}</p>
+                <p className="text-dense text-muted-foreground italic">{t("privacyTab.statsLoading")}</p>
               )}
             </div>
           </div>

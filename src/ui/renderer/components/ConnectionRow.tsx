@@ -115,7 +115,7 @@ export function ConnectionRow({
               {state === null ? null : (
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1.5 text-[11px]",
+                    "inline-flex items-center gap-1.5 text-dense",
                     state === "attention" ? "text-destructive" : "text-muted-foreground",
                   )}
                   data-state={state}
@@ -129,7 +129,7 @@ export function ConnectionRow({
             </span>
             {endpoint === null || endpoint === undefined || endpoint === "" ? null : (
               <span
-                className="block truncate font-mono text-[11px] text-muted-foreground"
+                className="block truncate font-mono text-dense text-muted-foreground"
                 {...(typeof endpoint === "string" ? { title: endpoint } : {})}
                 data-testid={`${testId}:endpoint`}
               >

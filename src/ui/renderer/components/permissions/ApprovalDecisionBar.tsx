@@ -137,9 +137,9 @@ export function ApprovalDecisionBar({
         onSelect={() => state.select(choice === "deny-once" ? null : choice)}
       >
         <span className="text-xs">{t(option?.labelKey ?? DECISION_LABEL_KEYS["deny-once"])}</span>
-        {reason ? <span className="text-[10px] text-muted-foreground" data-testid={`approval-choice-${choice}-reason`}>{reason}</span> : null}
+        {reason ? <span className="text-tiny text-muted-foreground" data-testid={`approval-choice-${choice}-reason`}>{reason}</span> : null}
         {option?.offered === true && option.noteKey !== undefined
-          ? <span className="text-[10px] text-muted-foreground" data-testid={`approval-choice-${choice}-note`}>{t(option.noteKey)}</span> : null}
+          ? <span className="text-tiny text-muted-foreground" data-testid={`approval-choice-${choice}-note`}>{t(option.noteKey)}</span> : null}
       </DropdownMenuItem>
     );
   };
@@ -157,13 +157,13 @@ export function ApprovalDecisionBar({
       </Button>
     </DropdownMenuTrigger>
   );
-  const mainClass = `h-auto min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] leading-tight ${compact ? buttonSize : "px-1 py-2 text-[11px]"}`;
+  const mainClass = `h-auto min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] leading-tight ${compact ? buttonSize : "px-1 py-2 text-dense"}`;
   return (
     <div className={`min-w-0 space-y-1.5 ${stackWhenNarrow ? "@container" : ""}`} data-testid="approval-decision-bar" data-approval-variant={model.variant} data-selected-choice={state.selected ?? undefined}>
       {showEdit ? (
         <div className="min-w-0 space-y-1" data-testid="approval-rule-row">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-            <p className="min-w-0 break-all text-[11px] text-muted-foreground">
+            <p className="min-w-0 break-all text-dense text-muted-foreground">
               {selectedOption?.rule !== null && selectedOption?.rule !== undefined && !editorOpen ? (
                 <>
                   {t("toolApprovalDialog.ruleToSave")}{" "}
@@ -188,7 +188,7 @@ export function ApprovalDecisionBar({
           </div>
           {editorOpen ? (
             <div className="min-w-0 space-y-1">
-              <label className="block text-[11px] text-muted-foreground" htmlFor={inputId}>{t("toolApprovalDialog.editRuleLabel")}</label>
+              <label className="block text-dense text-muted-foreground" htmlFor={inputId}>{t("toolApprovalDialog.editRuleLabel")}</label>
               <Input
                 id={inputId}
                 className="h-7 font-mono text-xs"
@@ -200,10 +200,10 @@ export function ApprovalDecisionBar({
                 onChange={(event) => state.setDraft(event.target.value)}
               />
               {selectedOption?.needsEdit && draftText.trim().length === 0 ? (
-                <p className="text-[10px] text-muted-foreground" data-testid="approval-rule-required">{t("toolApprovalDialog.ruleEditRequired")}</p>
+                <p className="text-tiny text-muted-foreground" data-testid="approval-rule-required">{t("toolApprovalDialog.ruleEditRequired")}</p>
               ) : null}
               {warnWildcard ? (
-                <p role="note" className="text-[10px] font-medium text-warning" data-testid="approval-rule-wildcard-warning">
+                <p role="note" className="text-tiny font-medium text-warning" data-testid="approval-rule-wildcard-warning">
                   {t(wildcardWarningKey(model))}
                 </p>
               ) : null}

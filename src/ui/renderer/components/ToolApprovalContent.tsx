@@ -255,7 +255,7 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
         <p className="text-xs font-semibold text-warning">
           {tBand("chatView.permissionReviewSuggestionTitle")}
         </p>
-        <p className="mt-0.5 break-words text-[11px] text-muted-foreground">
+        <p className="mt-0.5 break-words text-dense text-muted-foreground">
           {suggestion.reason === "allow-always"
             ? tBand("chatView.permissionReviewSuggestionAllowAlways")
             : tBand("chatView.permissionReviewSuggestionRepeat", {
@@ -265,7 +265,7 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
         </p>
         {suggestion.error ? (
           <p
-            className="mt-0.5 break-words text-[10px] text-destructive"
+            className="mt-0.5 break-words text-tiny text-destructive"
             data-testid="reviewer-suggestion-error"
           >
             {suggestion.error}
@@ -966,7 +966,7 @@ export function ToolApprovalContent({
                     </code>
 
                   </div>
-                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-tiny text-muted-foreground">
                     <span>{request.sourcePluginId ?? sourceBadge}</span>
                     <span aria-hidden="true">·</span>
                     <span>{categoryLabel(category)}</span>
@@ -978,7 +978,7 @@ export function ToolApprovalContent({
                     </span>
                   </div>
                   {request.kind === "agent-action" && request.approvalScope ? (
-                    <p className="break-words text-[10px] text-muted-foreground">
+                    <p className="break-words text-tiny text-muted-foreground">
                       {tHook("toolApprovalDialog.approvalScopePrefix")}: {request.approvalScope}
                     </p>
                   ) : null}
@@ -998,7 +998,7 @@ export function ToolApprovalContent({
                   data-testid="approval-impact-summary"
                 >
                   {showsHighRiskReason ? (
-                    <span className="text-[10px] font-semibold text-destructive">
+                    <span className="text-tiny font-semibold text-destructive">
                       {highRiskReasonSource}
                     </span>
                   ) : null}
@@ -1013,7 +1013,7 @@ export function ToolApprovalContent({
                       allow-always shows the parent folder before the press. */}
                   {isOutOfDir ? (
                     <p
-                      className="mt-0.5 break-all font-mono text-[11px]"
+                      className="mt-0.5 break-all font-mono text-dense"
                       data-testid="approval-decision-target"
                     >
                       {decisionIndex === 0
@@ -1027,7 +1027,7 @@ export function ToolApprovalContent({
                   ) : null}
                   {sandboxSummary ? (
                     <p
-                      className="mt-0.5 break-words text-[10px] text-muted-foreground"
+                      className="mt-0.5 break-words text-tiny text-muted-foreground"
                       data-testid={sandboxSummary.testId}
                     >
                       {sandboxSummary.value}
@@ -1053,7 +1053,7 @@ export function ToolApprovalContent({
                     </div>
                   ) : null}
                   {showsHighRiskReason ? (
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                    <p className="mt-0.5 text-tiny text-muted-foreground">
                       {tHook("toolApprovalDialog.highRiskExplicitApproval")}
                     </p>
                   ) : null}
@@ -1069,7 +1069,7 @@ export function ToolApprovalContent({
                   <span className="block text-xs font-semibold">
                     {tHook("toolApprovalDialog.reviewDetails")}
                   </span>
-                  <span className="block text-[10px] font-normal text-muted-foreground">
+                  <span className="block text-tiny font-normal text-muted-foreground">
                     {tHook("toolApprovalDialog.reviewDetailsHint")}
                   </span>
                 </span>
@@ -1079,7 +1079,7 @@ export function ToolApprovalContent({
                 />
               </summary>
               <div className="space-y-3 border-t p-3">
-                <p className="break-all text-[10px] text-muted-foreground">
+                <p className="break-all text-tiny text-muted-foreground">
                   {tHook("approvalAttribution.rowConversation")}:{" "}
                   <code className="font-mono" data-testid="approval-conversation-id">
                     {request.sessionId ?? tHook("approvalAttribution.unattributed")}
@@ -1108,7 +1108,7 @@ export function ToolApprovalContent({
                     ) : null}
                     {decisionIndex === 1 && (outOfDir?.adjacencyWarnings.length ?? 0) > 0 ? (
                       <p
-                        className="border-t px-3 py-2 text-[11px] text-warning"
+                        className="border-t px-3 py-2 text-dense text-warning"
                         data-testid="approval-adjacency-warning"
                       >
                         {`⚠ ${outOfDir?.adjacencyWarnings.join(" · ")}`}
@@ -1128,7 +1128,7 @@ export function ToolApprovalContent({
                       >
                         {row.monospace ? (
                           <pre
-                            className="max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed"
+                            className="max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono text-dense leading-relaxed"
                             data-testid={row.testId}
                           >
                             {row.value}
@@ -1145,7 +1145,7 @@ export function ToolApprovalContent({
                     <p className="border-b px-3 py-2 text-xs font-semibold">
                       {tHook("toolApprovalDialog.showFullInput")}
                     </p>
-                    <pre className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
+                    <pre className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed">
                       {argsDisplay}
                     </pre>
                     {argsStr.length > 500 && (
@@ -1153,7 +1153,7 @@ export function ToolApprovalContent({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-auto px-3 pb-2 pt-0 text-[11px] text-primary underline hover:bg-transparent"
+                        className="h-auto px-3 pb-2 pt-0 text-dense text-primary underline hover:bg-transparent"
                         onClick={() => setExpanded((v) => !v)}
                       >
                         {expanded ? tHook("toolApprovalDialog.collapse") : tHook("toolApprovalDialog.showAll")}
@@ -1247,7 +1247,7 @@ export function ToolApprovalContent({
                           </div>
                         )}
                         {field.description && (
-                          <p className="text-[11px] text-muted-foreground">
+                          <p className="text-dense text-muted-foreground">
                             {field.description}
                           </p>
                         )}
@@ -1270,7 +1270,7 @@ export function ToolApprovalContent({
             {isUnsupportedElicitationForm || elicitationInvalid && (
               <p
                 id="mcp-elicitation-input-unavailable"
-                className="mt-2 text-[10px] text-muted-foreground"
+                className="mt-2 text-tiny text-muted-foreground"
                 data-testid="mcp-elicitation-input-unavailable"
               >
                 {tHook("toolApprovalDialog.typedInputOutsideApproval")}
@@ -1285,16 +1285,16 @@ export function ToolApprovalContent({
               <div className="space-y-1" data-testid="approval-shell-rule-context">
                 {/* Only unconfined runs display the outside-sandbox warning. */}
                 {request.executionPlan?.sandboxed !== true ? (
-                  <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
+                  <p className="text-dense text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
                 ) : null}
-                <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
+                <p className="break-all text-tiny text-muted-foreground" data-testid="approval-shell-rule-scope-target">
                     {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
                   </p>
                 {/* An -EncodedCommand payload is shown as the script it runs; the host checked that text, and no rule covers it. */}
                 {shellRule.decodedCommands?.map((decoded, index) => (
                   <div key={index} className="min-w-0 space-y-0.5" data-testid="approval-shell-decoded-command">
-                    <p className="text-[10px] font-medium text-warning">{tHook("toolApprovalDialog.shellDecodedCommand")}</p>
-                    <code className="block whitespace-pre-wrap break-all rounded bg-muted px-1.5 py-1 font-mono text-[11px]">{decoded}</code>
+                    <p className="text-tiny font-medium text-warning">{tHook("toolApprovalDialog.shellDecodedCommand")}</p>
+                    <code className="block whitespace-pre-wrap break-all rounded bg-muted px-1.5 py-1 font-mono text-dense">{decoded}</code>
                   </div>
                 ))}
               </div>
@@ -1356,29 +1356,29 @@ export function ToolApprovalContent({
             {persistentUnavailableReason ? (
               <p
                 id="allow-always-unavailable-reason"
-                className="text-[10px] text-muted-foreground"
+                className="text-tiny text-muted-foreground"
                 data-testid="allow-always-unavailable-reason"
               >
                 {persistentUnavailableReason}
               </p>
             ) : null}
             {browserTargetText(tHook, request) ? (
-              <p className="text-[10px] text-muted-foreground" data-testid="approval-browser-target">
+              <p className="text-tiny text-muted-foreground" data-testid="approval-browser-target">
                 {browserTargetText(tHook, request)}
               </p>
             ) : null}
             {terminalTargetText(tHook, request) ? (
-              <p className="text-[10px] text-muted-foreground break-all" data-testid="approval-terminal-target">
+              <p className="text-tiny text-muted-foreground break-all" data-testid="approval-terminal-target">
                 {terminalTargetText(tHook, request)}
               </p>
             ) : null}
             {terminalCommandNotes(tHook, request).map((note) => (
-              <p key={note} className="text-[10px] text-warning break-all" data-testid="approval-terminal-note">
+              <p key={note} className="text-tiny text-warning break-all" data-testid="approval-terminal-note">
                 {note}
               </p>
             ))}
             {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
-              <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
+              <p className="text-tiny text-muted-foreground" data-testid="allow-always-exact-scope">
                 {decision.selected === "allow-everywhere"
                   ? request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
                     ? tHook("toolApprovalDialog.rememberScopeMcpToolGlobal", { serverId: request.approvalMemory.scope.serverId, toolName: request.approvalMemory.scope.toolName })
@@ -1390,7 +1390,7 @@ export function ToolApprovalContent({
               <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
                 <p
                   id="approval-decision-locked"
-                  className="text-[10px] text-muted-foreground"
+                  className="text-tiny text-muted-foreground"
                   data-testid="approval-decision-locked"
                 >
                   {tHook("toolApprovalDialog.decisionPendingInSettings")}
@@ -1401,7 +1401,7 @@ export function ToolApprovalContent({
                     type="button"
                     size="sm"
                     variant="link"
-                    className="h-auto min-w-0 max-w-full shrink p-0 text-right text-[11px] whitespace-normal break-words"
+                    className="h-auto min-w-0 max-w-full shrink p-0 text-right text-dense whitespace-normal break-words"
                     data-testid={TEST_IDS.openPermanentDenySettings}
                     onClick={() => onOpenPermanentDeny(request, finalVerdict as UserApprovalVerdict)}
                   >
@@ -1411,7 +1411,7 @@ export function ToolApprovalContent({
               </div>
             ) : null}
             {recordError ? (
-              <p className="text-[11px] text-destructive" role="alert" data-testid="exact-decision-save-error">
+              <p className="text-dense text-destructive" role="alert" data-testid="exact-decision-save-error">
                 {recordError}
               </p>
             ) : null}

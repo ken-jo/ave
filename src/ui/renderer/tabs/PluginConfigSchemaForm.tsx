@@ -248,10 +248,10 @@ export function PluginConfigSchemaForm({
             <Label htmlFor={fieldId} className="text-xs font-medium">
               {label}
               {required.has(key) && <span className="ml-1 text-destructive">*</span>}
-              <span className="ml-2 font-mono text-[10px] text-muted-foreground">{key}</span>
+              <span className="ml-2 font-mono text-tiny text-muted-foreground">{key}</span>
             </Label>
             {description && (
-              <p className="text-[11px] text-muted-foreground">{description}</p>
+              <p className="text-dense text-muted-foreground">{description}</p>
             )}
             {isSecret ? (
               <>
@@ -277,7 +277,7 @@ export function PluginConfigSchemaForm({
                     {fieldSaving[key] ? t("pluginConfigSchemaForm.saving") : t("pluginConfigSchemaForm.save")}
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground">
+                <p className="text-tiny text-muted-foreground">
                   {t("pluginConfigSchemaForm.secretKeychainNote")}
                 </p>
               </>
@@ -392,13 +392,13 @@ export function PluginConfigSchemaForm({
                 />
               </div>
             )}
-            {error && <p className="text-[11px] text-destructive">{error}</p>}
+            {error && <p className="text-dense text-destructive">{error}</p>}
           </div>
         );
       })}
       {schema.customPanel && (
         <div
-          className="rounded-md border border-dashed p-2 text-[11px] text-muted-foreground"
+          className="rounded-md border border-dashed p-2 text-dense text-muted-foreground"
           data-testid={`${pluginId}:custom-panel-placeholder`}
         >
           {t("pluginConfigSchemaForm.customPanelNote", { exportName: schema.customPanel.exportName })}
