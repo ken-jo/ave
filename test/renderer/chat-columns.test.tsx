@@ -2,7 +2,7 @@ import "./setup.js";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "./render-app.js";
-import { emitAgentTabNew } from "./helpers.js";
+import { approvalRequest, emitAgentTabNew } from "./helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { t } from "../../src/i18n/runtime.js";
 import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../src/shared/browser-workspace.js";
@@ -10,6 +10,33 @@ import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 
 describe("chat columns", () => {
+  it("ends a narrow overlay above the composer and approval without lifting the transcript", async () => {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === TEST_IDS.chatViewRoot) return new DOMRect(0, 41, 783, 722);
+      if (this.hasAttribute("data-composer-placement")) return new DOMRect(87, 644, 672, 73);
+      if (this.hasAttribute("data-approval-request-id")) return new DOMRect(87, 500, 672, 250);
+      return original.call(this);
+    });
+    try {
+      const view = await renderApp({ hasApiKey: true, shellWidth: 783, canvasWidth: 783 });
+      fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
+      const panel = await waitFor(() => {
+        const element = view.container.querySelector<HTMLElement>('[data-testid="chat-side-panel-motion"]')!;
+        expect(element?.dataset.panelMode).toBe("overlay");
+        expect(element.style.bottom).toBe("119px");
+        return element;
+      });
+      act(() => view.emitApproval(approvalRequest({ id: "narrow-card", sessionId: MOCK_DEFAULT_SESSION_ID })));
+      await waitFor(() => expect(panel.style.bottom).toBe("263px"));
+      expect(view.container.querySelector('[data-testid="chat-main-column"]')?.classList.contains("z-50")).toBe(false);
+      expect(panel.classList.contains("z-40")).toBe(true);
+      expect(panel.classList.contains("opacity-0")).toBe(false);
+      await view.resizeContainers({ shellWidth: 1600, canvasWidth: 1600 });
+      await waitFor(() => expect(panel.dataset.panelMode).toBe("docked"));
+      expect(panel.style.bottom).toBe("");
+    } finally { bounds.mockRestore(); }
+  });
   it("opens the selected browser tab in the work panel and closes it through the existing tab store", async () => {
     const view = await renderApp({ hasApiKey: true, browserTabs: true });
     const browserTabs = view.api.browserTabs as unknown as {
@@ -18,6 +45,7 @@ describe("chat columns", () => {
     };
     await emitAgentTabNew(view.container, view.api, { requestId: "page-one", url: "https://one.example/", active: true });
     await emitAgentTabNew(view.container, view.api, { requestId: "page-two", url: "https://two.example/", active: true });
+    fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
     const hosts = await waitFor(() => {
       const hosts = [...view.container.querySelectorAll<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]')];
       expect(hosts).toHaveLength(2);

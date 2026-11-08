@@ -654,6 +654,8 @@ jobs:
           src/main/browser/__tests__/browser-tab-registry.test.ts
           src/main/browser/__tests__/browser-actions.test.ts
           src/main/browser/__tests__/browser-tab-activity.test.ts
+          src/ui/renderer/__tests__/ChatView-columns.test.tsx
+          test/renderer/chat-columns.test.tsx
           src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx
           src/main/browser/__tests__/browser-guest-tracking.test.ts
           src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx

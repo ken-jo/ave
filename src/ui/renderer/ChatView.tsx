@@ -351,6 +351,22 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth && !revealedPanelOverlay });
   }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth, revealedPanelOverlay]);
   const panelLayout = revealedPanelOverlay ? sidePanelLayout(containerWidth, true) : columns.panelLayout;
+  const [panelOverlayBottom, setPanelOverlayBottom] = useState(0);
+  useLayoutEffect(() => {
+    const root = chatViewRootRef.current;
+    if (!root || panelLayout.mode !== "overlay") { setPanelOverlayBottom(0); return undefined; }
+    const anchors = [...root.querySelectorAll<HTMLElement>('[data-composer-placement], [data-approval-request-id]')];
+    const measure = () => {
+      const bounds = root.getBoundingClientRect();
+      const tops = anchors.map((element) => element.getBoundingClientRect()).filter((rect) => rect.height > 0).map((rect) => rect.top);
+      setPanelOverlayBottom(tops.length ? Math.max(0, bounds.bottom - Math.min(...tops)) : 0);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    for (const anchor of anchors) observer.observe(anchor);
+    return () => observer.disconnect();
+  }, [panelLayout.mode, approvalHead?.id]);
   const dockedPanelWidth = revealedPanelOverlay
     ? Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth)) : columns.panelWidth;
   const dockedPanelShouldOpen = columns.panelVisible || revealedPanelOverlay;
@@ -849,7 +865,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       data-testid={TEST_IDS.chatViewRoot}
     >
       <div
-        className={`@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size] ${approvalHead !== null && panelLayout.mode === "overlay" ? "z-50" : ""}`}
+        className="@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
         data-testid="chat-main-column"
       >
 
@@ -1076,6 +1092,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
           shouldOpen={dockedPanelShouldOpen}
           width={dockedPanelWidth}
           mode={panelLayout.mode}
+          overlayBottom={panelOverlayBottom}
           resizing={sidePanelResizing}
         >
           <ChatSidePanel

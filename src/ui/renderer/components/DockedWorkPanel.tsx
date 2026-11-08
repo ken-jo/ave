@@ -60,11 +60,12 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
   shouldOpen: boolean;
   width: number;
   mode: "docked" | "overlay";
+  overlayBottom?: number;
   resizing: boolean;
   id?: string;
   testId: string;
   children: ReactNode;
-}>(function DockedPanelColumn({ motion, shouldOpen, width, mode, resizing, id, testId, children }, ref) {
+}>(function DockedPanelColumn({ motion, shouldOpen, width, mode, overlayBottom = 0, resizing, id, testId, children }, ref) {
   return (
     <div
       ref={ref}
@@ -77,6 +78,7 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
         order: 2,
         width: motion.expanded ? `${width}px` : "0px",
         maxWidth: shouldOpen ? width : 0,
+        ...(mode === "overlay" ? { bottom: overlayBottom } : {}),
         // Closed and settled, but kept for what it holds: out of the layout entirely, not a collapsed sliver of padding.
         ...(motion.present ? {} : { display: "none" }),
       }}
@@ -90,7 +92,7 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
           : "transition-[width,opacity,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
         motion.expanded
           ? "pointer-events-auto translate-x-0 overflow-visible opacity-100"
-          : "pointer-events-none translate-x-2 overflow-hidden opacity-0",
+          : `pointer-events-none translate-x-2 overflow-hidden ${mode === "overlay" ? "opacity-100" : "opacity-0"}`,
       ].join(" ")}
       onTransitionEnd={(event) => {
         if (event.target === event.currentTarget && event.propertyName === "width" && !shouldOpen) motion.settleClosed();
