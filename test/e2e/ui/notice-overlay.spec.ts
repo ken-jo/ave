@@ -1,6 +1,7 @@
 import { setWindowSize } from "./seeded-electron.js";
 import type { ElectronApplication, Locator } from "playwright";
-import { test, expect } from "./fixtures";
+import { test, expect } from "./fixtures.js";
+import { test as providerTest } from "../../screenshots/fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
@@ -113,42 +114,90 @@ test(`transient window and composer notices preserve bounds and card access at $
 
 }
 
-test("side chat notices float above the composer without moving the transcript", async ({ app, mainWindow: page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByTestId(TEST_IDS.panePanelToggle).click();
-  await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();
-  const side = page.getByTestId("side-chat-view");
-  const composer = side.getByTestId("composer-textarea");
-  const transcript = side.getByTestId("side-chat-transcript");
-  await expect(composer).toBeVisible();
-  await app.evaluate(({ ipcMain }, channels) => {
-    ipcMain.removeHandler(channels.sidechat.send);
-    ipcMain.handle(channels.sidechat.send, (event, payload) => {
-      event.sender.send(channels.sidechat.stream, { type: "user_message", text: payload.input, sessionId: "notice-side", streamId: 1, sendRequestId: payload.sendRequestId });
-      return { ok: true, result: {} };
+providerTest.describe("side-chat notice delivery", () => {
+  providerTest.use({
+    reviewerMode: "disabled",
+    executionMode: "default",
+    scriptedScript: {
+      unavailableModels: ["unavailable-model"],
+      turns: [
+        { expect: "assistant", parts: [{ kind: "tool", id: "notice-side-question", name: "ask_user_question", input: {
+          questions: [{ question: "Continue the side conversation?", choices: ["Continue", "Stop"] }],
+        } }] },
+        { expect: "assistant", parts: [{ kind: "text", text: "Recorded side answer." }] },
+      ],
+    },
+  });
+
+  for (const width of [360, 1243]) {
+    providerTest(`real fallback and question delivery preserve the side chat at ${width}px`, async ({ app, mainWindow: page, scriptedProvider }, testInfo) => {
+      if (!scriptedProvider) throw new Error("Missing scripted provider");
+      await setWindowSize(app, width, 640);
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.evaluate(async () => {
+        const current = await window.aveApi.getSettings();
+        const result = await window.aveApi.updateSettings({ llm: {
+          vendors: { ...current.llm.vendors, "openai-compatible": {
+            ...current.llm.vendors["openai-compatible"], model: "unavailable-model",
+          } },
+          fallbackChain: [{ provider: "openai-compatible", model: "local-model" }],
+        } });
+        if ("ok" in result && !result.ok) throw new Error(result.error);
+      });
+      await expect(page.locator('[data-composer-surface="main"] [data-testid="iab-status-model"]')).toContainText("unavailable-model");
+      await page.getByTestId(TEST_IDS.panePanelToggle).click();
+      await page.getByTestId(chatSidePanelLauncherTestId("side-chat")).click();
+      const side = page.getByTestId("side-chat-view");
+      const composer = side.getByTestId("composer-textarea");
+      const transcript = side.getByTestId("side-chat-transcript");
+      await expect(composer).toBeVisible();
+      const before = { composer: await composer.boundingBox(), transcript: await transcript.boundingBox() };
+      await composer.fill("Keep the reading position");
+      await side.getByTestId("composer-send-button").click();
+      const toast = side.getByTestId("status-toast");
+      const card = side.getByTestId("ask-user-question-card");
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect(toast).toBeVisible();
+      await expect(toast).toContainText("unavailable-model");
+      await expect(toast).toContainText("local-model");
+      expect(await composer.boundingBox()).toEqual(before.composer);
+      expect(await transcript.boundingBox()).toEqual(before.transcript);
+      const answer = card.getByRole("option", { name: "Continue", exact: true });
+      expect(await answer.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+      })).toBe(true);
+      const overlap = await card.evaluate((element) => {
+        const notice = element.closest('[data-testid="side-chat-view"]')?.querySelector('[data-testid="status-toast"]');
+        if (!notice) throw new Error("Missing concurrent notice");
+        const toastBox = notice.getBoundingClientRect();
+        const cardBox = element.getBoundingClientRect();
+        const left = Math.max(toastBox.left, cardBox.left);
+        const right = Math.min(toastBox.right, cardBox.right);
+        const top = Math.max(toastBox.top, cardBox.top);
+        const bottom = Math.min(toastBox.bottom, cardBox.bottom);
+        const overlaps = left < right && top < bottom;
+        return { overlaps, cardOwnsHit: overlaps && element.contains(document.elementFromPoint((left + right) / 2, (top + bottom) / 2)) };
+      });
+      expect(overlap).toEqual({ overlaps: true, cardOwnsHit: true });
+      await page.screenshot({ path: testInfo.outputPath("side-chat-notice-and-question.png") });
+      await answer.click();
+      await expect(card).toHaveCount(0);
+      await expect(transcript).toContainText("Recorded side answer.", { timeout: 30_000 });
+      const fallbackIndex = scriptedProvider.requestedModels.indexOf("local-model");
+      expect(fallbackIndex).toBeGreaterThan(0);
+      expect(scriptedProvider.requestedModels.slice(0, fallbackIndex).every((model) => model === "unavailable-model")).toBe(true);
+      const answeredQuestion = scriptedProvider.toolResponses.map((response) => JSON.parse(response) as { tool_call_id: string; content: unknown })
+        .find((response) => response.tool_call_id === "notice-side-question");
+      expect(JSON.stringify(answeredQuestion?.content)).toContain("Continue");
+      expect(scriptedProvider.violations).toEqual([]);
+      await testInfo.attach("provider-delivery", { body: JSON.stringify({
+        requestedModels: scriptedProvider.requestedModels, toolResponses: scriptedProvider.toolResponses,
+      }, null, 2), contentType: "application/json" });
+      await toast.getByTestId("status-toast-dismiss").click();
+      await expect(toast).toHaveCount(0);
+      expect(await composer.boundingBox()).toEqual(before.composer);
+      expect(await transcript.boundingBox()).toEqual(before.transcript);
     });
-  }, CHANNELS);
-  await composer.fill("Keep the reading position");
-  await side.getByTestId("composer-send-button").click();
-  await expect(transcript).toContainText("Keep the reading position");
-  const before = { composer: await composer.boundingBox(), transcript: await transcript.boundingBox() };
-  await app.evaluate(({ BrowserWindow }, channel) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { streamId: 1, from: "primary/model", to: "secondary/model" });
-  }, CHANNELS.sidechat.fallback);
-  const toast = side.getByTestId("status-toast");
-  await expect(toast).toBeVisible();
-  await expect(toast).toHaveCSS("opacity", "1");
-  expect(await composer.boundingBox()).toEqual(before.composer);
-  expect(await transcript.boundingBox()).toEqual(before.transcript);
-  expect(await toast.evaluate((element) => {
-    const card = element.getBoundingClientRect();
-    return element.contains(document.elementFromPoint(card.left + card.width / 2, card.top + card.height / 2));
-  })).toBe(true);
-  await showApproval(app, "notice-side", "side-notice-approval");
-  await expectAnswerReceivesClick(side.getByTestId("approve-button"));
-  await page.screenshot({ path: testInfo.outputPath("side-chat-notice-overlay.png") });
-  await toast.getByTestId("status-toast-dismiss").click();
-  await expect(toast).toHaveCount(0);
-  expect(await composer.boundingBox()).toEqual(before.composer);
-  expect(await transcript.boundingBox()).toEqual(before.transcript);
+  }
 });
