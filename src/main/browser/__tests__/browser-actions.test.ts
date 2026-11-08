@@ -228,7 +228,8 @@ describe("resolving refs", () => {
     const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const shot = await snapshot(target(cdp), {}, refs);
-    const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+    const ref = /\[ref=(e\d+)\]/.exec(shot.text)?.[1];
+  if (!ref) throw new Error("Missing select reference");
 
     // A framework re-render replaces the button with an identical one.
     cdp.nodes = page([ax("b2", "button", "Save", { backendDOMNodeId: 42 })]);

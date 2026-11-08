@@ -150,7 +150,9 @@ describe("sub-agent approval adapter", () => {
     const input = { id: "unattributed", category: "tool" as const, toolName: "read_file", args: {},
       reason: "Read a file", createdAt: Date.now(), requestingAgentTitle: "forged child" };
     const pending = base.requestAndWait(input);
-    const card = send.mock.calls.find(([channel]) => channel === "ave:approval:request")![1];
+    const call = send.mock.calls.find(([channel]) => channel === "ave:approval:request");
+    if (!call) throw new Error("Missing approval card");
+    const card = call[1];
     expect(card.requestingAgentTitle).toBeUndefined();
     base.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
     await pending;

@@ -59,10 +59,11 @@ describe("BrowserTabRegistry", () => {
     expect(ops).toHaveLength(0);
     answer.resolve();
     await Promise.resolve();
-    attachTab(registry, { tabId: "page", webContentsId: 81, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
+    attachTab(registry, { tabId: "page", webContentsId: 81, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
     const opened = await opening;
     if (!opened.ok) throw new Error("Missing tab");
-    const tab = registry.liveTab(opened.tabId)!;
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing live tab");
     const lease = registry.acquireControl(tab, actor);
     expect(registry.setAgentTabAwake(81, true)).toBe(true);
     registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
@@ -126,15 +127,20 @@ describe("BrowserTabRegistry", () => {
     const { registry, ops } = setup();
     for (const [index, tabId] of ["first", "second"].entries()) {
       const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
-      attachTab(registry, { tabId, webContentsId: 91 + index, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
+      attachTab(registry, { tabId, webContentsId: 91 + index, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
       await opening;
     }
     registry.setActiveSurface(1, { kind: "browser", tabId: "first" });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-1" });
     await registry.requestTabOp(1, { op: "select", tabId: "tab-1", actor: ACTOR });
     expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-1" });
     await expect(registry.requestTabOp(1, { op: "select", tabId: "tab-2", actor: ACTOR })).resolves.toMatchObject({ ok: true });
     expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-2" });
     registry.setActiveSurface(1, { kind: "browser", tabId: "first" });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-2" });
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "third", webContentsId: 93, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    await opening;
     expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-2" });
     registry.bindConversationSurface(ACTOR.sessionId, { windowId: 1, surface: { kind: "browser", tabId: "first" } });
     expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-1" });

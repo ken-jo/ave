@@ -313,7 +313,8 @@ describe("browser tools", () => {
     await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
     let continued = false;
     h.page.actions.click = async target => {
-      await target.authorizeSite!("https://restricted.example/redirect");
+      if (!target.authorizeSite) throw new Error("Missing site authorization");
+      await target.authorizeSite("https://restricted.example/redirect");
       continued = true;
     };
     const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
@@ -367,21 +368,28 @@ describe("browser tools", () => {
   it("publishes each concurrent child's opened page for composer previews", async () => {
     const observed = browserObservations();
     const prepared = new Set<number>();
-    const h = harness({ onPrepare: target => { prepared.add(target.tab.guest!.id); h.tabs.documentChanged(target.tab.guest!.id); } });
+    const h = harness({ onPrepare: target => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      prepared.add(guest.id); h.tabs.documentChanged(guest.id);
+    } });
     const navigate = h.page.actions.navigate;
     h.page.actions.navigate = async (target, url, origin) => {
-      if (!prepared.has(target.tab.guest!.id)) h.tabs.documentChanged(target.tab.guest!.id);
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      if (!prepared.has(guest.id)) h.tabs.documentChanged(guest.id);
       if (target.signal.aborted) throw new Error("browser document changed");
       return navigate(target, url, origin);
     };
     const children = [CHILD_SESSION, "child-b"];
     const actions = children.map(sessionId => runWithAgentObservationTurn({ sessionId, turnId: "open-pages" }, () =>
-      h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/" + sessionId }, sessionId)));
+      h.run(BROWSER_TOOL.tabNew, { url: `https://a.example/${sessionId}` }, sessionId)));
     await vi.waitFor(() => expect(h.ops.filter(op => op.op === "new")).toHaveLength(2));
     for (const [index, op] of h.ops.filter(op => op.op === "new").entries()) {
       const guest = new FakeGuest(601 + index, "about:blank");
       h.tabs.guestAttached(guest, 1);
-      h.tabs.bindTab(1, { tabId: "child-page-" + index, webContentsId: guest.id, requestId: op.requestId! });
+      if (!op.requestId) throw new Error("Missing tab request");
+      h.tabs.bindTab(1, { tabId: `child-page-${index}`, webContentsId: guest.id, requestId: op.requestId });
     }
     expect((await Promise.all(actions)).every(result => !result.isError)).toBe(true);
     expect(observed.completed.map(entry => entry.identity.sessionId).sort()).toEqual([...children].sort());
@@ -543,7 +551,8 @@ describe("browser tools", () => {
     }
     expect((await opening).isError).toBe(false);
     expect(cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
-    expect(cards.at(-1)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    expect(cards.find(card => card.browserSite !== undefined)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    if (action === "ask") expect(cards.some(card => card.browserSite === undefined && card.exactRecordAllowed === false)).toBe(true);
   });
 
   it("reads an agent tab without asking and asks again when the user selects Ask", async () => {
@@ -568,10 +577,16 @@ describe("browser tools", () => {
 
   it("prepares a newly approved child tab before capturing its action signal", async () => {
     let prepared = false;
-    const h = harness({ onPrepare: (target) => { h.tabs.documentChanged(target.tab.guest!.id); prepared = true; } });
+    const h = harness({ onPrepare: (target) => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      h.tabs.documentChanged(guest.id); prepared = true;
+    } });
     const navigate = h.page.actions.navigate;
     h.page.actions.navigate = async (target, url, origin) => {
-      if (!prepared) h.tabs.documentChanged(target.tab.guest!.id);
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      if (!prepared) h.tabs.documentChanged(guest.id);
       if (target.signal.aborted) throw new Error("browser document changed");
       return navigate(target, url, origin);
     };
@@ -579,9 +594,12 @@ describe("browser tools", () => {
     await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
     const guest = new FakeGuest(501, "about:blank");
     h.tabs.guestAttached(guest, 1);
-    h.tabs.bindTab(1, { tabId: "child-page", webContentsId: guest.id, requestId: h.ops.at(-1)!.requestId! });
+    const requestId = h.ops.at(-1)?.requestId;
+    if (!requestId) throw new Error("Missing tab request");
+    h.tabs.bindTab(1, { tabId: "child-page", webContentsId: guest.id, requestId });
     expect((await opening).isError).toBe(false);
-    const tab = h.tabs.liveTab("tab-1")!;
+    const tab = h.tabs.liveTab("tab-1");
+    if (!tab) throw new Error("Missing live tab");
     expect(tab.controlMode).toBe("agent-active");
     expect(tab.owner?.sessionId).toBe(CHILD_SESSION);
     expect(h.cards.filter(card => card.browserSite)).toHaveLength(1);

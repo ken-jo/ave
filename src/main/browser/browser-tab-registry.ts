@@ -564,7 +564,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
       const actor = pendingNew.actor;
       tab.owner = actor ?? null;
-      if (actor) this.selectedOwnedTabs.set(windowTabKey(senderWindowId, actor.sessionId), tab.handle);
       this.bindingsChanged(senderWindowId);
       tab.opener = takenOver || actor === undefined ? "user" : "agent";
       tab.agentOrigin = takenOver || actor === undefined ? null : browserOrigin(pendingNew.request.url);
@@ -919,7 +918,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return;
     }
     if (backgroundFocus() && this.activeBrowserTab(tab.windowId) !== tab.handle) {
-      guest.focus!();
+      guest.focus?.();
     } else if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
     })) throw new Error("no browser renderer can focus this guest");

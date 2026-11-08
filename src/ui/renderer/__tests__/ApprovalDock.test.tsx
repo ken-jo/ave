@@ -81,7 +81,7 @@ describe("ApprovalDock", () => {
     const previous = getLocale();
     setLocale(locale);
     const cards = ["First page reader", "Second page reader"].map((title, index) => makeRequest({
-      id: "site-" + index, source: "builtin", toolName: "browser_navigate", browserSite: "https://en.wikipedia.org:443",
+      id: `site-${index}`, source: "builtin", toolName: "browser_navigate", browserSite: "https://en.wikipedia.org:443",
       requestingAgentTitle: title, args: { url: "https://en.wikipedia.org/" }, allowedChoices: ["allow-once", "deny-once"],
     }));
     const decide = vi.fn();
