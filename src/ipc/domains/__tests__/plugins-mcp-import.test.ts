@@ -23,7 +23,7 @@ describe("MCP config import refusal details", () => {
       removeConfig: vi.fn().mockRejectedValue(error),
     };
     const { registerPluginsHandlers } = await import("../plugins.js");
-    registerPluginsHandlers({ mcpManager, auditLogger: { log: vi.fn() } } as unknown as IpcDeps);
+    registerPluginsHandlers({ pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined) }, mcpManager, auditLogger: { log: vi.fn() } } as unknown as IpcDeps);
     const result = await invoke(CHANNELS.mcp.importClaudeDesktopApply, {
       raw: JSON.stringify({ mcpServers: { notes: { command: "notes-server" } } }),
       conflictPolicy: "overwrite",

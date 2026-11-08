@@ -160,6 +160,8 @@ export type PluginCardSummary = {
   tools: string[];
   toolDescriptions?: Record<string, string>;
   loadStatus?: "loaded" | "preparing" | "failed" | "disabled";
+  /** Retirement is in progress; a failed attempt clears this flag. */
+  stopping?: boolean;
   /** Whether the plugin's tools are currently exposed to the model. */
   active?: boolean;
   /** Whether an active immutable plugin generation is currently instantiated. */

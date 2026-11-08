@@ -12,6 +12,7 @@ import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { readWindowsAdminPolicy } from "../../shared/windows-admin-policy.js";
 import * as homePrivacy from "../../shared/ave-home.js";
 import * as facts from "../../shared/windows-path-facts.js";
+import * as sensitivePaths from "../sensitive-paths.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
 import * as integrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -92,10 +93,10 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(turnLines).toHaveLength(1);
     expect(releaseLines).toHaveLength(1);
     expect(turnLines[0]?.[1]).toEqual({
-      preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, totalMs: duration, rows: expect.any(Number),
+      preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, configMs: 0, liveGrants: 0, totalMs: duration, rows: expect.any(Number),
     });
     expect(turnLines[0]?.[1].rows).toBeGreaterThan(0);
-    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, totalMs: duration });
+    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, configMs: 0, liveGrants: 1, totalMs: duration });
     for (const [, fields] of [...turnLines, ...releaseLines]) {
       for (const value of Object.values(fields)) {
         expect(typeof value).toBe("number");
@@ -141,13 +142,37 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", {
       preflightMs: expect.any(Number), srtWinPrepMs: 12, userStatusMs: 11, pinsMs: 0,
-      denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0,
+      denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0, configMs: expect.any(Number), liveGrants: 0,
       totalMs: now, rows: expect.any(Number),
     });
     const fields = info.mock.calls.find(([message]) => message === "[asrt-sandbox] windows grant turn timing")?.[1];
     expect(fields.preflightMs).toBeGreaterThanOrEqual(3);
-    expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
+    expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows" && key !== "liveGrants").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
     grant.release();
+  });
+
+  it("times config builds and updates and counts holders rather than paths", async () => {
+    const other = join(fixture, "other");
+    mkdirSync(other);
+    await initializeAsrtSandbox({});
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(integrity.prepareSrtWinExecutable).mockImplementation(source => { now += 5; return source; });
+    vi.mocked(runtime.SandboxManager.updateConfig).mockImplementation(next => { now += 37; config = next; });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const first = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target, other] });
+    const second = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+    first.release();
+    second.release();
+    const turns = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant turn timing");
+    const releases = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant release timing");
+    expect(turns.map(([, fields]) => fields.liveGrants)).toEqual([0, 1]);
+    expect(releases.map(([, fields]) => fields.liveGrants)).toEqual([2, 1]);
+    for (const [, fields] of turns) expect(fields.configMs).toBe(47);
+    for (const [, fields] of releases) {
+      expect(fields.configMs).toBe(42);
+      expect(fields.totalMs).toBe(fields.configMs + fields.revokeMs);
+    }
   });
 
   it("logs elapsed grant time when the native grant throws", async () => {
@@ -161,6 +186,55 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] })).rejects.toThrow("grant interrupted");
     expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, grantRevokeMs: 31, totalMs: 6031 }));
     expect(warn).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, grantRevokeMs: 31, totalMs: 6031 }));
+  });
+
+  it("bounds repeated filesystem identity work and rechecks grants on each config build", () => {
+    const grants = Array.from({ length: 8 }, (_, index) => {
+      const path = join(fixture, `live-${index}`);
+      mkdirSync(path);
+      return { path, literal: true as const };
+    });
+    const canonicalize = vi.spyOn(sensitivePaths, "canonicalizePathForMatch");
+    const denied = join(target, "missing-denied");
+    const settings = { denyWrite: [denied] };
+    buildSandboxConfig(settings);
+    const baseline = canonicalize.mock.calls.length;
+    canonicalize.mockClear();
+    const live = { allowRead: grants, allowWrite: grants };
+    const before = buildSandboxConfig(settings, undefined, live);
+    expect(canonicalize.mock.calls.length).toBeLessThanOrEqual(baseline + 64);
+    for (const grant of grants) expect(canonicalize.mock.calls.some(([path]) => path === grant.path)).toBe(true);
+    canonicalize.mockClear();
+    const moved = join(fixture, "moved");
+    const first = grants[0];
+    if (!first) throw new Error("Live grant fixture is empty");
+    renameSync(first.path, moved);
+    symlinkSync(target, first.path, "junction");
+    const after = buildSandboxConfig(settings, undefined, live);
+    expect(canonicalize.mock.calls.some(([path]) => path === first.path)).toBe(true);
+    expect(before.filesystem.allowWrite).toEqual(after.filesystem.allowWrite);
+    expect(before.filesystem.allowRead).toEqual(after.filesystem.allowRead);
+    expect(before.filesystem.denyWrite).not.toContain(denied);
+    expect(after.filesystem.denyWrite).toContain(denied);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("accounts for rollback config and revoke time when publication fails", async () => {
+    await initializeAsrtSandbox({});
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(runtime.SandboxManager.updateConfig)
+      .mockImplementationOnce(() => { now += 31; throw new Error("config publication failed"); })
+      .mockImplementationOnce(next => { now += 47; config = next; });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementation(() => { now += 19; return [{ path: target, status: "revoked" }]; });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: 12345, allowRead: [target] })).rejects.toThrow("config publication failed");
+    expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({
+      configMs: 78, grantRevokeMs: 19, totalMs: 97, liveGrants: 0,
+    }));
+    expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant release timing", {
+      configMs: 47, revokeMs: 19, totalMs: 66, liveGrants: 1,
+    });
   });
 
   it.for(["junction", "dir"] as const)("grants the resolved %s target and retains its native identity", async (type, context) => {

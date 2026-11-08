@@ -350,10 +350,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
 
   // #1176 — toggle a plugin active/inactive. Inactive plugins stay loaded but their tools are hidden from the model.
   // Optimistically reflects the new loadStatus, then refreshes from the runtime (which is the source of truth).
-  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<{ pluginId: string; enabled: boolean } | null>(null);
   const handleToggleEnabled = useCallback(
     async (pluginId: string, nextEnabled: boolean) => {
-      setTogglingId(pluginId);
+      setToggling({ pluginId, enabled: nextEnabled });
       try {
         const res = await getApi().setPluginEnabled(pluginId, nextEnabled);
         if (!res.ok) {
@@ -364,7 +364,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       } catch (e) {
         showBanner("error", errorMessage(e) || t("pluginConfigTab.errorToggleEnabled"));
       } finally {
-        setTogglingId(null);
+        setToggling(null);
       }
     },
     [refreshPlugins, showBanner, t],
@@ -423,7 +423,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   }, [refreshPlugins]);
 
   useEffect(() => {
-    if (!plugins.some((plugin) => plugin.loadStatus === "preparing")) return;
+    if (!plugins.some((plugin) => plugin.loadStatus === "preparing" || plugin.stopping)) return;
     const interval = window.setInterval(() => {
       void refreshPlugins();
     }, 750);
@@ -521,6 +521,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
   const selectedPluginRuntimeLoaded = selectedPlugin ? isRuntimeCallablePlugin(selectedPlugin) : false;
+  const selectedPluginStopping = Boolean(selectedPlugin?.stopping
+    || (toggling?.pluginId === selectedPlugin?.id && toggling && !toggling.enabled));
   // The active-state switch is shown for a callable runtime AND for a disabled
   // plugin. Disable retires the plugin's generation, so a disabled plugin has
   // no runtime (`runtimeLoaded: false`), and this switch is the only way to
@@ -795,7 +797,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           {t("pluginConfigTab.statusFailed")}
                         </span>
                       )}
-                      {p.loadStatus === "disabled" && (
+                      {p.stopping && (
+                        <span
+                          data-testid={`plugin-config:row-status:${p.id}`}
+                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
+                        >
+                          {t("pluginConfigTab.statusStopping")}
+                        </span>
+                      )}
+                      {p.loadStatus === "disabled" && !p.stopping && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
                           className="inline-block rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
@@ -849,12 +859,12 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           >
                             {t("pluginConfigTab.statusLoaded")}
                           </span>
-                        ) : selectedPlugin.loadStatus === "preparing" ? (
+                        ) : selectedPlugin.loadStatus === "preparing" || selectedPlugin.stopping ? (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
                             className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
                           >
-                            {t("pluginConfigTab.statusPreparing")}
+                            {t(selectedPlugin.stopping ? "pluginConfigTab.statusStopping" : "pluginConfigTab.statusPreparing")}
                           </span>
                         ) : selectedPlugin.loadStatus === "failed" ? (
                           <span
@@ -884,6 +894,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {selectedPluginStopping && (
+                      <span
+                        role="status"
+                        data-testid={`plugin-config:stopping:${selectedPlugin.id}`}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {t("pluginConfigTab.stopping")}
+                      </span>
+                    )}
                     {selectedPluginToggleable ? (
                       <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         <span>{selectedPluginActive ? t("pluginConfigTab.activeLabel") : t("pluginConfigTab.inactiveLabel")}</span>
@@ -891,7 +910,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           size="sm"
                           data-testid={`plugin-config:enabled-toggle:${selectedPlugin.id}`}
                           checked={selectedPluginActive}
-                          disabled={togglingId === selectedPlugin.id}
+                          disabled={selectedPluginStopping || toggling?.pluginId === selectedPlugin.id}
+                          aria-busy={selectedPluginStopping || toggling?.pluginId === selectedPlugin.id}
                           onCheckedChange={(next) => void handleToggleEnabled(selectedPlugin.id, next)}
                           aria-label={t("pluginConfigTab.toggleAriaLabel", { name: selectedPlugin.name })}
                         />

@@ -272,6 +272,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
     broadcastToAppWindows(deps, channel, payload, { logger: log });
   };
+  pluginRuntime.subscribePluginStateChange((pluginId, enabled) => {
+    emitHostEvent("plugin.enabled-changed", { pluginId, enabled });
+    broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled });
+  });
   const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   // Retain bootstrap status for windows that miss events while the splash document is loaded.
   ipcMain.handle(CHANNELS.bootstrap.statusGet, (e) => {
@@ -318,7 +322,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       } catch (err) {
         const message = errMessage(err);
         if (err instanceof PluginDeploymentDeniedError) {
-          // Log deployment-policy details internally; return a stable renderer refusal.
           log.warn(`plugin enabled-state change denied (${pluginId}): %s`, message);
           return pluginConfigError(
             "disable-not-permitted",
@@ -331,8 +334,6 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         log.error(`plugin enabled-state change failed (${pluginId}): %s`, message);
         return pluginConfigError("toggle-failed", "plugin enabled state could not be changed");
       }
-      emitHostEvent("plugin.enabled-changed", { pluginId, enabled });
-      broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled });
       return { ok: true, pluginId, enabled } as const;
     },
   );

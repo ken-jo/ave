@@ -74,6 +74,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
       installLocal: vi.fn(),
     },
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       resolvePluginId: vi.fn((pluginId: string) => pluginId),
       resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
       resolvePluginInstallIdIfKnown: vi.fn((pluginId: string) => pluginId),

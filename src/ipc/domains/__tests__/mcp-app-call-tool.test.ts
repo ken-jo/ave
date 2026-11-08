@@ -33,6 +33,7 @@ async function setup() {
 
   const deps = {
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       resolveToolOwner: vi.fn((method: string) =>
         method === "acme_open" || method === "acme_write" ? "acme-cards" : undefined),
       callFromApp,

@@ -86,6 +86,8 @@ export interface PluginCard {
   capabilities: string[];
   toolDescriptions?: Record<string, string>;
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
+  /** Retirement is in progress; a failed attempt clears this flag. */
+  stopping?: boolean;
   /** Model exposure is independent of whether the runtime is loaded. */
   active: boolean;
   /** Inactive plugins can remain loaded and callable. */
@@ -1510,6 +1512,10 @@ abstract class PluginRuntimeState {
   private readonly pendingHostApiIncarnations = new Map<string, Set<() => void>>();
   /** A RuntimePlugin instance's stop hook must execute at most once. */
   private readonly pluginStopOperations = new WeakMap<RuntimePlugin, Promise<boolean>>();
+  private readonly pluginStopSettlements = new WeakMap<RuntimePlugin, Promise<void>>();
+  protected readonly pendingDisabledRetirements = new Set<string>();
+  protected readonly stoppingPluginIds = new Set<string>();
+  protected readonly disabledStopSettlements = new Map<string, Promise<void>>();
   protected nextPluginLifecycleGeneration = 0;
   protected readonly pluginUiRevisions = new Map<string, number>();
   protected nextPluginUiRevision = 0;
@@ -2258,7 +2264,17 @@ abstract class PluginRuntimeState {
   protected assertPluginLifecycleAvailable(pluginId: string): void {
     // No generation is added, replaced or reloaded once shutdown has begun.
     if (this.isShuttingDown()) throw new PluginRuntimeShutdownError(pluginId, "plugin lifecycle");
+    this.assertPluginDisableShutdownConfirmed(pluginId);
     this.assertPluginLifecycleNotQuarantined(pluginId);
+  }
+
+  protected assertPluginDisableShutdownConfirmed(pluginId: string): void {
+    if (this.pendingDisabledRetirements.has(this.resolveKnownPluginId(pluginId))) {
+      const recovery = this.isPluginLifecycleQuarantined(pluginId)
+        ? "host restart is required"
+        : "retry the enabled-state change";
+      throw new Error(`plugin shutdown is unconfirmed for ${pluginId}; ${recovery}`);
+    }
   }
 
   /** A quarantined lifecycle neither starts nor commits a generation until host restart. */
@@ -2366,6 +2382,9 @@ abstract class PluginRuntimeState {
     this.loadFailureInfo.clear();
     this.lastAttemptRefusal.clear();
     this.disabledPluginIds.clear();
+    this.pendingDisabledRetirements.clear();
+    this.stoppingPluginIds.clear();
+    this.disabledStopSettlements.clear();
     this.capabilityBlockedPluginIds.clear();
     this.preparation.clear();
     this.pendingRestarts.clear();
@@ -2394,21 +2413,30 @@ abstract class PluginRuntimeState {
     pluginId: string,
     instance: RuntimePlugin,
     lifecycleHookScope?: PluginLifecycleHookScope,
+    quarantineOnTimeout = true,
   ): Promise<boolean> {
     if (!instance.stop) return true;
     // A native child's stop includes its owned process's disposal deadline; a shorter race would
     // quarantine a normal, verified shutdown until host restart.
     const stopBudgetMs = pluginStopBudgetMs(instance, START_FAILURE_STOP_TIMEOUT_MS);
+    let stop = this.pluginStopSettlements.get(instance);
+    if (!stop) {
+      stop = Promise.resolve().then(() => this.runPluginLifecycleHook(lifecycleHookScope, () => instance.stop!()));
+      this.pluginStopSettlements.set(instance, stop);
+      if (!quarantineOnTimeout) this.disabledStopSettlements.set(pluginId, stop);
+    }
+    let settled = false;
+    void stop.then(() => { settled = true; }, () => { settled = true; });
     try {
       await raceWithTimeout(
-        this.runPluginLifecycleHook(lifecycleHookScope, () => instance.stop!()),
+        stop,
         stopBudgetMs,
         () => new Error(`stop timeout (>${stopBudgetMs}ms)`),
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.STOP_OK }, "plugin stopped");
       return true;
     } catch (err) {
-      this.quarantinePluginLifecycle(pluginId, (err as Error).message);
+      if (settled || quarantineOnTimeout) this.quarantinePluginLifecycle(pluginId, (err as Error).message);
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.STOP_FAIL, err }, "plugin stop failed");
       return false;
     }
@@ -2910,14 +2938,15 @@ abstract class PluginRuntimeState {
         runtime.deactivateHostApi?.();
       }),
       once("runtime.stop", async () => {
-        const stopped = await this.stopAfterStartFailure(
+        const stopped = await this.stopPluginInstance(
           runtime.manifest.id,
           runtime.instance,
           runtime.lifecycleHookScope,
+          !this.pendingDisabledRetirements.has(runtime.manifest.id),
         );
         if (!stopped) {
           throw new Error(
-            `generation stop failed or timed out for ${runtime.manifest.id}`,
+            `generation stop is unconfirmed for ${runtime.manifest.id}; retry the enabled-state change`,
           );
         }
       }),
@@ -3202,6 +3231,10 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.methodMap = this.methodMapWith(pluginId, new Map());
         this.plugins = nextPlugins;
         this.disposers = nextDisposers;
+        if (this.pendingDisabledRetirements.has(pluginId)) {
+          this.inactivePluginIds.add(pluginId);
+          this.disabledPluginIds.add(pluginId);
+        }
         this.invalidatePluginUiRevision(pluginId);
         if (predecessorAuthKey !== undefined) {
           this.pluginAccountHashes.delete(predecessorAuthKey);
@@ -3490,6 +3523,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     canonicalPluginId: string,
     options: { preserveConfigOverride?: boolean },
   ): Promise<void> {
+    this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
     this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
     this.clearCapabilityBlockedRetry(
       canonicalPluginId,
@@ -4798,6 +4832,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     const generationLifecycle = this.requireCapabilityCommitLifecycle("atomic plugin removal");
     return generationLifecycle.runInLifecycleQueue(canonicalPluginId, () => {
+      this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
       this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
       return commitAtomicPluginRemoval({
         requestedPluginId: pluginId,
@@ -6655,9 +6690,30 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
 
   /** Disable drains predecessor leases; enable verifies immutable receipt bytes before atomic registry and generation publication. */
   async setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    return this.changePluginEnabled(pluginId, enabled);
+  }
+
+  private readonly pluginStateChangeListeners = new Set<(pluginId: string, enabled: boolean) => void>();
+
+  subscribePluginStateChange(listener: (pluginId: string, enabled: boolean) => void): () => void {
+    this.pluginStateChangeListeners.add(listener);
+    return () => { this.pluginStateChangeListeners.delete(listener); };
+  }
+
+  private notifyPluginStateChange(pluginId: string): void {
+    for (const listener of this.pluginStateChangeListeners) {
+      try {
+        listener(pluginId, this.isPluginEnabled(pluginId));
+      } catch (error) {
+        log.error(`plugin state notification failed for ${pluginId}: %s`, errorMessage(error));
+      }
+    }
+  }
+
+  private async changePluginEnabled(pluginId: string, enabled: boolean, retirementOnly = false): Promise<void> {
     // Cancel dependency-held restart work before admission to its canonical lifecycle lock.
-    this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
-    return withResolvedPluginInstallLocks(
+    if (!retirementOnly) this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
+    const transition = withResolvedPluginInstallLocks(
       () => {
         const canonicalPluginId = this.resolveKnownPluginId(pluginId);
         const installClaim = this.getPluginInstallClaim(canonicalPluginId);
@@ -6679,12 +6735,41 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         if (installClaim === undefined) {
           throw new Error(`Plugin install provenance unknown: ${pluginId}`);
         }
+        const pendingEnable = enabled && this.pendingDisabledRetirements.has(canonicalPluginId);
+        if (pendingEnable && this.isPluginLifecycleQuarantined(canonicalPluginId)) {
+          this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+        }
         await assertDisableAllowed(enabled, installClaim, pluginId, this.deploymentGuard);
         const generationLifecycle = this.requireCapabilityCommitLifecycle(
           "plugin enabled-state change",
         );
         await generationLifecycle.runInLifecycleQueue(canonicalPluginId, async () => {
-          if (!this.inactivePluginIds.has(canonicalPluginId) === enabled) return;
+          const refuseEnable = pendingEnable || (enabled && this.pendingDisabledRetirements.has(canonicalPluginId));
+          if (refuseEnable && this.isPluginLifecycleQuarantined(canonicalPluginId)) {
+            this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+          }
+          if (this.pendingDisabledRetirements.has(canonicalPluginId)) {
+            if (generationLifecycle.getActive(canonicalPluginId)) {
+              throw new Error(`cannot retire disabled plugin with an active generation: ${canonicalPluginId}`);
+            }
+            this.stoppingPluginIds.add(canonicalPluginId);
+            try {
+              await generationLifecycle.deactivateWithCommit(canonicalPluginId, async () => undefined);
+            } catch (error) {
+              if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+              throw error;
+            } finally {
+              this.stoppingPluginIds.delete(canonicalPluginId);
+            }
+            this.pendingDisabledRetirements.delete(canonicalPluginId);
+            this.disabledStopSettlements.delete(canonicalPluginId);
+            this.notifyPluginStateChange(canonicalPluginId);
+          }
+          if (refuseEnable) {
+            throw new Error(`previous plugin shutdown is now confirmed for ${canonicalPluginId}; enable again`);
+          }
+          if (retirementOnly || !this.inactivePluginIds.has(canonicalPluginId) === enabled) return;
+          let persisted = false;
           const persist = async (): Promise<void> => {
             // Static toggles are session-local; installed toggles persist under the raw registry id.
             if (this.registryPath && installClaim !== null) {
@@ -6696,6 +6781,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
                 entry.enabled = enabled;
               });
             }
+            persisted = true;
           };
 
           let retirementError: unknown;
@@ -6751,21 +6837,37 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               );
               this.beginPluginLifecycleOperation(canonicalPluginId);
               this.preparation.clearFor(canonicalPluginId);
-              const { retirement } = await generationLifecycle.deactivateWithCommit(
-                canonicalPluginId,
-                persist,
-                this.capabilityDependencyCommitScope(() => {
-                  this.assertNoActiveCapabilityDependents(
-                    canonicalPluginId,
-                    "disable",
-                  );
-                }),
-              );
-              retirementError = await this.captureCommittedRetirementFailure(
-                canonicalPluginId,
-                retirement,
-                "plugin enabled-state disable",
-              );
+              this.pendingDisabledRetirements.add(canonicalPluginId);
+              this.stoppingPluginIds.add(canonicalPluginId);
+              try {
+                const { retirement } = await generationLifecycle.deactivateWithCommit(
+                  canonicalPluginId,
+                  persist,
+                  this.capabilityDependencyCommitScope(() => {
+                    this.assertNoActiveCapabilityDependents(
+                      canonicalPluginId,
+                      "disable",
+                    );
+                  }),
+                );
+                retirementError = await this.captureCommittedRetirementFailure(
+                  canonicalPluginId,
+                  retirement,
+                  "plugin enabled-state disable",
+                );
+              } catch (error) {
+                if (!persisted || generationLifecycle.getActive(canonicalPluginId)) {
+                  this.pendingDisabledRetirements.delete(canonicalPluginId);
+                  throw error;
+                }
+                retirementError = error;
+              } finally {
+                this.stoppingPluginIds.delete(canonicalPluginId);
+              }
+              if (retirementError === undefined) {
+                this.pendingDisabledRetirements.delete(canonicalPluginId);
+                this.disabledStopSettlements.delete(canonicalPluginId);
+              }
             }
             this.inactivePluginIds.add(canonicalPluginId);
             this.disabledPluginIds.add(canonicalPluginId);
@@ -6847,6 +6949,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
           } catch (error) {
             callbackError = error;
           }
+          this.notifyPluginStateChange(canonicalPluginId);
           if (retirementError !== undefined && callbackError !== undefined) {
             throw new AggregateError(
               [
@@ -6870,6 +6973,16 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         }
       },
     );
+    void transition.catch(() => {
+      const canonicalPluginId = this.resolveKnownPluginId(pluginId);
+      const stop = this.disabledStopSettlements.get(canonicalPluginId);
+      this.disabledStopSettlements.delete(canonicalPluginId);
+      if (!stop || !this.pendingDisabledRetirements.has(canonicalPluginId)) return;
+      void stop.then(() => this.changePluginEnabled(canonicalPluginId, false, true)).catch(error => {
+        log.error(`disabled plugin retirement remains incomplete for ${canonicalPluginId}: %s`, errorMessage(error));
+      });
+    });
+    return transition;
   }
 
   getPluginManifest(pluginId: string): PluginManifest | undefined {
@@ -6914,15 +7027,18 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       : null;
     const cards = new Map<string, PluginCard>();
     for (const [pluginId, manifest] of this.knownPluginManifests) {
-      const runtimeLoaded = this.plugins.has(pluginId);
+      const stopping = this.stoppingPluginIds.has(pluginId);
+      const runtimeLoaded = !stopping && this.plugins.has(pluginId);
       const enabled = !this.inactivePluginIds.has(pluginId);
       // Loaded candidates remain inactive until their generation publishes.
-      const active = enabled && this.isPluginGenerationActive(pluginId);
-      const loadStatus = this.preparation.isPreparing(pluginId)
+      const active = !stopping && enabled && this.isPluginGenerationActive(pluginId);
+      const loadStatus = stopping ? "disabled" : this.preparation.isPreparing(pluginId)
         || this.capabilityBlockedPluginIds.has(pluginId)
         ? "preparing"
         // Disabled cards report runtimeLoaded false while retaining the settings switch needed to re-enable them.
-        : !enabled
+        : this.pendingDisabledRetirements.has(pluginId)
+          ? "failed"
+          : !enabled
           ? "disabled"
           // A quarantined lifecycle (an unverified child termination) is never reported as healthy.
           : runtimeLoaded && !this.isPluginLifecycleQuarantined(pluginId)
@@ -6940,6 +7056,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         preparationStatus: this.preparation.getStatus(pluginId),
         installAliases: this.getPluginInstallAliases(pluginId),
       });
+      if (stopping) card.stopping = true;
       // Retain later-phase load classification so the settings UI can offer the appropriate repair.
       if (loadStatus === "failed") {
         const info = this.loadFailureInfo.get(pluginId);
@@ -6948,6 +7065,9 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         // Factory arm and confinement exist only if the failed construction reached routing.
         if (info?.arm) card.arm = info.arm;
         if (info?.confinement) card.confinement = info.confinement;
+        if (this.pendingDisabledRetirements.has(pluginId)) {
+          card.installFailureMessage = "Plugin shutdown or generation cleanup is unconfirmed; retry the enabled-state change";
+        }
       }
       // Report the generation actually serving, independent of model exposure.
       const loaded = this.plugins.get(pluginId);

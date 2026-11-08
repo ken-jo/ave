@@ -228,13 +228,13 @@ function addProtectedRoutingPins(path: string, routingPins: Set<string>, deniedP
 }
 
 // Compare filesystem grants, including canonical Windows aliases and casing.
-export function isGrantPathWithin(root: string, path: string): boolean {
+export function isGrantPathWithin(root: string, path: string, canonicalize = canonicalizePathForMatch): boolean {
   if (process.platform !== "win32") {
     const rel = relative(resolve(root), resolve(path));
     return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
   }
-  const foldedRoot = caseFoldForMatch(canonicalizePathForMatch(root));
-  const foldedPath = caseFoldForMatch(canonicalizePathForMatch(path));
+  const foldedRoot = caseFoldForMatch(canonicalize(root));
+  const foldedPath = caseFoldForMatch(canonicalize(path));
   return isCanonicalPathWithin(foldedRoot, foldedPath);
 }
 
