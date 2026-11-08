@@ -842,6 +842,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const resumeId = spawn.childSessionId;
     expect(subStore.sessions.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
       "read_only",
+      "read_tool_result_chunk",
       "agent_send",
     ]);
 
@@ -854,6 +855,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
     expect(resumeProvider.observedToolNames[0]).toEqual([
       "read_only",
+      "read_tool_result_chunk",
       "agent_send",
     ]);
     expect(resumeProvider.observedToolNames[0]).not.toContain("bash");
@@ -885,7 +887,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     } finally {
       restore();
     }
-    expect(resumeProvider.observedToolNames[0]).toEqual(["orig_tool"]);
+    expect(resumeProvider.observedToolNames[0]).toEqual(["orig_tool", "read_tool_result_chunk"]);
     expect(resumeProvider.observedToolNames[0]).not.toContain(
       "newly_added_tool",
     );
@@ -920,6 +922,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const resumeId = spawn.childSessionId;
     expect(subStore.sessions.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
       "noop",
+      "read_tool_result_chunk",
     ]);
 
     let spawnDepthAtResume: unknown = "unset";
@@ -944,7 +947,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
     // Continuation depth stays one to prevent recursive spawning.
     expect(spawnDepthAtResume).toBe(1);
-    expect(resumeProvider.observedToolNames[0]).toEqual(["noop"]);
+    expect(resumeProvider.observedToolNames[0]).toEqual(["noop", "read_tool_result_chunk"]);
     expect(resumeProvider.observedToolNames[0]).not.toContain("agent_spawn");
   });
 
@@ -2850,7 +2853,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       afterSpawn.cumulativeRounds! + resumed.turnCount,
     );
     // Full metadata overwrite must preserve frozen scope and profile fields for later resumes.
-    expect(afterResume.sourceTools).toEqual(["noop"]);
+    expect(afterResume.sourceTools).toEqual(["noop", "read_tool_result_chunk"]);
     expect(afterResume.profileModel).toBe("high");
     expect(afterResume.profileMode).toBe("execute");
     expect(afterResume.sessionKind).toBe("subagent");
