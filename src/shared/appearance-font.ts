@@ -22,5 +22,5 @@ export function isValidFontFamilyOverride(value: unknown): value is string {
     && value.length > 0
     && value.length <= _FONT_FAMILY_MAX
     && FONT_FAMILY_LIST.test(value)
-    && value.split(",").every((family) => !CSS_WIDE_KEYWORDS.has(family.trim().toLowerCase()));
+    && value.match(/"[^"]*"|'[^']*'|[^,"']+/g)?.every((family) => !CSS_WIDE_KEYWORDS.has(family.trim().toLowerCase())) === true;
 }

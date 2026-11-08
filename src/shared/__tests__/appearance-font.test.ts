@@ -62,3 +62,15 @@ it("rejects malformed font lists while allowing quoted and multiword family name
   expect(isValidFontFamilyOverride(good), good).toBe(true);
  }
 });
+
+it("treats commas and CSS-wide words inside quotes as part of one family", () => {
+ for (const keyword of ["inherit", "initial", "unset", "revert", "revert-layer", "default"]) {
+  for (const quote of ['"', "'"]) {
+   expect(isValidFontFamilyOverride(` ${quote}Foo, ${keyword}, Bar${quote}, monospace`)).toBe(true);
+   expect(isValidFontFamilyOverride(`${quote}Foo, ${keyword}, Bar${quote}, ${keyword}`)).toBe(false);
+   expect(isValidFontFamilyOverride(`${keyword}, ${quote}Foo, ${keyword}, Bar${quote}`)).toBe(false);
+  }
+  expect(isValidFontFamilyOverride(`Foo ${keyword} Bar, monospace`)).toBe(true);
+  expect(isValidFontFamilyOverride(`Foo, ${keyword.toUpperCase()}, Bar`)).toBe(false);
+ }
+});
