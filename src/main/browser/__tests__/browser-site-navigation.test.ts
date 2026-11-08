@@ -15,9 +15,10 @@ describe("browser site navigation admission", () => {
     const n = navigation();
     let allow = () => {};
     const authorize = vi.fn(() => new Promise<void>((resolve) => { allow = resolve; }));
-    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize });
+    const signal = new AbortController().signal;
+    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize, signal });
     n.paused("click", "https://other.example/path");
-    expect(authorize).toHaveBeenCalledWith("https://other.example/path");
+    expect(authorize).toHaveBeenCalledWith("https://other.example/path", signal);
     expect(n.send).not.toHaveBeenCalledWith("Fetch.continueRequest", expect.anything());
     allow();
     await vi.waitFor(() => expect(n.send).toHaveBeenCalledWith("Fetch.continueRequest", { requestId: "click" }));
@@ -26,19 +27,21 @@ describe("browser site navigation admission", () => {
   it("checks every redirect hop and refuses denied and non-web destinations", async () => {
     const n = navigation();
     const authorize = vi.fn(async (url: string) => { if (url.includes("denied")) throw new Error("denied"); });
-    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize });
+    const signal = new AbortController().signal;
+    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize, signal });
     n.paused("first", "https://first.example");
     n.paused("redirect", "https://denied.example");
     n.paused("scheme", "file:///example");
     await vi.waitFor(() => expect(n.send).toHaveBeenCalledWith("Fetch.failRequest", { requestId: "redirect", errorReason: "Aborted" }));
     expect(n.send).toHaveBeenCalledWith("Fetch.failRequest", { requestId: "scheme", errorReason: "Aborted" });
-    expect(authorize.mock.calls).toEqual([["https://first.example"], ["https://denied.example"]]);
+    expect(authorize.mock.calls).toEqual([["https://first.example", signal], ["https://denied.example", signal]]);
     stop();
   });
   it("refuses an unknown document frame instead of treating it as a subframe", async () => {
     const n = navigation();
     const authorize = vi.fn(async () => {});
-    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize });
+    const signal = new AbortController().signal;
+    const stop = await gateBrowserSiteNavigation(n.cdp, "main", { active: () => true, authorize, signal });
     n.paused("unknown", "https://other.example", "unknown-frame");
     await vi.waitFor(() => expect(n.send).toHaveBeenCalledWith("Fetch.failRequest", { requestId: "unknown", errorReason: "Aborted" }));
     expect(authorize).not.toHaveBeenCalled();
