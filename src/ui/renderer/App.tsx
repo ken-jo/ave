@@ -12,6 +12,7 @@ import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
 import { NoticeLiveRegion, StatusBar } from "./components/StatusBar.js";
+import { PendingAnswerDot } from "./components/PendingAnswerDot.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
@@ -911,6 +912,10 @@ export function App() {
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
   }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  const sidebarAnswerPending = [...pendingAnswers.sessionIds].some((sessionId) => {
+    const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
+    return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
+  });
   const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
@@ -2371,7 +2376,7 @@ export function App() {
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
-                keepVisibleInFullscreen={sidebarHidden}
+                keepVisibleInFullscreen={sidebarHidden || sidebarCollapsed}
                 leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? RAIL_BAND_LEAD : COLLAPSED_RAIL_RESERVE + sidebarWidth + CONTENT_TITLE_INSET}
               >
                 {/* With the list folded, the button that unfolds it is the band's first control (case 21). */}
@@ -2380,14 +2385,15 @@ export function App() {
                     data-testid="sidebar-collapse-toggle"
                     variant="ghost"
                     size="icon"
-                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    className="relative h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
                     title={t("mainToolbar.expandSidebar")}
-                    aria-label={t("mainToolbar.expandSidebar")}
+                    aria-label={sidebarAnswerPending ? `${t("mainToolbar.expandSidebar")} · ${t("pendingAnswerDot.label")}` : t("mainToolbar.expandSidebar")}
                     aria-pressed={false}
                     onClick={() => setSidebarState("expanded")}
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   >
                     <PanelLeftOpen className="h-4 w-4" />
+                    {sidebarAnswerPending ? <PendingAnswerDot testId="sidebar-collapse-toggle-pending-answer" /> : null}
                   </Button>
                 )}
                 {sidebarHidden && (
@@ -2395,13 +2401,14 @@ export function App() {
                     data-testid="sidebar-show"
                     variant="ghost"
                     size="icon"
-                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    className="relative h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
                     title={t("mainToolbar.showSidebar")}
-                    aria-label={t("mainToolbar.showSidebar")}
+                    aria-label={sidebarAnswerPending ? `${t("mainToolbar.showSidebar")} · ${t("pendingAnswerDot.label")}` : t("mainToolbar.showSidebar")}
                     onClick={showSidebar}
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   >
                     <PanelLeftOpen className="h-4 w-4" />
+                    {sidebarAnswerPending ? <PendingAnswerDot testId="sidebar-show-pending-answer" /> : null}
                   </Button>
                 )}
                 <MainToolbar
