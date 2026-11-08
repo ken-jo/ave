@@ -150,6 +150,34 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     );
   }
 
+  function makeLifecycle(runtime: ReturnType<typeof makeRuntime>): PluginBundleLifecycle {
+    return new PluginBundleLifecycle({
+      pluginRuntime: runtime,
+      receiptCacheRoot: testDir,
+      skillStore: new SkillStore({ userDir: join(testDir, "skills") }),
+      skillOverlay: { clearPluginGeneration: vi.fn() },
+      personaPromptStore: new PersonaPromptStore({ userDir: join(testDir, "prompts") }),
+      hookManager: new ScriptHookManager(),
+      revokeOperationGeneration: vi.fn(),
+      onContributionsUpdated: vi.fn(),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration: vi.fn(async () => ({ records: [], predecessorServerIds: [], predecessorToolNames: [],
+          registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false })),
+        publishBundledGeneration: vi.fn(),
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+      loopbackManager: {
+        prepareGeneration: vi.fn(async () => ({})),
+        prepareRemoval: vi.fn(() => ({})),
+        publishGeneration: vi.fn(), postPublishGeneration: vi.fn(),
+        discardGeneration: vi.fn(async () => undefined), retireGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+  }
+
   it("defaults to active (enabled !== false) for a freshly loaded plugin", async () => {
     const runtime = makeRuntime();
     await runtime.startAll();
@@ -497,6 +525,47 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
   });
 
+  it.each([false, true])("reports stopping throughout a leased generation drain, retirement failure=%s", async (failRetirement) => {
+    const runtime = makeRuntime();
+    const lifecycle = makeLifecycle(runtime);
+    runtime.setGenerationAccess(lifecycle);
+    await runtime.startAll();
+    const lease = await lifecycle.acquire("se-plugin");
+    const prepare = runtime.prepareRuntimeRetirement.bind(runtime);
+    const retirement = failRetirement ? vi.spyOn(runtime, "prepareRuntimeRetirement").mockImplementation(view =>
+      prepare(view).map(step => step.phase === "runtime.drain"
+        ? { ...step, run: async () => { throw new Error("forced retirement failure"); } }
+        : step)) : undefined;
+    let settled = false;
+    let stoppedCard: ReturnType<typeof runtime.listPluginCards>[number] | undefined;
+    const disable = runtime.setPluginEnabled("se-plugin", false).then(
+      () => { settled = true; }, error => { settled = true; return error; },
+    );
+    try {
+      await vi.waitFor(() => expect(lifecycle.getActive("se-plugin")).toBeUndefined());
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      for (const wait of [60_000, 60_000]) {
+        await vi.advanceTimersByTimeAsync(wait);
+        expect(settled).toBe(false);
+        const card = runtime.listPluginCards().find(card => card.id === "se-plugin");
+        expect(card).toMatchObject({ loadStatus: "disabled", stopping: true, active: false, runtimeLoaded: false });
+        expect(card?.installFailureMessage).toBeUndefined();
+      }
+    } finally {
+      vi.useRealTimers();
+      lease.release();
+      await disable;
+      stoppedCard = runtime.listPluginCards().find(card => card.id === "se-plugin");
+      retirement?.mockRestore();
+      if (failRetirement) await runtime.setPluginEnabled("se-plugin", false);
+    }
+    expect(stoppedCard).toMatchObject({
+      loadStatus: failRetirement ? "failed" : "disabled",
+      ...(failRetirement ? { installFailureMessage: expect.stringContaining("unconfirmed; retry") } : {}),
+    });
+    expect(stoppedCard?.stopping).toBeUndefined();
+  });
+
   it.each([
     [2500, false, "recover"],
     [12000, false, "recover"],
@@ -509,31 +578,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     const runtime = makeRuntime();
     const stateChanged = vi.fn();
     const unsubscribeStateChange = runtime.subscribePluginStateChange(stateChanged);
-    const lifecycle = new PluginBundleLifecycle({
-      pluginRuntime: runtime,
-      receiptCacheRoot: testDir,
-      skillStore: new SkillStore({ userDir: join(testDir, "skills") }),
-      skillOverlay: { clearPluginGeneration: vi.fn() },
-      personaPromptStore: new PersonaPromptStore({ userDir: join(testDir, "prompts") }),
-      hookManager: new ScriptHookManager(),
-      revokeOperationGeneration: vi.fn(),
-      onContributionsUpdated: vi.fn(),
-      mcpManager: {
-        bundledServerIdsForPlugin: vi.fn(() => []),
-        prepareBundledGeneration: vi.fn(async () => ({ records: [], predecessorServerIds: [], predecessorToolNames: [],
-          registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false })),
-        publishBundledGeneration: vi.fn(),
-        discardBundledGeneration: vi.fn(async () => undefined),
-        retirePublishedMcpReplacement: vi.fn(async () => undefined),
-        disconnectBundledGeneration: vi.fn(async () => undefined),
-      } as never,
-      loopbackManager: {
-        prepareGeneration: vi.fn(async () => ({})),
-        prepareRemoval: vi.fn(() => ({})),
-        publishGeneration: vi.fn(), postPublishGeneration: vi.fn(),
-        discardGeneration: vi.fn(async () => undefined), retireGeneration: vi.fn(async () => undefined),
-      } as never,
-    });
+    const lifecycle = makeLifecycle(runtime);
     runtime.setGenerationAccess(lifecycle);
     await runtime.startAll();
     const activeGeneration = lifecycle.getActive("se-plugin");

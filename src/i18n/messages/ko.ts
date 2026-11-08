@@ -4034,6 +4034,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.noPluginsInstalled": "설치된 익스텐션이 없습니다.",
   "pluginConfigTab.statusLoaded": "로드됨",
   "pluginConfigTab.statusPreparing": "준비 중",
+  "pluginConfigTab.statusStopping": "중지 중…",
   "pluginConfigTab.statusFailed": "실패",
   "pluginConfigTab.statusDisabled": "비활성",
   "pluginConfigTab.unauthTitle": "이 익스텐션은 로그인이 필요합니다",

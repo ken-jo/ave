@@ -1057,6 +1057,34 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
 });
 
 describe("PluginConfigTab — auth UI", () => {
+  it("shows a runtime stopping card on a fresh mount without a local toggle", async () => {
+    const setPluginEnabled = vi.fn();
+    const cards = vi.fn(async (): Promise<PluginCardSummary[]> => [makePluginCard({
+      active: false, runtimeLoaded: false, loadStatus: "disabled" as const, stopping: true,
+    })]);
+    setRendererApi({ listPluginCards: cards, setPluginEnabled, listPluginUiExtensions: vi.fn(async () => []) });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      render(<PluginConfigTab />);
+      const toggle = await screen.findByTestId("plugin-config:enabled-toggle:meeting");
+      expect(toggle).toBeDisabled();
+      expect(toggle).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByTestId("plugin-config:stopping:meeting")).toHaveTextContent("중지 중… 진행 중인 호출이 끝날 때까지 기다리고 있습니다.");
+      expect(screen.queryByText(/unconfirmed; retry/)).toBeNull();
+      fireEvent.click(toggle);
+      expect(setPluginEnabled).not.toHaveBeenCalled();
+      expect(screen.getByTestId("plugin-config:row-status:meeting")).toHaveTextContent("중지 중…");
+      expect(screen.getByTestId("plugin-config:detail-status:meeting")).toHaveTextContent("중지 중…");
+      cards.mockResolvedValue([makePluginCard({ active: false, runtimeLoaded: false, loadStatus: "disabled" as const, stopping: false })]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+      expect(screen.queryByTestId("plugin-config:stopping:meeting")).toBeNull();
+      expect(toggle).not.toBeDisabled();
+      expect(toggle).toHaveAttribute("aria-busy", "false");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the stopping message and busy switch through the call ceiling and card refreshes", async () => {
     let finish!: (result: { ok: true }) => void;
     const toggleResult = new Promise<{ ok: true }>((resolve) => { finish = resolve; });
@@ -1085,7 +1113,7 @@ describe("PluginConfigTab — auth UI", () => {
     vi.useFakeTimers();
     try {
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      cards.mockResolvedValue([makePluginCard({ active: false, runtimeLoaded: false, loadStatus: "disabled" })]);
+      cards.mockResolvedValue([makePluginCard({ active: false, runtimeLoaded: false, loadStatus: "disabled", stopping: true })]);
       await act(async () => { refresh(); });
       view.rerender(<PluginConfigTab />);
       expect(cards.mock.calls.length).toBeGreaterThan(1);

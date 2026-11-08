@@ -86,6 +86,8 @@ export interface PluginCard {
   capabilities: string[];
   toolDescriptions?: Record<string, string>;
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
+  /** Retirement is in progress; a failed attempt clears this flag. */
+  stopping?: boolean;
   /** Model exposure is independent of whether the runtime is loaded. */
   active: boolean;
   /** Inactive plugins can remain loaded and callable. */
@@ -1512,6 +1514,7 @@ abstract class PluginRuntimeState {
   private readonly pluginStopOperations = new WeakMap<RuntimePlugin, Promise<boolean>>();
   private readonly pluginStopSettlements = new WeakMap<RuntimePlugin, Promise<void>>();
   protected readonly pendingDisabledRetirements = new Set<string>();
+  protected readonly stoppingPluginIds = new Set<string>();
   protected readonly disabledStopSettlements = new Map<string, Promise<void>>();
   protected nextPluginLifecycleGeneration = 0;
   protected readonly pluginUiRevisions = new Map<string, number>();
@@ -2380,6 +2383,7 @@ abstract class PluginRuntimeState {
     this.lastAttemptRefusal.clear();
     this.disabledPluginIds.clear();
     this.pendingDisabledRetirements.clear();
+    this.stoppingPluginIds.clear();
     this.disabledStopSettlements.clear();
     this.capabilityBlockedPluginIds.clear();
     this.preparation.clear();
@@ -6748,11 +6752,14 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             if (generationLifecycle.getActive(canonicalPluginId)) {
               throw new Error(`cannot retire disabled plugin with an active generation: ${canonicalPluginId}`);
             }
+            this.stoppingPluginIds.add(canonicalPluginId);
             try {
               await generationLifecycle.deactivateWithCommit(canonicalPluginId, async () => undefined);
             } catch (error) {
               if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
               throw error;
+            } finally {
+              this.stoppingPluginIds.delete(canonicalPluginId);
             }
             this.pendingDisabledRetirements.delete(canonicalPluginId);
             this.disabledStopSettlements.delete(canonicalPluginId);
@@ -6831,6 +6838,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               this.beginPluginLifecycleOperation(canonicalPluginId);
               this.preparation.clearFor(canonicalPluginId);
               this.pendingDisabledRetirements.add(canonicalPluginId);
+              this.stoppingPluginIds.add(canonicalPluginId);
               try {
                 const { retirement } = await generationLifecycle.deactivateWithCommit(
                   canonicalPluginId,
@@ -6853,6 +6861,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
                   throw error;
                 }
                 retirementError = error;
+              } finally {
+                this.stoppingPluginIds.delete(canonicalPluginId);
               }
               if (retirementError === undefined) {
                 this.pendingDisabledRetirements.delete(canonicalPluginId);
@@ -7017,11 +7027,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       : null;
     const cards = new Map<string, PluginCard>();
     for (const [pluginId, manifest] of this.knownPluginManifests) {
-      const runtimeLoaded = this.plugins.has(pluginId);
+      const stopping = this.stoppingPluginIds.has(pluginId);
+      const runtimeLoaded = !stopping && this.plugins.has(pluginId);
       const enabled = !this.inactivePluginIds.has(pluginId);
       // Loaded candidates remain inactive until their generation publishes.
-      const active = enabled && this.isPluginGenerationActive(pluginId);
-      const loadStatus = this.preparation.isPreparing(pluginId)
+      const active = !stopping && enabled && this.isPluginGenerationActive(pluginId);
+      const loadStatus = stopping ? "disabled" : this.preparation.isPreparing(pluginId)
         || this.capabilityBlockedPluginIds.has(pluginId)
         ? "preparing"
         // Disabled cards report runtimeLoaded false while retaining the settings switch needed to re-enable them.
@@ -7045,6 +7056,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         preparationStatus: this.preparation.getStatus(pluginId),
         installAliases: this.getPluginInstallAliases(pluginId),
       });
+      if (stopping) card.stopping = true;
       // Retain later-phase load classification so the settings UI can offer the appropriate repair.
       if (loadStatus === "failed") {
         const info = this.loadFailureInfo.get(pluginId);

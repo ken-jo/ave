@@ -423,7 +423,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   }, [refreshPlugins]);
 
   useEffect(() => {
-    if (!plugins.some((plugin) => plugin.loadStatus === "preparing")) return;
+    if (!plugins.some((plugin) => plugin.loadStatus === "preparing" || plugin.stopping)) return;
     const interval = window.setInterval(() => {
       void refreshPlugins();
     }, 750);
@@ -521,6 +521,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     ? (selectedPlugin.active ?? selectedPlugin.loadStatus !== "disabled")
     : false;
   const selectedPluginRuntimeLoaded = selectedPlugin ? isRuntimeCallablePlugin(selectedPlugin) : false;
+  const selectedPluginStopping = Boolean(selectedPlugin?.stopping
+    || (toggling?.pluginId === selectedPlugin?.id && toggling && !toggling.enabled));
   // The active-state switch is shown for a callable runtime AND for a disabled
   // plugin. Disable retires the plugin's generation, so a disabled plugin has
   // no runtime (`runtimeLoaded: false`), and this switch is the only way to
@@ -795,7 +797,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           {t("pluginConfigTab.statusFailed")}
                         </span>
                       )}
-                      {p.loadStatus === "disabled" && (
+                      {p.stopping && (
+                        <span
+                          data-testid={`plugin-config:row-status:${p.id}`}
+                          className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
+                        >
+                          {t("pluginConfigTab.statusStopping")}
+                        </span>
+                      )}
+                      {p.loadStatus === "disabled" && !p.stopping && (
                         <span
                           data-testid={`plugin-config:row-status:${p.id}`}
                           className="inline-block rounded-full bg-muted px-1.5 py-px text-[9px] font-medium text-muted-foreground"
@@ -849,12 +859,12 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           >
                             {t("pluginConfigTab.statusLoaded")}
                           </span>
-                        ) : selectedPlugin.loadStatus === "preparing" ? (
+                        ) : selectedPlugin.loadStatus === "preparing" || selectedPlugin.stopping ? (
                           <span
                             data-testid={`plugin-config:detail-status:${selectedPlugin.id}`}
                             className="inline-block rounded-full bg-warning/(--opacity-soft) px-1.5 py-px text-[9px] font-medium text-warning"
                           >
-                            {t("pluginConfigTab.statusPreparing")}
+                            {t(selectedPlugin.stopping ? "pluginConfigTab.statusStopping" : "pluginConfigTab.statusPreparing")}
                           </span>
                         ) : selectedPlugin.loadStatus === "failed" ? (
                           <span
@@ -884,7 +894,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {toggling?.pluginId === selectedPlugin.id && !toggling.enabled && (
+                    {selectedPluginStopping && (
                       <span
                         role="status"
                         data-testid={`plugin-config:stopping:${selectedPlugin.id}`}
@@ -900,8 +910,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           size="sm"
                           data-testid={`plugin-config:enabled-toggle:${selectedPlugin.id}`}
                           checked={selectedPluginActive}
-                          disabled={toggling?.pluginId === selectedPlugin.id}
-                          aria-busy={toggling?.pluginId === selectedPlugin.id}
+                          disabled={selectedPluginStopping || toggling?.pluginId === selectedPlugin.id}
+                          aria-busy={selectedPluginStopping || toggling?.pluginId === selectedPlugin.id}
                           onCheckedChange={(next) => void handleToggleEnabled(selectedPlugin.id, next)}
                           aria-label={t("pluginConfigTab.toggleAriaLabel", { name: selectedPlugin.name })}
                         />

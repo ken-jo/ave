@@ -4032,6 +4032,7 @@ export const en = {
   "pluginConfigTab.noPluginsInstalled": "No extensions installed.",
   "pluginConfigTab.statusLoaded": "Loaded",
   "pluginConfigTab.statusPreparing": "Preparing",
+  "pluginConfigTab.statusStopping": "Stopping…",
   "pluginConfigTab.statusFailed": "Failed",
   "pluginConfigTab.statusDisabled": "Inactive",
   "pluginConfigTab.unauthTitle": "This extension requires login",
