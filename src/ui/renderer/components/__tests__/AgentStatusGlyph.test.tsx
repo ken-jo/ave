@@ -46,6 +46,7 @@ describe("AgentStatusGlyph — the state-to-rendering table", () => {
         // Idle draws no badge; every other state one corner badge, one token, labelled and titled.
         if (row.badge === null) {
           expect(screen.queryByTestId("badge")).toBeNull();
+          expect(slot.getAttribute("title")).toBe(working ? "작업 중" : null);
           expect(slot.hasAttribute("data-agent-badge")).toBe(false);
           return;
         }
@@ -54,6 +55,11 @@ describe("AgentStatusGlyph — the state-to-rendering table", () => {
         expect(slot.contains(badge)).toBe(true);
         expect(badge.className).toContain(row.tone ?? "missing-tone");
         expect(badge.className).toContain("absolute -right-1 -top-1");
+        // It overhangs the square, so it must never take a click meant for what lies under that corner.
+        expect(badge.className).toContain("pointer-events-none");
+        expect(badge.className).not.toContain("pointer-events-auto");
+        // The square carries the state as its tooltip instead.
+        expect(slot.getAttribute("title")).toBe(working ? `작업 중, ${row.label}` : row.label);
         expect(badge.getAttribute("role")).toBe("img");
         expect(badge.getAttribute("aria-label")).toBe(row.label);
         expect(badge.getAttribute("title")).toBe(row.label);

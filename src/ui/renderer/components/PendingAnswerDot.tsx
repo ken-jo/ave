@@ -6,8 +6,9 @@ export type StatusDotPlacement = "control" | "mark" | "inline";
 
 const PLACEMENT_CLASS: Record<StatusDotPlacement, string> = {
   control: "pointer-events-none absolute right-0.5 top-0.5",
-  // Takes the pointer even inside a slot that does not, so its tooltip shows.
-  mark: "pointer-events-auto absolute -right-1 -top-1",
+  // Never takes the pointer: it overhangs the square, and a row's hover control (the sidebar's pin) lives under that corner.
+  // The slot's square carries the state as its tooltip instead.
+  mark: "pointer-events-none absolute -right-1 -top-1",
   inline: "",
 };
 

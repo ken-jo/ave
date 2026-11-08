@@ -189,7 +189,7 @@ function SessionRow({
   const time = formatRelativeSessionTime(session.modifiedAt, t);
   const pinLabel = isPinned ? t("sidebar.unpinConversation") : t("sidebar.pinConversation");
   const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
-  const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding });
+  const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding, waiting: pendingAnswer && pendingCount === 0 });
   const rowPreview = sidebarPreviewRowProps(renaming ? null : preview);
   // The Suggestions row's count stands in for the waiting badge. The row's button names the slot's state, so the way to the
   // conversation says what is happening there.

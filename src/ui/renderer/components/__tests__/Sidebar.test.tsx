@@ -2064,6 +2064,8 @@ describe("Sidebar pending-answer dot", () => {
       const badge = getByTestId("sidebar-pending-answer-side-1");
       expect(getByTestId("sidebar-session-responding-side-1").parentElement?.contains(badge)).toBe(true);
       expect(getByTestId("sidebar-session-side-1").textContent).toContain("작업 중, 답변 대기 중");
+      // The badge overhangs the pin's square: it must let the pin take the click.
+      expect(badge.className).toContain("pointer-events-none");
       expect(queryByTestId("sidebar-session-responding-sess-1")).toBeNull();
     } finally {
       restore();

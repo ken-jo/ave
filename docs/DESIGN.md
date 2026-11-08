@@ -338,7 +338,9 @@ state never moves the row.
 Working and a badge are separate inputs: a conversation can be running while one of its
 side chats waits on a card, and the square then shows the loader with the warning badge.
 `--warning` means "needs your answer" and nothing else; a running agent is never warning.
-Every badge carries an aria-label and the same text as its tooltip; where the surface's own
+Every badge carries an aria-label. A badge never takes the pointer — it overhangs the square,
+and a row's hover control (the sidebar's pin) sits under that corner — so the square is the
+tooltip for what it shows, and a sidebar row's hover preview names it too; where the surface's own
 accessible name already says the state (a sidebar row's button, a sub-agent's or a run's
 status text), the slot is hidden from assistive tech so it is not read twice. The loader
 stops spinning under reduced motion and the label carries the state. A conversation stays

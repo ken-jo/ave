@@ -79,9 +79,12 @@ export function AgentStatusGlyph({
 }) {
   const { t } = useTranslation();
   const square = SIZE_CLASS[size];
+  // The badge never takes the pointer (it overhangs the square), so the square itself is the tooltip for what it shows.
+  const tooltip = agentStatusLabels(t, working, badge).join(", ");
   return (
     <span
       className={cn("relative flex shrink-0 items-center justify-center", square, className)}
+      title={tooltip || undefined}
       data-testid={testId}
       data-agent-status={working ? "working" : "idle"}
       data-agent-badge={badge ?? undefined}
