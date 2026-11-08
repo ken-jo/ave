@@ -63,7 +63,8 @@ contextBridge.exposeInMainWorld("aveHost", buildAveHostWorld());
 // ─── Window control bridge (custom titlebar) ─────────────────────────────
 // Exposed unconditionally so the renderer can branch at runtime.
 // On macOS the windowControl methods are never called (traffic lights
-// are OS-managed). isDarwin lets the renderer suppress Win/Linux buttons.
+// are OS-managed). isDarwin lets the renderer suppress Win/Linux buttons;
+// windowControls says which edge the renderer's buttons take.
 contextBridge.exposeInMainWorld("avePlatform", buildAvePlatformWorld());
 contextBridge.exposeInMainWorld("aveWindow", buildAveWindowWorld());
 

@@ -39,7 +39,6 @@ vi.mock("electron", () => {
     unmaximize: vi.fn(),
     isMaximized: () => false,
     close: vi.fn(),
-    setTitleBarOverlay: vi.fn(),
   };
   return {
     ipcMain: {

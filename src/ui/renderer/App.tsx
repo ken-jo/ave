@@ -2369,9 +2369,8 @@ export function App() {
             onQueueChange={setOverlayQueue}
           >
             {/* `relative` makes THIS full-height shell column the positioning
-                context for the floating-card Sidebar, so the card's `top-0` reaches
-                the window top — extending UP into the traffic-light band and
-                reclaiming that vertical space on the left. */}
+                context for the floating-card Sidebar, which starts one band down
+                (`--shell-card-top`) on the tiles' top line. */}
             <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it

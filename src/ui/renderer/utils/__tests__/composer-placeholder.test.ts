@@ -9,7 +9,7 @@ function setPlatform(isDarwin: boolean | undefined): void {
     delete window.avePlatform;
     return;
   }
-  window.avePlatform = { isDarwin };
+  window.avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
 }
 
 afterEach(() => {

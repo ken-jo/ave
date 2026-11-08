@@ -10,7 +10,7 @@ import type { AveApi, AvePreviewApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
-const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false }));
+const mockSendSync = vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: "unsupported" }));
 const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
@@ -69,7 +69,7 @@ describe("preload — plugin webview asset URLs", () => {
   beforeEach(() => {
     exposed.clear();
     mockInvoke.mockReset();
-    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false });
+    mockSendSync.mockReset().mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE, glass: "unsupported" });
     mockSend.mockReset();
     mockOn.mockReset();
     mockRemoveListener.mockReset();
@@ -84,9 +84,9 @@ describe("preload — plugin webview asset URLs", () => {
 
   it("reads fresh main-owned appearance synchronously on every preload start", async () => {
     const { readInitialAppearance } = await import("../preload/internal-surface.js");
-    expect(readInitialAppearance()).toEqual({ appearance: DEFAULT_APPEARANCE, glass: false });
-    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" }, glass: true });
-    expect(readInitialAppearance()).toMatchObject({ appearance: { darkScheme: "nord" }, glass: true });
+    expect(readInitialAppearance()).toEqual({ appearance: DEFAULT_APPEARANCE, glass: "unsupported" });
+    mockSendSync.mockReturnValue({ ok: true, appearance: { ...DEFAULT_APPEARANCE, darkScheme: "nord" }, glass: "on" });
+    expect(readInitialAppearance()).toMatchObject({ appearance: { darkScheme: "nord" }, glass: "on" });
     expect(mockSendSync).toHaveBeenLastCalledWith(CHANNELS.settings.initialAppearance);
   });
 
@@ -94,6 +94,36 @@ describe("preload — plugin webview asset URLs", () => {
     mockSendSync.mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE } as never);
     const { readInitialAppearance } = await import("../preload/internal-surface.js");
     expect(() => readInitialAppearance()).toThrow("Invalid initial appearance glass flag");
+  });
+
+  it("rejects a glass flag outside the three states, including the old boolean", async () => {
+    const { readInitialAppearance } = await import("../preload/internal-surface.js");
+    for (const glass of [true, false, "mica", null]) {
+      mockSendSync.mockReturnValue({ ok: true, appearance: DEFAULT_APPEARANCE, glass } as never);
+      expect(() => readInitialAppearance()).toThrow("Invalid initial appearance glass flag");
+    }
+  });
+
+  it.each([
+    ["on", true, true],
+    ["reduced", false, true],
+    ["unsupported", false, false],
+  ] as const)("marks the document for glass state %s", async (glass, drawn, capable) => {
+    const { applyInitialAppearance } = await import("../preload/internal-surface.js");
+    // Preload runs before the page's DOM library exists; a bare root is all applyInitialAppearance touches.
+    const attributes = new Map<string, string>();
+    const root = {
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      style: { setProperty: () => {}, removeProperty: () => {} },
+    };
+    vi.stubGlobal("document", { documentElement: root, defaultView: null });
+    try {
+      applyInitialAppearance({ appearance: DEFAULT_APPEARANCE, glass });
+      expect(attributes.has("data-glass")).toBe(drawn);
+      expect(attributes.has("data-glass-capable")).toBe(capable);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("fails clearly when main refuses an appearance read", async () => {
@@ -141,7 +171,7 @@ describe("preload — plugin webview asset URLs", () => {
     const windowApi = api.window as Record<string, unknown>;
     expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
     expect(Object.keys(CHANNELS.window)).toEqual([
-      "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
+      "minimize", "toggleMaximize", "close", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
     ]);
     expect([...exposed.keys()].sort()).toEqual([
       "__aveDevMode", "__aveInitialAppearance", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",

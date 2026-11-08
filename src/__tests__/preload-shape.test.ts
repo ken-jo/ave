@@ -33,7 +33,7 @@ vi.mock("electron", () => ({
     }),
   },
   ipcRenderer: {
-    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: false })),
+    sendSync: vi.fn(() => ({ ok: true, appearance: DEFAULT_APPEARANCE, glass: "unsupported" })),
     invoke: mockInvoke,
     on: mockOn,
     removeListener: mockRemoveListener,
@@ -679,13 +679,13 @@ describe("preload contextBridge world shape lock", () => {
         },
         "avePlatform": {
           "isDarwin": "boolean",
+          "windowControls": "string",
         },
         "aveWindow": {
           "close": "function",
           "minimize": "function",
           "onFullscreenChanged": "function",
           "onMaximizedChanged": "function",
-          "syncTitleBarTheme": "function",
           "toggleMaximize": "function",
         },
       }

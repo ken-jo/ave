@@ -2,6 +2,7 @@
 // bright flash while keeping shell rendering independent of theme IPC.
 
 import { t } from "../i18n/index.js";
+import { BAND_EDGE_PAD, CHROME_BAND_HEIGHT, WINDOW_CONTROL_BUTTON_WIDTH, windowControlsPlacement } from "../shared/shell-geometry.js";
 
 export const TITLEBAR_COLORS = {
   light: { background: "#f3f2ed", foreground: "#1c1917" },
@@ -15,26 +16,33 @@ export interface TitlebarShellOptions {
   title: string;
 }
 
-// Render the titlebar root <div>. macOS gets a 36px drag-only strip (matches Win/Linux height so chrome looks consistent and OS traffic lights center
-// cleanly); Win/Linux gets a full bar with title + min/max/close buttons.
+// Render the titlebar root <div>. macOS gets a band-height drag-only strip (matches Win/Linux height so chrome looks consistent and OS traffic lights center
+// cleanly); Windows gets a full bar with title + min/max/close trailing; Linux puts close/min/max first, as the main window's band does
+// (`windowControlsPlacement` in shared/shell-geometry.ts).
 export function buildTitlebarHtml({ platform }: TitlebarShellOptions): string {
-  const isMac = platform === "darwin";
-  if (isMac) {
+  const placement = windowControlsPlacement(platform);
+  if (placement === "native") {
     return `<div class="titlebar titlebar-mac" id="titlebar"></div>`;
   }
-  return `<div class="titlebar" id="titlebar">
-    <div class="title" id="title"></div>
-    <div class="controls">
-      <button class="titlebar-btn" id="minimize" title="${t("be_windowTitlebarShell.minimize")}" aria-label="${t("be_windowTitlebarShell.minimize")}">
+  const minimize = `<button class="titlebar-btn" id="minimize" title="${t("be_windowTitlebarShell.minimize")}" aria-label="${t("be_windowTitlebarShell.minimize")}">
         <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
-      </button>
-      <button class="titlebar-btn" id="maximize" title="${t("be_windowTitlebarShell.maximize")}" aria-label="${t("be_windowTitlebarShell.maximize")}">
+      </button>`;
+  const maximize = `<button class="titlebar-btn" id="maximize" title="${t("be_windowTitlebarShell.maximize")}" aria-label="${t("be_windowTitlebarShell.maximize")}">
         <svg id="max-icon" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-      </button>
-      <button class="titlebar-btn titlebar-btn-close" id="close" title="${t("be_windowTitlebarShell.close")}" aria-label="${t("be_windowTitlebarShell.close")}">
+      </button>`;
+  const close = `<button class="titlebar-btn titlebar-btn-close" id="close" title="${t("be_windowTitlebarShell.close")}" aria-label="${t("be_windowTitlebarShell.close")}">
         <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-    </button>
-    </div>
+      </button>`;
+  const title = `<div class="title" id="title"></div>`;
+  if (placement === "leading") {
+    return `<div class="titlebar titlebar-leading" id="titlebar">
+    <div class="controls">${close}${minimize}${maximize}</div>
+    ${title}
+  </div>`;
+  }
+  return `<div class="titlebar" id="titlebar">
+    ${title}
+    <div class="controls">${minimize}${maximize}${close}</div>
   </div>`;
 }
 
@@ -44,7 +52,6 @@ export function buildTitlebarCss(): string {
     :root {
       --ts-bg:              ${TITLEBAR_COLORS.light.background};
       --ts-fg:              ${TITLEBAR_COLORS.light.foreground};
-      --ts-border:          hsl(35 14% 80% / 0.7);
       --ts-btn:             hsl(24 8% 32%);
       --ts-btn-hover-bg:    hsl(35 14% 84% / 0.8);
       --ts-btn-close-hover: hsl(0 72% 51%);
@@ -54,7 +61,6 @@ export function buildTitlebarCss(): string {
       :root {
         --ts-bg:              ${TITLEBAR_COLORS.dark.background};
         --ts-fg:              ${TITLEBAR_COLORS.dark.foreground};
-        --ts-border:          hsl(20 8% 30% / 0.7);
         --ts-btn:             hsl(40 8% 68%);
         --ts-btn-hover-bg:    hsl(20 6% 24%);
         --ts-btn-close-hover: hsl(0 72% 56%);
@@ -72,26 +78,27 @@ export function buildTitlebarCss(): string {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
     }
     .titlebar {
-      height: 36px;
-      flex: 0 0 36px;
+      height: ${CHROME_BAND_HEIGHT}px;
+      flex: 0 0 ${CHROME_BAND_HEIGHT}px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--ts-border);
+      /* No bottom rule, as on the main window's band. */
       background: var(--ts-bg);
       color: var(--ts-fg);
       user-select: none;
       -webkit-app-region: drag;
     }
+    .titlebar-leading { justify-content: flex-start; }
+    .titlebar-leading .title { padding-right: ${BAND_EDGE_PAD}px; }
     .titlebar-mac {
-      height: 36px;
-      flex: 0 0 36px;
-      border-bottom: 0;
+      height: ${CHROME_BAND_HEIGHT}px;
+      flex: 0 0 ${CHROME_BAND_HEIGHT}px;
       background: transparent;
     }
     .title {
       min-width: 0;
-      padding-left: 12px;
+      padding-left: ${BAND_EDGE_PAD}px;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
@@ -106,8 +113,8 @@ export function buildTitlebarCss(): string {
       -webkit-app-region: no-drag;
     }
     .titlebar-btn {
-      width: 44px;
-      height: 36px;
+      width: ${WINDOW_CONTROL_BUTTON_WIDTH}px;
+      height: ${CHROME_BAND_HEIGHT}px;
       border: 0;
       border-radius: 0;
       display: grid;

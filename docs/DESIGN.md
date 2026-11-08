@@ -185,6 +185,13 @@ name one location while several panes are open. A path floated to the *trailing*
 read as window furniture and lose the association — that is the placement the rule forbids, and
 it is not this one.
 
+The one exception is Linux, where the window buttons lead the band (close, minimize, maximize, as
+GNOME and macOS order them): the path can never start before `BAND_LEAD_PAD_LINUX` (136px).
+With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (84px).
+With the sidebar hidden, it starts at 136px instead of at the band edge (12px).
+In both cases it no longer lines up with the content title below; that is the cost of keeping the
+buttons where Linux users expect them.
+
 What it names is the **focused pane's location**, since that is where the window is (see
 `docs/design/tiled-chat-groups.md`). Moving focus between panes therefore moves the path, with
 nothing navigated.

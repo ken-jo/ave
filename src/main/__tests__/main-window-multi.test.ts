@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { release } from "node:os";
 import { resolve } from "node:path";
 
 type Listener = (...args: unknown[]) => void;
@@ -89,6 +90,11 @@ vi.mock("node:fs", async (importOriginal) => {
         : original.readFileSync(path, options),
   };
 });
+const osRelease = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return { ...original, release: () => osRelease.value ?? original.release() };
+});
 vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
 const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
@@ -162,21 +168,62 @@ describe("main windows", () => {
     expect(readAppearance(win)).toMatchObject({ ok: true, appearance: { darkScheme: "tokyo-night" } });
   });
 
-  it("creates the window over the macOS material only on darwin with transparency allowed, and tells its renderer", () => {
-    const darwin = process.platform === "darwin";
+  it("creates the window over the system material only where the OS has one and transparency is allowed, and tells its renderer", async () => {
+    const { mainWindowGlassMaterial } = await import("../window-chrome.js");
+    const material = mainWindowGlassMaterial(process.platform, release());
     const win = open();
-    const options = win.options as { vibrancy?: string; backgroundColor?: string; transparent?: boolean };
+    const options = win.options as { vibrancy?: string; backgroundMaterial?: string; backgroundColor?: string; transparent?: boolean };
     expect(options.transparent).toBeUndefined();
-    expect(options.vibrancy).toBe(darwin ? "under-window" : undefined);
-    expect(readAppearance(win)).toMatchObject({ ok: true, glass: darwin });
+    expect(options.vibrancy).toBe(material === "vibrancy" ? "under-window" : undefined);
+    expect(options.backgroundMaterial).toBe(material === "mica" ? "mica" : undefined);
+    expect(readAppearance(win)).toMatchObject({ ok: true, glass: material === null ? "unsupported" : "on" });
     electronMock.nativeTheme.prefersReducedTransparency = true;
     try {
       const opaque = open();
-      expect((opaque.options as { vibrancy?: string }).vibrancy).toBeUndefined();
-      expect(readAppearance(opaque)).toMatchObject({ ok: true, glass: false });
+      const opaqueOptions = opaque.options as { vibrancy?: string; backgroundMaterial?: string };
+      expect(opaqueOptions.vibrancy).toBeUndefined();
+      expect(opaqueOptions.backgroundMaterial).toBeUndefined();
+      expect(readAppearance(opaque)).toMatchObject({ ok: true, glass: material === null ? "unsupported" : "reduced" });
     } finally {
       electronMock.nativeTheme.prefersReducedTransparency = false;
     }
+  });
+
+  describe("on Windows", () => {
+    const realPlatform = process.platform;
+    function asWindows(release: string): void {
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      osRelease.value = release;
+    }
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      osRelease.value = null;
+      electronMock.nativeTheme.prefersReducedTransparency = false;
+    });
+
+    it("draws Mica from Windows 11 22H2 (build 22621) and tells the renderer", () => {
+      asWindows("10.0.22621");
+      const win = open();
+      expect(win.options).toMatchObject({ backgroundMaterial: "mica", backgroundColor: "#00000000", frame: false });
+      expect(win.options).not.toHaveProperty("vibrancy");
+      expect(win.options).not.toHaveProperty("transparent");
+      expect(readAppearance(win)).toMatchObject({ ok: true, glass: "on" });
+    });
+
+    it("stays opaque but offers the tint control when reduce transparency is on at creation", () => {
+      asWindows("10.0.22621");
+      electronMock.nativeTheme.prefersReducedTransparency = true;
+      const win = open();
+      expect(win.options).not.toHaveProperty("backgroundMaterial");
+      expect(readAppearance(win)).toMatchObject({ ok: true, glass: "reduced" });
+    });
+
+    it("stays opaque with no tint control before 22H2", () => {
+      asWindows("10.0.19045");
+      const win = open();
+      expect(win.options).not.toHaveProperty("backgroundMaterial");
+      expect(readAppearance(win)).toMatchObject({ ok: true, glass: "unsupported" });
+    });
   });
 
   it("refuses appearance reads from subframes and navigated documents", () => {
