@@ -20,6 +20,7 @@ import {
   GUIDE_JOINED_MAX_CHARS,
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
+import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { isValidSessionId } from "../shared/session-id.js";
@@ -126,7 +127,7 @@ function maskSubAgentText(text: string): string {
 }
 
 /** Tool scopes are explicit: parent-all minus the blocklist, nonempty exactly minus the blocklist, or deny-all.
- * agent_send is granted separately; resume uses only the frozen persisted scope and never expands from the current parent registry. */
+ * Recovery reads remain scoped to the child history. agent_send is granted separately; resume never expands source authority from the current parent registry. */
 export type SubAgentToolScope =
   | { readonly kind: "parent-all" }
   | { readonly kind: "exactly"; readonly names: readonly string[] }
@@ -2298,6 +2299,7 @@ export class SubAgentRunner {
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
     const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
+    if (scopedRegistry.listAll().length > 0) scopedRegistry.register(createReadToolResultChunkTool());
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });

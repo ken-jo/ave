@@ -645,6 +645,10 @@ jobs:
         working-directory: ave
         run: >
           bun run test --
+          src/shared/__tests__/tool-result-trim.test.ts
+          src/engine/__tests__/conversation-history-trim.test.ts
+          src/engine/__tests__/subagent-runner.test.ts
+          src/tools/__tests__/tool-result-chunk.test.ts
           src/tools/__tests__/browser-tools.test.ts
           src/tools/__tests__/executor-approval-memory-skip-integration.test.ts
           src/permissions/__tests__/session-scope-end.test.ts

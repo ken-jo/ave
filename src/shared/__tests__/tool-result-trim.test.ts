@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   HARD_BYTES_CEILING,
-  MAX_TOOL_RESULT_LINES,
   MAX_TOOL_RESULT_TOKENS,
   trimOversizedToolResult,
 } from "../tool-result-trim.js";
@@ -12,19 +11,16 @@ describe("trimOversizedToolResult (Issue #902)", () => {
     expect(result.truncated).toBeUndefined();
   });
 
-  it("passes content right at the line limit", () => {
-    const lines = Array.from({ length: MAX_TOOL_RESULT_LINES }, (_, i) => `line ${i}`).join("\n");
+  it("passes content right at the token limit", () => {
+    const lines = "x".repeat((MAX_TOOL_RESULT_TOKENS - 1) * 4);
     const result = trimOversizedToolResult(lines);
     expect(result.truncated).toBeUndefined();
   });
 
-  it("trips truncated when line count exceeds the line limit", () => {
-    const lines = Array.from({ length: MAX_TOOL_RESULT_LINES + 1 }, (_, i) => `line ${i}`).join("\n");
-    const result = trimOversizedToolResult(lines);
-    expect(result.truncated).toBeDefined();
-    expect(result.truncated!.originalLines).toBe(MAX_TOOL_RESULT_LINES + 1);
-    expect(result.truncated!.originalBytes).toBe(lines.length);
-    expect(result.truncated!.originalTokens).toBeGreaterThan(0);
+  it("keeps a small multiline snapshot within the token budget", () => {
+    const lines = Array.from({ length: 220 }, (_, i) => `page outline element ${i}`).join("\n");
+    expect(lines.length).toBeGreaterThan(5_000);
+    expect(trimOversizedToolResult(lines).truncated).toBeUndefined();
   });
 
   it("trips truncated on single-line content above token limit (long-line shape)", () => {
@@ -36,7 +32,7 @@ describe("trimOversizedToolResult (Issue #902)", () => {
   });
 
   it("trimmedAt is a valid ISO timestamp", () => {
-    const lines = Array.from({ length: MAX_TOOL_RESULT_LINES + 1 }, () => "x").join("\n");
+    const lines = "x".repeat(MAX_TOOL_RESULT_TOKENS * 4 + 1);
     const result = trimOversizedToolResult(lines);
     expect(result.truncated!.trimmedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(Number.isNaN(Date.parse(result.truncated!.trimmedAt))).toBe(false);

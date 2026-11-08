@@ -29,7 +29,7 @@ import {
 import { MODEL_COMPLEXITY_MAP } from "../../shared/model-complexity-map.js";
 import { llmVendorModelOptions } from "../../shared/llm-vendor-defaults.js";
 import { AGENT_MODE_MAP } from "../../shared/agent-mode-map.js";
-import type { LLMProvider, StreamEvent, StreamTurnParams,
+import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
 import { createAgentSpawnTool, createAgentStatusTool } from "../../tools/agent-spawn.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
@@ -73,12 +73,14 @@ class ScriptedProvider implements LLMProvider {
   public turnsServed = 0;
   public observedToolNames: string[][] = [];
   public observedSystemPrompts: string[] = [];
+  public observedMessages: GenericMessage[][] = [];
 
   constructor(private readonly turns: StreamEvent[][]) {}
 
   async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
     this.observedToolNames.push((params.tools ?? []).map((tool) => tool.name));
     this.observedSystemPrompts.push(params.systemPrompt);
+    this.observedMessages.push(params.messages);
     const idx = this.turnsServed++;
     yield* this.turns[idx] ?? this.turns[this.turns.length - 1] ?? [
       { type: "text_delta", text: "(out-of-script)" },
@@ -1407,9 +1409,38 @@ describe("SubAgentRunner — what each tool scope grants", () => {
     expect(advertised).not.toContain("agent_spawn");
   });
 
-  it("grants exactly the named tools for `exactly`", async () => {
+  it("grants named tools and session recovery for `exactly`", async () => {
     const advertised = await advertisedToolNames(exactToolScope(["read_file"]));
-    expect(advertised).toEqual(["read_file"]);
+    expect(advertised).toEqual(["read_file", "read_tool_result_chunk"]);
+  });
+
+
+  it("recovers only results retained in the receiving child history", async () => {
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_outline", description: "Read outline", source: "builtin", category: "read",
+      isReadOnly: () => true, jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({ output: "retained outline ".repeat(900), isError: false }),
+    }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "child-result", name: "read_outline", input: {} }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "tool_call", id: "own-read", name: "read_tool_result_chunk", input: { toolUseId: "child-result", maxChars: 500 } }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "tool_call", id: "foreign-read", name: "read_tool_result_chunk", input: { toolUseId: "parent-or-sibling-result" } }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const restore = patchLoopProvider(provider);
+    try {
+      const permissionDirectory = mkdtempSync(join(tmpdir(), "ave-outline-read-"));
+      const permissionManager = new PermissionManager(join(permissionDirectory, "permissions.json"));
+      const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager() });
+      try { await runner.spawn({ title: "outline", instructions: "read", toolScope: exactToolScope(["read_outline"]) }); }
+      finally { await cleanupTmpDir(permissionDirectory); }
+      const messages = provider.observedMessages.at(-1) ?? [];
+      const own = messages.find((m) => m.role === "tool_result" && m.toolUseId === "own-read");
+      const foreign = messages.find((m) => m.role === "tool_result" && m.toolUseId === "foreign-read");
+      expect(JSON.parse(String(own?.content))).toMatchObject({ toolUseId: "child-result", chunk: "retained outline ".repeat(900).slice(0, 500) });
+      expect(JSON.parse(String(foreign?.content))).toMatchObject({ error: "toolUseId was not found in the current in-memory session" });
+    } finally { restore.hasProviderSpy.mockRestore(); restore.refreshProviderSpy.mockRestore(); }
   });
 
   it("grants no source tool at all for `deny-all`", async () => {
@@ -1519,7 +1550,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         maxRounds: 2,
       });
 
-      expect(provider.observedToolNames[0]).toEqual([scheduleToolName]);
+      expect(provider.observedToolNames[0]).toEqual([scheduleToolName, "read_tool_result_chunk"]);
       expect(provider.observedToolNames[0]).not.toContain("other_plugin_tool");
       expect(execSpy).toHaveBeenCalledOnce();
       expect(requestAndWait).toHaveBeenCalledOnce();
@@ -1584,7 +1615,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       });
 
       const childPrompt = provider.observedSystemPrompts[0] ?? "";
-      expect(provider.observedToolNames[0]).toEqual([CARD_FIXTURE_IN_SCOPE_TOOL]);
+      expect(provider.observedToolNames[0]).toEqual([CARD_FIXTURE_IN_SCOPE_TOOL, "read_tool_result_chunk"]);
       expect(childPrompt).not.toContain(CARD_FIXTURE_OUT_OF_SCOPE_PLUGIN);
       for (const name of CARD_FIXTURE_OUT_OF_SCOPE_TOOLS) {
         expect(childPrompt).not.toContain(name);
@@ -1631,7 +1662,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         maxRounds: 1,
       });
 
-      expect(provider.observedToolNames[0]).toEqual(["noop"]);
+      expect(provider.observedToolNames[0]).toEqual(["noop", "read_tool_result_chunk"]);
     } finally {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
@@ -2226,7 +2257,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       );
       expect(meta).not.toBeNull();
       expect(meta?.sessionKind).toBe("subagent");
-      expect(meta?.sourceTools).toEqual(["noop"]);
+      expect(meta?.sourceTools).toEqual(["noop", "read_tool_result_chunk"]);
       expect(meta?.profileModel).toBe("high");
       expect(meta?.profileMode).toBe("execute");
       expect(meta?.resumeCount).toBe(0);
@@ -2270,7 +2301,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       expect(meta?.budgetResumeCount).toBe(0);
       expect(meta?.questionAnswerCount).toBe(0);
       expect(meta?.cumulativeRounds).toBe(result.turnCount);
-      expect(meta?.sourceTools).toEqual(["noop"]);
+      expect(meta?.sourceTools).toEqual(["noop", "read_tool_result_chunk"]);
     } finally {
       restore();
     }
