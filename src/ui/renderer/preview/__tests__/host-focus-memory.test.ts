@@ -151,3 +151,21 @@ it.each(["hidden", "replaced", "wrong-borrower"])("refuses a focus receipt with 
   if (change === "wrong-borrower") expect(memory.restoreReceipt("receipt", page)).toBe(true);
   detach();
 });
+
+
+it("retires a disconnected borrowing guest receipt before the next action", () => {
+  const { memory, detach, composer, page } = setup();
+  vi.spyOn(composer, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+  const replacement = document.createElement("webview"); replacement.tabIndex = 0;
+  document.body.appendChild(replacement);
+  composer.focus();
+  expect(memory.capture("old-action", page)).toBe(true);
+  page.focus(); page.remove();
+  expect(memory.restoreReceipt("old-action", replacement)).toBe(false);
+  composer.focus();
+  expect(memory.capture("new-action", replacement)).toBe(true);
+  replacement.focus();
+  expect(memory.restoreReceipt("new-action", replacement)).toBe(true);
+  expect(document.activeElement).toBe(composer);
+  detach();
+});

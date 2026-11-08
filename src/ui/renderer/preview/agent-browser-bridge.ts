@@ -85,7 +85,11 @@ export class HostFocusMemory {
 
   restoreReceipt(receiptId: string, guest: HTMLElement | null, preserveFocus = false): boolean {
     const receipt = this.receipts.get(receiptId);
-    if (!receipt || guest !== receipt.guest && (guest !== null || receipt.guest.isConnected)) return false;
+    if (!receipt) return false;
+    if (guest !== receipt.guest && (guest !== null || receipt.guest.isConnected)) {
+      if (!receipt.guest.isConnected) this.receipts.delete(receiptId);
+      return false;
+    }
     this.receipts.delete(receiptId);
     if (receipt.moved || preserveFocus) return true;
     const active = this.doc.activeElement;
