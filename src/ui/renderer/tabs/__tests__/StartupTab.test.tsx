@@ -25,6 +25,7 @@ describe("StartupTab", () => {
       ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],
       ["-", "NumpadSubtract", "numsub", "be_main.menuZoomOut"],
       ["+", "Equal", "Shift+=", "be_main.menuZoomIn"],
+      ["+", "BracketRight", "Plus", "be_main.menuZoomIn"],
     ] as const)("refuses fixed %s, keeps the prior value and continues recording", async (key, code, token, labelKey) => {
       const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
       try {

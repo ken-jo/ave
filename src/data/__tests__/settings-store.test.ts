@@ -3035,8 +3035,8 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
       setProcessPlatform(platform);
       const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
-      for (const token of ["num0", "numadd", "numsub", "Shift+Plus", "Shift+="]) {
-        for (const modifier of ["CommandOrControl", "CmdOrCtrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+      for (const token of ["num0", "numadd", "numsub", "=", "-", "Shift+-", "Shift+Shift+-", "Shift+Shift+=", "Shift+Plus", "Shift+=", "Plus", "NotAKey", "__proto__"]) {
+        for (const modifier of ["CommandOrControl", "CmdOrCtrl", "CommandOrControl+CommandOrControl", platform === "darwin" ? "Cmd+Cmd" : "Ctrl+Ctrl", platform === "darwin" ? "Command+Cmd+Meta+Super" : "Control+Ctrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
           const accelerator = `${modifier}+${token}`;
           await s.patch({ shortcuts: { toggleWindow: accelerator } });
           expect(s.get("shortcuts").toggleWindow).toBe("Alt+F1");
@@ -3046,7 +3046,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
           expect(loaded.get("shortcuts")).toEqual({ toggleWindow: null, enabled: true, bindings: {} });
         }
       }
-      for (const accelerator of ["Alt+num0", "Alt+numadd", "Alt+numsub", "Alt+End"]) {
+      for (const accelerator of ["Alt+num0", "Alt+numadd", "Alt+numsub", "Alt+End", "Alt+Plus", "Alt+F1", "AltGr+F2"]) {
         await s.patch({ shortcuts: { toggleWindow: accelerator } });
         expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("shortcuts").toggleWindow).toBe(accelerator);
       }

@@ -79,6 +79,7 @@ import {
 import {
   normalizeAccelerator,
   fixedShortcutOwner,
+  nativeAcceleratorIdentity,
   applyShortcutBindingsPatch,
   normalizeShortcuts,
   shortcutPlatformOf,
@@ -1235,7 +1236,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
+        if (accel !== null && nativeAcceleratorIdentity(accel, shortcutPlatformOf(process.platform)) !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(

@@ -2,7 +2,7 @@
 import { globalShortcut } from "electron";
 import type { BrowserWindow } from "electron";
 import { createLogger } from "../lib/logger.js";
-import { fixedShortcutOwner, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
+import { fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
 import { getMainWindow, getServices } from "./app-state.js";
 import { showOrCreateMainWindow } from "./app-tray.js";
 import { toggleMainWindowVisibility } from "./main-window.js";
@@ -90,7 +90,7 @@ export function reconcileGlobalShortcuts(
   }
 
   const accelerator = normalizeAccelerator(shortcuts.toggleWindow);
-  if (accelerator === null || fixedShortcutOwner(accelerator, shortcutPlatformOf(process.platform)) !== null) {
+  if (accelerator === null || nativeAcceleratorIdentity(accelerator, shortcutPlatformOf(process.platform)) === null || fixedShortcutOwner(accelerator, shortcutPlatformOf(process.platform)) !== null) {
     // Malformed accelerator that slipped past the store (defensive) — surface it.
     log.warn("global-shortcuts: invalid accelerator %s", JSON.stringify(shortcuts.toggleWindow));
     deps.notifyFailure(String(shortcuts.toggleWindow));

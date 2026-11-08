@@ -66,7 +66,7 @@ export function normalizeShortcuts(
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
     const accel = normalizeAccelerator(obj.toggleWindow);
-    if (accel !== null) result.toggleWindow = fixedShortcutOwner(accel, platform) === null ? accel : null;
+    result.toggleWindow = accel !== null && nativeAcceleratorIdentity(accel, platform) !== null && fixedShortcutOwner(accel, platform) === null ? accel : null;
   }
   if (typeof obj.enabled === "boolean") {
     result.enabled = obj.enabled;
@@ -125,6 +125,51 @@ function canonicalKeyToken(token: string): string | null {
   return NAMED_KEY_ALIASES[token.toLowerCase()] ?? null;
 }
 
+const NATIVE_KEY_CODES: Readonly<Record<string, number>> = {
+  backspace: 8, tab: 9, enter: 13, return: 13, capslock: 20, esc: 27, escape: 27, space: 32,
+  pageup: 33, pagedown: 34, end: 35, home: 36, left: 37, up: 38, right: 39, down: 40,
+  printscreen: 44, insert: 45, delete: 46,
+  nummult: 106, numadd: 107, numsub: 109, numdec: 110, numdiv: 111, numlock: 144, scrolllock: 145,
+  volumemute: 173, volumedown: 174, volumeup: 175, medianexttrack: 176, mediaprevioustrack: 177,
+  mediastop: 178, mediaplaypause: 179,
+  ";": 186, "=": 187, plus: 187, ",": 188, "-": 189, ".": 190, "/": 191, "`": 192,
+  "[": 219, "\\": 220, "]": 221, "'": 222,
+};
+const NATIVE_SHIFTED_KEYS: Readonly<Record<string, string>> = {
+  "!": "1", '"': "'", "#": "3", "$": "4", "%": "5", "&": "7", "(": "9", ")": "0",
+  "*": "8", plus: "=", ":": ";", "<": ",", ">": ".", "?": "/", "@": "2", "^": "6",
+  _: "-", "{": "[", "|": "\\", "}": "]", "~": "`",
+};
+
+/** Native key code plus modifier set; null means the reservation cannot be proven safe.
+ * Pinned v45.2.2: shell/browser/ui/accelerator_util.cc:27-58 ORs flags and adds implicit Shift;
+ * shell/common/keyboard_util.cc:17-108,110-259,266-276 defines aliases and shifted key codes. */
+export function nativeAcceleratorIdentity(input: unknown, platform: ShortcutPlatform): string | null {
+  if (typeof input !== "string" || input.length > MAX_ACCELERATOR_LEN || /[^\x20-\x7e]/.test(input)) return null;
+  const modifiers = new Set<string>();
+  let keyCode: number | undefined;
+  for (const part of input.split("+").map((token) => token.trim().toLowerCase()).filter(Boolean)) {
+    const modifier = part === "altgr" ? "G" : part === "shift" ? "S"
+      : part === "alt" || part === "option" ? "A"
+      : part === "control" || part === "ctrl" ? "C"
+      : part === "commandorcontrol" || part === "cmdorctrl" ? (platform === "darwin" ? "M" : "C")
+      : part === "command" || part === "cmd" || part === "super" || part === "meta" ? "M" : null;
+    if (modifier !== null) {
+      modifiers.add(modifier);
+      continue;
+    }
+    const shifted = Object.hasOwn(NATIVE_SHIFTED_KEYS, part) ? NATIVE_SHIFTED_KEYS[part] : undefined;
+    if (shifted !== undefined) modifiers.add("S");
+    const token = shifted ?? part;
+    const code = /^[a-z0-9]$/.test(token) ? token.toUpperCase().charCodeAt(0)
+      : /^f([1-9]|1[0-9]|2[0-4])$/.test(token) ? 111 + Number(token.slice(1))
+      : /^num[0-9]$/.test(token) ? 96 + Number(token.slice(3)) : Object.hasOwn(NATIVE_KEY_CODES, token) ? NATIVE_KEY_CODES[token] : undefined;
+    if (code === undefined) return null;
+    keyCode = code;
+  }
+  return keyCode === undefined ? null : `${[...modifiers].sort().join("")}+${keyCode}`;
+}
+
 function parseAccelerator(input: unknown): ParsedAccelerator | null {
   const shape = normalizeAccelerator(input);
   if (shape === null) return null;
@@ -175,7 +220,7 @@ function chordSignature(accelerator: string, platform: ShortcutPlatform): string
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return null;
   const chord = resolveChord(parsed, platform);
-  const key = chord.shift && chord.key === "Plus" ? "=" : chord.key;
+  const key = chord.key;
   return `${chord.meta ? "M" : ""}${chord.ctrl ? "C" : ""}${chord.alt ? "A" : ""}${chord.shift ? "S" : ""}+${key}`;
 }
 
@@ -232,7 +277,7 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
   const key = eventKeyToken(event);
-  return (key === chord.key || (chord.shift && chord.key === "Plus" && key === "="))
+  return key === chord.key
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt
@@ -458,13 +503,13 @@ export function defaultAccelerator(id: ShortcutId, platform: ShortcutPlatform): 
 
 /** The fixed registry row that owns this chord, excluding the separately configured global toggle. */
 export function fixedShortcutOwner(accelerator: string, platform: ShortcutPlatform): ShortcutDefinition | null {
-  const signature = chordSignature(accelerator, platform);
+  const signature = nativeAcceleratorIdentity(accelerator, platform);
   if (signature === null) return null;
   for (const entry of SHORTCUTS) {
     const row = entry as ShortcutDefinition;
     if (!row.readOnly || row.layeredOn !== undefined || row.id === "system.toggleWindow") continue;
     const fixed = row.defaults[platform];
-    if (fixed !== null && chordSignature(fixed, platform) === signature) return row;
+    if (fixed !== null && nativeAcceleratorIdentity(fixed, platform) === signature) return row;
   }
   return null;
 }
@@ -534,7 +579,10 @@ export function conflictingShortcutIds(rows: readonly ResolvedShortcut[], platfo
     for (let j = i + 1; j < keyed.length; j++) {
       const a = keyed[i];
       const b = keyed[j];
-      if (a.signature === null || a.signature !== b.signature) continue;
+      const fixedPair = !a.row.rebindable || !b.row.rebindable;
+      const aSignature = fixedPair ? nativeAcceleratorIdentity(a.row.accelerator as string, platform) : a.signature;
+      const bSignature = fixedPair ? nativeAcceleratorIdentity(b.row.accelerator as string, platform) : b.signature;
+      if (aSignature === null || aSignature !== bSignature) continue;
       if (!a.row.rebindable && !b.row.rebindable) continue;
       if (!scopesOverlap(a.row.definition.scope, b.row.definition.scope)) continue;
       conflicts.add(a.row.id);
@@ -588,7 +636,7 @@ export function shortcutBindingRefusal(
   const owner = fixedShortcutOwner(accelerator, platform);
   if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
   const toggle = resolveShortcut("system.toggleWindow", input, platform);
-  if (toggle !== null && chordSignature(toggle, platform) === signature) {
+  if (toggle !== null && nativeAcceleratorIdentity(toggle, platform) === nativeAcceleratorIdentity(accelerator, platform)) {
     return { reason: "fixed-key", ownerId: "system.toggleWindow" };
   }
   return null;

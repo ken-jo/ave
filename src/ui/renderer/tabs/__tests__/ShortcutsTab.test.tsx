@@ -51,7 +51,11 @@ describe("ShortcutsTab", () => {
       const api = installApi();
       render(<Harness api={api} />);
       fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
-      press({ key: "+", code: "Equal", shiftKey: true, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+      for (const [code, shiftKey] of [["Equal", true], ["BracketRight", false], ["BracketRight", true]] as const) {
+        press({ key: "+", code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
+        expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko["be_main.menuZoomIn"]);
+        expect(api.updateSettings).not.toHaveBeenCalled();
+      }
       expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko["be_main.menuZoomIn"]);
       expect(api.updateSettings).not.toHaveBeenCalled();
       expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");

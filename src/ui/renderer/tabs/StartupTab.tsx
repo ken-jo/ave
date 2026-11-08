@@ -14,7 +14,7 @@ import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { acceleratorFromEvent, fixedShortcutOwner, normalizeAccelerator } from "../../../shared/shortcuts.js";
+import { acceleratorFromEvent, fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator } from "../../../shared/shortcuts.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
@@ -230,7 +230,7 @@ export function StartupTab() {
       const recorded = acceleratorFromEvent(e, rendererShortcutPlatform());
       if (recorded.kind !== "accelerator") return; // modifier-only or unbindable press — keep waiting for a key.
       const normalized = normalizeAccelerator(recorded.accelerator);
-      if (normalized === null) return;
+      if (normalized === null || nativeAcceleratorIdentity(normalized, rendererShortcutPlatform()) === null) return;
       const owner = fixedShortcutOwner(normalized, rendererShortcutPlatform());
       if (owner !== null) {
         setCaptureError(t("startupTab.shortcutReserved", { label: t(owner.labelKey) }));
