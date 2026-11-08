@@ -76,7 +76,7 @@ it("renders code presets in their saved typeface", () => {
 it("rejects unsafe custom code stacks before saving", () => {
  render(<AppearanceTab />);
  api.updateSettings.mockClear();
- const input = screen.getByLabelText("사용자 정의 코드 폰트 stack");
+ const input = screen.getByLabelText("사용자 정의 코드 글꼴 목록");
  fireEvent.change(input, { target: { value: "Broken; color: red" } });
  fireEvent.blur(input);
  expect(api.updateSettings).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ it("keeps one live chat preview above both font sections before saving completes
  const view = render(<AppearanceTab />);
  const preview = screen.getByTestId("font-chat-preview");
  expect(preview).toHaveTextContent("이 코드를 설명해 주세요.");
- expect(preview).toHaveTextContent("결과를 출력하는 예제입니다.");
+ expect(preview).toHaveTextContent("인사말을 출력하는 예제입니다.");
  expect(screen.getByTestId("terminal-font-preview").textContent?.split("\n")).toHaveLength(2);
  const firstFontSection = view.container.querySelector('[data-settings-section="appearance-font"]') as HTMLElement;
  expect(preview.compareDocumentPosition(firstFontSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

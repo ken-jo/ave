@@ -1,5 +1,5 @@
-import { ZoomIndicator } from "./components/ZoomControls.js";
 import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
+import { ZoomIndicator } from "./components/ZoomControls.js";
 import { ViewHistoryNav, ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
 import { useTranslation } from "../../i18n/react.js";
 import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";

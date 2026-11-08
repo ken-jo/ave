@@ -1,6 +1,5 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Button } from "../../../components/ui/button.js";
 import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";

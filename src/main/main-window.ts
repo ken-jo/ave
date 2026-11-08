@@ -1,6 +1,6 @@
+import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { zoomLevelToZoomFactor } from "../shared/app-zoom.js";
 import { bindAppWindowZoom } from "./app-zoom.js";
-import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";

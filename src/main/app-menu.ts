@@ -1,5 +1,5 @@
-import { runAppZoomCommand } from "./app-zoom.js";
 // Menu builders read live state and rebuild when window or plugin state changes.
+import { runAppZoomCommand } from "./app-zoom.js";
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import { getLocale, t } from "../i18n/index.js";

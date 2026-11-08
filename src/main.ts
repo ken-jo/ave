@@ -1,9 +1,5 @@
-import { applyAppZoomLevel } from "./main/app-zoom.js";
-
-
-
-
 import { app, net, powerMonitor } from "electron";
+import { applyAppZoomLevel } from "./main/app-zoom.js";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
 import { writeSync } from "node:fs";
 import { onLocaleChange, t } from "./i18n/index.js";
