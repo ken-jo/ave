@@ -1927,13 +1927,13 @@ function logWindowsAclRecovery({ deadBrokers, acesRevoked }: WindowsAclRecoveryR
 }
 
 // srt-win dropped these rows without releasing them (`mismatch`: the path now names another object, whose ACE is left as it was, so a deny stays
-// fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds; the next boot's ACL recovery handles leftovers.
-// Counts only, never paths. A test double's reset() may resolve with nothing.
+// fail-closed; `missing`: the path is gone). Retrying changes nothing, so the reset still succeeds.
+// Redacted target keys identify dropped rows without paths. A test double's reset() may resolve with nothing.
 function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
   const unreleased = report?.windowsAclUnreleased ?? [];
   if (unreleased.length === 0) return;
-  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); next-boot ACL recovery handles leftovers",
-    unreleased.map(({ step, status, count }) => `${step} ${status} x${count}`).join(", "));
+  log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); inspect retained ACLs using target keys",
+    unreleased.map(({ step, status, count, rowKeys }) => `${step} ${status} x${count} [${rowKeys.join(",")}]`).join(", "));
 }
 
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.

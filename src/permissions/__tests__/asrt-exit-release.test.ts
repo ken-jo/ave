@@ -116,20 +116,22 @@ describe("sandbox runtime release at exit", () => {
     expect(existsSync(executable)).toBe(true);
   });
 
-  it("completes the release when srt-win dropped rows it cannot release, and logs their counts without paths", async () => {
-    const dropped = (status: string) => ({ path: "D:\\work\\private-target", status });
+  it("logs stable redacted target keys for every dropped release row", async () => {
+    const dropped = (status: string, path = "D:\\work\\private-target") => ({ path, status });
     setWindowsAclReleaseForTesting({
       sandboxUserSid: "S-1-5-21-1", srtWin: executable,
       revoke: ({ onExit }) => { onExit(true); return [dropped("missing"), dropped("revoked")]; },
-      restore: ({ onExit }) => { onExit(true); return [dropped("mismatch")]; },
+      restore: ({ onExit }) => { onExit(true); return [dropped("mismatch", "d:/work/private-target"), dropped("mismatch", "D:\\work\\second-target")]; },
     });
     manager.reset.mockImplementation(() => RealSandboxManager.reset());
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await releaseAsrtSandboxForExit();
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), "grant revoke missing x1, deny restore mismatch x1");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"),
+        "grant revoke missing x1 [14d6fb468b98e4af12b11856], deny restore mismatch x2 [14d6fb468b98e4af12b11856,30879eb4dbafdc888399713e]");
       expect(JSON.stringify(warn.mock.calls)).not.toContain("private-target");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("second-target");
     } finally {
       warn.mockRestore();
     }
