@@ -898,7 +898,11 @@ export class SessionRepository {
   private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
     const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
     const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-    writeUtf8FileAtomicSync(targetPath, lines);
+    let unchanged = false;
+    try {
+      unchanged = readFileSync(targetPath).equals(Buffer.from(lines, "utf8"));
+    } catch { /* Write when the existing transcript cannot be compared. */ }
+    if (!unchanged) writeUtf8FileAtomicSync(targetPath, lines);
     this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
     this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
     const ids = rowIdsOf(messages);

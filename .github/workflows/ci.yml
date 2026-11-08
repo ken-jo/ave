@@ -670,6 +670,14 @@ jobs:
           src/__tests__/app-menu-edit-shortcuts-source.test.ts
           src/ui/renderer/__tests__/MainToolbar.test.tsx
           src/data/__tests__/settings-documents.test.ts
+      - name: Run Windows session persistence regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: >
+          bun run test:vitest --
+          src/memory/__tests__/session-repository.test.ts
+          src/memory/__tests__/session-turn-journal.test.ts
+          src/engine/__tests__/conversation-loop-resume.test.ts
       - name: Run Windows permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
