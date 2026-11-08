@@ -25,6 +25,13 @@ beforeEach(() => {
 afterEach(() => setAgentBrowserObservationSink(undefined));
 
 describe("agent browser command admission", () => {
+  it.each(["snapshot", "screenshot", "wait"] as const)("observes owned %s work between input leases", async (action) => {
+    tab.lease = null;
+    tab.controlMode = "human";
+    await runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, action, async () => 42));
+    expect(sink.begin).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledOnce();
+  });
   it("requires both the model turn and admitted invocation rather than supplied tab metadata", async () => {
     await observeAgentBrowserCommand(tab, "click", async () => 1);
     await runWithAgentObservationTurn(identity, () => observeAgentBrowserCommand(tab, "click", async () => 1));

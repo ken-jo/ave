@@ -385,7 +385,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
-      return run(async (actions) => {
+      return observeAgentBrowserCommand(target.resolved.tab, "snapshot", () => run(async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
@@ -403,7 +403,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
         }, shot.text), browserPreview);
-      });
+      }), ctx.abortSignal);
     },
 
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
@@ -413,7 +413,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
-      return run(async (actions) => {
+      return observeAgentBrowserCommand(target.resolved.tab, "screenshot", () => run(async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
@@ -425,7 +425,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           isError: false,
           image: { data: image.data, mimeType: image.mimeType, bytes: image.bytes },
         }, browserPreview);
-      });
+      }), ctx.abortSignal);
     },
 
     [BROWSER_TOOL.wait]: async (input, ctx) => {
@@ -440,7 +440,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
       if (changed) return changed;
-      return run(async (actions) => {
+      return observeAgentBrowserCommand(target.resolved.tab, "wait", () => run(async (actions) => {
         const fresh = recheck(input, ctx, target);
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
@@ -457,7 +457,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         const changedAfterWait = unchangedSinceApproval(ctx, completed.resolved);
         if (changedAfterWait) return changedAfterWait;
         return fenced({ tabId: target.resolved.tab.handle, ...waited });
-      });
+      }), ctx.abortSignal);
     },
 
     [BROWSER_TOOL.navigate]: async (input, ctx) => {

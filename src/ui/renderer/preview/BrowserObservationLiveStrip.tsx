@@ -18,6 +18,9 @@ const ACTION_KEYS: Record<BrowserObservationAction, string> = {
   scroll: "agentBrowser.observationScroll",
   upload: "agentBrowser.observationUpload",
   "press-key": "agentBrowser.observationPressKey",
+  snapshot: "agentBrowser.observationSnapshot",
+  screenshot: "agentBrowser.observationScreenshot",
+  wait: "agentBrowser.observationWait",
 };
 const DOWNLOAD_STATE_KEYS = {
   started: "agentBrowser.observationDownloadStarted",

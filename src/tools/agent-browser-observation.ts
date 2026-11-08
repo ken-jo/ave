@@ -38,10 +38,11 @@ export async function observeAgentBrowserCommand<T>(
   const identity = admission?.identity;
   const guest = tab.guest;
   const sink = browserSink;
-  const tabOperation = action === "tab-close" || action === "tab-switch";
+  const tabOperation = action === "tab-close" || action === "tab-switch" || action === "snapshot" || action === "screenshot" || action === "wait";
   const lease = tab.lease;
   const controlled = lease?.actor.sessionId === identity?.sessionId && tab.controlMode === "agent-active";
-  const ownedOperation = tabOperation && identity !== undefined && agentDrivesTab(tab, identity.sessionId);
+  const ownedOperation = tabOperation && identity !== undefined && agentDrivesTab(tab, identity.sessionId)
+    && (!lease || lease.actor.sessionId === identity.sessionId);
   if (!identity || !admission || !sink || !guest || guest.isDestroyed() || signal?.aborted || (!controlled && !ownedOperation)) {
     return run(undefined);
   }

@@ -197,10 +197,6 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     && observation.target.hostSessionId === currentSessionId
     ? { tabId: observation.after.tabId, rendererTabId: observation.after.rendererTabId, sessionId: observation.sessionId } : undefined;
   const observedTabId = observedHandle?.rendererTabId;
-  const showObservedBrowser = !hidden && !!observedHandle && !!observedTabId && !!onFocusObservedBrowser
-    && hiddenBrowserTabIds?.has(observedTabId) && !browserControlUnavailable
-    && browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === observedTabId
-      && tab.tabId === observedHandle.tabId && agentDrivesBrowserTab(tab, observedHandle.sessionId));
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
@@ -261,6 +257,17 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
+  const observedSideTab = workspaceTabs.tabs.find((tab) => tab.id === observedTabId);
+  const showObservedBrowser = !hidden && !!observedHandle && !!observedTabId && !browserControlUnavailable
+    && (observedSideTab ? !sidePanelOpen || workspaceTabs.activeTabId !== observedTabId : hiddenBrowserTabIds?.has(observedTabId))
+    && browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === observedTabId
+      && tab.tabId === observedHandle.tabId && agentDrivesBrowserTab(tab, observedHandle.sessionId));
+  const focusObservedBrowser = (tabId: string) => {
+    if (workspaceTabs.hasTab(tabId)) {
+      workspaceTabs.setActiveTabId(tabId);
+      onSidePanelOpenChange(true);
+    } else onFocusObservedBrowser?.(tabId);
+  };
   const handleRevealChangedFile = useCallback((path: string) => {
     workspaceTabs.ensureContainerTab("file-browser");
     setFileReveal((previous) => ({ sessionId: currentSessionId, request: { path, token: (previous?.request.token ?? 0) + 1 } }));
@@ -945,7 +952,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
         notices={<>
           {showObservedBrowser && observedTabId ? <div data-testid="conversation-browser-observation" className="mb-2 flex items-center gap-2">
             <div className="min-w-0 flex-1"><BrowserObservationLiveStrip tabId={observedTabId} sessionId={currentSessionId} /></div>
-            <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => onFocusObservedBrowser?.(observedTabId)}
+            <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => focusObservedBrowser(observedTabId)}
               className="relative shrink-0 overflow-hidden rounded border" style={{ width: 128, height: 80 }}>
               <BrowserObservationPreview tabId={observedTabId} sessionId={currentSessionId} observeHidden>
                 <span className="text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>

@@ -3,7 +3,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
+import { deferred, emitAgentTabNew, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import {
@@ -64,6 +64,31 @@ function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHei
 }
 
 describe("ChatView", () => {
+  it.each(["snapshot", "wait", "scroll"] as const)("shows and focuses the preview of a never-shown side tab during %s", async (action) => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    await emitAgentTabNew(container, api, { requestId: "never-shown", url: "https://example.test/" });
+    const tabId = container.querySelector<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]')!.dataset.tabId!;
+    const guest = document.querySelector(`webview[data-tab-id="${tabId}"]`);
+    const controls = api.browserTabs as unknown as { emitBrowserControl(ids: string[]): void };
+    const emit = vi.mocked(window.ave.preview.onAgentObservation).mock.calls[0]![0] as Parameters<AvePreviewApi["onAgentObservation"]>[0];
+    const event: AgentObservationEvent = { source: "browser", actor: "agent", sessionId: "fixture-session",
+      target: { id: "never-shown-target", path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
+      kind: "action", before: null, after: { action, tabId: `handle-${tabId}`, rendererTabId: tabId,
+        url: "https://example.test/", title: "Example" } };
+    act(() => { controls.emitBrowserControl([tabId]); emit([event]); });
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-testid="conversation-browser-observation"]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    const toggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(row.querySelector('[data-testid="browser-observation-preview"]')).not.toBeNull();
+    fireEvent.click(within(row).getByRole("button"));
+    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(container.querySelector('[data-testid="conversation-browser-observation"]')).toBeNull());
+    expect(document.querySelector(`webview[data-tab-id="${tabId}"]`)).toBe(guest);
+  });
   it.each(["close-race", "move-race", "session-switch"])("shows one hosted hidden-pane thumbnail, focuses it and clears it on %s", async (ending) => {
     const tabId = "browser:abc12345-1";
     const surface = { kind: "browser", tabId, ordinal: 1, url: "https://example.test/", cwd: null, projectRoot: process.cwd() };
