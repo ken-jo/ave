@@ -5,6 +5,7 @@ import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { MainToolbar } from "../MainToolbar.js";
 import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
+import { userEvent } from "@testing-library/user-event";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
 function defaultProps(overrides: Partial<Parameters<typeof MainToolbar>[0]> = {}) {
@@ -43,12 +44,10 @@ describe("MainToolbar", () => {
   // The band hosts right-aligned lifecycle and development controls. The search / star / export controls + the
   // collapse toggle moved into the floating sidebar's cluster strip next to the
   // traffic lights (see Sidebar.tsx / Sidebar tests).
-  it("no longer renders a hamburger / more-menu trigger", () => {
-    renderWithProvider(defaultProps());
-    expect(screen.queryByTitle("더 많은 메뉴")).toBeNull();
-    expect(screen.queryByTitle("홈")).toBeNull();
-    expect(screen.queryByText("새 대화")).toBeNull();
-    expect(document.querySelector("[data-testid='token-progress-ring']")).toBeNull();
+  it("keeps status pills inline without an overflow button on wide screens", () => {
+    renderWithProvider(defaultProps({ appUpdateState: { kind: "available", version: "9.9.9" } }));
+    expect(screen.queryByTestId("toolbar-status-overflow")).toBeNull();
+    expect(screen.getByRole("button", { name: /9.9.9/ })).toBe(screen.getByTestId("app-update-badge-available"));
   });
 
   it("puts back / forward and then the location on its leading edge", () => {
@@ -87,22 +86,37 @@ describe("MainToolbar", () => {
     expect(crumb.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const chip = screen.getByTestId("bootstrap-status-pill");
     expect(slot.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId("main-toolbar").className).toContain("data-[compact=true]:[&_[data-toolbar-pill-label]]:hidden");
   });
 
-  it("compacts labels before the breadcrumb yields and releases compaction when content fits", async () => {
-    renderWithProvider(defaultProps({ appUpdateState: { kind: "available", version: "9.9.9" } }));
-    const toolbar = screen.getByTestId("main-toolbar");
-    const controls = screen.getByTestId("toolbar-status-controls");
-    Object.defineProperty(toolbar, "clientWidth", { configurable: true, value: 200 });
-    Object.defineProperty(toolbar, "scrollWidth", { configurable: true, get: () => toolbar.dataset.compact ? 200 : 300 });
-    await act(async () => { setContainerWidths({ canvasWidth: 200 }); });
-    expect(toolbar).toHaveAttribute("data-compact", "true");
-    expect(screen.getByTestId("app-update-badge-available")).toHaveAccessibleName(/9.9.9/);
-    expect(controls).toHaveClass("min-w-0", "overflow-x-auto");
-    Object.defineProperty(toolbar, "scrollWidth", { configurable: true, value: 100 });
-    await act(async () => { setContainerWidths({ canvasWidth: 600 }); });
-    expect(toolbar).not.toHaveAttribute("data-compact");
+  it("uses a counted overflow menu on narrow screens and preserves each update action", async () => {
+    await act(async () => { setContainerWidths({ canvasWidth: 360 }); });
+    const onReview = vi.fn();
+    const onDownload = vi.fn();
+    const updates = [{ key: { sourceId: "ave", kind: "plugin" as const, name: "meeting" }, displayName: "Meeting", from: "1.0.0", to: "2.0.0", state: "manual" as const }];
+    renderWithProvider(defaultProps({ appUpdateState: { kind: "available", version: "9.9.9" }, onDownloadAppUpdate: onDownload, pluginUpdates: { updates, onSkip: vi.fn(), onReview } }));
+    const user = userEvent.setup();
+    expect(await screen.findByTestId("toolbar-status-overflow-count")).toHaveTextContent("2");
+    expect(screen.queryByTestId("marketplace-update-action")).toBeNull();
+    await user.click(await screen.findByTestId("toolbar-status-overflow"));
+    expect(screen.getByTestId("marketplace-update-action")).toHaveAttribute("role", "menuitem");
+    await user.click(screen.getByTestId("marketplace-update-action"));
+    expect(onReview).toHaveBeenCalledWith(updates);
+    await user.click(await screen.findByTestId("toolbar-status-overflow"));
+    await user.click(screen.getByTestId("app-update-badge-available"));
+    expect(onDownload).toHaveBeenCalledOnce();
+  });
+
+  it("keeps popup status controls usable from the overflow menu", async () => {
+    await act(async () => { setContainerWidths({ canvasWidth: 360 }); });
+    render(<TooltipProvider><ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, zoomLevel: 1 }}><MainToolbar {...defaultProps()} /></ThemeProvider></TooltipProvider>);
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId("toolbar-status-overflow"));
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(screen.getByTestId("zoom-controls")).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("zoom-controls")).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("toolbar-status-menu")).toBeNull();
   });
 
   it("lines the lifecycle pills up in one row, app update first", () => {
@@ -171,7 +185,6 @@ describe("MainToolbar", () => {
 });
 
 afterEach(() => {
-  setContainerWidths({ canvasWidth: Infinity, shellWidth: Infinity });
   vi.unstubAllGlobals();
 });
 

@@ -3121,6 +3121,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mainToolbar.toggleSidebar": "사이드바 숨김/표시",
   "mainToolbar.showSidebar": "사이드바 표시",
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
+  "mainToolbar.statusOverflow": "상태 더 보기 ({{count}}개)",
   "mainToolbar.devToolsTooltip": "Dev Tools — Preflight 임계 조절 (Cmd/Ctrl+Shift+D)",
   "mainToolbar.unifiedSearch": "통합 검색 ({shortcut})",
   "mainToolbar.sessionStar": "현재 세션 핀 고정",

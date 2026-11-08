@@ -6,6 +6,17 @@ import { test as providerTest } from "../../screenshots/fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 
+async function captureWindow(app: ElectronApplication, path: string, width: number) {
+  const capture = await app.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) throw new Error("Missing main window");
+    const image = await win.webContents.capturePage();
+    return { png: image.toPNG().toString("base64"), size: image.getSize() };
+  });
+  expect(capture.size).toEqual({ width, height: 640 });
+  await writeFile(path, Buffer.from(capture.png, "base64"));
+}
+
 async function showApproval(app: ElectronApplication, sessionId: string, id: string) {
   await app.evaluate(({ BrowserWindow }, { channel, sessionId, id }) => {
     BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
@@ -95,6 +106,8 @@ test(`title bar notices leave every routed toolbar clickable at ${width}px`, asy
   await expectControlReceivesClick(header.getByTestId("pane-action-conversation.pin"));
   await expect(header.getByTestId("pane-action-conversation.unpin")).toBeVisible();
   expect(await composer.boundingBox()).toEqual(composerBounds);
+  if (width < 768) await expectControlReceivesClick(page.getByTestId("toolbar-status-overflow"));
+  else await expect(page.getByTestId("toolbar-status-overflow")).toHaveCount(0);
   const titleControl = page.getByTestId("bootstrap-status-pill");
   await expectControlReceivesClick(titleControl);
   await expect(titleControl).toHaveCount(0);
@@ -179,14 +192,14 @@ test(`title bar notices leave every routed toolbar clickable at ${width}px`, asy
 });
 }
 
-for (const zoomLevel of [1, 2]) {
-  test(`combined update offers keep sticky notice controls reachable at 360px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
-    await setWindowSize(app, 360, 640);
+for (const [width, zoomLevel, overflowExpected] of [[360, 1, true], [360, 2, true], [768, 0, true], [1243, 0, false]] as const) {
+  test(`status overflow preserves update actions and notice dismissal at ${width}px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
+    await setWindowSize(app, width, 640);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.evaluate(async (zoomLevel) => {
       await window.aveApi.updateSettings({ appearance: { zoomLevel } });
     }, zoomLevel);
-    await expect(page.getByTestId("zoom-indicator")).toBeVisible();
+    await expect.poll(() => page.evaluate(async () => (await window.aveApi.getSettings()).appearance.zoomLevel)).toBe(zoomLevel);
     await activateView(app, "settings");
     await expect(page.getByRole("searchbox")).toBeVisible();
     await app.evaluate(({ BrowserWindow }, channels) => {
@@ -203,8 +216,6 @@ for (const zoomLevel of [1, 2]) {
     const slot = page.getByTestId("window-notice-slot");
     const toast = slot.getByTestId("status-toast");
     await expect(toast).toHaveAttribute("data-severity", "error");
-    await expect(page.getByTestId("marketplace-update-action")).toBeVisible();
-    await expect(page.getByTestId("app-update-badge-available")).toBeVisible();
     const assertUnclippedHit = async (control: Locator) => {
       const hit = await control.evaluate((element) => {
         const box = element.getBoundingClientRect();
@@ -226,39 +237,32 @@ for (const zoomLevel of [1, 2]) {
       expect(hit.clipped, JSON.stringify(hit)).toBe(false);
       expect(hit.hit, JSON.stringify(hit)).toBe(true);
     };
-    const updateStyle = await page.getByTestId("app-update-badge-available").evaluate((element) => {
-      const icon = element.querySelector("svg");
-      if (!icon) throw new Error("Missing compact update icon");
-      const box = icon.getBoundingClientRect();
-      return { iconWidth: box.width, iconHeight: box.height, color: getComputedStyle(icon).color,
-        background: getComputedStyle(element).backgroundColor, opacity: getComputedStyle(icon).opacity };
-    });
-    expect(updateStyle.iconWidth).toBeGreaterThan(0);
-    expect(updateStyle.iconHeight).toBeGreaterThan(0);
-    const stylePath = testInfo.outputPath("compact-update-style.json");
-    await writeFile(stylePath, JSON.stringify(updateStyle, null, 2));
-    await testInfo.attach("compact-update-style", { path: stylePath, contentType: "application/json" });
     const dismiss = toast.getByTestId("status-toast-dismiss");
     await assertUnclippedHit(dismiss);
-    await assertUnclippedHit(page.getByTestId("app-update-badge-available"));
+    if (!overflowExpected) {
+      await expect(page.getByTestId("toolbar-status-overflow")).toHaveCount(0);
+      await assertUnclippedHit(page.getByTestId("app-update-badge-available"));
+      await assertUnclippedHit(page.getByTestId("marketplace-update-action"));
+    } else await assertUnclippedHit(page.getByTestId("toolbar-status-overflow"));
     await assertUnclippedHit(page.getByTestId(TEST_IDS.viewPathBack));
     await expectControlReceivesClick(page.getByTestId(TEST_IDS.viewPathBack));
     await expect(page.getByTestId("composer-textarea").first()).toBeVisible();
     await expect(toast).toBeVisible();
     expect(await toast.getAttribute("title")).toBe(await page.getByTestId("window-notice-strip").getByTestId("notice-live-assertive").textContent());
-    // Capture the physical content bounds: page screenshots crop when the shell is zoomed.
-    const capture = await app.evaluate(async ({ BrowserWindow }) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (!win) throw new Error("Missing main window");
-      const image = await win.webContents.capturePage();
-      return { png: image.toPNG().toString("base64"), size: image.getSize(), bounds: win.getContentBounds() };
-    });
-    expect(capture.size).toEqual({ width: 360, height: 640 });
-    expect(capture.bounds.width).toBe(360);
-    await writeFile(testInfo.outputPath(`notice-controls-360-zoom-${zoomLevel}.png`), Buffer.from(capture.png, "base64"));
-    const pluginUpdate = page.getByTestId("marketplace-update-action");
-    await pluginUpdate.scrollIntoViewIfNeeded();
-    await assertUnclippedHit(pluginUpdate);
+    await captureWindow(app, testInfo.outputPath(`status-controls-${width}-zoom-${zoomLevel}.png`), width);
+    if (overflowExpected) {
+      await expectControlReceivesClick(page.getByTestId("toolbar-status-overflow"));
+      await expect(page.getByTestId("toolbar-status-menu")).toBeVisible();
+      await expect(page.getByTestId("marketplace-update-action")).toHaveAttribute("role", "menuitem");
+      await captureWindow(app, testInfo.outputPath(`status-menu-${width}-zoom-${zoomLevel}.png`), width);
+    }
+    await expectControlReceivesClick(page.getByTestId("marketplace-update-action"));
+    const review = page.getByTestId("git-marketplace:sheet");
+    await expect(review).toBeVisible();
+    await expect(review).toContainText("notice-update");
+    await expect(page.getByTestId("toolbar-status-menu")).toHaveCount(0);
+    await expectControlReceivesClick(page.getByTestId("git-marketplace:sheet:close"));
+    await expect(toast).toBeVisible();
     await assertUnclippedHit(dismiss);
     await expectControlReceivesClick(dismiss);
     await expect(toast).toHaveCount(0);

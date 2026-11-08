@@ -1,3 +1,4 @@
+import { ToolbarStatusMenuButton } from "../toolbar-status-menu.js";
 // Title-bar badge for 확인 필요: the list's `total` (every authorized project), hidden at zero and until the first result. Its popover
 // lists each counted item once, grouped by project (the viewed project first, the shared items last), and only navigates; it has no
 // decide buttons — decisions are made on the card in that project's home.
@@ -92,7 +93,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
+        <ToolbarStatusMenuButton variant="ghost" size="sm"
           type="button"
           aria-label={t("workApprovals.badgeLabel", { count: state.total })}
           data-testid="work-approvals-badge"
@@ -100,7 +101,7 @@ export function WorkApprovalsBadge({ api, projectRoot, onOpenItem, onOpenAll, no
         >
           <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
           {t("workApprovals.badge", { count: state.total })}
-        </button>
+        </ToolbarStatusMenuButton>
       </PopoverTrigger>
       <PopoverContent
         align="end"

@@ -3119,6 +3119,7 @@ export const en = {
   "mainToolbar.toggleSidebar": "Toggle Sidebar Visibility",
   "mainToolbar.showSidebar": "Show sidebar",
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
+  "mainToolbar.statusOverflow": "More status controls ({{count}})",
   "mainToolbar.devToolsTooltip": "Dev Tools — Preflight threshold adjustment (Cmd/Ctrl+Shift+D)",
   "mainToolbar.unifiedSearch": "Unified Search ({shortcut})",
   "mainToolbar.sessionStar": "Pin current session",

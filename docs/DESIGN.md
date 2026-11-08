@@ -565,7 +565,7 @@ determine whether a tile can split or a panel can dock.
       can never swallow the next announcement;
     - transient notices never move the layout; conversation notices float at `z-30`, below request cards and clipped below their pane toolbar and above the composer; persistent banners stay in flow;
     - window notices occupy the title bar’s free slot between the breadcrumb and status chips, clear of navigation and window controls; one line, capped at `24rem`, with opacity-only motion and only the notice opting out of dragging;
-    - reserve the intrinsic width of notice controls; only its message may shrink to zero, with full text in the tooltip and live region. Under pressure, status pills become icons before breadcrumbs truncate; remaining status controls scroll within their own space;
+    - reserve the intrinsic width of notice controls; only its message may shrink to zero, with full text in the tooltip and live region. Below 768px of available toolbar width, status pills move into a visible overflow menu whose badge counts the pills; each keeps its original action; wider title bars keep them inline;
     - a request with its own card (approval or ask-user question) sends no in-app toast;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
