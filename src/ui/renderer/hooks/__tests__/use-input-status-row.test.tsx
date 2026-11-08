@@ -79,10 +79,10 @@ describe("useInputStatusRow", () => {
 
 describe("configured route billing in the current composer", () => {
   it.each([
-    ["optional key", undefined, true, true],
-    ["keyless preset", false, false, false],
-    ["keyed preset", true, true, true],
-  ] as const)("resolves %s using its exact credential address", async (_label, presetRequiresKey, hasKey, billed) => {
+    ["optional key", undefined, true],
+    ["keyless preset", false, false],
+    ["keyed preset", true, true],
+  ] as const)("omits billing and credential queries for %s", async (_label, presetRequiresKey, hasKey) => {
     const preset = {
       providerId: "billing-fixture", label: "Billing fixture", baseUrl: "https://billing.example.test/v1",
       defaultModel: "fixture-model", modelOptions: ["fixture-model"], requiresApiKey: presetRequiresKey ?? false,
@@ -100,21 +100,25 @@ describe("configured route billing in the current composer", () => {
     const api = apiWith(settings);
     api.hasApiKey = vi.fn(async () => hasKey);
     const { result } = renderHook(() => useInputStatusRow(api));
-    await waitFor(() => expect(result.current.billingRoute).toEqual({ kind: billed ? "api-key" : "keyless" }));
-    expect(api.hasApiKey).toHaveBeenCalledWith(presetId ? "marketplace-provider:billing-fixture" : "openai-compatible");
+    await waitFor(() => expect(result.current.activeChatModel).toEqual(settings.activeChatModel));
+    expect(result.current.billingRoute).toBeUndefined();
+    expect(api.hasApiKey).not.toHaveBeenCalled();
   });
 
-  it("does not let a delayed key query label a newly selected subscription", async () => {
-    const initial = fakeAppSettings({ llm: { provider: "openai-compatible", vendors: { "openai-compatible": { baseUrl: "https://billing.example.test/v1", model: "fixture-model" } } }, activeChatModel: { kind: "api", vendor: "openai-compatible", model: "fixture-model" } });
-    let resolveKey!: (value: boolean) => void;
+  it("updates subscription billing on settings broadcasts without querying credentials", async () => {
+    const initial = fakeAppSettings({ llm: { activeChatRuntime: { kind: "subscription", provider: "claude-code" } } });
+    const next = fakeAppSettings({ llm: { activeChatRuntime: { kind: "api" } } });
     let broadcast!: (settings: AppSettings) => void;
     const api = apiWith(initial);
-    api.hasApiKey = vi.fn(() => new Promise<boolean>((resolve) => { resolveKey = resolve; }));
+    api.hasApiKey = vi.fn(async () => true);
     api.onSettingsUpdated = vi.fn((callback) => { broadcast = callback; return () => {}; });
     const { result } = renderHook(() => useInputStatusRow(api));
-    await waitFor(() => expect(api.hasApiKey).toHaveBeenCalled());
-    act(() => broadcast(fakeAppSettings({ llm: { activeChatRuntime: { kind: "subscription", provider: "claude-code" } } })));
-    await act(async () => resolveKey(true));
+    await waitFor(() => expect(result.current.billingRoute).toEqual({ kind: "subscription", provider: "claude-code" }));
+    act(() => broadcast(next));
+    expect(result.current.billingRoute).toBeUndefined();
+    expect(api.hasApiKey).not.toHaveBeenCalled();
+    act(() => broadcast(initial));
     expect(result.current.billingRoute).toEqual({ kind: "subscription", provider: "claude-code" });
+    expect(api.hasApiKey).not.toHaveBeenCalled();
   });
 });
