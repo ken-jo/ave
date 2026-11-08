@@ -122,6 +122,24 @@ describe("BrowserTabRegistry", () => {
     expect(registry.activeBrowserTab(1)).toBeUndefined();
   });
 
+  it("keeps explicit root owner selection authoritative over the visible tab", async () => {
+    const { registry, ops } = setup();
+    for (const [index, tabId] of ["first", "second"].entries()) {
+      const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+      attachTab(registry, { tabId, webContentsId: 91 + index, requestId: ops.at(-1)!.request.requestId }, 1, "about:blank");
+      await opening;
+    }
+    registry.setActiveSurface(1, { kind: "browser", tabId: "first" });
+    await registry.requestTabOp(1, { op: "select", tabId: "tab-1", actor: ACTOR });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-1" });
+    await expect(registry.requestTabOp(1, { op: "select", tabId: "tab-2", actor: ACTOR })).resolves.toMatchObject({ ok: true });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-2" });
+    registry.setActiveSurface(1, { kind: "browser", tabId: "first" });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-2" });
+    registry.bindConversationSurface(ACTOR.sessionId, { windowId: 1, surface: { kind: "browser", tabId: "first" } });
+    expect(registry.defaultBrowserTab(1, ACTOR.sessionId)).toEqual({ ok: true, handle: "tab-1" });
+  });
+
   it("binds a tab only to a live guest attached to the sender's own window", () => {
     const { registry } = setup();
     const guest = new FakeGuest(11);

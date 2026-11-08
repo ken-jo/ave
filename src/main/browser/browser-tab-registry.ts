@@ -1111,6 +1111,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (ownerSessionId !== sessionId) return lastOwned ? { ok: true, handle: lastOwned.handle } : { ok: false, error: NO_SHOWN_BROWSER_TAB };
     const bound = this.conversationSurface(windowId, sessionId);
     if (bound === undefined) {
+      const explicit = owned.find((tab) => tab.handle === selected);
+      if (explicit) return { ok: true, handle: explicit.handle };
       const active = this.activeBrowserTab(windowId);
       const activeOwner = active === undefined ? undefined : this.tabs.get(active)?.owner;
       if (active !== undefined && (activeOwner == null || activeOwner.sessionId === ownerSessionId)) return { ok: true, handle: active };
