@@ -127,6 +127,19 @@ ELECTRON_RUN_AS_NODE=1 node_modules/.bin/electron -e 'console.log(process.versio
 
 This meets the Windows native-stdio requirement `>=24.21.0 <25 || >=26.8.0` (`T:README.md:16–18`, `T:dist/bindings/native-stdio.js:10–19`). The measurement removes the Node-version reason for skipping SDK JS; it does not test a Windows native handle transfer. The lock resolves the application runtime, while package.json declares a range. Native Windows packaging must repeat the measurement on the executable actually shipped. [A15] [T]
 
+Measured again on a native Windows host with the locked Electron **45.2.2** (main `5b9d1b3ed`, a development build, not the packaged executable):
+
+```sh
+ELECTRON_RUN_AS_NODE=1 node_modules/.bin/electron -e "console.log(process.versions.node, process.versions.electron)"
+# 24.22.2 45.2.2
+```
+
+- **Version.** Node 24.22.2 meets `>=24.21.0 <25`.
+- **Shells.** They select the container backend. The boot start probe took 4.8–6.0 s across boots, and readiness is `available`.
+- **Extensions.** They still run on the srt-win fallback. The readiness is `fallback`, with reason `native-validation-required`. That reason is a static boot gate (`src/boot/steps/sandbox-init.ts`), not a probe that failed on this host. So the Node version no longer blocks extensions; only the separate native validation gate does.
+- **Confined plugin children.** They start under srt-win.
+- **Relay.** The proxy relay for their egress works: a CONNECT to the declared host returned 200, and a direct socket was refused with `EACCES`.
+
 Choose SDK JS **in a dedicated supervisor process, not Electron main**, for persistent extension processes: `spawn()` returns live native streams plus `wait`, `kill`, `dispose`, and native lifecycle ownership. Retain `wxc-exec` for the current shell route and boot probe. A long-lived CLI subprocess would require another stdio/liveness supervisor and would not itself provide the SDK's owned process abstraction. Do not migrate shells as incidental work. `T:dist/v1/container.d.ts:20–25`, `T:dist/v1/container-process.d.ts:31–95` [T]; [A10]
 
 ### Placement and DLL loading
