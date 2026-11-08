@@ -1,6 +1,8 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { restoreWindowsAcl, revokeWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -91,6 +93,65 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
     return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
   }
+
+  it("ledgers and releases account-profile denies while the application home is isolated", async () => {
+    const reset = manager.reset;
+    captureRuntime();
+    const account = join(root, "bob");
+    const target = join(account, ".config", "ave", "hooks");
+    mkdirSync(target, { recursive: true });
+    vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: account });
+    expect(process.env.AVE_HOME?.startsWith(account)).toBe(false);
+    await initializeAsrtSandbox({});
+    const denied = paths(config?.filesystem.denyRead).filter(path => path === target);
+    expect(denied).toEqual([target]);
+
+    const ledger = join(root, "held-rows.json");
+    const calls = join(root, "release-calls.json");
+    const script = join(root, "acl-ledger.mjs");
+    writeFileSync(script, [
+      'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+      `const ledger = ${JSON.stringify(ledger)};`,
+      `const calls = ${JSON.stringify(calls)};`,
+      'const command = process.argv[3];',
+      'const holder = process.argv[process.argv.indexOf("--holder-pid") + 1];',
+      'let rows = existsSync(ledger) ? JSON.parse(readFileSync(ledger, "utf8")) : [];',
+      'const history = existsSync(calls) ? JSON.parse(readFileSync(calls, "utf8")) : [];',
+      'history.push({ command, holder }); writeFileSync(calls, JSON.stringify(history));',
+      'let outcomes = [];',
+      'if (command === "stamp") {',
+      '  const input = JSON.parse(readFileSync(0, "utf8"));',
+      `  rows = input.denyRead.flatMap(path => [{ path, holder, kind: "deny-read" }, { path: ${JSON.stringify(dirname(target))}, holder, kind: "deny-delete-child" }]);`,
+      '} else if (command === "restore") {',
+      '  outcomes = rows.filter(row => row.holder === holder).map(row => ({ path: row.path, status: "revoked" }));',
+      '  rows = rows.filter(row => row.holder !== holder);',
+      '}',
+      'writeFileSync(ledger, JSON.stringify(rows));',
+      'process.stdout.write(JSON.stringify(outcomes));',
+    ].join("\n"));
+    const srtWin = { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] };
+    const sandboxUserSid = "S-1-5-21-1001";
+    stampWindowsAcl({ denyRead: denied, denyWrite: [], sandboxUserSid, srtWin });
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([
+      { path: target, holder: String(process.pid), kind: "deny-read" },
+      { path: dirname(target), holder: String(process.pid), kind: "deny-delete-child" },
+    ]);
+    setWindowsAclReleaseForTesting({
+      sandboxUserSid, srtWin: srtWin as never,
+      revoke: ({ onExit }) => revokeWindowsAcl({ sandboxUserSid, srtWin, onExit }),
+      restore: ({ onExit }) => restoreWindowsAcl({ sandboxUserSid, srtWin, onExit }),
+    });
+    vi.mocked(manager.reset).mockImplementation(reset);
+    try {
+      await resetAsrtSandbox();
+      expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
+      expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual(
+        ["stamp", "revoke", "restore"].map(command => ({ command, holder: String(process.pid) })),
+      );
+    } finally {
+      setWindowsAclReleaseForTesting(undefined);
+    }
+  });
 
   it("preserves machine read protection when a parent receives a write grant", async () => {
     captureRuntime();
