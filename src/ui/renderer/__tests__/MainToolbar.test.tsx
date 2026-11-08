@@ -146,6 +146,8 @@ afterEach(() => {
 it("shows the title zoom popover only away from the default level", () => {
  const view = render(<TooltipProvider><ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, zoomLevel: 1 }}><MainToolbar {...defaultProps()} /></ThemeProvider></TooltipProvider>);
  const indicator = screen.getByTestId("zoom-indicator");
+ expect(indicator).toHaveClass("h-(--chrome-icon-button)", "w-(--chrome-icon-button)", "p-0");
+ expect(indicator).not.toHaveClass("h-10", "w-10");
  expect(indicator).toHaveAttribute("aria-label", expect.stringContaining("120%"));
  fireEvent.click(indicator);
  expect(screen.getByText("120%")).toBeInTheDocument();

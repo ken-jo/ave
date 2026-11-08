@@ -52,7 +52,7 @@ export function ZoomIndicator() {
   const Icon = level > 0 ? ZoomIn : ZoomOut;
   return <Popover>
     <PopoverTrigger asChild>
-      <Button type="button" variant="ghost" size="icon" data-testid="zoom-indicator" onDoubleClick={(event) => event.stopPropagation()}
+      <Button type="button" variant="ghost" className="h-(--chrome-icon-button) w-(--chrome-icon-button) p-0" data-testid="zoom-indicator" onDoubleClick={(event) => event.stopPropagation()}
         aria-label={`${t("appearanceTab.zoom")} ${Math.round(zoomLevelToZoomFactor(level) * 100)}% (Cmd/Ctrl+= / Cmd/Ctrl+-)`}>
         <Icon size={14} />
       </Button>
