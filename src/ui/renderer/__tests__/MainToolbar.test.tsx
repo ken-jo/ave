@@ -96,6 +96,7 @@ describe("MainToolbar", () => {
     renderWithProvider(defaultProps({ appUpdateState: { kind: "available", version: "9.9.9" }, onDownloadAppUpdate: onDownload, pluginUpdates: { updates, onSkip: vi.fn(), onReview } }));
     const user = userEvent.setup();
     expect(await screen.findByTestId("toolbar-status-overflow-count")).toHaveTextContent("2");
+    expect(screen.getByTestId("toolbar-status-overflow")).toHaveAccessibleName(/\(2\)|\(2개\)/);
     expect(screen.queryByTestId("marketplace-update-action")).toBeNull();
     await user.click(await screen.findByTestId("toolbar-status-overflow"));
     expect(screen.getByTestId("marketplace-update-action")).toHaveAttribute("role", "menuitem");
