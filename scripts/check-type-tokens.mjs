@@ -1,14 +1,17 @@
 #!/usr/bin/env node
-// Require the named type scale for renderer text sizes; an arbitrary px size ignores the
-// appearance font-size scale. Missing scan roots fail closed rather than reporting a clean tree.
+// Require the named type scale for renderer text sizes; an arbitrary length ignores the
+// appearance font-size scale. The scan covers what styles.css's `@source "./**/*.{ts,tsx,html}"`
+// feeds Tailwind. A missing scan root fails closed rather than reporting a clean tree.
 import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { walkSourceFiles } from "./lib/source-walk.mjs";
 
-const SCAN_DIRS = [join("src", "ui"), join("src", "components")];
+const SCAN_DIRS = ["src"];
 
-// Matches `text-[11px]`, `text-[10.5px]` and variant/important forms such as `sm:!text-[9px]`.
-const ARBITRARY_PX_SIZE = /\btext-\[[0-9.]+px/g;
+// Matches `text-[11px]`, `text-[0.7rem]`, `text-[length:1.1em]`, any unit case, and variant or
+// important forms such as `sm:!text-[9px]`. Colour forms (`text-[hsl(...)]`, `text-[CanvasText]`,
+// `text-[var(--x)]`) do not start with a number and are left alone.
+const ARBITRARY_SIZE = /\btext-\[(?:length:)?[0-9.]+(?:px|rem|em)\]/gi;
 
 const TEST_FILE = /\.(?:test|spec)\.tsx?$/;
 
@@ -36,7 +39,7 @@ for (const dir of SCAN_DIRS) {
   try {
     files = walkSourceFiles(join(root, dir), {
       skipDirs: new Set(["__tests__", "node_modules"]),
-      extensions: [".ts", ".tsx"],
+      extensions: [".ts", ".tsx", ".html"],
       accept: (p) => !TEST_FILE.test(p),
     });
   } catch (error) {
@@ -47,7 +50,7 @@ for (const dir of SCAN_DIRS) {
     scanned += 1;
     const rel = toPosix(relative(root, p));
     readFileSync(p, "utf8").split("\n").forEach((line, i) => {
-      for (const m of line.matchAll(ARBITRARY_PX_SIZE)) violations.push(`${rel}:${i + 1}  ${m[0]}]`);
+      for (const m of line.matchAll(ARBITRARY_SIZE)) violations.push(`${rel}:${i + 1}  ${m[0]}`);
     });
   }
 }

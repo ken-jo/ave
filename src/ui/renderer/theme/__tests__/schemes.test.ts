@@ -3,6 +3,7 @@ import { SCHEMES, requireScheme } from "../schemes/index.js";
 import { applyAppearance, contrastRatio, resolveTheme, resolveAppearanceScheme } from "../resolve-theme.js";
 import { STATIC_DESIGN_TOKENS } from "../design-tokens.js";
 import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS, DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
+import { FONT_SIZE_SCALE_DEFAULT } from "../../../../shared/appearance-font.js";
 
 function rgbHex(triple: string): string {
   const [h, s, l] = triple.split(" ").map(Number.parseFloat) as [number, number, number];
@@ -20,6 +21,18 @@ describe("curated color schemes", () => {
     for (const [name, value] of Object.entries(STATIC_DESIGN_TOKENS)) {
       expect(document.documentElement.style.getPropertyValue(name), name).toBe(value);
     }
+  });
+  it("renders the dense type steps at their former px sizes on the default root", () => {
+    // tiny and dense replaced fixed 10px and 11px labels; at the default scale they must render the same box.
+    const root = 16 * FONT_SIZE_SCALE_DEFAULT;
+    expect(root).toBe(14);
+    const px = (name: keyof typeof STATIC_DESIGN_TOKENS) => Number.parseFloat(STATIC_DESIGN_TOKENS[name]) * root;
+    expect(STATIC_DESIGN_TOKENS["--type-size-tiny"]).toMatch(/rem$/);
+    expect(STATIC_DESIGN_TOKENS["--type-size-dense"]).toMatch(/rem$/);
+    expect(px("--type-size-tiny")).toBeCloseTo(10, 4);
+    expect(px("--type-leading-tiny")).toBeCloseTo(15, 4);
+    expect(px("--type-size-dense")).toBeCloseTo(11, 4);
+    expect(px("--type-leading-dense")).toBeCloseTo(16.5, 4);
   });
   it("matches the persisted catalog with six schemes per mode", () => {
     expect(SCHEMES.filter((s) => s.shell === "dark").map((s) => s.id)).toEqual([...DARK_SCHEME_IDS]);

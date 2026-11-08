@@ -4,15 +4,14 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runGateScript, writeFixtureFile as write } from "./gate-script-runner.js";
 
-// Fixtures cover both scan roots, variant prefixes, and the test-file exemption.
+// Fixtures cover the whole Tailwind source tree, length units and prefixes, colour forms, and the test-file exemption.
 const SCRIPT = resolve(process.cwd(), "scripts/check-type-tokens.mjs");
 const roots: string[] = [];
 
 function createRoot(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "ave-type-tokens-"));
   roots.push(root);
-  write(root, "src/ui/.keep.ts", "");
-  write(root, "src/components/.keep.ts", "");
+  write(root, "src/.keep.ts", "");
   for (const [rel, contents] of Object.entries(files)) write(root, rel, contents);
   return root;
 }
@@ -29,7 +28,7 @@ describe("check-type-tokens", () => {
     });
     const result = runGateScript(SCRIPT, root);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("[type-token-check] OK files=4");
+    expect(result.stdout).toContain("[type-token-check] OK files=3");
   });
 
   it("rejects an arbitrary px size in the renderer", () => {
@@ -46,6 +45,26 @@ describe("check-type-tokens", () => {
     expect(result.stderr).toContain("src/components/ui/kbd.tsx:2  text-[10.5px]");
   });
 
+  it("rejects rem, em, length-prefixed and upper-case units in renderer entries outside src/ui", () => {
+    const root = createRoot({
+      "src/floating-dock-window.tsx": `const a = "text-[0.7rem]";\nconst b = "text-[length:1.1em]";\nconst c = "text-[11PX]";\n`,
+      "src/studio/page.html": `<span class="text-[0.75rem]"></span>\n`,
+    });
+    const result = runGateScript(SCRIPT, root);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("src/floating-dock-window.tsx:1  text-[0.7rem]");
+    expect(result.stderr).toContain("src/floating-dock-window.tsx:2  text-[length:1.1em]");
+    expect(result.stderr).toContain("src/floating-dock-window.tsx:3  text-[11PX]");
+    expect(result.stderr).toContain("src/studio/page.html:1  text-[0.75rem]");
+  });
+
+  it("leaves arbitrary colour forms alone", () => {
+    const root = createRoot({
+      "src/ui/renderer/Banner.tsx": "const a = \"text-[hsl(var(--action-view))]\";\nconst b = \"text-[CanvasText]\";\nconst c = \"text-[var(--x)]\";\nconst d = `text-[hsl(var(--" + "$" + "{token}))]`;\n",
+    });
+    expect(runGateScript(SCRIPT, root).status).toBe(0);
+  });
+
   it("leaves test files to assert whatever class names they need", () => {
     const root = createRoot({
       "src/ui/renderer/__tests__/Row.test.tsx": `expect(el.className).toContain("text-[11px]");\n`,
@@ -54,12 +73,11 @@ describe("check-type-tokens", () => {
     expect(runGateScript(SCRIPT, root).status).toBe(0);
   });
 
-  it("fails closed when a scan root is missing", () => {
+  it("fails closed when the source root is missing", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-type-tokens-"));
     roots.push(root);
-    write(root, "src/ui/Row.tsx", "");
     const result = runGateScript(SCRIPT, root);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("cannot scan src/components");
+    expect(result.stderr).toContain("cannot scan src");
   });
 });

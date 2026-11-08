@@ -75,11 +75,11 @@
     - `text-sm` and `text-body-sm` (12.25px, 17.5px line): comfortable body, control labels, dialog copy.
     - `text-base` (14px): lead paragraphs only; rare by design.
     - `text-lg` and above: page titles and section headers only — never inside repeated items.
-  - Arbitrary px sizes (`text-[11px]`) are not allowed in `src/ui` or `src/components`: a px
-    size ignores the user's font-size scale and splits the ladder. Add a step to the scale
-    instead; a new step also needs a `TYPE_SCALE` entry in `src/lib/utils.ts`, or `cn()` reads
-    it as a text colour and drops the real one.
-    `scripts/check-type-tokens.mjs` fails `bun run build` on any `text-[Npx]` there.
+  - Arbitrary sizes (`text-[11px]`, `text-[0.7rem]`) are not allowed anywhere Tailwind scans
+    (`src/**`): a fixed length ignores the user's font-size setting and splits the ladder. Add a
+    step to the scale instead; a new step also needs a `TYPE_SCALE` entry in `src/lib/utils.ts`,
+    or `cn()` reads it as a text colour and drops the real one. `scripts/check-type-tokens.mjs`
+    fails `bun run build` on any of them.
   - No viewport-scaled type and no negative letter spacing in app UI.
   - Compact panels use compact headings; hero-scale type belongs only to real hero surfaces, which the app generally should not need.
 - Spacing/layout rhythm:
