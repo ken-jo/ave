@@ -732,6 +732,8 @@
     --chrome-gap: 8px;
     --chrome-gap-tight: 4px;
     --chrome-gap-hair: 2px;
+    /* One renderer-drawn window button (Windows/Linux): WINDOW_CONTROL_BUTTON_WIDTH. */
+    --chrome-window-button-width: 44px;
   }
   /* Floating-shell geometry — the air around the raised cards (the sidebar
    * rail, the chat group's tiles, the docked side panel). Every one of them

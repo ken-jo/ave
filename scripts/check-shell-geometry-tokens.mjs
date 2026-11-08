@@ -11,6 +11,7 @@ const MIRRORS = [
   { css: "--chrome-gap-tight", ts: "CHROME_GAP_TIGHT" },
   { css: "--shell-card-inset", ts: "SHELL_GUTTER" },
   { css: "--shell-collapsed-rail-reserve", ts: "COLLAPSED_RAIL_RESERVE" },
+  { css: "--chrome-window-button-width", ts: "WINDOW_CONTROL_BUTTON_WIDTH" },
 ];
 
 const CONTAINER_MIRRORS = [

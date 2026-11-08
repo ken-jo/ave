@@ -26,6 +26,7 @@ import {
   normalizePluginActionResult,
 } from "./internal-api-surface.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
+import { windowControlsPlacement } from "../shared/shell-geometry.js";
 export { buildInternalApiSurface } from "./internal-api-surface.js";
 
 export interface InitialWindowAppearance {
@@ -94,6 +95,7 @@ export function buildAveHostWorld() {
 export function buildAvePlatformWorld() {
   return {
     isDarwin: process.platform === "darwin",
+    windowControls: windowControlsPlacement(process.platform),
   };
 }
 

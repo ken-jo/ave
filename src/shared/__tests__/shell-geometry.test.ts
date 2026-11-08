@@ -3,6 +3,10 @@ import { FONT_SIZE_SCALE_VALUES } from "../appearance-font.js";
 import {
   BAND_EDGE_PAD,
   BAND_LEAD_PAD_DARWIN,
+  BAND_LEAD_PAD_LINUX,
+  CHROME_GAP_TIGHT,
+  WINDOW_CONTROL_BUTTON_WIDTH,
+  windowControlsPlacement,
   COLLAPSED_RAIL_RESERVE,
   CONTENT_TITLE_INSET,
   RAIL_CONTROL_REM,
@@ -45,5 +49,18 @@ describe("shell geometry: collapsed rail reserve", () => {
     // The widest rail control must fit at the largest font scale; a merely positive width is insufficient.
     const widestRailControlPx = RAIL_CONTROL_REM * 16 * Math.max(...FONT_SIZE_SCALE_VALUES);
     expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBeGreaterThanOrEqual(widestRailControlPx);
+  });
+});
+
+describe("window controls placement", () => {
+  it("leaves macOS its lights, trails on Windows and leads on Linux", () => {
+    expect(windowControlsPlacement("darwin")).toBe("native");
+    expect(windowControlsPlacement("win32")).toBe("trailing");
+    expect(windowControlsPlacement("linux")).toBe("leading");
+  });
+
+  it("starts Linux band content past the three leading buttons by the same gap macOS leaves after its lights", () => {
+    expect(BAND_LEAD_PAD_LINUX).toBe(WINDOW_CONTROL_BUTTON_WIDTH * 3 + CHROME_GAP_TIGHT);
+    expect(BAND_LEAD_PAD_LINUX).toBe(136);
   });
 });

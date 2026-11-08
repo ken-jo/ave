@@ -20,8 +20,8 @@ const mockOnFullscreenChanged = vi.fn((handler: (fs: boolean) => void) => {
   return () => { fullscreenListener = null; };
 });
 
-function setupBridges(isDarwin: boolean) {
-  (window as unknown as Record<string, unknown>).avePlatform = { isDarwin };
+function setupBridges(isDarwin: boolean, windowControls: "native" | "trailing" | "leading" = isDarwin ? "native" : "trailing") {
+  (window as unknown as Record<string, unknown>).avePlatform = { isDarwin, windowControls };
   (window as unknown as Record<string, unknown>).aveWindow = {
     minimize: mockMinimize,
     toggleMaximize: mockToggleMaximize,
@@ -61,8 +61,47 @@ describe("CustomTitleBar", () => {
     });
   });
 
-  describe("Win/Linux (isDarwin=false)", () => {
+  describe("Linux (controls leading)", () => {
+    beforeEach(() => setupBridges(false, "leading"));
+
+    it("puts close, minimize, maximize at the leading edge, GNOME/macOS order", () => {
+      const { getByTestId } = render(<CustomTitleBar><span data-testid="band-content">path</span></CustomTitleBar>);
+      const band = getByTestId("custom-titlebar");
+      expect(band).toHaveAttribute("data-window-controls", "leading");
+      const controls = getByTestId("titlebar-controls");
+      expect([...controls.children].map((button) => button.getAttribute("data-testid"))).toEqual(["titlebar-close", "titlebar-minimize", "titlebar-maximize"]);
+      expect(controls).toHaveClass("absolute", "left-0", "top-0");
+      expect(controls.className).not.toContain("ml-auto");
+      expect(controls.style.getPropertyValue("-webkit-app-region") || (controls.style as unknown as Record<string, string>).WebkitAppRegion).toBe("no-drag");
+      for (const button of controls.children) expect(button).toHaveClass("w-(--chrome-window-button-width)");
+    });
+
+    it("starts content past the buttons and mirrors the trailing pad", () => {
+      const { getByTestId } = render(<CustomTitleBar><span>path</span></CustomTitleBar>);
+      const band = getByTestId("custom-titlebar");
+      // 3 x 44px buttons + the 4px tight gap, as BAND_LEAD_PAD_DARWIN clears the lights; 12px on the far edge.
+      expect(band.style.paddingLeft).toBe("136px");
+      expect(band.style.paddingRight).toBe("12px");
+      expect(render(<CustomTitleBar leadClearance={300} />).getAllByTestId("custom-titlebar")[1].style.paddingLeft).toBe("300px");
+    });
+
+    it("still drags from the band and toggles maximize on double-click", () => {
+      const { getByTestId } = render(<CustomTitleBar />);
+      fireEvent.doubleClick(getByTestId("custom-titlebar"));
+      expect(mockToggleMaximize).toHaveBeenCalledTimes(1);
+      fireEvent.click(getByTestId("titlebar-close"));
+      expect(mockClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Windows (controls trailing)", () => {
     beforeEach(() => setupBridges(false));
+
+    it("keeps minimize, maximize, close at the trailing edge", () => {
+      const { getByTestId } = render(<CustomTitleBar />);
+      expect(getByTestId("custom-titlebar")).toHaveAttribute("data-window-controls", "trailing");
+      expect([...getByTestId("titlebar-controls").children].map((button) => button.getAttribute("data-testid"))).toEqual(["titlebar-minimize", "titlebar-maximize", "titlebar-close"]);
+    });
 
     it("renders the full control bar", () => {
       const { getByTestId, queryByTestId } = render(<CustomTitleBar />);

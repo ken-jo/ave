@@ -1,3 +1,4 @@
+import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../../shared/memory-detail.js";
 import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
@@ -2043,6 +2044,8 @@ export interface AveUiApi {
 /** The preload platform bridge (`window.avePlatform`). */
 export type AvePlatformApi = {
   isDarwin: boolean;
+  /** Where the window buttons sit (`shared/shell-geometry.ts`). */
+  windowControls: WindowControlsPlacement;
 };
 
 export type AveApi = Omit<AvePreloadApi, "permission" | "approval" | "userApproval" | "policy" | "mcp">;

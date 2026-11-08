@@ -679,6 +679,7 @@ describe("preload contextBridge world shape lock", () => {
         },
         "avePlatform": {
           "isDarwin": "boolean",
+          "windowControls": "string",
         },
         "aveWindow": {
           "close": "function",

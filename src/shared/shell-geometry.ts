@@ -44,11 +44,30 @@ export function sidebarPushThreshold(sidebarWidth: number): number {
 /** Files need readable tree and detail columns; narrower workspaces use tree-to-detail navigation. */
 export const FILE_WORKSPACE_COLUMNS_MIN_WIDTH = 520;
 
-/** Window controls sit flush on win/linux, so those bands must not add trailing padding. */
+/**
+ * Where a window's minimize / maximize / close sit. macOS draws its own lights (`native`); the renderer draws the buttons
+ * elsewhere — trailing on Windows, leading on Linux in the GNOME/macOS order (close, minimize, maximize).
+ */
+export type WindowControlsPlacement = "native" | "trailing" | "leading";
+
+export function windowControlsPlacement(platform: NodeJS.Platform): WindowControlsPlacement {
+  if (platform === "darwin") return "native";
+  return platform === "linux" ? "leading" : "trailing";
+}
+
+/** One renderer-drawn window button; px like the band, mirrored by `--chrome-window-button-width`. */
+export const WINDOW_CONTROL_BUTTON_WIDTH = 44;
+
+const WINDOW_CONTROLS_RUN = WINDOW_CONTROL_BUTTON_WIDTH * 3;
+
+/** The band's pad on the side away from renderer-drawn buttons, and on both sides of macOS's trailing edge. Buttons sit flush. */
 export const BAND_EDGE_PAD = 12;
 
 /** Measured from the window edge, past the native buttons and their gap. */
 export const BAND_LEAD_PAD_DARWIN = TRAFFIC_LIGHT_RIGHT_EDGE + CHROME_GAP_TIGHT;
+
+/** Linux mirrors macOS: measured from the window edge, past the renderer's leading buttons and the same gap. */
+export const BAND_LEAD_PAD_LINUX = WINDOW_CONTROLS_RUN + CHROME_GAP_TIGHT;
 
 /** Content titles begin two gutters from the card edge, matching the band label above. */
 export const CONTENT_TITLE_INSET = SHELL_GUTTER * 2;
