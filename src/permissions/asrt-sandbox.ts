@@ -2962,7 +2962,7 @@ function hasWindowsGrantCleanup(requests: readonly WindowsGrantTarget[], outcome
   for (const row of outcome) {
     if (WINDOWS_GRANT_STALE_STATUSES.has(row.status)) staleCounts.set(row.status, (staleCounts.get(row.status) ?? 0) + 1);
   }
-  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); next-boot ACL recovery handles leftovers",
+  if (staleCounts.size > 0) log.warn("Windows grant release dropped stale rows (%s); recovery cannot revisit dropped rows",
     [...staleCounts].map(([status, count]) => `${status} x${count}`).join(", "));
   // A clean empty ledger means the holder was already removed or pruned. Dropped release paths require a non-zero exit.
   if (outcome.length === 0) return true;

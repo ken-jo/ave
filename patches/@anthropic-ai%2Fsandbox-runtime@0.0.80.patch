@@ -207,8 +207,8 @@ the installed package.
     downgraded, relocated and noRow are completed releases, as are the
     legacy restored/alreadyOriginal. mismatch and missing already deleted
     the holder row, so a retry changes nothing; a mismatched object's ACE is
-    left as it was (a deny stays fail-closed) and the next boot's recovery
-    handles leftovers. reset() resolves with those counted per step in
+    left as it was (a deny stays fail-closed). Recovery cannot revisit
+    rows already dropped. reset() resolves with those counted per step in
     `SandboxResetReport.windowsAclUnreleased` (in-process targets for host redaction). srt-win not
     running (undefined), a non-zero exit or any other status is a failure:
     reset() finishes the rest of the teardown, then rejects with
