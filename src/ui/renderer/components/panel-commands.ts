@@ -1,7 +1,6 @@
 /** The panel commands the palette lists and the app-wide key handler binds; their keys live in the shortcut registry. */
 import {
-  matchesAccelerator,
-  resolveShortcut,
+  matchesResolvedShortcut,
   shortcutDefinition,
   type ShortcutKeyEvent,
   type ShortcutPlatform,
@@ -38,5 +37,5 @@ export function panelCommandFor(
 ): PanelCommandId | null {
   if (isShortcutCaptureActive()) return null;
   const platform: ShortcutPlatform = darwin ? "darwin" : "other";
-  return PANEL_COMMAND_IDS.find((id) => matchesAccelerator(resolveShortcut(id, input, platform), event, platform)) ?? null;
+  return PANEL_COMMAND_IDS.find((id) => matchesResolvedShortcut(id, event, input, platform)) ?? null;
 }

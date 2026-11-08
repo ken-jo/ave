@@ -251,6 +251,7 @@ function eventKeyToken(event: ShortcutKeyEvent): string | null {
   if (event.code === "Numpad0" && key === "0") return "num0";
   if (event.code === "NumpadAdd" && key === "+") return "numadd";
   if (event.code === "NumpadSubtract" && key === "-") return "numsub";
+  if (event.code?.startsWith("Numpad")) return null;
   if (event.code === "Equal" && event.shiftKey && key === "+") return "=";
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
@@ -277,11 +278,30 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
   const key = eventKeyToken(event);
-  return (chord.key === "Plus" ? event.key === "+" : key === chord.key)
+  return (chord.key === "Plus" ? event.key === "+" && !event.code?.startsWith("Numpad") : key === chord.key)
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt
     && event.shiftKey === chord.shift;
+}
+
+/** Cover every matching class: recorded singleton keys and printed plus with its code-dependent recording. */
+function bindingWitnessEvents(accelerators: readonly (string | null)[], platform: ShortcutPlatform): ShortcutKeyEvent[] {
+  return accelerators.flatMap((accelerator) => {
+    const parsed = parseAccelerator(accelerator);
+    if (!parsed) return [];
+    const chord = resolveChord(parsed, platform);
+    const modifiers = { metaKey: chord.meta, ctrlKey: chord.ctrl, altKey: chord.alt, shiftKey: chord.shift };
+    return [
+      { key: chord.key === "Plus" ? "+" : chord.key, ...modifiers },
+      { key: "+", code: "Equal", ...modifiers },
+    ];
+  });
+}
+
+/** Some single event matches both bindings; compatibility is defined by the matcher itself. */
+export function bindingsOverlap(a: string | null, b: string | null, platform: ShortcutPlatform): boolean {
+  return bindingWitnessEvents([a, b], platform).some((event) => matchesAccelerator(a, event, platform) && matchesAccelerator(b, event, platform));
 }
 
 export type RecordedAccelerator =
@@ -567,26 +587,42 @@ function scopesOverlap(a: ShortcutScope, b: ShortcutScope): boolean {
   return a === b || WINDOW_WIDE_SCOPES.has(a) || WINDOW_WIDE_SCOPES.has(b);
 }
 
+/** Choose by recorded identity, then registry order, before any renderer listener acts.
+ * Layered meanings and fixed contextual keys retain their focus guards. */
+export function matchesResolvedShortcut(id: ShortcutId, event: ShortcutKeyEvent, input: ShortcutResolutionInput, platform: ShortcutPlatform): boolean {
+  const definition = shortcutDefinition(id);
+  if (definition.layeredOn !== undefined) return matchesResolvedShortcut(definition.layeredOn as ShortcutId, event, input, platform);
+  const accelerator = resolveShortcut(id, input, platform);
+  if (!matchesAccelerator(accelerator, event, platform)) return false;
+  const recorded = acceleratorFromEvent(event, platform);
+  const identity = recorded.kind === "accelerator" ? chordSignature(recorded.accelerator, platform) : null;
+  const candidates = resolveShortcuts(input, platform).filter((row) => row.definition.layeredOn === undefined
+    && scopesOverlap(definition.scope, row.definition.scope)
+    && (definition.readOnly === undefined || row.rebindable || row.id === id)
+    && bindingsOverlap(accelerator, row.accelerator, platform)
+    && matchesAccelerator(row.accelerator, event, platform));
+  const winner = candidates.find((row) => chordSignature(row.accelerator as string, platform) === identity) ?? candidates[0];
+  return winner?.id === id;
+}
+
 /** Ids of rows that share a chord with another row whose scope overlaps theirs. Two fixed rows never count: they are
  * designed to coexist (Enter sends in the composer and opens a tree row) and the user could not change either. A layered
  * row is the same key by definition, so it is not a conflict either. */
 export function conflictingShortcutIds(rows: readonly ResolvedShortcut[], platform: ShortcutPlatform): Set<ShortcutId> {
   const conflicts = new Set<ShortcutId>();
-  const keyed = rows
-    .filter((row) => row.accelerator !== null && row.definition.layeredOn === undefined)
-    .map((row) => ({ row, signature: chordSignature(row.accelerator as string, platform) }));
+  const keyed = rows.filter((row) => row.accelerator !== null && row.definition.layeredOn === undefined);
   for (let i = 0; i < keyed.length; i++) {
     for (let j = i + 1; j < keyed.length; j++) {
       const a = keyed[i];
       const b = keyed[j];
-      const fixedPair = !a.row.rebindable || !b.row.rebindable;
-      const aSignature = fixedPair ? nativeAcceleratorIdentity(a.row.accelerator as string, platform) : a.signature;
-      const bSignature = fixedPair ? nativeAcceleratorIdentity(b.row.accelerator as string, platform) : b.signature;
-      if (aSignature === null || aSignature !== bSignature) continue;
-      if (!a.row.rebindable && !b.row.rebindable) continue;
-      if (!scopesOverlap(a.row.definition.scope, b.row.definition.scope)) continue;
-      conflicts.add(a.row.id);
-      conflicts.add(b.row.id);
+      if (!a.rebindable && !b.rebindable) continue;
+      if (!scopesOverlap(a.definition.scope, b.definition.scope)) continue;
+      const nativeOverlap = (!a.rebindable || !b.rebindable)
+        && nativeAcceleratorIdentity(a.accelerator, platform) !== null
+        && nativeAcceleratorIdentity(a.accelerator, platform) === nativeAcceleratorIdentity(b.accelerator, platform);
+      if (!nativeOverlap && !bindingsOverlap(a.accelerator, b.accelerator, platform)) continue;
+      conflicts.add(a.id);
+      conflicts.add(b.id);
     }
   }
   return conflicts;
@@ -614,8 +650,7 @@ export type ShortcutBindingRefusal =
   | { reason: "fixed-key"; ownerId: ShortcutId };
 
 /** Why `accelerator` cannot be bound to `id` on `platform`, or null when it can. The settings page shows the reason and
- * the store refuses the same patch, so neither side persists what the other would reject. Duplicating another rebindable
- * row's key is allowed: that is a conflict, shown with a badge, not a refusal. */
+ * the store refuses the same patch, so neither side persists what the other would reject. Pairwise overlaps are checked at patch time; persisted overlaps remain visible as conflicts. */
 export function shortcutBindingRefusal(
   id: string,
   accelerator: string,
@@ -715,15 +750,20 @@ export function applyShortcutBindingsPatch(
     if (value === defaultAccelerator(id, platform)) delete next[id];
     else next[id] = value;
   }
+  const before = resolveShortcuts(current, platform);
   const rows = resolveShortcuts({ ...current, bindings: next }, platform).filter((row) => row.rebindable);
-  for (const row of rows) {
-    const parsed = row.accelerator === null ? null : parseAccelerator(row.accelerator);
-    if (parsed?.key !== "Plus" || !parsed.shift) continue;
-    const equalsSignature = chordSignature(row.accelerator as string, platform)?.replace(/Plus$/, "=");
-    if (rows.some((other) => other.id !== row.id
-      && scopesOverlap(row.definition.scope, other.definition.scope)
-      && other.accelerator !== null && chordSignature(other.accelerator, platform) === equalsSignature)) {
-      throw new ShortcutBindingsPatchError("Printed plus and shifted equals bindings overlap.");
+  for (let i = 0; i < rows.length; i++) {
+    for (let j = i + 1; j < rows.length; j++) {
+      const a = rows[i];
+      const b = rows[j];
+      if (!scopesOverlap(a.definition.scope, b.definition.scope) || !bindingsOverlap(a.accelerator, b.accelerator, platform)) continue;
+      const priorA = before.find((row) => row.id === a.id)?.accelerator ?? null;
+      const priorB = before.find((row) => row.id === b.id)?.accelerator ?? null;
+      const worsened = bindingWitnessEvents([a.accelerator, b.accelerator], platform).some((event) =>
+        matchesAccelerator(a.accelerator, event, platform) && matchesAccelerator(b.accelerator, event, platform)
+        && !(matchesAccelerator(priorA, event, platform) && matchesAccelerator(priorB, event, platform)));
+      if (!worsened) continue;
+      throw new ShortcutBindingsPatchError("Shortcut bindings overlap.");
     }
   }
   return next;

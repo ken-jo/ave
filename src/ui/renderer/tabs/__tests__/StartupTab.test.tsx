@@ -49,7 +49,11 @@ describe("StartupTab", () => {
         expect(capture.textContent).toBe(`Alt+${token}`);
         expect(queryByRole("alert")).toBeNull();
         fireEvent.click(await findByTestId("startup-accelerator-record"));
+        const calls = api.updateSettings.mock.calls.length;
         fireEvent.keyDown(capture, { key: "End", code: "Numpad1", altKey: true });
+        expect(api.updateSettings).toHaveBeenCalledTimes(calls);
+        expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
+        fireEvent.keyDown(capture, { key: "End", code: "End", altKey: true });
         expect(api.updateSettings).toHaveBeenLastCalledWith({ shortcuts: { toggleWindow: "Alt+End" } });
       } finally {
         platformSpy.mockRestore();

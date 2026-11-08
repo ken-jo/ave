@@ -83,6 +83,21 @@ describe("ShortcutsTab", () => {
     await waitFor(() => expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key, code, altKey: true }))).toBe(true));
   });
 
+  it.each(["darwin", "other"] as const)("badges a retained shifted plus overlap on %s", async (platform) => {
+    const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue(platform);
+    try {
+      const api = installApi({ "app.search": "Alt+Shift+Plus", "app.commandPalette": "Alt+Shift+=" });
+      render(<Harness api={api} />);
+      expect(await screen.findByTestId("shortcuts:conflict-app.search")).toBeTruthy();
+      expect(screen.getByTestId("shortcuts:conflict-app.commandPalette")).toBeTruthy();
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("shortcuts:reset-app.search"));
+      await waitFor(() => expect(screen.queryByTestId("shortcuts:conflict-app.commandPalette")).toBeNull());
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it("groups rows by scope, shows platform keycaps, and marks fixed rows with their reason", async () => {
     installApi();
     render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
