@@ -2772,6 +2772,13 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       ["high", "error"],
     ];
     for (const [verdict, severity] of cases) {
+      // Each tier has its own notice; close the one shown so the next tier reaches the head.
+      const shownDismiss = container.querySelector<HTMLButtonElement>(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`);
+      if (shownDismiss) {
+        await act(async () => {
+          fireEvent.click(shownDismiss);
+        });
+      }
       await act(async () => {
         fire({ toolName: `tool_${verdict}`, scope: "session", verdictAtApproval: verdict });
       });
@@ -2790,6 +2797,9 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     });
     await waitFor(() => expect(container.querySelector(APPROVAL_HIT)).not.toBeNull());
     expect(container.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+    await act(async () => {
+      fireEvent.click(container.querySelector(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`) as HTMLButtonElement);
+    });
     await act(async () => {
       fire({ toolName: "fs_read", scope: "session", verdictAtApproval: "low" });
     });
@@ -2861,6 +2871,23 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     warnSpy.mockRestore();
   });
 
+  it("a later low hit queues behind an unread high notice instead of replacing it", async () => {
+    const { container, fire } = await setupWithCallback();
+    await act(async () => {
+      fire({ toolName: "risky_tool", scope: "session", verdictAtApproval: "high" });
+    });
+    await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain("risky_tool"));
+    await act(async () => {
+      fire({ toolName: "safe_tool", scope: "session", verdictAtApproval: "low" });
+    });
+    // Well past the low notice's TTL: the high notice is still the one shown, with the low one waiting behind it.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const shown = container.querySelector(APPROVAL_HIT);
+    expect(shown?.textContent).toContain("risky_tool");
+    expect(shown?.textContent).not.toContain("safe_tool");
+    expect(shown?.textContent).toContain("+1");
+  });
+
   it("subsequent hit replaces previous toast (new payload wins)", async () => {
     const { container, fire } = await setupWithCallback();
     await act(async () => {
@@ -2870,7 +2897,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       expect(container.textContent).toContain("first_tool");
     });
     await act(async () => {
-      fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "high" });
+      fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "low" });
     });
     await waitFor(() => {
       const el = container.querySelector(APPROVAL_HIT);
