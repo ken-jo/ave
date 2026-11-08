@@ -533,17 +533,25 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     const inStop = new Promise<void>(resolve => { entered = resolve; });
     const originalStop = projection.instance.stop.bind(projection.instance);
     let stopped = false;
+    let settleStop!: () => void;
+    const stopSettled = new Promise<void>(resolve => { settleStop = resolve; });
     let confirmEarlyStop: (() => void) | undefined;
     const earlyStopGate = releaseMs === 12000 && !queuedEnable && action === "recover"
       ? new Promise<void>(resolve => { confirmEarlyStop = resolve; })
       : undefined;
     const stop = vi.spyOn(projection.instance, "stop").mockImplementation(async () => {
-      entered();
-      await new Promise(resolve => setTimeout(resolve, releaseMs));
-      await earlyStopGate;
-      await originalStop();
-      stopped = true;
-      if (action === "reject") throw new Error("late stop rejection");
+      try {
+        entered();
+        await new Promise(resolve => setTimeout(resolve, releaseMs));
+        await earlyStopGate;
+        // The release is simulated; child RPC and exit use the real clock.
+        vi.useRealTimers();
+        await originalStop();
+        stopped = true;
+        if (action === "reject") throw new Error("late stop rejection");
+      } finally {
+        settleStop();
+      }
     });
     let effectsBlocked = true;
     const retirementPasses = action === "effects" ? vi.spyOn(lifecycle, "deactivateWithCommit") : undefined;
@@ -581,7 +589,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         } finally {
           if (!enableOutcome) {
             confirmEarlyStop?.();
-            await vi.advanceTimersByTimeAsync(releaseMs);
+            if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(releaseMs);
           }
           await earlyEnable;
         }
@@ -646,8 +654,9 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       queuedEnableError = error;
     }) : undefined;
     const cancelPendingRestart = vi.spyOn(runtime, "cancelPendingRestart");
-    await vi.advanceTimersByTimeAsync(releaseMs);
-    await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 20000 });
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(releaseMs);
+    await stopSettled;
+    expect(stopped).toBe(true);
     unlock?.();
     await lockHeld;
     if (action === "effects") {

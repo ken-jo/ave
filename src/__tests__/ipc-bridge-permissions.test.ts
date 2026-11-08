@@ -64,6 +64,7 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
   const defaultPluginManifest = { id: "meeting", config: {} };
   return {
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       call: vi.fn(),
       listToolNames: vi.fn(() => []),
       listPluginIds: vi.fn(() => []),

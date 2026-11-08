@@ -36,7 +36,7 @@ describe("host theme publication", () => {
 
   it("publishes the validated theme through the registered host IPC handler", () => {
     registerPluginsHandlers({
-      pluginRuntime: { getWildcardConfigOverride: () => undefined },
+      pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined), getWildcardConfigOverride: () => undefined },
       pluginMarketplace: {}, settingsService: { get: () => ({}) },
       auditLogger: { log: vi.fn() }, getMainWindow: () => null,
     } as never);

@@ -49,6 +49,7 @@ function makeServices(
 
   return {
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       call: vi.fn(),
       listToolNames: vi.fn(() => []),
       listPluginIds: vi.fn(() => pluginIds),
