@@ -208,7 +208,7 @@ it("renders size segments at one body size with nominal pixels and a default", (
   chips.forEach((chip, index) => {
     expect(chip.style.fontSize).toBe("");
     expect(chip).toHaveClass("text-sm");
-    expect(chip).toHaveTextContent(["12px", "14px", "16px", "18px"][index]!);
+    expect(chip).toHaveTextContent(`${12 + index * 2}px`);
   });
   expect(chips[1]).toHaveTextContent("기본값");
 });
@@ -216,10 +216,27 @@ it("renders size segments at one body size with nominal pixels and a default", (
 it("renders each interface preset in its saved stack with the host default", async () => {
  const view = renderAppearance();
  const presets = within(view.getByTestId("font-family-presets")).getAllByRole("radio");
- expect(presets[0]!.style.fontFamily).toBe(HOST_FONT_STACK);
+ expect(presets[0]?.style.fontFamily).toBe(HOST_FONT_STACK);
  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
  for (const preset of presets.slice(1)) {
    fireEvent.click(preset);
    expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { font: { family: preset.style.fontFamily } } });
  }
+});
+
+it("offers the zoom row with percent, limits and reset", async () => {
+ const view = renderAppearance();
+ const zoom = within(view.getByRole("group", { name: "확대/축소" }));
+ expect(zoom.getByText("100%")).toBeInTheDocument();
+ expect(zoom.getByRole("button", { name: /Num0/ })).toBeDisabled();
+ const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+=/ }));
+ expect(zoom.getByRole("button", { name: /Ctrl\+=/ })).toBeDisabled();
+ expect(zoom.getByText("430%")).toBeInTheDocument();
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 8 } });
+ fireEvent.click(zoom.getByRole("button", { name: /Num0/ }));
+ expect(zoom.getByText("100%")).toBeInTheDocument();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+-/ }));
+ expect(zoom.getByRole("button", { name: /Ctrl\+-/ })).toBeDisabled();
+ expect(zoom.getByText("23%")).toBeInTheDocument();
 });

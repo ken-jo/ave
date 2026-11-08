@@ -27,6 +27,8 @@ const electronMock = vi.hoisted(() => {
       id: this.id * 100,
       isDestroyed: () => this.destroyed,
       setWindowOpenHandler: vi.fn(),
+      setZoomLevel: vi.fn(),
+      setVisualZoomLevelLimits: vi.fn(async () => undefined),
       on: (name: string, fn: Listener) => this.pushContents(name, fn),
       once: (name: string, fn: Listener) => this.pushContents(name, fn),
       send: vi.fn(),
@@ -104,6 +106,7 @@ const { BOOTSTRAP_SPLASH_URL } = await import("../bootstrap-splash.js");
 const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
 const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
 const { promptSurfaceResolver } = await import("../../boot/host-runtime.js");
+const { applyAppZoomLevel } = await import("../app-zoom.js");
 type FakeWindow = InstanceType<typeof electronMock.FakeBrowserWindow>;
 
 function open(): FakeWindow {
@@ -127,6 +130,20 @@ describe("main windows", () => {
     appState.setServices(null);
     electronMock.savedAppearance = undefined;
     electronMock.app.quit.mockClear();
+  });
+
+  it("sets the saved startup factor for primary and secondary shell windows", () => {
+    electronMock.savedAppearance = { schemaVersion: 3, zoomLevel: -3 };
+    const shells = [open(), open()];
+    const guest = new electronMock.FakeBrowserWindow({});
+    for (const win of shells) {
+      expect(win.options).toMatchObject({ webPreferences: { zoomFactor: 1.2 ** -3 } });
+      expect(win.webContents.setVisualZoomLevelLimits).toHaveBeenCalledWith(1, 1);
+      expect(win.contentsListeners.has("zoom-changed")).toBe(true);
+    }
+    applyAppZoomLevel(2);
+    for (const win of shells) expect(win.webContents.setZoomLevel).toHaveBeenCalledWith(2);
+    expect(guest.webContents.setZoomLevel).not.toHaveBeenCalled();
   });
 
   it("opens a centered responsive window without stale appearance arguments", () => {

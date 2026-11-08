@@ -640,6 +640,23 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
             throw 'Native sandbox provisioning did not produce a usable account'
           }
+      - name: Run Windows appearance regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: >
+          bun run test:vitest --
+          src/ui/renderer/__tests__/appearance-tab.test.tsx
+          src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx
+          src/ui/renderer/theme/__tests__/ThemeProvider-initial-theme.test.tsx
+          src/shared/__tests__/appearance-settings.test.ts
+          src/shared/__tests__/app-zoom.test.ts
+          src/main/__tests__/app-zoom.test.ts
+          src/main/__tests__/app-menu-zoom.test.ts
+          src/main/__tests__/main-window-multi.test.ts
+          src/main/__tests__/main-window-bounds.test.ts
+          src/__tests__/app-menu-edit-shortcuts-source.test.ts
+          src/ui/renderer/__tests__/MainToolbar.test.tsx
+          src/data/__tests__/settings-documents.test.ts
       - name: Run Windows permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

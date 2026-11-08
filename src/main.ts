@@ -1,3 +1,4 @@
+import { applyAppZoomLevel } from "./main/app-zoom.js";
 
 
 
@@ -203,7 +204,11 @@ async function main() {
   // Electron's native theme (window frames and material, native menus, `prefers-color-scheme` in every web contents) follows
   // the app's appearance mode; `createWindow` set it
   // from the saved mode, this keeps it with every later change. The app-lifetime subscription is never undone.
-  services.settingsService.onChanged("appearance", () => syncNativeThemeSource(services.settingsService.get("appearance").mode));
+  services.settingsService.onChanged("appearance", () => {
+    const appearance = services.settingsService.get("appearance");
+    syncNativeThemeSource(appearance.mode);
+    applyAppZoomLevel(appearance.zoomLevel);
+  });
 
   updateSplashStatus(t("be_main.splashOpeningWorkspace"));
 

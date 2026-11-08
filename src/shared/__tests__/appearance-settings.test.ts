@@ -60,3 +60,12 @@ describe("glass tint", () => {
     expect(glassTintAlpha(250, "dark")).toBe(1);
   });
 });
+
+it("normalizes missing and invalid zoom levels to zero without changing valid integers", () => {
+ for (const zoomLevel of [undefined, null, "2", 0.5, -9, 9, NaN, Infinity]) {
+   expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, zoomLevel }, () => {}).zoomLevel).toBe(0);
+ }
+ for (let zoomLevel = -8; zoomLevel <= 8; zoomLevel++) {
+   expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, zoomLevel }).zoomLevel).toBe(zoomLevel);
+ }
+});

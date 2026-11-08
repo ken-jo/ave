@@ -1,3 +1,5 @@
+import { zoomLevelToZoomFactor } from "../shared/app-zoom.js";
+import { bindAppWindowZoom } from "./app-zoom.js";
 import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -112,7 +114,8 @@ export function createWindow(
   }
 
   // The native appearance follows the app's light/dark choice before the material is first drawn.
-  syncNativeThemeSource(readCurrentAppearance().mode);
+  const appearance = readCurrentAppearance();
+  syncNativeThemeSource(appearance.mode);
   const glass = mainWindowGlassEnabled(process.platform, nativeTheme.prefersReducedTransparency);
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
@@ -126,6 +129,7 @@ export function createWindow(
     // macOS: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
     ...getMainWindowGlassOptions(glass),
     webPreferences: {
+      zoomFactor: zoomLevelToZoomFactor(appearance.zoomLevel ?? 0),
       contextIsolation: true,
       nodeIntegration: false,
       // The host preload and its sandbox (false: it needs Node built-ins), from the one table.
@@ -137,6 +141,7 @@ export function createWindow(
   });
   if (glass) glassContents.add(win.webContents);
   registerMainWindow(win, nextMainWindowRole());
+  bindAppWindowZoom(win);
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;
   // Point-to-point sends (menu actions, dialogs) follow the window in use.

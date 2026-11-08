@@ -1,3 +1,4 @@
+import { ZoomIndicator } from "./components/ZoomControls.js";
 import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
 import { ViewHistoryNav, ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
 import { useTranslation } from "../../i18n/react.js";
@@ -100,6 +101,9 @@ export function MainToolbar({
       {/* ── Spacer pushes the trailing controls to the far-right edge (stays drag) */}
       <div className="min-w-0 flex-1 sm:min-w-[64px]" aria-hidden="true" data-testid="main-toolbar-drag-band" />
 
+      <NoDrag className="empty:hidden">
+        <ZoomIndicator />
+      </NoDrag>
       <NoDrag>
         <RemoteA2AActionButton />
       </NoDrag>

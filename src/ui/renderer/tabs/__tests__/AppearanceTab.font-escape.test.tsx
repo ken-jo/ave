@@ -66,7 +66,7 @@ it("renders code presets in their saved typeface", () => {
  render(<AppearanceTab />);
  const buttons = within(screen.getByTestId("code-font-presets")).getAllByRole("radio");
  expect(buttons).toHaveLength(6);
- expect(buttons[0]!.style.fontFamily).toBe(DEFAULT_APPEARANCE.terminalFont.family);
+ expect(buttons[0]?.style.fontFamily).toBe(DEFAULT_APPEARANCE.terminalFont.family);
  for (const button of buttons) {
    fireEvent.click(button);
    expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: button.style.fontFamily, size: 12, lineHeight: 1.2 } } });
@@ -117,14 +117,14 @@ it("keeps one live chat preview above both font sections before saving completes
  const preview = screen.getByTestId("font-chat-preview");
  expect(preview).toHaveTextContent("이 코드를 설명해 주세요.");
  expect(preview).toHaveTextContent("결과를 출력하는 예제입니다.");
- expect(screen.getByTestId("terminal-font-preview").textContent!.split("\n")).toHaveLength(2);
- const firstFontSection = view.container.querySelector('[data-settings-section="appearance-font"]')!;
+ expect(screen.getByTestId("terminal-font-preview").textContent?.split("\n")).toHaveLength(2);
+ const firstFontSection = view.container.querySelector('[data-settings-section="appearance-font"]') as HTMLElement;
  expect(preview.compareDocumentPosition(firstFontSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
- fireEvent.click(within(screen.getByTestId("font-family-presets")).getAllByRole("radio")[1]!);
+ fireEvent.click(within(screen.getByTestId("font-family-presets")).getAllByRole("radio")[1] as HTMLButtonElement);
  expect(preview.style.fontFamily).toContain("Pretendard");
  const previousSize = preview.style.fontSize;
- fireEvent.click(within(screen.getByTestId("font-size-scale")).getAllByRole("radio")[0]!);
+ fireEvent.click(within(screen.getByTestId("font-size-scale")).getAllByRole("radio")[0] as HTMLButtonElement);
  expect(preview.style.fontSize).not.toBe(previousSize);
- fireEvent.click(within(screen.getByTestId("code-font-presets")).getAllByRole("radio")[1]!);
+ fireEvent.click(within(screen.getByTestId("code-font-presets")).getAllByRole("radio")[1] as HTMLButtonElement);
  expect(screen.getByTestId("terminal-font-preview").style.fontFamily).toContain("JetBrains Mono");
 });

@@ -1,3 +1,4 @@
+import { runAppZoomCommand } from "./app-zoom.js";
 // Menu builders read live state and rebuild when window or plugin state changes.
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -84,11 +85,25 @@ export function createAlwaysOnTopMenuItem(): MenuItemConstructorOptions {
   };
 }
 
+export function createZoomMenuItems(): MenuItemConstructorOptions[] {
+  const run = (command: "in" | "out" | "reset") => () => { void runAppZoomCommand(command).catch(() => console.warn("Could not save app zoom")); };
+  return [
+    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+=", click: run("in") },
+    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+Shift+=", visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
+    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+numadd", visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
+    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+-", click: run("out") },
+    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+Shift+-", visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
+    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+numsub", visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
+    { label: t("be_main.menuResetZoom"), accelerator: "CommandOrControl+num0", click: run("reset") },
+  ];
+}
+
 function createDisplayMenu(): MenuItemConstructorOptions {
   return {
     label: t("be_main.menuView"),
     submenu: [
       { role: "reload" },
+      ...createZoomMenuItems(),
       { type: "separator" },
       createAlwaysOnTopMenuItem(),
     ],

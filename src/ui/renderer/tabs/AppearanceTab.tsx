@@ -1,5 +1,7 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Button } from "../../../components/ui/button.js";
+import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
@@ -342,7 +344,7 @@ export function AppearanceTab() {
 
       <div data-testid="font-chat-preview" className="space-y-3 rounded-md border border-border p-3 text-sm"
         style={{ fontFamily: family === "system" ? HOST_FONT_STACK : family,
-          fontSize: "calc(var(--type-size-14) * " + sizeScale / (appearance.font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT) + ")" }}>
+          fontSize: `calc(var(--type-size-14) * ${sizeScale / (appearance.font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT)})` }}>
         <p className="ml-auto w-fit max-w-full rounded-md bg-message-user px-3 py-2 text-message-user-foreground">{t("appearanceTab.previewUser")}</p>
         <p>{t("appearanceTab.previewAssistant")}</p>
         <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded bg-muted p-3 font-mono"
@@ -431,6 +433,10 @@ export function AppearanceTab() {
       </SettingsSection>
 
       <TerminalFontSection {...terminal} />
+      <div className="space-y-2">
+        <div className="text-dense text-muted-foreground">{t("appearanceTab.zoom")}</div>
+        <ZoomControls />
+      </div>
 
     </div>
   );
@@ -511,7 +517,7 @@ function GlassTintControl() {
 const CODE_FONT_PRESETS: ReadonlyArray<FontFamilyPreset> = [
   { value: "system", label: "appearanceTab.codeFontSystem", stack: DEFAULT_APPEARANCE.terminalFont.family },
   ...["JetBrains Mono", "Fira Code", "D2Coding", "Cascadia Code"].map((family) => ({
-    value: family, label: family, stack: '"' + family + '", ' + DEFAULT_APPEARANCE.terminalFont.family,
+    value: family, label: family, stack: `"${family}", ${DEFAULT_APPEARANCE.terminalFont.family}`,
   })),
   { value: "sf-mono", label: "SF Mono / Menlo", stack: '"SF Mono", Menlo, ui-monospace, monospace' },
 ];
@@ -540,19 +546,19 @@ function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof use
       <label className="text-dense text-muted-foreground">{t("appearanceTab.terminalFamily")}</label>
       <div role="radiogroup" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
         onKeyDown={handleRadioGroupKeyDown} className="flex flex-wrap gap-2">
-        {CODE_FONT_PRESETS.map((preset, index) => <button key={preset.value} type="button" role="radio"
+        {CODE_FONT_PRESETS.map((preset, index) => <Button key={preset.value} type="button" role="radio"
           aria-checked={activePreset === preset.value} tabIndex={activePreset === preset.value || (activePreset === "custom" && index === 0) ? 0 : -1}
           style={{ fontFamily: preset.stack }} onClick={() => updateFont({ family: preset.stack })}
           className={activePreset === preset.value ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs text-primary-foreground" : "rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"}>
           {t(preset.label)}
-        </button>)}
+        </Button>)}
       </div>
       <FontFamilyCustomInput initial={activePreset === "custom" ? font.family : ""}
         label={t("appearanceTab.codeFontCustomAriaLabel")} onCommit={(family) => updateFont({ family: family || DEFAULT_APPEARANCE.terminalFont.family })} />
     </div>
     <div className="flex flex-wrap gap-6">
       <FontMetricStepper label={t("appearanceTab.terminalSize")} value={font.size} step={1} validate={isTerminalFontSize}
-        format={(value) => String(value) + "px"} onChange={(size) => updateFont({ size })} />
+        format={(value) => `${String(value)}px`} onChange={(size) => updateFont({ size })} />
       <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
         format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
     </div>
@@ -565,14 +571,14 @@ function FontMetricStepper({ label, value, step, validate, format, onChange }: {
 }) {
   const previous = Math.round((value - step) * 10) / 10;
   const next = Math.round((value + step) * 10) / 10;
-  return <div role="group" aria-label={label} className="space-y-1">
-    <div className="text-dense text-muted-foreground">{label}</div>
+  return <fieldset aria-label={label} className="space-y-1">
+    <legend className="text-dense text-muted-foreground">{label}</legend>
     <div className="flex items-center gap-2 text-sm">
-      <button type="button" aria-label={label + " −"} disabled={!validate(previous)} onClick={() => onChange(previous)}
+      <button type="button" aria-label={`${label} −`} disabled={!validate(previous)} onClick={() => onChange(previous)}
         className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">−</button>
       <span className="min-w-12 text-center tabular-nums">{format(value)}</span>
-      <button type="button" aria-label={label + " +"} disabled={!validate(next)} onClick={() => onChange(next)}
+      <button type="button" aria-label={`${label} +`} disabled={!validate(next)} onClick={() => onChange(next)}
         className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">+</button>
     </div>
-  </div>;
+  </fieldset>;
 }
