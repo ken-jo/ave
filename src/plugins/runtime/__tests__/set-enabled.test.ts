@@ -493,6 +493,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     [12000, true, "recover"],
     [12000, false, "remove"],
     [12000, false, "reject"],
+    [12000, false, "effects"],
   ] as const)("settles a committed disable after a %s ms release, queued enable=%s, action=%s", async (releaseMs, queuedEnable, action) => {
     const runtime = makeRuntime();
     const lifecycle = new PluginBundleLifecycle({
@@ -530,13 +531,29 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     const inStop = new Promise<void>(resolve => { entered = resolve; });
     const originalStop = projection.instance.stop.bind(projection.instance);
     let stopped = false;
+    let confirmEarlyStop: (() => void) | undefined;
+    const earlyStopGate = releaseMs === 12000 && !queuedEnable && action === "recover"
+      ? new Promise<void>(resolve => { confirmEarlyStop = resolve; })
+      : undefined;
     const stop = vi.spyOn(projection.instance, "stop").mockImplementation(async () => {
       entered();
       await new Promise(resolve => setTimeout(resolve, releaseMs));
+      await earlyStopGate;
       await originalStop();
       stopped = true;
       if (action === "reject") throw new Error("late stop rejection");
     });
+    let effectsBlocked = true;
+    const retirementPasses = action === "effects" ? vi.spyOn(lifecycle, "deactivateWithCommit") : undefined;
+    const dispose = vi.fn(() => {
+      if (!stopped) throw new Error("effects await stop confirmation");
+      if (effectsBlocked) throw new Error("effects retirement failed after stop");
+    });
+    if (action === "effects") {
+      const prepareRuntimeRetirement = runtime.prepareRuntimeRetirement.bind(runtime);
+      vi.spyOn(runtime, "prepareRuntimeRetirement").mockImplementation(view =>
+        prepareRuntimeRetirement({ ...view, disposers: [...(view.disposers ?? []), dispose] }));
+    }
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let outcome: { error?: unknown } | undefined;
     const disable = runtime.setPluginEnabled("se-plugin", false).then(
@@ -558,9 +575,12 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
           () => { enableOutcome = {}; }, error => { enableOutcome = { error }; },
         );
         try {
-          await vi.waitFor(() => expect(enableOutcome).toBeDefined(), { timeout: 4000 });
+          await vi.waitFor(() => expect(enableOutcome).toBeDefined(), { timeout: 20000 });
         } finally {
-          if (!enableOutcome) await vi.advanceTimersByTimeAsync(releaseMs);
+          if (!enableOutcome) {
+            confirmEarlyStop?.();
+            await vi.advanceTimersByTimeAsync(releaseMs);
+          }
           await earlyEnable;
         }
         const enableError = enableOutcome?.error;
@@ -568,8 +588,8 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         expect((enableError as Error).message).toBe(
           "plugin shutdown is unconfirmed for se-plugin; retry the enabled-state change",
         );
-        expect(lifecycleQueue).not.toHaveBeenCalled();
-        expect(retirement).not.toHaveBeenCalled();
+        expect(lifecycleQueue).toHaveBeenCalledTimes(1);
+        expect(retirement).toHaveBeenCalledTimes(1);
         lifecycleQueue.mockRestore();
         retirement.mockRestore();
         await withPluginInstallLock("se-plugin", async () => undefined);
@@ -580,6 +600,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("failed");
         expect(stop).toHaveBeenCalledTimes(1);
         expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
+        confirmEarlyStop?.();
       }
     }
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
@@ -627,6 +648,43 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 20000 });
     unlock?.();
     await lockHeld;
+    if (action === "effects") {
+      await vi.waitFor(() => expect(retirementPasses).toHaveBeenCalledTimes(2), { timeout: 20000 });
+      let automaticError: unknown;
+      const automaticRetirement = retirementPasses?.mock.results[1]?.value as Promise<unknown>;
+      void automaticRetirement.catch(error => { automaticError = error; });
+      await vi.waitFor(() => expect(automaticError).toBeInstanceOf(Error), { timeout: 20000 });
+      await withPluginInstallLock("se-plugin", async () => undefined);
+      const disposalAttempts = dispose.mock.calls.length;
+      expect(disposalAttempts).toBeGreaterThan(1);
+      expect(stopped).toBe(true);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
+        active: false, runtimeLoaded: false, loadStatus: "failed",
+      });
+      expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
+      expect(Reflect.get(runtime, "pendingDisabledRetirements").has("se-plugin")).toBe(true);
+      expect(Reflect.get(runtime, "disabledStopSettlements").size).toBe(0);
+      effectsBlocked = false;
+      retirementPasses?.mockClear();
+      await expect(runtime.setPluginEnabled("se-plugin", true)).rejects.toThrow(
+        "previous plugin shutdown is now confirmed for se-plugin; enable again",
+      );
+      expect(retirementPasses).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(disposalAttempts + 1);
+      expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+      expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+      expect(JSON.parse(await readFile(registryPath, "utf8")).plugins[0].enabled).toBe(false);
+      expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
+      expect(Reflect.get(runtime, "pendingDisabledRetirements").size).toBe(0);
+      expect(Reflect.get(runtime, "disabledStopSettlements").size).toBe(0);
+      await runtime.setPluginEnabled("se-plugin", true);
+      await expect(runtime.call("se_ping")).resolves.toBe("pong");
+      expect(Reflect.get(runtime, "pendingDisabledRetirements").size).toBe(0);
+      expect(Reflect.get(runtime, "disabledStopSettlements").size).toBe(0);
+      await runtime.setPluginEnabled("se-plugin", false);
+      return;
+    }
     if (action === "reject") {
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
       let retryError: unknown;
@@ -655,7 +713,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       await enable;
       expect(queuedEnableError).toBeInstanceOf(Error);
       expect((queuedEnableError as Error).message).toBe(
-        "plugin shutdown is unconfirmed for se-plugin; retry the enabled-state change",
+        "previous plugin shutdown is now confirmed for se-plugin; enable again",
       );
       expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
       expect(lifecycle.getActive("se-plugin")).toBeUndefined();

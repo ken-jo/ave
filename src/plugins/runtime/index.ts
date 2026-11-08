@@ -6714,20 +6714,34 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         if (installClaim === undefined) {
           throw new Error(`Plugin install provenance unknown: ${pluginId}`);
         }
-        if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+        const pendingEnable = enabled && this.pendingDisabledRetirements.has(canonicalPluginId);
+        if (pendingEnable && this.isPluginLifecycleQuarantined(canonicalPluginId)) {
+          this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+        }
         await assertDisableAllowed(enabled, installClaim, pluginId, this.deploymentGuard);
         const generationLifecycle = this.requireCapabilityCommitLifecycle(
           "plugin enabled-state change",
         );
         await generationLifecycle.runInLifecycleQueue(canonicalPluginId, async () => {
-          if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+          const refuseEnable = pendingEnable || (enabled && this.pendingDisabledRetirements.has(canonicalPluginId));
+          if (refuseEnable && this.isPluginLifecycleQuarantined(canonicalPluginId)) {
+            this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+          }
           if (this.pendingDisabledRetirements.has(canonicalPluginId)) {
             if (generationLifecycle.getActive(canonicalPluginId)) {
               throw new Error(`cannot retire disabled plugin with an active generation: ${canonicalPluginId}`);
             }
-            await generationLifecycle.deactivateWithCommit(canonicalPluginId, async () => undefined);
+            try {
+              await generationLifecycle.deactivateWithCommit(canonicalPluginId, async () => undefined);
+            } catch (error) {
+              if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
+              throw error;
+            }
             this.pendingDisabledRetirements.delete(canonicalPluginId);
             this.disabledStopSettlements.delete(canonicalPluginId);
+          }
+          if (refuseEnable) {
+            throw new Error(`previous plugin shutdown is now confirmed for ${canonicalPluginId}; enable again`);
           }
           if (retirementOnly || !this.inactivePluginIds.has(canonicalPluginId) === enabled) return;
           let persisted = false;
