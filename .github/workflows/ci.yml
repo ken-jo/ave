@@ -655,6 +655,11 @@ jobs:
           src/main/browser/__tests__/browser-workspace.test.ts
           src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx
           src/main/__tests__/app-zoom.test.ts
+          src/__tests__/preload-shape.test.ts
+          src/main/browser/__tests__/browser-workspace-desktop.test.ts
+          src/shared/__tests__/shortcuts.test.ts
+          src/main/__tests__/app-menu-accelerators.test.ts
+          src/ui/renderer/tabs/__tests__/ShortcutsTab.test.tsx
           src/main/__tests__/app-menu-zoom.test.ts
           src/main/__tests__/main-window-multi.test.ts
           src/main/__tests__/main-window-bounds.test.ts

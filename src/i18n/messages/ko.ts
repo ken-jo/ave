@@ -4747,6 +4747,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "shortcutsTab.scope.composer": "메시지 입력란",
   "shortcutsTab.scope.lists": "목록과 카드",
   "shortcutsTab.scope.system": "시스템 전체",
+  "shortcutsTab.readOnly.zoom": "이번 릴리스에서는 확대/축소 키가 고정되어 있습니다.",
   "shortcutsTab.readOnly.edit": "표준 편집 명령입니다. 키는 시스템이 관리합니다.",
   "shortcutsTab.readOnly.typing": "메시지 입력란의 입력 키입니다. 입력이 항상 동작하도록 고정되어 있습니다.",
   "shortcutsTab.readOnly.list": "이 목록의 키보드 탐색 키입니다. 키보드로 항상 쓸 수 있도록 고정되어 있습니다.",

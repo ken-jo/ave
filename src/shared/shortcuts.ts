@@ -108,7 +108,7 @@ const MODIFIER_ALIASES: Readonly<Record<string, "commandOrControl" | "command" |
 
 const NAMED_KEYS = [
   "Enter", "Tab", "Space", "Esc", "Backspace", "Delete", "Up", "Down", "Left", "Right",
-  "Home", "End", "PageUp", "PageDown", "Plus",
+  "Home", "End", "PageUp", "PageDown", "Plus", "num0", "numadd", "numsub",
 ] as const;
 const NAMED_KEY_ALIASES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(NAMED_KEYS.map((name) => [name.toLowerCase(), name])),
@@ -340,6 +340,7 @@ interface LayeredShortcut extends ShortcutDefinitionBase {
 export type ShortcutDefinition = KeyedShortcut | LayeredShortcut;
 
 const both = (accelerator: string) => ({ darwin: accelerator, other: accelerator });
+const ZOOM = { reasonKey: "shortcutsTab.readOnly.zoom" } as const;
 const EDIT = { reasonKey: "shortcutsTab.readOnly.edit" } as const;
 const TYPING = { reasonKey: "shortcutsTab.readOnly.typing" } as const;
 const LIST = { reasonKey: "shortcutsTab.readOnly.list" } as const;
@@ -370,6 +371,13 @@ export const SHORTCUTS = [
   // Native menu
   { id: "menu.settings", scope: "menu", handledBy: "menu", labelKey: "shortcuts.label.openSettings", defaults: both("CommandOrControl+,") },
   { id: "menu.newWindow", scope: "menu", handledBy: "menu", labelKey: "be_main.menuNewWindow", defaults: both("CommandOrControl+Shift+N") },
+  { id: "menu.zoomIn", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+="), readOnly: ZOOM },
+  { id: "menu.zoomInShifted", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+Shift+="), readOnly: ZOOM },
+  { id: "menu.zoomInKeypad", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomIn", defaults: both("CommandOrControl+numadd"), readOnly: ZOOM },
+  { id: "menu.zoomOut", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+-"), readOnly: ZOOM },
+  { id: "menu.zoomOutShifted", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+Shift+-"), readOnly: ZOOM },
+  { id: "menu.zoomOutKeypad", scope: "menu", handledBy: "menu", labelKey: "be_main.menuZoomOut", defaults: both("CommandOrControl+numsub"), readOnly: ZOOM },
+  { id: "menu.resetZoom", scope: "menu", handledBy: "menu", labelKey: "be_main.menuResetZoom", defaults: both("CommandOrControl+num0"), readOnly: ZOOM },
   // Electron role items: their keys are the platform's standard editing keys.
   { id: "edit.undo", scope: "menu", handledBy: "os", labelKey: "be_main.menuUndo", defaults: both("CommandOrControl+Z"), readOnly: EDIT },
   { id: "edit.redo", scope: "menu", handledBy: "os", labelKey: "be_main.menuRedo", defaults: { darwin: "CommandOrControl+Shift+Z", other: "CommandOrControl+Y" }, readOnly: EDIT },

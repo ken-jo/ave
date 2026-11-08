@@ -57,6 +57,28 @@ describe("ShortcutsTab", () => {
     expect(screen.getByTestId("shortcuts:reason-system.toggleWindow").textContent).toBe(ko["shortcutsTab.readOnly.global"]);
   });
 
+  it("lists primary and alternate zoom keys as fixed menu commands", async () => {
+    installApi();
+    render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
+    await screen.findByTestId("shortcuts:row-app.search");
+    const rows = [
+      ["menu.zoomIn", "be_main.menuZoomIn", "Ctrl="],
+      ["menu.zoomInShifted", "be_main.menuZoomIn", "CtrlShift="],
+      ["menu.zoomInKeypad", "be_main.menuZoomIn", "Ctrlnumadd"],
+      ["menu.zoomOut", "be_main.menuZoomOut", "Ctrl-"],
+      ["menu.zoomOutShifted", "be_main.menuZoomOut", "CtrlShift-"],
+      ["menu.zoomOutKeypad", "be_main.menuZoomOut", "Ctrlnumsub"],
+      ["menu.resetZoom", "be_main.menuResetZoom", "Ctrlnum0"],
+    ] as const;
+    for (const [id, labelKey, keycaps] of rows) {
+      const row = screen.getByTestId(`shortcuts:row-${id}`);
+      expect(within(row).getByText(ko[labelKey])).toBeTruthy();
+      expect(Array.from(screen.getByTestId(`shortcuts:fixed-${id}`).querySelectorAll("kbd"), (key) => key.textContent).join("")).toBe(keycaps);
+      expect(screen.queryByTestId(`shortcuts:record-${id}`)).toBeNull();
+      expect(screen.getByTestId(`shortcuts:reason-${id}`).textContent).toBe(ko["shortcutsTab.readOnly.zoom"]);
+    }
+  });
+
   it("filters by search over labels and keys", async () => {
     installApi();
     render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);

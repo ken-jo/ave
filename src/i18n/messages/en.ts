@@ -4745,6 +4745,7 @@ export const en = {
   "shortcutsTab.scope.composer": "Message box",
   "shortcutsTab.scope.lists": "Lists and cards",
   "shortcutsTab.scope.system": "System-wide",
+  "shortcutsTab.readOnly.zoom": "Zoom keys stay fixed for this release.",
   "shortcutsTab.readOnly.edit": "A standard editing command; the system owns its key.",
   "shortcutsTab.readOnly.typing": "A typing key in the message box; it stays fixed so typing always works.",
   "shortcutsTab.readOnly.list": "Keyboard navigation for this list; it stays fixed so the list is always usable from the keyboard.",

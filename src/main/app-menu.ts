@@ -11,11 +11,11 @@ import {
   requestOpenNewMainWindow,
   requestShowOrCreateMainWindow,
 } from "./native-window-coordinator.js";
-import { NO_SHORTCUT_OVERRIDES, resolveShortcut, shortcutPlatformOf } from "../shared/shortcuts.js";
+import { NO_SHORTCUT_OVERRIDES, resolveShortcut, shortcutPlatformOf, type ShortcutId } from "../shared/shortcuts.js";
 
 /** A menu item's accelerator is the user's binding for its registry row. Before services exist (the first menu at boot)
  * no settings are loaded yet, so the row's default applies; the menu is rebuilt once settings change. */
-function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
+function menuAccelerator(id: Extract<ShortcutId, `menu.${string}`>): string | undefined {
   const shortcuts = getServices()?.settingsService.get("shortcuts") ?? NO_SHORTCUT_OVERRIDES;
   return resolveShortcut(id, shortcuts, shortcutPlatformOf(process.platform)) ?? undefined;
 }
@@ -96,13 +96,13 @@ export function createAlwaysOnTopMenuItem(): MenuItemConstructorOptions {
 export function createZoomMenuItems(): MenuItemConstructorOptions[] {
   const run = (command: "in" | "out" | "reset") => () => { void runAppZoomCommand(command).catch(() => console.warn("Could not save app zoom")); };
   return [
-    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+=", click: run("in") },
-    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+Shift+=", visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
-    { label: t("be_main.menuZoomIn"), accelerator: "CommandOrControl+numadd", visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
-    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+-", click: run("out") },
-    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+Shift+-", visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
-    { label: t("be_main.menuZoomOut"), accelerator: "CommandOrControl+numsub", visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
-    { label: t("be_main.menuResetZoom"), accelerator: "CommandOrControl+num0", click: run("reset") },
+    { label: t("be_main.menuZoomIn"), accelerator: menuAccelerator("menu.zoomIn"), click: run("in") },
+    { label: t("be_main.menuZoomIn"), accelerator: menuAccelerator("menu.zoomInShifted"), visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
+    { label: t("be_main.menuZoomIn"), accelerator: menuAccelerator("menu.zoomInKeypad"), visible: false, acceleratorWorksWhenHidden: true, click: run("in") },
+    { label: t("be_main.menuZoomOut"), accelerator: menuAccelerator("menu.zoomOut"), click: run("out") },
+    { label: t("be_main.menuZoomOut"), accelerator: menuAccelerator("menu.zoomOutShifted"), visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
+    { label: t("be_main.menuZoomOut"), accelerator: menuAccelerator("menu.zoomOutKeypad"), visible: false, acceleratorWorksWhenHidden: true, click: run("out") },
+    { label: t("be_main.menuResetZoom"), accelerator: menuAccelerator("menu.resetZoom"), click: run("reset") },
   ];
 }
 

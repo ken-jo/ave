@@ -128,6 +128,22 @@ describe("shortcut registry", () => {
     }
   });
 
+  it.each(platforms)("reserves every zoom key without taking project home on %s", (platform) => {
+    const rows = resolveShortcuts(NO_SHORTCUT_OVERRIDES, platform).filter((row) => row.definition.readOnly?.reasonKey === "shortcutsTab.readOnly.zoom");
+    expect(rows.map((row) => row.accelerator)).toEqual([
+      "CommandOrControl+=", "CommandOrControl+Shift+=", "CommandOrControl+numadd",
+      "CommandOrControl+-", "CommandOrControl+Shift+-", "CommandOrControl+numsub", "CommandOrControl+num0",
+    ]);
+    expect(resolveShortcut("project.openHome", NO_SHORTCUT_OVERRIDES, platform)).toBe("CommandOrControl+0");
+    for (const row of rows) {
+      if (row.accelerator === null) throw new Error("Zoom shortcut must have an accelerator");
+      expect(row.accelerator).not.toBe("CommandOrControl+0");
+      expect(row.rebindable).toBe(false);
+      expect(row.definition).toMatchObject({ scope: "menu", handledBy: "menu" });
+      expect(shortcutBindingRefusal("app.search", row.accelerator, platform, NO_SHORTCUT_OVERRIDES)).toEqual({ reason: "fixed-key", ownerId: row.id });
+    }
+  });
+
   it("gives a layered row the key of the row it follows, rebinds included", () => {
     const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "app.commandPalette": "CommandOrControl+J" } };
     expect(resolveShortcut("composer.guide", NO_SHORTCUT_OVERRIDES, "darwin")).toBe("CommandOrControl+K");
