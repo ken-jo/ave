@@ -647,6 +647,8 @@ jobs:
           bun run test --
           src/shared/__tests__/tool-result-trim.test.ts
           src/engine/__tests__/conversation-history-trim.test.ts
+          src/engine/__tests__/conversation-loop-rounds.test.ts
+          src/engine/turn/__tests__/directory-instructions.test.ts
           src/engine/__tests__/subagent-runner.test.ts
           src/permissions/__tests__/approval-gate.test.ts
           src/tools/__tests__/tool-result-chunk.test.ts

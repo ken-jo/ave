@@ -169,7 +169,9 @@ describe("SubAgentRunner pending approval status", () => {
       const statusTool = createAgentStatusTool({ getRunner: () => runner });
       const result = await statusTool.execute({ id: childId }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId: parentId } });
       expect(JSON.parse(result.output)).toMatchObject({ run: expected });
-      const request = contents.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST)![1] as ApprovalRequest;
+      const card = contents.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST);
+      expect(card).toBeDefined();
+      const request = card?.[1] as ApprovalRequest;
       if (answer === "cancel") gate.cancelPendingRequest(request.id, childId, "caller-abort");
       else gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac, ...(answer === "allow" ? { browserSiteChoice: "this-site" as const } : {}) }, contents as never);
       await vi.waitFor(() => expect(resumed).toBe(true));

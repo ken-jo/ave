@@ -1038,7 +1038,7 @@ describe("ConversationLoop queryLoop", () => {
     const toolRegistry = new ToolRegistry();
     const body = Array.from(
       { length: toolName === "web_fetch" ? 1_000 : 160 },
-      (_, i) => `row-${i.toString().padStart(3, "0")}: ${"x".repeat(20)}`,
+      (_, i) => `row-${i.toString().padStart(3, "0")}: ${"x".repeat(60)}`,
     ).join("\n");
     const url = "https://93.184.216.34/document";
     const input = toolName === "web_fetch" ? { url } : {};

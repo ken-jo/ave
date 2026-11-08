@@ -65,7 +65,8 @@ describe("BrowserTabRegistry", () => {
     attachTab(registry, { tabId: "owned", webContentsId: 91, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
     await opening;
     attachTab(registry, { tabId: "unrelated", webContentsId: 92 });
-    const unrelated = registry.liveTab("tab-2")!;
+    const unrelated = registry.liveTab("tab-2");
+    if (!unrelated) throw new Error("Unrelated tab missing");
     const lease = registry.acquireControl(unrelated, { sessionId: "other" });
     const timer = vi.fn();
     const pendingTimer = setTimeout(timer, 60_000);

@@ -2182,8 +2182,8 @@ describe("pending session approval summary", () => {
   it("isolates sessions, masks the displayed target and clears a settled request", async () => {
     const contents = makeMockWebContents();
     const gate = new ApprovalGate(contents as never);
-    const secret = "sk-" + "a".repeat(48);
-    const pending = gate.requestAndWait(makeRequest({ sessionId: "child-session", toolName: "write_file", args: { path: "/project/" + secret + ".txt" } }));
+    const secret = `sk-${"a".repeat(48)}`;
+    const pending = gate.requestAndWait(makeRequest({ sessionId: "child-session", toolName: "write_file", args: { path: `/project/${secret}.txt` } }));
     try {
       await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
       const summary = gate.pendingSessionApproval("child-session");
