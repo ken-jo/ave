@@ -178,15 +178,18 @@ describe("independent configuration owners", () => {
     expect(JSON.parse(readFileSync(join(home, "config", "policy.json"), "utf8"))).toEqual({ version: 1, requireExplicitApproval: true, managed: false });
   });
 
-  it("moves a reappearing root copy aside instead of deleting it, since nothing was imported from it", () => {
+  it("reuses the preserved copy when identical root bytes reappear", () => {
     const home = fixture();
     const bytes = '{"version":1,"requireExplicitApproval":false}';
     writeFileSync(join(home, "policy.json"), bytes);
     migrateOtherProcess(home);
+    const preserved = readdirSync(home).filter(name => name.startsWith("policy.json.post-migration-"));
+    expect(preserved).toHaveLength(1);
     writeFileSync(join(home, "policy.json"), bytes);
     expect(migrateOtherProcess(home).join("\n")).toContain("policy.json.post-migration-");
     expect(existsSync(join(home, "policy.json"))).toBe(false);
-    expect(readdirSync(home).filter((name) => name.startsWith("policy.json.post-migration-"))).toHaveLength(2);
+    expect(readdirSync(home).filter(name => name.startsWith("policy.json.post-migration-"))).toEqual(preserved);
+    for (const name of preserved) expect(readFileSync(join(home, name), "utf8")).toBe(bytes);
   });
 
   it("reverifies a replaced configuration directory before reading", () => {
