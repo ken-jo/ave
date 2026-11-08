@@ -37,6 +37,7 @@ import type { AveApi } from "../types.js";
 import type { AskUserQuestionRequest } from "../components/AskUserQuestionCard.js";
 import type { SubAgentSpawn } from "../subagents/types.js";
 import type { SkillBadgeProps } from "../components/SkillBadge.js";
+import { getAccessibilitySignalEngine } from "../accessibility-signal-engine.js";
 
 /**
  * M4: cap the inline skill badges so a chatty assistant cannot grow the
@@ -81,6 +82,8 @@ export function useWorkflowTools(api: AveApi, options: WorkflowToolsOptions = {}
       setAskQuestions((prev) =>
         prev.some((p) => p.id === req.id) ? prev : [...prev, req],
       );
+      // A question card waits for the user like an approval does. Several tiles may draw it; the engine sounds it once.
+      getAccessibilitySignalEngine().signal("approvalNeeded", `ask:${req.id}`);
     });
     // Questions sent before this renderer subscribed — the window that drew
     // them closed, or this one reloaded. Subscribed first, fetched second, so

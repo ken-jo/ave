@@ -264,7 +264,7 @@ describe("NotificationService — routing decision", () => {
     expect(factoryStub.calls.length).toBe(1);
     const call = factoryStub.calls[0];
     expect(call.title).toBe("승인 필요");
-    expect(call.silent).toBe(false);
+    expect(call.silent).toBe(true);
     expect(call.urgency).toBe("critical");
     // body capped
     expect(call.body.length).toBe(81);
@@ -296,11 +296,11 @@ describe("NotificationService — routing decision", () => {
     expect(factoryStub.calls.length).toBe(1);
   });
 
-  it("approval kind defaults urgent=true (silent=false, urgency=critical)", () => {
+  it("approval kind defaults urgent=true (urgency=critical) and leaves its sound to the approval-needed signal", () => {
     const win = makeMockWindow({ focused: false });
     const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({ kind: "approval", title: "승인 필요", body: "do thing?" });
-    expect(factoryStub.calls[0].silent).toBe(false);
+    expect(factoryStub.calls[0].silent).toBe(true);
     expect(factoryStub.calls[0].urgency).toBe("critical");
   });
 });
