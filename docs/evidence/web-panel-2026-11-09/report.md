@@ -18,6 +18,16 @@ GREEN: `TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-brow
 
 Files: src/observation/browser-screencast.ts; src/observation/__tests__/browser-screencast.test.ts; test/e2e/ui/main-session-browser-preview.spec.ts; docs/architecture/architecture.md; this report. Local receipts are under /private/tmp/webfix-round2/.
 
+### All registered builtin action summaries
+
+One action descriptor mapping now covers actual core/workflow/meta builtin registration, including optional tool groups. Builtin source returns through that mapping before the external-tool execution fallback; even an unknown builtin receives action framing and a nonempty subject. The real boot-registry test iterates tools, rejects missing descriptors, verifies both locale titles/subjects, and derives operand assertions from actual tool schemas. It does not mirror registration in a test-maintained name list. Canonical file/transfer targets take precedence; patch summaries show affected paths and text-input summaries omit typed values. Site/egress precedence, approval rules/choices and execution are unchanged. Two independent reviewers found no authorization or completeness objection.
+
+RED: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-round2/test-tmp bun run test:vitest -- run src/boot/__tests__/builtin-approval-actions.test.ts`: 6 failed / 0 passed (builtins-red.log).
+
+GREEN: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-round2/test-tmp bun run test:vitest -- run src/boot/__tests__/builtin-approval-actions.test.ts src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx src/ui/renderer/__tests__/ApprovalDock.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-allowed-choices.test.tsx src/ui/renderer/components/__tests__/ToolApprovalContent-agent-action.test.tsx src/i18n/__tests__`: 11 files / 132 tests passed (builtins-consumers.log). `bun run typecheck` passed. `bun run check:i18n-catalog` passed: 2 locales / 5862 keys. The real-registry regression is registered in the cross-platform CI test list. No new native screenshots of builtin cards were taken.
+
+Files: src/ui/renderer/components/permissions/approval-action.ts; src/ui/renderer/components/permissions/builtin-approval-action.ts; src/i18n/messages/en.ts; src/i18n/messages/ko.ts; src/boot/__tests__/builtin-approval-actions.test.ts; src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx; .github/workflows/ci.yml; docs/architecture/architecture.md; this report.
+
 ## Review corrections after d614d1623
 
 Understood as: repair each of the four independent review findings in its own local commit, prove each with a failing regression, repeat the requested validation, and compare the cross-site native failure with the same scenario on the clone's origin/main. No push.

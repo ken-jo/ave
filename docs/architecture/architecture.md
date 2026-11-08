@@ -2062,6 +2062,12 @@ The [owner-approved permission decision tree](permission-decision-tree.md) is th
 
 All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display/audit, not authority. Remote user equivalence additionally requires a current owner-identity match; the [decision tree](permission-decision-tree.md) owns pairing, existing-binding revalidation and live identity admission.
 
+Builtin approval cards describe the requested action and its subject through one
+presentation mapping, checked against actual core and workflow tool registration.
+Missing registered descriptors fail coverage; builtin source never reaches the
+generic external-tool execution title. Site and egress card precedence and all
+approval choices, rules and requirements remain unchanged.
+
 New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores and the process ownership lock remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
 
 Owner-away cards wait without a timeout by default; optional `permissions.ownerAwayAutoSkipMinutes` denies after N minutes (0 means unlimited). True headless auto requests review first; a required human fallback denies with “Nobody can approve this request; do not retry.” Recently denied replaces deferred approvals with redacted summaries and fresh manually approved reruns. Reruns retain the original session and turn-origin restrictions; the user click supplies only one-time consent. Stored history grants nothing.

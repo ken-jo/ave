@@ -59,7 +59,7 @@ describe("ToolApprovalContent identity strip", () => {
 
   it.each(["en", "ko"] as const)("asks to use the host-owned plugin tool in %s", (locale) => {
     setLocale(locale);
-    renderApproval({ ...baseRequest(), kind: "agent-action", sourcePluginId: "calendar", toolName: "create-event", args: { title: "Review" } }, vi.fn());
+    renderApproval({ ...baseRequest(), kind: "agent-action", source: "plugin", sourcePluginId: "calendar", toolName: "create-event", args: { title: "Review" } }, vi.fn());
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.externalActionTitle", { server: "calendar", tool: "create-event" }));
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "calendar의 create-event을(를) 사용해도 될까요?" : "Use create-event from calendar?");
     expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("Review");
@@ -105,9 +105,10 @@ describe("ToolApprovalContent identity strip", () => {
     expect(primary).toHaveTextContent(locale === "ko" ? "페이지 요소: e4" : "Page element: e4");
   });
 
-  it("keeps the fallback for an unknown builtin action", () => {
-    renderApproval({ ...baseRequest(), toolName: "unknown_action", toolCategory: "meta" }, vi.fn());
-    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.toolApprovalTitle"));
+  it("keeps unknown builtins in action framing", () => {
+    renderApproval({ ...baseRequest(), toolName: "unknown_action", toolCategory: "meta", args: {} }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.builtinActionTitle"));
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("unknown_action");
   });
 
   it("offers no remembered shell allow when the host supplies no command rule", () => {
